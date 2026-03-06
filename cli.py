@@ -3159,7 +3159,11 @@ metadata:
                 payload = (text, images) if images else text
                 if self._agent_running and not (text and text.startswith("/")):
                     self._interrupt_queue.put(payload)
-                    self._queued_messages.append(text if text else "(image)")
+                    display_text = text or ""
+                    if images:
+                        img_labels = " ".join(f"[Image]" for _ in images)
+                        display_text = f"{display_text}  {img_labels}".strip() if display_text else img_labels
+                    self._queued_messages.append(display_text or "(empty)")
                     event.app.invalidate()
                 else:
                     self._pending_input.put(payload)
