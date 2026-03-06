@@ -64,7 +64,7 @@ class SwarmWorker:
 
 @dataclass
 class SwarmConfig:
-    max_workers: int = 4
+    max_workers: int = 2
     max_retries: int = 3
     default_model: str = ""
     artifact_dir: str = "./artifacts"

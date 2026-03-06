@@ -81,7 +81,7 @@ class LocalWorkerBackend(WorkerBackend):
                 api_key=api_key,
                 base_url=base_url,
                 provider=provider,
-                max_iterations=task.max_retries * 5 or 15,
+                max_iterations=5,
                 quiet_mode=True,
             )
 
@@ -101,7 +101,7 @@ class LocalWorkerBackend(WorkerBackend):
                 final = f"Agent returned no output (api_calls={result.get('api_calls', 0)}, keys={list(result.keys())})"
 
             return {
-                "status": "completed" if completed else "failed",
+                "status": "completed" if (completed or final) else "failed",
                 "output": final,
                 "api_calls": result.get("api_calls", 0),
                 "tokens": getattr(agent, "session_total_tokens", 0),

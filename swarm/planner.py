@@ -113,21 +113,14 @@ class TaskPlanner:
         if not clean_goal:
             clean_goal = goal
 
-        # Generate n parallel subtasks that each tackle a piece
+        # Each subtask is a concrete, actionable piece — no vague "design" tasks
         subtasks = []
-        labels = [
-            "Design the architecture and module structure",
-            "Implement the core logic and main module",
-            "Implement helper modules and utilities",
-            "Write tests for all modules",
-            "Create the entry point, integrate all modules, and verify it works",
-        ]
-        # Extend with generic labels if n > len(labels)
-        while len(labels) < n:
-            labels.append(f"Implement additional component {len(labels)}")
-
         for i in range(n):
-            subtasks.append(f"{labels[i]} for: {clean_goal}")
+            subtasks.append(
+                f"You are worker {i+1} of {n} building: {clean_goal}\n"
+                f"Write your part as working code. Be concrete — create files, not plans.\n"
+                f"Focus on part {i+1}: split the work roughly into {n} equal pieces and do piece {i+1}."
+            )
 
         return subtasks
 
