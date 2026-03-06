@@ -2680,20 +2680,14 @@ metadata:
             self._agent_running = False
             self._swarm_display = None
             self._queued_messages.clear()
-            # Discard messages typed during swarm — don't auto-send
-            dropped = []
+            # Re-queue messages typed during swarm so they process next
             while hasattr(self, '_interrupt_queue') and not self._interrupt_queue.empty():
                 try:
                     msg = self._interrupt_queue.get_nowait()
                     if msg:
-                        dropped.append(msg)
+                        self._pending_input.put(msg)
                 except queue.Empty:
                     break
-            if dropped:
-                for msg in dropped:
-                    display = msg[0] if isinstance(msg, tuple) else str(msg)
-                    print(f"  (discarded input while swarm ran: '{str(display)[:60]}')")
-                print(f"  Use up-arrow to re-enter.")
 
     def _clarify_callback(self, question, choices):
         """
