@@ -221,60 +221,79 @@ class SwarmOrchestrator:
 
         return table
 
+    def _print_status(self):
+        """Print a plain-text status line."""
+        from datetime import datetime, timezone
+        sched_status = self._scheduler.get_status()
+        completed = sched_status.get("completed", 0)
+        failed = sched_status.get("failed", 0)
+        pending = sched_status.get("pending", 0)
+        running = sched_status.get("running", 0)
+        total = sum(sched_status.values())
+
+        workers = []
+        for wid, worker in sorted(self._pool._workers.items()):
+            if worker.current_task_id:
+                task = self._scheduler._tasks.get(worker.current_task_id)
+                if task:
+                    elapsed = ""
+                    if task.started_at:
+                        now = datetime.now(timezone.utc)
+                        started = task.started_at.replace(tzinfo=timezone.utc)
+                        secs = (now - started).total_seconds()
+                        elapsed = f" {secs:.0f}s"
+                    workers.append(f"{worker.name[:8]}:{task.name}{elapsed}")
+        worker_str = ", ".join(workers) if workers else ""
+        print(f"\r  [{completed}/{total} done, {running} running, {failed} failed] {worker_str}    ", end="", flush=True)
+
     def run_with_display(self, console=None, max_turns: int = 1000, poll_interval: float = 0.5) -> dict:
-        """Run the swarm with a live Rich display."""
-        from rich.live import Live
-
-        if console is None:
-            from rich.console import Console
-            console = Console()
-
+        """Run the swarm with a plain-text progress display."""
         self._cancelled.clear()
         self._ensure_workers()
 
-        with Live(self._build_live_table(), console=console, refresh_per_second=4) as live:
-            turn = 0
-            while turn < max_turns and not self._cancelled.is_set():
-                if self._scheduler.is_complete():
-                    live.update(self._build_live_table())
+        turn = 0
+        while turn < max_turns and not self._cancelled.is_set():
+            if self._scheduler.is_complete():
+                break
+
+            ready = self._scheduler.get_ready_tasks()
+            dispatched = 0
+
+            for task in ready:
+                if self._cancelled.is_set():
                     break
 
-                ready = self._scheduler.get_ready_tasks()
-                dispatched = 0
+                worker = self._pool.get_available_worker()
+                if worker is None:
+                    break
 
-                for task in ready:
-                    if self._cancelled.is_set():
-                        break
+                if not task.model:
+                    task.model = self._router.select_model(task.role)
 
-                    worker = self._pool.get_available_worker()
-                    if worker is None:
-                        break
+                self._scheduler.mark_running(task.id, worker.id)
+                self._log_event(
+                    "task_dispatched",
+                    task_id=task.id,
+                    worker_id=worker.id,
+                    model=task.model,
+                )
 
-                    if not task.model:
-                        task.model = self._router.select_model(task.role)
+                self._dispatch_task(task, worker)
+                dispatched += 1
 
-                    self._scheduler.mark_running(task.id, worker.id)
-                    self._log_event(
-                        "task_dispatched",
-                        task_id=task.id,
-                        worker_id=worker.id,
-                        model=task.model,
-                    )
+            self._collect_results()
+            self._print_status()
 
-                    self._dispatch_task(task, worker)
-                    dispatched += 1
+            if dispatched == 0 and not self._has_running_tasks():
+                if self._scheduler.is_complete():
+                    break
+                time.sleep(poll_interval)
 
-                self._collect_results()
-                live.update(self._build_live_table())
+            turn += 1
+            if dispatched == 0:
+                time.sleep(poll_interval)
 
-                if dispatched == 0 and not self._has_running_tasks():
-                    if self._scheduler.is_complete():
-                        break
-                    time.sleep(poll_interval)
-
-                turn += 1
-                if dispatched == 0:
-                    time.sleep(poll_interval)
+        print()  # newline after \r status updates
 
             self._drain_running(timeout=self._config.timeout_seconds)
             self._collect_results()
