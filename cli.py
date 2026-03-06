@@ -2949,8 +2949,8 @@ metadata:
                 w = _term_width()
                 label = " ⚕ Hermes "
                 fill = w - 2 - len(label)
-                top = f"{_GOLD}├─{label}{'─' * max(fill - 1, 0)}┤{_RST}"
-                bot = f"{_GOLD}├{'─' * (w - 2)}┤{_RST}"
+                top = f"{_GOLD}──{label}{'─' * max(fill, 0)}{_RST}"
+                bot = f"{_GOLD}{'─' * w}{_RST}"
 
                 # Style or strip <think> blocks based on user preference
                 import re as _re
