@@ -2534,7 +2534,7 @@ metadata:
             self.console.print("[bold red]Swarm module not available.[/]")
             return
 
-        self.console.print(f"[bold #DAA520]🐝 Swarm: decomposing goal...[/]")
+        print("Swarm: decomposing goal...")
 
         try:
             # Use planner to break goal into tasks
@@ -2545,12 +2545,10 @@ metadata:
                 t.model = self.model
 
             if not tasks:
-                self.console.print("[yellow]Planner returned no tasks.[/]")
+                print("  Planner returned no tasks.")
                 return
 
             # Convert SwarmTask objects to dicts for add_plan().
-            # Planner deps are task IDs; add_plan() resolves by *name*,
-            # so map IDs back to names.
             id_to_name = {t.id: t.name for t in tasks}
             plan = [
                 {"name": t.name, "prompt": t.prompt, "role": t.role,
@@ -2559,31 +2557,31 @@ metadata:
                 for t in tasks
             ]
 
-            self.console.print(f"[dim]  → {len(plan)} tasks planned[/]")
+            print(f"  {len(plan)} tasks planned")
             for i, t in enumerate(plan, 1):
-                self.console.print(f"[dim]  {i}. {t['name']}[/]")
+                print(f"  {i}. {t['name']}: {t['prompt'][:60]}")
 
             # Run swarm
             config = SwarmConfig()
             orch = SwarmOrchestrator(config)
             orch.add_plan(plan)
 
-            self.console.print(f"[bold #DAA520]🐝 Swarm: executing {len(plan)} tasks...[/]")
-            summary = orch.run_with_display(console=self.console)
+            print(f"Swarm: executing {len(plan)} tasks...")
+            summary = orch.run_with_display()
 
-            # Display results — summary shape: {"tasks": {state: count}, "total_tasks": N, ...}
+            # Display results
             task_counts = summary.get("tasks", {})
             completed = task_counts.get("completed", 0)
             failed = task_counts.get("failed", 0)
             total = summary.get("total_tasks", len(plan))
 
             if failed == 0:
-                self.console.print(f"[bold green]✅ Swarm complete: {completed}/{total} tasks succeeded[/]")
+                print(f"Swarm complete: {completed}/{total} tasks succeeded")
             else:
-                self.console.print(f"[bold yellow]⚠️  Swarm: {completed}/{total} succeeded, {failed} failed[/]")
+                print(f"Swarm: {completed}/{total} succeeded, {failed} failed")
 
         except Exception as e:
-            self.console.print(f"[bold red]Swarm error: {e}[/]")
+            print(f"Swarm error: {e}")
 
     def _clarify_callback(self, question, choices):
         """

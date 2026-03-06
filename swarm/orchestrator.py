@@ -187,7 +187,10 @@ class SwarmOrchestrator:
                     task_name = task.name[:28]
                     role = task.role
                     if task.started_at:
-                        secs = time.time() - task.started_at.timestamp()
+                        from datetime import datetime, timezone
+                        now = datetime.now(timezone.utc)
+                        started = task.started_at.replace(tzinfo=timezone.utc)
+                        secs = (now - started).total_seconds()
                         elapsed = f"{secs:.0f}s"
 
             if worker.state.value == "busy":

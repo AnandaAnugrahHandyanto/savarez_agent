@@ -70,6 +70,11 @@ class TaskPlanner:
         if not steps:
             steps = [goal]
 
+        # If the goal is a single sentence (no explicit steps), auto-decompose
+        # into parallel subtasks so the swarm actually uses multiple workers.
+        if len(steps) == 1:
+            steps = self._auto_decompose(steps[0])
+
         tasks: list[SwarmTask] = []
         for i, step_text in enumerate(steps):
             role = _infer_role(step_text)
@@ -94,6 +99,36 @@ class TaskPlanner:
             tasks.append(task)
 
         return tasks
+
+    def _auto_decompose(self, goal: str) -> list[str]:
+        """Break a single goal sentence into parallel subtasks."""
+        # Extract requested agent count if present (e.g. "5 agents to build X")
+        count_match = re.search(r'(\d+)\s*agents?', goal, re.IGNORECASE)
+        n = int(count_match.group(1)) if count_match else 3
+        n = max(2, min(n, 10))
+
+        # Strip the "N agents to" prefix to get the actual goal
+        clean_goal = re.sub(r'\d+\s*agents?\s*(?:to\s+)?', '', goal, flags=re.IGNORECASE).strip()
+        if not clean_goal:
+            clean_goal = goal
+
+        # Generate n parallel subtasks that each tackle a piece
+        subtasks = []
+        labels = [
+            "Design the architecture and module structure",
+            "Implement the core logic and main module",
+            "Implement helper modules and utilities",
+            "Write tests for all modules",
+            "Create the entry point, integrate all modules, and verify it works",
+        ]
+        # Extend with generic labels if n > len(labels)
+        while len(labels) < n:
+            labels.append(f"Implement additional component {len(labels)}")
+
+        for i in range(n):
+            subtasks.append(f"{labels[i]} for: {clean_goal}")
+
+        return subtasks
 
     def plan_from_steps(
         self,
