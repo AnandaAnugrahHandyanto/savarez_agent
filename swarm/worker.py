@@ -54,6 +54,12 @@ class LocalWorkerBackend(WorkerBackend):
 
         model = task.model or "claude-haiku-4-5"
 
+        # Normalize model names: dots to dashes (e.g. claude-opus-4.6 -> claude-opus-4-6)
+        # Anthropic API requires dashes, but users/configs may use dots
+        if "claude" in model:
+            import re as _re
+            model = _re.sub(r'(\d+)\.(\d+)', r'\1-\2', model)
+
         # Infer provider from model name
         import os
         if "claude" in model:

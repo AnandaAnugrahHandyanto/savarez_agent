@@ -2540,9 +2540,14 @@ metadata:
             # Use planner to break goal into tasks
             planner = TaskPlanner()
             tasks = planner.decompose(goal)
-            # Override all task models to use the CLI session's current model
+            # Use a fast/cheap model for swarm workers (haiku) unless user
+            # is already on a small model. Swarm tasks are parallelized so
+            # using opus/sonnet for each would be slow and expensive.
+            swarm_model = self.model
+            if "opus" in swarm_model or "sonnet" in swarm_model:
+                swarm_model = "claude-haiku-4-5"
             for t in tasks:
-                t.model = self.model
+                t.model = swarm_model
 
             if not tasks:
                 print("  Planner returned no tasks.")
