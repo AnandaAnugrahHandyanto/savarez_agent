@@ -5,10 +5,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "postinstall": "node scripts/sync-kaspa-wasm.mjs",
+    "prestart": "node scripts/sync-kaspa-wasm.mjs",
     "start": "node bridge.js",
+    "pretest": "node scripts/sync-kaspa-wasm.mjs",
     "test": "node --test"
   },
   "dependencies": {
-    "@kasdk/nodejs": "0.15.2"
+    "adm-zip": "^0.5.16"
   }
 }

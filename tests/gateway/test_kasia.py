@@ -279,6 +279,50 @@ class TestKasiaAdapter:
 
         assert result.success is True
         assert result.message_id == "abc123"
+        assert result.raw_response["chunk_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_send_splits_oversized_message_after_bridge_size_error(self):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        adapter = KasiaAdapter(self._make_config())
+        adapter._mark_connected()
+        oversized = "A" * 450
+
+        adapter._request_json = AsyncMock(
+            side_effect=[
+                RuntimeError(
+                    "Kasia bridge error (500) on /send: transaction is not standard: "
+                    "transaction transient (storage) mass of 131124 is larger than max allowed size of 100000"
+                ),
+                {"status": "sent", "txId": "chunk-1"},
+                {"status": "sent", "txId": "chunk-2"},
+                {"status": "sent", "txId": "chunk-3"},
+            ]
+        )
+
+        result = await adapter.send("kaspa:qpeeraddress", oversized)
+
+        assert result.success is True
+        assert result.message_id == "chunk-2"
+        assert result.raw_response["chunk_count"] == 1
+        sent_chunks = [
+            call.kwargs["payload"]["message"]
+            for call in adapter._request_json.await_args_list
+        ]
+        assert sent_chunks[0] == oversized
+        assert len(sent_chunks) == 3
+        assert all(len(chunk) <= 400 for chunk in sent_chunks[1:])
+
+    def test_chunk_message_splits_at_word_boundaries(self):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        text = ("alpha beta gamma delta " * 40).strip()
+        chunks = KasiaAdapter._chunk_message(text)
+
+        assert len(chunks) > 1
+        assert " ".join(" ".join(chunks).split()) == " ".join(text.split())
+        assert all(len(chunk) <= 400 for chunk in chunks)
 
     @pytest.mark.asyncio
     async def test_connect_refuses_busy_port_without_killing_other_processes(self, tmp_path):

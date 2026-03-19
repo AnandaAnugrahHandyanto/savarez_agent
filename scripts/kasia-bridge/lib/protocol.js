@@ -1,4 +1,4 @@
-import { Address, XOnlyPublicKey, kaspaToSompi } from "@kasdk/nodejs";
+import { Address, XOnlyPublicKey, kaspaToSompi } from "./kaspa_sdk.js";
 import {
   createCipheriv,
   createDecipheriv,
@@ -17,8 +17,8 @@ function hkdfKey(sharedSecret) {
   return Buffer.from(
     hkdfSync(
       "sha256",
-      Buffer.alloc(0),
       Buffer.from(sharedSecret),
+      Buffer.alloc(0),
       Buffer.alloc(0),
       32
     )

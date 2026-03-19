@@ -11,7 +11,7 @@ import {
   UtxoContext,
   UtxoProcessor,
   XPrv,
-} from "@kasdk/nodejs";
+} from "./kaspa_sdk.js";
 
 export function deriveWalletIdentity(seedPhrase, network) {
   const mnemonic = new Mnemonic(String(seedPhrase || "").trim());

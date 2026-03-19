@@ -34,6 +34,10 @@ function joinUrl(baseUrl, relativePath, params = {}) {
   return url;
 }
 
+function encodeIndexerAlias(alias) {
+  return Buffer.from(String(alias || ""), "utf8").toString("hex");
+}
+
 export class KasiaBridgeCore {
   constructor({
     stateDir,
@@ -311,7 +315,7 @@ export class KasiaBridgeCore {
 
       const records = await this._fetchJson("/contextual-messages/by-sender", {
         address: conversation.peer_address,
-        alias: conversation.their_alias,
+        alias: encodeIndexerAlias(conversation.their_alias),
         block_time: conversation.last_context_block_time || 0,
         limit: this.pollLimit,
       });

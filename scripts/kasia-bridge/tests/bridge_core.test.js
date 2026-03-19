@@ -134,3 +134,41 @@ test("duplicate transactions are deduplicated by tx id", async () => {
   );
   assert.deepEqual(stateJson.processed_tx_ids, ["tx-dup"]);
 });
+
+test("contextual polling encodes aliases for the live indexer query shape", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "kasia-bridge-"));
+  const requestedUrls = [];
+  const bridge = new KasiaBridgeCore({
+    stateDir,
+    indexerUrl: "http://indexer.invalid",
+    nodeUrl: "ws://node.invalid",
+    network: "mainnet",
+    seedPhrase: "seed",
+    walletClient: new FakeWalletClient(),
+    fetchImpl: async (url) => {
+      requestedUrls.push(String(url));
+      return response([]);
+    },
+  });
+
+  await bridge.init();
+  bridge.state.conversations["kaspa:qcontactaddressxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"] = {
+    conversation_id: "kasia:test",
+    peer_address: "kaspa:qcontactaddressxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    our_alias: "001122334455",
+    their_alias: "a1b2c3d4e5f6",
+    status: "active",
+    updated_at: new Date().toISOString(),
+    last_handshake_block_time: 100,
+    last_context_block_time: 0,
+    pending_handshake: null,
+  };
+
+  await bridge.syncOnce();
+
+  const contextualUrl = requestedUrls.find((url) =>
+    url.includes("/contextual-messages/by-sender")
+  );
+  assert.ok(contextualUrl);
+  assert.match(contextualUrl, /alias=613162326333643465356636/);
+});
