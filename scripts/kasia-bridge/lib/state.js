@@ -52,6 +52,11 @@ function normalizeSendJob(existing = {}) {
         (value) => typeof value === "string" && value.trim()
       )
     : [];
+  const indexedTxIds = Array.isArray(existing.indexed_tx_ids || existing.indexedTxIds)
+    ? (existing.indexed_tx_ids || existing.indexedTxIds).filter(
+        (value) => typeof value === "string" && value.trim()
+      )
+    : [];
 
   return {
     job_id: jobId,
@@ -67,11 +72,28 @@ function normalizeSendJob(existing = {}) {
       existing.finished_ms == null && existing.finishedMs == null
         ? null
         : Number(existing.finished_ms ?? existing.finishedMs),
+    submitted_ms:
+      existing.submitted_ms == null && existing.submittedMs == null
+        ? null
+        : Number(existing.submitted_ms ?? existing.submittedMs),
+    indexed_ms:
+      existing.indexed_ms == null && existing.indexedMs == null
+        ? null
+        : Number(existing.indexed_ms ?? existing.indexedMs),
+    indexed_block_time_ms:
+      existing.indexed_block_time_ms == null &&
+      existing.indexedBlockTimeMs == null
+        ? null
+        : Number(
+            existing.indexed_block_time_ms ?? existing.indexedBlockTimeMs
+          ),
     total_parts: Number(existing.total_parts || existing.totalParts || 0),
     completed_parts: Number(
       existing.completed_parts || existing.completedParts || 0
     ),
+    indexed_parts: Number(existing.indexed_parts || existing.indexedParts || 0),
     tx_ids: txIds,
+    indexed_tx_ids: indexedTxIds,
     last_tx_id:
       String(existing.last_tx_id || existing.lastTxId || "").trim() || null,
     error: existing.error == null ? null : String(existing.error),

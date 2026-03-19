@@ -165,11 +165,12 @@ test("preflight chunking splits oversized contextual messages before send", asyn
     waitMs: 250,
   });
 
-  assert.equal(result.status, "sent");
+  assert.equal(result.status, "submitted");
   assert.ok(result.partCount > 1);
   assert.equal(result.txIds.length, result.partCount);
   assert.equal(result.txId, result.txIds[result.txIds.length - 1]);
   assert.equal(walletClient.sentTransactions.length, result.partCount);
+  assert.match(result.statusMessage, /waiting for indexer visibility/i);
 });
 
 test("non-size wallet send errors surface as failed send jobs", async () => {
@@ -238,12 +239,76 @@ test("send returns a queued job when waitMs expires before submission completes"
     waitMs: 1,
   });
 
-  assert.ok(["queued", "running"].includes(queued.status));
+  assert.ok(["queued", "submitting"].includes(queued.status));
   assert.ok(queued.jobId);
 
   const completed = await bridge.waitForSendJob(queued.jobId, 500);
-  assert.equal(completed.status, "sent");
+  assert.equal(completed.status, "submitted");
   assert.equal(completed.partCount, 1);
+  assert.equal(completed.completedParts, 1);
+  assert.equal(completed.indexedParts, 0);
+});
+
+test("sync marks submitted jobs as processed once the indexer shows all tx ids", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "kasia-bridge-"));
+  const walletClient = new FakeWalletClient();
+  const requestedUrls = [];
+  const bridge = new KasiaBridgeCore({
+    stateDir,
+    indexerUrl: "http://indexer.invalid",
+    nodeUrl: "ws://node.invalid",
+    network: "mainnet",
+    seedPhrase: "seed",
+    walletClient,
+    fetchImpl: async (url) => {
+      requestedUrls.push(String(url));
+      if (
+        String(url).includes("/contextual-messages/by-sender") &&
+        String(url).includes("alias=303031313232333334343535")
+      ) {
+        return response([
+          {
+            tx_id: "tx-1",
+            block_time: 1234,
+            message_payload: "ignored",
+          },
+        ]);
+      }
+      return response([]);
+    },
+  });
+
+  await bridge.init();
+  bridge.state.conversations[VALID_CONTACT_ADDRESS] = {
+    conversation_id: "kasia:test",
+    peer_address: VALID_CONTACT_ADDRESS,
+    our_alias: "001122334455",
+    their_alias: "aabbccddeeff",
+    status: "active",
+    updated_at: new Date().toISOString(),
+    last_handshake_block_time: 100,
+    last_context_block_time: 200,
+    pending_handshake: null,
+  };
+
+  const initial = await bridge.send({
+    chatId: VALID_CONTACT_ADDRESS,
+    message: "hello indexed kasia",
+    waitMs: 250,
+  });
+  assert.equal(initial.status, "submitted");
+
+  await bridge.syncOnce();
+
+  const processed = bridge.getSendJob(initial.jobId);
+  assert.equal(processed.status, "processed");
+  assert.equal(processed.indexedParts, 1);
+  assert.equal(processed.indexedBlockTimeMs, 1234);
+  assert.equal(processed.indexedMs != null, true);
+  assert.match(processed.statusMessage, /visible through the kasia indexer/i);
+  assert.ok(
+    requestedUrls.some((url) => url.includes("alias=303031313232333334343535"))
+  );
 });
 
 test("preflight rejects messages that exceed the Kasia multipart cap", async () => {

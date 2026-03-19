@@ -44,9 +44,23 @@ const DEFAULT_CONTEXTUAL_MESSAGE_MIN_CHARS = 40;
 const DEFAULT_CONTEXTUAL_MESSAGE_MAX_PARTS = 8;
 const DEFAULT_MAX_SEND_JOBS = 100;
 const DEFAULT_SEND_JOB_PREVIEW_CHARS = 120;
+const DEFAULT_SEND_JOB_INDEXER_LOOKBACK_MS = 60_000;
 
 function isTerminalSendJobStatus(status) {
-  return status === "sent" || status === "failed" || status === "rejected";
+  return (
+    status === "processed" ||
+    status === "sent" ||
+    status === "failed" ||
+    status === "rejected"
+  );
+}
+
+function isBlockingSendJobStatus(status) {
+  return status === "queued" || status === "submitting";
+}
+
+function isIndexerTrackedSendJobStatus(status) {
+  return status === "submitted" || status === "waiting_for_indexer";
 }
 
 function buildSendJobPreview(message, maxChars = DEFAULT_SEND_JOB_PREVIEW_CHARS) {
@@ -58,6 +72,42 @@ function buildSendJobPreview(message, maxChars = DEFAULT_SEND_JOB_PREVIEW_CHARS)
     return normalized;
   }
   return `${normalized.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
+}
+
+function buildSendJobStatusMessage(job) {
+  const totalParts = Math.max(0, Number(job?.total_parts || 0));
+  const completedParts = Math.max(0, Number(job?.completed_parts || 0));
+  const indexedParts = Math.max(0, Number(job?.indexed_parts || 0));
+  const plural = totalParts === 1 ? "" : "s";
+
+  switch (job?.status) {
+    case "queued":
+      return "Queued for Kasia delivery.";
+    case "submitting":
+      return totalParts > 1
+        ? `Submitting ${completedParts}/${totalParts} Kasia parts to the node.`
+        : "Submitting the Kasia transaction to the node.";
+    case "submitted":
+      return totalParts > 1
+        ? `Submitted ${completedParts}/${totalParts} Kasia parts to the node. Waiting for indexer visibility.`
+        : "Submitted to the Kaspa node. Waiting for indexer visibility.";
+    case "waiting_for_indexer":
+      return indexedParts > 0 && totalParts > 0
+        ? `${indexedParts}/${totalParts} Kasia part${plural} visible through the indexer.`
+        : "Submitted to the Kaspa node. Waiting for indexer visibility.";
+    case "processed":
+      return totalParts > 1
+        ? `All ${totalParts} Kasia parts are visible through the indexer.`
+        : "Visible through the Kasia indexer.";
+    case "failed":
+      return job?.error || "Kasia delivery failed.";
+    case "rejected":
+      return job?.error || "Kasia delivery was rejected.";
+    case "sent":
+      return "Sent under the previous Kasia bridge format.";
+    default:
+      return null;
+  }
 }
 
 function toPublicSendJob(job) {
@@ -72,12 +122,18 @@ function toPublicSendJob(job) {
     updatedMs: job.updated_ms,
     startedMs: job.started_ms,
     finishedMs: job.finished_ms,
+    submittedMs: job.submitted_ms,
+    indexedMs: job.indexed_ms,
+    indexedBlockTimeMs: job.indexed_block_time_ms,
     partCount: job.total_parts,
     completedParts: job.completed_parts,
+    indexedParts: job.indexed_parts,
     txId: job.last_tx_id,
     txIds: [...(job.tx_ids || [])],
+    indexedTxIds: [...(job.indexed_tx_ids || [])],
     error: job.error,
     messagePreview: job.message_preview,
+    statusMessage: buildSendJobStatusMessage(job),
   };
 }
 
@@ -275,8 +331,12 @@ export class KasiaBridgeCore {
 
   health() {
     const sendState = this.walletClient.exportSendState?.() || {};
-    const activeSendJobCount = Object.values(this.state.send_jobs || {}).filter(
+    const jobs = Object.values(this.state.send_jobs || {});
+    const activeSendJobCount = jobs.filter(
       (job) => !isTerminalSendJobStatus(job.status)
+    ).length;
+    const waitingForIndexerCount = jobs.filter(
+      (job) => job.status === "submitted" || job.status === "waiting_for_indexer"
     ).length;
     return {
       status: this.walletClient.isConnected ? "connected" : "starting",
@@ -294,6 +354,7 @@ export class KasiaBridgeCore {
         ? sendState.reserved_outpoints.length
         : 0,
       activeSendJobCount,
+      waitingForIndexerCount,
     };
   }
 
@@ -403,7 +464,12 @@ export class KasiaBridgeCore {
     }
 
     const current = this.getSendJob(normalizedJobId);
-    if (!current || waitMs <= 0 || isTerminalSendJobStatus(current.status)) {
+    if (
+      !current ||
+      waitMs <= 0 ||
+      isTerminalSendJobStatus(current.status) ||
+      !isBlockingSendJobStatus(current.status)
+    ) {
       return current;
     }
 
@@ -421,7 +487,11 @@ export class KasiaBridgeCore {
 
       const onUpdate = () => {
         const latest = this.getSendJob(normalizedJobId);
-        if (!latest || isTerminalSendJobStatus(latest.status)) {
+        if (
+          !latest ||
+          isTerminalSendJobStatus(latest.status) ||
+          !isBlockingSendJobStatus(latest.status)
+        ) {
           cleanup();
           resolve(latest);
         }
@@ -542,9 +612,14 @@ export class KasiaBridgeCore {
       updated_ms: nowMs,
       started_ms: null,
       finished_ms: null,
+      submitted_ms: null,
+      indexed_ms: null,
+      indexed_block_time_ms: null,
       total_parts: Number(totalParts || 0),
       completed_parts: 0,
+      indexed_parts: 0,
       tx_ids: [],
+      indexed_tx_ids: [],
       last_tx_id: null,
       error: null,
       message_preview: buildSendJobPreview(message),
@@ -569,8 +644,17 @@ export class KasiaBridgeCore {
       0,
       Math.min(job.total_parts || 0, Number(job.completed_parts || 0))
     );
+    job.indexed_parts = Math.max(
+      0,
+      Math.min(job.total_parts || 0, Number(job.indexed_parts || 0))
+    );
     job.tx_ids = Array.isArray(job.tx_ids)
       ? job.tx_ids.filter((value) => typeof value === "string" && value.trim())
+      : [];
+    job.indexed_tx_ids = Array.isArray(job.indexed_tx_ids)
+      ? job.indexed_tx_ids.filter(
+          (value) => typeof value === "string" && value.trim()
+        )
       : [];
     job.last_tx_id =
       String(job.last_tx_id || "").trim() || job.tx_ids[job.tx_ids.length - 1] || null;
@@ -605,6 +689,11 @@ export class KasiaBridgeCore {
     const nowMs = this.nowFn();
     for (const job of Object.values(this.state.send_jobs || {})) {
       if (isTerminalSendJobStatus(job.status)) {
+        continue;
+      }
+      if (isIndexerTrackedSendJobStatus(job.status) && job.tx_ids.length > 0) {
+        job.status = "waiting_for_indexer";
+        job.updated_ms = nowMs;
         continue;
       }
       job.status = "failed";
@@ -655,10 +744,12 @@ export class KasiaBridgeCore {
   async _runSendJob(jobId, chatId, chunks) {
     const conversation = this._requireActiveConversation(chatId);
     await this._updateSendJob(jobId, {
-      status: "running",
+      status: "submitting",
       started_ms: this.nowFn(),
       total_parts: chunks.length,
       completed_parts: 0,
+      indexed_parts: 0,
+      indexed_tx_ids: [],
       error: null,
     });
 
@@ -671,7 +762,7 @@ export class KasiaBridgeCore {
       const txId = result?.txId || result?.messageId || result;
       txResults.push(result);
       await this._updateSendJob(jobId, {
-        status: "running",
+        status: "submitting",
         completed_parts: index + 1,
         tx_ids: txResults
           .map((entry) => entry?.txId || entry?.messageId || entry)
@@ -682,7 +773,8 @@ export class KasiaBridgeCore {
 
     touchConversation(conversation, new Date(this.nowFn()).toISOString());
     await this._updateSendJob(jobId, {
-      status: "sent",
+      status: "submitted",
+      submitted_ms: this.nowFn(),
       completed_parts: chunks.length,
       tx_ids: txResults
         .map((entry) => entry?.txId || entry?.messageId || entry)
@@ -708,6 +800,7 @@ export class KasiaBridgeCore {
   async syncOnce() {
     await this._pollHandshakes();
     await this._pollContextualMessages();
+    await this._pollSendJobVisibility();
     this.state.last_sync_ms = this.nowFn();
     await this._saveState();
   }
@@ -848,6 +941,78 @@ export class KasiaBridgeCore {
       }
 
       conversation.last_context_block_time = maxBlockTime;
+    }
+  }
+
+  async _pollSendJobVisibility() {
+    const pendingJobs = Object.values(this.state.send_jobs || {}).filter(
+      (job) =>
+        isIndexerTrackedSendJobStatus(job.status) &&
+        Array.isArray(job.tx_ids) &&
+        job.tx_ids.length > 0
+    );
+
+    for (const job of pendingJobs) {
+      const conversation = this.state.conversations[String(job.chat_id || "").trim()];
+      if (!conversation?.our_alias) {
+        continue;
+      }
+
+      const trackedTxIds = new Set(job.tx_ids);
+      const lookbackBlockTime = Math.max(
+        0,
+        Number(job.submitted_ms || job.started_ms || job.created_ms || 0) -
+          DEFAULT_SEND_JOB_INDEXER_LOOKBACK_MS
+      );
+      const records = await this._fetchJson("/contextual-messages/by-sender", {
+        address: this.walletInfo.address,
+        alias: encodeIndexerAlias(conversation.our_alias),
+        block_time: lookbackBlockTime,
+        limit: Math.max(this.pollLimit, trackedTxIds.size * 10),
+      });
+
+      const matchedRecords = Array.isArray(records)
+        ? records.filter((record) => trackedTxIds.has(record?.tx_id))
+        : [];
+      const indexedTxIds = job.tx_ids.filter((txId) =>
+        matchedRecords.some((record) => String(record?.tx_id || "").trim() === txId)
+      );
+      const indexedParts = indexedTxIds.length;
+      const indexedBlockTimeMs = matchedRecords.reduce(
+        (maxBlockTime, record) =>
+          Math.max(maxBlockTime, Number(record?.block_time || 0)),
+        Number(job.indexed_block_time_ms || 0)
+      );
+
+      const updates = {
+        indexed_parts: indexedParts,
+        indexed_tx_ids: indexedTxIds,
+        indexed_block_time_ms: indexedBlockTimeMs || null,
+      };
+
+      if (indexedParts >= trackedTxIds.size) {
+        updates.status = "processed";
+        updates.indexed_ms = job.indexed_ms ?? this.nowFn();
+        updates.finished_ms = this.nowFn();
+      } else if (job.status !== "waiting_for_indexer") {
+        updates.status = "waiting_for_indexer";
+      } else {
+        updates.status = "waiting_for_indexer";
+      }
+
+      const hasChanged =
+        updates.status !== job.status ||
+        updates.indexed_parts !== Number(job.indexed_parts || 0) ||
+        JSON.stringify(updates.indexed_tx_ids) !==
+          JSON.stringify(job.indexed_tx_ids || []) ||
+        updates.indexed_block_time_ms !==
+          (job.indexed_block_time_ms ?? null) ||
+        updates.indexed_ms !== (job.indexed_ms ?? null) ||
+        updates.finished_ms !== (job.finished_ms ?? null);
+
+      if (hasChanged) {
+        await this._updateSendJob(job.job_id, updates);
+      }
     }
   }
 

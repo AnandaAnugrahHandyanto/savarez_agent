@@ -267,9 +267,17 @@ class KasiaAdapter(BasePlatformAdapter):
                     error=data.get("error") or "Kasia send failed",
                     raw_response=data,
                 )
+            if data.get("status") in {"submitted", "waiting_for_indexer"}:
+                logger.info(
+                    "[%s] Kasia send for %s is %s: %s",
+                    self.name,
+                    chat_id,
+                    data.get("status"),
+                    data.get("statusMessage") or "Waiting for public indexer visibility.",
+                )
             return SendResult(
                 success=True,
-                message_id=data.get("txId") or data.get("jobId") or data.get("messageId"),
+                message_id=data.get("jobId") or data.get("txId") or data.get("messageId"),
                 raw_response=data,
             )
         except Exception as error:

@@ -435,7 +435,10 @@ class TestSendToPlatformKasia:
                 "success": True,
                 "platform": "kasia",
                 "chat_id": chat_id,
-                "message_id": "tx-1",
+                "message_id": "job-1",
+                "job_id": "job-1",
+                "status": "submitted",
+                "status_message": "Submitted to the Kaspa node. Waiting for indexer visibility.",
             }
         )
 
@@ -450,6 +453,8 @@ class TestSendToPlatformKasia:
             )
 
         assert result["success"] is True
+        assert result["status"] == "submitted"
+        assert "Waiting for indexer visibility" in result["status_message"]
         async_mock.assert_awaited_once_with({"bridge_port": 3010}, chat_id, "hello from hermes")
 
 

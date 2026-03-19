@@ -315,6 +315,32 @@ class TestKasiaAdapter:
         assert result.raw_response["status"] == "queued"
 
     @pytest.mark.asyncio
+    async def test_send_prefers_job_id_for_submitted_bridge_job(self):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        adapter = KasiaAdapter(self._make_config())
+        adapter._mark_connected()
+        adapter._request_json = AsyncMock(
+            return_value={
+                "status": "submitted",
+                "jobId": "job-789",
+                "txId": "tx-789",
+                "statusMessage": "Submitted to the Kaspa node. Waiting for indexer visibility.",
+                "partCount": 1,
+                "completedParts": 1,
+                "indexedParts": 0,
+                "submittedMs": 1710000000100,
+            }
+        )
+
+        result = await adapter.send("kaspa:qpeeraddress", "hello")
+
+        assert result.success is True
+        assert result.message_id == "job-789"
+        assert result.raw_response["status"] == "submitted"
+        assert "Waiting for indexer visibility" in result.raw_response["statusMessage"]
+
+    @pytest.mark.asyncio
     async def test_send_surfaces_rejected_bridge_job(self):
         from gateway.platforms.kasia import KasiaAdapter
 

@@ -614,9 +614,15 @@ async def _send_kasia(extra, chat_id, message):
                         "success": True,
                         "platform": "kasia",
                         "chat_id": chat_id,
-                        "message_id": data.get("txId") or data.get("jobId") or data.get("messageId"),
+                        "message_id": data.get("jobId") or data.get("txId") or data.get("messageId"),
                         "job_id": data.get("jobId"),
                         "status": data.get("status"),
+                        "status_message": data.get("statusMessage"),
+                        "part_count": data.get("partCount"),
+                        "completed_parts": data.get("completedParts"),
+                        "indexed_parts": data.get("indexedParts"),
+                        "submitted_ms": data.get("submittedMs"),
+                        "indexed_ms": data.get("indexedMs"),
                     }
                 body = await resp.text()
                 return {"error": f"Kasia bridge error ({resp.status}): {body}"}
