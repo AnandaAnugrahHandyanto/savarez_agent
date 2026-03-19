@@ -2,11 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  KaspaWalletClient,
   buildCandidateUtxoPlans,
   makeOutpointKey,
   normalizeSendState,
   reconcileSendState,
-  shouldCompactContextualSend,
+  shouldCompactSend,
 } from "../lib/kaspa_wallet.js";
 
 function utxo({ txId, index, amount, blockDaaScore = 1, isCoinbase = false }) {
@@ -119,9 +120,9 @@ test("reconcileSendState removes tracked pending outputs once they mature", () =
   assert.equal(reconciled.pending_outputs.length, 0);
 });
 
-test("shouldCompactContextualSend matches KaChat-style no-pending multi-utxo condition", () => {
+test("shouldCompactSend matches KaChat-style no-pending multi-utxo condition", () => {
   assert.equal(
-    shouldCompactContextualSend({
+    shouldCompactSend({
       matureUtxos: [utxo({ txId: "a", index: 0, amount: 1 }), utxo({ txId: "b", index: 0, amount: 1 })],
       trackedPendingUtxos: [],
       lastCompactionMs: 0,
@@ -133,7 +134,7 @@ test("shouldCompactContextualSend matches KaChat-style no-pending multi-utxo con
   );
 
   assert.equal(
-    shouldCompactContextualSend({
+    shouldCompactSend({
       matureUtxos: [
         utxo({ txId: "a", index: 0, amount: 1 }),
         utxo({ txId: "b", index: 0, amount: 1 }),
@@ -149,7 +150,7 @@ test("shouldCompactContextualSend matches KaChat-style no-pending multi-utxo con
   );
 
   assert.equal(
-    shouldCompactContextualSend({
+    shouldCompactSend({
       matureUtxos: [
         utxo({ txId: "a", index: 0, amount: 1 }),
         utxo({ txId: "b", index: 0, amount: 1 }),
@@ -163,4 +164,105 @@ test("shouldCompactContextualSend matches KaChat-style no-pending multi-utxo con
     }),
     false
   );
+});
+
+test("wallet planner passes plain address strings into transaction attempts", async () => {
+  class ProbeWalletClient extends KaspaWalletClient {
+    constructor() {
+      super({
+        seedPhrase:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        nodeUrl: "ws://node.invalid",
+        network: "mainnet",
+      });
+      this.identity = { address: "kaspa:qselfaddressxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" };
+      this.utxoContext = {};
+      this.rpc = {};
+      this.planCalls = [];
+    }
+
+    _loadSendContext() {
+      return {
+        trackedPendingUtxos: [],
+        availableMatureUtxos: [utxo({ txId: "mature-1", index: 0, amount: 1_000_000 })],
+      };
+    }
+
+    async _tryPlans(_plans, txOptions) {
+      this.planCalls.push({ ...txOptions });
+      return {
+        success: true,
+        transactions: [{ txId: "tx-ok", inputCount: 1, usesPendingInputs: false }],
+      };
+    }
+  }
+
+  const wallet = new ProbeWalletClient();
+  const result = await wallet._sendPayloadTransaction({
+    destinationAddress: "kaspa:qpeeraddressxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    amountSompi: 1000n,
+    payloadBytes: new Uint8Array(),
+    strategy: "direct",
+  });
+
+  assert.equal(result.txId, "tx-ok");
+  assert.equal(wallet.planCalls.length, 1);
+  assert.equal(typeof wallet.planCalls[0].destination, "string");
+  assert.equal(typeof wallet.planCalls[0].receiveAddress, "string");
+});
+
+test("wallet planner can compact before retrying a fragmented direct send", async () => {
+  class ProbeWalletClient extends KaspaWalletClient {
+    constructor() {
+      super({
+        seedPhrase:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        nodeUrl: "ws://node.invalid",
+        network: "mainnet",
+      });
+      this.identity = { address: "kaspa:qselfaddressxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" };
+      this.utxoContext = {};
+      this.rpc = {};
+      this.didCompact = false;
+      this.compactionCount = 0;
+    }
+
+    _loadSendContext() {
+      return {
+        trackedPendingUtxos: [],
+        availableMatureUtxos: [
+          utxo({ txId: "m1", index: 0, amount: 1000 }),
+          utxo({ txId: "m2", index: 0, amount: 1000 }),
+          utxo({ txId: "m3", index: 0, amount: 1000 }),
+        ],
+      };
+    }
+
+    async _tryPlans(_plans, txOptions) {
+      if (!this.didCompact && txOptions.destination !== txOptions.receiveAddress) {
+        return { success: false, error: new Error("insufficient funds") };
+      }
+      return {
+        success: true,
+        transactions: [{ txId: "tx-after-compact", inputCount: 1, usesPendingInputs: true }],
+      };
+    }
+
+    async _compactMatureUtxos() {
+      this.didCompact = true;
+      this.compactionCount += 1;
+    }
+  }
+
+  const wallet = new ProbeWalletClient();
+  const result = await wallet._sendPayloadTransaction({
+    destinationAddress: "kaspa:qpeeraddressxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    amountSompi: 1000n,
+    payloadBytes: new Uint8Array(),
+    strategy: "direct",
+  });
+
+  assert.equal(wallet.compactionCount, 1);
+  assert.equal(result.txId, "tx-after-compact");
+  assert.equal(result.usedPendingInput, true);
 });

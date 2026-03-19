@@ -253,7 +253,7 @@ export function buildCandidateUtxoPlans({
   return plans;
 }
 
-export function shouldCompactContextualSend({
+export function shouldCompactSend({
   matureUtxos = [],
   trackedPendingUtxos = [],
   lastCompactionMs = 0,
@@ -381,16 +381,7 @@ export class KaspaWalletClient {
       timeoutDuration: 5000,
     });
 
-    this.utxoProcessor = new UtxoProcessor({
-      rpc: this.rpc,
-      networkId: this.identity.networkId,
-    });
-    await this.utxoProcessor.start();
-
-    this.utxoContext = new UtxoContext({
-      processor: this.utxoProcessor,
-    });
-    await this.utxoContext.trackAddresses([this.identity.address]);
+    await this._rebuildUtxoContext();
 
     this.isConnected = true;
     return this.getWalletInfo();
@@ -452,43 +443,72 @@ export class KaspaWalletClient {
       throw new Error("Wallet client is not initialized");
     }
 
-    const receiveAddress = new Address(this.identity.address);
-    const destination = new Address(destinationAddress);
-    const isSelfSend = destination.toString() === receiveAddress.toString();
+    const receiveAddress = String(this.identity.address);
+    const destination = String(destinationAddress || "").trim();
+    const isSelfSend = destination === receiveAddress;
     const sendStrategy =
       strategy === "default" ? (isSelfSend ? "contextual" : "direct") : strategy;
 
     let lastError = null;
     for (let attempt = 0; attempt <= this.visibilityRetries; attempt += 1) {
-      const context = this._loadSendContext();
-      const plans = buildCandidateUtxoPlans({
-        trackedPendingUtxos: context.trackedPendingUtxos,
-        matureUtxos: context.availableMatureUtxos,
-        maxConfirmedPlans: this.maxConfirmedPlans,
-      });
-
-      const firstPassPlans = plans.filter((plan) => plan.entries.length <= 1);
-      const laterPlans = plans.filter((plan) => plan.entries.length > 1);
-
-      const firstPass = await this._tryPlans(firstPassPlans, {
-        destination,
-        receiveAddress,
-        amountSompi,
-        payloadBytes,
-        priorityFeeSompi,
-      });
-      if (firstPass.success) {
-        return this._finalizeSubmittedTransactions(firstPass.transactions);
+      let context = this._loadSendContext();
+      if (
+        context.availableMatureUtxos.length === 0 &&
+        context.availablePendingUtxos.length === 0
+      ) {
+        const chainBalance = await this._getOnChainBalance();
+        if (chainBalance > 0n) {
+          await this._rebuildUtxoContext();
+          context = this._loadSendContext();
+        }
       }
-      if (firstPass.error) {
-        lastError = firstPass.error;
+      const availablePendingUtxos = Array.isArray(context.availablePendingUtxos)
+        ? context.availablePendingUtxos
+        : [];
+      const trackedPendingUtxos = Array.isArray(context.trackedPendingUtxos)
+        ? context.trackedPendingUtxos
+        : [];
+      const availableMatureUtxos = Array.isArray(context.availableMatureUtxos)
+        ? context.availableMatureUtxos
+        : [];
+      const directPass = await this._tryPlans(
+        [
+          {
+            name: "context",
+            useFullContext: true,
+            usesPendingInputs: availablePendingUtxos.length > 0,
+          },
+        ],
+        {
+          destination,
+          receiveAddress,
+          amountSompi,
+          payloadBytes,
+          priorityFeeSompi,
+        }
+      );
+      if (directPass.success) {
+        return this._finalizeSubmittedTransactions(directPass.transactions);
+      }
+      if (directPass.error) {
+        lastError = directPass.error;
+        if (
+          String(directPass.error?.message || directPass.error).includes(
+            "No transaction was produced"
+          )
+        ) {
+          const chainBalance = await this._getOnChainBalance();
+          if (chainBalance > 0n) {
+            await this._rebuildUtxoContext();
+            continue;
+          }
+        }
       }
 
       if (
-        sendStrategy === "contextual" &&
-        shouldCompactContextualSend({
-          matureUtxos: context.availableMatureUtxos,
-          trackedPendingUtxos: context.trackedPendingUtxos,
+        shouldCompactSend({
+          matureUtxos: availableMatureUtxos,
+          trackedPendingUtxos,
           lastCompactionMs: this.sendState.last_compaction_ms,
           nowMs: this.nowFn(),
           cooldownMs: this.compactionCooldownMs,
@@ -496,29 +516,15 @@ export class KaspaWalletClient {
         })
       ) {
         await this._compactMatureUtxos(
-          context.availableMatureUtxos,
+          availableMatureUtxos,
           receiveAddress
         );
         continue;
       }
 
-      const laterPass = await this._tryPlans(laterPlans, {
-        destination,
-        receiveAddress,
-        amountSompi,
-        payloadBytes,
-        priorityFeeSompi,
-      });
-      if (laterPass.success) {
-        return this._finalizeSubmittedTransactions(laterPass.transactions);
-      }
-      if (laterPass.error) {
-        lastError = laterPass.error;
-      }
-
       if (
         this.sendState.pending_outputs.length > 0 &&
-        context.trackedPendingUtxos.length === 0 &&
+        trackedPendingUtxos.length === 0 &&
         attempt < this.visibilityRetries
       ) {
         await delay(this.visibilityDelayMs * (attempt + 1));
@@ -604,13 +610,17 @@ export class KaspaWalletClient {
     plan,
     { destination, receiveAddress, amountSompi, payloadBytes, priorityFeeSompi }
   ) {
+    const receiveAddressObject = new Address(receiveAddress);
+    const outputs =
+      destination === receiveAddress
+        ? []
+        : [new PaymentOutput(new Address(destination), toBigInt(amountSompi, 0n))];
     const generator = new Generator({
-      changeAddress: receiveAddress,
-      entries: createGeneratorEntries(plan.entries),
-      outputs:
-        destination.toString() === receiveAddress.toString()
-          ? []
-          : [new PaymentOutput(destination, toBigInt(amountSompi, 0n))],
+      changeAddress: receiveAddressObject,
+      entries: plan.useFullContext
+        ? this.utxoContext
+        : createGeneratorEntries(plan.entries),
+      outputs,
       payload: payloadBytes,
       networkId: this.identity.networkId,
       priorityFee: toBigInt(priorityFeeSompi, 0n),
@@ -761,18 +771,14 @@ export class KaspaWalletClient {
   }
 
   async _compactMatureUtxos(availableMatureUtxos, receiveAddress) {
-    const selected = sortByAmountDescending(availableMatureUtxos).slice(
-      0,
-      Math.max(2, this.compactionMaxInputs)
-    );
-    if (selected.length < 2) {
+    if (availableMatureUtxos.length < 2) {
       return;
     }
 
     await this._submitPlan(
       {
         name: "compaction",
-        entries: selected,
+        useFullContext: true,
         usesPendingInputs: false,
       },
       {
@@ -813,5 +819,51 @@ export class KaspaWalletClient {
     try {
       await this.rpc?.disconnect?.();
     } catch {}
+  }
+
+  async _getOnChainBalance() {
+    try {
+      const balance = await this.rpc?.getBalanceByAddress?.({
+        address: this.identity?.address,
+      });
+      return toBigInt(balance?.balance, 0n);
+    } catch {
+      return 0n;
+    }
+  }
+
+  async _rebuildUtxoContext() {
+    try {
+      await this.utxoContext?.clear?.();
+    } catch {}
+    try {
+      await this.utxoProcessor?.stop?.();
+    } catch {}
+
+    this.utxoProcessor = new UtxoProcessor({
+      rpc: this.rpc,
+      networkId: this.identity.networkId,
+    });
+    await this.utxoProcessor.start();
+
+    this.utxoContext = new UtxoContext({
+      processor: this.utxoProcessor,
+    });
+    await this.utxoContext.trackAddresses([this.identity.address]);
+
+    const chainBalance = await this._getOnChainBalance();
+    if (chainBalance <= 0n) {
+      return;
+    }
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (
+        this.utxoContext.matureLength > 0 ||
+        normalizeUtxoList(this.utxoContext.getPending()).length > 0
+      ) {
+        return;
+      }
+      await delay(500);
+    }
   }
 }
