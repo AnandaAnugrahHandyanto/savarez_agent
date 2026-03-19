@@ -3,7 +3,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   Address,
   addressFromScriptPublicKey,
+  calculateTransactionFee,
   ConnectStrategy,
+  createTransaction,
   Encoding,
   Generator,
   Mnemonic,
@@ -11,9 +13,12 @@ import {
   PaymentOutput,
   PrivateKeyGenerator,
   RpcClient,
+  signTransaction,
+  TransactionOutput,
   UtxoContext,
   UtxoEntries,
   UtxoProcessor,
+  updateTransactionMass,
   XPrv,
   payToAddressScript,
 } from "./kaspa_sdk.js";
@@ -31,6 +36,8 @@ const DEFAULT_COMPACTION_MAX_INPUTS = 12;
 const DEFAULT_COMPACTION_COOLDOWN_MS = 60_000;
 const DEFAULT_RESERVED_OUTPOINT_TTL_MS = 120_000;
 const DEFAULT_PENDING_OUTPUT_TTL_MS = 600_000;
+const DUST_THRESHOLD_SOMPI = 10_000n;
+const DEFAULT_LOCAL_PENDING_RETENTION_MS = 30_000;
 
 function toBigInt(value, fallback = 0n) {
   if (typeof value === "bigint") {
@@ -236,18 +243,18 @@ export function reconcileSendState(
     }
   }
 
-  normalized.reserved_outpoints = normalized.reserved_outpoints.filter((entry) => {
-    if (!entry.key) {
-      return false;
-    }
-    if (!liveByKey.has(entry.key)) {
-      return false;
-    }
-    return entry.reserved_at_ms + reservedOutpointTtlMs > nowMs;
-  });
+  normalized.reserved_outpoints = normalized.reserved_outpoints.filter(
+    (entry) => entry.key && entry.reserved_at_ms + reservedOutpointTtlMs > nowMs
+  );
+  const reservedKeys = new Set(
+    normalized.reserved_outpoints.map((entry) => entry.key)
+  );
 
   normalized.pending_outputs = normalized.pending_outputs.filter((entry) => {
     if (!entry.key) {
+      return false;
+    }
+    if (reservedKeys.has(entry.key)) {
       return false;
     }
     const live = liveByKey.get(entry.key);
@@ -319,6 +326,441 @@ export function shouldCompactSend({
   return nowMs - toNumber(lastCompactionMs, 0) >= cooldownMs;
 }
 
+function sumUtxoAmounts(entries) {
+  return normalizeUtxoList(entries).reduce(
+    (total, entry) => total + toBigInt(entry?.amount, 0n),
+    0n
+  );
+}
+
+function dedupeUtxos(entries) {
+  const byKey = new Map();
+  for (const entry of normalizeUtxoList(entries)) {
+    const key = makeOutpointKey(entry);
+    if (!key) {
+      continue;
+    }
+    byKey.set(key, entry);
+  }
+  return [...byKey.values()];
+}
+
+function compareContextualUtxos(left, right) {
+  const amountDiff = toBigInt(right?.amount, 0n) - toBigInt(left?.amount, 0n);
+  if (amountDiff !== 0n) {
+    return amountDiff > 0n ? 1 : -1;
+  }
+
+  const leftPending = isPendingUtxo(left);
+  const rightPending = isPendingUtxo(right);
+  if (leftPending !== rightPending) {
+    return leftPending ? -1 : 1;
+  }
+
+  const leftKey = makeOutpointKey(left) || "";
+  const rightKey = makeOutpointKey(right) || "";
+  return rightKey.localeCompare(leftKey);
+}
+
+export function previewRawSelfSpend({
+  entries,
+  payloadBytes,
+  networkId,
+  scriptPublicKey,
+  dustThresholdSompi = DUST_THRESHOLD_SOMPI,
+}) {
+  const normalizedEntries = normalizeUtxoList(entries);
+  if (normalizedEntries.length === 0) {
+    throw new Error("No spendable UTXOs selected");
+  }
+
+  const totalInput = sumUtxoAmounts(normalizedEntries);
+  if (totalInput <= 0n) {
+    throw new Error("Selected UTXOs do not carry a spendable amount");
+  }
+
+  const transaction = createTransaction(
+    normalizedEntries,
+    [],
+    0n,
+    payloadBytes,
+    1
+  );
+  transaction.outputs = [new TransactionOutput(totalInput, scriptPublicKey)];
+
+  let fee = calculateTransactionFee(networkId, transaction, 1);
+  let outputAmount = totalInput - toBigInt(fee, 0n);
+  if (outputAmount <= dustThresholdSompi) {
+    throw new Error("Insufficient funds after fee");
+  }
+
+  transaction.outputs = [new TransactionOutput(outputAmount, scriptPublicKey)];
+  if (!updateTransactionMass(networkId, transaction, 1)) {
+    throw new Error("Transaction is not standard: storage mass too large");
+  }
+
+  fee = calculateTransactionFee(networkId, transaction, 1);
+  outputAmount = totalInput - toBigInt(fee, 0n);
+  if (outputAmount <= dustThresholdSompi) {
+    throw new Error("Insufficient funds after fee");
+  }
+
+  transaction.outputs = [new TransactionOutput(outputAmount, scriptPublicKey)];
+  if (!updateTransactionMass(networkId, transaction, 1)) {
+    throw new Error("Transaction is not standard: storage mass too large");
+  }
+
+  return {
+    transaction,
+    fee: toBigInt(fee, 0n),
+    outputAmount,
+    inputCount: normalizedEntries.length,
+    usesPendingInputs: normalizedEntries.some(isPendingUtxo),
+  };
+}
+
+export function buildRawSelfSpendTransaction({
+  entries,
+  payloadBytes,
+  networkId,
+  scriptPublicKey,
+  privateKey,
+  dustThresholdSompi = DUST_THRESHOLD_SOMPI,
+}) {
+  const preview = previewRawSelfSpend({
+    entries,
+    payloadBytes,
+    networkId,
+    scriptPublicKey,
+    dustThresholdSompi,
+  });
+  const signedTransaction = signTransaction(
+    preview.transaction,
+    [privateKey],
+    false
+  );
+  return {
+    ...preview,
+    transaction: signedTransaction,
+  };
+}
+
+export function previewRawDirectedSpend({
+  entries,
+  amountSompi,
+  payloadBytes,
+  networkId,
+  destinationScriptPublicKey,
+  changeScriptPublicKey,
+  dustThresholdSompi = DUST_THRESHOLD_SOMPI,
+}) {
+  const normalizedEntries = normalizeUtxoList(entries);
+  if (normalizedEntries.length === 0) {
+    throw new Error("No spendable UTXOs selected");
+  }
+
+  const spendAmount = toBigInt(amountSompi, 0n);
+  if (spendAmount <= 0n) {
+    throw new Error("Directed spends must specify a positive amount");
+  }
+
+  const totalInput = sumUtxoAmounts(normalizedEntries);
+  if (totalInput <= spendAmount) {
+    throw new Error("Insufficient funds after fee");
+  }
+
+  const transaction = createTransaction(
+    normalizedEntries,
+    [],
+    0n,
+    payloadBytes,
+    1
+  );
+
+  let outputs = [
+    new TransactionOutput(spendAmount, destinationScriptPublicKey),
+    new TransactionOutput(totalInput - spendAmount, changeScriptPublicKey),
+  ];
+  transaction.outputs = outputs;
+  let fee = calculateTransactionFee(networkId, transaction, 1);
+  let changeAmount = totalInput - spendAmount - toBigInt(fee, 0n);
+
+  if (changeAmount > dustThresholdSompi) {
+    outputs = [
+      new TransactionOutput(spendAmount, destinationScriptPublicKey),
+      new TransactionOutput(changeAmount, changeScriptPublicKey),
+    ];
+  } else {
+    fee = calculateTransactionFee(
+      networkId,
+      Object.assign(transaction, {
+        outputs: [new TransactionOutput(spendAmount, destinationScriptPublicKey)],
+      }),
+      1
+    );
+    changeAmount = totalInput - spendAmount - toBigInt(fee, 0n);
+    outputs = [new TransactionOutput(spendAmount, destinationScriptPublicKey)];
+  }
+
+  if (changeAmount < 0n) {
+    throw new Error("Insufficient funds after fee");
+  }
+
+  transaction.outputs = outputs;
+  if (!updateTransactionMass(networkId, transaction, 1)) {
+    throw new Error("Transaction is not standard: storage mass too large");
+  }
+
+  fee = calculateTransactionFee(networkId, transaction, 1);
+  if (outputs.length === 2) {
+    changeAmount = totalInput - spendAmount - toBigInt(fee, 0n);
+    if (changeAmount <= dustThresholdSompi) {
+      outputs = [new TransactionOutput(spendAmount, destinationScriptPublicKey)];
+    } else {
+      outputs = [
+        new TransactionOutput(spendAmount, destinationScriptPublicKey),
+        new TransactionOutput(changeAmount, changeScriptPublicKey),
+      ];
+    }
+  } else {
+    changeAmount = totalInput - spendAmount - toBigInt(fee, 0n);
+  }
+
+  if (changeAmount < 0n) {
+    throw new Error("Insufficient funds after fee");
+  }
+
+  transaction.outputs = outputs;
+  if (!updateTransactionMass(networkId, transaction, 1)) {
+    throw new Error("Transaction is not standard: storage mass too large");
+  }
+
+  return {
+    transaction,
+    fee: toBigInt(fee, 0n),
+    changeAmount,
+    inputCount: normalizedEntries.length,
+    usesPendingInputs: normalizedEntries.some(isPendingUtxo),
+  };
+}
+
+export function buildRawDirectedSpendTransaction({
+  entries,
+  amountSompi,
+  payloadBytes,
+  networkId,
+  destinationScriptPublicKey,
+  changeScriptPublicKey,
+  privateKey,
+  dustThresholdSompi = DUST_THRESHOLD_SOMPI,
+}) {
+  const preview = previewRawDirectedSpend({
+    entries,
+    amountSompi,
+    payloadBytes,
+    networkId,
+    destinationScriptPublicKey,
+    changeScriptPublicKey,
+    dustThresholdSompi,
+  });
+  const signedTransaction = signTransaction(
+    preview.transaction,
+    [privateKey],
+    false
+  );
+  return {
+    ...preview,
+    transaction: signedTransaction,
+  };
+}
+
+export function selectContextualRawEntries({
+  availablePendingUtxos = [],
+  trackedPendingUtxos = [],
+  matureUtxos = [],
+  payloadBytes,
+  networkId,
+  scriptPublicKey,
+  dustThresholdSompi = DUST_THRESHOLD_SOMPI,
+}) {
+  const trackedPending = sortByAmountDescending(
+    dedupeUtxos(trackedPendingUtxos)
+  );
+  for (const entry of trackedPending) {
+    try {
+      previewRawSelfSpend({
+        entries: [entry],
+        payloadBytes,
+        networkId,
+        scriptPublicKey,
+        dustThresholdSompi,
+      });
+      return [entry];
+    } catch (error) {
+      if (!isLikelyInsufficientFundsError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  const prioritized = dedupeUtxos([
+    ...normalizeUtxoList(availablePendingUtxos),
+    ...normalizeUtxoList(matureUtxos),
+  ]).sort(compareContextualUtxos);
+
+  if (prioritized.length === 0) {
+    throw new Error("Insufficient funds after fee");
+  }
+
+  const selected = [];
+  for (const entry of prioritized) {
+    selected.push(entry);
+    try {
+      previewRawSelfSpend({
+        entries: selected,
+        payloadBytes,
+        networkId,
+        scriptPublicKey,
+        dustThresholdSompi,
+      });
+      return [...selected];
+    } catch (error) {
+      if (!isLikelyInsufficientFundsError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error("Insufficient funds after fee");
+}
+
+export function selectDirectedRawEntries({
+  availablePendingUtxos = [],
+  trackedPendingUtxos = [],
+  matureUtxos = [],
+  amountSompi,
+  payloadBytes,
+  networkId,
+  destinationScriptPublicKey,
+  changeScriptPublicKey,
+  dustThresholdSompi = DUST_THRESHOLD_SOMPI,
+}) {
+  const trackedPending = sortByAmountDescending(
+    dedupeUtxos(trackedPendingUtxos)
+  );
+  for (const entry of trackedPending) {
+    try {
+      previewRawDirectedSpend({
+        entries: [entry],
+        amountSompi,
+        payloadBytes,
+        networkId,
+        destinationScriptPublicKey,
+        changeScriptPublicKey,
+        dustThresholdSompi,
+      });
+      return [entry];
+    } catch (error) {
+      if (!isLikelyInsufficientFundsError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  const prioritized = dedupeUtxos([
+    ...normalizeUtxoList(availablePendingUtxos),
+    ...normalizeUtxoList(matureUtxos),
+  ]).sort(compareContextualUtxos);
+
+  if (prioritized.length === 0) {
+    throw new Error("Insufficient funds after fee");
+  }
+
+  const selected = [];
+  for (const entry of prioritized) {
+    selected.push(entry);
+    try {
+      previewRawDirectedSpend({
+        entries: selected,
+        amountSompi,
+        payloadBytes,
+        networkId,
+        destinationScriptPublicKey,
+        changeScriptPublicKey,
+        dustThresholdSompi,
+      });
+      return [...selected];
+    } catch (error) {
+      if (!isLikelyInsufficientFundsError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error("Insufficient funds after fee");
+}
+
+export function selectCompactionRawEntries({
+  matureUtxos = [],
+  pendingUtxos = [],
+  networkId,
+  scriptPublicKey,
+  maxInputs = DEFAULT_COMPACTION_MAX_INPUTS,
+  minOutputAmount = DUST_THRESHOLD_SOMPI,
+  dustThresholdSompi = DUST_THRESHOLD_SOMPI,
+}) {
+  const confirmed = sortByAmountDescending(dedupeUtxos(matureUtxos));
+  const pending = sortByAmountDescending(dedupeUtxos(pendingUtxos));
+  const candidates = [...confirmed, ...pending].slice(0, Math.max(2, maxInputs));
+
+  if (candidates.length < 2) {
+    throw new Error("Not enough spendable UTXOs for compaction");
+  }
+
+  let bestSelection = null;
+  const selected = [];
+  for (const entry of candidates) {
+    selected.push(entry);
+    if (selected.length < 2) {
+      continue;
+    }
+
+    try {
+      const preview = previewRawSelfSpend({
+        entries: selected,
+        payloadBytes: new Uint8Array(),
+        networkId,
+        scriptPublicKey,
+        dustThresholdSompi,
+      });
+      if (preview.outputAmount < minOutputAmount) {
+        continue;
+      }
+      if (
+        !bestSelection ||
+        selected.length > bestSelection.entries.length ||
+        (selected.length === bestSelection.entries.length &&
+          preview.outputAmount > bestSelection.preview.outputAmount)
+      ) {
+        bestSelection = {
+          entries: [...selected],
+          preview,
+        };
+      }
+    } catch (error) {
+      if (!isLikelyInsufficientFundsError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  if (!bestSelection) {
+    throw new Error("Insufficient spendable funds for compaction");
+  }
+
+  return bestSelection.entries;
+}
+
 function createGeneratorEntries(entries) {
   const normalized = normalizeUtxoList(entries);
   if (normalized.length === 0) {
@@ -350,23 +792,6 @@ function isLikelyInsufficientFundsError(error) {
     text.includes("not enough balance") ||
     text.includes("storage mass") ||
     text.includes("larger than max allowed size")
-  );
-}
-
-function shouldUseCandidatePlans({
-  sendStrategy,
-  trackedPendingUtxos = [],
-  sendState,
-}) {
-  if (sendStrategy !== "contextual") {
-    return false;
-  }
-  return (
-    trackedPendingUtxos.length > 0 ||
-    (Array.isArray(sendState?.pending_outputs) &&
-      sendState.pending_outputs.length > 0) ||
-    (Array.isArray(sendState?.reserved_outpoints) &&
-      sendState.reserved_outpoints.length > 0)
   );
 }
 
@@ -521,6 +946,24 @@ export class KaspaWalletClient {
     const sendStrategy =
       strategy === "default" ? (isSelfSend ? "contextual" : "direct") : strategy;
 
+    if (sendStrategy === "contextual") {
+      return this._sendRawContextualPayloadTransaction({
+        payloadBytes,
+      });
+    }
+
+    return this._sendRawDirectPayloadTransaction({
+      destination,
+      amountSompi,
+      payloadBytes,
+    });
+  }
+
+  async _sendRawDirectPayloadTransaction({
+    destination,
+    amountSompi,
+    payloadBytes,
+  }) {
     let lastError = null;
     for (let attempt = 0; attempt <= this.visibilityRetries; attempt += 1) {
       await this._rebuildUtxoContext();
@@ -534,49 +977,30 @@ export class KaspaWalletClient {
       const availableMatureUtxos = Array.isArray(context.availableMatureUtxos)
         ? context.availableMatureUtxos
         : [];
-      const plans = shouldUseCandidatePlans({
-        sendStrategy,
-        trackedPendingUtxos,
-        sendState: this.sendState,
-      })
-        ? buildCandidateUtxoPlans({
-            trackedPendingUtxos,
-            matureUtxos: availableMatureUtxos,
-            maxConfirmedPlans: this.maxConfirmedPlans,
-          })
-        : [
-            {
-              name: "context",
-              useFullContext: true,
-              usesPendingInputs: availablePendingUtxos.length > 0,
-            },
-          ];
-      const directPass = await this._tryPlans(
-        plans,
-        {
-          destination,
-          receiveAddress,
+
+      try {
+        const selectedEntries = selectDirectedRawEntries({
+          availablePendingUtxos,
+          trackedPendingUtxos,
+          matureUtxos: availableMatureUtxos,
           amountSompi,
           payloadBytes,
-          priorityFeeSompi,
+          networkId: this.identity.networkId,
+          destinationScriptPublicKey: payToAddressScript(new Address(destination)),
+          changeScriptPublicKey: this.identity.scriptPublicKey,
+        });
+        const submission = await this._submitRawDirectedSpend({
+          entries: selectedEntries,
+          destinationAddress: destination,
+          amountSompi,
+          payloadBytes,
+        });
+        return this._finalizeSubmittedTransactions([submission]);
+      } catch (error) {
+        if (!isLikelyInsufficientFundsError(error)) {
+          throw error;
         }
-      );
-      if (directPass.success) {
-        return this._finalizeSubmittedTransactions(directPass.transactions);
-      }
-      if (directPass.error) {
-        lastError = directPass.error;
-        if (
-          String(directPass.error?.message || directPass.error).includes(
-            "No transaction was produced"
-          )
-        ) {
-          const chainBalance = await this._getOnChainBalance();
-          if (chainBalance > 0n) {
-            await this._rebuildUtxoContext();
-            continue;
-          }
-        }
+        lastError = error;
       }
 
       if (
@@ -591,7 +1015,7 @@ export class KaspaWalletClient {
       ) {
         await this._compactMatureUtxos(
           availableMatureUtxos,
-          receiveAddress
+          this.identity.address
         );
         continue;
       }
@@ -606,6 +1030,77 @@ export class KaspaWalletClient {
       }
 
       break;
+    }
+
+    if (lastError) {
+      throw lastError;
+    }
+    throw new Error(
+      "No transaction was produced. The Kasia wallet may not have enough mature balance."
+    );
+  }
+
+  async _sendRawContextualPayloadTransaction({ payloadBytes }) {
+    let lastError = null;
+
+    for (let attempt = 0; attempt <= this.visibilityRetries; attempt += 1) {
+      await this._rebuildUtxoContext();
+      const context = this._loadSendContext();
+      const availablePendingUtxos = Array.isArray(context.availablePendingUtxos)
+        ? context.availablePendingUtxos
+        : [];
+      const trackedPendingUtxos = Array.isArray(context.trackedPendingUtxos)
+        ? context.trackedPendingUtxos
+        : [];
+      const availableMatureUtxos = Array.isArray(context.availableMatureUtxos)
+        ? context.availableMatureUtxos
+        : [];
+
+      if (
+        shouldCompactSend({
+          matureUtxos: availableMatureUtxos,
+          trackedPendingUtxos,
+          lastCompactionMs: this.sendState.last_compaction_ms,
+          nowMs: this.nowFn(),
+          cooldownMs: this.compactionCooldownMs,
+          threshold: this.compactionInputThreshold,
+        })
+      ) {
+        try {
+          await this._compactSpendableUtxosRaw({
+            matureUtxos: availableMatureUtxos,
+            pendingUtxos: availablePendingUtxos,
+          });
+          continue;
+        } catch (error) {
+          if (!isLikelyInsufficientFundsError(error)) {
+            throw error;
+          }
+          lastError = error;
+        }
+      }
+
+      try {
+        const selectedEntries = selectContextualRawEntries({
+          availablePendingUtxos,
+          trackedPendingUtxos,
+          matureUtxos: availableMatureUtxos,
+          payloadBytes,
+          networkId: this.identity.networkId,
+          scriptPublicKey: this.identity.scriptPublicKey,
+        });
+        const submission = await this._submitRawSelfSpend(selectedEntries, payloadBytes);
+        return this._finalizeSubmittedTransactions([submission]);
+      } catch (error) {
+        if (!isLikelyInsufficientFundsError(error)) {
+          throw error;
+        }
+        lastError = error;
+      }
+
+      if (attempt < this.visibilityRetries) {
+        await delay(this.visibilityDelayMs * (attempt + 1));
+      }
     }
 
     if (lastError) {
@@ -638,10 +1133,18 @@ export class KaspaWalletClient {
       const key = makeOutpointKey(entry);
       return key && !reservedKeys.has(key);
     });
-    const availablePendingUtxos = pendingUtxos.filter((entry) => {
+    const livePendingUtxos = pendingUtxos.filter((entry) => {
       const key = makeOutpointKey(entry);
       return key && !reservedKeys.has(key);
     });
+    const syntheticPendingUtxos = this.sendState.pending_outputs
+      .filter((entry) => entry.key && !reservedKeys.has(entry.key))
+      .map((entry) => this._buildSyntheticPendingUtxo(entry))
+      .filter(Boolean);
+    const availablePendingUtxos = dedupeUtxos([
+      ...syntheticPendingUtxos,
+      ...livePendingUtxos,
+    ]);
     const trackedPendingUtxos = sortByAmountDescending(
       availablePendingUtxos.filter((entry) =>
         trackedPendingKeys.has(makeOutpointKey(entry))
@@ -653,6 +1156,132 @@ export class KaspaWalletClient {
       availablePendingUtxos,
       trackedPendingUtxos,
     };
+  }
+
+  _buildSyntheticPendingUtxo(entry) {
+    const transactionId = String(entry?.tx_id || entry?.transaction_id || "").trim();
+    const index = toNumber(entry?.index, -1);
+    if (!transactionId || index < 0 || !this.identity?.scriptPublicKey) {
+      return null;
+    }
+    return {
+      address: this.identity.address,
+      amount: toBigInt(entry?.amount, 0n),
+      scriptPublicKey: this.identity.scriptPublicKey,
+      blockDaaScore: 0n,
+      isCoinbase: false,
+      outpoint: {
+        transactionId,
+        index,
+      },
+    };
+  }
+
+  async _submitRawSelfSpend(entries, payloadBytes) {
+    const rawTransaction = buildRawSelfSpendTransaction({
+      entries,
+      payloadBytes,
+      networkId: this.identity.networkId,
+      scriptPublicKey: this.identity.scriptPublicKey,
+      privateKey: this.identity.privateKey,
+    });
+    const txId = await this._submitRawTransaction(
+      rawTransaction.transaction,
+      rawTransaction.usesPendingInputs
+    );
+    this._reserveConsumedInputs(entries);
+    this._consumePendingOutputs(entries);
+    this._trackPendingOutputs(rawTransaction.transaction, txId);
+    return {
+      txId,
+      inputCount: rawTransaction.inputCount,
+      usesPendingInputs: rawTransaction.usesPendingInputs,
+    };
+  }
+
+  async _submitRawDirectedSpend({
+    entries,
+    destinationAddress,
+    amountSompi,
+    payloadBytes,
+  }) {
+    const rawTransaction = buildRawDirectedSpendTransaction({
+      entries,
+      amountSompi,
+      payloadBytes,
+      networkId: this.identity.networkId,
+      destinationScriptPublicKey: payToAddressScript(
+        new Address(destinationAddress)
+      ),
+      changeScriptPublicKey: this.identity.scriptPublicKey,
+      privateKey: this.identity.privateKey,
+    });
+    const txId = await this._submitRawTransaction(
+      rawTransaction.transaction,
+      rawTransaction.usesPendingInputs
+    );
+    this._reserveConsumedInputs(entries);
+    this._consumePendingOutputs(entries);
+    this._trackPendingOutputs(rawTransaction.transaction, txId);
+    return {
+      txId,
+      inputCount: rawTransaction.inputCount,
+      usesPendingInputs: rawTransaction.usesPendingInputs,
+    };
+  }
+
+  async _submitRawTransaction(transaction, usesPendingInputs) {
+    if (usesPendingInputs) {
+      const response = await this.rpc.submitTransaction({
+        transaction,
+        allowOrphan: true,
+      });
+      return this._extractTransactionIdFromResponse(response, transaction);
+    }
+
+    const response = await this.rpc.submitTransaction({
+      transaction,
+      allowOrphan: false,
+    });
+    return this._extractTransactionIdFromResponse(response, transaction);
+  }
+
+  _extractTransactionIdFromResponse(response, transaction) {
+    if (typeof response === "string" && response.trim()) {
+      return response;
+    }
+    if (response && typeof response === "object") {
+      if (typeof response.txId === "string" && response.txId.trim()) {
+        return response.txId;
+      }
+      if (
+        typeof response.transactionId === "string" &&
+        response.transactionId.trim()
+      ) {
+        return response.transactionId;
+      }
+      if (typeof response.id === "string" && response.id.trim()) {
+        return response.id;
+      }
+    }
+    const txId = normalizeAddressValue(transaction?.id);
+    if (txId) {
+      return txId;
+    }
+    throw new Error("Submitted transaction did not return a transaction id");
+  }
+
+  async _compactSpendableUtxosRaw({ matureUtxos, pendingUtxos }) {
+    const selectedEntries = selectCompactionRawEntries({
+      matureUtxos,
+      pendingUtxos,
+      networkId: this.identity.networkId,
+      scriptPublicKey: this.identity.scriptPublicKey,
+      maxInputs: this.compactionMaxInputs,
+    });
+    await this._submitRawSelfSpend(selectedEntries, new Uint8Array());
+    this.sendState.last_compaction_ms = this.nowFn();
+    await delay(this.visibilityDelayMs);
   }
 
   async _tryPlans(plans, txOptions) {
@@ -955,8 +1584,20 @@ export class KaspaWalletClient {
       });
       const addressEntry = mempoolEntriesForAddress(mempool, this.identity.address);
       const nowMs = this.nowFn();
-      const reservedByKey = new Map();
-      const pendingByKey = new Map();
+      const retentionMs = Math.max(
+        DEFAULT_LOCAL_PENDING_RETENTION_MS,
+        this.visibilityRetries * this.visibilityDelayMs * 2
+      );
+      const reservedByKey = new Map(
+        this.sendState.reserved_outpoints
+          .filter((entry) => entry.reserved_at_ms + retentionMs > nowMs)
+          .map((entry) => [entry.key, entry])
+      );
+      const pendingByKey = new Map(
+        this.sendState.pending_outputs
+          .filter((entry) => entry.created_ms + retentionMs > nowMs)
+          .map((entry) => [entry.key, entry])
+      );
 
       for (const mempoolEntry of addressEntry?.sending || []) {
         const transaction = mempoolEntry?.transaction;
@@ -980,8 +1621,15 @@ export class KaspaWalletClient {
           this.identity.networkId,
           nowMs
         )) {
+          if (reservedByKey.has(pendingOutput.key)) {
+            continue;
+          }
           pendingByKey.set(pendingOutput.key, pendingOutput);
         }
+      }
+
+      for (const reservedKey of reservedByKey.keys()) {
+        pendingByKey.delete(reservedKey);
       }
 
       this.sendState = normalizeSendState({
