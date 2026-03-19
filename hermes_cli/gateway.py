@@ -1125,6 +1125,12 @@ _PLATFORMS = [
         "token_var": "SIGNAL_HTTP_URL",
     },
     {
+        "key": "kasia",
+        "label": "Kasia",
+        "emoji": "🛰️",
+        "token_var": "KASIA_ENABLED",
+    },
+    {
         "key": "email",
         "label": "Email",
         "emoji": "📧",
@@ -1212,6 +1218,15 @@ def _platform_status(platform: dict) -> str:
             if session_file.exists():
                 return "configured + paired"
             return "enabled, not paired"
+        return "not configured"
+    if platform.get("key") == "kasia":
+        seed_phrase = get_env_value("KASIA_SEED_PHRASE")
+        indexer_url = get_env_value("KASIA_INDEXER_URL")
+        node_url = get_env_value("KASIA_NODE_WBORSH_URL")
+        if val and val.lower() == "true" and all([seed_phrase, indexer_url, node_url]):
+            return "configured"
+        if any([val, seed_phrase, indexer_url, node_url]):
+            return "partially configured"
         return "not configured"
     if platform.get("key") == "signal":
         account = get_env_value("SIGNAL_ACCOUNT")
@@ -1535,6 +1550,118 @@ def _setup_signal():
     print_info(f"  Groups: {'enabled' if get_env_value('SIGNAL_GROUP_ALLOWED_USERS') else 'disabled'}")
 
 
+def _setup_kasia():
+    """Interactive setup for Kasia messenger."""
+    print()
+    print(color("  ─── 🛰️ Kasia Setup ───", Colors.CYAN))
+
+    existing_enabled = (get_env_value("KASIA_ENABLED") or "").lower() in ("true", "1", "yes")
+    existing_seed = get_env_value("KASIA_SEED_PHRASE")
+    existing_indexer = get_env_value("KASIA_INDEXER_URL")
+    existing_node = get_env_value("KASIA_NODE_WBORSH_URL")
+    if existing_enabled and existing_seed and existing_indexer and existing_node:
+        print()
+        print_success("Kasia is already configured.")
+        if not prompt_yes_no("  Reconfigure Kasia?", False):
+            return
+
+    print()
+    print_info("  Hermes uses a dedicated Kasia identity and talks to a local Kasia bridge.")
+    print_info("  Required for v1:")
+    print_info("    1. A Kasia seed phrase dedicated to Hermes")
+    print_info("    2. A trusted Kasia indexer URL")
+    print_info("    3. A Kaspa node Wborsh / RPC URL for transaction submission")
+    print_info("  Hermes does not auto-discover public indexers in v1.")
+
+    values = [
+        (
+            "KASIA_SEED_PHRASE",
+            "Seed phrase",
+            True,
+            "Seed phrase for the dedicated Hermes Kasia identity.",
+            existing_seed or "",
+        ),
+        (
+            "KASIA_INDEXER_URL",
+            "Indexer URL",
+            False,
+            "Trusted Kasia indexer base URL, e.g. https://your-indexer.example.com",
+            existing_indexer or "",
+        ),
+        (
+            "KASIA_NODE_WBORSH_URL",
+            "Kaspa node URL",
+            False,
+            "Kaspa node Wborsh / RPC URL used for submitting Kasia transactions.",
+            existing_node or "",
+        ),
+        (
+            "KASIA_NETWORK",
+            "Network",
+            False,
+            "Optional network name, e.g. mainnet or testnet-10.",
+            get_env_value("KASIA_NETWORK") or "mainnet",
+        ),
+    ]
+
+    for env_name, prompt_label, is_password, help_text, default in values:
+        print()
+        print_info(f"  {help_text}")
+        if is_password:
+            prompt_label_text = f"  {prompt_label}"
+            if default:
+                prompt_label_text += " (leave blank to keep current value)"
+            value = prompt(prompt_label_text, password=True)
+            value = value or default
+        else:
+            value = prompt(f"  {prompt_label}", default=default, password=False)
+        if not value and env_name in {"KASIA_SEED_PHRASE", "KASIA_INDEXER_URL", "KASIA_NODE_WBORSH_URL"}:
+            print_error(f"  {env_name} is required.")
+            return
+        if value:
+            save_env_value(env_name, value)
+
+    print()
+    print_info("  The gateway DENIES all users by default for security.")
+    print_info("  Enter Kasia user addresses to allow, or leave empty and choose open access.")
+    existing_allowed = get_env_value("KASIA_ALLOWED_USERS") or ""
+    try:
+        allowed = input(f"  Allowed users [{existing_allowed}]: ").strip() or existing_allowed
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Setup cancelled.")
+        return
+
+    if allowed:
+        save_env_value("KASIA_ALLOWED_USERS", allowed.replace(" ", ""))
+        save_env_value("KASIA_ALLOW_ALL_USERS", "")
+        print_success("  Saved allowlist.")
+    else:
+        if prompt_yes_no("  Enable open access for Kasia?", False):
+            save_env_value("KASIA_ALLOW_ALL_USERS", "true")
+            print_warning("  Open access enabled for Kasia.")
+        else:
+            save_env_value("KASIA_ALLOW_ALL_USERS", "")
+            print_info("  Leaving Kasia deny-by-default until you add KASIA_ALLOWED_USERS.")
+
+    print()
+    default_home = get_env_value("KASIA_HOME_CHANNEL") or ""
+    try:
+        home_channel = input(f"  Home channel Kasia address{f' [{default_home}]' if default_home else ''}: ").strip() or default_home
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Setup cancelled.")
+        return
+    if home_channel:
+        save_env_value("KASIA_HOME_CHANNEL", home_channel)
+
+    save_env_value("KASIA_ENABLED", "true")
+
+    print()
+    print_success("Kasia configured!")
+    print_info(f"  Indexer: {get_env_value('KASIA_INDEXER_URL')}")
+    print_info(f"  Node: {get_env_value('KASIA_NODE_WBORSH_URL')}")
+    print_info(f"  Network: {get_env_value('KASIA_NETWORK') or 'mainnet'}")
+
+
 def gateway_setup():
     """Interactive setup for messaging platforms + gateway service."""
 
@@ -1593,6 +1720,8 @@ def gateway_setup():
             _setup_whatsapp()
         elif platform["key"] == "signal":
             _setup_signal()
+        elif platform["key"] == "kasia":
+            _setup_kasia()
         else:
             _setup_standard_platform(platform)
 

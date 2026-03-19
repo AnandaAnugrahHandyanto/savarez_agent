@@ -1,0 +1,14 @@
+{
+  "name": "hermes-kasia-bridge",
+  "version": "0.1.0",
+  "description": "Kasia bridge for Hermes Agent",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node bridge.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@kasdk/nodejs": "0.15.2"
+  }
+}

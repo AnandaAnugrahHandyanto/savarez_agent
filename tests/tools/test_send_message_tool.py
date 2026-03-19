@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.config import Platform
-from tools.send_message_tool import _send_telegram, _send_to_platform, send_message_tool
+from tools.send_message_tool import _parse_target_ref, _send_telegram, _send_to_platform, send_message_tool
 
 
 def _run_async_immediately(coro):
@@ -415,6 +415,42 @@ class TestSendToPlatformWhatsapp:
 
         assert result["success"] is True
         async_mock.assert_awaited_once_with({"bridge_port": 3000}, chat_id, "hello from hermes")
+
+
+class TestSendToPlatformKasia:
+    def test_kasia_target_parser_treats_prefixed_address_as_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "kasia",
+            "kaspa:qpeeraddress",
+        )
+
+        assert chat_id == "kaspa:qpeeraddress"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_kasia_routes_via_local_bridge_sender(self):
+        chat_id = "kaspa:qpeeraddress"
+        async_mock = AsyncMock(
+            return_value={
+                "success": True,
+                "platform": "kasia",
+                "chat_id": chat_id,
+                "message_id": "tx-1",
+            }
+        )
+
+        with patch("tools.send_message_tool._send_kasia", async_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.KASIA,
+                    SimpleNamespace(enabled=True, token=None, extra={"bridge_port": 3010}),
+                    chat_id,
+                    "hello from hermes",
+                )
+            )
+
+        assert result["success"] is True
+        async_mock.assert_awaited_once_with({"bridge_port": 3010}, chat_id, "hello from hermes")
 
 
 class TestSendTelegramHtmlDetection:

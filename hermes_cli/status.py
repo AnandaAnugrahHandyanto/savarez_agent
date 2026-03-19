@@ -251,6 +251,7 @@ def show_status(args):
         "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"),
         "WhatsApp": ("WHATSAPP_ENABLED", None),
         "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
+        "Kasia": ("KASIA_ENABLED", "KASIA_HOME_CHANNEL"),
         "Slack": ("SLACK_BOT_TOKEN", None),
         "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
         "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
@@ -259,7 +260,9 @@ def show_status(args):
     for name, (token_var, home_var) in platforms.items():
         token = os.getenv(token_var, "")
         has_token = bool(token)
-        
+        if token_var in {"WHATSAPP_ENABLED", "KASIA_ENABLED"}:
+            has_token = token.lower() in ("true", "1", "yes")
+
         home_channel = ""
         if home_var:
             home_channel = os.getenv(home_var, "")

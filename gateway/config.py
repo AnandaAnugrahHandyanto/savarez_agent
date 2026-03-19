@@ -49,6 +49,7 @@ class Platform(Enum):
     WHATSAPP = "whatsapp"
     SLACK = "slack"
     SIGNAL = "signal"
+    KASIA = "kasia"
     MATTERMOST = "mattermost"
     MATRIX = "matrix"
     HOMEASSISTANT = "homeassistant"
@@ -253,6 +254,9 @@ class GatewayConfig:
                 connected.append(platform)
             # Signal uses extra dict for config (http_url + account)
             elif platform == Platform.SIGNAL and config.extra.get("http_url"):
+                connected.append(platform)
+            # Kasia uses bridge-backed config in extra dict
+            elif platform == Platform.KASIA:
                 connected.append(platform)
             # Email uses extra dict for config (address + imap_host + smtp_host)
             elif platform == Platform.EMAIL and config.extra.get("address"):
@@ -651,6 +655,32 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.SIGNAL,
                 chat_id=signal_home,
                 name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
+            )
+
+    # Kasia
+    kasia_enabled = os.getenv("KASIA_ENABLED", "").lower() in ("true", "1", "yes")
+    if kasia_enabled:
+        if Platform.KASIA not in config.platforms:
+            config.platforms[Platform.KASIA] = PlatformConfig()
+        config.platforms[Platform.KASIA].enabled = True
+        config.platforms[Platform.KASIA].extra.update({
+            "seed_phrase": os.getenv("KASIA_SEED_PHRASE", ""),
+            "indexer_url": os.getenv("KASIA_INDEXER_URL", ""),
+            "node_wborsh_url": os.getenv("KASIA_NODE_WBORSH_URL", ""),
+            "network": os.getenv("KASIA_NETWORK", ""),
+        })
+        kasia_bridge_port = os.getenv("KASIA_BRIDGE_PORT", "").strip()
+        if kasia_bridge_port:
+            try:
+                config.platforms[Platform.KASIA].extra["bridge_port"] = int(kasia_bridge_port)
+            except ValueError:
+                logger.warning("Invalid KASIA_BRIDGE_PORT=%r (expected integer)", kasia_bridge_port)
+        kasia_home = os.getenv("KASIA_HOME_CHANNEL")
+        if kasia_home:
+            config.platforms[Platform.KASIA].home_channel = HomeChannel(
+                platform=Platform.KASIA,
+                chat_id=kasia_home,
+                name=os.getenv("KASIA_HOME_CHANNEL_NAME", "Home"),
             )
 
     # Mattermost

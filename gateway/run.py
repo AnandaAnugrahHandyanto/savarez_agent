@@ -1358,6 +1358,16 @@ class GatewayRunner:
                 return None
             return SignalAdapter(config)
 
+        elif platform == Platform.KASIA:
+            from gateway.platforms.kasia import KasiaAdapter, check_kasia_requirements
+            if not check_kasia_requirements(config):
+                logger.warning(
+                    "Kasia: KASIA_ENABLED requires KASIA_SEED_PHRASE, "
+                    "KASIA_INDEXER_URL, and KASIA_NODE_WBORSH_URL"
+                )
+                return None
+            return KasiaAdapter(config)
+
         elif platform == Platform.HOMEASSISTANT:
             from gateway.platforms.homeassistant import HomeAssistantAdapter, check_ha_requirements
             if not check_ha_requirements():
@@ -1447,6 +1457,7 @@ class GatewayRunner:
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
             Platform.SLACK: "SLACK_ALLOWED_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
+            Platform.KASIA: "KASIA_ALLOWED_USERS",
             Platform.EMAIL: "EMAIL_ALLOWED_USERS",
             Platform.SMS: "SMS_ALLOWED_USERS",
             Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
@@ -1459,6 +1470,7 @@ class GatewayRunner:
             Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
+            Platform.KASIA: "KASIA_ALLOW_ALL_USERS",
             Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
             Platform.SMS: "SMS_ALLOW_ALL_USERS",
             Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
@@ -3712,6 +3724,7 @@ class GatewayRunner:
                 Platform.WHATSAPP: "hermes-whatsapp",
                 Platform.SLACK: "hermes-slack",
                 Platform.SIGNAL: "hermes-signal",
+                Platform.KASIA: "hermes-kasia",
                 Platform.HOMEASSISTANT: "hermes-homeassistant",
                 Platform.EMAIL: "hermes-email",
                 Platform.DINGTALK: "hermes-dingtalk",
@@ -3734,6 +3747,7 @@ class GatewayRunner:
                 Platform.WHATSAPP: "whatsapp",
                 Platform.SLACK: "slack",
                 Platform.SIGNAL: "signal",
+                Platform.KASIA: "kasia",
                 Platform.HOMEASSISTANT: "homeassistant",
                 Platform.EMAIL: "email",
                 Platform.DINGTALK: "dingtalk",
@@ -4872,6 +4886,7 @@ class GatewayRunner:
             Platform.WHATSAPP: "hermes-whatsapp",
             Platform.SLACK: "hermes-slack",
             Platform.SIGNAL: "hermes-signal",
+            Platform.KASIA: "hermes-kasia",
             Platform.HOMEASSISTANT: "hermes-homeassistant",
             Platform.EMAIL: "hermes-email",
             Platform.DINGTALK: "hermes-dingtalk",
@@ -4897,6 +4912,7 @@ class GatewayRunner:
             Platform.WHATSAPP: "whatsapp",
             Platform.SLACK: "slack",
             Platform.SIGNAL: "signal",
+            Platform.KASIA: "kasia",
             Platform.HOMEASSISTANT: "homeassistant",
             Platform.EMAIL: "email",
             Platform.DINGTALK: "dingtalk",

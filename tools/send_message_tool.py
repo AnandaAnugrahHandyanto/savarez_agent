@@ -41,7 +41,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567', 'kasia:kaspa:qp...'"
             },
             "message": {
                 "type": "string",
@@ -128,6 +128,7 @@ def _handle_send(args):
         "mattermost": Platform.MATTERMOST,
         "homeassistant": Platform.HOMEASSISTANT,
         "dingtalk": Platform.DINGTALK,
+        "kasia": Platform.KASIA,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }
@@ -198,6 +199,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
+    if platform_name == "kasia":
+        lowered = target_ref.lower()
+        if lowered.startswith(("kaspa:", "kaspatest:", "kaspasim:")):
+            return target_ref, None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     return None, None, False
@@ -339,6 +344,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.KASIA:
+            result = await _send_kasia(pconfig.extra, chat_id, chunk)
         elif platform == Platform.EMAIL:
             result = await _send_email(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SMS:
@@ -582,6 +589,34 @@ async def _send_signal(extra, chat_id, message):
             return {"success": True, "platform": "signal", "chat_id": chat_id}
     except Exception as e:
         return {"error": f"Signal send failed: {e}"}
+
+
+async def _send_kasia(extra, chat_id, message):
+    """Send via the local Kasia bridge HTTP API."""
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+    try:
+        bridge_port = extra.get("bridge_port", 3010)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"http://127.0.0.1:{bridge_port}/send",
+                json={"chatId": chat_id, "message": message},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return {
+                        "success": True,
+                        "platform": "kasia",
+                        "chat_id": chat_id,
+                        "message_id": data.get("txId") or data.get("messageId"),
+                    }
+                body = await resp.text()
+                return {"error": f"Kasia bridge error ({resp.status}): {body}"}
+    except Exception as e:
+        return {"error": f"Kasia send failed: {e}"}
 
 
 async def _send_email(extra, chat_id, message):
