@@ -183,8 +183,17 @@ class TestKasiaRequirements:
             run_mock.return_value = SimpleNamespace(returncode=0)
             assert check_kasia_requirements(config) is True
 
-    def test_check_requirements_missing_values(self):
+    def test_check_requirements_missing_values(self, monkeypatch):
         from gateway.platforms.kasia import check_kasia_requirements
+
+        for name in (
+            "KASIA_SEED_PHRASE",
+            "KASIA_INDEXER_URL",
+            "KASIA_INDEXER_URLS",
+            "KASIA_NODE_WBORSH_URL",
+            "KASIA_NODE_WBORSH_URLS",
+        ):
+            monkeypatch.delenv(name, raising=False)
 
         config = PlatformConfig(enabled=True, extra={})
         assert check_kasia_requirements(config) is False
