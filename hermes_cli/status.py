@@ -15,7 +15,6 @@ from gateway.kasia_config import load_kasia_settings
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
-from hermes_cli.kasia_status import fetch_kasia_bridge_health, kasia_status_lines
 from hermes_cli.models import provider_label
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_constants import OPENROUTER_MODELS_URL
@@ -279,10 +278,6 @@ def show_status(args):
             status += f" (home: {home_channel})"
 
         print(f"  {name:<12}  {check_mark(has_token)} {status}")
-        if name == "Kasia" and has_token:
-            health = fetch_kasia_bridge_health(kasia_settings.bridge_port)
-            for line in kasia_status_lines(kasia_settings, health=health):
-                print(line)
     
     # =========================================================================
     # Gateway Status

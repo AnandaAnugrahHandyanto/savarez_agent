@@ -1,0 +1,227 @@
+import os
+from types import SimpleNamespace
+
+import hermes_cli.kasia as kasia_mod
+
+
+def _test_io(env_values, saved_env, *, prompt_values, yes_no_answers):
+    infos = []
+    successes = []
+    warnings = []
+    errors = []
+
+    def get_env_value(name):
+        return env_values.get(name)
+
+    def save_env_value(name, value):
+        saved_env[name] = value
+        env_values[name] = value
+
+    def prompt(question, default=None, password=False):
+        return prompt_values.get(question, default or "")
+
+    def prompt_yes_no(question, default=False):
+        return yes_no_answers.get(question, default)
+
+    io = kasia_mod.KasiaCLIIO(
+        get_env_value=get_env_value,
+        save_env_value=save_env_value,
+        prompt=prompt,
+        prompt_yes_no=prompt_yes_no,
+        print_info=infos.append,
+        print_success=successes.append,
+        print_warning=warnings.append,
+        print_error=errors.append,
+    )
+    return io, infos, successes, warnings, errors
+
+
+def test_is_kasia_configured_recognizes_plural_endpoint_env_vars(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("KASIA_ENABLED", raising=False)
+    monkeypatch.delenv("KASIA_SEED_PHRASE", raising=False)
+    monkeypatch.delenv("KASIA_INDEXER_URL", raising=False)
+    monkeypatch.delenv("KASIA_NODE_WBORSH_URL", raising=False)
+    monkeypatch.setenv(
+        "KASIA_INDEXER_URLS",
+        "https://indexer-a.example.com,https://indexer-b.example.com",
+    )
+    monkeypatch.setenv(
+        "KASIA_NODE_WBORSH_URLS",
+        "ws://node-a.example.com,ws://node-b.example.com",
+    )
+
+    assert kasia_mod.is_kasia_configured(os.getenv) is True
+
+
+def test_prompt_kasia_seed_phrase_shows_hidden_note_and_retries_invalid(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    entered = iter(
+        [
+            "bad words only",
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu",
+        ]
+    )
+    infos = []
+    errors = []
+
+    result = kasia_mod.prompt_kasia_seed_phrase(
+        get_env_value=lambda _name: None,
+        prompt=lambda question, default=None, password=False: next(entered),
+        print_info=infos.append,
+        print_error=errors.append,
+        validate_seed_phrase=lambda value: (
+            (False, "invalid mnemonic")
+            if value == "bad words only"
+            else (True, None)
+        ),
+    )
+
+    assert result == "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu"
+    assert any("hidden as you type" in line for line in infos)
+    assert errors == ["invalid mnemonic"]
+
+
+def test_validate_kasia_seed_phrase_rejects_non_12_or_24_word_lengths(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        kasia_mod.subprocess,
+        "run",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    is_valid, error = kasia_mod.validate_kasia_seed_phrase(
+        "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen"
+    )
+
+    assert is_valid is False
+    assert error == "Kasia seed phrase should contain 12 or 24 words."
+    assert calls == []
+
+
+def test_run_kasia_setup_saves_expected_values(monkeypatch):
+    env_values = {}
+    saved_env = {}
+    prompt_values = {
+        "Kasia indexer URL": "https://indexer.kasia.fyi",
+        "Kaspa node URL": "wss://wrpc.kasia.fyi",
+        "Kasia network": "mainnet",
+        "Kasia KNS API URL": "https://kns.kasia.fyi/api/v1",
+        "Kasia fee policy": "priority",
+        "Allowed Kasia addresses (comma-separated, leave empty to set later)": "kaspa:qpeeraddress",
+        "Kasia home channel address (leave empty to set later)": "kaspa:qhomeaddress",
+    }
+    yes_no_answers = {
+        "Allow all Kasia users to message Hermes?": False,
+    }
+
+    io, infos, successes, warnings, errors = _test_io(
+        env_values,
+        saved_env,
+        prompt_values=prompt_values,
+        yes_no_answers=yes_no_answers,
+    )
+
+    configured = kasia_mod.run_kasia_setup(
+        io,
+        prompt_seed_phrase=lambda: "seed words go here",
+    )
+
+    assert configured is True
+    assert saved_env["KASIA_ENABLED"] == "true"
+    assert saved_env["KASIA_SEED_PHRASE"] == "seed words go here"
+    assert saved_env["KASIA_INDEXER_URL"] == "https://indexer.kasia.fyi"
+    assert saved_env["KASIA_NODE_WBORSH_URL"] == "wss://wrpc.kasia.fyi"
+    assert saved_env["KASIA_NETWORK"] == "mainnet"
+    assert saved_env["KASIA_KNS_URL"] == "https://kns.kasia.fyi/api/v1"
+    assert saved_env["KASIA_FEE_POLICY"] == "priority"
+    assert saved_env["KASIA_ALLOW_ALL_USERS"] == "false"
+    assert saved_env["KASIA_ALLOWED_USERS"] == "kaspa:qpeeraddress"
+    assert saved_env["KASIA_HOME_CHANNEL"] == "kaspa:qhomeaddress"
+    assert any("Kasia configured!" in line for line in successes)
+    assert errors == []
+    assert warnings == []
+    assert any("dedicated Kasia wallet" in line for line in infos)
+
+
+def test_run_kasia_doctor_includes_live_health(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("KASIA_ENABLED", "true")
+    monkeypatch.setenv("KASIA_SEED_PHRASE", "seed words go here")
+    monkeypatch.setenv("KASIA_INDEXER_URL", "https://indexer.example.com")
+    monkeypatch.setenv(
+        "KASIA_INDEXER_URLS",
+        "https://indexer.example.com,https://indexer-backup.example.com",
+    )
+    monkeypatch.setenv("KASIA_NODE_WBORSH_URL", "wss://node.example.com")
+    monkeypatch.setenv(
+        "KASIA_NODE_WBORSH_URLS",
+        "wss://node.example.com,wss://node-backup.example.com",
+    )
+    monkeypatch.setenv("KASIA_KNS_URL", "https://kns.example.com/api/v1")
+    monkeypatch.setenv("KASIA_ALLOWED_BROADCAST_CHANNELS", "alerts,ops")
+    monkeypatch.setenv("KASIA_HOME_CHANNEL", "kaspa:qhome")
+    monkeypatch.setattr(kasia_mod, "PROJECT_ROOT", tmp_path)
+
+    bridge_dir = tmp_path / "scripts" / "kasia-bridge"
+    bridge_dir.mkdir(parents=True)
+    (bridge_dir / "bridge.js").write_text("// test bridge\n")
+    (bridge_dir / "node_modules").mkdir()
+
+    monkeypatch.setattr(
+        kasia_mod,
+        "fetch_kasia_bridge_health",
+        lambda _port: {
+            "indexerPool": {"activeUrl": "https://indexer-backup.example.com", "degraded": True},
+            "nodePool": {"activeUrl": "wss://node-backup.example.com"},
+        },
+    )
+    monkeypatch.setattr(
+        kasia_mod.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="v22.1.0", stderr=""),
+    )
+
+    assert kasia_mod.run_kasia_doctor() is True
+
+    output = capsys.readouterr().out
+    assert "Kasia Doctor" in output
+    assert "KNS:        https://kns.example.com/api/v1" in output
+    assert "Indexers:   2 configured" in output
+    assert "Nodes:      2 configured" in output
+    assert "Broadcasts: publish allowlist for #alerts, #ops" in output
+    assert "Active indexer: https://indexer-backup.example.com" in output
+    assert "Active node:    wss://node-backup.example.com" in output
+    assert "Indexer pool is degraded / failover active" in output
+
+
+def test_run_kasia_doctor_fails_when_bridge_is_unreachable(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("KASIA_ENABLED", "true")
+    monkeypatch.setenv("KASIA_SEED_PHRASE", "seed words go here")
+    monkeypatch.setenv("KASIA_INDEXER_URL", "https://indexer.example.com")
+    monkeypatch.setenv("KASIA_NODE_WBORSH_URL", "wss://node.example.com")
+    monkeypatch.setattr(kasia_mod, "PROJECT_ROOT", tmp_path)
+
+    bridge_dir = tmp_path / "scripts" / "kasia-bridge"
+    bridge_dir.mkdir(parents=True)
+    (bridge_dir / "bridge.js").write_text("// test bridge\n")
+    (bridge_dir / "node_modules").mkdir()
+
+    monkeypatch.setattr(kasia_mod, "fetch_kasia_bridge_health", lambda _port: None)
+    monkeypatch.setattr(
+        kasia_mod.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="v22.1.0", stderr=""),
+    )
+
+    assert kasia_mod.run_kasia_doctor() is False
+
+    output = capsys.readouterr().out
+    assert "Bridge health" in output
+    assert "Kasia doctor found configuration or dependency issues." in output
+    assert "Kasia configuration looks good." not in output

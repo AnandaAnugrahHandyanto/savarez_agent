@@ -257,96 +257,14 @@ class TestKasiaGatewayRunnerBehavior:
 
 
 class TestKasiaGatewaySetup:
-    def test_setup_kasia_hides_existing_seed_default(self):
+    def test_setup_kasia_delegates_to_dedicated_command(self):
         import hermes_cli.gateway as gateway_cli
 
-        env_values = {
-            "KASIA_ENABLED": "true",
-            "KASIA_SEED_PHRASE": "existing twelve words",
-            "KASIA_INDEXER_URL": "https://indexer.example.com",
-            "KASIA_NODE_WBORSH_URL": "ws://127.0.0.1:17110",
-            "KASIA_NETWORK": "mainnet",
-        }
-        prompt_calls = []
-        saved = {}
-
-        def fake_get_env(name):
-            return env_values.get(name, "")
-
-        def fake_prompt(question, default=None, password=False):
-            prompt_calls.append((question, default, password))
-            if password:
-                return ""
-            if question == "Allowed Kasia addresses (comma-separated, leave empty to set later)":
-                return "kaspa:qpeeraddress"
-            if question == "Kasia home channel address (leave empty to set later)":
-                return "kaspa:qhomeaddress"
-            return default or ""
-
-        def fake_save_env(name, value):
-            saved[name] = value
-
-        with patch.object(gateway_cli, "get_env_value", side_effect=fake_get_env), patch.object(
-            gateway_cli, "prompt", side_effect=fake_prompt
-        ), patch.object(gateway_cli, "save_env_value", side_effect=fake_save_env), patch.object(
-            gateway_cli,
-            "prompt_yes_no",
-            side_effect=lambda question, default=False: {
-                "  Reconfigure Kasia?": True,
-                "Allow all Kasia users to message Hermes?": False,
-            }.get(question, default),
-        ):
+        with patch("hermes_cli.main.cmd_kasia") as kasia_cmd:
             gateway_cli._setup_kasia()
 
-        assert prompt_calls[0] == (
-            "Kasia seed phrase",
-            "existing twelve words",
-            True,
-        )
-        assert "KASIA_SEED_PHRASE" not in saved
-
-    def test_setup_kasia_prompts_kns_and_fee_policy_when_allowlist_is_saved(self):
-        import hermes_cli.gateway as gateway_cli
-
-        saved = {}
-
-        def fake_save_env(name, value):
-            saved[name] = value
-
-        prompt_values = {
-            "Kasia indexer URL": "https://indexer.example.com",
-            "Kaspa node URL": "ws://127.0.0.1:17110",
-            "Kasia network": "mainnet",
-            "Kasia KNS API URL": "https://kns.example.com/api/v1",
-            "Kasia fee policy": "priority",
-            "Allowed Kasia addresses (comma-separated, leave empty to set later)": "kaspa:qpeeraddress",
-            "Kasia home channel address (leave empty to set later)": "kaspa:qhomeaddress",
-        }
-
-        with patch.object(gateway_cli, "get_env_value", return_value=""), patch.object(
-            gateway_cli,
-            "prompt",
-            side_effect=lambda question, default=None, password=False: prompt_values.get(
-                question,
-                default or "",
-            ),
-        ), patch.object(
-            gateway_cli,
-            "prompt_kasia_seed_phrase",
-            return_value="alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu",
-        ), patch.object(gateway_cli, "save_env_value", side_effect=fake_save_env), patch.object(
-            gateway_cli,
-            "prompt_yes_no",
-            side_effect=lambda question, default=False: {
-                "Allow all Kasia users to message Hermes?": False,
-            }.get(question, default),
-        ):
-            gateway_cli._setup_kasia()
-
-        assert saved["KASIA_ALLOWED_USERS"] == "kaspa:qpeeraddress"
-        assert saved["KASIA_ALLOW_ALL_USERS"] == "false"
-        assert saved["KASIA_KNS_URL"] == "https://kns.example.com/api/v1"
-        assert saved["KASIA_FEE_POLICY"] == "priority"
+        kasia_cmd.assert_called_once()
+        assert kasia_cmd.call_args.args[0].kasia_command == "setup"
 
 
 class TestKasiaAdapter:

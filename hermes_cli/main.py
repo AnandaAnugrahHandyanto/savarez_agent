@@ -12,6 +12,8 @@ Usage:
     hermes gateway install     # Install gateway service
     hermes gateway uninstall   # Uninstall gateway service
     hermes setup               # Interactive setup wizard
+    hermes kasia               # Set up Kasia integration
+    hermes kasia doctor        # Diagnose Kasia configuration and bridge health
     hermes logout              # Clear stored authentication
     hermes status              # Show status of all components
     hermes cron                # Manage cron jobs
@@ -740,6 +742,19 @@ def cmd_setup(args):
     """Interactive setup wizard."""
     from hermes_cli.setup import run_setup_wizard
     run_setup_wizard(args)
+
+
+def cmd_kasia(args):
+    """Set up or diagnose the Kasia integration."""
+    from hermes_cli.kasia import run_kasia_doctor, run_kasia_setup
+
+    kasia_command = getattr(args, "kasia_command", "setup") or "setup"
+    if kasia_command == "doctor":
+        if not run_kasia_doctor():
+            sys.exit(1)
+        return
+
+    run_kasia_setup()
 
 
 def cmd_model(args):
@@ -3263,6 +3278,30 @@ For more help on a command:
         description="Configure WhatsApp and pair via QR code"
     )
     whatsapp_parser.set_defaults(func=cmd_whatsapp)
+
+    # =========================================================================
+    # kasia command
+    # =========================================================================
+    kasia_parser = subparsers.add_parser(
+        "kasia",
+        help="Set up and diagnose Kasia integration",
+        description="Configure the Kasia bridge and run Kasia-specific diagnostics",
+    )
+    kasia_subparsers = kasia_parser.add_subparsers(dest="kasia_command")
+
+    kasia_setup_parser = kasia_subparsers.add_parser(
+        "setup",
+        help="Configure Kasia integration",
+    )
+    kasia_setup_parser.set_defaults(func=cmd_kasia, kasia_command="setup")
+
+    kasia_doctor_parser = kasia_subparsers.add_parser(
+        "doctor",
+        help="Diagnose Kasia configuration and bridge health",
+    )
+    kasia_doctor_parser.set_defaults(func=cmd_kasia, kasia_command="doctor")
+
+    kasia_parser.set_defaults(func=cmd_kasia, kasia_command="setup")
 
     # =========================================================================
     # login command

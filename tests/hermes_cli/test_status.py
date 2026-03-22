@@ -14,7 +14,7 @@ def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
     assert "tvly...cdef" in output
 
 
-def test_show_status_includes_kasia_details(monkeypatch, capsys, tmp_path):
+def test_show_status_keeps_kasia_generic(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("KASIA_ENABLED", "true")
     monkeypatch.setenv("KASIA_SEED_PHRASE", "seed words go here")
@@ -32,13 +32,6 @@ def test_show_status_includes_kasia_details(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("KASIA_ALLOWED_BROADCAST_CHANNELS", "alerts,ops")
     monkeypatch.setenv("KASIA_HOME_CHANNEL", "kaspa:qhome")
     monkeypatch.setattr(
-        "hermes_cli.status.fetch_kasia_bridge_health",
-        lambda _port: {
-            "indexerPool": {"activeUrl": "https://indexer-backup.example.com", "degraded": True},
-            "nodePool": {"activeUrl": "ws://node-backup.example.com:17110"},
-        },
-    )
-    monkeypatch.setattr(
         "hermes_cli.status.subprocess.run",
         lambda *args, **kwargs: SimpleNamespace(stdout="", returncode=1),
     )
@@ -48,8 +41,10 @@ def test_show_status_includes_kasia_details(monkeypatch, capsys, tmp_path):
     output = capsys.readouterr().out
     assert "Kasia" in output
     assert "home: kaspa:qhome" in output
-    assert "KNS:        https://kns.example.com/api/v1" in output
-    assert "Indexers:   2 configured" in output
-    assert "Broadcasts: publish allowlist for #alerts, #ops" in output
-    assert "Active indexer: https://indexer-backup.example.com" in output
-    assert "Indexer pool:   degraded / failover active" in output
+    assert "KNS:        https://kns.example.com/api/v1" not in output
+    assert "Indexers:   2 configured" not in output
+    assert "Nodes:      2 configured" not in output
+    assert "Broadcasts: publish allowlist for #alerts, #ops" not in output
+    assert "Active indexer:" not in output
+    assert "Active node:" not in output
+    assert "Indexer pool:" not in output

@@ -15,13 +15,6 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from hermes_cli.config import get_env_value, get_hermes_home, save_env_value
-from hermes_cli.kasia_setup import (
-    KasiaSetupIO,
-    is_kasia_configured,
-    kasia_summary_lines,
-    prompt_kasia_seed_phrase,
-    run_kasia_setup_prompts,
-)
 from hermes_cli.setup import (
     print_header, print_info, print_success, print_warning, print_error,
     prompt, prompt_choice, prompt_yes_no,
@@ -1558,50 +1551,11 @@ def _setup_signal():
 
 
 def _setup_kasia():
-    """Interactive setup for Kasia messenger."""
-    print()
-    print(color("  ─── 🛰️ Kasia Setup ───", Colors.CYAN))
+    """Delegate to the dedicated Kasia setup command."""
+    from hermes_cli.main import cmd_kasia
+    import argparse
 
-    if is_kasia_configured(get_env_value):
-        print()
-        print_success("Kasia is already configured.")
-        if not prompt_yes_no("  Reconfigure Kasia?", False):
-            return
-
-    print()
-    print_info("  Hermes uses a dedicated Kasia identity and talks to a local Kasia bridge.")
-    print_info("  Required for v1:")
-    print_info("    1. A Kasia seed phrase dedicated to Hermes")
-    print_info("    2. A trusted Kasia indexer URL")
-    print_info("    3. A Kaspa node Wborsh / RPC URL for transaction submission")
-    print_info("    4. Optional: a KNS API URL for human-readable names")
-    print_info("    5. A fee policy for outbound Kasia transactions")
-    print_info("  Hermes does not auto-discover public indexers in v1.")
-    print()
-
-    run_kasia_setup_prompts(
-        KasiaSetupIO(
-            get_env_value=get_env_value,
-            save_env_value=save_env_value,
-            prompt=prompt,
-            prompt_yes_no=prompt_yes_no,
-            print_info=print_info,
-            print_success=print_success,
-            print_warning=print_warning,
-            print_error=print_error,
-        ),
-        prompt_seed_phrase=lambda: prompt_kasia_seed_phrase(
-            get_env_value=get_env_value,
-            prompt=prompt,
-            print_info=print_info,
-            print_error=print_error,
-        ),
-    )
-
-    print()
-    print_success("Kasia configured!")
-    for line in kasia_summary_lines(get_env_value):
-        print_info(f"  {line}")
+    cmd_kasia(argparse.Namespace(kasia_command="setup"))
 
 
 def gateway_setup():

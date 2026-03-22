@@ -2,7 +2,7 @@ import json
 
 import hermes_cli.setup as setup_mod
 from hermes_cli.auth import _update_config_for_provider, get_active_provider
-from hermes_cli.config import get_env_value, load_config, save_config
+from hermes_cli.config import load_config, save_config
 from hermes_cli.setup import setup_gateway, setup_model_provider
 
 
@@ -179,8 +179,20 @@ def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, mon
     assert reloaded["model"]["base_url"] == "https://chatgpt.com/backend-api/codex"
 
 
-def test_setup_gateway_can_configure_kasia(tmp_path, monkeypatch):
+def test_setup_gateway_can_launch_kasia_command(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for key in (
+        "TELEGRAM_BOT_TOKEN",
+        "DISCORD_BOT_TOKEN",
+        "SLACK_BOT_TOKEN",
+        "MATTERMOST_TOKEN",
+        "WHATSAPP_ENABLED",
+        "KASIA_ENABLED",
+        "KASIA_SEED_PHRASE",
+        "KASIA_INDEXER_URL",
+        "KASIA_NODE_WBORSH_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
     config = load_config()
 
     yes_no_answers = {
@@ -190,7 +202,6 @@ def test_setup_gateway_can_configure_kasia(tmp_path, monkeypatch):
         "Set up Matrix?": False,
         "Set up Mattermost?": False,
         "Set up Kasia?": True,
-        "Allow all Kasia users to message Hermes?": True,
         "Set up WhatsApp?": False,
     }
 
@@ -198,46 +209,15 @@ def test_setup_gateway_can_configure_kasia(tmp_path, monkeypatch):
         "hermes_cli.setup.prompt_yes_no",
         lambda question, default=True: yes_no_answers.get(question, default),
     )
-
+    called = {}
     monkeypatch.setattr(
-        "hermes_cli.setup._prompt_kasia_seed_phrase",
-        lambda: "seed words go here",
-    )
-
-    prompt_answers = {
-        "Kasia indexer URL": "https://indexer.kasia.fyi",
-        "Kaspa node URL": "wss://wrpc.kasia.fyi",
-        "Kasia network": "mainnet",
-        "Kasia KNS API URL": "https://kns.kasia.fyi/api/v1",
-        "Kasia fee policy": "priority",
-        "Kasia home channel address (leave empty to set later)": "",
-    }
-    monkeypatch.setattr(
-        "hermes_cli.setup.prompt",
-        lambda question, default=None, password=False: prompt_answers.get(
-            question, default or ""
-        ),
-    )
-    saved_env = {}
-    monkeypatch.setattr(
-        "hermes_cli.setup.save_env_value",
-        lambda key, value: (
-            saved_env.__setitem__(key, value),
-            monkeypatch.setenv(key, value),
-        )[-1],
+        "hermes_cli.setup._run_kasia_setup_command",
+        lambda: called.__setitem__("kasia_called", True),
     )
 
     setup_gateway(config)
 
-    assert saved_env["KASIA_ENABLED"] == "true"
-    assert saved_env["KASIA_SEED_PHRASE"] == "seed words go here"
-    assert saved_env["KASIA_INDEXER_URL"] == "https://indexer.kasia.fyi"
-    assert saved_env["KASIA_NODE_WBORSH_URL"] == "wss://wrpc.kasia.fyi"
-    assert saved_env["KASIA_NETWORK"] == "mainnet"
-    assert saved_env["KASIA_KNS_URL"] == "https://kns.kasia.fyi/api/v1"
-    assert saved_env["KASIA_FEE_POLICY"] == "priority"
-    assert saved_env["KASIA_ALLOW_ALL_USERS"] == "true"
-    assert get_env_value("KASIA_ALLOW_ALL_USERS") == "true"
+    assert called.get("kasia_called") is True
 
 
 def test_quick_setup_offers_kasia_in_messaging_checklist(tmp_path, monkeypatch):
@@ -270,7 +250,7 @@ def test_quick_setup_offers_kasia_in_messaging_checklist(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_cli.setup.prompt_checklist", _fake_prompt_checklist)
     monkeypatch.setattr("hermes_cli.setup._print_setup_summary", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        "hermes_cli.setup._setup_kasia_prompts",
+        "hermes_cli.setup._run_kasia_setup_command",
         lambda: captured.__setitem__("kasia_called", True),
     )
 
@@ -279,24 +259,6 @@ def test_quick_setup_offers_kasia_in_messaging_checklist(tmp_path, monkeypatch):
     assert captured["title"] == "Which platforms would you like to set up?"
     assert "🔐 Kasia" in captured["items"]
     assert captured.get("kasia_called") is True
-
-
-def test_kasia_configured_recognizes_plural_endpoint_env_vars(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.delenv("KASIA_ENABLED", raising=False)
-    monkeypatch.delenv("KASIA_SEED_PHRASE", raising=False)
-    monkeypatch.delenv("KASIA_INDEXER_URL", raising=False)
-    monkeypatch.delenv("KASIA_NODE_WBORSH_URL", raising=False)
-    monkeypatch.setenv(
-        "KASIA_INDEXER_URLS",
-        "https://indexer-a.example.com,https://indexer-b.example.com",
-    )
-    monkeypatch.setenv(
-        "KASIA_NODE_WBORSH_URLS",
-        "ws://node-a.example.com,ws://node-b.example.com",
-    )
-
-    assert setup_mod._kasia_configured() is True
 
 
 def test_password_prompt_hides_stored_default(monkeypatch):
@@ -318,59 +280,3 @@ def test_password_prompt_hides_stored_default(monkeypatch):
     assert "secret words stay hidden" not in captured["prompt"]
     assert "input hidden" in captured["prompt"]
     assert "keep current" in captured["prompt"]
-
-
-def test_prompt_kasia_seed_phrase_shows_hidden_note_and_retries_invalid(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-    entered = iter(
-        [
-            "bad words only",
-            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu",
-        ]
-    )
-    infos = []
-    errors = []
-
-    monkeypatch.setattr(
-        setup_mod,
-        "prompt",
-        lambda question, default=None, password=False: next(entered),
-    )
-    monkeypatch.setattr(
-        setup_mod,
-        "_validate_kasia_seed_phrase",
-        lambda value: (
-            (False, "invalid mnemonic")
-            if value == "bad words only"
-            else (True, None)
-        ),
-    )
-    monkeypatch.setattr(setup_mod, "print_info", infos.append)
-    monkeypatch.setattr(setup_mod, "print_error", errors.append)
-
-    result = setup_mod._prompt_kasia_seed_phrase()
-
-    assert result == "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu"
-    assert any("hidden as you type" in line for line in infos)
-    assert errors == ["invalid mnemonic"]
-
-
-def test_validate_kasia_seed_phrase_rejects_non_12_or_24_word_lengths(monkeypatch):
-    calls = []
-
-    monkeypatch.setattr(
-        setup_mod.subprocess,
-        "run",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
-    )
-
-    is_valid, error = setup_mod._validate_kasia_seed_phrase(
-        "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen"
-    )
-
-    assert is_valid is False
-    assert error == "Kasia seed phrase should contain 12 or 24 words."
-    assert calls == []

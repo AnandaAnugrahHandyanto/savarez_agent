@@ -23,14 +23,6 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from hermes_cli.kasia_setup import (
-    KasiaSetupIO,
-    is_kasia_configured as _shared_is_kasia_configured,
-    prompt_kasia_seed_phrase as _shared_prompt_kasia_seed_phrase,
-    run_kasia_setup_prompts as _shared_run_kasia_setup_prompts,
-    validate_kasia_seed_phrase as _shared_validate_kasia_seed_phrase,
-)
-
 
 def _model_config_dict(config: Dict[str, Any]) -> Dict[str, Any]:
     current_model = config.get("model")
@@ -377,21 +369,6 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
     except (KeyboardInterrupt, EOFError):
         print()
         sys.exit(1)
-
-
-def _validate_kasia_seed_phrase(seed_phrase: str) -> tuple[bool, str | None]:
-    return _shared_validate_kasia_seed_phrase(seed_phrase)
-
-
-def _prompt_kasia_seed_phrase() -> str:
-    return _shared_prompt_kasia_seed_phrase(
-        get_env_value=get_env_value,
-        prompt=prompt,
-        print_info=print_info,
-        print_error=print_error,
-        validate_seed_phrase=_validate_kasia_seed_phrase,
-    )
-
 
 def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int:
     """Single-select menu using curses to avoid simple_term_menu rendering bugs."""
@@ -2445,39 +2422,22 @@ def setup_agent_settings(config: dict):
 # =============================================================================
 
 
-def _kasia_configured() -> bool:
-    return _shared_is_kasia_configured(get_env_value)
+def _run_kasia_setup_command() -> None:
+    from hermes_cli.main import cmd_kasia
+    import argparse
 
-
-def _setup_kasia_prompts() -> None:
-    print_info("Kasia connects Hermes through the Kasia messaging bridge.")
-    print_info("Use a dedicated Kasia wallet for Hermes rather than your main wallet.")
-    print()
-    _shared_run_kasia_setup_prompts(
-        KasiaSetupIO(
-            get_env_value=get_env_value,
-            save_env_value=save_env_value,
-            prompt=prompt,
-            prompt_yes_no=prompt_yes_no,
-            print_info=print_info,
-            print_success=print_success,
-            print_warning=print_warning,
-            print_error=print_error,
-        ),
-        prompt_seed_phrase=_prompt_kasia_seed_phrase,
-    )
+    cmd_kasia(argparse.Namespace(kasia_command="setup"))
 
 
 def _run_kasia_setup_prompt(reconfigure_default: bool = False) -> bool:
-    if _kasia_configured():
-        print_info("Kasia: already configured")
-        if not prompt_yes_no("Reconfigure Kasia?", reconfigure_default):
-            return False
-    else:
-        if not prompt_yes_no("Set up Kasia?", False):
-            return False
+    from hermes_cli.kasia import is_kasia_configured
 
-    _setup_kasia_prompts()
+    question = "Open Kasia setup?" if is_kasia_configured(get_env_value) else "Set up Kasia?"
+    default_choice = reconfigure_default if reconfigure_default else False
+    if not prompt_yes_no(question, default_choice):
+        return False
+
+    _run_kasia_setup_command()
     return True
 
 
@@ -3499,7 +3459,7 @@ def _run_quick_setup(config: dict, hermes_home):
                 print()
                 print(color("  ─── 🔐 Kasia ───", Colors.CYAN))
                 print()
-                _setup_kasia_prompts()
+                _run_kasia_setup_command()
                 print()
                 continue
             vars_list = platforms[plat]
