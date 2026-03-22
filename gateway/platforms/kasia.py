@@ -92,6 +92,37 @@ class KasiaAdapter(BasePlatformAdapter):
         self._bridge_log_fh = None
         self._poll_task: Optional[asyncio.Task] = None
 
+    def _unauthorized_dm_behavior(self) -> str:
+        """Return how first-contact unauthorized DMs should be handled."""
+        return str(
+            self.config.extra.get("unauthorized_dm_behavior", "pair")
+        ).strip().lower() or "pair"
+
+    def _build_handshake_event(self, data: Dict[str, Any]) -> MessageEvent:
+        """Normalize a handshake request into a DM event for the gateway."""
+        timestamp_ms = data.get("timestampMs")
+        timestamp = (
+            datetime.fromtimestamp(float(timestamp_ms) / 1000.0)
+            if timestamp_ms
+            else datetime.now()
+        )
+        chat_id = data.get("chatId") or data.get("senderId") or ""
+        sender_name = data.get("senderName") or chat_id
+        return MessageEvent(
+            text="",
+            message_type=MessageType.TEXT,
+            source=self.build_source(
+                chat_id=chat_id,
+                chat_name=sender_name,
+                chat_type="dm",
+                user_id=data.get("senderId") or chat_id,
+                user_name=sender_name,
+            ),
+            raw_message=data,
+            message_id=data.get("messageId"),
+            timestamp=timestamp,
+        )
+
     async def connect(self) -> bool:
         """Launch the Kasia bridge process and wait for its health endpoint."""
         if not check_kasia_requirements(self.config):
@@ -353,6 +384,27 @@ class KasiaAdapter(BasePlatformAdapter):
                 except Exception as error:
                     logger.warning(
                         "[%s] Failed to respond to Kasia handshake from %s: %s",
+                        self.name,
+                        chat_id,
+                        error,
+                    )
+            elif self._unauthorized_dm_behavior() == "pair":
+                try:
+                    await self._request_json(
+                        "POST",
+                        "/handshakes/respond",
+                        payload={"chatId": chat_id},
+                        total=30,
+                    )
+                    logger.info(
+                        "[%s] Responded to unauthorized Kasia handshake from %s to deliver pairing instructions",
+                        self.name,
+                        chat_id,
+                    )
+                    await self.handle_message(self._build_handshake_event(data))
+                except Exception as error:
+                    logger.warning(
+                        "[%s] Failed to prepare Kasia pairing response for %s: %s",
                         self.name,
                         chat_id,
                         error,

@@ -1317,7 +1317,9 @@ class GatewayRunner:
         config: Any
     ) -> Optional[BasePlatformAdapter]:
         """Create the appropriate adapter for a platform."""
-        if hasattr(config, "extra") and isinstance(config.extra, dict):
+        if hasattr(config, "extra"):
+            if not isinstance(config.extra, dict):
+                config.extra = {}
             config.extra.setdefault(
                 "group_sessions_per_user",
                 self.config.group_sessions_per_user,
@@ -1360,6 +1362,11 @@ class GatewayRunner:
 
         elif platform == Platform.KASIA:
             from gateway.platforms.kasia import KasiaAdapter, check_kasia_requirements
+            if hasattr(self.config, "get_unauthorized_dm_behavior"):
+                config.extra.setdefault(
+                    "unauthorized_dm_behavior",
+                    self.config.get_unauthorized_dm_behavior(platform),
+                )
             if not check_kasia_requirements(config):
                 logger.warning(
                     "Kasia: KASIA_ENABLED requires KASIA_SEED_PHRASE plus either "
@@ -1559,6 +1566,15 @@ class GatewayRunner:
                             "Too many pairing requests right now~ "
                             "Please try again later!"
                         )
+            return None
+
+        if (
+            source.platform == Platform.KASIA
+            and isinstance(event.raw_message, dict)
+            and event.raw_message.get("eventType") == "handshake_request"
+            and not (event.text or "").strip()
+        ):
+            logger.debug("Ignoring empty Kasia handshake event for authorized user %s", source.user_id)
             return None
         
         # PRIORITY handling when an agent is already running for this session.

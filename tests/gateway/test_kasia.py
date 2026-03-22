@@ -220,6 +220,53 @@ class TestKasiaGatewayRunnerBehavior:
         assert config.extra["group_sessions_per_user"] is True
         adapter_cls.assert_called_once_with(config)
 
+    def test_create_adapter_bridges_unauthorized_dm_behavior_for_kasia(self):
+        import gateway.platforms.kasia as kasia_platform
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = SimpleNamespace(
+            group_sessions_per_user=False,
+            get_unauthorized_dm_behavior=lambda platform: "ignore",
+        )
+        config = PlatformConfig(enabled=True, extra={})
+        adapter_instance = object()
+
+        with patch.object(kasia_platform, "check_kasia_requirements", return_value=True), patch.object(
+            kasia_platform,
+            "KasiaAdapter",
+            return_value=adapter_instance,
+        ):
+            result = GatewayRunner._create_adapter(runner, Platform.KASIA, config)
+
+        assert result is adapter_instance
+        assert config.extra["unauthorized_dm_behavior"] == "ignore"
+
+    def test_create_adapter_normalizes_null_extra_for_kasia(self):
+        import gateway.platforms.kasia as kasia_platform
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = SimpleNamespace(
+            group_sessions_per_user=False,
+            get_unauthorized_dm_behavior=lambda platform: "ignore",
+        )
+        config = PlatformConfig(enabled=True, extra=None)
+        adapter_instance = object()
+
+        with patch.object(kasia_platform, "check_kasia_requirements", return_value=True), patch.object(
+            kasia_platform,
+            "KasiaAdapter",
+            return_value=adapter_instance,
+        ):
+            result = GatewayRunner._create_adapter(runner, Platform.KASIA, config)
+
+        assert result is adapter_instance
+        assert config.extra == {
+            "group_sessions_per_user": False,
+            "unauthorized_dm_behavior": "ignore",
+        }
+
     def test_create_adapter_returns_none_when_requirements_fail(self):
         import gateway.platforms.kasia as kasia_platform
         from gateway.run import GatewayRunner
@@ -358,6 +405,59 @@ class TestKasiaAdapter:
             payload={"chatId": "kaspa:qpeeraddress"},
             total=30,
         )
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_handshake_request_triggers_pairing_flow_for_unauthorized_user(self):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        adapter = KasiaAdapter(self._make_config())
+        adapter.handle_message = AsyncMock()
+        adapter._request_json = AsyncMock(return_value={"status": "sent", "txId": "tx-2"})
+
+        with patch.object(adapter, "_is_address_authorized", return_value=False):
+            await adapter._handle_bridge_event(
+                {
+                    "eventType": "handshake_request",
+                    "chatId": "kaspa:qpeeraddress",
+                    "senderId": "kaspa:qpeeraddress",
+                    "senderName": "peer.kas",
+                    "messageId": "tx-handshake",
+                }
+            )
+
+        adapter._request_json.assert_awaited_once_with(
+            "POST",
+            "/handshakes/respond",
+            payload={"chatId": "kaspa:qpeeraddress"},
+            total=30,
+        )
+        adapter.handle_message.assert_awaited_once()
+        forwarded_event = adapter.handle_message.await_args.args[0]
+        assert forwarded_event.text == ""
+        assert forwarded_event.message_id == "tx-handshake"
+        assert forwarded_event.source.chat_id == "kaspa:qpeeraddress"
+        assert forwarded_event.source.user_id == "kaspa:qpeeraddress"
+        assert forwarded_event.source.user_name == "peer.kas"
+
+    @pytest.mark.asyncio
+    async def test_handshake_request_still_ignores_unauthorized_user_when_behavior_is_ignore(self):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        adapter = KasiaAdapter(self._make_config(unauthorized_dm_behavior="ignore"))
+        adapter.handle_message = AsyncMock()
+        adapter._request_json = AsyncMock(return_value={"status": "sent", "txId": "tx-2"})
+
+        with patch.object(adapter, "_is_address_authorized", return_value=False):
+            await adapter._handle_bridge_event(
+                {
+                    "eventType": "handshake_request",
+                    "chatId": "kaspa:qpeeraddress",
+                    "senderId": "kaspa:qpeeraddress",
+                }
+            )
+
+        adapter._request_json.assert_not_awaited()
         adapter.handle_message.assert_not_awaited()
 
     @pytest.mark.asyncio
