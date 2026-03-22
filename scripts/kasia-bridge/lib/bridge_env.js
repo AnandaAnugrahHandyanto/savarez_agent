@@ -54,7 +54,7 @@ export function readBridgeEnv(env = process.env) {
     nodeUrls: effectiveNodeUrls,
     network: String(env.KASIA_NETWORK || "mainnet").trim() || "mainnet",
     knsUrl: String(env.KASIA_KNS_URL || "").trim(),
-    feePolicy: String(env.KASIA_FEE_POLICY || "priority").trim() || "priority",
+    feePolicy: String(env.KASIA_FEE_POLICY || "auto").trim() || "auto",
     maxMultipartParts: Number.parseInt(env.KASIA_MAX_MULTIPARTS || "8", 10),
     contextualMessageTargetExplicit: String(
       env.KASIA_TARGET_MESSAGE_CHARS || ""

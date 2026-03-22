@@ -109,9 +109,7 @@ def test_run_kasia_setup_saves_expected_values(monkeypatch):
     prompt_values = {
         "Kasia indexer URL": "https://indexer.kasia.fyi",
         "Kaspa node URL": "wss://wrpc.kasia.fyi",
-        "Kasia network": "mainnet",
-        "Kasia KNS API URL": "https://kns.kasia.fyi/api/v1",
-        "Kasia fee policy": "priority",
+        "Kaspa network": "mainnet",
         "Allowed Kasia addresses (comma-separated, leave empty to set later)": "kaspa:qpeeraddress",
         "Kasia home channel address (leave empty to set later)": "kaspa:qhomeaddress",
     }
@@ -137,15 +135,78 @@ def test_run_kasia_setup_saves_expected_values(monkeypatch):
     assert saved_env["KASIA_INDEXER_URL"] == "https://indexer.kasia.fyi"
     assert saved_env["KASIA_NODE_WBORSH_URL"] == "wss://wrpc.kasia.fyi"
     assert saved_env["KASIA_NETWORK"] == "mainnet"
-    assert saved_env["KASIA_KNS_URL"] == "https://kns.kasia.fyi/api/v1"
-    assert saved_env["KASIA_FEE_POLICY"] == "priority"
+    assert saved_env["KASIA_FEE_POLICY"] == "auto"
     assert saved_env["KASIA_ALLOW_ALL_USERS"] == "false"
     assert saved_env["KASIA_ALLOWED_USERS"] == "kaspa:qpeeraddress"
     assert saved_env["KASIA_HOME_CHANNEL"] == "kaspa:qhomeaddress"
+    assert "KASIA_KNS_URL" not in saved_env
     assert any("Kasia configured!" in line for line in successes)
     assert errors == []
     assert warnings == []
-    assert any("dedicated Kasia wallet" in line for line in infos)
+    assert any("dedicated Kaspa wallet" in line for line in infos)
+    assert any("recommended default shown in brackets" in line for line in infos)
+    assert any("Kaspa network saved: mainnet" in line for line in successes)
+    assert any("Kasia fee policy saved: auto" in line for line in successes)
+
+
+def test_run_kasia_setup_defaults_allow_all_to_false(monkeypatch):
+    env_values = {}
+    saved_env = {}
+    prompt_values = {
+        "Kasia indexer URL": "https://indexer.kasia.fyi",
+        "Kaspa node URL": "wss://wrpc.kasia.fyi",
+        "Kaspa network": "mainnet",
+        "Allowed Kasia addresses (comma-separated, leave empty to set later)": "kaspa:qpeeraddress",
+        "Kasia home channel address (leave empty to set later)": "kaspa:qhomeaddress",
+    }
+
+    io, _infos, _successes, _warnings, _errors = _test_io(
+        env_values,
+        saved_env,
+        prompt_values=prompt_values,
+        yes_no_answers={},
+    )
+
+    configured = kasia_mod.run_kasia_setup(
+        io,
+        prompt_seed_phrase=lambda: "seed words go here",
+    )
+
+    assert configured is True
+    assert saved_env["KASIA_ALLOW_ALL_USERS"] == "false"
+
+
+def test_run_kasia_setup_resets_existing_priority_fee_policy_to_auto(monkeypatch):
+    env_values = {
+        "KASIA_FEE_POLICY": "priority",
+    }
+    saved_env = {}
+    prompt_values = {
+        "Kasia indexer URL": "https://indexer.kasia.fyi",
+        "Kaspa node URL": "wss://wrpc.kasia.fyi",
+        "Kaspa network": "mainnet",
+        "Allowed Kasia addresses (comma-separated, leave empty to set later)": "kaspa:qpeeraddress",
+        "Kasia home channel address (leave empty to set later)": "kaspa:qhomeaddress",
+    }
+    yes_no_answers = {
+        "Allow all Kasia users to message Hermes?": False,
+    }
+
+    io, _infos, successes, _warnings, _errors = _test_io(
+        env_values,
+        saved_env,
+        prompt_values=prompt_values,
+        yes_no_answers=yes_no_answers,
+    )
+
+    configured = kasia_mod.run_kasia_setup(
+        io,
+        prompt_seed_phrase=lambda: "seed words go here",
+    )
+
+    assert configured is True
+    assert saved_env["KASIA_FEE_POLICY"] == "auto"
+    assert any("Kasia fee policy saved: auto" in line for line in successes)
 
 
 def test_run_kasia_doctor_includes_live_health(monkeypatch, capsys, tmp_path):
@@ -190,13 +251,49 @@ def test_run_kasia_doctor_includes_live_health(monkeypatch, capsys, tmp_path):
 
     output = capsys.readouterr().out
     assert "Kasia Doctor" in output
-    assert "KNS:        https://kns.example.com/api/v1" in output
+    assert "KNS:        https://kns.example.com/api/v1 (override)" in output
     assert "Indexers:   2 configured" in output
     assert "Nodes:      2 configured" in output
     assert "Broadcasts: publish allowlist for #alerts, #ops" in output
     assert "Active indexer: https://indexer-backup.example.com" in output
     assert "Active node:    wss://node-backup.example.com" in output
     assert "Indexer pool is degraded / failover active" in output
+
+
+def test_run_kasia_doctor_shows_network_default_kns_when_unset(
+    monkeypatch, capsys, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("KASIA_ENABLED", "true")
+    monkeypatch.setenv("KASIA_SEED_PHRASE", "seed words go here")
+    monkeypatch.setenv("KASIA_INDEXER_URL", "https://indexer.example.com")
+    monkeypatch.setenv("KASIA_NODE_WBORSH_URL", "wss://node.example.com")
+    monkeypatch.setenv("KASIA_NETWORK", "testnet-10")
+    monkeypatch.setattr(kasia_mod, "PROJECT_ROOT", tmp_path)
+
+    bridge_dir = tmp_path / "scripts" / "kasia-bridge"
+    bridge_dir.mkdir(parents=True)
+    (bridge_dir / "bridge.js").write_text("// test bridge\n")
+    (bridge_dir / "node_modules").mkdir()
+
+    monkeypatch.setattr(
+        kasia_mod,
+        "fetch_kasia_bridge_health",
+        lambda _port: {
+            "indexerPool": {"activeUrl": "https://indexer.example.com"},
+            "nodePool": {"activeUrl": "wss://node.example.com"},
+        },
+    )
+    monkeypatch.setattr(
+        kasia_mod.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="v22.1.0", stderr=""),
+    )
+
+    assert kasia_mod.run_kasia_doctor() is True
+
+    output = capsys.readouterr().out
+    assert "KNS:        https://api.knsdomains.org/tn10/api/v1 (network default)" in output
 
 
 def test_run_kasia_doctor_fails_when_bridge_is_unreachable(monkeypatch, capsys, tmp_path):

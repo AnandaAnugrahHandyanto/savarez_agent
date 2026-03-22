@@ -39,6 +39,7 @@ test("readBridgeEnv uses the cutover Kasia message sizing defaults", () => {
     KASIA_NODE_WBORSH_URL: "ws://127.0.0.1:17110",
   });
 
+  assert.equal(config.feePolicy, "auto");
   assert.equal(config.contextualMessageTargetChars, 4096);
   assert.equal(config.maxMultipartParts, 8);
   assert.equal(config.contextualMessageTargetExplicit, false);

@@ -27,7 +27,7 @@ class TestKasiaConfigLoading:
         monkeypatch.setenv("KASIA_NODE_WBORSH_URLS", "ws://127.0.0.1:17110,ws://127.0.0.1:17111")
         monkeypatch.setenv("KASIA_NETWORK", "mainnet")
         monkeypatch.setenv("KASIA_KNS_URL", "https://kns.example.com/api/v1")
-        monkeypatch.setenv("KASIA_FEE_POLICY", "priority")
+        monkeypatch.setenv("KASIA_FEE_POLICY", "auto")
         monkeypatch.setenv("KASIA_BRIDGE_PORT", "3011")
         monkeypatch.setenv("KASIA_SEND_WAIT_MS", "7000")
         monkeypatch.setenv("KASIA_MAX_MULTIPARTS", "6")
@@ -56,7 +56,7 @@ class TestKasiaConfigLoading:
         ]
         assert kasia_config.extra["network"] == "mainnet"
         assert kasia_config.extra["kns_url"] == "https://kns.example.com/api/v1"
-        assert kasia_config.extra["fee_policy"] == "priority"
+        assert kasia_config.extra["fee_policy"] == "auto"
         assert kasia_config.extra["bridge_port"] == 3011
         assert kasia_config.extra["send_wait_ms"] == 7000
         assert kasia_config.extra["max_multipart_parts"] == 6

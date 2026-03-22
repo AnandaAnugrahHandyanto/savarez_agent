@@ -19,7 +19,9 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 DEFAULT_KASIA_INDEXER_URL = "https://indexer.kasia.fyi"
 DEFAULT_KASIA_NODE_WBORSH_URL = "wss://wrpc.kasia.fyi"
 DEFAULT_KASIA_NETWORK = "mainnet"
-DEFAULT_KASIA_FEE_POLICY = "priority"
+DEFAULT_KASIA_FEE_POLICY = "auto"
+DEFAULT_MAINNET_KNS_URL = "https://api.knsdomains.org/mainnet/api/v1"
+DEFAULT_TESTNET_KNS_URL = "https://api.knsdomains.org/tn10/api/v1"
 _TRUE_VALUES = {"true", "1", "yes"}
 
 
@@ -163,8 +165,9 @@ def _run_kasia_setup_prompts(
         password=False,
     )
     if indexer_url:
-        io.save_env_value("KASIA_INDEXER_URL", indexer_url.rstrip("/"))
-        io.print_success("Kasia indexer URL saved")
+        normalized_indexer_url = indexer_url.rstrip("/")
+        io.save_env_value("KASIA_INDEXER_URL", normalized_indexer_url)
+        io.print_success(f"Kasia indexer URL saved: {normalized_indexer_url}")
 
     node_url = io.prompt(
         "Kaspa node URL",
@@ -173,38 +176,30 @@ def _run_kasia_setup_prompts(
     )
     if node_url:
         io.save_env_value("KASIA_NODE_WBORSH_URL", node_url)
-        io.print_success("Kaspa node URL saved")
+        io.print_success(f"Kaspa node URL saved: {node_url}")
 
     network = io.prompt(
-        "Kasia network",
+        "Kaspa network",
         default=io.get_env_value("KASIA_NETWORK") or DEFAULT_KASIA_NETWORK,
         password=False,
     )
     if network:
         io.save_env_value("KASIA_NETWORK", network)
-
-    kns_url = io.prompt(
-        "Kasia KNS API URL",
-        default=io.get_env_value("KASIA_KNS_URL") or None,
-        password=False,
-    )
-    if kns_url:
-        io.save_env_value("KASIA_KNS_URL", kns_url.rstrip("/"))
-        io.print_success("Kasia KNS API URL saved")
+        io.print_success(f"Kaspa network saved: {network}")
 
     fee_policy = io.prompt(
         "Kasia fee policy",
-        default=io.get_env_value("KASIA_FEE_POLICY") or DEFAULT_KASIA_FEE_POLICY,
+        default=DEFAULT_KASIA_FEE_POLICY,
         password=False,
     )
     if fee_policy:
         io.save_env_value("KASIA_FEE_POLICY", fee_policy)
+        io.print_success(f"Kasia fee policy saved: {fee_policy}")
 
     io.print_info("🔒 Security: decide who can handshake and message Hermes over Kasia")
-    allow_all_default = _is_truthy(io.get_env_value("KASIA_ALLOW_ALL_USERS"))
     allow_all = io.prompt_yes_no(
         "Allow all Kasia users to message Hermes?",
-        allow_all_default,
+        False,
     )
     if allow_all:
         io.save_env_value("KASIA_ALLOW_ALL_USERS", "true")
@@ -244,15 +239,17 @@ def kasia_summary_lines(
     get_env_value: Callable[[str], Optional[str]],
 ) -> list[str]:
     """Return a stable, operator-facing Kasia summary."""
+    effective_kns_url, kns_overridden = resolve_kasia_kns_url(
+        get_env_value("KASIA_NETWORK"),
+        get_env_value("KASIA_KNS_URL"),
+    )
     lines = [
         f"Indexer: {get_env_value('KASIA_INDEXER_URL') or '(not set)'}",
         f"Node: {get_env_value('KASIA_NODE_WBORSH_URL') or '(not set)'}",
         f"Network: {get_env_value('KASIA_NETWORK') or DEFAULT_KASIA_NETWORK}",
         f"Fee policy: {get_env_value('KASIA_FEE_POLICY') or DEFAULT_KASIA_FEE_POLICY}",
+        f"KNS API: {effective_kns_url} ({'override' if kns_overridden else 'network default'})",
     ]
-    kns_url = get_env_value("KASIA_KNS_URL")
-    if kns_url:
-        lines.append(f"KNS API: {kns_url}")
     return lines
 
 
@@ -263,8 +260,13 @@ def kasia_status_lines(
 ) -> list[str]:
     """Render operator-facing Kasia detail lines for Kasia diagnostics."""
     lines: list[str] = []
-    if kasia_settings.kns_url:
-        lines.append(f"    KNS:        {kasia_settings.kns_url}")
+    effective_kns_url, kns_overridden = resolve_kasia_kns_url(
+        kasia_settings.network,
+        kasia_settings.kns_url,
+    )
+    lines.append(
+        f"    KNS:        {effective_kns_url} ({'override' if kns_overridden else 'network default'})"
+    )
     if kasia_settings.indexer_urls:
         lines.append(f"    Indexers:   {len(kasia_settings.indexer_urls)} configured")
     if kasia_settings.node_wborsh_urls:
@@ -316,14 +318,10 @@ def run_kasia_setup(
             return False
 
     print()
-    io.print_info("Kasia connects Hermes through the Kasia messaging bridge.")
-    io.print_info("Use a dedicated Kasia wallet for Hermes rather than your main wallet.")
-    io.print_info("Required for v1:")
-    io.print_info("  1. A Kasia seed phrase dedicated to Hermes")
-    io.print_info("  2. A trusted Kasia indexer URL")
-    io.print_info("  3. A Kaspa node Wborsh / RPC URL for transaction submission")
-    io.print_info("  4. Optional: a KNS API URL for human-readable names")
-    io.print_info("  5. A fee policy for outbound Kasia transactions")
+    io.print_info("Kasia lets Hermes send and receive messages on the Kaspa network.")
+    io.print_info("Use a dedicated Kaspa wallet for Hermes, not your main wallet.")
+    io.print_info("You will need a Kaspa seed phrase for Hermes.")
+    io.print_info("Press Enter to use the recommended default shown in brackets.")
     print()
 
     _run_kasia_setup_prompts(io, prompt_seed_phrase=prompt_seed_phrase)
@@ -345,12 +343,25 @@ def fetch_kasia_bridge_health(bridge_port: Optional[int]) -> dict[str, Any] | No
         return None
 
 
-def _is_truthy(value: Optional[str]) -> bool:
-    return str(value or "").strip().lower() in _TRUE_VALUES
-
-
 def _doctor_mark(ok: bool) -> str:
     return "✓" if ok else "✗"
+
+
+def default_kasia_kns_url(network: Optional[str]) -> str:
+    normalized_network = str(network or DEFAULT_KASIA_NETWORK).strip().lower()
+    if normalized_network.startswith("mainnet"):
+        return DEFAULT_MAINNET_KNS_URL
+    return DEFAULT_TESTNET_KNS_URL
+
+
+def resolve_kasia_kns_url(
+    network: Optional[str],
+    configured_kns_url: Optional[str],
+) -> tuple[str, bool]:
+    normalized_kns_url = str(configured_kns_url or "").strip()
+    if normalized_kns_url:
+        return normalized_kns_url, True
+    return default_kasia_kns_url(network), False
 
 
 def _node_runtime_status() -> tuple[bool, str]:
@@ -409,7 +420,6 @@ def run_kasia_doctor() -> bool:
         ("Indexer", bool(settings.indexer_url), settings.indexer_url or "missing"),
         ("Kaspa node", bool(settings.node_wborsh_url), settings.node_wborsh_url or "missing"),
         ("Fee policy", bool(settings.fee_policy), settings.fee_policy or DEFAULT_KASIA_FEE_POLICY),
-        ("KNS", bool(settings.kns_url), settings.kns_url or "not configured"),
         ("Home channel", bool(settings.home_channel), settings.home_channel or "not configured"),
     ]
     if settings.allow_all_users:

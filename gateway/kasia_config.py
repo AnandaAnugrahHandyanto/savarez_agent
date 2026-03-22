@@ -8,7 +8,7 @@ _TRUE_VALUES = frozenset({"true", "1", "yes", "on"})
 _KASIA_ADDRESS_PREFIXES = ("kaspa:", "kaspatest:", "kaspasim:")
 
 DEFAULT_KASIA_NETWORK = "mainnet"
-DEFAULT_KASIA_FEE_POLICY = "priority"
+DEFAULT_KASIA_FEE_POLICY = "auto"
 DEFAULT_KASIA_BRIDGE_PORT = 3010
 DEFAULT_KASIA_SEND_WAIT_MS = 5000
 

@@ -42,11 +42,11 @@ function utxo({ txId, index, amount, blockDaaScore = 1, isCoinbase = false }) {
   };
 }
 
-test("normalizeFeePolicy defaults invalid values back to priority", () => {
+test("normalizeFeePolicy defaults invalid values back to auto", () => {
   assert.equal(normalizeFeePolicy("priority"), "priority");
   assert.equal(normalizeFeePolicy("NORMAL"), "normal");
-  assert.equal(normalizeFeePolicy(""), "priority");
-  assert.equal(normalizeFeePolicy("weird"), "priority");
+  assert.equal(normalizeFeePolicy(""), "auto");
+  assert.equal(normalizeFeePolicy("weird"), "auto");
   assert.equal(normalizeFeePolicy("bogus", "low"), "low");
 });
 

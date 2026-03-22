@@ -70,7 +70,7 @@ export class KasiaBridgeCore {
     network,
     seedPhrase,
     knsUrl,
-    feePolicy = "priority",
+    feePolicy = "auto",
     broadcastSubscriptions = {},
     allowedBroadcastChannels = [],
     allowAllBroadcastChannels = false,
@@ -94,7 +94,7 @@ export class KasiaBridgeCore {
     this.network = network || "mainnet";
     this.seedPhrase = seedPhrase;
     this.knsUrl = String(knsUrl || "").trim();
-    this.feePolicy = String(feePolicy || "priority");
+    this.feePolicy = String(feePolicy || "auto");
     this.fetchImpl = fetchImpl || fetch;
     this.logger = logger;
     this.maxQueueSize = maxQueueSize;
