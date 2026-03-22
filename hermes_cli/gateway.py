@@ -15,6 +15,13 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from hermes_cli.config import get_env_value, get_hermes_home, save_env_value
+from hermes_cli.kasia_setup import (
+    KasiaSetupIO,
+    is_kasia_configured,
+    kasia_summary_lines,
+    prompt_kasia_seed_phrase,
+    run_kasia_setup_prompts,
+)
 from hermes_cli.setup import (
     print_header, print_info, print_success, print_warning, print_error,
     prompt, prompt_choice, prompt_yes_no,
@@ -1555,11 +1562,7 @@ def _setup_kasia():
     print()
     print(color("  ─── 🛰️ Kasia Setup ───", Colors.CYAN))
 
-    existing_enabled = (get_env_value("KASIA_ENABLED") or "").lower() in ("true", "1", "yes")
-    existing_seed = get_env_value("KASIA_SEED_PHRASE")
-    existing_indexer = get_env_value("KASIA_INDEXER_URL")
-    existing_node = get_env_value("KASIA_NODE_WBORSH_URL")
-    if existing_enabled and existing_seed and existing_indexer and existing_node:
+    if is_kasia_configured(get_env_value):
         print()
         print_success("Kasia is already configured.")
         if not prompt_yes_no("  Reconfigure Kasia?", False):
@@ -1572,105 +1575,33 @@ def _setup_kasia():
     print_info("    2. A trusted Kasia indexer URL")
     print_info("    3. A Kaspa node Wborsh / RPC URL for transaction submission")
     print_info("    4. Optional: a KNS API URL for human-readable names")
+    print_info("    5. A fee policy for outbound Kasia transactions")
     print_info("  Hermes does not auto-discover public indexers in v1.")
-
-    values = [
-        (
-            "KASIA_SEED_PHRASE",
-            "Seed phrase",
-            True,
-            "Seed phrase for the dedicated Hermes Kasia identity.",
-            existing_seed or "",
-        ),
-        (
-            "KASIA_INDEXER_URL",
-            "Indexer URL",
-            False,
-            "Trusted Kasia indexer base URL, e.g. https://your-indexer.example.com",
-            existing_indexer or "",
-        ),
-        (
-            "KASIA_NODE_WBORSH_URL",
-            "Kaspa node URL",
-            False,
-            "Kaspa node Wborsh / RPC URL used for submitting Kasia transactions.",
-            existing_node or "",
-        ),
-        (
-            "KASIA_NETWORK",
-            "Network",
-            False,
-            "Optional network name, e.g. mainnet or testnet-10.",
-            get_env_value("KASIA_NETWORK") or "mainnet",
-        ),
-        (
-            "KASIA_KNS_URL",
-            "KNS API URL",
-            False,
-            "Optional KNS API base URL used for display names and KNS target resolution.",
-            get_env_value("KASIA_KNS_URL") or "",
-        ),
-    ]
-
-    for env_name, prompt_label, is_password, help_text, default in values:
-        print()
-        print_info(f"  {help_text}")
-        if is_password:
-            prompt_label_text = f"  {prompt_label}"
-            if default:
-                prompt_label_text += " (leave blank to keep current value)"
-            value = prompt(prompt_label_text, password=True)
-            value = value or default
-        else:
-            value = prompt(f"  {prompt_label}", default=default, password=False)
-        if not value and env_name in {"KASIA_SEED_PHRASE", "KASIA_INDEXER_URL", "KASIA_NODE_WBORSH_URL"}:
-            print_error(f"  {env_name} is required.")
-            return
-        if value:
-            save_env_value(env_name, value)
-
     print()
-    print_info("  The gateway DENIES all users by default for security.")
-    print_info("  Enter Kasia user addresses to allow, or leave empty and choose open access.")
-    existing_allowed = get_env_value("KASIA_ALLOWED_USERS") or ""
-    try:
-        allowed = input(f"  Allowed users [{existing_allowed}]: ").strip() or existing_allowed
-    except (EOFError, KeyboardInterrupt):
-        print("\n  Setup cancelled.")
-        return
 
-    if allowed:
-        save_env_value("KASIA_ALLOWED_USERS", allowed.replace(" ", ""))
-        save_env_value("KASIA_ALLOW_ALL_USERS", "")
-        print_success("  Saved allowlist.")
-    else:
-        if prompt_yes_no("  Enable open access for Kasia?", False):
-            save_env_value("KASIA_ALLOW_ALL_USERS", "true")
-            print_warning("  Open access enabled for Kasia.")
-        else:
-            save_env_value("KASIA_ALLOW_ALL_USERS", "")
-            print_info("  Leaving Kasia deny-by-default until you add KASIA_ALLOWED_USERS.")
-
-    print()
-    default_home = get_env_value("KASIA_HOME_CHANNEL") or ""
-    try:
-        home_channel = input(f"  Home channel Kasia address{f' [{default_home}]' if default_home else ''}: ").strip() or default_home
-    except (EOFError, KeyboardInterrupt):
-        print("\n  Setup cancelled.")
-        return
-    if home_channel:
-        save_env_value("KASIA_HOME_CHANNEL", home_channel)
-
-    save_env_value("KASIA_ENABLED", "true")
+    run_kasia_setup_prompts(
+        KasiaSetupIO(
+            get_env_value=get_env_value,
+            save_env_value=save_env_value,
+            prompt=prompt,
+            prompt_yes_no=prompt_yes_no,
+            print_info=print_info,
+            print_success=print_success,
+            print_warning=print_warning,
+            print_error=print_error,
+        ),
+        prompt_seed_phrase=lambda: prompt_kasia_seed_phrase(
+            get_env_value=get_env_value,
+            prompt=prompt,
+            print_info=print_info,
+            print_error=print_error,
+        ),
+    )
 
     print()
     print_success("Kasia configured!")
-    print_info(f"  Indexer: {get_env_value('KASIA_INDEXER_URL')}")
-    print_info(f"  Node: {get_env_value('KASIA_NODE_WBORSH_URL')}")
-    print_info(f"  Network: {get_env_value('KASIA_NETWORK') or 'mainnet'}")
-    if get_env_value("KASIA_KNS_URL"):
-        print_info(f"  KNS API: {get_env_value('KASIA_KNS_URL')}")
-    print_info(f"  Fee policy: {get_env_value('KASIA_FEE_POLICY') or 'priority'}")
+    for line in kasia_summary_lines(get_env_value):
+        print_info(f"  {line}")
 
 
 def gateway_setup():

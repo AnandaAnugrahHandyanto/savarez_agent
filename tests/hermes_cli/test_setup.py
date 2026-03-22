@@ -208,6 +208,7 @@ def test_setup_gateway_can_configure_kasia(tmp_path, monkeypatch):
         "Kasia indexer URL": "https://indexer.kasia.fyi",
         "Kaspa node URL": "wss://wrpc.kasia.fyi",
         "Kasia network": "mainnet",
+        "Kasia KNS API URL": "https://kns.kasia.fyi/api/v1",
         "Kasia fee policy": "priority",
         "Kasia home channel address (leave empty to set later)": "",
     }
@@ -233,6 +234,7 @@ def test_setup_gateway_can_configure_kasia(tmp_path, monkeypatch):
     assert saved_env["KASIA_INDEXER_URL"] == "https://indexer.kasia.fyi"
     assert saved_env["KASIA_NODE_WBORSH_URL"] == "wss://wrpc.kasia.fyi"
     assert saved_env["KASIA_NETWORK"] == "mainnet"
+    assert saved_env["KASIA_KNS_URL"] == "https://kns.kasia.fyi/api/v1"
     assert saved_env["KASIA_FEE_POLICY"] == "priority"
     assert saved_env["KASIA_ALLOW_ALL_USERS"] == "true"
     assert get_env_value("KASIA_ALLOW_ALL_USERS") == "true"

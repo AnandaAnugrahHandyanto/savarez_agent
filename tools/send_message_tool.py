@@ -490,31 +490,27 @@ async def _send_to_platform(
     if action != "send" and platform != Platform.KASIA:
         return {"error": f"Action '{action}' is only supported for Kasia right now"}
 
-    # Platform message length limits (from adapter class attributes)
-    _MAX_LENGTHS = {
+    max_lengths = {
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH,
         Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
     }
 
-    # Smart-chunk the message to fit within platform limits.
-    # For short messages or platforms without a known limit this is a no-op.
-    max_len = _MAX_LENGTHS.get(platform)
+    max_len = max_lengths.get(platform)
     if max_len:
         chunks = BasePlatformAdapter.truncate_message(message, max_len)
     else:
         chunks = [message]
 
-    # --- Telegram: special handling for media attachments ---
     if platform == Platform.TELEGRAM:
         last_result = None
-        for i, chunk in enumerate(chunks):
-            is_last = (i == len(chunks) - 1)
+        for index, chunk in enumerate(chunks):
+            is_last_chunk = index == len(chunks) - 1
             result = await _send_telegram(
                 pconfig.token,
                 chat_id,
                 chunk,
-                media_files=media_files if is_last else [],
+                media_files=media_files if is_last_chunk else [],
                 thread_id=thread_id,
             )
             if isinstance(result, dict) and result.get("error"):
@@ -522,7 +518,6 @@ async def _send_to_platform(
             last_result = result
         return last_result
 
-    # --- Non-Telegram platforms ---
     if media_files and not message.strip():
         return {
             "error": (
@@ -530,6 +525,7 @@ async def _send_to_platform(
                 f"target {platform.value} had only media attachments"
             )
         }
+
     warning = None
     if media_files:
         warning = (
@@ -580,8 +576,8 @@ async def _send_to_platform(
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
-    Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
-    so that bold, links, and headers render correctly.  If the message
+    Applies markdown->MarkdownV2 formatting (same as the gateway adapter)
+    so that bold, links, and headers render correctly. If the message
     already contains HTML tags, it is sent with ``parse_mode='HTML'``
     instead, bypassing MarkdownV2 conversion.
     """
@@ -589,21 +585,18 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         from telegram import Bot
         from telegram.constants import ParseMode
 
-        # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
-        # Inspired by github.com/ashaney — PR #1568.
-        _has_html = bool(re.search(r'<[a-zA-Z/][^>]*>', message))
+        has_html = bool(re.search(r"<[a-zA-Z/][^>]*>", message))
 
-        if _has_html:
+        if has_html:
             formatted = message
             send_parse_mode = ParseMode.HTML
         else:
-            # Reuse the gateway adapter's format_message for markdown→MarkdownV2
             try:
-                from gateway.platforms.telegram import TelegramAdapter, _escape_mdv2, _strip_mdv2
-                _adapter = TelegramAdapter.__new__(TelegramAdapter)
-                formatted = _adapter.format_message(message)
+                from gateway.platforms.telegram import TelegramAdapter
+
+                adapter = TelegramAdapter.__new__(TelegramAdapter)
+                formatted = adapter.format_message(message)
             except Exception:
-                # Fallback: send as-is if formatting unavailable
                 formatted = message
             send_parse_mode = ParseMode.MARKDOWN_V2
 
@@ -620,27 +613,35 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         if formatted.strip():
             try:
                 last_msg = await bot.send_message(
-                    chat_id=int_chat_id, text=formatted,
-                    parse_mode=send_parse_mode, **thread_kwargs
+                    chat_id=int_chat_id,
+                    text=formatted,
+                    parse_mode=send_parse_mode,
+                    **thread_kwargs,
                 )
-            except Exception as md_error:
-                # Parse failed, fall back to plain text
-                if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
-                    logger.warning("Parse mode %s failed in _send_telegram, falling back to plain text: %s", send_parse_mode, md_error)
-                    if not _has_html:
-                        try:
-                            from gateway.platforms.telegram import _strip_mdv2
-                            plain = _strip_mdv2(formatted)
-                        except Exception:
-                            plain = message
-                    else:
-                        plain = message
-                    last_msg = await bot.send_message(
-                        chat_id=int_chat_id, text=plain,
-                        parse_mode=None, **thread_kwargs
-                    )
-                else:
+            except Exception as error:
+                error_text = str(error).lower()
+                if "parse" not in error_text and "markdown" not in error_text and "html" not in error_text:
                     raise
+                logger.warning(
+                    "Parse mode %s failed in _send_telegram, falling back to plain text: %s",
+                    send_parse_mode,
+                    error,
+                )
+                if not has_html:
+                    try:
+                        from gateway.platforms.telegram import _strip_mdv2
+
+                        plain = _strip_mdv2(formatted)
+                    except Exception:
+                        plain = message
+                else:
+                    plain = message
+                last_msg = await bot.send_message(
+                    chat_id=int_chat_id,
+                    text=plain,
+                    parse_mode=None,
+                    **thread_kwargs,
+                )
 
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):
@@ -651,29 +652,39 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 
             ext = os.path.splitext(media_path)[1].lower()
             try:
-                with open(media_path, "rb") as f:
+                with open(media_path, "rb") as handle:
                     if ext in _IMAGE_EXTS:
                         last_msg = await bot.send_photo(
-                            chat_id=int_chat_id, photo=f, **thread_kwargs
+                            chat_id=int_chat_id,
+                            photo=handle,
+                            **thread_kwargs,
                         )
                     elif ext in _VIDEO_EXTS:
                         last_msg = await bot.send_video(
-                            chat_id=int_chat_id, video=f, **thread_kwargs
+                            chat_id=int_chat_id,
+                            video=handle,
+                            **thread_kwargs,
                         )
                     elif ext in _VOICE_EXTS and is_voice:
                         last_msg = await bot.send_voice(
-                            chat_id=int_chat_id, voice=f, **thread_kwargs
+                            chat_id=int_chat_id,
+                            voice=handle,
+                            **thread_kwargs,
                         )
                     elif ext in _AUDIO_EXTS:
                         last_msg = await bot.send_audio(
-                            chat_id=int_chat_id, audio=f, **thread_kwargs
+                            chat_id=int_chat_id,
+                            audio=handle,
+                            **thread_kwargs,
                         )
                     else:
                         last_msg = await bot.send_document(
-                            chat_id=int_chat_id, document=f, **thread_kwargs
+                            chat_id=int_chat_id,
+                            document=handle,
+                            **thread_kwargs,
                         )
-            except Exception as e:
-                warning = f"Failed to send media {media_path}: {e}"
+            except Exception as error:
+                warning = f"Failed to send media {media_path}: {error}"
                 logger.error(warning)
                 warnings.append(warning)
 
@@ -693,16 +704,15 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             result["warnings"] = warnings
         return result
     except ImportError:
-        return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
-    except Exception as e:
-        return {"error": f"Telegram send failed: {e}"}
+        return {
+            "error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"
+        }
+    except Exception as error:
+        return {"error": f"Telegram send failed: {error}"}
 
 
 async def _send_discord(token, chat_id, message):
-    """Send a single message via Discord REST API (no websocket client needed).
-
-    Chunking is handled by _send_to_platform() before this is called.
-    """
+    """Send a single message via Discord REST API (no websocket client needed)."""
     try:
         import aiohttp
     except ImportError:
@@ -716,9 +726,14 @@ async def _send_discord(token, chat_id, message):
                     body = await resp.text()
                     return {"error": f"Discord API error ({resp.status}): {body}"}
                 data = await resp.json()
-        return {"success": True, "platform": "discord", "chat_id": chat_id, "message_id": data.get("id")}
-    except Exception as e:
-        return {"error": f"Discord send failed: {e}"}
+        return {
+            "success": True,
+            "platform": "discord",
+            "chat_id": chat_id,
+            "message_id": data.get("id"),
+        }
+    except Exception as error:
+        return {"error": f"Discord send failed: {error}"}
 
 
 async def _send_slack(token, chat_id, message):
@@ -734,10 +749,15 @@ async def _send_slack(token, chat_id, message):
             async with session.post(url, headers=headers, json={"channel": chat_id, "text": message}) as resp:
                 data = await resp.json()
                 if data.get("ok"):
-                    return {"success": True, "platform": "slack", "chat_id": chat_id, "message_id": data.get("ts")}
+                    return {
+                        "success": True,
+                        "platform": "slack",
+                        "chat_id": chat_id,
+                        "message_id": data.get("ts"),
+                    }
                 return {"error": f"Slack API error: {data.get('error', 'unknown')}"}
-    except Exception as e:
-        return {"error": f"Slack send failed: {e}"}
+    except Exception as error:
+        return {"error": f"Slack send failed: {error}"}
 
 
 async def _send_whatsapp(extra, chat_id, message):
@@ -764,8 +784,8 @@ async def _send_whatsapp(extra, chat_id, message):
                     }
                 body = await resp.text()
                 return {"error": f"WhatsApp bridge error ({resp.status}): {body}"}
-    except Exception as e:
-        return {"error": f"WhatsApp send failed: {e}"}
+    except Exception as error:
+        return {"error": f"WhatsApp send failed: {error}"}
 
 
 async def _send_signal(extra, chat_id, message):
@@ -800,8 +820,8 @@ async def _send_signal(extra, chat_id, message):
             if "error" in data:
                 return {"error": f"Signal RPC error: {data['error']}"}
             return {"success": True, "platform": "signal", "chat_id": chat_id}
-    except Exception as e:
-        return {"error": f"Signal send failed: {e}"}
+    except Exception as error:
+        return {"error": f"Signal send failed: {error}"}
 
 
 async def _send_kasia(extra, chat_id, message, action="send", display_name=None, retry=False):
@@ -865,8 +885,8 @@ async def _send_kasia(extra, chat_id, message, action="send", display_name=None,
                 action=action,
                 fallback_chat_id=resolved_chat_id if should_resolve_target else chat_id,
             )
-    except Exception as e:
-        return {"error": f"Kasia send failed: {e}"}
+    except Exception as error:
+        return {"error": f"Kasia send failed: {error}"}
 
 
 def _read_kasia_int_setting(extra, key: str, default: int) -> int:
@@ -995,7 +1015,11 @@ async def _send_email(extra, chat_id, message):
     smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
 
     if not all([address, password, smtp_host]):
-        return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
+        return {
+            "error": (
+                "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"
+            )
+        }
 
     try:
         msg = MIMEText(message, "plain", "utf-8")
@@ -1009,16 +1033,12 @@ async def _send_email(extra, chat_id, message):
         server.send_message(msg)
         server.quit()
         return {"success": True, "platform": "email", "chat_id": chat_id}
-    except Exception as e:
-        return {"error": f"Email send failed: {e}"}
+    except Exception as error:
+        return {"error": f"Email send failed: {error}"}
 
 
 async def _send_sms(auth_token, chat_id, message):
-    """Send a single SMS via Twilio REST API.
-
-    Uses HTTP Basic auth (Account SID : Auth Token) and form-encoded POST.
-    Chunking is handled by _send_to_platform() before this is called.
-    """
+    """Send a single SMS via Twilio REST API."""
     try:
         import aiohttp
     except ImportError:
@@ -1029,9 +1049,13 @@ async def _send_sms(auth_token, chat_id, message):
     account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
     from_number = os.getenv("TWILIO_PHONE_NUMBER", "")
     if not account_sid or not auth_token or not from_number:
-        return {"error": "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)"}
+        return {
+            "error": (
+                "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, "
+                "TWILIO_PHONE_NUMBER required)"
+            )
+        }
 
-    # Strip markdown — SMS renders it as literal characters
     message = re.sub(r"\*\*(.+?)\*\*", r"\1", message, flags=re.DOTALL)
     message = re.sub(r"\*(.+?)\*", r"\1", message, flags=re.DOTALL)
     message = re.sub(r"__(.+?)__", r"\1", message, flags=re.DOTALL)
@@ -1061,9 +1085,14 @@ async def _send_sms(auth_token, chat_id, message):
                     error_msg = body.get("message", str(body))
                     return {"error": f"Twilio API error ({resp.status}): {error_msg}"}
                 msg_sid = body.get("sid", "")
-                return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": msg_sid}
-    except Exception as e:
-        return {"error": f"SMS send failed: {e}"}
+                return {
+                    "success": True,
+                    "platform": "sms",
+                    "chat_id": chat_id,
+                    "message_id": msg_sid,
+                }
+    except Exception as error:
+        return {"error": f"SMS send failed: {error}"}
 
 
 def _check_send_message():

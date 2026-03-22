@@ -23,6 +23,14 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
+from hermes_cli.kasia_setup import (
+    KasiaSetupIO,
+    is_kasia_configured as _shared_is_kasia_configured,
+    prompt_kasia_seed_phrase as _shared_prompt_kasia_seed_phrase,
+    run_kasia_setup_prompts as _shared_run_kasia_setup_prompts,
+    validate_kasia_seed_phrase as _shared_validate_kasia_seed_phrase,
+)
+
 
 def _model_config_dict(config: Dict[str, Any]) -> Dict[str, Any]:
     current_model = config.get("model")
@@ -372,69 +380,17 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
 
 
 def _validate_kasia_seed_phrase(seed_phrase: str) -> tuple[bool, str | None]:
-    normalized = " ".join(str(seed_phrase or "").strip().split())
-    if not normalized:
-        return False, "Kasia seed phrase cannot be empty."
-
-    word_count = len(normalized.split(" "))
-    if word_count not in {12, 24}:
-        return (
-            False,
-            "Kasia seed phrase should contain 12 or 24 words.",
-        )
-
-    env = dict(os.environ)
-    env["KASIA_SEED_TO_VALIDATE"] = normalized
-    validator = (
-        "import { Mnemonic } from './scripts/kasia-bridge/lib/kaspa_sdk.js'; "
-        "new Mnemonic(process.env.KASIA_SEED_TO_VALIDATE || '');"
-    )
-
-    try:
-        subprocess.run(
-            ["node", "--input-type=module", "-e", validator],
-            cwd=PROJECT_ROOT,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=True,
-        )
-    except FileNotFoundError:
-        logger.warning("Skipping full Kasia seed validation because Node is unavailable")
-    except subprocess.TimeoutExpired:
-        logger.warning("Skipping full Kasia seed validation because Node timed out")
-    except subprocess.CalledProcessError:
-        return (
-            False,
-            "Kasia seed phrase is not a valid Kasia/Kaspa mnemonic. Please check the words and try again.",
-        )
-
-    return True, None
+    return _shared_validate_kasia_seed_phrase(seed_phrase)
 
 
 def _prompt_kasia_seed_phrase() -> str:
-    existing_seed = get_env_value("KASIA_SEED_PHRASE") or None
-    print_info("🔒 Seed phrase input is hidden as you type.")
-    if existing_seed:
-        print_info("   Press Enter to keep the current stored seed phrase.")
-
-    while True:
-        seed_phrase = prompt(
-            "Kasia seed phrase",
-            default=existing_seed,
-            password=True,
-        )
-        if not seed_phrase:
-            return ""
-        if existing_seed and seed_phrase == existing_seed:
-            return seed_phrase
-
-        is_valid, error = _validate_kasia_seed_phrase(seed_phrase)
-        if is_valid:
-            return " ".join(seed_phrase.strip().split())
-
-        print_error(error or "Invalid Kasia seed phrase.")
+    return _shared_prompt_kasia_seed_phrase(
+        get_env_value=get_env_value,
+        prompt=prompt,
+        print_info=print_info,
+        print_error=print_error,
+        validate_seed_phrase=_validate_kasia_seed_phrase,
+    )
 
 
 def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int:
@@ -2490,101 +2446,26 @@ def setup_agent_settings(config: dict):
 
 
 def _kasia_configured() -> bool:
-    return any(
-        [
-            get_env_value("KASIA_ENABLED"),
-            get_env_value("KASIA_SEED_PHRASE"),
-            get_env_value("KASIA_INDEXER_URL"),
-            get_env_value("KASIA_INDEXER_URLS"),
-            get_env_value("KASIA_NODE_WBORSH_URL"),
-            get_env_value("KASIA_NODE_WBORSH_URLS"),
-        ]
-    )
+    return _shared_is_kasia_configured(get_env_value)
 
 
 def _setup_kasia_prompts() -> None:
     print_info("Kasia connects Hermes through the Kasia messaging bridge.")
     print_info("Use a dedicated Kasia wallet for Hermes rather than your main wallet.")
     print()
-
-    save_env_value("KASIA_ENABLED", "true")
-    print_success("Kasia enabled")
-
-    seed_phrase = _prompt_kasia_seed_phrase()
-    if seed_phrase:
-        save_env_value("KASIA_SEED_PHRASE", seed_phrase)
-        print_success("Kasia seed phrase saved")
-
-    indexer_url = prompt(
-        "Kasia indexer URL",
-        default=get_env_value("KASIA_INDEXER_URL") or "https://indexer.kasia.fyi",
+    _shared_run_kasia_setup_prompts(
+        KasiaSetupIO(
+            get_env_value=get_env_value,
+            save_env_value=save_env_value,
+            prompt=prompt,
+            prompt_yes_no=prompt_yes_no,
+            print_info=print_info,
+            print_success=print_success,
+            print_warning=print_warning,
+            print_error=print_error,
+        ),
+        prompt_seed_phrase=_prompt_kasia_seed_phrase,
     )
-    if indexer_url:
-        save_env_value("KASIA_INDEXER_URL", indexer_url.rstrip("/"))
-        print_success("Kasia indexer URL saved")
-
-    node_url = prompt(
-        "Kaspa node URL",
-        default=get_env_value("KASIA_NODE_WBORSH_URL") or "wss://wrpc.kasia.fyi",
-    )
-    if node_url:
-        save_env_value("KASIA_NODE_WBORSH_URL", node_url)
-        print_success("Kaspa node URL saved")
-
-    network = prompt(
-        "Kasia network",
-        default=get_env_value("KASIA_NETWORK") or "mainnet",
-    )
-    if network:
-        save_env_value("KASIA_NETWORK", network)
-
-    fee_policy = prompt(
-        "Kasia fee policy",
-        default=get_env_value("KASIA_FEE_POLICY") or "priority",
-    )
-    if fee_policy:
-        save_env_value("KASIA_FEE_POLICY", fee_policy)
-
-    print()
-    print_info("🔒 Security: decide who can handshake and message Hermes over Kasia")
-    allow_all_default = (
-        get_env_value("KASIA_ALLOW_ALL_USERS") or ""
-    ).strip().lower() in ("true", "1", "yes")
-    allow_all = prompt_yes_no(
-        "Allow all Kasia users to message Hermes?",
-        allow_all_default,
-    )
-    if allow_all:
-        save_env_value("KASIA_ALLOW_ALL_USERS", "true")
-        save_env_value("KASIA_ALLOWED_USERS", "")
-        print_info("⚠️  Any Kasia address can now interact with Hermes.")
-    else:
-        save_env_value("KASIA_ALLOW_ALL_USERS", "false")
-        allowed_users = prompt(
-            "Allowed Kasia addresses (comma-separated, leave empty to set later)",
-            default=get_env_value("KASIA_ALLOWED_USERS") or None,
-        )
-        if allowed_users:
-            cleaned = ",".join(
-                item.strip() for item in allowed_users.split(",") if item.strip()
-            )
-            save_env_value("KASIA_ALLOWED_USERS", cleaned)
-            print_success("Kasia allowlist configured")
-        else:
-            print_warning(
-                "No Kasia allowlist set yet. Add KASIA_ALLOWED_USERS later before opening access."
-            )
-
-    print()
-    print_info("📬 Home Channel: where Hermes delivers cron job results and cross-platform messages.")
-    print_info("   You can also set this later with /sethome in your Kasia chat.")
-    home_channel = prompt(
-        "Kasia home channel address (leave empty to set later)",
-        default=get_env_value("KASIA_HOME_CHANNEL") or None,
-    )
-    if home_channel:
-        save_env_value("KASIA_HOME_CHANNEL", home_channel.strip())
-        print_success("Kasia home channel saved")
 
 
 def _run_kasia_setup_prompt(reconfigure_default: bool = False) -> bool:

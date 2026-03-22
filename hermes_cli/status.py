@@ -7,15 +7,15 @@ Shows the status of all Hermes Agent components.
 import os
 import sys
 import subprocess
-import json
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from gateway.kasia_config import DEFAULT_KASIA_BRIDGE_PORT, load_kasia_settings
+from gateway.kasia_config import load_kasia_settings
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
+from hermes_cli.kasia_status import fetch_kasia_bridge_health, kasia_status_lines
 from hermes_cli.models import provider_label
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_constants import OPENROUTER_MODELS_URL
@@ -280,35 +280,9 @@ def show_status(args):
 
         print(f"  {name:<12}  {check_mark(has_token)} {status}")
         if name == "Kasia" and has_token:
-            if kasia_settings.kns_url:
-                print(f"    KNS:        {kasia_settings.kns_url}")
-            if kasia_settings.indexer_urls:
-                print(f"    Indexers:   {len(kasia_settings.indexer_urls)} configured")
-            if kasia_settings.node_wborsh_urls:
-                print(f"    Nodes:      {len(kasia_settings.node_wborsh_urls)} configured")
-            broadcast_channels = list(kasia_settings.allowed_broadcast_channels)
-            if broadcast_channels:
-                print(
-                    "    Broadcasts: publish allowlist for "
-                    + ", ".join(f"#{channel}" for channel in broadcast_channels)
-                )
-            bridge_port = kasia_settings.bridge_port or DEFAULT_KASIA_BRIDGE_PORT
-            try:
-                from urllib.request import urlopen
-                with urlopen(f"http://127.0.0.1:{bridge_port}/health", timeout=1.5) as response:
-                    health = json.loads(response.read().decode("utf-8"))
-                active_indexer = (health.get("indexerPool") or {}).get("activeUrl") or health.get("indexerUrl")
-                active_node = (health.get("nodePool") or {}).get("activeUrl") or health.get("nodeUrl")
-                if active_indexer:
-                    print(f"    Active indexer: {active_indexer}")
-                if active_node:
-                    print(f"    Active node:    {active_node}")
-                if (health.get("indexerPool") or {}).get("degraded"):
-                    print("    Indexer pool:   degraded / failover active")
-                if (health.get("nodePool") or {}).get("degraded"):
-                    print("    Node pool:      degraded / failover active")
-            except Exception:
-                pass
+            health = fetch_kasia_bridge_health(kasia_settings.bridge_port)
+            for line in kasia_status_lines(kasia_settings, health=health):
+                print(line)
     
     # =========================================================================
     # Gateway Status

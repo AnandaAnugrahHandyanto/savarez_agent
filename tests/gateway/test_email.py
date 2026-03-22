@@ -287,9 +287,18 @@ class TestSendMessageToolRouting(unittest.TestCase):
 
     def test_email_in_platform_map(self):
         import tools.send_message_tool as smt
-        import inspect
-        source = inspect.getsource(smt._handle_send)
-        self.assertIn('"email"', source)
+        from gateway.config import Platform
+
+        fake_platform_config = SimpleNamespace(enabled=True, extra={})
+        fake_gateway_config = SimpleNamespace(
+            platforms={Platform.EMAIL: fake_platform_config}
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=fake_gateway_config):
+            _, platform, platform_config = smt._load_send_platform("email")
+
+        self.assertEqual(platform, Platform.EMAIL)
+        self.assertIs(platform_config, fake_platform_config)
 
     def test_send_to_platform_has_email_branch(self):
         import tools.send_message_tool as smt

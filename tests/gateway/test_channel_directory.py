@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from gateway.channel_directory import (
+    build_channel_directory,
     resolve_channel_name,
     format_directory_for_display,
     load_directory,
@@ -212,6 +213,24 @@ class TestBuildFromSessions:
         assert "Coaching Chat" in names
         assert "Coaching Chat / topic 17585" in names
         assert "Coaching Chat / topic 17587" in names
+
+    def test_build_channel_directory_includes_kasia_broadcast_channels(self, tmp_path):
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_HOME": str(tmp_path),
+                "KASIA_BROADCAST_SUBSCRIPTIONS": "news=kaspa:qpub1;alerts=kaspa:qpub2",
+                "KASIA_ALLOWED_BROADCAST_CHANNELS": "alerts,ops",
+            },
+            clear=False,
+        ), patch(
+            "gateway.channel_directory.DIRECTORY_PATH",
+            tmp_path / "channel_directory.json",
+        ):
+            directory = build_channel_directory({})
+
+        ids = {entry["id"] for entry in directory["platforms"]["kasia"]}
+        assert {"broadcast:news", "broadcast:alerts", "broadcast:ops"} <= ids
 
 
 class TestFormatDirectoryForDisplay:

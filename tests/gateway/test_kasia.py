@@ -1,12 +1,12 @@
 """Tests for Kasia gateway integration."""
 
-import inspect
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+from gateway.session import SessionSource
 
 
 class TestKasiaPlatformEnum:
@@ -95,6 +95,76 @@ class TestKasiaConfigLoading:
         assert settings.node_wborsh_url == "ws://config.example.com:17110"
         assert settings.node_wborsh_urls == ("ws://config.example.com:17110",)
 
+    def test_load_kasia_settings_exports_platform_and_bridge_settings(self):
+        from gateway.kasia_config import load_kasia_settings
+
+        settings = load_kasia_settings(
+            extra={
+                "seed_phrase": "seed words",
+                "indexer_url": "https://indexer.example.com",
+                "indexer_urls": ["https://indexer.example.com", "https://indexer-backup.example.com"],
+                "node_wborsh_url": "ws://node.example.com:17110",
+                "node_wborsh_urls": ["ws://node.example.com:17110", "ws://node-backup.example.com:17110"],
+                "kns_url": "https://kns.example.com/api/v1",
+                "fee_policy": "priority",
+                "broadcast_subscriptions": "news=kaspa:qpub1;alerts=kaspa:qpub2",
+                "allowed_broadcast_channels": ["alerts", "ops"],
+                "allow_all_broadcast_channels": True,
+                "max_multipart_parts": 6,
+            }
+        )
+
+        assert settings.platform_extra()["allowed_broadcast_channels"] == ["alerts", "ops"]
+        assert settings.bridge_env()["KASIA_ALLOWED_BROADCAST_CHANNELS"] == "alerts,ops"
+        assert settings.bridge_env()["KASIA_BROADCAST_SUBSCRIPTIONS"] == "news=kaspa:qpub1;alerts=kaspa:qpub2"
+        assert settings.bridge_env()["KASIA_ALLOW_ALL_BROADCAST_CHANNELS"] == "true"
+        assert settings.bridge_env()["KASIA_MAX_MULTIPARTS"] == "6"
+
+    def test_load_kasia_settings_warns_and_falls_back_for_invalid_ints(self, caplog):
+        from gateway.kasia_config import (
+            DEFAULT_KASIA_BRIDGE_PORT,
+            DEFAULT_KASIA_SEND_WAIT_MS,
+            load_kasia_settings,
+        )
+        import logging
+
+        settings = load_kasia_settings(
+            env={
+                "KASIA_BRIDGE_PORT": "not-a-number",
+                "KASIA_SEND_WAIT_MS": "still-not-a-number",
+            },
+            logger=logging.getLogger("tests.kasia"),
+        )
+
+        assert settings.bridge_port == DEFAULT_KASIA_BRIDGE_PORT
+        assert settings.send_wait_ms == DEFAULT_KASIA_SEND_WAIT_MS
+        assert "Invalid KASIA_BRIDGE_PORT" in caplog.text
+        assert "Invalid KASIA_SEND_WAIT_MS" in caplog.text
+
+    def test_configured_broadcast_channels_merge_subscriptions_and_allowlist(self):
+        from gateway.kasia_config import load_kasia_settings
+
+        settings = load_kasia_settings(
+            extra={
+                "broadcast_subscriptions": "news=kaspa:qpub1;alerts=kaspa:qpub2",
+                "allowed_broadcast_channels": ["alerts", "ops"],
+            }
+        )
+
+        assert settings.configured_broadcast_channels() == ["news", "alerts", "ops"]
+
+    def test_kasia_authorization_uses_platform_and_global_allowlists(self):
+        from gateway.kasia_config import is_kasia_address_authorized
+
+        env = {
+            "KASIA_ALLOWED_USERS": "kaspa:qpeeraddress",
+            "GATEWAY_ALLOWED_USERS": "qglobalpeer",
+        }
+
+        assert is_kasia_address_authorized("qpeeraddress", env=env) is True
+        assert is_kasia_address_authorized("kaspa:qglobalpeer", env=env) is True
+        assert is_kasia_address_authorized("kaspa:qunknown", env=env) is False
+
 
 class TestKasiaRequirements:
     def test_check_requirements(self):
@@ -120,24 +190,70 @@ class TestKasiaRequirements:
         assert check_kasia_requirements(config) is False
 
 
-class TestKasiaAuthorizationMaps:
-    def test_kasia_in_adapter_factory(self):
-        import gateway.run
+class TestKasiaGatewayRunnerBehavior:
+    def test_create_adapter_builds_kasia_adapter(self):
+        import gateway.platforms.kasia as kasia_platform
+        from gateway.run import GatewayRunner
 
-        source = inspect.getsource(gateway.run.GatewayRunner._create_adapter)
-        assert "Platform.KASIA" in source
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = SimpleNamespace(group_sessions_per_user=True)
+        config = PlatformConfig(enabled=True, extra={})
+        adapter_instance = object()
 
-    def test_kasia_in_allowed_users_map(self):
-        import gateway.run
+        with patch.object(kasia_platform, "check_kasia_requirements", return_value=True), patch.object(
+            kasia_platform,
+            "KasiaAdapter",
+            return_value=adapter_instance,
+        ) as adapter_cls:
+            result = GatewayRunner._create_adapter(runner, Platform.KASIA, config)
 
-        source = inspect.getsource(gateway.run.GatewayRunner._is_user_authorized)
-        assert "KASIA_ALLOWED_USERS" in source
+        assert result is adapter_instance
+        assert config.extra["group_sessions_per_user"] is True
+        adapter_cls.assert_called_once_with(config)
 
-    def test_kasia_in_allow_all_map(self):
-        import gateway.run
+    def test_create_adapter_returns_none_when_requirements_fail(self):
+        import gateway.platforms.kasia as kasia_platform
+        from gateway.run import GatewayRunner
 
-        source = inspect.getsource(gateway.run.GatewayRunner._is_user_authorized)
-        assert "KASIA_ALLOW_ALL_USERS" in source
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = SimpleNamespace(group_sessions_per_user=False)
+        config = PlatformConfig(enabled=True, extra={})
+
+        with patch.object(kasia_platform, "check_kasia_requirements", return_value=False):
+            result = GatewayRunner._create_adapter(runner, Platform.KASIA, config)
+
+        assert result is None
+
+    def test_is_user_authorized_accepts_platform_allow_all_for_kasia(self, monkeypatch):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.pairing_store = SimpleNamespace(is_approved=lambda *args: False)
+        source = SessionSource(
+            platform=Platform.KASIA,
+            chat_id="kaspa:qpeeraddress",
+            user_id="kaspa:qpeeraddress",
+        )
+
+        monkeypatch.setenv("KASIA_ALLOW_ALL_USERS", "true")
+
+        assert GatewayRunner._is_user_authorized(runner, source) is True
+
+    def test_is_user_authorized_accepts_kasia_allowlist(self, monkeypatch):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.pairing_store = SimpleNamespace(is_approved=lambda *args: False)
+        source = SessionSource(
+            platform=Platform.KASIA,
+            chat_id="kaspa:qpeeraddress",
+            user_id="kaspa:qpeeraddress",
+        )
+
+        monkeypatch.setenv("KASIA_ALLOWED_USERS", "kaspa:qpeeraddress")
+        monkeypatch.delenv("KASIA_ALLOW_ALL_USERS", raising=False)
+
+        assert GatewayRunner._is_user_authorized(runner, source) is True
 
 
 class TestKasiaGatewaySetup:
@@ -145,6 +261,7 @@ class TestKasiaGatewaySetup:
         import hermes_cli.gateway as gateway_cli
 
         env_values = {
+            "KASIA_ENABLED": "true",
             "KASIA_SEED_PHRASE": "existing twelve words",
             "KASIA_INDEXER_URL": "https://indexer.example.com",
             "KASIA_NODE_WBORSH_URL": "ws://127.0.0.1:17110",
@@ -160,6 +277,10 @@ class TestKasiaGatewaySetup:
             prompt_calls.append((question, default, password))
             if password:
                 return ""
+            if question == "Allowed Kasia addresses (comma-separated, leave empty to set later)":
+                return "kaspa:qpeeraddress"
+            if question == "Kasia home channel address (leave empty to set later)":
+                return "kaspa:qhomeaddress"
             return default or ""
 
         def fake_save_env(name, value):
@@ -167,19 +288,24 @@ class TestKasiaGatewaySetup:
 
         with patch.object(gateway_cli, "get_env_value", side_effect=fake_get_env), patch.object(
             gateway_cli, "prompt", side_effect=fake_prompt
-        ), patch.object(gateway_cli, "save_env_value", side_effect=fake_save_env), patch(
-            "builtins.input", side_effect=["kaspa:qpeeraddress", "kaspa:qhomeaddress"]
+        ), patch.object(gateway_cli, "save_env_value", side_effect=fake_save_env), patch.object(
+            gateway_cli,
+            "prompt_yes_no",
+            side_effect=lambda question, default=False: {
+                "  Reconfigure Kasia?": True,
+                "Allow all Kasia users to message Hermes?": False,
+            }.get(question, default),
         ):
             gateway_cli._setup_kasia()
 
         assert prompt_calls[0] == (
-            "  Seed phrase (leave blank to keep current value)",
-            None,
+            "Kasia seed phrase",
+            "existing twelve words",
             True,
         )
-        assert saved["KASIA_SEED_PHRASE"] == "existing twelve words"
+        assert "KASIA_SEED_PHRASE" not in saved
 
-    def test_setup_kasia_clears_open_access_when_allowlist_is_saved(self):
+    def test_setup_kasia_prompts_kns_and_fee_policy_when_allowlist_is_saved(self):
         import hermes_cli.gateway as gateway_cli
 
         saved = {}
@@ -187,25 +313,40 @@ class TestKasiaGatewaySetup:
         def fake_save_env(name, value):
             saved[name] = value
 
-        prompt_values = iter(
-            [
-                "seed words go here",
-                "https://indexer.example.com",
-                "ws://127.0.0.1:17110",
-                "mainnet",
-                "",
-            ]
-        )
+        prompt_values = {
+            "Kasia indexer URL": "https://indexer.example.com",
+            "Kaspa node URL": "ws://127.0.0.1:17110",
+            "Kasia network": "mainnet",
+            "Kasia KNS API URL": "https://kns.example.com/api/v1",
+            "Kasia fee policy": "priority",
+            "Allowed Kasia addresses (comma-separated, leave empty to set later)": "kaspa:qpeeraddress",
+            "Kasia home channel address (leave empty to set later)": "kaspa:qhomeaddress",
+        }
 
         with patch.object(gateway_cli, "get_env_value", return_value=""), patch.object(
-            gateway_cli, "prompt", side_effect=lambda *args, **kwargs: next(prompt_values)
-        ), patch.object(gateway_cli, "save_env_value", side_effect=fake_save_env), patch(
-            "builtins.input", side_effect=["kaspa:qpeeraddress", "kaspa:qhomeaddress"]
+            gateway_cli,
+            "prompt",
+            side_effect=lambda question, default=None, password=False: prompt_values.get(
+                question,
+                default or "",
+            ),
+        ), patch.object(
+            gateway_cli,
+            "prompt_kasia_seed_phrase",
+            return_value="alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu",
+        ), patch.object(gateway_cli, "save_env_value", side_effect=fake_save_env), patch.object(
+            gateway_cli,
+            "prompt_yes_no",
+            side_effect=lambda question, default=False: {
+                "Allow all Kasia users to message Hermes?": False,
+            }.get(question, default),
         ):
             gateway_cli._setup_kasia()
 
         assert saved["KASIA_ALLOWED_USERS"] == "kaspa:qpeeraddress"
-        assert saved["KASIA_ALLOW_ALL_USERS"] == ""
+        assert saved["KASIA_ALLOW_ALL_USERS"] == "false"
+        assert saved["KASIA_KNS_URL"] == "https://kns.example.com/api/v1"
+        assert saved["KASIA_FEE_POLICY"] == "priority"
 
 
 class TestKasiaAdapter:
