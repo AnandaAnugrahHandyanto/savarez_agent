@@ -415,7 +415,7 @@ def create_job(
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {
-            "times": repeat,  # None = forever
+            "times": None if (repeat is None or repeat <= 0) else repeat,  # None = forever; normalize -1 (LLM convention) to None
             "completed": 0
         },
         "enabled": True,
@@ -571,7 +571,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
                 # Check if we've hit the repeat limit
                 times = job["repeat"].get("times")
                 completed = job["repeat"]["completed"]
-                if times is not None and completed >= times:
+                if times is not None and times > 0 and completed >= times:  # times <= 0 means forever (handles LLM passing -1)
                     # Remove the job (limit reached)
                     jobs.pop(i)
                     save_jobs(jobs)

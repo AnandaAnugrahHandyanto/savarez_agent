@@ -267,7 +267,8 @@ def cronjob(
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
             if repeat is not None:
                 repeat_state = dict(job.get("repeat") or {})
-                repeat_state["times"] = repeat
+                # Normalize repeat <= 0 to None (LLMs often pass -1 to mean "forever")
+                repeat_state["times"] = None if repeat <= 0 else repeat
                 updates["repeat"] = repeat_state
             if schedule is not None:
                 parsed_schedule = parse_schedule(schedule)
