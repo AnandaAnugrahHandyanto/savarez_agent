@@ -554,6 +554,11 @@ class GatewayRunner:
                 "2. If you discovered a reusable workflow or solved a non-trivial "
                 "problem, consider saving it as a skill.\n"
                 "3. If nothing is worth saving, that's fine — just skip.\n\n"
+                "IMPORTANT: Only use the 'add' action for memory. Do NOT use "
+                "'replace' or 'remove' — other sessions or cron jobs may have "
+                "updated memory since this conversation ended, and you do not have "
+                "visibility into those changes. Overwriting existing entries risks "
+                "discarding newer information.\n\n"
                 "Do NOT respond to the user. Just use the memory and skill_manage "
                 "tools if needed, then stop.]"
             )
