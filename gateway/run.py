@@ -525,6 +525,26 @@ class GatewayRunner:
         Synchronous worker — meant to be called via run_in_executor from
         an async context so it doesn't block the event loop.
         """
+        # FIX: Prevent stale memory overwrites on session reset (#2670)
+        # 1. Skip memory flush for headless cron sessions
+        if old_session_id and old_session_id.startswith("cron_"):
+            logger.debug("Skipping memory flush for cron session: %s", old_session_id)
+            return
+
+        # 2. Allow users to opt-out via config.yaml (memory.flush_on_reset: false)
+        try:
+            import yaml
+            from pathlib import Path
+            cfg_path = Path.home() / ".hermes" / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                    if str(cfg.get("memory", {}).get("flush_on_reset", "true")).lower() in ("false", "0", "no"):
+                        logger.debug("Memory flush disabled in config for session %s", old_session_id)
+                        return
+        except Exception:
+            pass
+
         try:
             history = self.session_store.load_transcript(old_session_id)
             if not history or len(history) < 4:
