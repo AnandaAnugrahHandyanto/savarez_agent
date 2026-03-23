@@ -315,7 +315,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             result = file_ops.patch_replace(path, old_string, new_string, replace_all)
         elif mode == "patch":
             if not patch:
-                return json.dumps({"error": "patch content required"})            
+                return json.dumps({"error": "patch content required"})
             result = file_ops.patch_v4a(patch)
         else:
             return json.dumps({"error": f"Unknown mode: {mode}"})
