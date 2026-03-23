@@ -1833,11 +1833,18 @@ def shutdown_mcp_servers():
     with _lock:
         loop = _mcp_loop
     if loop is not None and loop.is_running():
+        shutdown_coro = _shutdown()
         try:
-            future = asyncio.run_coroutine_threadsafe(_shutdown(), loop)
-            future.result(timeout=15)
+            future = asyncio.run_coroutine_threadsafe(shutdown_coro, loop)
         except Exception as exc:
+            if asyncio.iscoroutine(shutdown_coro):
+                shutdown_coro.close()
             logger.debug("Error during MCP shutdown: %s", exc)
+        else:
+            try:
+                future.result(timeout=15)
+            except Exception as exc:
+                logger.debug("Error during MCP shutdown: %s", exc)
 
     _stop_mcp_loop()
 
