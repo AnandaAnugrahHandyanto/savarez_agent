@@ -4,6 +4,15 @@ Prevents SSRF (Server-Side Request Forgery) where a malicious prompt or
 skill could trick the agent into fetching internal resources like cloud
 metadata endpoints (169.254.169.254), localhost services, or private
 network hosts.
+
+Limitations (documented, not fixable at pre-flight level):
+  - DNS rebinding (TOCTOU): an attacker-controlled DNS server with TTL=0
+    can return a public IP for the check, then a private IP for the actual
+    connection. Fixing this requires connection-level validation (e.g.
+    Python's Champion library or an egress proxy like Stripe's Smokescreen).
+  - Redirect-based bypass in vision_tools is mitigated by an httpx event
+    hook that re-validates each redirect target. Web tools use third-party
+    SDKs (Firecrawl/Tavily) where redirect handling is on their servers.
 """
 
 import ipaddress
@@ -19,13 +28,30 @@ _BLOCKED_HOSTNAMES = frozenset({
     "metadata.goog",
 })
 
+# 100.64.0.0/10 (CGNAT / Shared Address Space, RFC 6598) is NOT covered by
+# ipaddress.is_private — it returns False for both is_private and is_global.
+# Must be blocked explicitly. Used by carrier-grade NAT, Tailscale/WireGuard
+# VPNs, and some cloud internal networks.
+_CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
+
+
+def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return True if the IP should be blocked for SSRF protection."""
+    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+        return True
+    if ip.is_multicast or ip.is_unspecified:
+        return True
+    # CGNAT range not covered by is_private
+    if ip in _CGNAT_NETWORK:
+        return True
+    return False
+
 
 def is_safe_url(url: str) -> bool:
     """Return True if the URL target is not a private/internal address.
 
     Resolves the hostname to an IP and checks against private ranges.
-    Returns True for unresolvable hosts (let the HTTP client handle DNS
-    errors) to avoid false positives on legitimate CDN hostnames.
+    Fails closed: DNS errors and unexpected exceptions block the request.
     """
     try:
         parsed = urlparse(url)
@@ -42,8 +68,10 @@ def is_safe_url(url: str) -> bool:
         try:
             addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
         except socket.gaierror:
-            # DNS resolution failed — let the HTTP client deal with it
-            return True
+            # DNS resolution failed — fail closed. If DNS can't resolve it,
+            # the HTTP client will also fail, so blocking loses nothing.
+            logger.warning("Blocked request — DNS resolution failed for: %s", hostname)
+            return False
 
         for family, _, _, _, sockaddr in addr_info:
             ip_str = sockaddr[0]
@@ -52,7 +80,7 @@ def is_safe_url(url: str) -> bool:
             except ValueError:
                 continue
 
-            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            if _is_blocked_ip(ip):
                 logger.warning(
                     "Blocked request to private/internal address: %s -> %s",
                     hostname, ip_str,
@@ -62,5 +90,7 @@ def is_safe_url(url: str) -> bool:
         return True
 
     except Exception as exc:
-        logger.debug("URL safety check error for %s: %s", url, exc)
-        return True  # Fail open on unexpected errors
+        # Fail closed on unexpected errors — don't let parsing edge cases
+        # become SSRF bypass vectors
+        logger.warning("Blocked request — URL safety check error for %s: %s", url, exc)
+        return False
