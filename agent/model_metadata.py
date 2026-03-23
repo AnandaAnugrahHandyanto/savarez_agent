@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
@@ -895,3 +896,92 @@ def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     """Rough token estimate for a message list (pre-flight only)."""
     total_chars = sum(len(str(msg)) for msg in messages)
     return total_chars // 4
+
+
+def estimate_request_tokens_rough(
+    messages: List[Dict[str, Any]],
+    *,
+    system_prompt: str = "",
+    tools: Optional[List[Dict[str, Any]]] = None,
+    prefill_messages: Optional[List[Dict[str, Any]]] = None,
+) -> int:
+    """Rough token estimate for a full chat-completions request.
+
+    Includes the same major payload buckets Hermes sends to providers:
+    system prompt, optional prefill messages, conversation messages, and tool
+    schemas. This is intentionally rough, but it is more faithful than counting
+    only the message list when tools are large.
+    """
+    total_chars = 0
+    if system_prompt:
+        total_chars += len(str({"role": "system", "content": system_prompt}))
+    if prefill_messages:
+        total_chars += sum(len(str(msg)) for msg in prefill_messages)
+    if messages:
+        total_chars += sum(len(str(msg)) for msg in messages)
+    if tools:
+        total_chars += len(str(tools))
+    return total_chars // 4
+
+
+@dataclass(frozen=True)
+class RequestBudget:
+    context_length: int
+    threshold_percent: float
+    threshold_tokens: int
+    warn_tokens: int
+
+
+def estimate_effective_request_tokens_rough(
+    messages: List[Dict[str, Any]],
+    *,
+    system_prompt: str = "",
+    ephemeral_system_prompt: str = "",
+    tools: Optional[List[Dict[str, Any]]] = None,
+    prefill_messages: Optional[List[Dict[str, Any]]] = None,
+) -> int:
+    """Rough token estimate for the effective request Hermes will send.
+
+    This mirrors the request envelope shape Hermes builds at API-call time:
+    stable system prompt + ephemeral system additions + prefill messages +
+    conversation messages + tool schemas.
+    """
+    effective_system = system_prompt or ""
+    if ephemeral_system_prompt:
+        effective_system = (
+            f"{effective_system}\n\n{ephemeral_system_prompt}".strip()
+            if effective_system
+            else ephemeral_system_prompt
+        )
+
+    return estimate_request_tokens_rough(
+        messages,
+        system_prompt=effective_system,
+        tools=tools,
+        prefill_messages=prefill_messages,
+    )
+
+
+def resolve_request_budget(
+    *,
+    model: str,
+    threshold_percent: float,
+    base_url: str = "",
+    api_key: str = "",
+    config_context_length: int | None = None,
+    provider: str = "",
+) -> RequestBudget:
+    """Resolve a model's usable context budget and derived thresholds."""
+    context_length = get_model_context_length(
+        model,
+        base_url=base_url,
+        api_key=api_key,
+        config_context_length=config_context_length,
+        provider=provider,
+    )
+    return RequestBudget(
+        context_length=context_length,
+        threshold_percent=threshold_percent,
+        threshold_tokens=int(context_length * threshold_percent),
+        warn_tokens=int(context_length * 0.95),
+    )

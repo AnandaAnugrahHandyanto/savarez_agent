@@ -23,6 +23,9 @@ from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
     _strip_provider_prefix,
+    estimate_request_tokens_rough,
+    estimate_effective_request_tokens_rough,
+    resolve_request_budget,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
     get_model_context_length,
@@ -99,6 +102,62 @@ class TestEstimateMessagesTokensRough:
         ]}
         result = estimate_messages_tokens_rough([msg])
         assert result == len(str(msg)) // 4
+
+
+class TestEstimateEffectiveRequestTokensRough:
+    def test_matches_built_api_request_shape(self):
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        prefill = [{"role": "assistant", "content": "prefill"}]
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory",
+                    "description": "x" * 40,
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+
+        result = estimate_effective_request_tokens_rough(
+            messages,
+            system_prompt="base system",
+            ephemeral_system_prompt="gateway context",
+            prefill_messages=prefill,
+            tools=tools,
+        )
+
+        expected = estimate_request_tokens_rough(
+            [
+                {"role": "system", "content": "base system\n\ngateway context"},
+                {"role": "assistant", "content": "prefill"},
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi"},
+            ],
+            tools=tools,
+        )
+        assert result == expected
+
+
+class TestResolveRequestBudget:
+    @patch("agent.model_metadata.get_model_context_length")
+    def test_uses_configured_threshold_and_context_length(self, mock_ctx):
+        mock_ctx.return_value = 200_000
+
+        budget = resolve_request_budget(
+            model="glm-5-turbo",
+            threshold_percent=0.5,
+            provider="zai",
+            base_url="https://api.z.ai/api/coding/paas/v4",
+        )
+
+        assert budget.context_length == 200_000
+        assert budget.threshold_percent == 0.5
+        assert budget.threshold_tokens == 100_000
+        assert budget.warn_tokens == 190_000
 
 
 # =========================================================================

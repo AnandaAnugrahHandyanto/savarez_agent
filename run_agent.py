@@ -78,6 +78,7 @@ from agent.prompt_builder import (
 from agent.model_metadata import (
     fetch_model_metadata,
     estimate_tokens_rough, estimate_messages_tokens_rough,
+    estimate_request_tokens_rough, estimate_effective_request_tokens_rough,
     get_next_probe_tier, parse_context_limit_from_error,
     save_context_length,
 )
@@ -1129,6 +1130,7 @@ class AIAgent:
             self.context_compressor.last_total_tokens = 0
             self.context_compressor.compression_count = 0
             self.context_compressor._context_probed = False
+            self.context_compressor._context_probe_persistable = False
     
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.
@@ -2428,6 +2430,40 @@ class AIAgent:
             prompt_parts.append(PLATFORM_HINTS[platform_key])
 
         return "\n\n".join(prompt_parts)
+
+    def _get_or_build_active_system_prompt(
+        self,
+        system_message: str = None,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        """Return the stable system prompt snapshot for the current session."""
+        if self._cached_system_prompt is None:
+            stored_prompt = None
+            if conversation_history and self._session_db:
+                try:
+                    session_row = self._session_db.get_session(self.session_id)
+                    if session_row:
+                        stored_prompt = session_row.get("system_prompt") or None
+                except Exception:
+                    pass
+
+            if stored_prompt:
+                self._cached_system_prompt = stored_prompt
+            else:
+                self._cached_system_prompt = self._build_system_prompt(system_message)
+                if self._honcho_context:
+                    self._cached_system_prompt = (
+                        self._cached_system_prompt + "\n\n" + self._honcho_context
+                    ).strip()
+                if self._session_db:
+                    try:
+                        self._session_db.update_system_prompt(
+                            self.session_id, self._cached_system_prompt
+                        )
+                    except Exception as e:
+                        logger.debug("Session DB update_system_prompt failed: %s", e)
+
+        return self._cached_system_prompt
 
     # =========================================================================
     # Pre/post-call guardrails (inspired by PR #1321 — @alireza78a)
@@ -5640,37 +5676,10 @@ class AIAgent:
         # from disk that the model already knows about (it wrote them!),
         # producing a different system prompt and breaking the Anthropic
         # prefix cache.
-        if self._cached_system_prompt is None:
-            stored_prompt = None
-            if conversation_history and self._session_db:
-                try:
-                    session_row = self._session_db.get_session(self.session_id)
-                    if session_row:
-                        stored_prompt = session_row.get("system_prompt") or None
-                except Exception:
-                    pass  # Fall through to build fresh
-
-            if stored_prompt:
-                # Continuing session — reuse the exact system prompt from
-                # the previous turn so the Anthropic cache prefix matches.
-                self._cached_system_prompt = stored_prompt
-            else:
-                # First turn of a new session — build from scratch.
-                self._cached_system_prompt = self._build_system_prompt(system_message)
-                # Bake Honcho context into the prompt so it's stable for
-                # the entire session (not re-fetched per turn).
-                if self._honcho_context:
-                    self._cached_system_prompt = (
-                        self._cached_system_prompt + "\n\n" + self._honcho_context
-                    ).strip()
-                # Store the system prompt snapshot in SQLite
-                if self._session_db:
-                    try:
-                        self._session_db.update_system_prompt(self.session_id, self._cached_system_prompt)
-                    except Exception as e:
-                        logger.debug("Session DB update_system_prompt failed: %s", e)
-
-        active_system_prompt = self._cached_system_prompt
+        active_system_prompt = self._get_or_build_active_system_prompt(
+            system_message,
+            conversation_history=conversation_history,
+        )
 
         # ── Preflight context compression ──
         # Before entering the main loop, check if the loaded conversation
@@ -5684,9 +5693,13 @@ class AIAgent:
             and len(messages) > self.context_compressor.protect_first_n
                                 + self.context_compressor.protect_last_n + 1
         ):
-            _sys_tok_est = estimate_tokens_rough(active_system_prompt or "")
-            _msg_tok_est = estimate_messages_tokens_rough(messages)
-            _preflight_tokens = _sys_tok_est + _msg_tok_est
+            _preflight_tokens = estimate_effective_request_tokens_rough(
+                messages,
+                system_prompt=active_system_prompt or "",
+                ephemeral_system_prompt=self.ephemeral_system_prompt or "",
+                tools=self.tools or None,
+                prefill_messages=self.prefill_messages or None,
+            )
 
             if _preflight_tokens >= self.context_compressor.threshold_tokens:
                 logger.info(
@@ -5712,9 +5725,13 @@ class AIAgent:
                     if len(messages) >= _orig_len:
                         break  # Cannot compress further
                     # Re-estimate after compression
-                    _sys_tok_est = estimate_tokens_rough(active_system_prompt or "")
-                    _msg_tok_est = estimate_messages_tokens_rough(messages)
-                    _preflight_tokens = _sys_tok_est + _msg_tok_est
+                    _preflight_tokens = estimate_effective_request_tokens_rough(
+                        messages,
+                        system_prompt=active_system_prompt or "",
+                        ephemeral_system_prompt=self.ephemeral_system_prompt or "",
+                        tools=self.tools or None,
+                        prefill_messages=self.prefill_messages or None,
+                    )
                     if _preflight_tokens < self.context_compressor.threshold_tokens:
                         break  # Under threshold
 
@@ -5839,8 +5856,11 @@ class AIAgent:
             api_messages = self._sanitize_api_messages(api_messages)
 
             # Calculate approximate request size for logging
-            total_chars = sum(len(str(msg)) for msg in api_messages)
-            approx_tokens = total_chars // 4  # Rough estimate: 4 chars per token
+            approx_tokens = estimate_request_tokens_rough(
+                api_messages,
+                tools=self.tools if self.tools else None,
+            )
+            total_chars = approx_tokens * 4
             
             # Thinking spinner for quiet mode (animated during API call)
             thinking_spinner = None
@@ -6158,9 +6178,15 @@ class AIAgent:
                         # Cache discovered context length after successful call
                         if self.context_compressor._context_probed:
                             ctx = self.context_compressor.context_length
-                            save_context_length(self.model, self.base_url, ctx)
-                            self._safe_print(f"{self.log_prefix}💾 Cached context length: {ctx:,} tokens for {self.model}")
+                            if (
+                                getattr(self.context_compressor, "_context_probe_persistable", False)
+                                and self.model
+                                and self.base_url
+                            ):
+                                save_context_length(self.model, self.base_url, ctx)
+                                self._safe_print(f"{self.log_prefix}💾 Cached context length: {ctx:,} tokens for {self.model}")
                             self.context_compressor._context_probed = False
+                            self.context_compressor._context_probe_persistable = False
 
                         self.session_prompt_tokens += prompt_tokens
                         self.session_completion_tokens += completion_tokens
@@ -6413,7 +6439,7 @@ class AIAgent:
                         'exceeds the limit', 'context window',
                         'request entity too large',  # OpenRouter/Nous 413 safety net
                         'prompt is too long',  # Anthropic: "prompt is too long: N tokens > M maximum"
-                        'prompt exceeds max length',  # Z.AI / GLM: generic 400 overflow wording
+                        'prompt exceeds max length',  # Z.AI GLM coding endpoint
                     ])
 
                     # Fallback heuristic: Anthropic sometimes returns a generic
@@ -6454,6 +6480,9 @@ class AIAgent:
                             compressor.context_length = new_ctx
                             compressor.threshold_tokens = int(new_ctx * compressor.threshold_percent)
                             compressor._context_probed = True
+                            compressor._context_probe_persistable = bool(
+                                parsed_limit and parsed_limit == new_ctx
+                            )
                             self._vprint(f"{self.log_prefix}⚠️  Context length exceeded — stepping down: {old_ctx:,} → {new_ctx:,} tokens", force=True)
                         else:
                             self._vprint(f"{self.log_prefix}⚠️  Context length exceeded at minimum tier — attempting compression...", force=True)

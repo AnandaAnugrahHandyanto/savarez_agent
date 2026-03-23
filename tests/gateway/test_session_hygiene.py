@@ -17,7 +17,11 @@ from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
-from agent.model_metadata import estimate_messages_tokens_rough
+from agent.model_metadata import (
+    estimate_messages_tokens_rough,
+    estimate_request_tokens_rough,
+    estimate_effective_request_tokens_rough,
+)
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
 from gateway.session import SessionEntry, SessionSource
@@ -304,6 +308,11 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
     class FakeCompressAgent:
         def __init__(self, **kwargs):
             self.model = kwargs.get("model")
+            self.context_compressor = SimpleNamespace(
+                context_length=500,
+                threshold_percent=0.5,
+                threshold_tokens=250,
+            )
 
         def _compress_context(self, messages, *_args, **_kwargs):
             return ([{"role": "assistant", "content": "compressed"}], None)
@@ -340,6 +349,11 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._session_db = None
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._prefill_messages = None
+    runner._load_reasoning_config = lambda: None
+    runner._get_or_create_gateway_honcho = lambda _session_key: (None, None)
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
     runner._run_agent = AsyncMock(
@@ -381,3 +395,553 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
     assert adapter.sent[1]["chat_id"] == "-1001"
     assert "Compressed:" in adapter.sent[1]["content"]
     assert adapter.sent[1]["metadata"] == {"thread_id": "17585"}
+
+
+@pytest.mark.asyncio
+async def test_session_hygiene_reports_full_request_estimate_after_compress(monkeypatch, tmp_path):
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    class FakeCompressAgent:
+        def __init__(self, **kwargs):
+            self.model = kwargs.get("model")
+            self.tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "memory",
+                        "description": "x" * 120,
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ]
+            self.prefill_messages = None
+            self._cached_system_prompt = "system prompt " + ("y" * 120)
+            self.context_compressor = SimpleNamespace(
+                context_length=500,
+                threshold_percent=0.5,
+                threshold_tokens=250,
+            )
+
+        def _compress_context(self, messages, *_args, **_kwargs):
+            return ([{"role": "assistant", "content": "compressed"}], None)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeCompressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    GatewayRunner = gateway_run.GatewayRunner
+
+    adapter = HygieneCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:group:-1001:17585",
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+    )
+    runner.session_store.load_transcript.return_value = _make_history(6, content_size=400)
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = None
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._prefill_messages = None
+    runner._load_reasoning_config = lambda: None
+    runner._get_or_create_gateway_honcho = lambda _session_key: (None, None)
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100,
+    )
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "795544298")
+
+    event = MessageEvent(
+        text="hello",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            thread_id="17585",
+        ),
+        message_id="1",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result == "ok"
+    compressed_notice = adapter.sent[1]["content"]
+    assert "Compressed:" in compressed_notice
+    assert "full request estimate" in compressed_notice
+
+    compressed_messages = [
+        {"role": "assistant", "content": "compressed"},
+        {"role": "user", "content": "hello"},
+    ]
+    expected_tokens = estimate_effective_request_tokens_rough(
+        compressed_messages,
+        system_prompt="system prompt " + ("y" * 120),
+        tools=FakeCompressAgent().tools,
+    )
+    assert f"~{expected_tokens:,} tokens" in compressed_notice
+
+
+@pytest.mark.asyncio
+async def test_session_hygiene_uses_agent_threshold_and_full_request_shape(monkeypatch, tmp_path):
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    (tmp_path / "config.yaml").write_text(
+        """
+model:
+  default: glm-5-turbo
+  provider: zai
+  base_url: https://api.z.ai/api/coding/paas/v4
+compression:
+  threshold: 0.5
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class FakeCompressAgent:
+        def __init__(self, **kwargs):
+            self.model = kwargs.get("model")
+            self.ephemeral_system_prompt = kwargs.get("ephemeral_system_prompt")
+            self.prefill_messages = None
+            self.tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "terminal",
+                        "description": "x" * 120,
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ]
+            self.context_compressor = SimpleNamespace(
+                context_length=400,
+                threshold_percent=0.5,
+                threshold_tokens=200,
+            )
+
+        def _get_or_build_active_system_prompt(self, *_args, **_kwargs):
+            return "base system"
+
+        def _compress_context(self, messages, *_args, **_kwargs):
+            return ([{"role": "assistant", "content": "compressed"}], None)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeCompressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    GatewayRunner = gateway_run.GatewayRunner
+
+    adapter = HygieneCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:group:-1001:17585",
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+    )
+    runner.session_store.load_transcript.return_value = _make_history(6, content_size=20)
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = None
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._prefill_messages = None
+    runner._load_reasoning_config = lambda: None
+    runner._get_or_create_gateway_honcho = lambda _session_key: (None, None)
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+    runner._ephemeral_system_prompt = "gateway note"
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "795544298")
+
+    event = MessageEvent(
+        text="hello",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            thread_id="17585",
+        ),
+        message_id="1",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result == "ok"
+    assert len(adapter.sent) == 2
+
+
+@pytest.mark.asyncio
+async def test_session_hygiene_accounts_for_reply_context_injected_message(monkeypatch, tmp_path):
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    (tmp_path / "config.yaml").write_text(
+        """
+model:
+  default: glm-5-turbo
+  provider: zai
+  base_url: https://api.z.ai/api/coding/paas/v4
+compression:
+  threshold: 0.5
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class FakeCompressAgent:
+        def __init__(self, **kwargs):
+            self.model = kwargs.get("model")
+            self.ephemeral_system_prompt = kwargs.get("ephemeral_system_prompt")
+            self.prefill_messages = None
+            self.tools = []
+            self.context_compressor = SimpleNamespace(
+                context_length=500,
+                threshold_percent=0.5,
+                threshold_tokens=250,
+            )
+
+        def _get_or_build_active_system_prompt(self, *_args, **_kwargs):
+            return "base system"
+
+        def _compress_context(self, messages, *_args, **_kwargs):
+            return ([{"role": "assistant", "content": "compressed"}], None)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeCompressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    GatewayRunner = gateway_run.GatewayRunner
+
+    adapter = HygieneCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:group:-1001:17585",
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+    )
+    runner.session_store.load_transcript.return_value = _make_history(6, content_size=5)
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = None
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._prefill_messages = None
+    runner._load_reasoning_config = lambda: None
+    runner._get_or_create_gateway_honcho = lambda _session_key: (None, None)
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+    runner._ephemeral_system_prompt = ""
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "795544298")
+
+    event = MessageEvent(
+        text="hello",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            thread_id="17585",
+        ),
+        message_id="1",
+        reply_to_message_id="prev-1",
+        reply_to_text="r" * 1000,
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result == "ok"
+    assert len(adapter.sent) == 2
+    assert "Auto-compressing" in adapter.sent[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_session_hygiene_accounts_for_at_expansion(monkeypatch, tmp_path):
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    (tmp_path / "config.yaml").write_text(
+        """
+model:
+  default: glm-5-turbo
+  provider: zai
+  base_url: https://api.z.ai/api/coding/paas/v4
+compression:
+  threshold: 0.5
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class FakeCompressAgent:
+        def __init__(self, **kwargs):
+            self.model = kwargs.get("model")
+            self.ephemeral_system_prompt = kwargs.get("ephemeral_system_prompt")
+            self.prefill_messages = None
+            self.tools = []
+            self.context_compressor = SimpleNamespace(
+                context_length=500,
+                threshold_percent=0.5,
+                threshold_tokens=250,
+            )
+
+        def _get_or_build_active_system_prompt(self, *_args, **_kwargs):
+            return "base system"
+
+        def _compress_context(self, messages, *_args, **_kwargs):
+            return ([{"role": "assistant", "content": "compressed"}], None)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeCompressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    async def _fake_expand(message_text, **_kwargs):
+        return SimpleNamespace(
+            blocked=False,
+            expanded=True,
+            message="[expanded]\n" + ("x" * 1000),
+            warnings=[],
+        )
+
+    gateway_run = importlib.import_module("gateway.run")
+    GatewayRunner = gateway_run.GatewayRunner
+
+    adapter = HygieneCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:group:-1001:17585",
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+    )
+    runner.session_store.load_transcript.return_value = _make_history(6, content_size=5)
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = None
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._prefill_messages = None
+    runner._load_reasoning_config = lambda: None
+    runner._get_or_create_gateway_honcho = lambda _session_key: (None, None)
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+    runner._ephemeral_system_prompt = ""
+    runner._model = "glm-5-turbo"
+    runner._base_url = "https://api.z.ai/api/coding/paas/v4"
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr(
+        "agent.context_references.preprocess_context_references_async",
+        _fake_expand,
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 500,
+    )
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "795544298")
+
+    event = MessageEvent(
+        text="@file:test.txt",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            thread_id="17585",
+        ),
+        message_id="1",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result == "ok"
+    assert len(adapter.sent) == 2
+    assert "Auto-compressing" in adapter.sent[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_manual_compact_reports_full_request_estimate(monkeypatch):
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    class FakeCompressAgent:
+        def __init__(self, **kwargs):
+            self.model = kwargs.get("model")
+            self.ephemeral_system_prompt = kwargs.get("ephemeral_system_prompt")
+            self.prefill_messages = None
+            self.tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "memory",
+                        "description": "x" * 120,
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ]
+
+        def _get_or_build_active_system_prompt(self, *_args, **_kwargs):
+            return "base system"
+
+        def _compress_context(self, messages, *_args, **_kwargs):
+            return ([{"role": "assistant", "content": "compressed"}], None)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeCompressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    GatewayRunner = gateway_run.GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:group:-1001:17585",
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+    )
+    runner.session_store.load_transcript.return_value = _make_history(6, content_size=100)
+    runner.session_store.update_session = MagicMock()
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner._session_db = None
+    runner._ephemeral_system_prompt = "gateway note"
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._prefill_messages = None
+    runner._load_reasoning_config = lambda: None
+    runner._get_or_create_gateway_honcho = lambda _session_key: (None, None)
+
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+
+    event = MessageEvent(
+        text="/compact",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            thread_id="17585",
+        ),
+        message_id="1",
+    )
+
+    result = await runner._handle_compress_command(event)
+
+    assert "full request estimate" in result
+    assert "tokens" in result

@@ -1499,6 +1499,353 @@ class GatewayRunner:
         if config and hasattr(config, "get_unauthorized_dm_behavior"):
             return config.get_unauthorized_dm_behavior(platform)
         return "pair"
+
+    def _resolve_enabled_toolsets_for_source(self, source: SessionSource) -> tuple[str, list]:
+        """Resolve the platform key and enabled toolsets for a source."""
+        default_toolset_map = {
+            Platform.LOCAL: "hermes-cli",
+            Platform.TELEGRAM: "hermes-telegram",
+            Platform.DISCORD: "hermes-discord",
+            Platform.WHATSAPP: "hermes-whatsapp",
+            Platform.SLACK: "hermes-slack",
+            Platform.SIGNAL: "hermes-signal",
+            Platform.HOMEASSISTANT: "hermes-homeassistant",
+            Platform.EMAIL: "hermes-email",
+            Platform.DINGTALK: "hermes-dingtalk",
+        }
+
+        platform_toolsets_config = {}
+        try:
+            config_path = _hermes_home / "config.yaml"
+            if config_path.exists():
+                import yaml
+                with open(config_path, "r", encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+                platform_toolsets_config = user_config.get("platform_toolsets", {})
+        except Exception as e:
+            logger.debug("Could not load platform_toolsets config: %s", e)
+
+        platform_key = {
+            Platform.LOCAL: "cli",
+            Platform.TELEGRAM: "telegram",
+            Platform.DISCORD: "discord",
+            Platform.WHATSAPP: "whatsapp",
+            Platform.SLACK: "slack",
+            Platform.SIGNAL: "signal",
+            Platform.HOMEASSISTANT: "homeassistant",
+            Platform.EMAIL: "email",
+            Platform.DINGTALK: "dingtalk",
+        }.get(source.platform, "telegram")
+
+        config_toolsets = platform_toolsets_config.get(platform_key)
+        if config_toolsets and isinstance(config_toolsets, list):
+            enabled_toolsets = config_toolsets
+        else:
+            default_toolset = default_toolset_map.get(source.platform, "hermes-telegram")
+            enabled_toolsets = [default_toolset]
+
+        return platform_key, enabled_toolsets
+
+    def _normalize_history_for_agent(self, history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Normalize stored transcript entries into the message shape the agent uses."""
+        agent_history: List[Dict[str, Any]] = []
+        for msg in history:
+            role = msg.get("role")
+            if not role or role == "system":
+                continue
+            if role in ("session_meta",):
+                continue
+
+            has_tool_calls = "tool_calls" in msg
+            has_tool_call_id = "tool_call_id" in msg
+            is_tool_message = role == "tool"
+
+            if has_tool_calls or has_tool_call_id or is_tool_message:
+                clean_msg = {k: v for k, v in msg.items() if k != "timestamp"}
+                agent_history.append(clean_msg)
+            else:
+                content = msg.get("content")
+                if content:
+                    if msg.get("mirror"):
+                        mirror_src = msg.get("mirror_source", "another session")
+                        content = f"[Delivered from {mirror_src}] {content}"
+                    entry = {"role": role, "content": content}
+                    if role == "assistant":
+                        for reasoning_key in ("reasoning", "reasoning_details", "codex_reasoning_items"):
+                            reasoning_value = msg.get(reasoning_key)
+                            if reasoning_value:
+                                entry[reasoning_key] = reasoning_value
+                    agent_history.append(entry)
+
+        return agent_history
+
+    @staticmethod
+    def _resolve_agent_system_prompt(agent: Any, conversation_history: List[Dict[str, Any]]) -> str:
+        """Get the effective stable system prompt for an agent, with test-friendly fallback."""
+        builder = getattr(agent, "_get_or_build_active_system_prompt", None)
+        if callable(builder):
+            return builder("", conversation_history=conversation_history) or ""
+        return getattr(agent, "_cached_system_prompt", "") or ""
+
+    def _resolve_turn_agent_setup(
+        self,
+        *,
+        message: str,
+        source: SessionSource,
+        context_prompt: str,
+        session_key: str,
+    ) -> dict:
+        """Resolve the effective agent configuration for a single turn."""
+        platform_key, enabled_toolsets = self._resolve_enabled_toolsets_for_source(source)
+
+        combined_ephemeral = context_prompt or ""
+        gateway_ephemeral = getattr(self, "_ephemeral_system_prompt", "") or ""
+        if gateway_ephemeral:
+            combined_ephemeral = (
+                f"{combined_ephemeral}\n\n{gateway_ephemeral}".strip()
+                if combined_ephemeral
+                else gateway_ephemeral
+            )
+
+        try:
+            load_dotenv(_env_path, override=True, encoding="utf-8")
+        except UnicodeDecodeError:
+            load_dotenv(_env_path, override=True, encoding="latin-1")
+        except Exception:
+            pass
+
+        model = _resolve_gateway_model()
+        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+        honcho_manager, honcho_config = self._get_or_create_gateway_honcho(session_key)
+        reasoning_config = self._load_reasoning_config()
+
+        return {
+            "platform_key": platform_key,
+            "enabled_toolsets": enabled_toolsets,
+            "combined_ephemeral": combined_ephemeral,
+            "turn_route": turn_route,
+            "honcho_manager": honcho_manager,
+            "honcho_config": honcho_config,
+            "reasoning_config": reasoning_config,
+        }
+
+    async def _maybe_hygiene_compress(
+        self,
+        *,
+        event: MessageEvent,
+        source: SessionSource,
+        session_entry,
+        session_key: str,
+        history: List[Dict[str, Any]],
+        context_prompt: str,
+        message_text: str,
+    ) -> List[Dict[str, Any]]:
+        """Auto-compress a large session using the final request shape for this turn."""
+        if not history or len(history) < 4:
+            return history
+
+        _hyg_compression_enabled = True
+        try:
+            _hyg_cfg_path = _hermes_home / "config.yaml"
+            if _hyg_cfg_path.exists():
+                import yaml as _hyg_yaml
+                with open(_hyg_cfg_path, encoding="utf-8") as _hyg_f:
+                    _hyg_data = _hyg_yaml.safe_load(_hyg_f) or {}
+                _comp_cfg = _hyg_data.get("compression", {})
+                if isinstance(_comp_cfg, dict):
+                    _hyg_compression_enabled = str(
+                        _comp_cfg.get("enabled", True)
+                    ).lower() in ("true", "1", "yes")
+        except Exception:
+            pass
+
+        if not _hyg_compression_enabled:
+            return history
+
+        from agent.model_metadata import estimate_effective_request_tokens_rough
+        from run_agent import AIAgent
+
+        _msg_count = len(history)
+        _hyg_adapter = self.adapters.get(source.platform)
+        _hyg_meta = {"thread_id": source.thread_id} if source.thread_id else None
+
+        try:
+            _turn_setup = self._resolve_turn_agent_setup(
+                message=message_text or "",
+                source=source,
+                context_prompt=context_prompt,
+                session_key=session_key,
+            )
+            self._reasoning_config = _turn_setup["reasoning_config"]
+
+            pr = getattr(self, "_provider_routing", {}) or {}
+            _hyg_agent = AIAgent(
+                model=_turn_setup["turn_route"]["model"],
+                **_turn_setup["turn_route"]["runtime"],
+                max_iterations=4,
+                quiet_mode=True,
+                verbose_logging=False,
+                enabled_toolsets=_turn_setup["enabled_toolsets"],
+                ephemeral_system_prompt=_turn_setup["combined_ephemeral"] or None,
+                prefill_messages=getattr(self, "_prefill_messages", None) or None,
+                reasoning_config=_turn_setup["reasoning_config"],
+                providers_allowed=pr.get("only"),
+                providers_ignored=pr.get("ignore"),
+                providers_order=pr.get("order"),
+                provider_sort=pr.get("sort"),
+                provider_require_parameters=pr.get("require_parameters", False),
+                provider_data_collection=pr.get("data_collection"),
+                session_id=session_entry.session_id,
+                platform=_turn_setup["platform_key"],
+                honcho_session_key=session_key,
+                honcho_manager=_turn_setup["honcho_manager"],
+                honcho_config=_turn_setup["honcho_config"],
+                session_db=getattr(self, "_session_db", None),
+                fallback_model=getattr(self, "_fallback_model", None),
+            )
+
+            _hyg_history = self._normalize_history_for_agent(history)
+            if len(_hyg_history) < 4:
+                return history
+
+            _active_system_prompt = self._resolve_agent_system_prompt(
+                _hyg_agent,
+                _hyg_history,
+            )
+            _pending_messages = list(_hyg_history)
+            if message_text:
+                _pending_messages.append({"role": "user", "content": message_text})
+
+            _approx_tokens = estimate_effective_request_tokens_rough(
+                _pending_messages,
+                system_prompt=_active_system_prompt or "",
+                ephemeral_system_prompt=getattr(
+                    _hyg_agent, "ephemeral_system_prompt", ""
+                ) or "",
+                tools=getattr(_hyg_agent, "tools", None),
+                prefill_messages=getattr(_hyg_agent, "prefill_messages", None),
+            )
+            _token_source = "effective-request-estimate"
+            _hyg_context_length = _hyg_agent.context_compressor.context_length
+            _compress_token_threshold = _hyg_agent.context_compressor.threshold_tokens
+            _warn_token_threshold = int(_hyg_context_length * 0.95)
+
+            if _approx_tokens < _compress_token_threshold:
+                return history
+
+            logger.info(
+                "Session hygiene: %s messages, ~%s tokens (%s) — auto-compressing "
+                "(threshold: %s%% of %s = %s tokens)",
+                _msg_count, f"{_approx_tokens:,}", _token_source,
+                int(_hyg_agent.context_compressor.threshold_percent * 100),
+                f"{_hyg_context_length:,}",
+                f"{_compress_token_threshold:,}",
+            )
+
+            if _hyg_adapter:
+                try:
+                    await _hyg_adapter.send(
+                        source.chat_id,
+                        f"🗜️ Session is large ({_msg_count} messages, "
+                        f"~{_approx_tokens:,} tokens). Auto-compressing...",
+                        metadata=_hyg_meta,
+                    )
+                except Exception:
+                    pass
+
+            loop = asyncio.get_event_loop()
+            _compressed, _ = await loop.run_in_executor(
+                None,
+                lambda: _hyg_agent._compress_context(
+                    _hyg_history, "",
+                    approx_tokens=_approx_tokens,
+                ),
+            )
+
+            self.session_store.rewrite_transcript(
+                session_entry.session_id, _compressed
+            )
+            session_entry.last_prompt_tokens = 0
+            history = _compressed
+            _new_count = len(_compressed)
+            _compressed_system_prompt = self._resolve_agent_system_prompt(
+                _hyg_agent,
+                _compressed,
+            )
+            _post_compress_messages = list(_compressed)
+            if message_text:
+                _post_compress_messages.append({"role": "user", "content": message_text})
+            _new_tokens = estimate_effective_request_tokens_rough(
+                _post_compress_messages,
+                system_prompt=_compressed_system_prompt or "",
+                ephemeral_system_prompt=getattr(
+                    _hyg_agent, "ephemeral_system_prompt", ""
+                ) or "",
+                tools=getattr(_hyg_agent, "tools", None),
+                prefill_messages=getattr(_hyg_agent, "prefill_messages", None),
+            )
+
+            logger.info(
+                "Session hygiene: compressed %s → %s msgs, "
+                "~%s → ~%s tokens",
+                _msg_count, _new_count,
+                f"{_approx_tokens:,}", f"{_new_tokens:,}",
+            )
+
+            if _hyg_adapter:
+                try:
+                    await _hyg_adapter.send(
+                        source.chat_id,
+                        f"🗜️ Compressed: {_msg_count} → "
+                        f"{_new_count} messages, "
+                        f"~{_approx_tokens:,} → "
+                        f"~{_new_tokens:,} tokens "
+                        f"(full request estimate)",
+                        metadata=_hyg_meta,
+                    )
+                except Exception:
+                    pass
+
+            if _new_tokens >= _warn_token_threshold and _hyg_adapter:
+                logger.warning(
+                    "Session hygiene: still ~%s tokens after "
+                    "compression — suggesting /reset",
+                    f"{_new_tokens:,}",
+                )
+                try:
+                    await _hyg_adapter.send(
+                        source.chat_id,
+                        "⚠️ Session is still very large "
+                        "after compression "
+                        f"(~{_new_tokens:,} tokens). "
+                        "Consider using /reset to start "
+                        "fresh if you experience issues.",
+                        metadata=_hyg_meta,
+                    )
+                except Exception:
+                    pass
+
+            return history
+
+        except Exception as e:
+            logger.warning("Session hygiene auto-compress failed: %s", e)
+            if "_approx_tokens" in locals() and "_warn_token_threshold" in locals():
+                if _approx_tokens >= _warn_token_threshold and _hyg_adapter:
+                    try:
+                        await _hyg_adapter.send(
+                            source.chat_id,
+                            f"⚠️ Session is very large "
+                            f"({_msg_count} messages, "
+                            f"~{_approx_tokens:,} tokens) and "
+                            "auto-compression failed. Consider "
+                            "using /compress or /reset to avoid "
+                            "issues.",
+                            metadata=_hyg_meta,
+                        )
+                    except Exception:
+                        pass
+            return history
     
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -1940,251 +2287,6 @@ class GatewayRunner:
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
         
-        # -----------------------------------------------------------------
-        # Session hygiene: auto-compress pathologically large transcripts
-        #
-        # Long-lived gateway sessions can accumulate enough history that
-        # every new message rehydrates an oversized transcript, causing
-        # repeated truncation/context failures.  Detect this early and
-        # compress proactively — before the agent even starts.  (#628)
-        #
-        # Token source priority:
-        # 1. Actual API-reported prompt_tokens from the last turn
-        #    (stored in session_entry.last_prompt_tokens)
-        # 2. Rough char-based estimate (str(msg)//4). Overestimates
-        #    by 30-50% on code/JSON-heavy sessions, but that just
-        #    means hygiene fires a bit early — safe and harmless.
-        # -----------------------------------------------------------------
-        if history and len(history) >= 4:
-            from agent.model_metadata import (
-                estimate_messages_tokens_rough,
-                get_model_context_length,
-            )
-
-            # Read model + compression config from config.yaml.
-            # NOTE: hygiene threshold is intentionally HIGHER than the agent's
-            # own compressor (0.85 vs 0.50).  Hygiene is a safety net for
-            # sessions that grew too large between turns — it fires pre-agent
-            # to prevent API failures.  The agent's own compressor handles
-            # normal context management during its tool loop with accurate
-            # real token counts.  Having hygiene at 0.50 caused premature
-            # compression on every turn in long gateway sessions.
-            _hyg_model = "anthropic/claude-sonnet-4.6"
-            _hyg_threshold_pct = 0.85
-            _hyg_compression_enabled = True
-            _hyg_config_context_length = None
-            _hyg_provider = None
-            _hyg_base_url = None
-            _hyg_api_key = None
-            try:
-                _hyg_cfg_path = _hermes_home / "config.yaml"
-                if _hyg_cfg_path.exists():
-                    import yaml as _hyg_yaml
-                    with open(_hyg_cfg_path, encoding="utf-8") as _hyg_f:
-                        _hyg_data = _hyg_yaml.safe_load(_hyg_f) or {}
-
-                    # Resolve model name (same logic as run_sync)
-                    _model_cfg = _hyg_data.get("model", {})
-                    if isinstance(_model_cfg, str):
-                        _hyg_model = _model_cfg
-                    elif isinstance(_model_cfg, dict):
-                        _hyg_model = _model_cfg.get("default", _hyg_model)
-                        # Read explicit context_length override from model config
-                        # (same as run_agent.py lines 995-1005)
-                        _raw_ctx = _model_cfg.get("context_length")
-                        if _raw_ctx is not None:
-                            try:
-                                _hyg_config_context_length = int(_raw_ctx)
-                            except (TypeError, ValueError):
-                                pass
-                        # Read provider for accurate context detection
-                        _hyg_provider = _model_cfg.get("provider") or None
-                        _hyg_base_url = _model_cfg.get("base_url") or None
-
-                    # Read compression settings — only use enabled flag.
-                    # The threshold is intentionally separate from the agent's
-                    # compression.threshold (hygiene runs higher).
-                    _comp_cfg = _hyg_data.get("compression", {})
-                    if isinstance(_comp_cfg, dict):
-                        _hyg_compression_enabled = str(
-                            _comp_cfg.get("enabled", True)
-                        ).lower() in ("true", "1", "yes")
-
-                # Resolve provider/base_url from runtime if not in config
-                if not _hyg_provider or not _hyg_base_url:
-                    try:
-                        _hyg_runtime = _resolve_runtime_agent_kwargs()
-                        _hyg_provider = _hyg_provider or _hyg_runtime.get("provider")
-                        _hyg_base_url = _hyg_base_url or _hyg_runtime.get("base_url")
-                        _hyg_api_key = _hyg_runtime.get("api_key")
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-            if _hyg_compression_enabled:
-                _hyg_context_length = get_model_context_length(
-                    _hyg_model,
-                    base_url=_hyg_base_url or "",
-                    api_key=_hyg_api_key or "",
-                    config_context_length=_hyg_config_context_length,
-                    provider=_hyg_provider or "",
-                )
-                _compress_token_threshold = int(
-                    _hyg_context_length * _hyg_threshold_pct
-                )
-                _warn_token_threshold = int(_hyg_context_length * 0.95)
-
-                _msg_count = len(history)
-
-                # Prefer actual API-reported tokens from the last turn
-                # (stored in session entry) over the rough char-based estimate.
-                _stored_tokens = session_entry.last_prompt_tokens
-                if _stored_tokens > 0:
-                    _approx_tokens = _stored_tokens
-                    _token_source = "actual"
-                else:
-                    _approx_tokens = estimate_messages_tokens_rough(history)
-                    _token_source = "estimated"
-                    # Note: rough estimates overestimate by 30-50% for code/JSON-heavy
-                    # sessions, but that just means hygiene fires a bit early — which
-                    # is safe and harmless.  The 85% threshold already provides ample
-                    # headroom (agent's own compressor runs at 50%).  A previous 1.4x
-                    # multiplier tried to compensate by inflating the threshold, but
-                    # 85% * 1.4 = 119% of context — which exceeds the model's limit
-                    # and prevented hygiene from ever firing for ~200K models (GLM-5).
-
-                _needs_compress = _approx_tokens >= _compress_token_threshold
-
-                if _needs_compress:
-                    logger.info(
-                        "Session hygiene: %s messages, ~%s tokens (%s) — auto-compressing "
-                        "(threshold: %s%% of %s = %s tokens)",
-                        _msg_count, f"{_approx_tokens:,}", _token_source,
-                        int(_hyg_threshold_pct * 100),
-                        f"{_hyg_context_length:,}",
-                        f"{_compress_token_threshold:,}",
-                    )
-
-                    _hyg_adapter = self.adapters.get(source.platform)
-                    _hyg_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                    if _hyg_adapter:
-                        try:
-                            await _hyg_adapter.send(
-                                source.chat_id,
-                                f"🗜️ Session is large ({_msg_count} messages, "
-                                f"~{_approx_tokens:,} tokens). Auto-compressing...",
-                                metadata=_hyg_meta,
-                            )
-                        except Exception:
-                            pass
-
-                    try:
-                        from run_agent import AIAgent
-
-                        _hyg_runtime = _resolve_runtime_agent_kwargs()
-                        if _hyg_runtime.get("api_key"):
-                            _hyg_msgs = [
-                                {"role": m.get("role"), "content": m.get("content")}
-                                for m in history
-                                if m.get("role") in ("user", "assistant")
-                                and m.get("content")
-                            ]
-
-                            if len(_hyg_msgs) >= 4:
-                                _hyg_agent = AIAgent(
-                                    **_hyg_runtime,
-                                    model=_hyg_model,
-                                    max_iterations=4,
-                                    quiet_mode=True,
-                                    enabled_toolsets=["memory"],
-                                    session_id=session_entry.session_id,
-                                )
-
-                                loop = asyncio.get_event_loop()
-                                _compressed, _ = await loop.run_in_executor(
-                                    None,
-                                    lambda: _hyg_agent._compress_context(
-                                        _hyg_msgs, "",
-                                        approx_tokens=_approx_tokens,
-                                    ),
-                                )
-
-                                self.session_store.rewrite_transcript(
-                                    session_entry.session_id, _compressed
-                                )
-                                # Reset stored token count — transcript was rewritten
-                                session_entry.last_prompt_tokens = 0
-                                history = _compressed
-                                _new_count = len(_compressed)
-                                _new_tokens = estimate_messages_tokens_rough(
-                                    _compressed
-                                )
-
-                                logger.info(
-                                    "Session hygiene: compressed %s → %s msgs, "
-                                    "~%s → ~%s tokens",
-                                    _msg_count, _new_count,
-                                    f"{_approx_tokens:,}", f"{_new_tokens:,}",
-                                )
-
-                                if _hyg_adapter:
-                                    try:
-                                        await _hyg_adapter.send(
-                                            source.chat_id,
-                                            f"🗜️ Compressed: {_msg_count} → "
-                                            f"{_new_count} messages, "
-                                            f"~{_approx_tokens:,} → "
-                                            f"~{_new_tokens:,} tokens",
-                                            metadata=_hyg_meta,
-                                        )
-                                    except Exception:
-                                        pass
-
-                                # Still too large after compression — warn user
-                                if _new_tokens >= _warn_token_threshold:
-                                    logger.warning(
-                                        "Session hygiene: still ~%s tokens after "
-                                        "compression — suggesting /reset",
-                                        f"{_new_tokens:,}",
-                                    )
-                                    if _hyg_adapter:
-                                        try:
-                                            await _hyg_adapter.send(
-                                                source.chat_id,
-                                                "⚠️ Session is still very large "
-                                                "after compression "
-                                                f"(~{_new_tokens:,} tokens). "
-                                                "Consider using /reset to start "
-                                                "fresh if you experience issues.",
-                                                metadata=_hyg_meta,
-                                            )
-                                        except Exception:
-                                            pass
-
-                    except Exception as e:
-                        logger.warning(
-                            "Session hygiene auto-compress failed: %s", e
-                        )
-                        # Compression failed and session is dangerously large
-                        if _approx_tokens >= _warn_token_threshold:
-                            _hyg_adapter = self.adapters.get(source.platform)
-                            _hyg_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                            if _hyg_adapter:
-                                try:
-                                    await _hyg_adapter.send(
-                                        source.chat_id,
-                                        f"⚠️ Session is very large "
-                                        f"({_msg_count} messages, "
-                                        f"~{_approx_tokens:,} tokens) and "
-                                        "auto-compression failed. Consider "
-                                        "using /compress or /reset to avoid "
-                                        "issues.",
-                                        metadata=_hyg_meta,
-                                    )
-                                except Exception:
-                                    pass
-
         # First-message onboarding -- only on the very first interaction ever
         if not history and not self.session_store.has_any_sessions():
             context_prompt += (
@@ -2382,6 +2484,16 @@ class GatewayRunner:
                         message_text = _ctx_result.message
                 except Exception as exc:
                     logger.debug("@ context reference expansion failed: %s", exc)
+
+            history = await self._maybe_hygiene_compress(
+                event=event,
+                source=source,
+                session_entry=session_entry,
+                session_key=session_key,
+                history=history,
+                context_prompt=context_prompt,
+                message_text=message_text,
+            )
 
             # Run the agent
             agent_result = await self._run_agent(
@@ -3934,30 +4046,66 @@ class GatewayRunner:
 
         try:
             from run_agent import AIAgent
-            from agent.model_metadata import estimate_messages_tokens_rough
+            from agent.model_metadata import estimate_effective_request_tokens_rough
 
-            runtime_kwargs = _resolve_runtime_agent_kwargs()
-            if not runtime_kwargs.get("api_key"):
-                return "No provider configured -- cannot compress."
+            _redact_pii = False
+            try:
+                import yaml as _pii_yaml
+                with open(_config_path, encoding="utf-8") as _pf:
+                    _pcfg = _pii_yaml.safe_load(_pf) or {}
+                _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
+            except Exception:
+                pass
 
-            # Resolve model from config (same reason as memory flush above).
-            model = _resolve_gateway_model()
+            context = build_session_context(source, self.config, session_entry)
+            context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
 
-            msgs = [
-                {"role": m.get("role"), "content": m.get("content")}
-                for m in history
-                if m.get("role") in ("user", "assistant") and m.get("content")
-            ]
+            turn_setup = self._resolve_turn_agent_setup(
+                message="",
+                source=source,
+                context_prompt=context_prompt,
+                session_key=session_entry.session_key,
+            )
+            self._reasoning_config = turn_setup["reasoning_config"]
+
+            pr = self._provider_routing
+            msgs = self._normalize_history_for_agent(history)
             original_count = len(msgs)
-            approx_tokens = estimate_messages_tokens_rough(msgs)
 
             tmp_agent = AIAgent(
-                **runtime_kwargs,
-                model=model,
+                model=turn_setup["turn_route"]["model"],
+                **turn_setup["turn_route"]["runtime"],
                 max_iterations=4,
                 quiet_mode=True,
-                enabled_toolsets=["memory"],
+                verbose_logging=False,
+                enabled_toolsets=turn_setup["enabled_toolsets"],
+                ephemeral_system_prompt=turn_setup["combined_ephemeral"] or None,
+                prefill_messages=self._prefill_messages or None,
+                reasoning_config=turn_setup["reasoning_config"],
+                providers_allowed=pr.get("only"),
+                providers_ignored=pr.get("ignore"),
+                providers_order=pr.get("order"),
+                provider_sort=pr.get("sort"),
+                provider_require_parameters=pr.get("require_parameters", False),
+                provider_data_collection=pr.get("data_collection"),
                 session_id=session_entry.session_id,
+                platform=turn_setup["platform_key"],
+                honcho_session_key=session_entry.session_key,
+                honcho_manager=turn_setup["honcho_manager"],
+                honcho_config=turn_setup["honcho_config"],
+                session_db=self._session_db,
+                fallback_model=self._fallback_model,
+            )
+            active_system_prompt = self._resolve_agent_system_prompt(
+                tmp_agent,
+                msgs,
+            )
+            approx_tokens = estimate_effective_request_tokens_rough(
+                msgs,
+                system_prompt=active_system_prompt or "",
+                ephemeral_system_prompt=getattr(tmp_agent, "ephemeral_system_prompt", "") or "",
+                tools=getattr(tmp_agent, "tools", None),
+                prefill_messages=getattr(tmp_agent, "prefill_messages", None),
             )
 
             loop = asyncio.get_event_loop()
@@ -3972,11 +4120,21 @@ class GatewayRunner:
                 session_entry.session_key, last_prompt_tokens=0,
             )
             new_count = len(compressed)
-            new_tokens = estimate_messages_tokens_rough(compressed)
+            compressed_system_prompt = self._resolve_agent_system_prompt(
+                tmp_agent,
+                compressed,
+            )
+            new_tokens = estimate_effective_request_tokens_rough(
+                compressed,
+                system_prompt=compressed_system_prompt or "",
+                ephemeral_system_prompt=getattr(tmp_agent, "ephemeral_system_prompt", "") or "",
+                tools=getattr(tmp_agent, "tools", None),
+                prefill_messages=getattr(tmp_agent, "prefill_messages", None),
+            )
 
             return (
                 f"🗜️ Compressed: {original_count} → {new_count} messages\n"
-                f"~{approx_tokens:,} → ~{new_tokens:,} tokens"
+                f"~{approx_tokens:,} → ~{new_tokens:,} tokens (full request estimate)"
             )
         except Exception as e:
             logger.warning("Manual compress failed: %s", e)
@@ -5120,29 +5278,14 @@ class GatewayRunner:
 
             # Read from env var or use default (same as CLI)
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
-            
-            # Map platform enum to the platform hint key the agent understands.
-            # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
-            platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
-            
-            # Combine platform context with user-configured ephemeral system prompt
-            combined_ephemeral = context_prompt or ""
-            if self._ephemeral_system_prompt:
-                combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
-
-            # Re-read .env and config for fresh credentials (gateway is long-lived,
-            # keys may change without restart).
-            try:
-                load_dotenv(_env_path, override=True, encoding="utf-8")
-            except UnicodeDecodeError:
-                load_dotenv(_env_path, override=True, encoding="latin-1")
-            except Exception:
-                pass
-
-            model = _resolve_gateway_model()
 
             try:
-                runtime_kwargs = _resolve_runtime_agent_kwargs()
+                turn_setup = self._resolve_turn_agent_setup(
+                    message=message,
+                    source=source,
+                    context_prompt=context_prompt,
+                    session_key=session_key,
+                )
             except Exception as exc:
                 return {
                     "final_response": f"⚠️ Provider authentication failed: {exc}",
@@ -5152,8 +5295,13 @@ class GatewayRunner:
                 }
 
             pr = self._provider_routing
-            honcho_manager, honcho_config = self._get_or_create_gateway_honcho(session_key)
-            reasoning_config = self._load_reasoning_config()
+            platform_key = turn_setup["platform_key"]
+            enabled_toolsets = turn_setup["enabled_toolsets"]
+            combined_ephemeral = turn_setup["combined_ephemeral"]
+            reasoning_config = turn_setup["reasoning_config"]
+            honcho_manager = turn_setup["honcho_manager"]
+            honcho_config = turn_setup["honcho_config"]
+            turn_route = turn_setup["turn_route"]
             self._reasoning_config = reasoning_config
             # Set up streaming consumer if enabled
             _stream_consumer = None
@@ -5183,8 +5331,6 @@ class GatewayRunner:
                         stream_consumer_holder[0] = _stream_consumer
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
-
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -5249,58 +5395,7 @@ class GatewayRunner:
             # Capture the full tool definitions for transcript logging
             tools_holder[0] = agent.tools if hasattr(agent, 'tools') else None
             
-            # Convert history to agent format.
-            # Two cases:
-            #   1. Normal path (from transcript): simple {role, content, timestamp} dicts
-            #      - Strip timestamps, keep role+content
-            #   2. Interrupt path (from agent result["messages"]): full agent messages
-            #      that may include tool_calls, tool_call_id, reasoning, etc.
-            #      - These must be passed through intact so the API sees valid
-            #        assistant→tool sequences (dropping tool_calls causes 500 errors)
-            agent_history = []
-            for msg in history:
-                role = msg.get("role")
-                if not role:
-                    continue
-                
-                # Skip metadata entries (tool definitions, session info)
-                # -- these are for transcript logging, not for the LLM
-                if role in ("session_meta",):
-                    continue
-                
-                # Skip system messages -- the agent rebuilds its own system prompt
-                if role == "system":
-                    continue
-                
-                # Rich agent messages (tool_calls, tool results) must be passed
-                # through intact so the API sees valid assistant→tool sequences
-                has_tool_calls = "tool_calls" in msg
-                has_tool_call_id = "tool_call_id" in msg
-                is_tool_message = role == "tool"
-                
-                if has_tool_calls or has_tool_call_id or is_tool_message:
-                    clean_msg = {k: v for k, v in msg.items() if k != "timestamp"}
-                    agent_history.append(clean_msg)
-                else:
-                    # Simple text message - just need role and content
-                    content = msg.get("content")
-                    if content:
-                        # Tag cross-platform mirror messages so the agent knows their origin
-                        if msg.get("mirror"):
-                            mirror_src = msg.get("mirror_source", "another session")
-                            content = f"[Delivered from {mirror_src}] {content}"
-                        entry = {"role": role, "content": content}
-                        # Preserve reasoning fields on assistant messages so
-                        # multi-turn reasoning context survives session reload.
-                        # The agent's _build_api_kwargs converts these to the
-                        # provider-specific format (reasoning_content, etc.).
-                        if role == "assistant":
-                            for _rkey in ("reasoning", "reasoning_details",
-                                          "codex_reasoning_items"):
-                                _rval = msg.get(_rkey)
-                                if _rval:
-                                    entry[_rkey] = _rval
-                        agent_history.append(entry)
+            agent_history = self._normalize_history_for_agent(history)
             
             # Collect MEDIA paths already in history so we can exclude them
             # from the current turn's extraction. This is compression-safe:
