@@ -937,7 +937,12 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
         raise RuntimeError("MCP event loop is not running")
 
     coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
-    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    try:
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+    except Exception:
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        raise
     try:
         return future.result(timeout=timeout)
     except concurrent.futures.TimeoutError:

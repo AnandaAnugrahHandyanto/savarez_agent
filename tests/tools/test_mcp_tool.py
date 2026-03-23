@@ -175,6 +175,44 @@ class TestCheckFunction:
 
 
 # ---------------------------------------------------------------------------
+# MCP loop runner
+# ---------------------------------------------------------------------------
+
+class TestRunOnMcpLoop:
+    def test_scheduler_failure_closes_factory_coroutine(self):
+        import tools.mcp_tool as mcp
+
+        created = {"coro": None}
+
+        async def _sample():
+            return "ok"
+
+        def factory():
+            created["coro"] = _sample()
+            return created["coro"]
+
+        fake_loop = MagicMock()
+        fake_loop.is_running.return_value = True
+
+        with patch.object(mcp, "_mcp_loop", fake_loop):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                with patch("tools.mcp_tool.asyncio.run_coroutine_threadsafe", side_effect=RuntimeError("scheduler down")):
+                    with pytest.raises(RuntimeError, match="scheduler down"):
+                        mcp._run_on_mcp_loop(factory)
+                gc.collect()
+
+        assert created["coro"] is not None
+        assert created["coro"].cr_frame is None
+        runtime_warnings = [
+            w for w in caught
+            if issubclass(w.category, RuntimeWarning)
+            and "was never awaited" in str(w.message)
+        ]
+        assert runtime_warnings == []
+
+
+# ---------------------------------------------------------------------------
 # Tool handler
 # ---------------------------------------------------------------------------
 
