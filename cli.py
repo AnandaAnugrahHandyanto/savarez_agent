@@ -7012,6 +7012,39 @@ class HermesCLI:
                     if isinstance(user_input, tuple):
                         user_input, submit_images = user_input
                     
+                    # Check for shell commands (!cmd)
+                    if isinstance(user_input, str) and user_input.startswith("!"):
+                        shell_cmd = user_input[1:].strip()
+                        if not shell_cmd:
+                            _cprint("\nUsage: !<shell command>")
+                            _cprint("Example: !ls -la, !pwd, !echo hello")
+                            continue
+                        _cprint(f"\n⚡ Executing shell: {shell_cmd}")
+                        try:
+                            import subprocess as _subprocess
+                            result = _subprocess.run(
+                                shell_cmd,
+                                shell=True,
+                                capture_output=True,
+                                text=True,
+                                timeout=60
+                            )
+                            if result.stdout:
+                                ChatConsole().print(
+                                    f"[bold green]stdout:[/]\n{result.stdout}"
+                                )
+                            if result.stderr:
+                                ChatConsole().print(
+                                    f"[bold red]stderr:[/]\n{result.stderr}"
+                                )
+                            if result.returncode != 0 and not result.stdout and not result.stderr:
+                                _cprint(f"  Command exited with code {result.returncode}")
+                        except _subprocess.TimeoutExpired:
+                            _cprint("  [bold red]Command timed out (60s)[/]")
+                        except Exception as e:
+                            _cprint(f"  [bold red]Error: {e}[/]")
+                        continue
+                    
                     # Check for commands
                     if isinstance(user_input, str) and user_input.startswith("/"):
                         _cprint(f"\n⚙️  {user_input}")
