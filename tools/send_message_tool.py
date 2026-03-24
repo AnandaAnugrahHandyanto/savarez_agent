@@ -1001,6 +1001,10 @@ def _build_kasia_result(data: dict, *, action: str, fallback_chat_id: str) -> di
 
 
 def _is_kasia_target_authorized(address: str) -> bool:
+    from gateway.pairing import PairingStore
+
+    if PairingStore().is_approved("kasia", address):
+        return True
     return is_kasia_address_authorized(address)
 
 

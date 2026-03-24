@@ -374,6 +374,38 @@ class TestOptionalEnvVarsRegistry:
         assert OPTIONAL_ENV_VARS["KASIA_NETWORK"]["prompt"] == "Kaspa network"
         assert "Default: auto." in OPTIONAL_ENV_VARS["KASIA_FEE_POLICY"]["description"]
 
+    def test_kasia_env_vars_are_tracked_for_migration_notices(self):
+        """New Kasia env vars should be discoverable during config migrations."""
+        from hermes_cli.config import ENV_VARS_BY_VERSION
+
+        registered_vars = {
+            name
+            for vars_list in ENV_VARS_BY_VERSION.values()
+            for name in vars_list
+        }
+        expected = {
+            "KASIA_ENABLED",
+            "KASIA_SEED_PHRASE",
+            "KASIA_INDEXER_URL",
+            "KASIA_NODE_WBORSH_URL",
+            "KASIA_NETWORK",
+            "KASIA_FEE_POLICY",
+            "KASIA_ALLOWED_USERS",
+            "KASIA_ALLOW_ALL_USERS",
+            "KASIA_HOME_CHANNEL",
+            "KASIA_INDEXER_URLS",
+            "KASIA_NODE_WBORSH_URLS",
+            "KASIA_KNS_URL",
+            "KASIA_BRIDGE_PORT",
+            "KASIA_SEND_WAIT_MS",
+            "KASIA_MAX_MULTIPARTS",
+            "KASIA_BROADCAST_SUBSCRIPTIONS",
+            "KASIA_ALLOWED_BROADCAST_CHANNELS",
+            "KASIA_ALLOW_ALL_BROADCAST_CHANNELS",
+        }
+
+        assert expected.issubset(registered_vars)
+
 
 class TestAnthropicTokenMigration:
     """Test that config version 8→9 clears ANTHROPIC_TOKEN."""

@@ -376,7 +376,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 10,
+    "_config_version": 11,
 }
 
 # =============================================================================
@@ -391,6 +391,26 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
+    11: [
+        "KASIA_ENABLED",
+        "KASIA_SEED_PHRASE",
+        "KASIA_INDEXER_URL",
+        "KASIA_NODE_WBORSH_URL",
+        "KASIA_NETWORK",
+        "KASIA_FEE_POLICY",
+        "KASIA_ALLOWED_USERS",
+        "KASIA_ALLOW_ALL_USERS",
+        "KASIA_HOME_CHANNEL",
+        "KASIA_INDEXER_URLS",
+        "KASIA_NODE_WBORSH_URLS",
+        "KASIA_KNS_URL",
+        "KASIA_BRIDGE_PORT",
+        "KASIA_SEND_WAIT_MS",
+        "KASIA_MAX_MULTIPARTS",
+        "KASIA_BROADCAST_SUBSCRIPTIONS",
+        "KASIA_ALLOWED_BROADCAST_CHANNELS",
+        "KASIA_ALLOW_ALL_BROADCAST_CHANNELS",
+    ],
 }
 
 # Required environment variables with metadata for migration prompts.

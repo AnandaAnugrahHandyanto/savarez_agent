@@ -65,6 +65,29 @@ def _make_runner(platform: Platform, config: GatewayConfig):
 
 
 @pytest.mark.asyncio
+async def test_startup_warning_treats_kasia_allowlist_as_configured(monkeypatch, tmp_path, caplog):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("KASIA_ALLOWED_USERS", "kaspa:qpeeraddress")
+
+    from gateway.run import GatewayRunner
+
+    config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=False, token="***")},
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+
+    with caplog.at_level("WARNING"):
+        ok = await runner.start()
+
+    assert ok is True
+    assert not any(
+        "No user allowlists configured" in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
 async def test_unauthorized_dm_pairs_by_default(monkeypatch):
     _clear_auth_env(monkeypatch)
     config = GatewayConfig(
