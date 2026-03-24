@@ -27,7 +27,6 @@ import logging
 import os
 import base64
 import datetime
-import tempfile
 from typing import Optional
 import requests
 
