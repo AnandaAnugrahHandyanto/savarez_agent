@@ -197,6 +197,7 @@ def cronjob(
                     "next_run_at": job["next_run_at"],
                     "job": _format_job(job),
                     "message": f"Cron job '{job['name']}' created.",
+                    "warning": _check_cron_ticker_warning(),
                 },
                 indent=2,
             )
