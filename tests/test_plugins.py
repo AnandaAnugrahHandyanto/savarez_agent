@@ -241,6 +241,93 @@ class TestPluginHooks:
 
         assert any("on_banana" in record.message for record in caplog.records)
 
+    def test_pre_llm_call_receives_kwargs(self):
+        """pre_llm_call callback receives messages and model kwargs."""
+        mgr = PluginManager()
+        received = {}
+
+        def cb(**kw):
+            received.update(kw)
+
+        mgr._hooks["pre_llm_call"] = [cb]
+        messages = [{"role": "user", "content": "hi"}]
+        mgr.invoke_hook("pre_llm_call", messages=messages, model="gpt-4o")
+
+        assert received["messages"] is messages
+        assert received["model"] == "gpt-4o"
+
+    def test_post_llm_call_receives_kwargs(self):
+        """post_llm_call callback receives messages, response, and model kwargs."""
+        mgr = PluginManager()
+        received = {}
+
+        def cb(**kw):
+            received.update(kw)
+
+        mgr._hooks["post_llm_call"] = [cb]
+        messages = [{"role": "user", "content": "hi"}]
+        fake_response = object()
+        mgr.invoke_hook("post_llm_call", messages=messages, response=fake_response, model="gpt-4o")
+
+        assert received["messages"] is messages
+        assert received["response"] is fake_response
+        assert received["model"] == "gpt-4o"
+
+    def test_on_session_start_receives_kwargs(self):
+        """on_session_start callback receives session_id and platform kwargs."""
+        mgr = PluginManager()
+        received = {}
+
+        def cb(**kw):
+            received.update(kw)
+
+        mgr._hooks["on_session_start"] = [cb]
+        mgr.invoke_hook("on_session_start", session_id="abc123", platform="cli")
+
+        assert received["session_id"] == "abc123"
+        assert received["platform"] == "cli"
+
+    def test_on_session_end_receives_kwargs(self):
+        """on_session_end callback receives session_id and platform kwargs."""
+        mgr = PluginManager()
+        received = {}
+
+        def cb(**kw):
+            received.update(kw)
+
+        mgr._hooks["on_session_end"] = [cb]
+        mgr.invoke_hook("on_session_end", session_id="abc123", platform="telegram")
+
+        assert received["session_id"] == "abc123"
+        assert received["platform"] == "telegram"
+
+    def test_llm_hooks_exceptions_do_not_propagate(self):
+        """Raising callbacks for LLM hooks do not crash the caller."""
+        mgr = PluginManager()
+        mgr._hooks["pre_llm_call"] = [lambda **kw: 1 / 0]
+        mgr._hooks["post_llm_call"] = [lambda **kw: 1 / 0]
+
+        mgr.invoke_hook("pre_llm_call", messages=[], model="x")
+        mgr.invoke_hook("post_llm_call", messages=[], response=None, model="x")
+
+    def test_session_hooks_exceptions_do_not_propagate(self):
+        """Raising callbacks for session hooks do not crash the caller."""
+        mgr = PluginManager()
+        mgr._hooks["on_session_start"] = [lambda **kw: 1 / 0]
+        mgr._hooks["on_session_end"] = [lambda **kw: 1 / 0]
+
+        mgr.invoke_hook("on_session_start", session_id="s", platform="cli")
+        mgr.invoke_hook("on_session_end", session_id="s", platform="cli")
+
+    def test_all_six_hooks_in_valid_hooks(self):
+        """VALID_HOOKS contains all six documented lifecycle hooks."""
+        expected = {
+            "pre_tool_call", "post_tool_call",
+            "pre_llm_call", "post_llm_call",
+            "on_session_start", "on_session_end",
+        }
+        assert expected == VALID_HOOKS
+
 
 # ── TestPluginContext ──────────────────────────────────────────────────────
 
