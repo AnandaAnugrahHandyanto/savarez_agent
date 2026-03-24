@@ -138,6 +138,26 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _check_cron_ticker_warning() -> str:
+    """Return a warning if the cron ticker is not running (gateway not active).
+
+    Cron jobs only fire automatically when the gateway is running.
+    In CLI-only mode, users must manually run 'hermes cron tick'.
+    """
+    try:
+        from gateway.status import get_running_pid
+        pid = get_running_pid()
+        if pid is None:
+            return (
+                "⚠️ The gateway is not running — this cron job will NOT fire automatically. "
+                "To enable automatic execution, run: hermes gateway run. "
+                "Or manually trigger: hermes cron tick."
+            )
+    except Exception:
+        pass
+    return None
+
+
 def cronjob(
     action: str,
     job_id: Optional[str] = None,
