@@ -933,6 +933,14 @@ class SessionStore:
                 logger.debug("Failed to backfill platform_message_id: %s", e)
         return False
 
+    def tag_response_message_ids(self, session_id: str, platform_message_id: str, response_ids: list) -> None:
+        """Persist bot response message IDs on the user's transcript entry."""
+        import json
+        if self._db:
+            self._db.set_response_message_ids(
+                session_id, platform_message_id, json.dumps(response_ids)
+            )
+
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript."""
         # Try SQLite first

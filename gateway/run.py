@@ -918,6 +918,7 @@ class GatewayRunner:
             
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
+            adapter.set_response_ids_callback(self._persist_response_ids)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             
             # Try to connect
@@ -2823,6 +2824,17 @@ class GatewayRunner:
         available = "`none`, " + ", ".join(f"`{n}`" for n in personalities.keys())
         return f"Unknown personality: `{args}`\n\nAvailable: {available}"
     
+    def _persist_response_ids(self, event, sent_message_ids: list) -> None:
+        """Persist bot response message IDs to transcript (survives restart)."""
+        if not event.message_id or not sent_message_ids:
+            return
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        self.session_store.tag_response_message_ids(
+            session_entry.session_id, event.message_id, sent_message_ids
+        )
+
+
     async def _handle_edit_as_branch(self, event: MessageEvent) -> Optional[str]:
         """Handle an edited message by truncating transcript and re-running.
 
@@ -2877,7 +2889,18 @@ class GatewayRunner:
                 if pmid:
                     ids_to_delete.add(pmid)
 
-            # 2. Collect bot response IDs from in-memory tracking
+            # 2. Collect bot response IDs from transcript (persisted)
+            import json as _json
+            for msg in removed_messages:
+                resp_ids_raw = msg.get("response_message_ids")
+                if resp_ids_raw:
+                    try:
+                        for resp_id in _json.loads(resp_ids_raw):
+                            ids_to_delete.add(resp_id)
+                    except (ValueError, TypeError):
+                        pass
+
+            # 3. Also check in-memory tracking (for messages sent since last restart)
             if hasattr(adapter, '_response_message_ids'):
                 for msg in removed_messages:
                     pmid = msg.get("platform_message_id")
@@ -2886,11 +2909,11 @@ class GatewayRunner:
                             ids_to_delete.add(resp_id)
                         del adapter._response_message_ids[pmid]
 
-            # 3. Don't delete the edited message itself -- the user's edit
+            # 4. Don't delete the edited message itself -- the user's edit
             #    should stay visible in the chat. Only delete what came after.
             ids_to_delete.discard(event.message_id)
 
-            # 4. Delete all collected messages
+            # 5. Delete all collected messages
             for msg_id in ids_to_delete:
                 await adapter.delete_message(str(source.chat_id), msg_id)
 

@@ -369,6 +369,7 @@ class BasePlatformAdapter(ABC):
         # Maps user platform_message_id -> list of bot response platform_message_ids
         # Used by edit-as-branch to delete old bot responses from chat
         self._response_message_ids: Dict[str, List[str]] = {}
+        self._response_ids_callback: Optional[Callable] = None
 
     @property
     def has_fatal_error(self) -> bool:
@@ -452,6 +453,10 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
+
+    def set_response_ids_callback(self, callback: Callable) -> None:
+        """Set callback for persisting bot response IDs after sending."""
+        self._response_ids_callback = callback
     
     @abstractmethod
     async def connect(self) -> bool:
@@ -1104,6 +1109,12 @@ class BasePlatformAdapter(ABC):
             # Store mapping of user message -> bot response IDs (for edit-as-branch)
             if event.message_id and _sent_message_ids:
                 self._response_message_ids[event.message_id] = _sent_message_ids
+                # Persist to transcript so IDs survive gateway restarts
+                if self._response_ids_callback:
+                    try:
+                        self._response_ids_callback(event, _sent_message_ids)
+                    except Exception as e:
+                        logger.warning("[%s] Failed to persist response IDs: %s", self.name, e)
 
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:

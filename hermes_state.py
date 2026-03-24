@@ -190,9 +190,13 @@ class SessionDB:
                         pass
                 cursor.execute("UPDATE schema_version SET version = 5")
             if current_version < 6:
-                # v6: add platform_message_id to messages (for edit-as-branch)
+                # v6: add platform_message_id and response_message_ids to messages (for edit-as-branch)
                 try:
                     cursor.execute('ALTER TABLE messages ADD COLUMN platform_message_id TEXT')
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                try:
+                    cursor.execute('ALTER TABLE messages ADD COLUMN response_message_ids TEXT')
                 except sqlite3.OperationalError:
                     pass  # Column already exists
                 cursor.execute('UPDATE schema_version SET version = 6')
@@ -689,6 +693,8 @@ class SessionDB:
                     pass
             if row["platform_message_id"]:
                 msg["platform_message_id"] = row["platform_message_id"]
+            if row["response_message_ids"]:
+                msg["response_message_ids"] = row["response_message_ids"]
             messages.append(msg)
         return messages
 
@@ -933,6 +939,17 @@ class SessionDB:
             )
             self._conn.commit()
         return True
+
+    def set_response_message_ids(self, session_id: str, platform_message_id: str, response_ids_json: str) -> None:
+        """Tag a user message with its bot response message IDs (JSON list)."""
+        with self._lock:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                """UPDATE messages SET response_message_ids = ?
+                   WHERE session_id = ? AND platform_message_id = ?""",
+                (response_ids_json, session_id, platform_message_id),
+            )
+            self._conn.commit()
 
     def clear_messages(self, session_id: str) -> None:
         """Delete all messages for a session and reset its counters."""
