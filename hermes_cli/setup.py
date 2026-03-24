@@ -14,6 +14,7 @@ Config files are stored in ~/.hermes/ for easy access.
 import importlib.util
 import logging
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -347,7 +348,11 @@ def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
 
 def prompt(question: str, default: str = None, password: bool = False) -> str:
     """Prompt for input with optional default."""
-    if default:
+    if password and default:
+        display = f"{question} [stored; input hidden, Enter to keep current]: "
+    elif password:
+        display = f"{question} (input hidden): "
+    elif default:
         display = f"{question} [{default}]: "
     else:
         display = f"{question}: "
@@ -364,7 +369,6 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
     except (KeyboardInterrupt, EOFError):
         print()
         sys.exit(1)
-
 
 def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int:
     """Single-select menu using curses to avoid simple_term_menu rendering bugs."""
@@ -2418,6 +2422,25 @@ def setup_agent_settings(config: dict):
 # =============================================================================
 
 
+def _run_kasia_setup_command() -> None:
+    from hermes_cli.main import cmd_kasia
+    import argparse
+
+    cmd_kasia(argparse.Namespace(kasia_command="setup"))
+
+
+def _run_kasia_setup_prompt(reconfigure_default: bool = False) -> bool:
+    from hermes_cli.kasia import is_kasia_configured
+
+    question = "Open Kasia setup?" if is_kasia_configured(get_env_value) else "Set up Kasia?"
+    default_choice = reconfigure_default if reconfigure_default else False
+    if not prompt_yes_no(question, default_choice):
+        return False
+
+    _run_kasia_setup_command()
+    return True
+
+
 def setup_gateway(config: dict):
     """Configure messaging platform integrations."""
     print_header("Messaging Platforms")
@@ -2763,6 +2786,9 @@ def setup_gateway(config: dict):
             if home_channel:
                 save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
 
+    # ── Kasia ──
+    _run_kasia_setup_prompt()
+
     # ── WhatsApp ──
     existing_whatsapp = get_env_value("WHATSAPP_ENABLED")
     if not existing_whatsapp and prompt_yes_no("Set up WhatsApp?", False):
@@ -2838,6 +2864,7 @@ def setup_gateway(config: dict):
         or get_env_value("MATTERMOST_TOKEN")
         or get_env_value("MATRIX_ACCESS_TOKEN")
         or get_env_value("MATRIX_PASSWORD")
+        or get_env_value("KASIA_ENABLED")
         or get_env_value("WHATSAPP_ENABLED")
         or get_env_value("WEBHOOK_ENABLED")
     )
@@ -2858,6 +2885,8 @@ def setup_gateway(config: dict):
             missing_home.append("Discord")
         if get_env_value("SLACK_BOT_TOKEN") and not get_env_value("SLACK_HOME_CHANNEL"):
             missing_home.append("Slack")
+        if get_env_value("KASIA_ENABLED") and not get_env_value("KASIA_HOME_CHANNEL"):
+            missing_home.append("Kasia")
 
         if missing_home:
             print()
@@ -3401,6 +3430,8 @@ def _run_quick_setup(config: dict, hermes_home):
                 plat = "Discord"
             elif "SLACK" in name:
                 plat = "Slack"
+            elif name.startswith("KASIA_"):
+                plat = "Kasia"
             else:
                 continue
             if plat not in platforms:
@@ -3412,6 +3443,7 @@ def _run_quick_setup(config: dict, hermes_home):
                 "Telegram": "📱 Telegram",
                 "Discord": "💬 Discord",
                 "Slack": "💼 Slack",
+                "Kasia": "🔐 Kasia",
             }.get(p, p)
             for p in platform_order
         ]
@@ -3423,8 +3455,15 @@ def _run_quick_setup(config: dict, hermes_home):
 
         for idx in selected_indices:
             plat = platform_order[idx]
+            if plat == "Kasia":
+                print()
+                print(color("  ─── 🔐 Kasia ───", Colors.CYAN))
+                print()
+                _run_kasia_setup_command()
+                print()
+                continue
             vars_list = platforms[plat]
-            emoji = {"Telegram": "📱", "Discord": "💬", "Slack": "💼"}.get(plat, "")
+            emoji = {"Telegram": "📱", "Discord": "💬", "Slack": "💼", "Kasia": "🔐"}.get(plat, "")
             print()
             print(color(f"  ─── {emoji} {plat} ───", Colors.CYAN))
             print()

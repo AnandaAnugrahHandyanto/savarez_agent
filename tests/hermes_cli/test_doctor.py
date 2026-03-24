@@ -104,6 +104,45 @@ def test_run_doctor_sets_interactive_env_for_tool_checks(monkeypatch, tmp_path):
     assert seen["interactive"] == "1"
 
 
+def test_run_doctor_audits_kasia_bridge_deps(monkeypatch, tmp_path):
+    """Generic doctor should audit Kasia bridge node deps when present."""
+    project_root = tmp_path / "project"
+    hermes_home = tmp_path / ".hermes"
+    kasia_bridge = project_root / "scripts" / "kasia-bridge"
+    kasia_bridge_node_modules = kasia_bridge / "node_modules"
+    kasia_bridge_node_modules.mkdir(parents=True)
+    hermes_home.mkdir()
+
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+    monkeypatch.setattr(doctor_mod.shutil, "which", lambda name: "/usr/bin/" + name)
+
+    audit_cwds = []
+
+    def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
+        if cmd[:2] == ["npm", "audit"]:
+            audit_cwds.append(cwd)
+            return SimpleNamespace(
+                returncode=0,
+                stdout='{"metadata":{"vulnerabilities":{"critical":0,"high":0,"moderate":0}}}',
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(doctor_mod.subprocess, "run", fake_run)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *args, **kwargs: (_ for _ in ()).throw(SystemExit(0)),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    with pytest.raises(SystemExit):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    assert str(kasia_bridge) in audit_cwds
+
+
 def test_check_gateway_service_linger_warns_when_disabled(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "hermes-gateway.service"
     unit_path.write_text("[Unit]\n")

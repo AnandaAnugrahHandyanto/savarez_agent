@@ -197,6 +197,16 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "kasia": (
+        "You are on a text messaging communication platform, Kasia. "
+        "Please do not use markdown as it does not render. "
+        "Keep responses plain text, concise, and aggressively compressed. "
+        "Prefer answers that fit in one brief message. If a response would be long, "
+        "give the essential answer first, summarize instead of elaborating, and avoid "
+        "large code blocks or long lists unless the user explicitly needs them. "
+        "Kasia delivery in Hermes is text-only. Direct messages and announcement-style "
+        "broadcast channels are supported, but broadcasts are not group chats."
+    ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "
         "suitable for email. Use plain text formatting (no markdown). "

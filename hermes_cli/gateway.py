@@ -1150,6 +1150,12 @@ _PLATFORMS = [
         "token_var": "SIGNAL_HTTP_URL",
     },
     {
+        "key": "kasia",
+        "label": "Kasia",
+        "emoji": "🛰️",
+        "token_var": "KASIA_ENABLED",
+    },
+    {
         "key": "email",
         "label": "Email",
         "emoji": "📧",
@@ -1237,6 +1243,15 @@ def _platform_status(platform: dict) -> str:
             if session_file.exists():
                 return "configured + paired"
             return "enabled, not paired"
+        return "not configured"
+    if platform.get("key") == "kasia":
+        seed_phrase = get_env_value("KASIA_SEED_PHRASE")
+        indexer_url = get_env_value("KASIA_INDEXER_URL")
+        node_url = get_env_value("KASIA_NODE_WBORSH_URL")
+        if val and val.lower() == "true" and all([seed_phrase, indexer_url, node_url]):
+            return "configured"
+        if any([val, seed_phrase, indexer_url, node_url]):
+            return "partially configured"
         return "not configured"
     if platform.get("key") == "signal":
         account = get_env_value("SIGNAL_ACCOUNT")
@@ -1560,6 +1575,14 @@ def _setup_signal():
     print_info(f"  Groups: {'enabled' if get_env_value('SIGNAL_GROUP_ALLOWED_USERS') else 'disabled'}")
 
 
+def _setup_kasia():
+    """Delegate to the dedicated Kasia setup command."""
+    from hermes_cli.main import cmd_kasia
+    import argparse
+
+    cmd_kasia(argparse.Namespace(kasia_command="setup"))
+
+
 def gateway_setup():
     """Interactive setup for messaging platforms + gateway service."""
 
@@ -1618,6 +1641,8 @@ def gateway_setup():
             _setup_whatsapp()
         elif platform["key"] == "signal":
             _setup_signal()
+        elif platform["key"] == "kasia":
+            _setup_kasia()
         else:
             _setup_standard_platform(platform)
 

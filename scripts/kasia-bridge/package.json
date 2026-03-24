@@ -1,0 +1,17 @@
+{
+  "name": "hermes-kasia-bridge",
+  "version": "0.1.0",
+  "description": "Kasia bridge for Hermes Agent",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "postinstall": "node scripts/sync-kaspa-wasm.mjs",
+    "prestart": "node scripts/sync-kaspa-wasm.mjs",
+    "start": "node bridge.js",
+    "pretest": "node scripts/sync-kaspa-wasm.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16"
+  }
+}

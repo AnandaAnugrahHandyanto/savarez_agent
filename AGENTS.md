@@ -33,6 +33,7 @@ hermes-agent/
 │   ├── commands.py       # Slash command definitions + SlashCommandCompleter
 │   ├── callbacks.py      # Terminal callbacks (clarify, sudo, approval)
 │   ├── setup.py          # Interactive setup wizard
+│   ├── kasia.py          # Dedicated Kasia setup, doctor, and status flows
 │   ├── skin_engine.py    # Skin/theme engine — CLI visual customization
 │   ├── skills_config.py  # `hermes skills` — enable/disable skills per platform
 │   ├── tools_config.py   # `hermes tools` — enable/disable tools per platform
@@ -55,7 +56,7 @@ hermes-agent/
 ├── gateway/              # Messaging platform gateway
 │   ├── run.py            # Main loop, slash commands, message dispatch
 │   ├── session.py        # SessionStore — conversation persistence
-│   └── platforms/        # Adapters: telegram, discord, slack, whatsapp, homeassistant, signal
+│   └── platforms/        # Adapters: telegram, discord, slack, whatsapp, kasia, homeassistant, signal
 ├── acp_adapter/          # ACP server (VS Code / Zed / JetBrains integration)
 ├── cron/                 # Scheduler (jobs.py, scheduler.py)
 ├── environments/         # RL training environments (Atropos)

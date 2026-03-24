@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Any
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
+from gateway.kasia_config import load_kasia_settings
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ class Platform(Enum):
     WHATSAPP = "whatsapp"
     SLACK = "slack"
     SIGNAL = "signal"
+    KASIA = "kasia"
     MATTERMOST = "mattermost"
     MATRIX = "matrix"
     HOMEASSISTANT = "homeassistant"
@@ -253,6 +255,9 @@ class GatewayConfig:
                 connected.append(platform)
             # Signal uses extra dict for config (http_url + account)
             elif platform == Platform.SIGNAL and config.extra.get("http_url"):
+                connected.append(platform)
+            # Kasia uses bridge-backed config in extra dict
+            elif platform == Platform.KASIA:
                 connected.append(platform)
             # Email uses extra dict for config (address + imap_host + smtp_host)
             elif platform == Platform.EMAIL and config.extra.get("address"):
@@ -653,6 +658,21 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
             )
 
+    # Kasia
+    kasia_settings = load_kasia_settings(env=os.environ, logger=logger)
+    if kasia_settings.enabled:
+        if Platform.KASIA not in config.platforms:
+            config.platforms[Platform.KASIA] = PlatformConfig()
+        kasia_config = config.platforms[Platform.KASIA]
+        kasia_config.enabled = True
+        kasia_config.extra.update(kasia_settings.platform_extra())
+        if kasia_settings.home_channel:
+            kasia_config.home_channel = HomeChannel(
+                platform=Platform.KASIA,
+                chat_id=kasia_settings.home_channel,
+                name=kasia_settings.home_channel_name,
+            )
+
     # Mattermost
     mattermost_token = os.getenv("MATTERMOST_TOKEN")
     if mattermost_token:
@@ -802,5 +822,3 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.default_reset_policy.at_hour = int(reset_hour)
         except ValueError:
             pass
-
-

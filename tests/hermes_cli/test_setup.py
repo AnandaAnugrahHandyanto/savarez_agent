@@ -1,8 +1,9 @@
 import json
 
+import hermes_cli.setup as setup_mod
 from hermes_cli.auth import _update_config_for_provider, get_active_provider
 from hermes_cli.config import load_config, save_config
-from hermes_cli.setup import setup_model_provider
+from hermes_cli.setup import setup_gateway, setup_model_provider
 
 
 def _maybe_keep_current_tts(question, choices):
@@ -176,3 +177,106 @@ def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, mon
     assert reloaded["model"]["provider"] == "openai-codex"
     assert reloaded["model"]["default"] == "gpt-5.2-codex"
     assert reloaded["model"]["base_url"] == "https://chatgpt.com/backend-api/codex"
+
+
+def test_setup_gateway_can_launch_kasia_command(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for key in (
+        "TELEGRAM_BOT_TOKEN",
+        "DISCORD_BOT_TOKEN",
+        "SLACK_BOT_TOKEN",
+        "MATTERMOST_TOKEN",
+        "WHATSAPP_ENABLED",
+        "KASIA_ENABLED",
+        "KASIA_SEED_PHRASE",
+        "KASIA_INDEXER_URL",
+        "KASIA_NODE_WBORSH_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    config = load_config()
+
+    yes_no_answers = {
+        "Set up Telegram bot?": False,
+        "Set up Discord bot?": False,
+        "Set up Slack bot?": False,
+        "Set up Matrix?": False,
+        "Set up Mattermost?": False,
+        "Set up Kasia?": True,
+        "Set up WhatsApp?": False,
+    }
+
+    monkeypatch.setattr(
+        "hermes_cli.setup.prompt_yes_no",
+        lambda question, default=True: yes_no_answers.get(question, default),
+    )
+    called = {}
+    monkeypatch.setattr(
+        "hermes_cli.setup._run_kasia_setup_command",
+        lambda: called.__setitem__("kasia_called", True),
+    )
+
+    setup_gateway(config)
+
+    assert called.get("kasia_called") is True
+
+
+def test_quick_setup_offers_kasia_in_messaging_checklist(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = load_config()
+
+    monkeypatch.setattr(
+        "hermes_cli.config.get_missing_env_vars",
+        lambda required_only=False: [
+            {
+                "name": "KASIA_SEED_PHRASE",
+                "description": "Seed phrase for the dedicated Hermes Kasia identity",
+                "prompt": "Kasia seed phrase",
+                "password": True,
+                "category": "messaging",
+                "advanced": False,
+            }
+        ],
+    )
+    monkeypatch.setattr("hermes_cli.config.get_missing_config_fields", lambda: [])
+    monkeypatch.setattr("hermes_cli.config.check_config_version", lambda: (1, 1))
+
+    captured = {}
+
+    def _fake_prompt_checklist(title, items, pre_selected=None):
+        captured["title"] = title
+        captured["items"] = list(items)
+        return [0]
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_checklist", _fake_prompt_checklist)
+    monkeypatch.setattr("hermes_cli.setup._print_setup_summary", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "hermes_cli.setup._run_kasia_setup_command",
+        lambda: captured.__setitem__("kasia_called", True),
+    )
+
+    setup_mod._run_quick_setup(config, tmp_path)
+
+    assert captured["title"] == "Which platforms would you like to set up?"
+    assert "🔐 Kasia" in captured["items"]
+    assert captured.get("kasia_called") is True
+
+
+def test_password_prompt_hides_stored_default(monkeypatch):
+    captured = {}
+
+    def _fake_getpass(prompt_text):
+        captured["prompt"] = prompt_text
+        return ""
+
+    monkeypatch.setattr("getpass.getpass", _fake_getpass)
+
+    result = setup_mod.prompt(
+        "Kasia seed phrase",
+        default="secret words stay hidden",
+        password=True,
+    )
+
+    assert result == "secret words stay hidden"
+    assert "secret words stay hidden" not in captured["prompt"]
+    assert "input hidden" in captured["prompt"]
+    assert "keep current" in captured["prompt"]

@@ -11,6 +11,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
+from gateway.kasia_config import load_kasia_settings
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
@@ -251,23 +252,31 @@ def show_status(args):
         "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"),
         "WhatsApp": ("WHATSAPP_ENABLED", None),
         "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
+        "Kasia": ("KASIA_ENABLED", "KASIA_HOME_CHANNEL"),
         "Slack": ("SLACK_BOT_TOKEN", None),
         "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
         "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
     }
     
+    kasia_settings = load_kasia_settings()
+
     for name, (token_var, home_var) in platforms.items():
         token = os.getenv(token_var, "")
         has_token = bool(token)
-        
+        if token_var in {"WHATSAPP_ENABLED", "KASIA_ENABLED"}:
+            has_token = token.lower() in ("true", "1", "yes")
+
         home_channel = ""
         if home_var:
             home_channel = os.getenv(home_var, "")
+        if name == "Kasia":
+            has_token = kasia_settings.enabled
+            home_channel = kasia_settings.home_channel
         
         status = "configured" if has_token else "not configured"
         if home_channel:
             status += f" (home: {home_channel})"
-        
+
         print(f"  {name:<12}  {check_mark(has_token)} {status}")
     
     # =========================================================================

@@ -944,7 +944,8 @@ class GatewayRunner:
             os.getenv(v)
             for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
                        "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
-                       "SIGNAL_ALLOWED_USERS", "EMAIL_ALLOWED_USERS",
+                       "SIGNAL_ALLOWED_USERS", "KASIA_ALLOWED_USERS",
+                       "EMAIL_ALLOWED_USERS",
                        "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
                        "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS",
                        "GATEWAY_ALLOWED_USERS")
@@ -988,6 +989,8 @@ class GatewayRunner:
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
+            if hasattr(adapter, "set_authorization_handler"):
+                adapter.set_authorization_handler(self._is_user_authorized_async)
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
@@ -1220,6 +1223,8 @@ class GatewayRunner:
 
                     adapter.set_message_handler(self._handle_message)
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
+                    if hasattr(adapter, "set_authorization_handler"):
+                        adapter.set_authorization_handler(self._is_user_authorized_async)
 
                     success = await adapter.connect()
                     if success:
@@ -1317,7 +1322,9 @@ class GatewayRunner:
         config: Any
     ) -> Optional[BasePlatformAdapter]:
         """Create the appropriate adapter for a platform."""
-        if hasattr(config, "extra") and isinstance(config.extra, dict):
+        if hasattr(config, "extra"):
+            if not isinstance(config.extra, dict):
+                config.extra = {}
             config.extra.setdefault(
                 "group_sessions_per_user",
                 self.config.group_sessions_per_user,
@@ -1357,6 +1364,22 @@ class GatewayRunner:
                 logger.warning("Signal: SIGNAL_HTTP_URL or SIGNAL_ACCOUNT not configured")
                 return None
             return SignalAdapter(config)
+
+        elif platform == Platform.KASIA:
+            from gateway.platforms.kasia import KasiaAdapter, check_kasia_requirements
+            if hasattr(self.config, "get_unauthorized_dm_behavior"):
+                config.extra.setdefault(
+                    "unauthorized_dm_behavior",
+                    self.config.get_unauthorized_dm_behavior(platform),
+                )
+            if not check_kasia_requirements(config):
+                logger.warning(
+                    "Kasia: KASIA_ENABLED requires KASIA_SEED_PHRASE plus either "
+                    "KASIA_INDEXER_URL or KASIA_INDEXER_URLS and either "
+                    "KASIA_NODE_WBORSH_URL or KASIA_NODE_WBORSH_URLS"
+                )
+                return None
+            return KasiaAdapter(config)
 
         elif platform == Platform.HOMEASSISTANT:
             from gateway.platforms.homeassistant import HomeAssistantAdapter, check_ha_requirements
@@ -1441,12 +1464,48 @@ class GatewayRunner:
         if not user_id:
             return False
 
+        platform_name = source.platform.value if source.platform else ""
+
+        # Kasia supports both canonical addresses and KNS names for allowlists.
+        if source.platform == Platform.KASIA:
+            from gateway.kasia_identity import kasia_target_matches
+
+            if os.getenv("KASIA_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes"):
+                return True
+            if self.pairing_store.is_approved(platform_name, user_id):
+                return True
+
+            allowed_targets = []
+            platform_allowlist = os.getenv("KASIA_ALLOWED_USERS", "").strip()
+            global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+            if platform_allowlist:
+                allowed_targets.extend(
+                    item.strip() for item in platform_allowlist.split(",") if item.strip()
+                )
+            if global_allowlist:
+                allowed_targets.extend(
+                    item.strip() for item in global_allowlist.split(",") if item.strip()
+                )
+
+            if not allowed_targets:
+                return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
+
+            return any(
+                kasia_target_matches(
+                    user_id,
+                    target,
+                    display_name=source.user_name,
+                )
+                for target in allowed_targets
+            )
+
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
             Platform.SLACK: "SLACK_ALLOWED_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
+            Platform.KASIA: "KASIA_ALLOWED_USERS",
             Platform.EMAIL: "EMAIL_ALLOWED_USERS",
             Platform.SMS: "SMS_ALLOWED_USERS",
             Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
@@ -1459,6 +1518,7 @@ class GatewayRunner:
             Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
+            Platform.KASIA: "KASIA_ALLOW_ALL_USERS",
             Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
             Platform.SMS: "SMS_ALLOW_ALL_USERS",
             Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
@@ -1472,7 +1532,6 @@ class GatewayRunner:
             return True
 
         # Check pairing store (always checked, regardless of allowlists)
-        platform_name = source.platform.value if source.platform else ""
         if self.pairing_store.is_approved(platform_name, user_id):
             return True
 
@@ -1497,6 +1556,12 @@ class GatewayRunner:
             check_ids.add(user_id.split("@")[0])
         return bool(check_ids & allowed_ids)
 
+    async def _is_user_authorized_async(self, source: SessionSource) -> bool:
+        """Async auth wrapper so Kasia lookups don't block the event loop."""
+        if source.platform == Platform.KASIA:
+            return await asyncio.to_thread(self._is_user_authorized, source)
+        return self._is_user_authorized(source)
+
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
         """Return how unauthorized DMs should be handled for a platform."""
         config = getattr(self, "config", None)
@@ -1520,32 +1585,56 @@ class GatewayRunner:
         source = event.source
 
         # Check if user is authorized
-        if not self._is_user_authorized(source):
+        if not await self._is_user_authorized_async(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
             if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
                 platform_name = source.platform.value if source.platform else "unknown"
-                code = self.pairing_store.generate_code(
-                    platform_name, source.user_id, source.user_name or ""
-                )
-                if code:
-                    adapter = self.adapters.get(source.platform)
-                    if adapter:
-                        await adapter.send(
-                            source.chat_id,
-                            f"Hi~ I don't recognize you yet!\n\n"
-                            f"Here's your pairing code: `{code}`\n\n"
-                            f"Ask the bot owner to run:\n"
-                            f"`hermes pairing approve {platform_name} {code}`"
-                        )
+                if source.platform == Platform.KASIA:
+                    await asyncio.to_thread(
+                        self.pairing_store.record_pending_request,
+                        platform_name,
+                        source.user_id,
+                        source.user_name or "",
+                    )
                 else:
-                    adapter = self.adapters.get(source.platform)
-                    if adapter:
-                        await adapter.send(
-                            source.chat_id,
-                            "Too many pairing requests right now~ "
-                            "Please try again later!"
+                    existing_code = self.pairing_store.get_pending_code(platform_name, source.user_id)
+                    code = (
+                        existing_code.strip()
+                        if isinstance(existing_code, str) and existing_code.strip()
+                        else None
+                    )
+                    if code is None:
+                        code = self.pairing_store.generate_code(
+                            platform_name, source.user_id, source.user_name or ""
                         )
+                    if code:
+                        adapter = self.adapters.get(source.platform)
+                        if adapter:
+                            await adapter.send(
+                                source.chat_id,
+                                f"Hi~ I don't recognize you yet!\n\n"
+                                f"Here's your pairing code: `{code}`\n\n"
+                                f"Ask the bot owner to run:\n"
+                                f"`hermes pairing approve {platform_name} {code}`"
+                            )
+                    else:
+                        adapter = self.adapters.get(source.platform)
+                        if adapter:
+                            await adapter.send(
+                                source.chat_id,
+                                "Too many pairing requests right now~ "
+                                "Please try again later!"
+                            )
+            return None
+
+        if (
+            source.platform == Platform.KASIA
+            and isinstance(event.raw_message, dict)
+            and event.raw_message.get("eventType") == "handshake_request"
+            and not (event.text or "").strip()
+        ):
+            logger.debug("Ignoring empty Kasia handshake event for authorized user %s", source.user_id)
             return None
         
         # PRIORITY handling when an agent is already running for this session.
@@ -3709,6 +3798,7 @@ class GatewayRunner:
                 Platform.WHATSAPP: "hermes-whatsapp",
                 Platform.SLACK: "hermes-slack",
                 Platform.SIGNAL: "hermes-signal",
+                Platform.KASIA: "hermes-kasia",
                 Platform.HOMEASSISTANT: "hermes-homeassistant",
                 Platform.EMAIL: "hermes-email",
                 Platform.DINGTALK: "hermes-dingtalk",
@@ -3731,6 +3821,7 @@ class GatewayRunner:
                 Platform.WHATSAPP: "whatsapp",
                 Platform.SLACK: "slack",
                 Platform.SIGNAL: "signal",
+                Platform.KASIA: "kasia",
                 Platform.HOMEASSISTANT: "homeassistant",
                 Platform.EMAIL: "email",
                 Platform.DINGTALK: "dingtalk",
@@ -4869,6 +4960,7 @@ class GatewayRunner:
             Platform.WHATSAPP: "hermes-whatsapp",
             Platform.SLACK: "hermes-slack",
             Platform.SIGNAL: "hermes-signal",
+            Platform.KASIA: "hermes-kasia",
             Platform.HOMEASSISTANT: "hermes-homeassistant",
             Platform.EMAIL: "hermes-email",
             Platform.DINGTALK: "hermes-dingtalk",
@@ -4894,6 +4986,7 @@ class GatewayRunner:
             Platform.WHATSAPP: "whatsapp",
             Platform.SLACK: "slack",
             Platform.SIGNAL: "signal",
+            Platform.KASIA: "kasia",
             Platform.HOMEASSISTANT: "homeassistant",
             Platform.EMAIL: "email",
             Platform.DINGTALK: "dingtalk",

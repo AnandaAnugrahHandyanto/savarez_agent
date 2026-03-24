@@ -12,6 +12,8 @@ Usage:
     hermes gateway install     # Install gateway service
     hermes gateway uninstall   # Uninstall gateway service
     hermes setup               # Interactive setup wizard
+    hermes kasia               # Set up Kasia integration
+    hermes kasia doctor        # Diagnose Kasia configuration and bridge health
     hermes logout              # Clear stored authentication
     hermes status              # Show status of all components
     hermes cron                # Manage cron jobs
@@ -737,6 +739,19 @@ def cmd_setup(args):
     """Interactive setup wizard."""
     from hermes_cli.setup import run_setup_wizard
     run_setup_wizard(args)
+
+
+def cmd_kasia(args):
+    """Set up or diagnose the Kasia integration."""
+    from hermes_cli.kasia import run_kasia_doctor, run_kasia_setup
+
+    kasia_command = getattr(args, "kasia_command", "setup") or "setup"
+    if kasia_command == "doctor":
+        if not run_kasia_doctor():
+            sys.exit(1)
+        return
+
+    run_kasia_setup()
 
 
 def cmd_model(args):
@@ -3262,6 +3277,30 @@ For more help on a command:
     whatsapp_parser.set_defaults(func=cmd_whatsapp)
 
     # =========================================================================
+    # kasia command
+    # =========================================================================
+    kasia_parser = subparsers.add_parser(
+        "kasia",
+        help="Set up and diagnose Kasia integration",
+        description="Configure the Kasia bridge and run Kasia-specific diagnostics",
+    )
+    kasia_subparsers = kasia_parser.add_subparsers(dest="kasia_command")
+
+    kasia_setup_parser = kasia_subparsers.add_parser(
+        "setup",
+        help="Configure Kasia integration",
+    )
+    kasia_setup_parser.set_defaults(func=cmd_kasia, kasia_command="setup")
+
+    kasia_doctor_parser = kasia_subparsers.add_parser(
+        "doctor",
+        help="Diagnose Kasia configuration and bridge health",
+    )
+    kasia_doctor_parser.set_defaults(func=cmd_kasia, kasia_command="doctor")
+
+    kasia_parser.set_defaults(func=cmd_kasia, kasia_command="setup")
+
+    # =========================================================================
     # login command
     # =========================================================================
     login_parser = subparsers.add_parser(
@@ -3463,20 +3502,20 @@ For more help on a command:
     # =========================================================================
     pairing_parser = subparsers.add_parser(
         "pairing",
-        help="Manage DM pairing codes for user authorization",
-        description="Approve or revoke user access via pairing codes"
+        help="Manage DM pairing and Kasia contact approvals",
+        description="Approve or revoke user access via pairing codes and Kasia contacts"
     )
     pairing_sub = pairing_parser.add_subparsers(dest="pairing_action")
 
     pairing_list_parser = pairing_sub.add_parser("list", help="Show pending + approved users")
 
-    pairing_approve_parser = pairing_sub.add_parser("approve", help="Approve a pairing code")
+    pairing_approve_parser = pairing_sub.add_parser("approve", help="Approve a pairing code or Kasia target")
     pairing_approve_parser.add_argument("platform", help="Platform name (telegram, discord, slack, whatsapp)")
-    pairing_approve_parser.add_argument("code", help="Pairing code to approve")
+    pairing_approve_parser.add_argument("code", help="Pairing code or Kasia address/KNS target to approve")
 
     pairing_revoke_parser = pairing_sub.add_parser("revoke", help="Revoke user access")
     pairing_revoke_parser.add_argument("platform", help="Platform name")
-    pairing_revoke_parser.add_argument("user_id", help="User ID to revoke")
+    pairing_revoke_parser.add_argument("user_id", help="User ID or Kasia address/KNS target to revoke")
 
     pairing_clear_parser = pairing_sub.add_parser("clear-pending", help="Clear all pending codes")
 

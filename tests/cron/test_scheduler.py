@@ -116,6 +116,22 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_kasia_home_channel_fallback(self, monkeypatch):
+        monkeypatch.setenv("KASIA_HOME_CHANNEL", "kaspa:qhomeaddress")
+        job = {
+            "deliver": "kasia",
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "123",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "kasia",
+            "chat_id": "kaspa:qhomeaddress",
+            "thread_id": None,
+        }
+
 
 class TestDeliverResultWrapping:
     """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""

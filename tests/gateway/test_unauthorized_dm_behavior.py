@@ -15,6 +15,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "WHATSAPP_ALLOWED_USERS",
         "SLACK_ALLOWED_USERS",
         "SIGNAL_ALLOWED_USERS",
+        "KASIA_ALLOWED_USERS",
         "EMAIL_ALLOWED_USERS",
         "SMS_ALLOWED_USERS",
         "MATTERMOST_ALLOWED_USERS",
@@ -26,6 +27,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "WHATSAPP_ALLOW_ALL_USERS",
         "SLACK_ALLOW_ALL_USERS",
         "SIGNAL_ALLOW_ALL_USERS",
+        "KASIA_ALLOW_ALL_USERS",
         "EMAIL_ALLOW_ALL_USERS",
         "SMS_ALLOW_ALL_USERS",
         "MATTERMOST_ALLOW_ALL_USERS",
@@ -60,6 +62,29 @@ def _make_runner(platform: Platform, config: GatewayConfig):
     runner.pairing_store = MagicMock()
     runner.pairing_store.is_approved.return_value = False
     return runner, adapter
+
+
+@pytest.mark.asyncio
+async def test_startup_warning_treats_kasia_allowlist_as_configured(monkeypatch, tmp_path, caplog):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("KASIA_ALLOWED_USERS", "kaspa:qpeeraddress")
+
+    from gateway.run import GatewayRunner
+
+    config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=False, token="***")},
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+
+    with caplog.at_level("WARNING"):
+        ok = await runner.start()
+
+    assert ok is True
+    assert not any(
+        "No user allowlists configured" in record.message
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
@@ -129,6 +154,68 @@ async def test_global_ignore_suppresses_pairing_reply(monkeypatch):
             Platform.TELEGRAM,
             "12345",
             "12345",
+        )
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_kasia_dm_records_pending_request_without_reply(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={Platform.KASIA: PlatformConfig(enabled=True)},
+    )
+    runner, adapter = _make_runner(Platform.KASIA, config)
+
+    result = await runner._handle_message(
+        MessageEvent(
+            text="",
+            message_id="tx-handshake",
+            raw_message={"eventType": "handshake_request"},
+            source=SessionSource(
+                platform=Platform.KASIA,
+                user_id="kaspa:qpeeraddress",
+                chat_id="kaspa:qpeeraddress",
+                user_name="peer.kas",
+                chat_type="dm",
+            ),
+        )
+    )
+
+    assert result is None
+    runner.pairing_store.record_pending_request.assert_called_once_with(
+        "kasia",
+        "kaspa:qpeeraddress",
+        "peer.kas",
+    )
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_authorized_kasia_handshake_event_does_not_run_agent(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={Platform.KASIA: PlatformConfig(enabled=True)},
+    )
+    runner, adapter = _make_runner(Platform.KASIA, config)
+    runner.pairing_store.is_approved.return_value = True
+
+    result = await runner._handle_message(
+        MessageEvent(
+            text="",
+            message_id="tx-handshake",
+            raw_message={"eventType": "handshake_request"},
+            source=SessionSource(
+                platform=Platform.KASIA,
+                user_id="kaspa:qpeeraddress",
+                chat_id="kaspa:qpeeraddress",
+                user_name="tester",
+                chat_type="dm",
+            ),
         )
     )
 
