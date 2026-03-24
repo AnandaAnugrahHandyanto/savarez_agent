@@ -295,6 +295,52 @@ class TestReasoningCallback(unittest.TestCase):
         # No exception = pass
 
 
+class TestReasoningPreviewBuffering(unittest.TestCase):
+    def _make_cli(self):
+        from cli import HermesCLI
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli.verbose = True
+        cli._spinner_text = ""
+        cli._reasoning_preview_buf = ""
+        cli._invalidate = lambda *args, **kwargs: None
+        return cli
+
+    @patch("cli._cprint")
+    def test_streamed_reasoning_chunks_wait_for_boundary(self, mock_cprint):
+        cli = self._make_cli()
+
+        cli._on_reasoning("Let")
+        cli._on_reasoning(" me")
+        cli._on_reasoning(" think")
+
+        self.assertEqual(mock_cprint.call_count, 0)
+
+        cli._on_reasoning(" about this.\n")
+
+        self.assertEqual(mock_cprint.call_count, 1)
+        rendered = mock_cprint.call_args[0][0]
+        self.assertIn("[thinking] Let me think about this.", rendered)
+
+    @patch("cli._cprint")
+    def test_pending_reasoning_flushes_when_thinking_stops(self, mock_cprint):
+        cli = self._make_cli()
+
+        cli._on_reasoning("see")
+        cli._on_reasoning(" how")
+        cli._on_reasoning(" this")
+        cli._on_reasoning(" plays")
+        cli._on_reasoning(" out")
+
+        self.assertEqual(mock_cprint.call_count, 0)
+
+        cli._on_thinking("")
+
+        self.assertEqual(mock_cprint.call_count, 1)
+        rendered = mock_cprint.call_args[0][0]
+        self.assertIn("[thinking] see how this plays out", rendered)
+
+
 # ---------------------------------------------------------------------------
 # Real provider format extraction
 # ---------------------------------------------------------------------------
