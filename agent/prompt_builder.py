@@ -565,14 +565,15 @@ def _load_cursorrules(cwd_path: Path) -> str:
 def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
     """Discover and load context files for the system prompt.
 
-    Priority (first found wins — only ONE project context type is loaded):
+    All present context files are composed (each capped independently at
+    20,000 chars):
       1. .hermes.md / HERMES.md  (walk to git root)
       2. AGENTS.md / agents.md   (recursive directory walk)
       3. CLAUDE.md / claude.md   (cwd only)
-      4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
+      4. .cursorrules / .cursor/rules/*.mdc  (fallback — only if none of the
+         above are present)
 
     SOUL.md from HERMES_HOME is independent and always included when present.
-    Each context source is capped at 20,000 chars.
 
     When *skip_soul* is True, SOUL.md is not included here (it was already
     loaded via ``load_soul_md()`` for the identity slot).
@@ -583,15 +584,23 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     cwd_path = Path(cwd).resolve()
     sections = []
 
-    # Priority-based project context: first match wins
-    project_context = (
-        _load_hermes_md(cwd_path)
-        or _load_agents_md(cwd_path)
-        or _load_claude_md(cwd_path)
-        or _load_cursorrules(cwd_path)
-    )
-    if project_context:
-        sections.append(project_context)
+    # Compose all present context files; each loader caps at 20k chars
+    project_parts = [
+        p for p in [
+            _load_hermes_md(cwd_path),
+            _load_agents_md(cwd_path),
+            _load_claude_md(cwd_path),
+        ]
+        if p
+    ]
+
+    # .cursorrules is a fallback — only loaded when no other context is present
+    if not project_parts:
+        cursorrules = _load_cursorrules(cwd_path)
+        if cursorrules:
+            project_parts.append(cursorrules)
+
+    sections.extend(project_parts)
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:
