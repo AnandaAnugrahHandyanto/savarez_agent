@@ -419,6 +419,8 @@ class AIAgent:
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
+        last_session_summary: str = None,
+        last_session_time: float = None,
     ):
         """
         Initialize the AI Agent.
@@ -483,6 +485,8 @@ class AIAgent:
         self._print_fn = None
         self.skip_context_files = skip_context_files
         self.pass_session_id = pass_session_id
+        self.last_session_summary = last_session_summary
+        self.last_session_time = last_session_time
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -2348,6 +2352,24 @@ class AIAgent:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
                     prompt_parts.append(user_block)
+
+        # Inject last session summary for continuity (new sessions only)
+        if self.last_session_summary:
+            header = (
+                "# Last Session Context\n"
+                "The following is a brief summary of the user's most recent session. "
+                "Use it for continuity \u2014 if the user wants to pick up where they left off, "
+                "you have context. Do not proactively reference it unless the user's message "
+                "is clearly related.\n"
+            )
+            if self.last_session_time:
+                from datetime import datetime
+                try:
+                    ts = datetime.fromtimestamp(self.last_session_time)
+                    header += f"\nLast session: {ts.strftime('%A, %B %d, %Y at %I:%M %p')}\n"
+                except Exception:
+                    pass
+            prompt_parts.append(header + "\n" + self.last_session_summary)
 
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         if has_skills_tools:
