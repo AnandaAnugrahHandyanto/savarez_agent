@@ -105,3 +105,34 @@ class TestCmdUpdateBranchFallback:
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
         pull_cmds = [c for c in commands if "pull" in c]
         assert len(pull_cmds) == 0
+
+
+@patch("shutil.which", return_value=None)
+@patch("subprocess.run")
+def test_update_skips_config_prompt_when_non_interactive(
+    mock_run, _mock_which, mock_args, monkeypatch, capsys, tmp_path
+):
+    """Non-interactive updates must not block on input() during config migration."""
+    import hermes_cli.main as hermes_main
+
+    mock_run.side_effect = _make_run_side_effect(
+        branch="main", verify_ok=True, commit_count="1"
+    )
+
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(hermes_main, "_stash_local_changes_if_needed", lambda *a, **kw: None)
+    monkeypatch.setattr(hermes_main, "_restore_stashed_changes", lambda *a, **kw: True)
+    monkeypatch.setattr("hermes_cli.config.get_missing_env_vars", lambda required_only=True: [])
+    monkeypatch.setattr("hermes_cli.config.get_missing_config_fields", lambda: ["new_field"])
+    monkeypatch.setattr("hermes_cli.config.check_config_version", lambda: (7, 10))
+    monkeypatch.setattr("hermes_cli.config.migrate_config", lambda **kw: {"env_added": [], "config_added": []})
+    monkeypatch.setattr(hermes_main.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(hermes_main.sys.stdout, "isatty", lambda: False)
+    monkeypatch.setattr("builtins.input", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("input() should not be called")))
+
+    cmd_update(mock_args)
+
+    captured = capsys.readouterr().out
+    assert "Non-interactive update: skipping config migration prompt." in captured
+    assert "Skipped. Run 'hermes config migrate' later to configure." in captured

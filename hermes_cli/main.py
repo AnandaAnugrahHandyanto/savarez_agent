@@ -2817,19 +2817,24 @@ def cmd_update(args):
                 print(f"  ⚠️  {len(missing_env)} new required setting(s) need configuration")
             if missing_config:
                 print(f"  ℹ️  {len(missing_config)} new config option(s) available")
-            
-            print()
-            response = input("Would you like to configure them now? [Y/n]: ").strip().lower()
-            
+
+            interactive_prompt = sys.stdin.isatty() and sys.stdout.isatty()
+            response = "n"
+            if interactive_prompt:
+                print()
+                response = input("Would you like to configure them now? [Y/n]: ").strip().lower()
+
             if response in ('', 'y', 'yes'):
                 print()
                 results = migrate_config(interactive=True, quiet=False)
-                
+
                 if results["env_added"] or results["config_added"]:
                     print()
                     print("✓ Configuration updated!")
             else:
                 print()
+                if not interactive_prompt:
+                    print("Non-interactive update: skipping config migration prompt.")
                 print("Skipped. Run 'hermes config migrate' later to configure.")
         else:
             print("  ✓ Configuration is up to date")
