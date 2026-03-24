@@ -473,3 +473,48 @@ class TestPluginCommands:
         assert mgr._plugins["bad_cmd"].enabled is False
         assert mgr._plugins["bad_cmd"].error is not None
         assert "conflicts" in mgr._plugins["bad_cmd"].error.lower()
+
+
+class TestSamplingPluginExample:
+    def test_example_plugin_updates_cli_and_agent_sampling(self, tmp_path, monkeypatch):
+        repo_root = Path(__file__).resolve().parents[1]
+        source = repo_root / "optional-plugins" / "sampling-command"
+        assert source.exists()
+
+        plugins_dir = tmp_path / "hermes_test" / "plugins" / "sampling-command"
+        plugins_dir.mkdir(parents=True, exist_ok=True)
+        for filename in ("plugin.yaml", "__init__.py"):
+            (plugins_dir / filename).write_text((source / filename).read_text())
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        import hermes_cli.plugins as plugins_mod
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
+
+        cli_stub = types.SimpleNamespace(
+            temperature=None,
+            top_p=None,
+            agent=types.SimpleNamespace(temperature=None, top_p=None),
+        )
+
+        result = invoke_plugin_command(
+            "sampling",
+            "0.7 0.95",
+            context={"surface": "cli", "cli": cli_stub},
+        )
+        assert "Sampling updated" in result
+        assert cli_stub.temperature == pytest.approx(0.7)
+        assert cli_stub.top_p == pytest.approx(0.95)
+        assert cli_stub.agent.temperature == pytest.approx(0.7)
+        assert cli_stub.agent.top_p == pytest.approx(0.95)
+
+        status = invoke_plugin_command(
+            "sampling",
+            "",
+            context={"surface": "cli", "cli": cli_stub},
+        )
+        assert "temperature: 0.7" in status
+        assert "top_p:       0.95" in status

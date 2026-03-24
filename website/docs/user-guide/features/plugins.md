@@ -125,6 +125,19 @@ def register(ctx):
     )
 ```
 
+A full working plugin implementation is included at:
+
+- `optional-plugins/sampling-command/plugin.yaml`
+- `optional-plugins/sampling-command/__init__.py`
+
+Install it into your user plugin directory:
+
+```bash
+mkdir -p ~/.hermes/plugins/sampling-command
+cp optional-plugins/sampling-command/plugin.yaml ~/.hermes/plugins/sampling-command/
+cp optional-plugins/sampling-command/__init__.py ~/.hermes/plugins/sampling-command/
+```
+
 ## Managing plugins
 
 ```

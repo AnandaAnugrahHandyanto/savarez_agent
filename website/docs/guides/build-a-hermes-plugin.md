@@ -297,6 +297,12 @@ def register(ctx):
 That command now works as `/sampling 0.7 0.95` and can update the current
 running CLI session immediately.
 
+If you want a ready-to-use implementation instead of copy/pasting, use the
+shipped example plugin in this repo:
+
+- `optional-plugins/sampling-command/plugin.yaml`
+- `optional-plugins/sampling-command/__init__.py`
+
 ## Step 6: Test it
 
 Start Hermes:

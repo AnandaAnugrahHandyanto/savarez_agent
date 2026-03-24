@@ -129,6 +129,48 @@ def _parse_reasoning_config(effort: str) -> dict | None:
     return None
 
 
+def _parse_temperature(value: Any) -> Optional[float]:
+    """Parse temperature from env/config/command input.
+
+    Accepts numbers >= 0 and reset tokens (default/none/off/auto/null).
+    Returns None for reset/default.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in {"default", "none", "off", "auto", "null", ""}:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring invalid temperature value: %r", value)
+        return None
+    if parsed < 0:
+        logger.warning("Ignoring temperature < 0: %r", value)
+        return None
+    return parsed
+
+
+def _parse_top_p(value: Any) -> Optional[float]:
+    """Parse top_p from env/config/command input.
+
+    Accepts numbers in (0, 1] and reset tokens (default/none/off/auto/null).
+    Returns None for reset/default.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in {"default", "none", "off", "auto", "null", ""}:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring invalid top_p value: %r", value)
+        return None
+    if parsed <= 0 or parsed > 1:
+        logger.warning("Ignoring top_p outside (0, 1]: %r", value)
+        return None
+    return parsed
+
+
 def load_cli_config() -> Dict[str, Any]:
     """
     Load CLI configuration from config files.
@@ -191,6 +233,8 @@ def load_cli_config() -> Dict[str, Any]:
             "system_prompt": "",
             "prefill_messages_file": "",
             "reasoning_effort": "",
+            "temperature": None,
+            "top_p": None,
             "personalities": {
                 "helpful": "You are a helpful, friendly AI assistant.",
                 "concise": "You are a concise assistant. Keep responses brief and to the point.",
@@ -1163,6 +1207,15 @@ class HermesCLI:
         self.reasoning_config = _parse_reasoning_config(
             CLI_CONFIG["agent"].get("reasoning_effort", "")
         )
+
+        # Session sampling controls. These can be overridden live by plugin
+        # slash commands (e.g. /sampling) and are passed into new agent routes.
+        self.temperature = _parse_temperature(
+            os.getenv("HERMES_TEMPERATURE", CLI_CONFIG["agent"].get("temperature"))
+        )
+        self.top_p = _parse_top_p(
+            os.getenv("HERMES_TOP_P", CLI_CONFIG["agent"].get("top_p"))
+        )
         
         # OpenRouter provider routing preferences
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
@@ -1920,6 +1973,8 @@ class HermesCLI:
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
+                temperature=self.temperature,
+                top_p=self.top_p,
                 providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore,
                 providers_order=self._providers_order,
