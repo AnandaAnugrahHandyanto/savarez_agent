@@ -899,12 +899,20 @@ from agent.skill_commands import (
 
 _skill_commands = scan_skill_commands()
 
+# Eager plugin discovery keeps plugin slash commands visible in /help,
+# autocomplete, and dispatch from the start of a CLI session.
+try:
+    from hermes_cli.plugins import discover_plugins as _discover_plugins
+    _discover_plugins()
+except Exception:
+    pass
+
 
 def _get_plugin_cmd_handler_names() -> set:
     """Return plugin command names (without slash prefix) for dispatch matching."""
     try:
-        from hermes_cli.plugins import get_plugin_manager
-        return set(get_plugin_manager()._plugin_commands.keys())
+        from hermes_cli.plugins import get_plugin_command_names
+        return set(get_plugin_command_names())
     except Exception:
         return set()
 
@@ -3702,7 +3710,8 @@ class HermesCLI:
                         version = f" v{p['version']}" if p["version"] else ""
                         tools = f"{p['tools']} tools" if p["tools"] else ""
                         hooks = f"{p['hooks']} hooks" if p["hooks"] else ""
-                        parts = [x for x in [tools, hooks] if x]
+                        commands = f"{p.get('commands', 0)} commands" if p.get("commands") else ""
+                        parts = [x for x in [tools, hooks, commands] if x]
                         detail = f" ({', '.join(parts)})" if parts else ""
                         error = f" — {p['error']}" if p["error"] else ""
                         print(f"  {status} {p['name']}{version}{detail}{error}")
@@ -3769,16 +3778,33 @@ class HermesCLI:
                     self.console.print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
             # Check for plugin-registered slash commands
             elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():
-                from hermes_cli.plugins import get_plugin_command_handler
-                plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
-                if plugin_handler:
-                    user_args = cmd_original[len(base_cmd):].strip()
-                    try:
-                        result = plugin_handler(user_args)
-                        if result:
-                            _cprint(str(result))
-                    except Exception as e:
-                        _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")
+                from hermes_cli.plugins import invoke_plugin_command
+                user_args = cmd_original[len(base_cmd):].strip()
+                try:
+                    result = invoke_plugin_command(
+                        base_cmd.lstrip("/"),
+                        user_args,
+                        context={
+                            "surface": "cli",
+                            "cli": self,
+                            "session_id": getattr(self, "session_id", None),
+                            "agent": getattr(self, "agent", None),
+                        },
+                    )
+
+                    # CLI command path is sync; allow async handlers via asyncio.run fallback.
+                    import asyncio as _asyncio
+                    if _asyncio.iscoroutine(result):
+                        try:
+                            result = _asyncio.run(result)
+                        except RuntimeError:
+                            _cprint("\033[1;31mPlugin command returned a coroutine while an event loop is active.\033[0m")
+                            result = None
+
+                    if result is not None and result != "":
+                        _cprint(str(result))
+                except Exception as e:
+                    _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             elif base_cmd in _skill_commands:
                 user_instruction = cmd_original[len(base_cmd):].strip()
