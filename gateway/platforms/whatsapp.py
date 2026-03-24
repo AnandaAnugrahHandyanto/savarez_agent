@@ -74,6 +74,8 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    SUPPORTED_DOCUMENT_TYPES,
+    cache_document_from_bytes,
     cache_image_from_url,
     cache_audio_from_url,
 )
@@ -665,7 +667,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 user_name=data.get("senderName"),
             )
             
-            # Download image media URLs to the local cache so the vision tool
+            # Download media URLs to the local cache so agent tools
             # can access them reliably regardless of URL expiration.
             raw_urls = data.get("mediaUrls", [])
             cached_urls = []
@@ -696,12 +698,49 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         print(f"[{self.name}] Failed to cache voice: {e}", flush=True)
                         cached_urls.append(url)
                         media_types.append("audio/ogg")
+                elif msg_type == MessageType.VOICE and os.path.isabs(url):
+                    # Local file path — bridge already downloaded the audio
+                    cached_urls.append(url)
+                    media_types.append("audio/ogg")
+                    print(f"[{self.name}] Using bridge-cached audio: {url}", flush=True)
+                elif msg_type == MessageType.DOCUMENT and os.path.isabs(url):
+                    # Local file path — bridge already downloaded the document
+                    cached_urls.append(url)
+                    ext = Path(url).suffix.lower()
+                    mime = SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
+                    media_types.append(mime)
+                    print(f"[{self.name}] Using bridge-cached document: {url}", flush=True)
+                elif msg_type == MessageType.VIDEO and os.path.isabs(url):
+                    cached_urls.append(url)
+                    media_types.append("video/mp4")
+                    print(f"[{self.name}] Using bridge-cached video: {url}", flush=True)
                 else:
                     cached_urls.append(url)
                     media_types.append("unknown")
-            
+
+            # For text-readable documents (.txt, .md), inject file content
+            # directly into the message text so the agent can read it inline.
+            body = data.get("body", "")
+            if msg_type == MessageType.DOCUMENT and cached_urls:
+                for doc_path in cached_urls:
+                    ext = Path(doc_path).suffix.lower()
+                    if ext in (".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"):
+                        try:
+                            content = Path(doc_path).read_text(errors="replace")
+                            fname = Path(doc_path).name
+                            # Remove the doc_ prefix for display
+                            display_name = fname
+                            if "_" in fname:
+                                parts = fname.split("_", 2)
+                                if len(parts) >= 3:
+                                    display_name = parts[2]
+                            body = f"{body}\n\n📄 **{display_name}**:\n```\n{content}\n```".strip()
+                            print(f"[{self.name}] Injected text content from: {doc_path}", flush=True)
+                        except Exception as e:
+                            print(f"[{self.name}] Failed to read document text: {e}", flush=True)
+
             return MessageEvent(
-                text=data.get("body", ""),
+                text=body,
                 message_type=msg_type,
                 source=source,
                 raw_message=data,
