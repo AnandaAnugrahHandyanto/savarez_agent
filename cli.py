@@ -2856,9 +2856,92 @@ class HermesCLI:
         except Exception as e:
             print(f"(x_x) Failed to save: {e}")
     
+    def _handle_resume_command_cli(self, command: str) -> None:
+        """Handle /resume command — list or switch to a previously-titled CLI session."""
+        if not self._session_db:
+            _cprint("  Session database not available.")
+            return
+
+        parts = command.split(None, 1)
+        name = parts[1].strip() if len(parts) > 1 else ""
+
+        if not name:
+            # List recent titled CLI sessions
+            try:
+                sessions = self._session_db.list_sessions_rich(source="cli", limit=10)
+                titled = [s for s in sessions if s.get("title")]
+                if not titled:
+                    _cprint("  No named sessions found.")
+                    _cprint("  Use /title <name> to name the current session, then /resume <name> later.")
+                    return
+                _cprint("  Named sessions:")
+                for s in titled[:10]:
+                    title = s["title"]
+                    preview = s.get("preview", "")[:40]
+                    preview_part = f" — {preview}" if preview else ""
+                    _cprint(f"    • {title}{preview_part}")
+                _cprint("  Usage: /resume <session name>")
+            except Exception as e:
+                _cprint(f"  Could not list sessions: {e}")
+            return
+
+        # Resolve the name to a session ID
+        target_id = self._session_db.resolve_session_by_title(name)
+        if not target_id:
+            _cprint(f"  No session found matching '{name}'.")
+            _cprint("  Use /resume with no arguments to see available sessions.")
+            return
+
+        if target_id == self.session_id:
+            _cprint(f"  Already on session '{name}'.")
+            return
+
+        # Flush memories for current session before switching
+        if self.agent and self.conversation_history:
+            try:
+                self.agent.flush_memories(self.conversation_history)
+            except Exception:
+                pass
+
+        # End the current session in the DB
+        if self.session_id:
+            try:
+                self._session_db.end_session(self.session_id, "resume_switch")
+            except Exception:
+                pass
+
+        # Switch to the target session
+        self.session_id = target_id
+        self._resumed = True
+        self.conversation_history = []
+        self._pending_title = None
+
+        # Update agent session bookkeeping
+        if self.agent:
+            self.agent.session_id = target_id
+            if hasattr(self.agent, "reset_session_state"):
+                self.agent.reset_session_state()
+            if hasattr(self.agent, "_last_flushed_db_idx"):
+                self.agent._last_flushed_db_idx = 0
+
+        # Load conversation history from DB
+        try:
+            restored = self._session_db.get_messages_as_conversation(target_id)
+            if restored:
+                self.conversation_history = restored
+                if self.agent:
+                    self.agent.conversation_history = restored
+        except Exception as e:
+            _cprint(f"  Warning: Could not load session history: {e}")
+
+        session_meta = self._session_db.get_session(target_id)
+        title = session_meta.get("title") if session_meta else name
+        msg_count = len(self.conversation_history)
+        _cprint(f"  Resumed session '{title}' ({msg_count} messages).")
+
     def retry_last(self):
         """Retry the last user message by removing the last exchange and re-sending.
-        
+
         Removes the last assistant response (and any tool-call messages) and
         the last user message, then re-sends that user message to the agent.
         Returns the message to re-send, or None if there's nothing to retry.
@@ -3558,6 +3641,8 @@ class HermesCLI:
                     _cprint("  Session database not available.")
         elif canonical == "new":
             self.new_session()
+        elif canonical == "resume":
+            self._handle_resume_command_cli(cmd_original)
         elif canonical == "model":
             # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
             parts = cmd_original.split(maxsplit=1)
