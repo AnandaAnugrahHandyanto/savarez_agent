@@ -6449,7 +6449,27 @@ class AIAgent:
                         logging.error(f"{self.log_prefix}Request details - Messages: {len(api_messages)}, Approx tokens: {approx_tokens:,}")
                         raise api_error
 
-                    wait_time = min(2 ** retry_count, 60)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s
+                    # Honour the Retry-After header for 429 rate-limit responses.
+                    # Providers may return Retry-After: <seconds> to tell the
+                    # client exactly how long to wait before the next request.
+                    _retry_after_secs = None
+                    if status_code == 429:
+                        _resp = getattr(api_error, "response", None)
+                        if _resp is not None:
+                            _ra_header = (
+                                _resp.headers.get("Retry-After")
+                                or _resp.headers.get("retry-after")
+                            )
+                            if _ra_header:
+                                try:
+                                    _retry_after_secs = max(1.0, float(_ra_header))
+                                    self._vprint(
+                                        f"{self.log_prefix}   ⏳ Retry-After: {_retry_after_secs:.0f}s (from server header)",
+                                        force=True,
+                                    )
+                                except (ValueError, TypeError):
+                                    pass
+                    wait_time = _retry_after_secs if _retry_after_secs is not None else min(2 ** retry_count, 60)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s
                     logger.warning(
                         "Retrying API call in %ss (attempt %s/%s) %s error=%s",
                         wait_time,
