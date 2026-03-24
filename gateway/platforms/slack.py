@@ -9,6 +9,7 @@ Uses slack-bolt (Python) with Socket Mode for:
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -59,7 +60,7 @@ class SlackAdapter(BasePlatformAdapter):
       - SLACK_APP_TOKEN (xapp-...) for Socket Mode connection
 
     Features:
-      - DMs and channel messages (mention-gated in channels)
+      - DMs and channel messages (mention-gated in channels; auto-responds in threads where bot has participated)
       - Thread support
       - File/image/audio attachments
       - Slash commands (/hermes)
@@ -74,6 +75,11 @@ class SlackAdapter(BasePlatformAdapter):
         self._handler: Optional[AsyncSocketModeHandler] = None
         self._bot_user_id: Optional[str] = None
         self._user_name_cache: Dict[str, str] = {}  # user_id → display name
+        # Track threads where the bot has participated so follow-up messages
+        # in those threads don't require @mention.  Persisted to disk so the
+        # set survives gateway restarts.
+        self._bot_participated_threads: set = self._load_participated_threads()
+        self._MAX_TRACKED_THREADS = 500
 
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
@@ -623,6 +629,46 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return {"name": chat_id, "type": "unknown"}
 
+    # ----- Thread participation tracking -----
+
+    @staticmethod
+    def _thread_state_path() -> _Path:
+        """Path to the persisted thread participation set."""
+        from hermes_cli.config import get_hermes_home
+        return get_hermes_home() / "slack_threads.json"
+
+    @classmethod
+    def _load_participated_threads(cls) -> set:
+        """Load persisted thread IDs from disk."""
+        path = cls._thread_state_path()
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    return set(data)
+        except Exception as e:
+            logger.debug("Could not load slack thread state: %s", e)
+        return set()
+
+    def _save_participated_threads(self) -> None:
+        """Persist the current thread set to disk (best-effort)."""
+        path = self._thread_state_path()
+        try:
+            thread_list = list(self._bot_participated_threads)
+            if len(thread_list) > self._MAX_TRACKED_THREADS:
+                thread_list = thread_list[-self._MAX_TRACKED_THREADS:]
+                self._bot_participated_threads = set(thread_list)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(thread_list), encoding="utf-8")
+        except Exception as e:
+            logger.debug("Could not save slack thread state: %s", e)
+
+    def _track_thread(self, thread_id: str) -> None:
+        """Add a thread to the participation set and persist."""
+        if thread_id not in self._bot_participated_threads:
+            self._bot_participated_threads.add(thread_id)
+            self._save_participated_threads()
+
     # ----- Internal handlers -----
 
     async def _handle_slack_message(self, event: dict) -> None:
@@ -655,11 +701,24 @@ class SlackAdapter(BasePlatformAdapter):
         else:
             thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
 
-        # In channels, only respond if bot is mentioned
+        # In channels, respond if bot is mentioned OR (when enabled) if bot
+        # already participated in this thread (mirroring Discord behaviour).
+        #
+        # Config: slack.auto_respond_threads (default: false)
+        #   env override: SLACK_AUTO_RESPOND_THREADS
         if not is_dm and self._bot_user_id:
-            if f"<@{self._bot_user_id}>" not in text:
+            is_mentioned = f"<@{self._bot_user_id}>" in text
+            auto_respond = os.getenv(
+                "SLACK_AUTO_RESPOND_THREADS", "false"
+            ).lower() in ("true", "1", "yes")
+            in_bot_thread = (
+                auto_respond
+                and event.get("thread_ts") is not None
+                and event["thread_ts"] in self._bot_participated_threads
+            )
+            if not is_mentioned and not in_bot_thread:
                 return
-            # Strip the bot mention from the text
+            # Strip the bot mention from the text (if present)
             text = text.replace(f"<@{self._bot_user_id}>", "").strip()
 
         # Determine message type
@@ -773,6 +832,10 @@ class SlackAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=thread_ts if thread_ts != ts else None,
         )
+
+        # Track thread participation so follow-ups don't require @mention
+        if thread_ts and not is_dm:
+            self._track_thread(thread_ts)
 
         # Add 👀 reaction to acknowledge receipt
         await self._add_reaction(channel_id, ts, "eyes")

@@ -533,6 +533,102 @@ class TestMessageRouting:
 
 
 # ---------------------------------------------------------------------------
+# TestThreadParticipation — auto-respond in threads without @mention
+# ---------------------------------------------------------------------------
+
+
+class TestThreadParticipation:
+    """Verify that the bot auto-responds in threads it has already participated in."""
+
+    @pytest.mark.asyncio
+    async def test_thread_message_without_mention_in_participated_thread(self, adapter, monkeypatch):
+        """Messages in a thread where bot has participated should be processed."""
+        monkeypatch.setenv("SLACK_AUTO_RESPOND_THREADS", "true")
+        adapter._bot_participated_threads.add("1234567890.000001")
+        event = {
+            "text": "follow-up question",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000099",
+            "thread_ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_thread_message_ignored_when_feature_disabled(self, adapter, monkeypatch):
+        """With auto_respond_threads off, thread messages still require @mention."""
+        monkeypatch.delenv("SLACK_AUTO_RESPOND_THREADS", raising=False)
+        adapter._bot_participated_threads.add("1234567890.000001")
+        event = {
+            "text": "follow-up question",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000099",
+            "thread_ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_thread_message_without_mention_in_unknown_thread(self, adapter, monkeypatch):
+        """Messages in a thread the bot hasn't participated in should be ignored."""
+        monkeypatch.setenv("SLACK_AUTO_RESPOND_THREADS", "true")
+        event = {
+            "text": "random thread message",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000099",
+            "thread_ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_mention_tracks_thread_participation(self, adapter):
+        """When bot is mentioned in a channel thread, the thread should be tracked."""
+        event = {
+            "text": "<@U_BOT> help me",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000002",
+            "thread_ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        assert "1234567890.000001" in adapter._bot_participated_threads
+
+    @pytest.mark.asyncio
+    async def test_top_level_mention_tracks_thread(self, adapter):
+        """A top-level @mention (no thread_ts) should track ts as the thread."""
+        event = {
+            "text": "<@U_BOT> hello",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        assert "1234567890.000001" in adapter._bot_participated_threads
+
+    @pytest.mark.asyncio
+    async def test_dm_does_not_track_threads(self, adapter):
+        """DM messages should not be tracked in participated threads."""
+        event = {
+            "text": "hello",
+            "user": "U_USER",
+            "channel": "D123",
+            "channel_type": "im",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        assert len(adapter._bot_participated_threads) == 0
+
+
+# ---------------------------------------------------------------------------
 # TestSendTyping — assistant.threads.setStatus
 # ---------------------------------------------------------------------------
 

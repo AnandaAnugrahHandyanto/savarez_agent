@@ -523,6 +523,12 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+
+            # Slack settings → env vars (env vars take precedence)
+            slack_cfg = yaml_cfg.get("slack", {})
+            if isinstance(slack_cfg, dict):
+                if "auto_respond_threads" in slack_cfg and not os.getenv("SLACK_AUTO_RESPOND_THREADS"):
+                    os.environ["SLACK_AUTO_RESPOND_THREADS"] = str(slack_cfg["auto_respond_threads"]).lower()
     except Exception as e:
         logger.warning(
             "Failed to process config.yaml — falling back to .env / gateway.json values. "
