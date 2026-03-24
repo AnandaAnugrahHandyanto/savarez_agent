@@ -1260,8 +1260,8 @@ _FALLBACK_COMMENT = """
 #
 # Supported providers:
 #   openrouter   (OPENROUTER_API_KEY)  — routes to any model
-#   openai-codex (OAuth — hermes login) — OpenAI Codex
-#   nous         (OAuth — hermes login) — Nous Portal
+#   openai-codex (OAuth — hermes model) — OpenAI Codex
+#   nous         (OAuth — hermes model) — Nous Portal
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
@@ -1303,8 +1303,8 @@ _COMMENTED_SECTIONS = """
 #
 # Supported providers:
 #   openrouter   (OPENROUTER_API_KEY)  — routes to any model
-#   openai-codex (OAuth — hermes login) — OpenAI Codex
-#   nous         (OAuth — hermes login) — Nous Portal
+#   openai-codex (OAuth — hermes model) — OpenAI Codex
+#   nous         (OAuth — hermes model) — Nous Portal
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
