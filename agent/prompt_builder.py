@@ -18,16 +18,25 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _CONTEXT_THREAT_PATTERNS = [
-    (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-    (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
-    (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection"),
+    (r"ignore\s+(previous|all|above|prior)\s+instructions", "prompt_injection"),
+    (r"ign[^\s]*\s+(?:previous|all|above|prior)\s+instructions", "prompt_injection"),
+    (r"ign[^\s]*[_\-](?:previous|all|above|prior)\s+instructions", "prompt_injection"),
+    (r"i\.g\.n\.o\.r\.e\s+(?:previous|all|above|prior)\s+instructions","prompt_injection"),
+    (r"ignore[_\-]?(?:previous|all|above|prior)\s+instructions", "prompt_injection"),
+    (r"i[^\w]+g[^\w]+n[^\w]+o[^\w]+r[^\w]+e\s+(?:previous|all|above|prior)\s+instructions","prompt_injection"),
+    (r"i[\s\x00a0]*g[\s\x00a0]*n[\s\x00a0]*o[\s\x00a0]*r[\s\x00a0]*e\s+(?:previous|all|above|prior)\s+instructions","prompt_injection"),
+    (r"ignore\u200b*ore", "prompt_injection"),
+    (r"i\u0433\u043d\u043e\u0440\u0435\s+(?:previous|all|above|prior)\s+instructions","prompt_injection"),
+    (r"\u0456gnore\s+(?:previous|all|above|prior)\s+instructions", "prompt_injection"),
+    (r"do\s+not\s+tell\s+the\s+user", "deception_hide"),
+    (r"system\s+prompt\s+override", "sys_prompt_override"),
+    (r"disregard\s+(your|all|any)\s+(instructions|rules|guidelines)","disregard_rules"),
+    (r"act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)","bypass_restrictions"),
+    (r"<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->","html_comment_injection"),
     (r'<\s*div\s+style\s*=\s*["\'].*display\s*:\s*none', "hidden_div"),
-    (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute"),
-    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
+    (r"translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)", "translate_execute"),
+    (r"curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)", "exfil_curl"),
+    (r"cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)", "read_secrets"),
 ]
 
 _CONTEXT_INVISIBLE_CHARS = {
