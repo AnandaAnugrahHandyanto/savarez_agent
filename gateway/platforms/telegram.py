@@ -235,6 +235,15 @@ class TelegramAdapter(BasePlatformAdapter):
             self._bot = self._app.bot
             
             # Register handlers
+            
+            # Handle edited messages FIRST (edit-as-branch).
+            # Must be before other handlers because MessageFilter.check_update
+            # matches edited_message updates too — without this ordering,
+            # the TEXT handler below would swallow edits as new messages.
+            self._app.add_handler(TelegramMessageHandler(
+                filters.UpdateType.EDITED_MESSAGE & (filters.TEXT | filters.CAPTION) & ~filters.COMMAND,
+                self._handle_edited_message
+            ))
             self._app.add_handler(TelegramMessageHandler(
                 filters.TEXT & ~filters.COMMAND,
                 self._handle_text_message
@@ -522,6 +531,22 @@ class TelegramAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return SendResult(success=False, error=str(e))
+
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a message from a Telegram chat. Returns True on success."""
+        if not self._bot:
+            return False
+        try:
+            await self._bot.delete_message(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+            )
+            return True
+        except Exception as e:
+            logger.warning("[%s] Failed to delete message %s: %s", self.name, message_id, e)
+            return False
+
 
     async def send_voice(
         self,
@@ -1411,6 +1436,22 @@ class TelegramAdapter(BasePlatformAdapter):
                 f"a sticker with emoji {emoji}" if emoji else "a sticker",
                 emoji, set_name,
             )
+
+    async def _handle_edited_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle an edited text message -- triggers edit-as-branch.
+        
+        When a user edits a message, we treat it as a branch rewrite:
+        truncate the transcript from that point and re-run the agent
+        with the new text.
+        """
+        edited = update.edited_message
+        if not edited or not edited.text:
+            return
+        
+        event = self._build_message_event(edited, MessageType.TEXT)
+        event.is_edit = True
+        
+        await self.handle_message(event)
 
     def _build_message_event(self, message: Message, msg_type: MessageType) -> MessageEvent:
         """Build a MessageEvent from a Telegram message."""

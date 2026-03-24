@@ -299,6 +299,9 @@ class MessageEvent:
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
+    # Edit flag (set when this event is from an edited message)
+    is_edit: bool = False
+    
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
         return self.text.startswith("/")
@@ -363,6 +366,9 @@ class BasePlatformAdapter(ABC):
         self._background_tasks: set[asyncio.Task] = set()
         # Chats where auto-TTS on voice input is disabled (set by /voice off)
         self._auto_tts_disabled_chats: set = set()
+        # Maps user platform_message_id -> list of bot response platform_message_ids
+        # Used by edit-as-branch to delete old bot responses from chat
+        self._response_message_ids: Dict[str, List[str]] = {}
 
     @property
     def has_fatal_error(self) -> bool:
@@ -495,6 +501,14 @@ class BasePlatformAdapter(ABC):
         sending a new message.
         """
         return SendResult(success=False, error="Not supported")
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a previously sent message. Returns True on success.
+
+        Override in subclasses. Default returns False (not supported).
+        Used by edit-as-branch to remove old bot responses from chat.
+        """
+        return False
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """
@@ -904,6 +918,7 @@ class BasePlatformAdapter(ABC):
             # Send response if any
             if not response:
                 logger.warning("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
+            _sent_message_ids = []  # Collect bot response IDs for edit-as-branch
             if response:
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
@@ -967,6 +982,13 @@ class BasePlatformAdapter(ABC):
                         reply_to=event.message_id,
                         metadata=_thread_metadata,
                     )
+                    if result.success and result.message_id:
+                        _sent_message_ids.append(result.message_id)
+                    # Also collect all message_ids from raw_response (multi-message sends)
+                    if result.success and result.raw_response and isinstance(result.raw_response, dict):
+                        for _rid in result.raw_response.get("message_ids", []):
+                            if _rid not in _sent_message_ids:
+                                _sent_message_ids.append(_rid)
 
                     # Log send failures (don't raise - user already saw tool progress)
                     if not result.success:
@@ -1078,6 +1100,10 @@ class BasePlatformAdapter(ABC):
                             )
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
+
+            # Store mapping of user message -> bot response IDs (for edit-as-branch)
+            if event.message_id and _sent_message_ids:
+                self._response_message_ids[event.message_id] = _sent_message_ids
 
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:

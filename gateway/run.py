@@ -1445,6 +1445,10 @@ class GatewayRunner:
                 self._pending_messages[_quick_key] = event.text
             return None
 
+        # Edit-as-branch: if this is an edited message, do transcript surgery and re-run
+        if getattr(event, 'is_edit', False) and event.message_id:
+            return await self._handle_edit_as_branch(event)
+
         # Check for commands
         command = event.get_command()
         
@@ -2262,9 +2266,11 @@ class GatewayRunner:
                 
                 # If no new messages found (edge case), fall back to simple user/assistant
                 if not new_messages:
+                    _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
+                    if event.message_id:
+                        _user_entry["platform_message_id"] = event.message_id
                     self.session_store.append_to_transcript(
-                        session_entry.session_id,
-                        {"role": "user", "content": message_text, "timestamp": ts}
+                        session_entry.session_id, _user_entry
                     )
                     if response:
                         self.session_store.append_to_transcript(
@@ -2277,6 +2283,13 @@ class GatewayRunner:
                     # to prevent the duplicate-write bug (#860).  We still write
                     # to JSONL for backward compatibility and as a backup.
                     agent_persisted = self._session_db is not None
+                    # Tag the first user message with its platform message ID
+                    # (for edit-as-branch: matching edited messages to transcript entries)
+                    if event.message_id:
+                        for msg in new_messages:
+                            if msg.get("role") == "user":
+                                msg["platform_message_id"] = event.message_id
+                                break
                     for msg in new_messages:
                         # Skip system messages (they're rebuilt each run)
                         if msg.get("role") == "system":
@@ -2286,6 +2299,12 @@ class GatewayRunner:
                         self.session_store.append_to_transcript(
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
+                        )
+                    # Backfill platform_message_id in SQLite for the user message
+                    # (the agent already wrote it to DB without this field)
+                    if agent_persisted and event.message_id:
+                        self.session_store.backfill_platform_message_id(
+                            session_entry.session_id, "user", message_text, event.message_id,
                         )
             
             # Update session with actual prompt token count and model from the agent
@@ -2804,6 +2823,81 @@ class GatewayRunner:
         available = "`none`, " + ", ".join(f"`{n}`" for n in personalities.keys())
         return f"Unknown personality: `{args}`\n\nAvailable: {available}"
     
+    async def _handle_edit_as_branch(self, event: MessageEvent) -> Optional[str]:
+        """Handle an edited message by truncating transcript and re-running.
+
+        Like git reset: finds the original message in the transcript by
+        platform_message_id, removes it and everything after it, then
+        re-processes the edited text as a new message.
+        """
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        history = self.session_store.load_transcript(session_entry.session_id)
+
+        # Find the original message by platform_message_id
+        target_idx = None
+        for i, msg in enumerate(history):
+            if msg.get("platform_message_id") == event.message_id:
+                target_idx = i
+                break
+
+        if target_idx is None:
+            # Message not found in transcript -- treat as a normal new message.
+            # This happens if: session was reset, message predates platform_message_id
+            # tracking, or the message was already undone.
+            logger.info(
+                "[edit-as-branch] message_id %s not found in transcript, treating as new message",
+                event.message_id,
+            )
+            event.is_edit = False
+            return await self._handle_message(event)
+
+        removed_count = len(history) - target_idx
+        logger.info(
+            "[edit-as-branch] Truncating transcript at index %d (removing %d messages), re-running with edited text",
+            target_idx, removed_count,
+        )
+
+        # Truncate: remove the matched message and everything after it
+        truncated = history[:target_idx]
+        self.session_store.rewrite_transcript(session_entry.session_id, truncated)
+        session_entry.last_prompt_tokens = 0  # Reset token count (same as /retry)
+
+        # Delete ALL orphaned messages from the Telegram chat (from edit point onward).
+        # In DMs and admin groups, bot can delete both its own and user messages.
+        # In non-admin groups, user message deletions will fail gracefully.
+        adapter = self.adapters.get(source.platform)
+        if adapter:
+            removed_messages = history[target_idx:]
+            ids_to_delete = set()
+
+            # 1. Collect platform_message_ids from removed transcript entries
+            for msg in removed_messages:
+                pmid = msg.get("platform_message_id")
+                if pmid:
+                    ids_to_delete.add(pmid)
+
+            # 2. Collect bot response IDs from in-memory tracking
+            if hasattr(adapter, '_response_message_ids'):
+                for msg in removed_messages:
+                    pmid = msg.get("platform_message_id")
+                    if pmid and pmid in adapter._response_message_ids:
+                        for resp_id in adapter._response_message_ids[pmid]:
+                            ids_to_delete.add(resp_id)
+                        del adapter._response_message_ids[pmid]
+
+            # 3. Don't delete the edited message itself -- the user's edit
+            #    should stay visible in the chat. Only delete what came after.
+            ids_to_delete.discard(event.message_id)
+
+            # 4. Delete all collected messages
+            for msg_id in ids_to_delete:
+                await adapter.delete_message(str(source.chat_id), msg_id)
+
+        # Re-run with the new (edited) text as a normal message
+        event.is_edit = False
+        return await self._handle_message(event)
+
     async def _handle_retry_command(self, event: MessageEvent) -> str:
         """Handle /retry command - re-send the last user message."""
         source = event.source

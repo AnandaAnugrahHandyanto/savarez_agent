@@ -26,7 +26,7 @@ from typing import Dict, Any, List, Optional
 
 DEFAULT_DB_PATH = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -189,6 +189,13 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass
                 cursor.execute("UPDATE schema_version SET version = 5")
+            if current_version < 6:
+                # v6: add platform_message_id to messages (for edit-as-branch)
+                try:
+                    cursor.execute('ALTER TABLE messages ADD COLUMN platform_message_id TEXT')
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                cursor.execute('UPDATE schema_version SET version = 6')
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -587,6 +594,7 @@ class SessionDB:
         tool_call_id: str = None,
         token_count: int = None,
         finish_reason: str = None,
+        platform_message_id: str = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -597,8 +605,9 @@ class SessionDB:
         with self._lock:
             cursor = self._conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, timestamp, token_count, finish_reason)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   tool_calls, tool_name, timestamp, token_count, finish_reason,
+                   platform_message_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -609,6 +618,7 @@ class SessionDB:
                     time.time(),
                     token_count,
                     finish_reason,
+                    platform_message_id,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -660,7 +670,7 @@ class SessionDB:
         """
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT role, content, tool_call_id, tool_calls, tool_name "
+                "SELECT role, content, tool_call_id, tool_calls, tool_name, platform_message_id "
                 "FROM messages WHERE session_id = ? ORDER BY timestamp, id",
                 (session_id,),
             )
@@ -677,6 +687,8 @@ class SessionDB:
                     msg["tool_calls"] = json.loads(row["tool_calls"])
                 except (json.JSONDecodeError, TypeError):
                     pass
+            if row["platform_message_id"]:
+                msg["platform_message_id"] = row["platform_message_id"]
             messages.append(msg)
         return messages
 
@@ -896,6 +908,31 @@ class SessionDB:
             messages = self.get_messages(session["id"])
             results.append({**session, "messages": messages})
         return results
+
+    def set_platform_message_id(self, session_id: str, role: str, content: str, platform_message_id: str) -> bool:
+        """Backfill platform_message_id on an existing message (matched by session, role, content).
+
+        Used when the agent persists messages to SQLite before platform metadata
+        is available, and the gateway needs to tag them after the fact.
+        Updates the LAST matching message (most recent) to avoid tagging old duplicates.
+        """
+        with self._lock:
+            # Find the row id of the last matching message
+            cursor = self._conn.execute(
+                """SELECT id FROM messages
+                   WHERE session_id = ? AND role = ? AND content = ? AND platform_message_id IS NULL
+                   ORDER BY timestamp DESC, id DESC LIMIT 1""",
+                (session_id, role, content),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return False
+            self._conn.execute(
+                "UPDATE messages SET platform_message_id = ? WHERE id = ?",
+                (platform_message_id, row[0] if isinstance(row, tuple) else row["id"]),
+            )
+            self._conn.commit()
+        return True
 
     def clear_messages(self, session_id: str) -> None:
         """Delete all messages for a session and reset its counters."""
