@@ -273,6 +273,9 @@ def _read_skill_conditions(skill_file: Path) -> dict:
             "fallback_for_tools": hermes.get("fallback_for_tools", []),
             "requires_tools": hermes.get("requires_tools", []),
         }
+    except FileNotFoundError:
+        logger.debug("Skill conditions file not found: %s", skill_file)
+        return {}
     except Exception as e:
         logger.debug("Failed to read skill conditions from %s: %s", skill_file, e)
         return {}
@@ -354,8 +357,14 @@ def build_skills_system_prompt(
         fm_name = frontmatter.get("name", skill_name)
         if fm_name in disabled or skill_name in disabled:
             continue
-        # Skip skills whose conditional activation rules exclude them
-        conditions = _read_skill_conditions(skill_file)
+        # Cache frontmatter to avoid redundant file read (extract conditions inline)
+        hermes_meta = frontmatter.get("metadata", {}).get("hermes", {})
+        conditions = {
+            "fallback_for_toolsets": hermes_meta.get("fallback_for_toolsets", []),
+            "requires_toolsets": hermes_meta.get("requires_toolsets", []),
+            "fallback_for_tools": hermes_meta.get("fallback_for_tools", []),
+            "requires_tools": hermes_meta.get("requires_tools", []),
+        }
         if not _skill_should_show(conditions, available_tools, available_toolsets):
             continue
         skills_by_category.setdefault(category, []).append((skill_name, desc))
@@ -482,16 +491,6 @@ def _load_hermes_md(cwd_path: Path) -> str:
 
 def _load_agents_md(cwd_path: Path) -> str:
     """AGENTS.md — hierarchical, recursive directory walk."""
-    top_level_agents = None
-    for name in ["AGENTS.md", "agents.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
-            top_level_agents = candidate
-            break
-
-    if not top_level_agents:
-        return ""
-
     agents_files = []
     for root, dirs, files in os.walk(cwd_path):
         dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('node_modules', '__pycache__', 'venv', '.venv')]
@@ -499,18 +498,24 @@ def _load_agents_md(cwd_path: Path) -> str:
             if f.lower() == "agents.md":
                 agents_files.append(Path(root) / f)
     agents_files.sort(key=lambda p: len(p.parts))
-
-    total_content = ""
+    
+    # Early return if no AGENTS.md files found
+    if not agents_files:
+        return ""
+    
+    # Use list accumulation for O(n) concatenation
+    total_content_lines: list[str] = []
     for agents_path in agents_files:
         try:
             content = agents_path.read_text(encoding="utf-8").strip()
             if content:
                 rel_path = agents_path.relative_to(cwd_path)
                 content = _scan_context_content(content, str(rel_path))
-                total_content += f"## {rel_path}\n\n{content}\n\n"
-        except Exception as e:
+                total_content_lines.append(f"## {rel_path}\n\n{content}\n\n")
+        except (OSError, UnicodeDecodeError) as e:
             logger.debug("Could not read %s: %s", agents_path, e)
-
+    
+    total_content = "".join(total_content_lines)
     if not total_content:
         return ""
     return _truncate_content(total_content, "AGENTS.md")
@@ -534,18 +539,22 @@ def _load_claude_md(cwd_path: Path) -> str:
 
 def _load_cursorrules(cwd_path: Path) -> str:
     """.cursorrules + .cursor/rules/*.mdc — cwd only."""
-    cursorrules_content = ""
+    cursor_rules_dir = cwd_path / ".cursor" / "rules"
+    # Use list accumulation for O(n) concatenation
+    cursorrules_lines: list[str] = []
+    
+    # Process .cursorrules file first
     cursorrules_file = cwd_path / ".cursorrules"
     if cursorrules_file.exists():
         try:
             content = cursorrules_file.read_text(encoding="utf-8").strip()
             if content:
                 content = _scan_context_content(content, ".cursorrules")
-                cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
-        except Exception as e:
+                cursorrules_lines.append(f"## .cursorrules\n\n{content}\n\n")
+        except (OSError, UnicodeDecodeError) as e:
             logger.debug("Could not read .cursorrules: %s", e)
-
-    cursor_rules_dir = cwd_path / ".cursor" / "rules"
+    
+    # Process .cursor/rules/*.mdc files
     if cursor_rules_dir.exists() and cursor_rules_dir.is_dir():
         mdc_files = sorted(cursor_rules_dir.glob("*.mdc"))
         for mdc_file in mdc_files:
@@ -553,9 +562,11 @@ def _load_cursorrules(cwd_path: Path) -> str:
                 content = mdc_file.read_text(encoding="utf-8").strip()
                 if content:
                     content = _scan_context_content(content, f".cursor/rules/{mdc_file.name}")
-                    cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
-            except Exception as e:
+                    cursorrules_lines.append(f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n")
+            except (OSError, UnicodeDecodeError) as e:
                 logger.debug("Could not read %s: %s", mdc_file, e)
+    
+    cursorrules_content = "".join(cursorrules_lines)
 
     if not cursorrules_content:
         return ""

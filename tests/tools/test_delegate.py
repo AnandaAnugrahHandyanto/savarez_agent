@@ -588,15 +588,25 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["provider"], "custom")
 
     def test_direct_endpoint_does_not_fall_back_to_openrouter_api_key_env(self):
+        """When base_url is configured, code should NOT use OPENROUTER_API_KEY.
+        It should only use OPENAI_API_KEY or raise ValueError if neither is set."""
         parent = _make_mock_parent(depth=0)
         cfg = {
             "model": "qwen2.5-coder",
             "base_url": "http://localhost:1234/v1",
         }
+        # Ensure OPENAI_API_KEY is not set, but OPENROUTER_API_KEY is
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "env-openrouter-key"}, clear=False):
-            with self.assertRaises(ValueError) as ctx:
-                _resolve_delegation_credentials(cfg, parent)
-        self.assertIn("OPENAI_API_KEY", str(ctx.exception))
+            # Explicitly remove OPENAI_API_KEY to ensure it's not inherited from other tests
+            original_openai = os.environ.pop("OPENAI_API_KEY", None)
+            try:
+                with self.assertRaises(ValueError) as ctx:
+                    _resolve_delegation_credentials(cfg, parent)
+                self.assertIn("OPENAI_API_KEY", str(ctx.exception))
+            finally:
+                # Restore OPENAI_API_KEY if it was originally set
+                if original_openai is not None:
+                    os.environ["OPENAI_API_KEY"] = original_openai
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_nous_provider_resolves_nous_credentials(self, mock_resolve):
