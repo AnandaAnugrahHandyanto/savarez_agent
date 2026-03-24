@@ -20,25 +20,54 @@ def test_annotate_requires_absolute_artifact_path():
     assert "must be an absolute path" in result["error"]
 
 
-def test_review_uses_default_bridge_template_without_target():
+def test_prepare_returns_reserved_url_without_waiting():
     completed = CompletedProcess(
         args=["bash", "-lc", "echo"],
         returncode=0,
-        stdout="URL=https://plannotator-demo.example/\nPID=321\nLOG=/tmp/plannotator.log\n",
+        stdout="HOST=plannotator-demo.example\nURL=https://plannotator-demo.example/\n",
         stderr="",
     )
 
     with patch("tools.exposure_helpers.subprocess.run", return_value=completed) as run_mock:
+        result = json.loads(plannotator_session_tool({"action": "prepare"}))
+
+    assert result["success"] is True
+    assert result["host"] == "plannotator-demo.example"
+    assert result["url"] == "https://plannotator-demo.example/"
+    assert result["waited_for_completion"] is False
+    assert "start_session.py prepare" in run_mock.call_args.args[0][2]
+
+
+def test_review_uses_default_bridge_template_without_target():
+    completed = CompletedProcess(
+        args=["bash", "-lc", "echo"],
+        returncode=0,
+        stdout="HOST=plannotator-demo.example\nURL=https://plannotator-demo.example/\nPID=321\nLOG=/tmp/plannotator.log\n",
+        stderr="",
+    )
+
+    with (
+        patch("tools.exposure_helpers.subprocess.run", return_value=completed) as run_mock,
+        patch("tools.plannotator_tool._wait_for_plannotator_completion", return_value={"completed": True, "status": "completed"}) as wait_mock,
+    ):
         result = json.loads(plannotator_session_tool({"action": "review"}))
 
     assert result["success"] is True
+    assert result["host"] == "plannotator-demo.example"
     assert result["url"] == "https://plannotator-demo.example/"
     command = run_mock.call_args.args[0][2]
     assert "start_session.py review" in command
     assert result["suggested_message"].startswith("Temporary review URL:")
+    assert result["waited_for_completion"] is True
+    wait_mock.assert_called_once_with(
+        pid="321",
+        log_path="/tmp/plannotator.log",
+        timeout_seconds=3600,
+        poll_interval_seconds=2.0,
+    )
 
 
-def test_review_with_target_and_strategy_passes_values_into_template():
+def test_review_with_target_strategy_and_fixed_host_passes_env_values():
     completed = CompletedProcess(
         args=["bash", "-lc", "echo"],
         returncode=0,
@@ -53,7 +82,9 @@ def test_review_with_target_and_strategy_passes_values_into_template():
                     "action": "review",
                     "review_target": "https://github.com/example/repo/pull/7",
                     "exposure_strategy": "tailscale-funnel",
+                    "fixed_host": "plannotator-fixed.a.cloud77.it",
                     "command_template": "launch-review {review_target_arg} --strategy {exposure_strategy}",
+                    "wait_for_completion": False,
                 }
             )
         )
@@ -64,6 +95,8 @@ def test_review_with_target_and_strategy_passes_values_into_template():
     assert "https://github.com/example/repo/pull/7" in command
     assert "--strategy tailscale-funnel" in command
     assert run_mock.call_args.kwargs["env"]["PLANNOTATOR_EXPOSURE_STRATEGY"] == "tailscale-funnel"
+    assert run_mock.call_args.kwargs["env"]["PLANNOTATOR_HOST"] == "plannotator-fixed.a.cloud77.it"
+    assert result["waited_for_completion"] is False
 
 
 def test_last_action_reports_launcher_failure():
@@ -79,3 +112,71 @@ def test_last_action_reports_launcher_failure():
 
     assert "launcher failed" in result["error"]
     assert result["stderr"] == "unsupported"
+
+
+def test_wait_returns_final_log_when_process_exits(tmp_path):
+    log_path = tmp_path / "review.log"
+    log_path.write_text("Code review completed — looks good.\n")
+
+    completed = CompletedProcess(
+        args=["bash", "-lc", "echo"],
+        returncode=0,
+        stdout=f"URL=https://review.example/\nPID=777\nLOG={log_path}\n",
+        stderr="",
+    )
+
+    with (
+        patch("tools.exposure_helpers.subprocess.run", return_value=completed),
+        patch("tools.plannotator_tool._pid_is_running", side_effect=[True, False]),
+        patch("tools.plannotator_tool.time.sleep", return_value=None),
+    ):
+        result = json.loads(
+            plannotator_session_tool(
+                {
+                    "action": "review",
+                    "completion_timeout_seconds": 60,
+                    "poll_interval_seconds": 0.25,
+                }
+            )
+        )
+
+    assert result["completed"] is True
+    assert result["timed_out"] is False
+    assert result["status"] == "completed"
+    assert "looks good" in result["final_log"]
+
+
+def test_wait_times_out_and_preserves_last_log(tmp_path):
+    log_path = tmp_path / "review.log"
+    log_path.write_text("Still waiting for annotations...\n")
+
+    completed = CompletedProcess(
+        args=["bash", "-lc", "echo"],
+        returncode=0,
+        stdout=f"URL=https://review.example/\nPID=888\nLOG={log_path}\n",
+        stderr="",
+    )
+
+    monotonic_values = iter([0.0, 0.0, 61.0])
+
+    with (
+        patch("tools.exposure_helpers.subprocess.run", return_value=completed),
+        patch("tools.plannotator_tool._pid_is_running", return_value=True),
+        patch("tools.plannotator_tool.time.sleep", return_value=None),
+        patch("tools.plannotator_tool.time.monotonic", side_effect=lambda: next(monotonic_values)),
+    ):
+        result = json.loads(
+            plannotator_session_tool(
+                {
+                    "action": "review",
+                    "completion_timeout_seconds": 60,
+                    "poll_interval_seconds": 0.25,
+                }
+            )
+        )
+
+    assert result["completed"] is False
+    assert result["timed_out"] is True
+    assert result["status"] == "timeout"
+    assert result["session_still_running"] is True
+    assert "Still waiting" in result["final_log"]
