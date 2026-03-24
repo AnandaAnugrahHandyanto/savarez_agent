@@ -5011,6 +5011,80 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
+                # Proactive capacity warning on successful writes (>=80% full)
+                if function_args.get("action") == "add" and self._memory_store and self.status_callback:
+                    try:
+                        _mem_ok = json.loads(function_result) if isinstance(function_result, str) else function_result
+                        if isinstance(_mem_ok, dict) and _mem_ok.get("success") is True:
+                            _t = function_args.get("target", "memory")
+                            _cur = self._memory_store._char_count(_t)
+                            _lim = self._memory_store._char_limit(_t)
+                            if _lim > 0 and _cur / _lim >= 0.80:
+                                try:
+                                    self.status_callback("memory_capacity_warning",
+                                        f"⚠️ Memory store at {int(_cur/_lim*100)}% capacity ({_cur:,}/{_lim:,} chars). Consider pruning old entries.")
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                # Auto-truncation retry: if memory write failed due to size limit,
+                # retry with truncated content (keep first 60% of chars).
+                # Surface failures to gateway users via status_callback.
+                if function_args.get("action") == "add":
+                    try:
+                        _mem_result = json.loads(function_result) if isinstance(function_result, str) else function_result
+                        if isinstance(_mem_result, dict) and _mem_result.get("success") is False:
+                            _mem_err = _mem_result.get("error", "")
+                            if "exceed the limit" in _mem_err:
+                                # Retry with truncated content
+                                _orig_content = function_args.get("content", "")
+                                _truncated = _orig_content[:int(len(_orig_content) * 0.6)]
+                                if _truncated and len(_truncated) < len(_orig_content):
+                                    from tools.memory_tool import memory_tool as _memory_tool2
+                                    _retry_result = _memory_tool2(
+                                        action="add",
+                                        target=target,
+                                        content=_truncated + "… [truncated]",
+                                        store=self._memory_store,
+                                    )
+                                    _retry_parsed = json.loads(_retry_result) if isinstance(_retry_result, str) else _retry_result
+                                    if isinstance(_retry_parsed, dict) and _retry_parsed.get("success"):
+                                        function_result = _retry_result
+                                        self._vprint(f"{self.log_prefix}📝 Memory entry truncated to fit limit", force=False)
+                                        # Check capacity after truncated write
+                                        if self._memory_store and self.status_callback:
+                                            try:
+                                                _t = function_args.get("target", "memory")
+                                                _cur = self._memory_store._char_count(_t)
+                                                _lim = self._memory_store._char_limit(_t)
+                                                if _lim > 0 and _cur / _lim >= 0.80:
+                                                    self.status_callback("memory_capacity_warning",
+                                                        f"⚠️ Memory store at {int(_cur/_lim*100)}% capacity ({_cur:,}/{_lim:,} chars). Consider pruning old entries.")
+                                            except Exception:
+                                                pass
+                                    else:
+                                        # Truncation also failed — notify user
+                                        if self.status_callback:
+                                            try:
+                                                self.status_callback("memory_write_failed",
+                                                    "⚠️ Memory store is full — could not save memory entry. Consider /compress or pruning old entries.")
+                                            except Exception:
+                                                pass
+                                else:
+                                    if self.status_callback:
+                                        try:
+                                            self.status_callback("memory_write_failed",
+                                                "⚠️ Memory store is full — could not save memory entry. Consider /compress or pruning old entries.")
+                                        except Exception:
+                                            pass
+                            elif _mem_result.get("success") is False and self.status_callback:
+                                try:
+                                    self.status_callback("memory_write_failed",
+                                        f"⚠️ Memory write failed: {_mem_err[:120]}")
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
             elif function_name == "clarify":
                 from tools.clarify_tool import clarify_tool as _clarify_tool
                 function_result = _clarify_tool(
