@@ -285,6 +285,30 @@ class APIServerAdapter(BasePlatformAdapter):
         )
 
     # ------------------------------------------------------------------
+    # User identification
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_memory_namespace(
+        request: "web.Request", body: Dict[str, Any],
+    ) -> Optional[str]:
+        """Return a per-user memory namespace from the request, or *None*.
+
+        Resolution order:
+        1. ``body["user"]`` — standard OpenAI field.
+        2. ``X-OpenWebUI-User-Email`` / ``-Name`` / ``-Id`` headers
+           (sent when ``ENABLE_FORWARD_USER_INFO_HEADERS`` is enabled).
+        """
+        user = body.get("user")
+        if not user:
+            user = (
+                request.headers.get("X-OpenWebUI-User-Email")
+                or request.headers.get("X-OpenWebUI-User-Name")
+                or request.headers.get("X-OpenWebUI-User-Id")
+            )
+        return f"api:{user}" if user else None
+
+    # ------------------------------------------------------------------
     # Agent creation helper
     # ------------------------------------------------------------------
 
@@ -293,6 +317,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        memory_namespace: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -307,6 +332,7 @@ class APIServerAdapter(BasePlatformAdapter):
         model = _resolve_gateway_model()
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+        skip_memory = os.getenv("HERMES_SKIP_MEMORY", "").lower() in ("true", "1", "yes")
 
         agent = AIAgent(
             model=model,
@@ -318,6 +344,8 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id=session_id,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
+            skip_memory=skip_memory,
+            memory_namespace=memory_namespace,
         )
         return agent
 
@@ -408,6 +436,8 @@ class APIServerAdapter(BasePlatformAdapter):
         model_name = body.get("model", "hermes-agent")
         created = int(time.time())
 
+        _memory_ns = self._resolve_memory_namespace(request, body)
+
         if stream:
             import queue as _q
             _stream_q: _q.Queue = _q.Queue()
@@ -422,6 +452,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
+                memory_namespace=_memory_ns,
             ))
 
             return await self._write_sse_chat_completion(
@@ -435,6 +466,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                memory_namespace=_memory_ns,
             )
         except Exception as e:
             logger.error("Error running agent for chat completions: %s", e, exc_info=True)
@@ -650,12 +682,14 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Run the agent
         session_id = str(uuid.uuid4())
+        _memory_ns = self._resolve_memory_namespace(request, body)
         try:
             result, usage = await self._run_agent(
                 user_message=user_message,
                 conversation_history=conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
+                memory_namespace=_memory_ns,
             )
         except Exception as e:
             logger.error("Error running agent for responses: %s", e, exc_info=True)
@@ -1051,6 +1085,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        memory_namespace: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -1065,6 +1100,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
                 stream_delta_callback=stream_delta_callback,
+                memory_namespace=memory_namespace,
             )
             result = agent.run_conversation(
                 user_message=user_message,

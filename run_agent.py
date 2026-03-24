@@ -412,6 +412,7 @@ class AIAgent:
         platform: str = None,
         skip_context_files: bool = False,
         skip_memory: bool = False,
+        memory_namespace: Optional[str] = None,
         session_db=None,
         honcho_session_key: str = None,
         honcho_manager=None,
@@ -922,6 +923,7 @@ class AIAgent:
                     self._memory_store = MemoryStore(
                         memory_char_limit=mem_config.get("memory_char_limit", 2200),
                         user_char_limit=mem_config.get("user_char_limit", 1375),
+                        memory_namespace=memory_namespace,
                     )
                     self._memory_store.load_from_disk()
             except Exception:

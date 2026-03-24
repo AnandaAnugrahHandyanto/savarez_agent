@@ -256,6 +256,28 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
+def _memory_namespace_from_session_key(session_key: str) -> Optional[str]:
+    """Derive a per-user memory namespace from a gateway session key.
+
+    Session keys are built by ``build_session_key()`` in gateway/session.py.
+    Format:  ``agent:main:<platform>:<chat_type>:<chat_id>[:<thread_id>][:<user_id>]``
+
+    For DMs the chat_id *is* the user, so we use ``<platform>:<chat_id>``.
+    For groups the user_id is always the last segment (when present),
+    so we use ``<platform>:<last_segment>`` as a best-effort identifier.
+    """
+    parts = session_key.split(":")
+    if len(parts) < 5:
+        return None
+    platform = parts[2]
+    chat_type = parts[3]
+    if chat_type == "dm":
+        # DM chat_id identifies the user; thread_id (if any) doesn't.
+        return f"{platform}:{parts[4]}"
+    # Groups: user_id is appended last by build_session_key().
+    return f"{platform}:{parts[-1]}"
+
+
 def _resolve_gateway_model() -> str:
     """Read model from env/config — mirrors the resolution in _run_agent_sync.
 
@@ -522,6 +544,7 @@ class GatewayRunner:
         self,
         old_session_id: str,
         honcho_session_key: Optional[str] = None,
+        memory_namespace: Optional[str] = None,
     ):
         """Prompt the agent to save memories/skills before context is lost.
 
@@ -557,6 +580,7 @@ class GatewayRunner:
                 enabled_toolsets=["memory", "skills"],
                 session_id=old_session_id,
                 honcho_session_key=honcho_session_key,
+                memory_namespace=memory_namespace,
             )
 
             # Build conversation history from transcript
@@ -631,6 +655,7 @@ class GatewayRunner:
         self,
         old_session_id: str,
         honcho_session_key: Optional[str] = None,
+        memory_namespace: Optional[str] = None,
     ):
         """Run the sync memory flush in a thread pool so it won't block the event loop."""
         loop = asyncio.get_event_loop()
@@ -639,6 +664,7 @@ class GatewayRunner:
             self._flush_memories_for_session,
             old_session_id,
             honcho_session_key,
+            memory_namespace,
         )
 
     @property
@@ -1152,7 +1178,8 @@ class GatewayRunner:
                         entry.session_id, key,
                     )
                     try:
-                        await self._async_flush_memories(entry.session_id, key)
+                        _ns = _memory_namespace_from_session_key(key)
+                        await self._async_flush_memories(entry.session_id, key, memory_namespace=_ns)
                         self._shutdown_gateway_honcho(key)
                         self.session_store._pre_flushed_sessions.add(entry.session_id)
                     except Exception as e:
@@ -2096,6 +2123,7 @@ class GatewayRunner:
                             ]
 
                             if len(_hyg_msgs) >= 4:
+                                _hyg_ns = f"{platform_key}:{source.user_id}" if source.user_id else None
                                 _hyg_agent = AIAgent(
                                     **_hyg_runtime,
                                     model=_hyg_model,
@@ -2103,6 +2131,7 @@ class GatewayRunner:
                                     quiet_mode=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
+                                    memory_namespace=_hyg_ns,
                                 )
 
                                 loop = asyncio.get_event_loop()
@@ -2676,8 +2705,9 @@ class GatewayRunner:
         try:
             old_entry = self.session_store._entries.get(session_key)
             if old_entry:
+                _ns = f"{source.platform.value if source.platform else 'unknown'}:{source.user_id}" if source.user_id else None
                 asyncio.create_task(
-                    self._async_flush_memories(old_entry.session_id, session_key)
+                    self._async_flush_memories(old_entry.session_id, session_key, memory_namespace=_ns)
                 )
         except Exception as e:
             logger.debug("Gateway memory flush on reset failed: %s", e)
@@ -3754,6 +3784,8 @@ class GatewayRunner:
             self._reasoning_config = reasoning_config
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
+            _bg_ns = f"{platform_key}:{source.user_id}" if source.user_id else None
+
             def run_sync():
                 agent = AIAgent(
                     model=turn_route["model"],
@@ -3773,6 +3805,7 @@ class GatewayRunner:
                     platform=platform_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    memory_namespace=_bg_ns,
                 )
 
                 return agent.run_conversation(
@@ -3959,6 +3992,8 @@ class GatewayRunner:
             original_count = len(msgs)
             approx_tokens = estimate_messages_tokens_rough(msgs)
 
+            _cmp_platform = source.platform.value if source.platform else "unknown"
+            _cmp_ns = f"{_cmp_platform}:{source.user_id}" if source.user_id else None
             tmp_agent = AIAgent(
                 **runtime_kwargs,
                 model=model,
@@ -3966,6 +4001,7 @@ class GatewayRunner:
                 quiet_mode=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
+                memory_namespace=_cmp_ns,
             )
 
             loop = asyncio.get_event_loop()
@@ -4088,8 +4124,9 @@ class GatewayRunner:
 
         # Flush memories for current session before switching
         try:
+            _ns = f"{source.platform.value if source.platform else 'unknown'}:{source.user_id}" if source.user_id else None
             asyncio.create_task(
-                self._async_flush_memories(current_entry.session_id, session_key)
+                self._async_flush_memories(current_entry.session_id, session_key, memory_namespace=_ns)
             )
         except Exception as e:
             logger.debug("Memory flush on resume failed: %s", e)
@@ -5209,6 +5246,7 @@ class GatewayRunner:
 
             if agent is None:
                 # Config changed or first message — create fresh agent
+                _memory_ns = f"{platform_key}:{source.user_id}" if source.user_id else None
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
@@ -5232,6 +5270,7 @@ class GatewayRunner:
                     honcho_config=honcho_config,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    memory_namespace=_memory_ns,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
