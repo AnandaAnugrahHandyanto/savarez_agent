@@ -58,7 +58,7 @@ If your skill is specialized, community-contributed, or niche, it's better suite
 | **Git** | With `--recurse-submodules` support |
 | **Python 3.11+** | uv will install it if missing |
 | **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
-| **Node.js 18+** | Optional — needed for browser tools and WhatsApp bridge |
+| **Node.js 18+** | Optional — needed for browser tools and the WhatsApp/Kasia bridges |
 
 ### Clone and install
 
@@ -139,6 +139,7 @@ hermes-agent/
 │   ├── commands.py               # Central slash command registry (CommandDef), autocomplete, gateway helpers
 │   ├── callbacks.py              # Interactive callbacks (clarify, sudo, approval)
 │   ├── doctor.py                 # Diagnostics
+│   ├── kasia.py                  # Dedicated Kasia setup, doctor, and status flows
 │   ├── skills_hub.py             # Skills Hub CLI + /skills slash command
 │   └── skin_engine.py            # Skin/theme engine — data-driven CLI visual customization
 │
@@ -163,12 +164,13 @@ hermes-agent/
 │   ├── config.py                 # Platform configuration resolution
 │   ├── session.py                # Session store, context prompts, reset policies
 │   └── platforms/                # Platform adapters
-│       ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
+│       ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py, kasia.py
 │
 ├── scripts/                  # Installer and bridge scripts
 │   ├── install.sh                # Linux/macOS installer
 │   ├── install.ps1               # Windows PowerShell installer
-│   └── whatsapp-bridge/          # Node.js WhatsApp bridge (Baileys)
+│   ├── whatsapp-bridge/          # Node.js WhatsApp bridge (Baileys)
+│   └── kasia-bridge/             # Node.js Kasia bridge
 │
 ├── skills/                   # Bundled skills (copied to ~/.hermes/skills/ on install)
 ├── optional-skills/          # Official optional skills (discoverable via hub, not activated by default)
@@ -192,6 +194,7 @@ hermes-agent/
 | `~/.hermes/state.db` | SQLite session database |
 | `~/.hermes/sessions/` | JSON session logs |
 | `~/.hermes/cron/` | Scheduled job data |
+| `~/.hermes/kasia/` | Kasia bridge state and logs |
 | `~/.hermes/whatsapp/session/` | WhatsApp bridge credentials |
 
 ---
