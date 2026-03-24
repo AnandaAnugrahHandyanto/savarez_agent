@@ -290,6 +290,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
         if origin.get("chat_name"):
             os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
+        if origin.get("thread_id"):
+            os.environ["HERMES_SESSION_THREAD_ID"] = str(origin["thread_id"])
 
     try:
         # Re-read .env and config.yaml fresh every run so provider/key
@@ -470,6 +472,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             "HERMES_SESSION_PLATFORM",
             "HERMES_SESSION_CHAT_ID",
             "HERMES_SESSION_CHAT_NAME",
+            "HERMES_SESSION_THREAD_ID",
+            "HERMES_SESSION_MESSAGE_ID",
             "HERMES_CRON_AUTO_DELIVER_PLATFORM",
             "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
             "HERMES_CRON_AUTO_DELIVER_THREAD_ID",

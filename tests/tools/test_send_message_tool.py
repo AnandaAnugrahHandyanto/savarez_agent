@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.config import Platform
-from tools.send_message_tool import _send_telegram, _send_to_platform, send_message_tool
+from tools.send_message_tool import _get_current_session_target, _send_telegram, _send_to_platform, send_message_tool
 
 
 def _run_async_immediately(coro):
@@ -103,6 +103,7 @@ class TestSendMessageTool:
             "hello",
             thread_id=None,
             media_files=[],
+            reply_to_message_id=None,
         )
         mirror_mock.assert_called_once_with("telegram", "-1002", "hello", source_label="cli", thread_id=None)
 
@@ -142,6 +143,7 @@ class TestSendMessageTool:
             "hello",
             thread_id="99999",
             media_files=[],
+            reply_to_message_id=None,
         )
         mirror_mock.assert_called_once_with("telegram", "-1001", "hello", source_label="cli", thread_id="99999")
 
@@ -171,6 +173,7 @@ class TestSendMessageTool:
             "hello",
             thread_id="17585",
             media_files=[],
+            reply_to_message_id=None,
         )
         mirror_mock.assert_called_once_with("telegram", "-1001", "hello", source_label="cli", thread_id="17585")
 
@@ -201,6 +204,7 @@ class TestSendMessageTool:
             "hello",
             thread_id="17585",
             media_files=[],
+            reply_to_message_id=None,
         )
 
     def test_media_only_message_uses_placeholder_for_mirroring(self):
@@ -229,6 +233,7 @@ class TestSendMessageTool:
             "",
             thread_id=None,
             media_files=[("/tmp/example.ogg", False)],
+            reply_to_message_id=None,
         )
         mirror_mock.assert_called_once_with(
             "telegram",
@@ -237,6 +242,58 @@ class TestSendMessageTool:
             source_label="cli",
             thread_id=None,
         )
+
+
+def test_get_current_session_target_from_env(monkeypatch):
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "12345")
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "99")
+    monkeypatch.setenv("HERMES_SESSION_MESSAGE_ID", "777")
+
+    assert _get_current_session_target() == {
+        "platform_name": "telegram",
+        "chat_id": "12345",
+        "thread_id": "99",
+        "message_id": "777",
+    }
+
+
+def test_send_message_uses_current_session_when_target_omitted(monkeypatch):
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "12345")
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "99")
+    monkeypatch.setenv("HERMES_SESSION_MESSAGE_ID", "777")
+
+    config, telegram_cfg = _make_config()
+    send_mock = AsyncMock(return_value={"success": True, "platform": "telegram", "chat_id": "12345", "message_id": "888"})
+
+    with patch("gateway.config.load_gateway_config", return_value=config), \
+         patch("tools.interrupt.is_interrupted", return_value=False), \
+         patch("model_tools._run_async", side_effect=_run_async_immediately), \
+         patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+         patch("gateway.mirror.mirror_to_session", return_value=False):
+        result = json.loads(send_message_tool({"message": "status update", "reply_to_current": True}))
+
+    assert result["success"] is True
+    assert "current telegram conversation" in result["note"]
+    send_mock.assert_awaited_once_with(
+        Platform.TELEGRAM,
+        telegram_cfg,
+        "12345",
+        "status update",
+        thread_id="99",
+        media_files=[],
+        reply_to_message_id="777",
+    )
+
+
+def test_send_message_current_requires_gateway_context(monkeypatch):
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+
+    result = json.loads(send_message_tool({"message": "hello", "target": "current"}))
+
+    assert "No active messaging session context found" in result["error"]
 
 
 class TestSendTelegramMediaDelivery:
@@ -374,7 +431,7 @@ class TestSendToPlatformChunking:
         """When chunked, media files are sent only with the last chunk."""
         sent_calls = []
 
-        async def fake_send(token, chat_id, message, media_files=None, thread_id=None):
+        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, reply_to_message_id=None):
             sent_calls.append(media_files or [])
             return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(len(sent_calls))}
 

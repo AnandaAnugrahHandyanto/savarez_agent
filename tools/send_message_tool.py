@@ -25,6 +25,8 @@ SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
     "description": (
         "Send a message to a connected messaging platform, or list available targets.\n\n"
+        "If target is omitted while running inside a messaging session, send to the current chat/channel automatically. "
+        "This is useful for status updates, pre-tool call notices, and progress messages in the active conversation.\n"
         "IMPORTANT: When the user asks to send to a specific channel or person "
         "(not just a bare platform name), call send_message(action='list') FIRST to see "
         "available targets, then send to the correct one.\n"
@@ -41,11 +43,15 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567'"
+                "description": "Optional delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Special values: 'current' or 'origin' use the active messaging conversation. If omitted in a messaging session, the current conversation is used automatically. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567'"
             },
             "message": {
                 "type": "string",
                 "description": "The message text to send"
+            },
+            "reply_to_current": {
+                "type": "boolean",
+                "description": "When true, reply to the user's current message if the platform supports it. Useful for inline status updates in the active conversation."
             }
         },
         "required": []
@@ -74,39 +80,56 @@ def _handle_list():
 
 def _handle_send(args):
     """Send a message to a platform target."""
-    target = args.get("target", "")
+    target = (args.get("target") or "").strip()
     message = args.get("message", "")
-    if not target or not message:
-        return json.dumps({"error": "Both 'target' and 'message' are required when action='send'"})
+    reply_to_current = bool(args.get("reply_to_current", False))
+    if not message:
+        return json.dumps({"error": "'message' is required when action='send'"})
 
-    parts = target.split(":", 1)
-    platform_name = parts[0].strip().lower()
-    target_ref = parts[1].strip() if len(parts) > 1 else None
-    chat_id = None
-    thread_id = None
+    current_context = _get_current_session_target()
+    use_current_target = (not target) or target.lower() in {"current", "origin"}
 
-    if target_ref:
-        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+    if use_current_target:
+        if not current_context:
+            return json.dumps({
+                "error": "No active messaging session context found. Specify 'target', or use send_message from a gateway conversation."
+            })
+        platform_name = current_context["platform_name"]
+        chat_id = current_context["chat_id"]
+        thread_id = current_context.get("thread_id")
+        reply_to_message_id = current_context.get("message_id") if reply_to_current else None
+        target_ref = None
+        is_explicit = True
     else:
-        is_explicit = False
+        parts = target.split(":", 1)
+        platform_name = parts[0].strip().lower()
+        target_ref = parts[1].strip() if len(parts) > 1 else None
+        chat_id = None
+        thread_id = None
+        reply_to_message_id = None
 
-    # Resolve human-friendly channel names to numeric IDs
-    if target_ref and not is_explicit:
-        try:
-            from gateway.channel_directory import resolve_channel_name
-            resolved = resolve_channel_name(platform_name, target_ref)
-            if resolved:
-                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
-            else:
+        if target_ref:
+            chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+        else:
+            is_explicit = False
+
+        # Resolve human-friendly channel names to numeric IDs
+        if target_ref and not is_explicit:
+            try:
+                from gateway.channel_directory import resolve_channel_name
+                resolved = resolve_channel_name(platform_name, target_ref)
+                if resolved:
+                    chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+                else:
+                    return json.dumps({
+                        "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                        f"Use send_message(action='list') to see available targets."
+                    })
+            except Exception:
                 return json.dumps({
                     "error": f"Could not resolve '{target_ref}' on {platform_name}. "
-                    f"Use send_message(action='list') to see available targets."
+                    f"Try using a numeric channel ID instead."
                 })
-        except Exception:
-            return json.dumps({
-                "error": f"Could not resolve '{target_ref}' on {platform_name}. "
-                f"Try using a numeric channel ID instead."
-            })
 
     from tools.interrupt import is_interrupted
     if is_interrupted():
@@ -172,10 +195,13 @@ def _handle_send(args):
                 cleaned_message,
                 thread_id=thread_id,
                 media_files=media_files,
+                reply_to_message_id=reply_to_message_id,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
+        elif use_current_target and isinstance(result, dict) and result.get("success"):
+            result["note"] = f"Sent to current {platform_name} conversation (chat_id: {chat_id})"
 
         # Mirror the sent message into the target's gateway session
         if isinstance(result, dict) and result.get("success") and mirror_text:
@@ -220,6 +246,22 @@ def _describe_media_for_mirror(media_files):
             return "[Sent audio attachment]"
         return "[Sent document attachment]"
     return f"[Sent {len(media_files)} media attachments]"
+
+
+def _get_current_session_target():
+    """Resolve the active gateway conversation from environment variables."""
+    platform_name = os.getenv("HERMES_SESSION_PLATFORM", "").strip().lower()
+    chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "").strip()
+    if not platform_name or not chat_id or platform_name == "local":
+        return None
+    thread_id = os.getenv("HERMES_SESSION_THREAD_ID", "").strip() or None
+    message_id = os.getenv("HERMES_SESSION_MESSAGE_ID", "").strip() or None
+    return {
+        "platform_name": platform_name,
+        "chat_id": chat_id,
+        "thread_id": thread_id,
+        "message_id": message_id,
+    }
 
 
 def _get_cron_auto_delivery_target():
@@ -267,7 +309,7 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, reply_to_message_id=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -308,6 +350,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 chunk,
                 media_files=media_files if is_last else [],
                 thread_id=thread_id,
+                reply_to_message_id=reply_to_message_id if i == 0 else None,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -357,7 +400,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     return last_result
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, reply_to_message_id=None):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -393,6 +436,8 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         thread_kwargs = {}
         if thread_id is not None:
             thread_kwargs["message_thread_id"] = int(thread_id)
+        if reply_to_message_id is not None:
+            thread_kwargs["reply_parameters"] = {"message_id": int(reply_to_message_id)}
 
         last_msg = None
         warnings = []
