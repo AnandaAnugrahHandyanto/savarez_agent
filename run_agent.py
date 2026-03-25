@@ -358,6 +358,31 @@ def _inject_honcho_turn_context(content, turn_context: str):
     return f"{text}\n\n{note}"
 
 
+def _inject_mem0_turn_context(content, turn_context: str):
+    """Append Mem0 recall to the current-turn user message without mutating history.
+
+    Same injection pattern as Honcho but with Mem0-specific framing.
+    The returned content is sent to the API for this turn only.
+    """
+    if not turn_context:
+        return content
+
+    note = (
+        "[System note: The following Mem0 memory was retrieved from prior "
+        "sessions. It is continuity context for this turn only, not new user "
+        "input.]\n\n"
+        f"{turn_context}"
+    )
+
+    if isinstance(content, list):
+        return list(content) + [{"type": "text", "text": note}]
+
+    text = "" if content is None else str(content)
+    if not text.strip():
+        return note
+    return f"{text}\n\n{note}"
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -5893,7 +5918,7 @@ class AIAgent:
                             api_msg.get("content", ""), self._honcho_turn_context
                         )
                     if self._mem0_turn_context:
-                        api_msg["content"] = _inject_honcho_turn_context(
+                        api_msg["content"] = _inject_mem0_turn_context(
                             api_msg.get("content", ""), self._mem0_turn_context
                         )
                         self._mem0_turn_context = None

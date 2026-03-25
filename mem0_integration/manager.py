@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _build_v2_filters(user_id: str) -> dict[str, Any]:
+def build_v2_filters(user_id: str) -> dict[str, Any]:
     """Build v2 API filters for a user.
 
     Mem0 scopes records per-entity: a record stored with both user_id
@@ -89,6 +89,10 @@ class Mem0MemoryManager:
         Used by mem0_conclude tool. Adds source metadata to distinguish
         agent-written facts from user utterances.
 
+        Note: run_id is intentionally omitted — concluded facts are
+        session-independent and should be retrievable via the bare
+        user_id filter branch (without needing run_id="*" wildcard).
+
         Warning: infer=False skips duplicate detection per Mem0 docs.
         """
         try:
@@ -111,17 +115,21 @@ class Mem0MemoryManager:
         query: str,
         user_id: str,
         top_k: int = 10,
-        rerank: bool = False,
+        rerank: bool | None = None,
     ) -> list[dict]:
-        """Semantic search over user's memories using v2 API."""
+        """Semantic search over user's memories using v2 API.
+
+        Args:
+            rerank: Override rerank setting. None (default) uses config value.
+        """
+        should_rerank = rerank if rerank is not None else self._config.rerank
         kwargs: dict[str, Any] = {
             "version": "v2",
-            "filters": _build_v2_filters(user_id),
+            "filters": build_v2_filters(user_id),
             "keyword_search": self._config.keyword_search,
+            "rerank": should_rerank,
             "top_k": min(top_k, 50),
         }
-        if rerank:
-            kwargs["rerank"] = True
 
         try:
             result = self._client.search(query, **kwargs)
@@ -137,7 +145,7 @@ class Mem0MemoryManager:
         try:
             result = self._client.get_all(
                 version="v2",
-                filters=_build_v2_filters(user_id),
+                filters=build_v2_filters(user_id),
                 page_size=page_size,
             )
             if isinstance(result, list):
@@ -165,8 +173,9 @@ class Mem0MemoryManager:
                 result = self._client.search(
                     query or "What do you know about this user?",
                     version="v2",
-                    filters=_build_v2_filters(user_id),
+                    filters=build_v2_filters(user_id),
                     keyword_search=self._config.keyword_search,
+                    rerank=self._config.rerank,
                     top_k=10,
                 )
                 memories = result if isinstance(result, list) else result.get("results", result.get("memories", []))

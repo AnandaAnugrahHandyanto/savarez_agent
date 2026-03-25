@@ -104,7 +104,7 @@ _SEARCH_SCHEMA = {
             },
             "rerank": {
                 "type": "boolean",
-                "description": "Enable reranking for higher accuracy (default false).",
+                "description": "Override reranking. Omit to use config setting (default: enabled).",
             },
             "top_k": {
                 "type": "integer",
@@ -123,7 +123,7 @@ def _handle_mem0_search(args: dict, **kw) -> str:
     manager, user_id = _resolve_mem0_context(**kw)
     if not manager or not user_id:
         return json.dumps({"error": "Mem0 is not active for this session."})
-    rerank = bool(args.get("rerank", False))
+    rerank = bool(args["rerank"]) if "rerank" in args else None  # None = use config default
     top_k = min(int(args.get("top_k", 10)), 50)
     try:
         results = manager.search(query, user_id, top_k=top_k, rerank=rerank)

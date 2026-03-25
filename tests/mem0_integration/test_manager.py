@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch, call
 import pytest
 
 from mem0_integration.client import Mem0ClientConfig
-from mem0_integration.manager import Mem0MemoryManager
+from mem0_integration.manager import Mem0MemoryManager, build_v2_filters
 
 
 @pytest.fixture
@@ -78,27 +78,31 @@ class TestAdd:
 
 
 class TestSearch:
-    def test_search_default_mode(self, manager, mock_client):
+    EXPECTED_FILTERS = {"OR": [{"user_id": "testuser"}, {"AND": [{"user_id": "testuser"}, {"run_id": "*"}]}]}
+
+    def test_search_default_uses_config_rerank(self, manager, mock_client):
+        """search() defaults to config-level rerank (True in fixture)."""
         results = manager.search("programming", user_id="testuser")
         mock_client.search.assert_called_once()
         _, kwargs = mock_client.search.call_args
         assert kwargs["version"] == "v2"
-        assert kwargs["filters"] == {"OR": [{"user_id": "testuser"}, {"AND": [{"user_id": "testuser"}, {"run_id": "*"}]}]}
+        assert kwargs["filters"] == self.EXPECTED_FILTERS
         assert kwargs["keyword_search"] is True
-        assert "rerank" not in kwargs  # rerank off by default
+        assert kwargs["rerank"] is True  # from config fixture
         assert len(results) == 2
 
-    def test_search_with_rerank(self, manager, mock_client):
-        manager.search("programming", user_id="testuser", rerank=True)
+    def test_search_rerank_override(self, manager, mock_client):
+        """Explicit rerank=False overrides config-level True."""
+        manager.search("programming", user_id="testuser", rerank=False)
         _, kwargs = mock_client.search.call_args
-        assert kwargs["rerank"] is True
+        assert kwargs["rerank"] is False
 
     def test_search_uses_v2_filters(self, manager, mock_client):
-        """v2 API passes user_id inside filters with OR operator."""
+        """v2 API passes user_id inside filters with OR + run_id wildcard."""
         manager.search("query", user_id="testuser")
         _, kwargs = mock_client.search.call_args
         assert kwargs["version"] == "v2"
-        assert kwargs["filters"] == {"OR": [{"user_id": "testuser"}, {"AND": [{"user_id": "testuser"}, {"run_id": "*"}]}]}
+        assert kwargs["filters"] == self.EXPECTED_FILTERS
 
     def test_search_handles_exception(self, manager, mock_client):
         mock_client.search.side_effect = Exception("fail")
@@ -166,6 +170,24 @@ class TestPrefetch:
         second = manager.pop_prefetch(user_id="testuser")
         assert first is not None
         assert second is None
+
+
+class TestBuildV2Filters:
+    def test_returns_or_with_both_branches(self):
+        result = build_v2_filters("alice")
+        assert "OR" in result
+        branches = result["OR"]
+        assert len(branches) == 2
+        # Branch 1: bare user_id (matches records without run_id)
+        assert branches[0] == {"user_id": "alice"}
+        # Branch 2: user_id + run_id wildcard (matches records with any run_id)
+        assert branches[1] == {"AND": [{"user_id": "alice"}, {"run_id": "*"}]}
+
+    def test_different_user_ids(self):
+        for uid in ["kartik", "test-user-123", "a"]:
+            result = build_v2_filters(uid)
+            assert result["OR"][0]["user_id"] == uid
+            assert result["OR"][1]["AND"][0]["user_id"] == uid
 
 
 class TestShutdown:

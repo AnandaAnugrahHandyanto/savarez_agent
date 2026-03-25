@@ -146,7 +146,7 @@ Controls how Mem0 context reaches the agent:
 |----------|-------------|----------|
 | `per-directory` | CWD directory name | Each project gets its own session (default) |
 | `per-session` | Unique per run | Fresh session every time |
-| `global` | Fixed `"global"` | Single cross-project session |
+| `global` | None (no session scoping) | Single cross-project session |
 
 ### Custom Instructions
 
@@ -274,7 +274,7 @@ Semantic search over the user's memories. Returns relevant facts ranked by simil
 
 Parameters:
 - `query` (string, required) — what to search for (e.g. "programming languages", "dietary preferences")
-- `rerank` (boolean, optional) — enable reranking for higher accuracy, default `false`
+- `rerank` (boolean, optional) — override reranking. Omit to use config setting (default: enabled)
 - `top_k` (integer, optional) — number of results to return, default `10`, max `50`
 
 ### `mem0_context`

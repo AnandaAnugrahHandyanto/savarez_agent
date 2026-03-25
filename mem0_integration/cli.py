@@ -13,6 +13,7 @@ from mem0_integration.client import (
     reset_mem0_client,
     resolve_config_path,
 )
+from mem0_integration.manager import build_v2_filters
 
 
 def _read_config_path() -> Path:
@@ -25,6 +26,9 @@ def _get_client_and_config():
     if not cfg.api_key:
         print("Error: No Mem0 API key configured. Run 'hermes mem0 setup'.")
         sys.exit(1)
+    if not cfg.user_id:
+        print("Error: No user ID configured. Run 'hermes mem0 setup'.")
+        sys.exit(1)
     reset_mem0_client()
     client = get_mem0_client(cfg)
     return client, cfg
@@ -36,19 +40,6 @@ def _prompt(text: str, default: str = "") -> str:
     val = input(f"  {text}{suffix}: ").strip()
     return val or default
 
-
-def _build_user_filters(user_id: str) -> dict:
-    """Build v2 filters that find all memories for a user.
-
-    Records stored with a run_id won't match a bare user_id filter
-    (Mem0 treats missing fields as "must be null"), so we OR both cases.
-    """
-    return {
-        "OR": [
-            {"user_id": user_id},
-            {"AND": [{"user_id": user_id}, {"run_id": "*"}]},
-        ]
-    }
 
 
 def _write_config(data: dict, path: Path | None = None) -> Path:
@@ -181,7 +172,7 @@ def cmd_status(args: Any) -> None:
             client.search(
                 "connection-test",
                 version="v2",
-                filters={"OR": [{"user_id": "health-check"}]},
+                filters=build_v2_filters("health-check"),
             )
             print(f"\n  Connection:       {color('\u2713 OK', Colors.GREEN)}")
         except Exception as e:
@@ -207,7 +198,7 @@ def cmd_search(args: Any) -> None:
         results = client.search(
             query,
             version="v2",
-            filters=_build_user_filters(cfg.user_id),
+            filters=build_v2_filters(cfg.user_id),
             keyword_search=cfg.keyword_search,
             rerank=True,
         )
@@ -240,7 +231,7 @@ def cmd_memories(args: Any) -> None:
     try:
         result = client.get_all(
             version="v2",
-            filters=_build_user_filters(cfg.user_id),
+            filters=build_v2_filters(cfg.user_id),
             page_size=50,
         )
         memories = result if isinstance(result, list) else result.get("results", result.get("memories", []))
