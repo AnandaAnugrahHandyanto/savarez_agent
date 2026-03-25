@@ -596,8 +596,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     break
                 continue
 
-            if delta is None:  # End of stream sentinel
-                break
+            # Agent sends None before tool execution to flush display buffers.
+            # Don't break — continue waiting for content. The stream closes
+            # when agent_task.done() and the queue is drained (lines 581-596).
+            if delta is None:
+                continue
 
             content_chunk = {
                 "id": completion_id, "object": "chat.completion.chunk",
