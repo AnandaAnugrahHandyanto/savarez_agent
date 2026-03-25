@@ -86,6 +86,32 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
             chat_id, thread_id = rest.split(":", 1)
         else:
             chat_id, thread_id = rest, None
+
+        # Resolve human-friendly channel names (e.g. #general) to numeric IDs
+        # for platforms that require IDs (Discord, Slack, Mattermost).
+        # Without this, deliver: "discord:#channel-name" causes a 404.
+        if chat_id and chat_id.startswith("#") and platform_name.lower() in ("discord", "slack", "mattermost"):
+            try:
+                from gateway.channel_directory import resolve_channel_name
+                resolved = resolve_channel_name(platform_name.lower(), chat_id)
+                if resolved:
+                    resolved_id = resolved.split(":")[-1] if ":" in resolved else resolved
+                    logger.info(
+                        "Resolved channel name '%s' -> '%s' for platform '%s'",
+                        chat_id, resolved_id, platform_name,
+                    )
+                    chat_id = resolved_id
+                else:
+                    logger.error(
+                        "Could not resolve channel '%s' on %s — "
+                        "check that the bot is a member of this channel "
+                        "and the channel directory is populated.",
+                        chat_id, platform_name,
+                    )
+                    return None
+            except Exception as e:
+                logger.warning("Channel name resolution failed for '%s' on %s: %s", chat_id, platform_name, e)
+
         return {
             "platform": platform_name,
             "chat_id": chat_id,
