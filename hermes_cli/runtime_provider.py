@@ -19,6 +19,7 @@ from hermes_cli.auth import (
 )
 from hermes_cli.config import load_config
 from hermes_constants import OPENROUTER_BASE_URL
+from hermes_cli.models import opencode_model_api_mode
 
 
 def _normalize_custom_provider_name(value: str) -> str:
@@ -403,6 +404,8 @@ def resolve_runtime_provider(
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if configured_mode:
                 api_mode = configured_mode
+            elif provider in ("opencode-zen", "opencode-go"):
+                api_mode = opencode_model_api_mode(provider, model_cfg.get("default", ""))
             # Auto-detect Anthropic-compatible endpoints by URL convention
             # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
             elif base_url.rstrip("/").endswith("/anthropic"):

@@ -55,8 +55,19 @@ class TestModelCommand:
         assert cli_obj.model == "anthropic/claude-sonnet-next"
         save_mock.assert_called_once()
 
-    def test_no_slash_model_accepted_with_warning(self, capsys):
+    def test_no_slash_model_accepted_with_warning(self, capsys, monkeypatch):
         cli_obj = self._make_cli()
+
+        # Make provider auto-detection deterministic for this regression test:
+        # without direct-provider credentials, bare gpt-5.4 should remap to the
+        # OpenRouter slug instead of switching to a direct provider.
+        for env_var in (
+            "COPILOT_GITHUB_TOKEN",
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "OPENCODE_ZEN_API_KEY",
+        ):
+            monkeypatch.delenv(env_var, raising=False)
 
         with patch("hermes_cli.models.fetch_api_models",
                    return_value=["openai/gpt-5.4"]) as fetch_mock, \
@@ -130,3 +141,31 @@ class TestModelCommand:
         assert "Could not resolve credentials" in output
         assert cli_obj.model == "anthropic/claude-opus-4.6"  # unchanged
         assert cli_obj.provider == "openrouter"  # unchanged
+
+    def test_opencode_same_provider_switch_updates_api_mode_and_persists(self, capsys):
+        cli_obj = self._make_cli()
+        cli_obj.model = "kimi-k2.5"
+        cli_obj.provider = "opencode-go"
+        cli_obj.requested_provider = "opencode-go"
+        cli_obj.base_url = "https://opencode.ai/zen/go/v1"
+        cli_obj.api_mode = "chat_completions"
+
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={
+                 "provider": "opencode-go",
+                 "api_key": "***",
+                 "base_url": "https://opencode.ai/zen/go/v1",
+                 "api_mode": "chat_completions",
+             }), \
+             patch("hermes_cli.models.fetch_api_models",
+                   return_value=["opencode-go/kimi-k2.5", "opencode-go/minimax-m2.5"]), \
+             patch("cli.save_config_value", return_value=True) as save_mock:
+            cli_obj.process_command("/model opencode-go:minimax-m2.5")
+
+        output = capsys.readouterr().out
+        assert "saved to config" in output
+        assert cli_obj.model == "minimax-m2.5"
+        assert cli_obj.provider == "opencode-go"
+        assert cli_obj.api_mode == "anthropic_messages"
+        save_calls = [c.args for c in save_mock.call_args_list]
+        assert ("model.default", "minimax-m2.5") in save_calls
+        assert ("model.api_mode", "anthropic_messages") in save_calls

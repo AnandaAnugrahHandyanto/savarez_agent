@@ -1441,6 +1441,30 @@ class HermesCLI:
                 pass
             return changed
 
+        if resolved_provider in {"opencode-zen", "opencode-go"}:
+            try:
+                from hermes_cli.models import opencode_model_api_mode
+
+                canonical = current_model
+                prefix = f"{resolved_provider}/"
+                if current_model.lower().startswith(prefix):
+                    canonical = current_model[len(prefix):]
+                    if not self._model_is_default:
+                        self.console.print(
+                            f"[yellow]⚠️  Stripped provider prefix from '{current_model}'; using '{canonical}' for {resolved_provider}.[/]"
+                        )
+                    self.model = canonical
+                    current_model = canonical
+                    changed = True
+
+                resolved_mode = opencode_model_api_mode(resolved_provider, current_model)
+                if resolved_mode != self.api_mode:
+                    self.api_mode = resolved_mode
+                    changed = True
+            except Exception:
+                pass
+            return changed
+
         if resolved_provider != "openai-codex":
             return False
 
@@ -3603,6 +3627,12 @@ class HermesCLI:
                     self.model = result.new_model
                     self.agent = None  # Force re-init
 
+                    # Apply the resolved route immediately for this session.
+                    # OpenCode can change API surface within the same provider
+                    # when switching model families (for example Kimi -> MiniMax).
+                    if result.api_mode:
+                        self.api_mode = result.api_mode
+
                     if result.provider_changed:
                         self.requested_provider = result.target_provider
                         self.provider = result.target_provider
@@ -3621,6 +3651,11 @@ class HermesCLI:
                                 save_config_value("model.base_url", result.base_url)
                             else:
                                 save_config_value("model.base_url", None)
+                        if result.api_mode and (
+                            result.provider_changed
+                            or result.target_provider in {"opencode-zen", "opencode-go"}
+                        ):
+                            save_config_value("model.api_mode", result.api_mode)
                         if saved_model:
                             print(f"(^_^)b Model changed to: {result.new_model}{provider_note} (saved to config)")
                         else:

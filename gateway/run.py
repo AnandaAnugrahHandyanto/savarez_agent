@@ -2924,6 +2924,8 @@ class GatewayRunner:
                         user_config["model"]["base_url"] = result.base_url
                     else:
                         user_config["model"].pop("base_url", None)
+                if result.api_mode:
+                    user_config["model"]["api_mode"] = result.api_mode
                 with open(config_path, 'w', encoding="utf-8") as f:
                     yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
             except Exception as e:
