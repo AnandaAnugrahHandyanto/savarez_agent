@@ -946,3 +946,97 @@ class TestFallbackPreservesThreadContext:
 
         call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
         assert "important screenshot" in call_kwargs["text"]
+
+
+# ---------------------------------------------------------------------------
+# TestThreadParentInjection
+# ---------------------------------------------------------------------------
+
+class TestThreadParentInjection:
+    """Verify that the thread parent message is injected into context."""
+
+    def _make_thread_event(self, text="reply text", thread_ts="1000000000.000001", ts="1000000001.000002"):
+        """Build a Slack message event that is a reply inside a thread."""
+        return {
+            "text": text,
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "im",
+            "ts": ts,
+            "thread_ts": thread_ts,
+        }
+
+    @pytest.mark.asyncio
+    async def test_parent_message_prepended_to_text(self, adapter):
+        """Thread replies should have the parent message prepended as context."""
+        adapter._app.client.conversations_replies = AsyncMock(return_value={
+            "messages": [{"text": "What is the capital of France?", "user": "U_USER"}]
+        })
+
+        event = self._make_thread_event(text="and what about Germany?")
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "[Thread started with]: What is the capital of France?" in msg_event.text
+        assert "and what about Germany?" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_parent_fetch_failure_does_not_crash(self, adapter):
+        """If the parent fetch fails, the handler should proceed normally."""
+        adapter._app.client.conversations_replies = AsyncMock(
+            side_effect=RuntimeError("API error")
+        )
+
+        event = self._make_thread_event(text="a follow-up")
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_called_once()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "a follow-up"
+
+    @pytest.mark.asyncio
+    async def test_bot_parent_message_not_injected(self, adapter):
+        """If the thread was started by the bot itself, skip parent injection."""
+        adapter._app.client.conversations_replies = AsyncMock(return_value={
+            "messages": [{"text": "I said this", "bot_id": "B_BOT"}]
+        })
+
+        event = self._make_thread_event(text="user reply")
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "[Thread started with]" not in (msg_event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_top_level_message_not_fetching_parent(self, adapter):
+        """A top-level message (ts == thread_ts) should not trigger a parent fetch."""
+        adapter._app.client.conversations_replies = AsyncMock()
+
+        ts = "1000000000.000001"
+        event = {
+            "text": "top level message",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "im",
+            "ts": ts,
+            "thread_ts": ts,  # Same as ts — this is the root message itself
+        }
+        await adapter._handle_slack_message(event)
+
+        adapter._app.client.conversations_replies.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_thread_ts_skips_fetch(self, adapter):
+        """A plain DM with no thread should not trigger a parent fetch."""
+        adapter._app.client.conversations_replies = AsyncMock()
+
+        event = {
+            "text": "just a plain dm",
+            "user": "U_USER",
+            "channel": "D123",
+            "channel_type": "im",
+            "ts": "1000000000.000001",
+        }
+        await adapter._handle_slack_message(event)
+
+        adapter._app.client.conversations_replies.assert_not_called()

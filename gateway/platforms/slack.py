@@ -750,6 +750,16 @@ class SlackAdapter(BasePlatformAdapter):
                 except Exception as e:  # pragma: no cover - defensive logging
                     logger.warning("[Slack] Failed to cache document from %s: %s", url, e, exc_info=True)
 
+        # Inject thread parent message as context when replying inside a thread.
+        # The parent (root) message is the one that started the thread; it is not
+        # included in the standard message event, so we fetch it explicitly via
+        # conversations.replies and prepend it to the agent's context.
+        real_thread_ts = event.get("thread_ts")
+        if real_thread_ts and real_thread_ts != ts:
+            parent_text = await self._fetch_thread_parent(channel_id, real_thread_ts)
+            if parent_text:
+                text = f"[Thread started with]: {parent_text}\n\n{text}" if text else f"[Thread started with]: {parent_text}"
+
         # Resolve user display name (cached after first lookup)
         user_name = await self._resolve_user_name(user_id)
 
@@ -818,6 +828,33 @@ class SlackAdapter(BasePlatformAdapter):
         )
 
         await self.handle_message(event)
+
+    async def _fetch_thread_parent(self, channel_id: str, thread_ts: str) -> Optional[str]:
+        """Fetch the parent (root) message that started a thread.
+
+        Uses conversations.replies with limit=1 to retrieve only the root message,
+        which is always the first item returned for a given thread_ts.
+        Returns the message text, or None if unavailable.
+        """
+        if not self._app:
+            return None
+        try:
+            result = await self._app.client.conversations_replies(
+                channel=channel_id,
+                ts=thread_ts,
+                limit=1,
+                inclusive=True,
+            )
+            messages = result.get("messages", [])
+            if messages:
+                parent = messages[0]
+                # Skip if the root message was posted by the bot itself
+                if parent.get("bot_id") or parent.get("subtype") == "bot_message":
+                    return None
+                return parent.get("text", "").strip() or None
+        except Exception as e:
+            logger.debug("[Slack] Failed to fetch thread parent %s: %s", thread_ts, e)
+        return None
 
     async def _download_slack_file(self, url: str, ext: str, audio: bool = False) -> str:
         """Download a Slack file using the bot token for auth."""
