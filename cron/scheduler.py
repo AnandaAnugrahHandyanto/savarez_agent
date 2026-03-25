@@ -90,7 +90,7 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
         # Resolve human-friendly channel names (e.g. #general) to numeric IDs
         # for platforms that require IDs (Discord, Slack, Mattermost).
         # Without this, deliver: "discord:#channel-name" causes a 404.
-        if chat_id and chat_id.startswith("#") and platform_name.lower() in ("discord", "slack", "mattermost"):
+        if chat_id and not chat_id.lstrip("-").isdigit() and platform_name.lower() in ("discord", "slack", "mattermost"):
             try:
                 from gateway.channel_directory import resolve_channel_name
                 resolved = resolve_channel_name(platform_name.lower(), chat_id)
