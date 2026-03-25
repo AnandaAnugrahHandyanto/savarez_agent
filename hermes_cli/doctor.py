@@ -746,6 +746,42 @@ def run_doctor(args):
         check_warn("Honcho check failed", str(_e))
 
     # =========================================================================
+    # Mem0 memory
+    # =========================================================================
+    print()
+    print(color("\u25c6 Mem0 Memory", Colors.CYAN, Colors.BOLD))
+
+    try:
+        from mem0_integration.client import Mem0ClientConfig, resolve_config_path as _mem0_resolve
+        m0cfg = Mem0ClientConfig.from_global_config()
+        _mem0_cfg_path = _mem0_resolve()
+
+        if not _mem0_cfg_path.exists():
+            check_warn("Mem0 config not found", "run: hermes mem0 setup")
+        elif not m0cfg.enabled:
+            check_info(f"Mem0 disabled (set enabled: true in {_mem0_cfg_path} to activate)")
+        elif not m0cfg.api_key:
+            check_fail("Mem0 API key not set", "run: hermes mem0 setup")
+            issues.append("No Mem0 API key \u2014 run 'hermes mem0 setup'")
+        else:
+            from mem0_integration.client import get_mem0_client, reset_mem0_client
+            reset_mem0_client()
+            try:
+                client = get_mem0_client(m0cfg)
+                client.search("health-check", filters={"user_id": "health-check"})
+                check_ok(
+                    "Mem0 connected",
+                    f"mode={m0cfg.memory_mode} rerank={'on' if m0cfg.rerank else 'off'}",
+                )
+            except Exception as _e:
+                check_fail("Mem0 connection failed", str(_e))
+                issues.append(f"Mem0 unreachable: {_e}")
+    except ImportError:
+        check_warn("mem0ai not installed", "pip install mem0ai")
+    except Exception as _e:
+        check_warn("Mem0 check failed", str(_e))
+
+    # =========================================================================
     # Summary
     # =========================================================================
     print()

@@ -3699,6 +3699,36 @@ For more help on a command:
     honcho_parser.set_defaults(func=cmd_honcho)
 
     # =========================================================================
+    # mem0 command
+    # =========================================================================
+    mem0_parser = subparsers.add_parser(
+        "mem0",
+        help="Manage Mem0 Platform memory integration",
+        description=(
+            "Mem0 is a memory layer that extracts and persists facts from conversations.\n\n"
+            "It automatically identifies preferences, project context, and important details "
+            "from your conversations and makes them available across sessions via semantic search.\n\n"
+            "Modes: hybrid (Mem0 + local MEMORY.md), mem0 (Mem0 only)."
+        ),
+        formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
+    )
+    mem0_subparsers = mem0_parser.add_subparsers(dest="mem0_command")
+
+    mem0_subparsers.add_parser("setup", help="Interactive setup wizard for Mem0 integration")
+    mem0_subparsers.add_parser("status", help="Show current Mem0 config and connection status")
+    mem0_subparsers.add_parser("memories", help="List all stored memories for current user")
+    mem0_subparsers.add_parser("clear", help="Delete all memories for current user")
+
+    mem0_search_parser = mem0_subparsers.add_parser("search", help="Search memories from the terminal")
+    mem0_search_parser.add_argument("query", nargs="?", default=None, help="Search query")
+
+    def cmd_mem0(args):
+        from mem0_integration.cli import mem0_command
+        mem0_command(args)
+
+    mem0_parser.set_defaults(func=cmd_mem0)
+
+    # =========================================================================
     # tools command
     # =========================================================================
     tools_parser = subparsers.add_parser(

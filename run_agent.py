@@ -106,6 +106,13 @@ HONCHO_TOOL_NAMES = {
     "honcho_conclude",
 }
 
+MEM0_TOOL_NAMES = {
+    "mem0_context",
+    "mem0_profile",
+    "mem0_search",
+    "mem0_conclude",
+}
+
 
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError/ValueError from broken pipes.
@@ -935,6 +942,16 @@ class AIAgent:
         self._honcho_session_key = honcho_session_key
         self._honcho_config = None  # HonchoClientConfig | None
         self._honcho_exit_hook_registered = False
+        # Mem0 Platform memory (cross-session fact extraction and retrieval)
+        # Reads $HERMES_HOME/mem0.json (instance) or ~/.hermes/mem0.json (global).
+        # Independent plugin — enabled via its own config, same pattern as Honcho.
+        # Both can be configured; each activates from its own enabled boolean.
+        self._mem0 = None              # Mem0MemoryManager | None
+        self._mem0_config = None       # Mem0ClientConfig | None
+        self._mem0_user_id = None      # Resolved user_id
+        self._mem0_run_id = None       # Resolved run_id from session strategy
+        self._mem0_context = None      # First-turn prefetch (baked into system prompt)
+        self._mem0_turn_context = None # Per-turn prefetch (injected as turn context)
         if not skip_memory:
             try:
                 if honcho_manager is not None:
@@ -998,6 +1015,43 @@ class AIAgent:
             if _user_mode == "honcho":
                 self._user_profile_enabled = False
                 logger.debug("peer %s memory_mode=honcho: local USER.md writes disabled", _hcfg.peer_name or "user")
+
+        # Mem0 Platform memory (cross-session fact extraction and retrieval)
+        # Independent plugin — activates from its own config, same as Honcho above.
+        if not skip_memory:
+            try:
+                from mem0_integration.client import Mem0ClientConfig, get_mem0_client
+                m0cfg = Mem0ClientConfig.from_global_config()
+                self._mem0_config = m0cfg
+                if self._mem0_should_activate(m0cfg):
+                    from mem0_integration.manager import Mem0MemoryManager
+                    client = get_mem0_client(m0cfg)
+                    self._mem0 = Mem0MemoryManager(client=client, config=m0cfg)
+                    self._activate_mem0(
+                        m0cfg,
+                        enabled_toolsets=enabled_toolsets,
+                        disabled_toolsets=disabled_toolsets,
+                    )
+                else:
+                    if not m0cfg.enabled:
+                        logger.debug("Mem0 disabled in config")
+                    elif not m0cfg.api_key:
+                        logger.debug("Mem0 enabled but no API key configured")
+            except Exception as e:
+                logger.warning("Mem0 init failed — memory disabled: %s", e)
+                print(f"  Mem0 init failed: {e}")
+                print("  Run 'hermes mem0 setup' to reconfigure.")
+                self._mem0 = None
+
+        if not self._mem0:
+            self._strip_mem0_tools_from_surface()
+
+        # Gate local memory writes for Mem0 memory_mode
+        if self._mem0_config and self._mem0:
+            if self._mem0_config.memory_mode == "mem0":
+                self._memory_enabled = False
+                self._user_profile_enabled = False
+                logger.debug("Mem0 memory_mode=mem0: local MEMORY.md/USER.md writes disabled")
 
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10
@@ -2229,10 +2283,158 @@ class AIAgent:
             if not self.quiet_mode:
                 print(f"  Honcho write failed: {e}")
 
+    # ------------------------------------------------------------------
+    # Mem0 integration
+    # ------------------------------------------------------------------
+
+    def _mem0_should_activate(self, cfg) -> bool:
+        """Return True when Mem0 should be active."""
+        return bool(cfg and cfg.enabled and cfg.api_key)
+
+    def _strip_tools_by_names(self, names: set) -> None:
+        """Remove named tools from the active tool surface (DRY helper)."""
+        if not self.tools:
+            self.valid_tool_names = set()
+            return
+        self.tools = [
+            tool for tool in self.tools
+            if tool.get("function", {}).get("name") not in names
+        ]
+        self.valid_tool_names = {
+            tool["function"]["name"] for tool in self.tools
+        } if self.tools else set()
+
+    def _strip_mem0_tools_from_surface(self) -> None:
+        """Remove Mem0 tools from the active tool surface."""
+        self._strip_tools_by_names(MEM0_TOOL_NAMES)
+
+    def _activate_mem0(
+        self,
+        cfg,
+        *,
+        enabled_toolsets,
+        disabled_toolsets,
+    ) -> None:
+        """Finish Mem0 setup once a manager is available."""
+        if not self._mem0:
+            return
+
+        # Resolve user_id
+        self._mem0_user_id = cfg.user_id or "hermes-user"
+
+        # Resolve run_id from session strategy
+        import re as _re
+        strategy = cfg.session_strategy
+        if strategy == "per-directory":
+            cwd = os.path.basename(os.getcwd())
+            self._mem0_run_id = _re.sub(r"[^a-zA-Z0-9_-]", "-", cwd).lower()
+        elif strategy == "per-session":
+            self._mem0_run_id = self.session_id or "default"
+        else:  # global
+            self._mem0_run_id = None
+
+        # Inject tool context
+        from tools.mem0_tools import set_mem0_context
+        set_mem0_context(self._mem0, self._mem0_user_id)
+
+        # Rebuild tool surface
+        self.tools = get_tool_definitions(
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=True,
+        )
+        self.valid_tool_names = {
+            tool["function"]["name"] for tool in self.tools
+        } if self.tools else set()
+
+        # Strip tools if recall_mode is context-only
+        if cfg.recall_mode == "context":
+            self._strip_mem0_tools_from_surface()
+            if not self.quiet_mode:
+                print("  Mem0 active \u2014 recall_mode: context (Mem0 tools hidden)")
+        else:
+            if not self.quiet_mode:
+                print(f"  Mem0 active \u2014 recall_mode: {cfg.recall_mode}")
+
+        logger.info(
+            "Mem0 active (user: %s, run_id: %s, memory_mode: %s)",
+            self._mem0_user_id,
+            self._mem0_run_id,
+            cfg.memory_mode,
+        )
+
+        # Pre-warm prefetch cache for turn 1
+        if cfg.recall_mode != "tools":
+            try:
+                self._mem0.prefetch(
+                    user_id=self._mem0_user_id,
+                    query="What do you know about this user?",
+                    run_id=self._mem0_run_id,
+                )
+            except Exception as exc:
+                logger.debug("Mem0 prefetch pre-warm failed (non-fatal): %s", exc)
+
+    def _mem0_sync(self, user_content: str, assistant_content: str) -> None:
+        """Send the turn's messages to Mem0 for fact extraction."""
+        if not self._mem0 or not self._mem0_user_id:
+            return
+        # Security: scan content before sending to external service
+        try:
+            from tools.memory_tool import _scan_memory_content
+            if _scan_memory_content(user_content):
+                logger.debug("Mem0 sync skipped: user content failed security scan")
+                return
+        except ImportError:
+            pass  # memory_tool not available, proceed without scanning
+        try:
+            messages = [
+                {"role": "user", "content": user_content},
+                {"role": "assistant", "content": assistant_content},
+            ]
+            self._mem0.add(
+                messages,
+                user_id=self._mem0_user_id,
+                run_id=self._mem0_run_id,
+            )
+            logger.info("Mem0 sync sent for user %s", self._mem0_user_id)
+        except Exception as e:
+            logger.warning("Mem0 sync failed: %s", e)
+            if not self.quiet_mode:
+                print(f"  Mem0 write failed: {e}")
+
+    def _queue_mem0_prefetch(self, user_message: str) -> None:
+        """Queue turn-end prefetch so next turn can consume cached results."""
+        if not self._mem0 or not self._mem0_user_id:
+            return
+        recall_mode = self._mem0_config.recall_mode if self._mem0_config else "hybrid"
+        if recall_mode == "tools":
+            return
+        try:
+            self._mem0.prefetch(
+                user_id=self._mem0_user_id,
+                query=user_message or "What were we working on?",
+                run_id=self._mem0_run_id,
+            )
+        except Exception as exc:
+            logger.debug("Mem0 background prefetch failed (non-fatal): %s", exc)
+
+    def _mem0_prefetch(self, user_message: str) -> str:
+        """Consume cached prefetch, return formatted markdown for prompt."""
+        if not self._mem0 or not self._mem0_user_id:
+            return ""
+        try:
+            return self._mem0.pop_prefetch(
+                user_id=self._mem0_user_id,
+                run_id=self._mem0_run_id,
+            ) or ""
+        except Exception as e:
+            logger.debug("Mem0 prefetch consume failed (non-fatal): %s", e)
+            return ""
+
     def _build_system_prompt(self, system_message: str = None) -> str:
         """
         Assemble the full system prompt from all layers.
-        
+
         Called once per session (cached on self._cached_system_prompt) and only
         rebuilt after context compression events. This ensures the system prompt
         is stable across all turns in a session, maximizing prefix cache hits.
@@ -5409,7 +5611,7 @@ class AIAgent:
                 transcripts/history when user_message contains API-only
                 synthetic prefixes.
             sync_honcho: When False, skip writing the final synthetic turn back
-                to Honcho or queuing follow-up prefetch work.
+                to Honcho/Mem0 or queuing follow-up prefetch work.
 
         Returns:
             Dict: Complete conversation result with final response and message history
@@ -5493,6 +5695,21 @@ class AIAgent:
             except Exception as e:
                 logger.debug("Honcho prefetch failed (non-fatal): %s", e)
 
+        # Mem0 prefetch consumption (same pattern as Honcho)
+        self._mem0_turn_context = None
+        if self._mem0 and self._mem0_user_id:
+            _m0_recall = (self._mem0_config.recall_mode if self._mem0_config else "hybrid")
+            if _m0_recall != "tools":
+                try:
+                    mem0_ctx = self._mem0_prefetch(original_user_message)
+                    if mem0_ctx:
+                        if not conversation_history:
+                            self._mem0_context = mem0_ctx
+                        else:
+                            self._mem0_turn_context = mem0_ctx
+                except Exception as e:
+                    logger.debug("Mem0 prefetch failed (non-fatal): %s", e)
+
         # Add user message
         user_msg = {"role": "user", "content": user_message}
         messages.append(user_msg)
@@ -5535,6 +5752,11 @@ class AIAgent:
                 if self._honcho_context:
                     self._cached_system_prompt = (
                         self._cached_system_prompt + "\n\n" + self._honcho_context
+                    ).strip()
+                # Bake Mem0 context into the prompt (same pattern as Honcho)
+                if self._mem0_context:
+                    self._cached_system_prompt = (
+                        self._cached_system_prompt + "\n\n" + self._mem0_context
                     ).strip()
                 # Store the system prompt snapshot in SQLite
                 if self._session_db:
@@ -5651,10 +5873,16 @@ class AIAgent:
             for idx, msg in enumerate(messages):
                 api_msg = msg.copy()
 
-                if idx == current_turn_user_idx and msg.get("role") == "user" and self._honcho_turn_context:
-                    api_msg["content"] = _inject_honcho_turn_context(
-                        api_msg.get("content", ""), self._honcho_turn_context
-                    )
+                if idx == current_turn_user_idx and msg.get("role") == "user":
+                    if self._honcho_turn_context:
+                        api_msg["content"] = _inject_honcho_turn_context(
+                            api_msg.get("content", ""), self._honcho_turn_context
+                        )
+                    if self._mem0_turn_context:
+                        api_msg["content"] = _inject_honcho_turn_context(
+                            api_msg.get("content", ""), self._mem0_turn_context
+                        )
+                        self._mem0_turn_context = None
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved
@@ -7095,10 +7323,12 @@ class AIAgent:
         # Persist session to both JSON log and SQLite
         self._persist_session(messages, conversation_history)
 
-        # Sync conversation to Honcho for user modeling
+        # Sync conversation to Honcho/Mem0 for user modeling
         if final_response and not interrupted and sync_honcho:
             self._honcho_sync(original_user_message, final_response)
             self._queue_honcho_prefetch(original_user_message)
+            self._mem0_sync(original_user_message, final_response)
+            self._queue_mem0_prefetch(original_user_message)
 
         # Extract reasoning from the last assistant message (if any)
         last_reasoning = None
