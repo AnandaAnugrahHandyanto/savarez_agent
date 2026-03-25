@@ -120,8 +120,9 @@ def _build_arguments(model_key: str, prompt: str, duration: int, aspect_ratio: s
             args["image_url"] = image_url
 
     elif model_key == "hunyuan":
-        args["aspect_ratio"] = _ASPECT_MAP[aspect_ratio]
-        # hunyuan is text-to-video only
+        # hunyuan only supports 16:9 and 9:16 (no 1:1), text-to-video only
+        ar = _ASPECT_MAP[aspect_ratio] if aspect_ratio != "square" else "16:9"
+        args["aspect_ratio"] = ar
 
     elif model_key == "veo2":
         args["aspect_ratio"] = _ASPECT_MAP[aspect_ratio]
