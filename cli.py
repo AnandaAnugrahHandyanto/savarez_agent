@@ -544,7 +544,9 @@ def _path_is_within_root(path: Path, root: Path) -> bool:
 def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
     """Create an isolated git worktree for this CLI session.
 
-    Returns a dict with worktree metadata on success, None on failure.
+    Returns a dict with wlogout
+logout
+orktree metadata on success, None on failure.
     The dict contains: path, branch, repo_root.
     """
     import subprocess
@@ -2357,21 +2359,30 @@ class HermesCLI:
         print(f"  ✅ Stopped {killed} process(es).")
 
     def _handle_paste_command(self):
-        """Handle /paste — explicitly check clipboard for an image.
+        """Handle /paste — check clipboard for images or text.
 
         This is the reliable fallback for terminals where BracketedPaste
         doesn't fire for image-only clipboard content (e.g., VSCode terminal,
         Windows Terminal with WSL2).
         """
-        from hermes_cli.clipboard import has_clipboard_image
+        from hermes_cli.clipboard import has_clipboard_image, get_clipboard_text
         if has_clipboard_image():
             if self._try_attach_clipboard_image():
                 n = len(self._attached_images)
                 _cprint(f"  📎 Image #{n} attached from clipboard")
             else:
                 _cprint(f"  {_DIM}(>_<) Clipboard has an image but extraction failed{_RST}")
+            return
+        # No image — try text
+        txt = get_clipboard_text()
+        if txt:
+            preview = txt[:120].replace("\n", "↵")
+            if len(txt) > 120:
+                preview += "…"
+            _cprint(f"  📋 Clipboard text ({len(txt)} chars): {preview}")
+            _cprint(f"  {_DIM}Use Ctrl+V in the prompt to paste it as input{_RST}")
         else:
-            _cprint(f"  {_DIM}(._.) No image found in clipboard{_RST}")
+            _cprint(f"  {_DIM}(._.) Nothing found in clipboard{_RST}")
 
     def _preprocess_images_with_vision(self, text: str, images: list) -> str:
         """Analyze attached images via the vision tool and return enriched text.
@@ -2521,7 +2532,10 @@ class HermesCLI:
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
-        _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
+        if sys.platform == "win32":
+            _cprint(f"  {_DIM}Paste image: Ctrl+V (or /paste){_RST}\n")
+        else:
+            _cprint(f"  {_DIM}Paste image: Alt+V, Ctrl+V (or /paste){_RST}\n")
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
@@ -3394,7 +3408,7 @@ class HermesCLI:
             print("  To start the gateway:")
             print("    python cli.py --gateway")
             print()
-            print("  Configuration file: ~/.hermes/config.yaml")
+            print(f"  Configuration file: {_hermes_home / 'config.yaml'}")
             print()
             
         except Exception as e:
@@ -3404,7 +3418,7 @@ class HermesCLI:
             print("    1. Set environment variables:")
             print("       TELEGRAM_BOT_TOKEN=your_token")
             print("       DISCORD_BOT_TOKEN=your_token")
-            print("    2. Or configure settings in ~/.hermes/config.yaml")
+            print(f"    2. Or configure settings in {_hermes_home / 'config.yaml'}")
             print()
     
     def process_command(self, command: str) -> bool:
@@ -3694,7 +3708,7 @@ class HermesCLI:
                 plugins = mgr.list_plugins()
                 if not plugins:
                     print("No plugins installed.")
-                    print(f"Drop plugin directories into ~/.hermes/plugins/ to get started.")
+                    print(f"Drop plugin directories into {_hermes_home / 'plugins'} to get started.")
                 else:
                     print(f"Plugins ({len(plugins)}):")
                     for p in plugins:
@@ -3737,12 +3751,16 @@ class HermesCLI:
             if base_cmd.lstrip("/") in quick_commands:
                 qcmd = quick_commands[base_cmd.lstrip("/")]
                 if qcmd.get("type") == "exec":
-                    import subprocess
+                    import subprocess, shlex as _shlex
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
+                            if sys.platform == "win32":
+                                _run_args = dict(args=exec_cmd, shell=True)
+                            else:
+                                _run_args = dict(args=_shlex.split(exec_cmd), shell=False)
                             result = subprocess.run(
-                                exec_cmd, shell=True, capture_output=True,
+                                **_run_args, capture_output=True,
                                 text=True, timeout=30
                             )
                             output = result.stdout.strip() or result.stderr.strip()
@@ -4199,7 +4217,7 @@ class HermesCLI:
                 source = f" ({s['source']})" if s["source"] == "user" else ""
                 print(f"   {marker} {s['name']}{source} — {s['description']}")
             print(f"\n  Usage: /skin <name>")
-            print(f"  Custom skins: drop a YAML file in ~/.hermes/skins/\n")
+            print(f"  Custom skins: drop a YAML file in {_hermes_home / 'skins'}\n")
             return
 
         new_skin = parts[1].strip().lower()
@@ -4360,7 +4378,9 @@ class HermesCLI:
             # Flush Honcho async queue so queued messages land before context resets
             if self.agent and getattr(self.agent, '_honcho', None):
                 try:
-                    self.agent._honcho.flush_all()
+                    self.alogout
+gent._hologout
+ncho.flush_all()
                 except Exception:
                     pass
         except Exception as e:
@@ -4373,7 +4393,8 @@ class HermesCLI:
             return
 
         agent = self.agent
-        input_tokens = getattr(agent, "session_input_tokens", 0) or 0
+        input_tokens = getattr(aglogout
+ent, "session_input_tokens", 0) or 0
         output_tokens = getattr(agent, "session_output_tokens", 0) or 0
         cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
         cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0) or 0
@@ -4932,7 +4953,8 @@ class HermesCLI:
         from tools.voice_mode import check_voice_requirements, detect_audio_environment
 
         # Environment detection -- warn and block in incompatible environments
-        env_check = detect_audio_environment()
+        env_chelogout
+ck = detect_audio_environment()
         if not env_check["available"]:
             _cprint(f"\n{_GOLD}Voice mode unavailable in this environment:{_RST}")
             for warning in env_check["warnings"]:
@@ -5354,7 +5376,8 @@ class HermesCLI:
         """
         Send a message to the agent and get a response.
         
-        Handles streaming output, interrupt detection (user typing while agent
+        Handles streaming output, interrupt detection (user typing while alogout
+gent
         is working), and re-queueing of interrupted messages.
         
         Uses a dedicated _interrupt_queue (separate from _pending_input) to avoid
@@ -5555,7 +5578,8 @@ class HermesCLI:
                         # output from the agent thread.  Without this, the
                         # StdoutProxy buffer only flushes on renderer passes
                         # triggered by input events — on macOS this causes
-                        # the CLI to appear frozen until the user types. (#1624)
+                        # the CLI to appear frozen ulogout
+ntil the user types. (#1624)
                         self._invalidate(min_interval=0.15)
                 else:
                     # Fallback for non-interactive mode (e.g., single-query)
@@ -5808,7 +5832,8 @@ class HermesCLI:
             return [("class:voice-processing", f"◉ {state_suffix}")]
         if self._sudo_state:
             return [("class:sudo-prompt", f"🔐 {state_suffix}")]
-        if self._secret_state:
+        if self._secret_state:logout
+
             return [("class:sudo-prompt", f"🔑 {state_suffix}")]
         if self._approval_state:
             return [("class:prompt-working", f"⚠ {state_suffix}")]
@@ -6370,6 +6395,15 @@ class HermesCLI:
                 event.app.invalidate()
         from prompt_toolkit.keys import Keys
 
+        def _attach_and_notify(event):
+            """Try to attach a clipboard image and print confirmation."""
+            if self._try_attach_clipboard_image():
+                n = len(self._attached_images)
+                _cprint(f"\n  📎 Image #{n} attached from clipboard")
+                event.app.invalidate()
+                return True
+            return False
+
         @kb.add(Keys.BracketedPaste, eager=True)
         def handle_paste(event):
             """Handle terminal paste — detect clipboard images.
@@ -6379,8 +6413,7 @@ class HermesCLI:
             clipboard for an image on every paste event.
             """
             pasted_text = event.data or ""
-            if self._try_attach_clipboard_image():
-                event.app.invalidate()
+            _attach_and_notify(event)
             if pasted_text:
                 event.current_buffer.insert_text(pasted_text)
 
@@ -6395,8 +6428,13 @@ class HermesCLI:
             Terminal, iTerm2, VSCode, Windows Terminal), the bracketed
             paste handler fires instead and this binding never triggers.
             """
-            if self._try_attach_clipboard_image():
-                event.app.invalidate()
+            if _attach_and_notify(event):
+                return
+            # No image — try pasting text from clipboard
+            from hermes_cli.clipboard import get_clipboard_text
+            txt = get_clipboard_text()
+            if txt:
+                event.current_buffer.insert_text(txt)
 
         @kb.add('escape', 'v')
         def handle_alt_v(event):
@@ -6408,11 +6446,13 @@ class HermesCLI:
             on WSL2, VSCode, and any terminal over SSH where Ctrl+V
             can't reach the application for image-only clipboard.
             """
-            if self._try_attach_clipboard_image():
-                event.app.invalidate()
-            else:
-                # No image found — show a hint
-                pass  # silent when no image (avoid noise on accidental press)
+            _attach_and_notify(event)
+
+        if sys.platform == "win32":
+            @kb.add('s-insert')
+            def handle_shift_insert(event):
+                """Shift+Insert — paste image from clipboard (Windows)."""
+                _attach_and_notify(event)
 
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
@@ -6504,8 +6544,8 @@ class HermesCLI:
             chars_added = len(text) - _prev_text_len[0]
             _prev_text_len[0] = len(text)
             # Heuristic: a real paste adds many characters at once (not just a
-            # single newline from Alt+Enter) AND the result has 5+ lines.
-            if line_count >= 5 and chars_added > 1 and not text.startswith('/'):
+            # single newline from Alt+Enter) AND the result has 10+ lines.
+            if line_count >= 10 and chars_added >= 200 and not text.startswith('/'):
                 _paste_counter[0] += 1
                 # Save to temp file
                 paste_dir = _hermes_home / "pastes"

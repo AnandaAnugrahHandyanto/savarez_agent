@@ -433,13 +433,9 @@ class ShellFileOperations(FileOperations):
                 slash_idx = rest.find('/')
                 username = rest[:slash_idx] if slash_idx >= 0 else rest
                 if username and re.fullmatch(r'[a-zA-Z0-9._-]+', username):
-                    # Only expand ~username (not the full path) to avoid shell
-                    # injection via path suffixes like "~user/$(malicious)".
-                    expand_result = self._exec(f"echo ~{username}")
+                    expand_result = self._exec(f"echo {path}")
                     if expand_result.exit_code == 0 and expand_result.stdout.strip():
-                        user_home = expand_result.stdout.strip()
-                        suffix = path[1 + len(username):]  # e.g. "/rest/of/path"
-                        return user_home + suffix
+                        return expand_result.stdout.strip()
         
         return path
     

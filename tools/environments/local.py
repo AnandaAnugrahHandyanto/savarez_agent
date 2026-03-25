@@ -6,6 +6,7 @@ import platform
 import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 
@@ -135,28 +136,21 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     """Filter Hermes-managed secrets from a subprocess environment.
 
     `_HERMES_FORCE_<VAR>` entries in ``extra_env`` opt a blocked variable back in
-    intentionally for callers that truly need it.  Vars registered via
-    :mod:`tools.env_passthrough` (skill-declared or user-configured) also
-    bypass the blocklist.
+    intentionally for callers that truly need it.
     """
-    try:
-        from tools.env_passthrough import is_env_passthrough as _is_passthrough
-    except Exception:
-        _is_passthrough = lambda _: False  # noqa: E731
-
     sanitized: dict[str, str] = {}
 
     for key, value in (base_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             continue
-        if key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
+        if key not in _HERMES_PROVIDER_ENV_BLOCKLIST:
             sanitized[key] = value
 
     for key, value in (extra_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
             sanitized[real_key] = value
-        elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
+        elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST:
             sanitized[key] = value
 
     return sanitized
@@ -261,28 +255,18 @@ def _clean_shell_noise(output: str) -> str:
     return result
 
 
-# Standard PATH entries for environments with minimal PATH (e.g. systemd services).
-# Includes macOS Homebrew paths (/opt/homebrew/* for Apple Silicon).
-_SANE_PATH = (
-    "/opt/homebrew/bin:/opt/homebrew/sbin:"
-    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-)
+_SANE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
-    try:
-        from tools.env_passthrough import is_env_passthrough as _is_passthrough
-    except Exception:
-        _is_passthrough = lambda _: False  # noqa: E731
-
     merged = dict(os.environ | env)
     run_env = {}
     for k, v in merged.items():
         if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = k[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
             run_env[real_key] = v
-        elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
+        elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST:
             run_env[k] = v
     existing_path = run_env.get("PATH", "")
     if "/usr/bin" not in existing_path.split(":"):
@@ -335,7 +319,7 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
 
     @property
     def _temp_prefix(self) -> str:
-        return f"/tmp/hermes-local-{self._session_id}"
+        return os.path.join(tempfile.gettempdir(), f"hermes-local-{self._session_id}")
 
     def _spawn_shell_process(self) -> subprocess.Popen:
         user_shell = _find_bash()
@@ -364,10 +348,17 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         if self._shell_pid is None:
             return
         try:
-            subprocess.run(
-                ["pkill", "-P", str(self._shell_pid)],
-                capture_output=True, timeout=5,
-            )
+            if _IS_WINDOWS:
+                # taskkill /T kills the process tree; /F forces termination
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(self._shell_pid)],
+                    capture_output=True, timeout=5,
+                )
+            else:
+                subprocess.run(
+                    ["pkill", "-P", str(self._shell_pid)],
+                    capture_output=True, timeout=5,
+                )
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
 

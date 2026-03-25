@@ -690,10 +690,8 @@ def resolve_provider(
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 
-    if normalized == "openrouter":
+    if normalized in {"openrouter", "custom"}:
         return "openrouter"
-    if normalized == "custom":
-        return "custom"
     if normalized in PROVIDER_REGISTRY:
         return normalized
     if normalized != "auto":
