@@ -71,6 +71,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("q",), args_hint="<prompt>"),
     CommandDef("status", "Show session info", "Session",
                gateway_only=True),
+    CommandDef("restart", "Restart the gateway service safely", "Session",
+               gateway_only=True),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",

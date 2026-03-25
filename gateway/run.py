@@ -1089,6 +1089,9 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Channel directory build failed: %s", e)
         
+        # Check if we're restarting after an in-chat operational command.
+        await self._send_restart_notification()
+
         # Check if we're restarting after a /update command. If the update is
         # still running, keep watching so we notify once it actually finishes.
         notified = await self._send_update_notification()
@@ -1560,6 +1563,9 @@ class GatewayRunner:
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
 
+            if event.get_command() == "restart":
+                return await self._handle_restart_command(event)
+
             # /reset and /new must bypass the running-agent guard so they
             # actually dispatch as commands instead of being queued as user
             # text (which would be fed back to the agent with the same
@@ -1670,6 +1676,9 @@ class GatewayRunner:
         
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "restart":
+            return await self._handle_restart_command(event)
         
         if canonical == "stop":
             return await self._handle_stop_command(event)
@@ -4412,6 +4421,80 @@ class GatewayRunner:
         self._schedule_update_notification_watch()
         return "⚕ Starting Hermes update… I'll notify you when it's done."
 
+    async def _handle_restart_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /restart command — restart the gateway safely from chat."""
+        import json
+        import shutil
+        import subprocess
+        from datetime import datetime
+
+        from hermes_cli.gateway import get_service_name
+
+        adapter = self.adapters.get(event.source.platform)
+        if not adapter:
+            return "✗ Gateway adapter is unavailable for this platform."
+
+        systemctl = shutil.which("systemctl")
+        if not systemctl:
+            return "✗ Could not find `systemctl` on this system."
+
+        systemd_run = shutil.which("systemd-run")
+        if not systemd_run:
+            return (
+                "✗ Safe in-chat restart is unavailable because `systemd-run` is missing. "
+                "Please restart externally with:\n"
+                f"`{systemctl} --user restart {get_service_name()}`"
+            )
+
+        pending_path = _hermes_home / ".restart_pending.json"
+        pending = {
+            "platform": event.source.platform.value,
+            "chat_id": event.source.chat_id,
+            "user_id": event.source.user_id,
+            "thread_id": event.source.thread_id,
+            "timestamp": datetime.now().isoformat(),
+        }
+        pending_path.write_text(json.dumps(pending))
+
+        ack = "↻ Restarting gateway… I'll message again when I'm back."
+        metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        ack_result = await adapter.send(
+            chat_id=event.source.chat_id,
+            content=ack,
+            reply_to=event.message_id,
+            metadata=metadata,
+        )
+        if not ack_result.success:
+            pending_path.unlink(missing_ok=True)
+            return f"✗ Failed to send restart acknowledgement: {ack_result.error or 'unknown error'}"
+
+        restart_cmd = [systemctl, "--user", "restart", get_service_name()]
+        try:
+            subprocess.Popen(
+                [
+                    systemd_run,
+                    "--user",
+                    "--scope",
+                    "--unit=hermes-restart",
+                    "--",
+                    *restart_cmd,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception as e:
+            pending_path.unlink(missing_ok=True)
+            await adapter.send(
+                chat_id=event.source.chat_id,
+                content=f"✗ Failed to start restart helper: {e}",
+                reply_to=event.message_id,
+                metadata=metadata,
+            )
+            return None
+
+        return None
+
     def _schedule_update_notification_watch(self) -> None:
         """Ensure a background task is watching for update completion."""
         existing_task = getattr(self, "_update_notification_task", None)
@@ -4447,6 +4530,54 @@ class GatewayRunner:
             logger.warning("Update watcher timed out waiting for completion marker")
             exit_code_path.write_text("124")
             await self._send_update_notification()
+
+    async def _send_restart_notification(self) -> bool:
+        """Notify the originating chat after a successful gateway restart."""
+        import json
+
+        pending_path = _hermes_home / ".restart_pending.json"
+        if not pending_path.exists():
+            return False
+
+        cleanup = False
+        try:
+            pending = json.loads(pending_path.read_text())
+            platform_str = pending.get("platform")
+            chat_id = pending.get("chat_id")
+            thread_id = pending.get("thread_id")
+            if not platform_str or not chat_id:
+                cleanup = True
+                return False
+
+            try:
+                platform = Platform(platform_str)
+            except Exception:
+                cleanup = True
+                return False
+
+            adapter = self.adapters.get(platform)
+            if not adapter:
+                logger.info(
+                    "Deferring restart notification: adapter unavailable for %s",
+                    platform_str,
+                )
+                return False
+
+            metadata = {"thread_id": thread_id} if thread_id else None
+            await adapter.send(
+                chat_id,
+                "✓ Gateway restarted successfully.",
+                reply_to=None,
+                metadata=metadata,
+            )
+            cleanup = True
+            return True
+        except Exception:
+            logger.debug("Failed to send restart notification", exc_info=True)
+            return False
+        finally:
+            if cleanup:
+                pending_path.unlink(missing_ok=True)
 
     async def _send_update_notification(self) -> bool:
         """If an update finished, notify the user.
