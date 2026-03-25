@@ -1443,12 +1443,10 @@ class HermesCLI:
 
         if resolved_provider in {"opencode-zen", "opencode-go"}:
             try:
-                from hermes_cli.models import opencode_model_api_mode
+                from hermes_cli.models import normalize_opencode_model_id, opencode_model_api_mode
 
-                canonical = current_model
-                prefix = f"{resolved_provider}/"
-                if current_model.lower().startswith(prefix):
-                    canonical = current_model[len(prefix):]
+                canonical = normalize_opencode_model_id(resolved_provider, current_model)
+                if canonical and canonical != current_model:
                     if not self._model_is_default:
                         self.console.print(
                             f"[yellow]⚠️  Stripped provider prefix from '{current_model}'; using '{canonical}' for {resolved_provider}.[/]"
@@ -3651,11 +3649,18 @@ class HermesCLI:
                                 save_config_value("model.base_url", result.base_url)
                             else:
                                 save_config_value("model.base_url", None)
-                        if result.api_mode and (
-                            result.provider_changed
-                            or result.target_provider in {"opencode-zen", "opencode-go"}
-                        ):
+                        target_provider = (result.target_provider or "").strip().lower()
+                        should_persist_api_mode = bool(
+                            result.api_mode
+                            and (
+                                result.is_custom_target
+                                or target_provider.startswith("opencode-")
+                            )
+                        )
+                        if should_persist_api_mode:
                             save_config_value("model.api_mode", result.api_mode)
+                        elif result.provider_changed:
+                            save_config_value("model.api_mode", None)
                         if saved_model:
                             print(f"(^_^)b Model changed to: {result.new_model}{provider_note} (saved to config)")
                         else:

@@ -1,5 +1,6 @@
 """Regression tests for the `/model` slash command in the interactive CLI."""
 
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from cli import HermesCLI
@@ -122,13 +123,13 @@ class TestModelCommand:
         assert cli_obj.model == "glm-5"
         assert cli_obj.provider == "zai"
         assert cli_obj.base_url == "https://api.z.ai/api/paas/v4"
-        # Model, provider, and base_url should be saved
-        assert save_mock.call_count == 3
         save_calls = [c.args for c in save_mock.call_args_list]
         assert ("model.default", "glm-5") in save_calls
         assert ("model.provider", "zai") in save_calls
         # base_url is also persisted on provider change (Phase 2 fix)
         assert any(c[0] == "model.base_url" for c in save_calls)
+        # switching away from an explicit-api-mode provider clears stale config
+        assert ("model.api_mode", None) in save_calls
 
     def test_provider_switch_fails_on_bad_credentials(self, capsys):
         cli_obj = self._make_cli()
@@ -168,4 +169,53 @@ class TestModelCommand:
         assert cli_obj.api_mode == "anthropic_messages"
         save_calls = [c.args for c in save_mock.call_args_list]
         assert ("model.default", "minimax-m2.5") in save_calls
+        assert ("model.api_mode", "anthropic_messages") in save_calls
+
+    def test_provider_switch_clears_stale_api_mode(self, capsys):
+        cli_obj = self._make_cli()
+        cli_obj.model = "minimax-m2.5"
+        cli_obj.provider = "opencode-go"
+        cli_obj.requested_provider = "opencode-go"
+        cli_obj.base_url = "https://opencode.ai/zen/go/v1"
+        cli_obj.api_mode = "anthropic_messages"
+
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={
+                 "provider": "zai",
+                 "api_key": "***",
+                 "base_url": "https://api.z.ai/api/paas/v4",
+                 "api_mode": "chat_completions",
+             }), \
+             patch("hermes_cli.models.fetch_api_models", return_value=["glm-5"]), \
+             patch("cli.save_config_value", return_value=True) as save_mock:
+            cli_obj.process_command("/model zai:glm-5")
+
+        output = capsys.readouterr().out
+        assert "saved to config" in output
+        save_calls = [c.args for c in save_mock.call_args_list]
+        assert ("model.api_mode", None) in save_calls
+
+    def test_custom_provider_switch_persists_api_mode(self, capsys):
+        cli_obj = self._make_cli()
+        custom_result = SimpleNamespace(
+            success=True,
+            new_model="gpt-4.1",
+            target_provider="custom:work-proxy",
+            provider_changed=True,
+            api_key="***",
+            base_url="https://proxy.example.com/anthropic",
+            api_mode="anthropic_messages",
+            persist=True,
+            error_message="",
+            warning_message="",
+            is_custom_target=True,
+            provider_label="Work Proxy",
+        )
+
+        with patch("hermes_cli.model_switch.switch_model", return_value=custom_result), \
+             patch("cli.save_config_value", return_value=True) as save_mock:
+            cli_obj.process_command("/model custom:work-proxy:gpt-4.1")
+
+        output = capsys.readouterr().out
+        assert "saved to config" in output
+        save_calls = [c.args for c in save_mock.call_args_list]
         assert ("model.api_mode", "anthropic_messages") in save_calls

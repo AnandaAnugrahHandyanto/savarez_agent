@@ -2924,8 +2924,18 @@ class GatewayRunner:
                         user_config["model"]["base_url"] = result.base_url
                     else:
                         user_config["model"].pop("base_url", None)
-                if result.api_mode:
+                target_provider = (result.target_provider or "").strip().lower()
+                should_persist_api_mode = bool(
+                    result.api_mode
+                    and (
+                        result.is_custom_target
+                        or target_provider.startswith("opencode-")
+                    )
+                )
+                if should_persist_api_mode:
                     user_config["model"]["api_mode"] = result.api_mode
+                elif result.provider_changed:
+                    user_config["model"].pop("api_mode", None)
                 with open(config_path, 'w', encoding="utf-8") as f:
                     yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
             except Exception as e:
