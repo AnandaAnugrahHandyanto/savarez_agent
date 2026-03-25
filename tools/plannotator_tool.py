@@ -49,7 +49,7 @@ _PLANNOTATOR_SCHEMA = {
     "description": (
         "Launch, prepare, or run an inline Plannotator review/annotation session using operator-configured command templates. "
         "By default review/annotate waits synchronously for the session to finish or timeout and returns final log output. "
-        "For the most reliable inline UX, use action='inline_review' or action='inline_annotate': Hermes reserves a URL, sends it immediately to the current chat, then launches Plannotator on that same fixed host and waits for the result."
+        "For the most reliable inline UX, use action='inline_review' or action='inline_annotate': Hermes reserves a URL, posts it immediately in the active conversation, then launches Plannotator on that same fixed host and waits for the result."
     ),
     "parameters": {
         "type": "object",
