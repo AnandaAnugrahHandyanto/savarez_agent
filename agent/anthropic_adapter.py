@@ -232,6 +232,17 @@ def build_anthropic_client(api_key: str, base_url: str = None):
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;
         # without Claude Code's fingerprint, requests get intermittent 500s.
+
+        # Warn if no refresh credentials are available — token will expire in ~8h
+        # with no auto-renewal path (headless servers, gateway mode).
+        creds = read_claude_code_credentials()
+        if not creds or not creds.get("refreshToken"):
+            logger.warning(
+                "OAuth token detected but no refresh credentials found in "
+                "~/.claude/.credentials.json. Token will expire in ~8 hours "
+                "with no auto-renewal. Run 'claude auth login' to set up refresh credentials."
+            )
+
         all_betas = _COMMON_BETAS + _OAUTH_ONLY_BETAS
         kwargs["auth_token"] = api_key
         kwargs["default_headers"] = {
@@ -379,13 +390,26 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
         return None
 
     try:
+        refreshed = refresh_anthropic_oauth_pure(refresh_token, use_json=True)
+        _write_claude_code_credentials(
+            refreshed["access_token"],
+            refreshed["refresh_token"],
+            refreshed["expires_at_ms"],
+        )
+        logger.debug("Successfully refreshed Claude Code OAuth token via platform.claude.com")
+        return refreshed["access_token"]
+    except Exception:
+        pass
+
+    # Fallback: try console.anthropic.com for legacy tokens
+    try:
         refreshed = refresh_anthropic_oauth_pure(refresh_token, use_json=False)
         _write_claude_code_credentials(
             refreshed["access_token"],
             refreshed["refresh_token"],
             refreshed["expires_at_ms"],
         )
-        logger.debug("Successfully refreshed Claude Code OAuth token")
+        logger.debug("Successfully refreshed Claude Code OAuth token via console.anthropic.com")
         return refreshed["access_token"]
     except Exception as e:
         logger.debug("Failed to refresh Claude Code token: %s", e)
