@@ -58,9 +58,6 @@ if _loaded_env_paths:
 else:
     logger.info("No .env file found. Using system environment variables.")
 
-# Point mini-swe-agent at ~/.hermes/ so it shares our config
-os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(_hermes_home))
-os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 # Import our tool system
 from model_tools import get_tool_definitions, handle_function_call, check_toolset_requirements
@@ -595,8 +592,7 @@ class AIAgent:
         # Context pressure warnings: notify the USER (not the LLM) as context
         # fills up.  Purely informational — displayed in CLI output and sent via
         # status_callback for gateway platforms.  Does NOT inject into messages.
-        self._context_50_warned = False
-        self._context_70_warned = False
+        self._context_pressure_warned = False
 
         # Persistent error log -- always writes WARNING+ to ~/.hermes/logs/errors.log
         # so tool failures, API errors, etc. are inspectable after the fact.
@@ -668,7 +664,7 @@ class AIAgent:
                 # INFO/WARNING messages just clutter it.
                 for quiet_logger in [
                     'tools',               # all tools.* (terminal, browser, web, file, etc.)
-                    'minisweagent',         # mini-swe-agent execution backend
+                    
                     'run_agent',            # agent runner internals
                     'trajectory_compressor',
                     'cron',                 # scheduler (only relevant in daemon mode)
@@ -1070,6 +1066,8 @@ class AIAgent:
         compression_threshold = float(_compression_cfg.get("threshold", 0.50))
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_summary_model = _compression_cfg.get("summary_model") or None
+        compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
+        compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
 
         # Read explicit context_length override from model config
         _model_cfg = _agent_cfg.get("model", {})
@@ -1108,8 +1106,8 @@ class AIAgent:
             model=self.model,
             threshold_percent=compression_threshold,
             protect_first_n=3,
-            protect_last_n=4,
-            summary_target_tokens=500,
+            protect_last_n=compression_protect_last,
+            summary_target_ratio=compression_target_ratio,
             summary_model_override=compression_summary_model,
             quiet_mode=self.quiet_mode,
             base_url=self.base_url,
@@ -2567,7 +2565,13 @@ class AIAgent:
             prompt_parts.append(skills_prompt)
 
         if not self.skip_context_files:
-            context_files_prompt = build_context_files_prompt(skip_soul=_soul_loaded)
+            # Use TERMINAL_CWD for context file discovery when set (gateway
+            # mode).  The gateway process runs from the hermes-agent install
+            # dir, so os.getcwd() would pick up the repo's AGENTS.md and
+            # other dev files — inflating token usage by ~10k for no benefit.
+            _context_cwd = os.getenv("TERMINAL_CWD") or None
+            context_files_prompt = build_context_files_prompt(
+                cwd=_context_cwd, skip_soul=_soul_loaded)
             if context_files_prompt:
                 prompt_parts.append(context_files_prompt)
 
@@ -3818,6 +3822,7 @@ class AIAgent:
                 reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
                 if reasoning_text:
                     reasoning_parts.append(reasoning_text)
+                    _fire_first_delta()
                     self._fire_reasoning_delta(reasoning_text)
 
                 # Accumulate text content — fire callback only when no tool calls
@@ -3932,6 +3937,7 @@ class AIAgent:
                             elif delta_type == "thinking_delta":
                                 thinking_text = getattr(delta, "thinking", "")
                                 if thinking_text:
+                                    _fire_first_delta()
                                     self._fire_reasoning_delta(thinking_text)
 
                 # Return the native Anthropic Message for downstream processing
@@ -4812,9 +4818,17 @@ class AIAgent:
             except Exception as e:
                 logger.debug("Session DB compression split failed: %s", e)
 
-        # Reset context pressure warnings — usage drops after compaction
-        self._context_50_warned = False
-        self._context_70_warned = False
+        # Reset context pressure warning and token estimate — usage drops
+        # after compaction.  Without this, the stale last_prompt_tokens from
+        # the previous API call causes the pressure calculation to stay at
+        # >1000% and spam warnings / re-trigger compression in a loop.
+        self._context_pressure_warned = False
+        _compressed_est = (
+            estimate_tokens_rough(new_system_prompt)
+            + estimate_messages_tokens_rough(compressed)
+        )
+        self.context_compressor.last_prompt_tokens = _compressed_est
+        self.context_compressor.last_completion_tokens = 0
 
         return compressed, new_system_prompt
 
@@ -7073,12 +7087,8 @@ class AIAgent:
                     # and fires status_callback for gateway platforms.
                     if _compressor.threshold_tokens > 0:
                         _compaction_progress = _estimated_next_prompt / _compressor.threshold_tokens
-                        if _compaction_progress >= 0.85 and not self._context_70_warned:
-                            self._context_70_warned = True
-                            self._context_50_warned = True  # skip first tier if we jumped past it
-                            self._emit_context_pressure(_compaction_progress, _compressor)
-                        elif _compaction_progress >= 0.60 and not self._context_50_warned:
-                            self._context_50_warned = True
+                        if _compaction_progress >= 0.85 and not self._context_pressure_warned:
+                            self._context_pressure_warned = True
                             self._emit_context_pressure(_compaction_progress, _compressor)
 
                     if self.compression_enabled and _compressor.should_compress(_estimated_next_prompt):

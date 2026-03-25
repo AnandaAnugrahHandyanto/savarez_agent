@@ -123,6 +123,27 @@ DEFAULT_SESSION_TIMEOUT = 300
 SNAPSHOT_SUMMARIZE_THRESHOLD = 8000
 
 
+def _get_command_timeout() -> int:
+    """Return the configured browser command timeout from config.yaml.
+
+    Reads ``config["browser"]["command_timeout"]`` and falls back to
+    ``DEFAULT_COMMAND_TIMEOUT`` (30s) if unset or unreadable.
+    """
+    try:
+        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        config_path = hermes_home / "config.yaml"
+        if config_path.exists():
+            import yaml
+            with open(config_path) as f:
+                cfg = yaml.safe_load(f) or {}
+            val = cfg.get("browser", {}).get("command_timeout")
+            if val is not None:
+                return max(int(val), 5)  # Floor at 5s to avoid instant kills
+    except Exception as e:
+        logger.debug("Could not read command_timeout from config: %s", e)
+    return DEFAULT_COMMAND_TIMEOUT
+
+
 def _get_vision_model() -> Optional[str]:
     """Model for browser_vision (screenshot analysis — multimodal)."""
     return os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
@@ -725,7 +746,7 @@ def _run_browser_command(
     task_id: str,
     command: str,
     args: List[str] = None,
-    timeout: int = DEFAULT_COMMAND_TIMEOUT
+    timeout: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Run an agent-browser CLI command using our pre-created Browserbase session.
@@ -734,11 +755,14 @@ def _run_browser_command(
         task_id: Task identifier to get the right session
         command: The command to run (e.g., "open", "click")
         args: Additional arguments for the command
-        timeout: Command timeout in seconds
+        timeout: Command timeout in seconds.  ``None`` reads
+                 ``browser.command_timeout`` from config (default 30s).
         
     Returns:
         Parsed JSON response from agent-browser
     """
+    if timeout is None:
+        timeout = _get_command_timeout()
     args = args or []
     
     # Build the command
@@ -1022,7 +1046,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         session_info["_first_nav"] = False
         _maybe_start_recording(effective_task_id)
     
-    result = _run_browser_command(effective_task_id, "open", [url], timeout=60)
+    result = _run_browser_command(effective_task_id, "open", [url], timeout=max(_get_command_timeout(), 60))
     
     if result.get("success"):
         data = result.get("data", {})
@@ -1496,7 +1520,6 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             effective_task_id, 
             "screenshot", 
             screenshot_args,
-            timeout=30
         )
         
         if not result.get("success"):
@@ -1544,6 +1567,20 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         vision_model = _get_vision_model()
         logger.debug("browser_vision: analysing screenshot (%d bytes)",
                      len(image_data))
+
+        # Read vision timeout from config (auxiliary.vision.timeout), default 120s.
+        # Local vision models (llama.cpp, ollama) can take well over 30s for
+        # screenshot analysis, so the default must be generous.
+        vision_timeout = 120.0
+        try:
+            from hermes_cli.config import load_config
+            _cfg = load_config()
+            _vt = _cfg.get("auxiliary", {}).get("vision", {}).get("timeout")
+            if _vt is not None:
+                vision_timeout = float(_vt)
+        except Exception:
+            pass
+
         call_kwargs = {
             "task": "vision",
             "messages": [
@@ -1557,6 +1594,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             ],
             "max_tokens": 2000,
             "temperature": 0.1,
+            "timeout": vision_timeout,
         }
         if vision_model:
             call_kwargs["model"] = vision_model
