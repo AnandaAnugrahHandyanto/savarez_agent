@@ -5,6 +5,8 @@ import importlib
 import logging
 import sys
 
+import agent.prompt_builder as prompt_builder
+
 from agent.prompt_builder import (
     _scan_context_content,
     _truncate_content,
@@ -394,6 +396,24 @@ class TestBuildSkillsSystemPrompt:
         result = build_skills_system_prompt()
         assert "backend-skill" in result
 
+    def test_compacts_large_skill_catalog(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(prompt_builder, "SKILLS_SYSTEM_PROMPT_MAX_CHARS", 250)
+
+        for idx in range(8):
+            skill_dir = tmp_path / "skills" / "coding" / f"python-{idx}"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: python-{idx}\ndescription: Python workflow {idx}\n---\n"
+            )
+
+        result = build_skills_system_prompt()
+        assert "<skill_categories>" in result
+        assert "<available_skills>" not in result
+        assert "skills_list" in result
+        assert "Installed: 8 skills across 1 categories." in result
+        assert "coding: 8 skills" in result
+
 
 # =========================================================================
 # Context files prompt builder
@@ -730,6 +750,28 @@ class TestReadSkillConditions:
         assert conditions["fallback_for_toolsets"] == ["browser"]
         assert conditions["requires_tools"] == ["terminal"]
 
+    def test_null_metadata_returns_empty_conditions(self, tmp_path):
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text(
+            "---\nname: test\ndescription: Test\nmetadata:\n---\n"
+        )
+        conditions = _read_skill_conditions(skill_file)
+        assert conditions["fallback_for_toolsets"] == []
+        assert conditions["requires_toolsets"] == []
+        assert conditions["fallback_for_tools"] == []
+        assert conditions["requires_tools"] == []
+
+    def test_null_hermes_metadata_returns_empty_conditions(self, tmp_path):
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text(
+            "---\nname: test\ndescription: Test\nmetadata:\n  hermes:\n---\n"
+        )
+        conditions = _read_skill_conditions(skill_file)
+        assert conditions["fallback_for_toolsets"] == []
+        assert conditions["requires_toolsets"] == []
+        assert conditions["fallback_for_tools"] == []
+        assert conditions["requires_tools"] == []
+
     def test_missing_file_returns_empty(self, tmp_path):
         conditions = _read_skill_conditions(tmp_path / "missing.md")
         assert conditions == {}
@@ -861,6 +903,19 @@ class TestBuildSkillsSystemPromptConditional:
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
             "---\nname: notes\ndescription: Take notes\n---\n"
+        )
+        result = build_skills_system_prompt(
+            available_tools=set(),
+            available_toolsets=set(),
+        )
+        assert "notes" in result
+
+    def test_null_metadata_skill_does_not_crash(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "general" / "notes"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: notes\ndescription: Take notes\nmetadata:\n---\n"
         )
         result = build_skills_system_prompt(
             available_tools=set(),
