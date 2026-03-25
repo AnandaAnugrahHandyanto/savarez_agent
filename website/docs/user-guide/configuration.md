@@ -1176,7 +1176,7 @@ display:
   show_cost: false        # Show estimated $ cost in the CLI status bar
 ```
 
-`display.busy_input_mode` is CLI-only. `queue` sends your follow-up on the next turn, while `interrupt` restores the legacy behavior where pressing Enter preempts the current run. `Ctrl+C` always interrupts immediately.
+`display.busy_input_mode` is CLI-only. `queue` sends your follow-up on the next turn, while `interrupt` restores the legacy behavior where pressing Enter preempts the current run. Use `/queue <prompt>` if you want to queue explicitly while Hermes is busy, regardless of this setting. `Ctrl+C` always interrupts immediately.
 
 ### Theme mode
 

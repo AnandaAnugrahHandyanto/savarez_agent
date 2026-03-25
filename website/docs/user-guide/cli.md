@@ -208,6 +208,7 @@ Pasting multi-line text is supported — use `Alt+Enter` or `Ctrl+J` to insert n
 You can interrupt the agent at any point:
 
 - **Type a new message + Enter** while the agent is working — by default it queues for the next turn in the CLI
+- **Use `/queue <prompt>`** while the agent is working to explicitly queue a follow-up, even if `display.busy_input_mode` is set to `interrupt`
 - **`Ctrl+C`** — interrupt the current operation (press twice within 2s to force exit)
 - In-progress terminal commands are killed immediately (SIGTERM, then SIGKILL after 1s)
 - Set `display.busy_input_mode: interrupt` in `~/.hermes/config.yaml` if you want Enter to preempt the current run instead
