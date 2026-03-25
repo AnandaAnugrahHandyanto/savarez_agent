@@ -422,7 +422,7 @@ class GitHubSource(SkillSource):
         path = path.rstrip("/")
         headers = self.auth.get_headers()
 
-        # Resolve the default branch tree SHA via the repo endpoint
+        # Resolve the default branch via the repo endpoint
         try:
             repo_url = f"https://api.github.com/repos/{repo}"
             resp = httpx.get(repo_url, headers=headers, timeout=15, follow_redirects=True)
@@ -432,21 +432,13 @@ class GitHubSource(SkillSource):
         except (httpx.HTTPError, ValueError):
             return None
 
+        # Fetch the full recursive tree (branch name works as tree-ish)
         try:
-            branch_url = f"https://api.github.com/repos/{repo}/git/ref/heads/{default_branch}"
-            resp = httpx.get(branch_url, headers=headers, timeout=15, follow_redirects=True)
-            if resp.status_code != 200:
-                return None
-            commit_sha = resp.json().get("object", {}).get("sha")
-            if not commit_sha:
-                return None
-        except (httpx.HTTPError, ValueError):
-            return None
-
-        # Fetch the full recursive tree
-        try:
-            tree_url = f"https://api.github.com/repos/{repo}/git/trees/{commit_sha}?recursive=1"
-            resp = httpx.get(tree_url, headers=headers, timeout=30, follow_redirects=True)
+            tree_url = f"https://api.github.com/repos/{repo}/git/trees/{default_branch}"
+            resp = httpx.get(
+                tree_url, params={"recursive": "1"},
+                headers=headers, timeout=30, follow_redirects=True,
+            )
             if resp.status_code != 200:
                 return None
             tree_data = resp.json()

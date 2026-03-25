@@ -1061,7 +1061,6 @@ class TestDownloadDirectoryViaTree:
     def test_tree_api_downloads_subdirectories(self, mock_get, mock_fetch):
         """Tree API returns files from nested subdirectories."""
         repo_resp = MagicMock(status_code=200, json=lambda: {"default_branch": "main"})
-        ref_resp = MagicMock(status_code=200, json=lambda: {"object": {"sha": "abc123"}})
         tree_resp = MagicMock(status_code=200, json=lambda: {
             "truncated": False,
             "tree": [
@@ -1072,7 +1071,7 @@ class TestDownloadDirectoryViaTree:
                 {"type": "blob", "path": "other/file.txt"},
             ],
         })
-        mock_get.side_effect = [repo_resp, ref_resp, tree_resp]
+        mock_get.side_effect = [repo_resp, tree_resp]
         mock_fetch.side_effect = lambda repo, path: f"content-of-{path}"
 
         src = self._source()
@@ -1089,9 +1088,8 @@ class TestDownloadDirectoryViaTree:
     def test_falls_back_on_truncated_tree(self, mock_get, mock_fallback):
         """When tree is truncated, fall back to recursive Contents API."""
         repo_resp = MagicMock(status_code=200, json=lambda: {"default_branch": "main"})
-        ref_resp = MagicMock(status_code=200, json=lambda: {"object": {"sha": "abc123"}})
         tree_resp = MagicMock(status_code=200, json=lambda: {"truncated": True, "tree": []})
-        mock_get.side_effect = [repo_resp, ref_resp, tree_resp]
+        mock_get.side_effect = [repo_resp, tree_resp]
 
         src = self._source()
         files = src._download_directory("owner/repo", "skills/my-skill")
@@ -1116,7 +1114,6 @@ class TestDownloadDirectoryViaTree:
     def test_tree_api_skips_failed_file_fetches(self, mock_get, mock_fetch):
         """Files that fail to fetch are skipped, not fatal."""
         repo_resp = MagicMock(status_code=200, json=lambda: {"default_branch": "main"})
-        ref_resp = MagicMock(status_code=200, json=lambda: {"object": {"sha": "abc123"}})
         tree_resp = MagicMock(status_code=200, json=lambda: {
             "truncated": False,
             "tree": [
@@ -1124,7 +1121,7 @@ class TestDownloadDirectoryViaTree:
                 {"type": "blob", "path": "skills/my-skill/scripts/run.py"},
             ],
         })
-        mock_get.side_effect = [repo_resp, ref_resp, tree_resp]
+        mock_get.side_effect = [repo_resp, tree_resp]
         mock_fetch.side_effect = lambda repo, path: (
             "# Skill" if path.endswith("SKILL.md") else None
         )
