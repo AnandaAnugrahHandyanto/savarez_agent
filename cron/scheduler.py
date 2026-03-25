@@ -477,6 +477,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             os.environ.pop(key, None)
         if _session_db:
             try:
+                # Mark cron session as ended so hermes prune can clean it up
+                _session_db.end_session()
+            except Exception as e:
+                logger.debug("Job '%s': failed to end session: %s", job_id, e)
+            try:
                 _session_db.close()
             except Exception as e:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
