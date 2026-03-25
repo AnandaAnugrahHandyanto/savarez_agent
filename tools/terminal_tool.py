@@ -53,7 +53,40 @@ from tools.interrupt import is_interrupted, _interrupt_event
 
 # Add mini-swe-agent to path if not installed. In git worktrees the populated
 # submodule may live in the main checkout rather than the worktree itself.
-from minisweagent_path import ensure_minisweagent_on_path
+try:
+    from minisweagent_path import ensure_minisweagent_on_path
+except ImportError:
+    def ensure_minisweagent_on_path(repo_root: Path) -> None:
+        """Best-effort fallback when the legacy helper module is absent."""
+        if importlib.util.find_spec("minisweagent") is not None:
+            return
+
+        repo_root = Path(repo_root).resolve()
+        candidates = [
+            repo_root / "mini-swe-agent",
+            repo_root.parent / "mini-swe-agent",
+        ]
+
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                capture_output=True,
+                cwd=repo_root,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                common_git_dir = Path(result.stdout.strip())
+                candidates.append(common_git_dir.parent / "mini-swe-agent")
+        except Exception:
+            pass
+
+        for candidate in candidates:
+            if not candidate.exists():
+                continue
+            if (candidate / "minisweagent").exists() or (candidate / "pyproject.toml").exists():
+                sys.path.insert(0, str(candidate))
+                return
 
 ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
 

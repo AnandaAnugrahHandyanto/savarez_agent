@@ -2636,14 +2636,20 @@ def _restore_stashed_changes(
     return True
 
 def _invalidate_update_cache():
-    """Delete the update-check cache so ``hermes --version`` doesn't
-    report a stale "commits behind" count after a successful update."""
+    """Reset the update-check cache so the banner doesn't show a stale
+    "commits behind" count after an update attempt.
+
+    Writes ``behind: 0`` with a fresh timestamp rather than just deleting
+    the file.  This prevents the next startup from re-fetching and
+    re-caching a nonzero count (which can happen when the local branch
+    has diverged, e.g. a local commit sitting on top of main).
+    """
+    import json as _json, time as _time
     try:
         cache_file = Path(os.getenv(
             "HERMES_HOME", Path.home() / ".hermes"
         )) / ".update_check"
-        if cache_file.exists():
-            cache_file.unlink()
+        cache_file.write_text(_json.dumps({"ts": _time.time(), "behind": 0}))
     except Exception:
         pass
 
@@ -2958,6 +2964,7 @@ def cmd_update(args):
         print("  hermes model              # Select provider and model")
         
     except subprocess.CalledProcessError as e:
+        _invalidate_update_cache()  # clear stale count even on failure
         if sys.platform == "win32":
             print(f"⚠ Git update failed: {e}")
             print("→ Falling back to ZIP download...")
@@ -3923,6 +3930,7 @@ For more help on a command:
                 if confirm.lower() not in ("y", "yes"):
                     print("Cancelled.")
                     return
+
             count = db.prune_sessions(older_than_days=days, source=args.source)
             print(f"Pruned {count} session(s).")
 

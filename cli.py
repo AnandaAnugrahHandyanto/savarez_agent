@@ -544,9 +544,7 @@ def _path_is_within_root(path: Path, root: Path) -> bool:
 def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
     """Create an isolated git worktree for this CLI session.
 
-    Returns a dict with wlogout
-logout
-orktree metadata on success, None on failure.
+    Returns a dict with worktree metadata on success, None on failure.
     The dict contains: path, branch, repo_root.
     """
     import subprocess
@@ -4378,9 +4376,7 @@ class HermesCLI:
             # Flush Honcho async queue so queued messages land before context resets
             if self.agent and getattr(self.agent, '_honcho', None):
                 try:
-                    self.alogout
-gent._hologout
-ncho.flush_all()
+                    self.agent._honcho.flush_all()
                 except Exception:
                     pass
         except Exception as e:
@@ -4393,8 +4389,7 @@ ncho.flush_all()
             return
 
         agent = self.agent
-        input_tokens = getattr(aglogout
-ent, "session_input_tokens", 0) or 0
+        input_tokens = getattr(agent, "session_input_tokens", 0) or 0
         output_tokens = getattr(agent, "session_output_tokens", 0) or 0
         cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
         cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0) or 0
@@ -4953,8 +4948,7 @@ ent, "session_input_tokens", 0) or 0
         from tools.voice_mode import check_voice_requirements, detect_audio_environment
 
         # Environment detection -- warn and block in incompatible environments
-        env_chelogout
-ck = detect_audio_environment()
+        env_check = detect_audio_environment()
         if not env_check["available"]:
             _cprint(f"\n{_GOLD}Voice mode unavailable in this environment:{_RST}")
             for warning in env_check["warnings"]:
@@ -5376,8 +5370,7 @@ ck = detect_audio_environment()
         """
         Send a message to the agent and get a response.
         
-        Handles streaming output, interrupt detection (user typing while alogout
-gent
+        Handles streaming output, interrupt detection (user typing while agent
         is working), and re-queueing of interrupted messages.
         
         Uses a dedicated _interrupt_queue (separate from _pending_input) to avoid
@@ -5578,8 +5571,7 @@ gent
                         # output from the agent thread.  Without this, the
                         # StdoutProxy buffer only flushes on renderer passes
                         # triggered by input events — on macOS this causes
-                        # the CLI to appear frozen ulogout
-ntil the user types. (#1624)
+                        # the CLI to appear frozen until the user types. (#1624)
                         self._invalidate(min_interval=0.15)
                 else:
                     # Fallback for non-interactive mode (e.g., single-query)
@@ -5832,8 +5824,7 @@ ntil the user types. (#1624)
             return [("class:voice-processing", f"◉ {state_suffix}")]
         if self._sudo_state:
             return [("class:sudo-prompt", f"🔐 {state_suffix}")]
-        if self._secret_state:logout
-
+        if self._secret_state:
             return [("class:sudo-prompt", f"🔑 {state_suffix}")]
         if self._approval_state:
             return [("class:prompt-working", f"⚠ {state_suffix}")]

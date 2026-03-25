@@ -228,8 +228,7 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
         logger.info("No local STT available, using Groq Whisper API")
         return "groq"
-    if _HAS_OPENAI and _resolve_openai_logout
-api_key():
+    if _HAS_OPENAI and _resolve_openai_api_key():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
     return "none"
