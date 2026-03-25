@@ -226,6 +226,7 @@ PLATFORM_HINTS = {
 CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
+SKILLS_SYSTEM_PROMPT_MAX_CHARS = 4_000
 
 
 # =========================================================================
@@ -266,7 +267,7 @@ def _read_skill_conditions(skill_file: Path) -> dict:
         from tools.skills_tool import _parse_frontmatter
         raw = skill_file.read_text(encoding="utf-8")[:2000]
         frontmatter, _ = _parse_frontmatter(raw)
-        hermes = frontmatter.get("metadata", {}).get("hermes", {})
+        hermes = _get_skill_hermes_metadata(frontmatter)
         return {
             "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
             "requires_toolsets": hermes.get("requires_toolsets", []),
@@ -276,6 +277,22 @@ def _read_skill_conditions(skill_file: Path) -> dict:
     except Exception as e:
         logger.debug("Failed to read skill conditions from %s: %s", skill_file, e)
         return {}
+
+
+def _get_skill_hermes_metadata(frontmatter: dict | None) -> dict:
+    """Return normalized ``metadata.hermes`` frontmatter as a dict."""
+    if not isinstance(frontmatter, dict):
+        return {}
+
+    metadata = frontmatter.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        return {}
+
+    hermes = metadata.get("hermes") or {}
+    if not isinstance(hermes, dict):
+        return {}
+
+    return hermes
 
 
 def _skill_should_show(
@@ -356,7 +373,7 @@ def build_skills_system_prompt(
             continue
         # Extract conditions inline from already-parsed frontmatter
         # (avoids redundant file re-read that _read_skill_conditions would do)
-        hermes_meta = frontmatter.get("metadata", {}).get("hermes", {})
+        hermes_meta = _get_skill_hermes_metadata(frontmatter)
         conditions = {
             "fallback_for_toolsets": hermes_meta.get("fallback_for_toolsets", []),
             "requires_toolsets": hermes_meta.get("requires_toolsets", []),
@@ -385,25 +402,31 @@ def build_skills_system_prompt(
             except Exception as e:
                 logger.debug("Could not read skill description %s: %s", desc_file, e)
 
-    index_lines = []
+    normalized_skills_by_category: dict[str, list[tuple[str, str]]] = {}
     for category in sorted(skills_by_category.keys()):
-        cat_desc = category_descriptions.get(category, "")
-        if cat_desc:
-            index_lines.append(f"  {category}: {cat_desc}")
-        else:
-            index_lines.append(f"  {category}:")
-        # Deduplicate and sort skills within each category
+        deduped: list[tuple[str, str]] = []
         seen = set()
         for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
             if name in seen:
                 continue
             seen.add(name)
+            deduped.append((name, desc))
+        normalized_skills_by_category[category] = deduped
+
+    index_lines = []
+    for category in sorted(normalized_skills_by_category.keys()):
+        cat_desc = category_descriptions.get(category, "")
+        if cat_desc:
+            index_lines.append(f"  {category}: {cat_desc}")
+        else:
+            index_lines.append(f"  {category}:")
+        for name, desc in normalized_skills_by_category[category]:
             if desc:
                 index_lines.append(f"    - {name}: {desc}")
             else:
                 index_lines.append(f"    - {name}")
 
-    return (
+    full_prompt = (
         "## Skills (mandatory)\n"
         "Before replying, scan the skills below. If one clearly matches your task, "
         "load it with skill_view(name) and follow its instructions. "
@@ -417,6 +440,39 @@ def build_skills_system_prompt(
         "</available_skills>\n"
         "\n"
         "If none match, proceed normally without loading a skill."
+    )
+
+    if len(full_prompt) <= SKILLS_SYSTEM_PROMPT_MAX_CHARS:
+        return full_prompt
+
+    compact_lines = []
+    total_skills = 0
+    for category in sorted(normalized_skills_by_category.keys()):
+        entries = normalized_skills_by_category[category]
+        total_skills += len(entries)
+        line = f"  - {category}: {len(entries)} skill"
+        if len(entries) != 1:
+            line += "s"
+        compact_lines.append(line)
+
+    return (
+        "## Skills\n"
+        "A large skill catalog is installed, so the full index is omitted to keep "
+        "the system prompt compact.\n"
+        "When a task may benefit from reusable instructions, prior workflow "
+        "knowledge, or domain-specific steps, call skills_list to discover "
+        "candidates, then load the best match with skill_view(name).\n"
+        "If you load a skill and find gaps or errors, patch it with "
+        "skill_manage(action='patch'). After difficult tasks, consider saving the "
+        "workflow as a new skill.\n"
+        f"Installed: {total_skills} skills across "
+        f"{len(normalized_skills_by_category)} categories.\n"
+        "\n"
+        "<skill_categories>\n"
+        + "\n".join(compact_lines) + "\n"
+        "</skill_categories>\n"
+        "\n"
+        "Do not assume a skill exists until you check with skills_list."
     )
 
 
