@@ -1168,12 +1168,15 @@ display:
   personality: "kawaii"  # Legacy cosmetic field still surfaced in some summaries
   compact: false          # Compact output mode (less whitespace)
   resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
+  busy_input_mode: queue  # queue | interrupt — what Enter does while the CLI is busy
   bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
   show_reasoning: false   # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   background_process_notifications: all  # all | result | error | off (gateway only)
   show_cost: false        # Show estimated $ cost in the CLI status bar
 ```
+
+`display.busy_input_mode` is CLI-only. `queue` sends your follow-up on the next turn, while `interrupt` restores the legacy behavior where pressing Enter preempts the current run. `Ctrl+C` always interrupts immediately.
 
 ### Theme mode
 

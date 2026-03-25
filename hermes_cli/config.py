@@ -265,6 +265,7 @@ DEFAULT_CONFIG = {
         "compact": False,
         "personality": "kawaii",
         "resume_display": "full",
+        "busy_input_mode": "queue",
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,
@@ -1676,6 +1677,7 @@ def show_config():
     display = config.get('display', {})
     print(f"  Personality:  {display.get('personality', 'kawaii')}")
     print(f"  Reasoning:    {'on' if display.get('show_reasoning', False) else 'off'}")
+    print(f"  Busy input:   {display.get('busy_input_mode', 'queue')}")
     print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
 
     # Terminal

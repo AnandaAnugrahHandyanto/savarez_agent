@@ -96,6 +96,50 @@ class TestVerboseAndToolProgress:
         assert cli.tool_progress_mode in ("off", "new", "all", "verbose")
 
 
+class TestBusyInputMode:
+    def test_default_busy_input_mode_is_queue(self):
+        cli = _make_cli()
+        assert cli.busy_input_mode == "queue"
+
+    def test_busy_input_mode_interrupt_is_honored(self):
+        cli = _make_cli(config_overrides={"display": {"busy_input_mode": "interrupt"}})
+        assert cli.busy_input_mode == "interrupt"
+
+    def test_busy_input_mode_aliases_normalize_to_queue(self):
+        cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queuing"}})
+        assert cli.busy_input_mode == "queue"
+
+    def test_busy_message_routes_to_pending_queue_when_queue_mode(self):
+        cli = _make_cli()
+        cli._agent_running = True
+
+        route = cli._route_submitted_payload("follow up", text="follow up")
+
+        assert route == "queued"
+        assert cli._pending_input.get_nowait() == "follow up"
+        assert cli._interrupt_queue.empty()
+
+    def test_busy_message_routes_to_interrupt_queue_when_interrupt_mode(self):
+        cli = _make_cli(config_overrides={"display": {"busy_input_mode": "interrupt"}})
+        cli._agent_running = True
+
+        route = cli._route_submitted_payload("stop that", text="stop that")
+
+        assert route == "interrupt"
+        assert cli._interrupt_queue.get_nowait() == "stop that"
+        assert cli._pending_input.empty()
+
+    def test_busy_command_stays_in_pending_queue_even_in_interrupt_mode(self):
+        cli = _make_cli(config_overrides={"display": {"busy_input_mode": "interrupt"}})
+        cli._agent_running = True
+
+        route = cli._route_submitted_payload("/statusbar", text="/statusbar")
+
+        assert route == "pending"
+        assert cli._pending_input.get_nowait() == "/statusbar"
+        assert cli._interrupt_queue.empty()
+
+
 class TestSingleQueryState:
     def test_voice_and_interrupt_state_initialized_before_run(self):
         """Single-query mode calls chat() without going through run()."""

@@ -129,6 +129,28 @@ def _parse_reasoning_config(effort: str) -> dict | None:
     return None
 
 
+def _normalize_busy_input_mode(mode: Any) -> str:
+    """Normalize Enter behavior while the CLI is busy."""
+    if mode is None:
+        return "queue"
+
+    normalized = str(mode).strip().lower()
+    aliases = {
+        "queue": "queue",
+        "queued": "queue",
+        "queueing": "queue",
+        "queuing": "queue",
+        "interrupt": "interrupt",
+        "interrupting": "interrupt",
+    }
+    resolved = aliases.get(normalized)
+    if resolved:
+        return resolved
+
+    logger.warning("Unknown display.busy_input_mode '%s', using default (queue)", mode)
+    return "queue"
+
+
 def load_cli_config() -> Dict[str, Any]:
     """
     Load CLI configuration from config files.
@@ -214,6 +236,7 @@ def load_cli_config() -> Dict[str, Any]:
             "resume_display": "full",
             "show_reasoning": False,
             "streaming": True,
+            "busy_input_mode": "queue",
 
             "skin": "default",
         },
@@ -1044,6 +1067,10 @@ class HermesCLI:
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
+        # busy_input_mode: while Hermes is busy, Enter queues follow-ups or interrupts.
+        self.busy_input_mode = _normalize_busy_input_mode(
+            CLI_CONFIG["display"].get("busy_input_mode", "queue")
+        )
 
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
@@ -1251,6 +1278,32 @@ class HermesCLI:
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
+
+    def _route_submitted_payload(self, payload: Any, text: str = "") -> str:
+        """Route submitted input based on whether the agent is currently busy."""
+        is_command = bool(text and text.startswith("/"))
+
+        if self._agent_running and not is_command:
+            if self.busy_input_mode == "interrupt":
+                self._interrupt_queue.put(payload)
+                # Debug: log to file when message enters interrupt queue
+                try:
+                    _dbg = _hermes_home / "interrupt_debug.log"
+                    with open(_dbg, "a") as _f:
+                        import time as _t
+                        _f.write(
+                            f"{_t.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
+                            f"agent_running={self._agent_running}\n"
+                        )
+                except Exception:
+                    pass
+                return "interrupt"
+
+            self._pending_input.put(payload)
+            return "queued"
+
+        self._pending_input.put(payload)
+        return "pending"
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -5449,9 +5502,10 @@ class HermesCLI:
         is working), and re-queueing of interrupted messages.
         
         Uses a dedicated _interrupt_queue (separate from _pending_input) to avoid
-        race conditions between the process_loop and interrupt monitoring. Messages
-        typed while the agent is running go to _interrupt_queue; messages typed while
-        idle go to _pending_input.
+        race conditions between the process_loop and interrupt monitoring. When
+        display.busy_input_mode is "interrupt", busy-session submissions go to
+        _interrupt_queue. When it is "queue", they go straight to _pending_input
+        for the next turn.
         
         Args:
             message: The user's message (str or multimodal content list)
@@ -6121,7 +6175,7 @@ class HermesCLI:
             - Approval selection: selected choice goes to approval response queue
             - Clarify freetext mode: answer goes to the clarify response queue
             - Clarify choice mode: selected choice goes to the clarify response queue
-            - Agent running: goes to _interrupt_queue (chat() monitors this)
+            - Agent running: queues or interrupts based on display.busy_input_mode
             - Agent idle: goes to _pending_input (process_loop monitors this)
             Commands (starting with /) always go to _pending_input so they're
             handled as commands, not sent as interrupt text to the agent.
@@ -6185,19 +6239,10 @@ class HermesCLI:
                 event.app.invalidate()
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
-                if self._agent_running and not (text and text.startswith("/")):
-                    self._interrupt_queue.put(payload)
-                    # Debug: log to file when message enters interrupt queue
-                    try:
-                        _dbg = _hermes_home / "interrupt_debug.log"
-                        with open(_dbg, "a") as _f:
-                            import time as _t
-                            _f.write(f"{_t.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
-                                     f"agent_running={self._agent_running}\n")
-                    except Exception:
-                        pass
-                else:
-                    self._pending_input.put(payload)
+                route = self._route_submitted_payload(payload, text=text)
+                if route == "queued":
+                    preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
+                    _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
                 event.app.current_buffer.reset(append_to_history=True)
         
         @kb.add('escape', 'enter')
