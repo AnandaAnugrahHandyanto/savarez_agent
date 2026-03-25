@@ -819,6 +819,16 @@ class BasePlatformAdapter(ABC):
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes
+        finally:
+            # Ensure the underlying platform typing loop is stopped.
+            # _keep_typing may have called send_typing() after an outer stop_typing()
+            # cleared the task dict, recreating the loop. Cancelling _keep_typing alone
+            # won't clean that up — we must explicitly stop it here.
+            if hasattr(self, "stop_typing"):
+                try:
+                    await self.stop_typing(chat_id)
+                except Exception:
+                    pass
     
     async def handle_message(self, event: MessageEvent) -> None:
         """
