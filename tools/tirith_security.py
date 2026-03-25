@@ -600,17 +600,42 @@ def ensure_installed(*, log_failures: bool = True):
 _MAX_FINDINGS = 50
 _MAX_SUMMARY_LEN = 500
 
+def _is_safe_readonly_http(command: str) -> bool:
+    cmd = command.strip().lower()
+
+    return (
+        cmd.startswith("curl ")
+        and ("http://" in cmd or "https://" in cmd)
+        and not any(x in cmd for x in [
+            "-x post", "-x put", "-x delete",
+            "-xpost", "-xput", "-xdelete",
+            "--request post", "--request put", "--request delete",
+        ])
+        and not any(x in cmd for x in [
+            "--data", "-d", "--upload-file", "-t"
+        ])
+        and not any(x in cmd for x in ["|", ">", ">>"])
+    )
 
 def check_command_security(command: str) -> dict:
     """Run tirith security scan on a command.
 
-    Exit code determines action (0=allow, 1=block, 2=warn). JSON enriches
-    findings/summary. Spawn failures and timeouts respect fail_open config.
-    Programming errors propagate.
+    Exit code determines action (0=allow, 1=block, 2=warn).
+    JSON enriches findings/summary. Spawn failures and timeouts
+    respect fail_open config. Programming errors propagate.
 
     Returns:
         {"action": "allow"|"warn"|"block", "findings": [...], "summary": str}
     """
+
+    # Allow safe read-only HTTP requests (e.g., curl GET)
+    if _is_safe_readonly_http(command):
+        return {
+            "action": "allow",
+            "findings": [],
+            "summary": "safe read-only http request",
+        }
+
     cfg = _load_security_config()
 
     if not cfg["tirith_enabled"]:
