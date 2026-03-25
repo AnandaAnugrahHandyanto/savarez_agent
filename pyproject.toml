@@ -57,7 +57,21 @@ homeassistant = ["aiohttp>=3.9.0,<4"]
 sms = ["aiohttp>=3.9.0,<4"]
 acp = ["agent-client-protocol>=0.8.1,<1.0"]
 dingtalk = ["dingtalk-stream>=0.1.0,<1"]
+online-rl = [
+  "torch>=2.1.0",
+  "transformers>=4.36.0",
+  "peft>=0.7.0",
+]
+online-rl-mlx = [
+  "mlx>=0.18.0",
+  "mlx-lm>=0.20.0",
+]
+online-rl-tinker = [
+  "tinker @ git+https://github.com/thinking-machines-lab/tinker.git",
+  "numpy>=1.24.0,<3",
+]
 rl = [
+  "hermes-agent[online-rl]",
   "atroposlib @ git+https://github.com/NousResearch/atropos.git",
   "tinker @ git+https://github.com/thinking-machines-lab/tinker.git",
   "fastapi>=0.104.0,<1",
