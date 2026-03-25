@@ -85,16 +85,24 @@ def _ensure_current_event_loop(request):
         yield
         return
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    try:
+        loop = asyncio.get_event_loop_policy().get_event_loop()
+    except RuntimeError:
+        loop = None
+
+    created = loop is None or loop.is_closed()
+    if created:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
     try:
         yield
     finally:
-        try:
-            loop.close()
-        finally:
-            asyncio.set_event_loop(None)
+        if created and loop is not None:
+            try:
+                loop.close()
+            finally:
+                asyncio.set_event_loop(None)
 
 
 @pytest.fixture(autouse=True)
