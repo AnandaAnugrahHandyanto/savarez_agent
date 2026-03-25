@@ -114,6 +114,9 @@ The cleaner architecture is:
 4. wait for completion
 5. return the final feedback
 
+For browser UX, that host should preferably be stable per chat/session/workspace
+rather than a brand-new random domain for every launch.
+
 That design led to integrated inline actions in the Plannotator tool rather than relying on the model to manually compose prepare + send_message + wait steps.
 
 ## Why this is better than only skills

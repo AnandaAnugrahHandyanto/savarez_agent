@@ -90,6 +90,13 @@ A launcher can support fixed-host reuse via an environment variable, flag, or
 other operator-defined contract. Hermes passes `fixed_host` through the launcher
 environment as `PLANNOTATOR_HOST`.
 
+For remote/shared review flows, the launcher should also set:
+- `PLANNOTATOR_REMOTE=1`
+- `PLANNOTATOR_PORT=<fixed-port>`
+
+That prevents local browser auto-open behavior and makes the forwarded/shared
+port predictable.
+
 ## Exposure configuration
 
 If Plannotator is not directly reachable, operators may expose it through:
@@ -97,6 +104,10 @@ If Plannotator is not directly reachable, operators may expose it through:
 - `tailscale-serve`
 - `tailscale-funnel`
 - another custom command-template strategy
+
+For browser UX, prefer a stable host per chat/session/workspace and distinguish
+individual reviews by path, token, or session state when possible. Reusing the
+same host helps preserve browser-side settings such as cookies.
 
 The `service_expose` tool supports:
 - `HERMES_SERVICE_EXPOSE_REVERSE_PROXY_TEMPLATE`
