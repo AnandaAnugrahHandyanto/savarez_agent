@@ -139,6 +139,36 @@ class TestBusyInputMode:
         assert cli._pending_input.get_nowait() == "/statusbar"
         assert cli._interrupt_queue.empty()
 
+    def test_busy_queue_command_is_handled_immediately(self):
+        cli = _make_cli()
+        cli._agent_running = True
+        cli.process_command = MagicMock(return_value=True)
+
+        handled = cli._handle_immediate_busy_command("/queue follow up")
+
+        assert handled is True
+        cli.process_command.assert_called_once_with("/queue follow up")
+
+    def test_busy_q_alias_is_handled_immediately(self):
+        cli = _make_cli()
+        cli._agent_running = True
+        cli.process_command = MagicMock(return_value=True)
+
+        handled = cli._handle_immediate_busy_command("/q follow up")
+
+        assert handled is True
+        cli.process_command.assert_called_once_with("/q follow up")
+
+    def test_non_queue_busy_command_is_not_handled_immediately(self):
+        cli = _make_cli()
+        cli._agent_running = True
+        cli.process_command = MagicMock(return_value=True)
+
+        handled = cli._handle_immediate_busy_command("/statusbar")
+
+        assert handled is False
+        cli.process_command.assert_not_called()
+
 
 class TestSingleQueryState:
     def test_voice_and_interrupt_state_initialized_before_run(self):

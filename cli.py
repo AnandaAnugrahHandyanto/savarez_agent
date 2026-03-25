@@ -1305,6 +1305,18 @@ class HermesCLI:
         self._pending_input.put(payload)
         return "pending"
 
+    def _handle_immediate_busy_command(self, text: str) -> bool:
+        """Handle slash commands that must observe the current busy state."""
+        if not (self._agent_running and text and text.startswith("/")):
+            return False
+
+        command_name = text.lower().split()[0].lstrip("/")
+        if command_name not in {"queue", "q"}:
+            return False
+
+        self.process_command(text)
+        return True
+
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
         import time as _time
@@ -6232,6 +6244,12 @@ class HermesCLI:
             # --- Normal input routing ---
             text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)
+            if self._handle_immediate_busy_command(text):
+                self._attached_images.clear()
+                event.app.current_buffer.reset(append_to_history=True)
+                event.app.invalidate()
+                return
+
             if text or has_images:
                 # Snapshot and clear attached images
                 images = list(self._attached_images)
