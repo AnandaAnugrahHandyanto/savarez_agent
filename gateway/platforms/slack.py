@@ -763,6 +763,41 @@ class SlackAdapter(BasePlatformAdapter):
             thread_id=thread_ts,
         )
 
+        # Fetch thread context including parent message when bot is in a thread.
+        # Without this, the parent message (thread root) is missing from context,
+        # leaving the agent unaware of the original question or instructions.
+        if thread_ts and thread_ts != ts:
+            try:
+                result = await self._app.client.conversations_replies(
+                    channel=channel_id,
+                    ts=thread_ts,
+                    limit=20,
+                )
+                thread_messages = result.get("messages", [])
+                thread_context_lines = []
+                for msg in thread_messages:
+                    if msg.get("ts") == ts:
+                        continue  # skip current message (already in text)
+                    if msg.get("bot_id") or msg.get("user") == self._bot_user_id:
+                        sender = "Assistant"
+                    else:
+                        msg_user = await self._resolve_user_name(msg.get("user", ""))
+                        sender = msg_user or "User"
+                    msg_text = msg.get("text", "")
+                    if self._bot_user_id:
+                        msg_text = msg_text.replace(f"<@{self._bot_user_id}>", "").strip()
+                    if msg_text:
+                        # Mark parent message clearly so agent knows it started the thread
+                        if msg.get("ts") == thread_ts:
+                            thread_context_lines.insert(0, f"{sender} [thread parent]: {msg_text}")
+                        else:
+                            thread_context_lines.append(f"{sender}: {msg_text}")
+                if thread_context_lines:
+                    thread_context = "\n".join(thread_context_lines)
+                    text = f"[Thread context:]\n{thread_context}\n\n[New message:]\n{text}"
+            except Exception as e:
+                logger.debug("[Slack] Failed to fetch thread context: %s", e)
+
         msg_event = MessageEvent(
             text=text,
             message_type=msg_type,
