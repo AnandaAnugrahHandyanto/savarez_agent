@@ -6,7 +6,7 @@ with the platform (or are commonly installed).
 
 Platform support:
   macOS   — osascript (always available), pngpaste (if installed), pbpaste (text)
-  Windows — PowerShell with .NET System.Windows.Forms.Clipboard (native win32)
+  Windows — Native win32 API via ctypes (instant), PowerShell fallback for save
   WSL2    — powershell.exe via .NET System.Windows.Forms.Clipboard
   Linux   — wl-paste (Wayland), xclip (X11)
 """
@@ -212,14 +212,97 @@ def _linux_save(dest: Path) -> bool:
 
 
 # ── Native Windows (sys.platform == "win32") ────────────────────────────
+#
+# Uses win32 API via ctypes for instant clipboard checks and text retrieval.
+# Image extraction still uses PowerShell (needs .NET for PNG conversion)
+# but the has_image/has_text checks are now sub-millisecond via ctypes.
 
-# PowerShell commands for native Windows — same .NET approach as WSL
-# but invokes "powershell" (not "powershell.exe") since we're native.
-_PS_WIN_CHECK_IMAGE = (
-    "Add-Type -AssemblyName System.Windows.Forms;"
-    "[System.Windows.Forms.Clipboard]::ContainsImage()"
-)
+# Win32 clipboard format constants
+_CF_BITMAP = 2
+_CF_DIB = 8
+_CF_DIBV5 = 17
+_CF_UNICODETEXT = 13
+_CF_TEXT = 1
+_GMEM_MOVEABLE = 0x0002
 
+
+def _win32_open_clipboard() -> bool:
+    """Open the Windows clipboard. Must call _win32_close_clipboard after."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    return bool(ctypes.windll.user32.OpenClipboard(0))
+
+
+def _win32_close_clipboard():
+    """Close the Windows clipboard."""
+    import ctypes
+    ctypes.windll.user32.CloseClipboard()
+
+
+def _windows_has_image() -> bool:
+    """Check if Windows clipboard has an image (native win32 API, instant)."""
+    try:
+        import ctypes
+        u32 = ctypes.windll.user32
+        # Check without opening — IsClipboardFormatAvailable is thread-safe
+        return bool(
+            u32.IsClipboardFormatAvailable(_CF_BITMAP)
+            or u32.IsClipboardFormatAvailable(_CF_DIB)
+            or u32.IsClipboardFormatAvailable(_CF_DIBV5)
+        )
+    except Exception as e:
+        logger.debug("Win32 clipboard image check failed: %s", e)
+    return False
+
+
+def _windows_has_text() -> bool:
+    """Check if Windows clipboard has text (native win32 API, instant)."""
+    try:
+        import ctypes
+        u32 = ctypes.windll.user32
+        return bool(
+            u32.IsClipboardFormatAvailable(_CF_UNICODETEXT)
+            or u32.IsClipboardFormatAvailable(_CF_TEXT)
+        )
+    except Exception as e:
+        logger.debug("Win32 clipboard text check failed: %s", e)
+    return False
+
+
+def _windows_get_text() -> str | None:
+    """Get text from Windows clipboard (native win32 API, instant)."""
+    try:
+        import ctypes
+        import ctypes.wintypes
+        u32 = ctypes.windll.user32
+        k32 = ctypes.windll.kernel32
+
+        if not u32.IsClipboardFormatAvailable(_CF_UNICODETEXT):
+            return None
+
+        if not u32.OpenClipboard(0):
+            return None
+        try:
+            handle = u32.GetClipboardData(_CF_UNICODETEXT)
+            if not handle:
+                return None
+            ptr = k32.GlobalLock(handle)
+            if not ptr:
+                return None
+            try:
+                return ctypes.wstring_at(ptr)
+            finally:
+                k32.GlobalUnlock(handle)
+        finally:
+            u32.CloseClipboard()
+    except Exception as e:
+        logger.debug("Win32 clipboard text get failed: %s", e)
+    return None
+
+
+# PowerShell is still needed for image extraction (DIB → PNG conversion
+# requires .NET System.Drawing). But checks are now instant via ctypes.
 _PS_WIN_EXTRACT_IMAGE = (
     "Add-Type -AssemblyName System.Windows.Forms;"
     "Add-Type -AssemblyName System.Drawing;"
@@ -228,17 +311,6 @@ _PS_WIN_EXTRACT_IMAGE = (
     "$ms = New-Object System.IO.MemoryStream;"
     "$img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png);"
     "[System.Convert]::ToBase64String($ms.ToArray())"
-)
-
-_PS_WIN_CHECK_TEXT = (
-    "Add-Type -AssemblyName System.Windows.Forms;"
-    "[System.Windows.Forms.Clipboard]::ContainsText()"
-)
-
-_PS_WIN_GET_TEXT = (
-    "Add-Type -AssemblyName System.Windows.Forms;"
-    "$t = [System.Windows.Forms.Clipboard]::GetText();"
-    "if ($t) { $t } else { exit 1 }"
 )
 
 
@@ -251,25 +323,15 @@ def _find_powershell_native() -> str:
     return "powershell"
 
 
-def _windows_has_image() -> bool:
-    """Check if Windows clipboard has an image (native win32)."""
-    try:
-        ps = _find_powershell_native()
-        r = subprocess.run(
-            [ps, "-NoProfile", "-NonInteractive", "-Command",
-             _PS_WIN_CHECK_IMAGE],
-            capture_output=True, text=True, timeout=10,
-        )
-        return r.returncode == 0 and "True" in r.stdout
-    except FileNotFoundError:
-        logger.debug("PowerShell not found — Windows clipboard unavailable")
-    except Exception as e:
-        logger.debug("Windows clipboard check failed: %s", e)
-    return False
-
-
 def _windows_save(dest: Path) -> bool:
-    """Extract clipboard image on native Windows via PowerShell."""
+    """Extract clipboard image on native Windows.
+
+    Uses ctypes for the quick has-image check, then PowerShell for the
+    actual PNG extraction (DIB→PNG conversion needs .NET).
+    """
+    if not _windows_has_image():
+        return False
+
     try:
         ps = _find_powershell_native()
         r = subprocess.run(
@@ -294,37 +356,6 @@ def _windows_save(dest: Path) -> bool:
         logger.debug("Windows clipboard extraction failed: %s", e)
         dest.unlink(missing_ok=True)
     return False
-
-
-def _windows_has_text() -> bool:
-    """Check if Windows clipboard has text (native win32)."""
-    try:
-        ps = _find_powershell_native()
-        r = subprocess.run(
-            [ps, "-NoProfile", "-NonInteractive", "-Command",
-             _PS_WIN_CHECK_TEXT],
-            capture_output=True, text=True, timeout=10,
-        )
-        return r.returncode == 0 and "True" in r.stdout
-    except Exception as e:
-        logger.debug("Windows text clipboard check failed: %s", e)
-    return False
-
-
-def _windows_get_text() -> str | None:
-    """Get text from Windows clipboard (native win32)."""
-    try:
-        ps = _find_powershell_native()
-        r = subprocess.run(
-            [ps, "-NoProfile", "-NonInteractive", "-Command",
-             _PS_WIN_GET_TEXT],
-            capture_output=True, text=True, timeout=10,
-        )
-        if r.returncode == 0 and r.stdout:
-            return r.stdout.rstrip("\r\n")
-    except Exception as e:
-        logger.debug("Windows text clipboard get failed: %s", e)
-    return None
 
 
 # ── WSL2 (powershell.exe) ────────────────────────────────────────────────
