@@ -534,6 +534,15 @@ def tick(verbose: bool = True) -> int:
                 # If the agent responded with [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
                 deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+
+                # Redact credentials/secrets before delivering to external platforms
+                if deliver_content:
+                    try:
+                        from agent.redact import redact_sensitive_text
+                        deliver_content = redact_sensitive_text(deliver_content)
+                    except Exception:
+                        pass  # Don't block delivery on redaction failure
+
                 should_deliver = bool(deliver_content)
                 if should_deliver and success and deliver_content.strip().upper().startswith(SILENT_MARKER):
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
