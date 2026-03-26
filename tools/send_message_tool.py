@@ -603,7 +603,7 @@ async def _send_email(extra, chat_id, message):
         msg["To"] = chat_id
         msg["Subject"] = "Hermes Agent"
 
-        server = smtplib.SMTP(smtp_host, smtp_port)
+        server = smtplib.SMTP(smtp_host, smtp_port, timeout=30)
         server.starttls(context=ssl.create_default_context())
         server.login(address, password)
         server.send_message(msg)
