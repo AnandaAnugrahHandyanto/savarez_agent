@@ -203,7 +203,7 @@ class GitHubAuth:
             if resp.status_code == 201:
                 return resp.json().get("token")
         except Exception as e:
-            logger.debug(f"GitHub App auth failed: {e}")
+            logger.debug("GitHub App auth failed: %s", e)
 
         return None
 
@@ -284,7 +284,7 @@ class GitHubSource(SkillSource):
                     if query_lower in searchable:
                         results.append(skill)
             except Exception as e:
-                logger.debug(f"Failed to search {tap['repo']}: {e}")
+                logger.debug("Failed to search %s: %s", tap['repo'], e)
                 continue
 
         # Deduplicate by name, preferring higher trust levels
@@ -2598,7 +2598,7 @@ def unified_search(query: str, sources: List[SkillSource],
             results = src.search(query, limit=limit)
             all_results.extend(results)
         except Exception as e:
-            logger.debug(f"Search failed for {src.source_id()}: {e}")
+            logger.debug("Search failed for %s: %s", src.source_id(), e)
 
     # Deduplicate by name, preferring higher trust levels
     _TRUST_RANK = {"builtin": 2, "trusted": 1, "community": 0}
