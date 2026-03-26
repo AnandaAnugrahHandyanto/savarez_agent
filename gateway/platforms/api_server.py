@@ -18,6 +18,7 @@ Requires:
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -344,7 +345,7 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
-            if token == self._api_key:
+            if hmac.compare_digest(token, self._api_key):
                 return None  # Auth OK
 
         return web.json_response(
@@ -518,7 +519,7 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.error("Error running agent for chat completions: %s", e, exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error("Internal server error", err_type="server_error"),
                     status=500,
                 )
         else:
@@ -527,7 +528,7 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.error("Error running agent for chat completions: %s", e, exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error("Internal server error", err_type="server_error"),
                     status=500,
                 )
 
@@ -743,7 +744,7 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.error("Error running agent for responses: %s", e, exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error("Internal server error", err_type="server_error"),
                     status=500,
                 )
         else:
@@ -752,7 +753,7 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.error("Error running agent for responses: %s", e, exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error("Internal server error", err_type="server_error"),
                     status=500,
                 )
 
@@ -896,7 +897,8 @@ class APIServerAdapter(BasePlatformAdapter):
             jobs = self._cron_list(include_disabled=include_disabled)
             return web.json_response({"jobs": jobs})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logger.exception("API server error: %s", e)
+            return web.json_response({"error": "Internal server error"}, status=500)
 
     async def _handle_create_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs — create a new cron job."""
@@ -944,7 +946,8 @@ class APIServerAdapter(BasePlatformAdapter):
             job = self._cron_create(**kwargs)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logger.exception("API server error: %s", e)
+            return web.json_response({"error": "Internal server error"}, status=500)
 
     async def _handle_get_job(self, request: "web.Request") -> "web.Response":
         """GET /api/jobs/{job_id} — get a single cron job."""
@@ -963,7 +966,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logger.exception("API server error: %s", e)
+            return web.json_response({"error": "Internal server error"}, status=500)
 
     async def _handle_update_job(self, request: "web.Request") -> "web.Response":
         """PATCH /api/jobs/{job_id} — update a cron job."""
@@ -996,7 +1000,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logger.exception("API server error: %s", e)
+            return web.json_response({"error": "Internal server error"}, status=500)
 
     async def _handle_delete_job(self, request: "web.Request") -> "web.Response":
         """DELETE /api/jobs/{job_id} — delete a cron job."""
@@ -1015,7 +1020,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"ok": True})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logger.exception("API server error: %s", e)
+            return web.json_response({"error": "Internal server error"}, status=500)
 
     async def _handle_pause_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/pause — pause a cron job."""
@@ -1034,7 +1040,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logger.exception("API server error: %s", e)
+            return web.json_response({"error": "Internal server error"}, status=500)
 
     async def _handle_resume_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/resume — resume a paused cron job."""
@@ -1053,7 +1060,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logger.exception("API server error: %s", e)
+            return web.json_response({"error": "Internal server error"}, status=500)
 
     async def _handle_run_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/run — trigger immediate execution."""
@@ -1072,7 +1080,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logger.exception("API server error: %s", e)
+            return web.json_response({"error": "Internal server error"}, status=500)
 
     # ------------------------------------------------------------------
     # Output extraction helper
