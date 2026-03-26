@@ -17,6 +17,8 @@ Gateway-specific env vars:
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import logging
 import os
 import re
@@ -203,6 +205,26 @@ class SmsAdapter(BasePlatformAdapter):
     # Twilio webhook handler
     # ------------------------------------------------------------------
 
+    def _validate_twilio_signature(self, request_url: str, post_params: dict, signature: str) -> bool:
+        """Validate Twilio webhook signature (HMAC-SHA1).
+
+        See https://www.twilio.com/docs/usage/webhooks/webhooks-security
+        """
+        if not self._auth_token:
+            return False
+        # Build the string to sign: URL + sorted POST params (key+value concatenated)
+        s = request_url
+        for key in sorted(post_params.keys()):
+            s += key + post_params[key]
+        # HMAC-SHA1 with auth_token as key
+        mac = hmac.new(
+            self._auth_token.encode("utf-8"),
+            s.encode("utf-8"),
+            hashlib.sha1,
+        )
+        expected = base64.b64encode(mac.digest()).decode("utf-8")
+        return hmac.compare_digest(expected, signature)
+
     async def _handle_webhook(self, request) -> "aiohttp.web.Response":
         from aiohttp import web
 
@@ -217,6 +239,16 @@ class SmsAdapter(BasePlatformAdapter):
                 content_type="application/xml",
                 status=400,
             )
+
+        # Validate Twilio signature to prevent spoofed webhooks
+        twilio_sig = request.headers.get("X-Twilio-Signature", "")
+        if twilio_sig:
+            # Reconstruct the flat dict (parse_qs returns lists, Twilio signs flat values)
+            flat_params = {k: v[0] for k, v in form.items() if v}
+            request_url = str(request.url)
+            if not self._validate_twilio_signature(request_url, flat_params, twilio_sig):
+                logger.warning("[sms] rejected request with invalid Twilio signature from %s", request.remote)
+                return web.Response(status=403, text="Forbidden")
 
         # Extract fields (parse_qs returns lists)
         from_number = (form.get("From", [""]))[0].strip()
