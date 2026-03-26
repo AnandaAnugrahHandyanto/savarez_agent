@@ -142,7 +142,9 @@ class SessionDB:
         cursor.execute("SELECT version FROM schema_version LIMIT 1")
         row = cursor.fetchone()
         if row is None:
-            cursor.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+            cursor.execute(
+                "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
+            )
         else:
             current_version = row["version"] if isinstance(row, sqlite3.Row) else row[0]
             if current_version < 2:
@@ -189,7 +191,9 @@ class SessionDB:
                         # not user input. Double-quote identifier escaping is applied
                         # as defense-in-depth; SQLite DDL cannot be parameterized.
                         safe_name = name.replace('"', '""')
-                        cursor.execute(f'ALTER TABLE sessions ADD COLUMN "{safe_name}" {column_type}')
+                        cursor.execute(
+                            f'ALTER TABLE sessions ADD COLUMN "{safe_name}" {column_type}'
+                        )
                     except sqlite3.OperationalError:
                         pass
                 cursor.execute("UPDATE schema_version SET version = 5")
@@ -351,6 +355,72 @@ class SessionDB:
             )
             self._conn.commit()
 
+    def set_token_counts(
+        self,
+        session_id: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        model: str = None,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        reasoning_tokens: int = 0,
+        estimated_cost_usd: Optional[float] = None,
+        actual_cost_usd: Optional[float] = None,
+        cost_status: Optional[str] = None,
+        cost_source: Optional[str] = None,
+        pricing_version: Optional[str] = None,
+        billing_provider: Optional[str] = None,
+        billing_base_url: Optional[str] = None,
+        billing_mode: Optional[str] = None,
+    ) -> None:
+        """Set token counters to absolute values (not increment).
+
+        Use this when you have cumulative token counts from a completed
+        conversation run, as opposed to update_token_counts() which
+        increments for per-API-call tracking.
+        """
+        with self._lock:
+            self._conn.execute(
+                """UPDATE sessions SET
+                   input_tokens = ?,
+                   output_tokens = ?,
+                   cache_read_tokens = ?,
+                   cache_write_tokens = ?,
+                   reasoning_tokens = ?,
+                   estimated_cost_usd = ?,
+                   actual_cost_usd = CASE
+                       WHEN ? IS NULL THEN actual_cost_usd
+                       ELSE ?
+                   END,
+                   cost_status = COALESCE(?, cost_status),
+                   cost_source = COALESCE(?, cost_source),
+                   pricing_version = COALESCE(?, pricing_version),
+                   billing_provider = COALESCE(billing_provider, ?),
+                   billing_base_url = COALESCE(billing_base_url, ?),
+                   billing_mode = COALESCE(billing_mode, ?),
+                   model = COALESCE(model, ?)
+                   WHERE id = ?""",
+                (
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens,
+                    cache_write_tokens,
+                    reasoning_tokens,
+                    estimated_cost_usd,
+                    actual_cost_usd,
+                    actual_cost_usd,
+                    cost_status,
+                    cost_source,
+                    pricing_version,
+                    billing_provider,
+                    billing_base_url,
+                    billing_mode,
+                    model,
+                    session_id,
+                ),
+            )
+            self._conn.commit()
+
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""
         with self._lock:
@@ -372,8 +442,7 @@ class SessionDB:
             return exact["id"]
 
         escaped = (
-            session_id_or_prefix
-            .replace("\\", "\\\\")
+            session_id_or_prefix.replace("\\", "\\\\")
             .replace("%", "\\%")
             .replace("_", "\\_")
         )
@@ -410,19 +479,20 @@ class SessionDB:
         # Remove ASCII control characters (0x00-0x1F, 0x7F) but keep
         # whitespace chars (\t=0x09, \n=0x0A, \r=0x0D) so they can be
         # normalized to spaces by the whitespace collapsing step below
-        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', title)
+        cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", title)
 
         # Remove problematic Unicode control characters:
         # - Zero-width chars (U+200B-U+200F, U+FEFF)
         # - Directional overrides (U+202A-U+202E, U+2066-U+2069)
         # - Object replacement (U+FFFC), interlinear annotation (U+FFF9-U+FFFB)
         cleaned = re.sub(
-            r'[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufffc\ufff9-\ufffb]',
-            '', cleaned,
+            r"[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufffc\ufff9-\ufffb]",
+            "",
+            cleaned,
         )
 
         # Collapse internal whitespace runs and strip
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
         if not cleaned:
             return None
@@ -517,7 +587,7 @@ class SessionDB:
         the highest existing number and increments.
         """
         # Strip existing #N suffix to find the true base
-        match = re.match(r'^(.*?) #(\d+)$', base_title)
+        match = re.match(r"^(.*?) #(\d+)$", base_title)
         if match:
             base = match.group(1)
         else:
@@ -539,7 +609,7 @@ class SessionDB:
         # Find the highest number
         max_num = 1  # The unnumbered original counts as #1
         for t in existing:
-            m = re.match(r'^.* #(\d+)$', t)
+            m = re.match(r"^.* #(\d+)$", t)
             if m:
                 max_num = max(max_num, int(m.group(1)))
 
@@ -623,12 +693,10 @@ class SessionDB:
         with self._lock:
             # Serialize structured fields to JSON for storage
             reasoning_details_json = (
-                json.dumps(reasoning_details)
-                if reasoning_details else None
+                json.dumps(reasoning_details) if reasoning_details else None
             )
             codex_items_json = (
-                json.dumps(codex_reasoning_items)
-                if codex_reasoning_items else None
+                json.dumps(codex_reasoning_items) if codex_reasoning_items else None
             )
             cursor = self._conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
@@ -730,7 +798,9 @@ class SessionDB:
                         pass
                 if row["codex_reasoning_items"]:
                     try:
-                        msg["codex_reasoning_items"] = json.loads(row["codex_reasoning_items"])
+                        msg["codex_reasoning_items"] = json.loads(
+                            row["codex_reasoning_items"]
+                        )
                     except (json.JSONDecodeError, TypeError):
                         pass
             messages.append(msg)
@@ -766,7 +836,7 @@ class SessionDB:
         sanitized = re.sub(r'"[^"]*"', _preserve_quoted, query)
 
         # Step 2: Strip remaining (unmatched) FTS5-special characters
-        sanitized = re.sub(r'[+{}()\"^]', " ", sanitized)
+        sanitized = re.sub(r"[+{}()\"^]", " ", sanitized)
 
         # Step 3: Collapse repeated * (e.g. "***") into a single one,
         # and remove leading * (prefix-only needs at least one char before *)
@@ -975,7 +1045,9 @@ class SessionDB:
             )
             if cursor.fetchone()[0] == 0:
                 return False
-            self._conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            self._conn.execute(
+                "DELETE FROM messages WHERE session_id = ?", (session_id,)
+            )
             self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._conn.commit()
             return True
@@ -986,6 +1058,7 @@ class SessionDB:
         Only prunes ended sessions (not active ones).
         """
         import time as _time
+
         cutoff = _time.time() - (older_than_days * 86400)
 
         with self._lock:
