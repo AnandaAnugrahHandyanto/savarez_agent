@@ -69,6 +69,7 @@ from tools.browser_tool import cleanup_browser
 
 
 from hermes_constants import OPENROUTER_BASE_URL
+from hermes_cli.plugins import discover_plugins, invoke_hook
 
 # Agent internals extracted to agent/ package for modularity
 from agent.prompt_builder import (
@@ -2143,6 +2144,12 @@ class AIAgent:
                 logger.debug("Honcho context prefetch failed (non-fatal): %s", exc)
 
         self._register_honcho_exit_hook()
+
+        # Discover and load plugins from ~/.hermes/plugins/ (idempotent)
+        try:
+            discover_plugins()
+        except Exception as exc:
+            logger.debug("Plugin discovery failed (non-fatal): %s", exc)
 
     def _register_honcho_exit_hook(self) -> None:
         """Register a process-exit flush hook without clobbering signal handlers."""
@@ -4795,6 +4802,24 @@ class AIAgent:
         tools. Used by the concurrent execution path; the sequential path retains
         its own inline invocation for backward-compatible display handling.
         """
+        # ── Plugin hook: pre_tool_call ───────────────────────────────
+        try:
+            invoke_hook("pre_tool_call", tool_name=function_name, tool_args=function_args)
+        except Exception as _hook_exc:
+            logger.debug("pre_tool_call hook error: %s", _hook_exc)
+
+        result = self._invoke_tool_inner(function_name, function_args, effective_task_id)
+
+        # ── Plugin hook: post_tool_call ──────────────────────────────
+        try:
+            invoke_hook("post_tool_call", tool_name=function_name, tool_args=function_args, result=result)
+        except Exception as _hook_exc:
+            logger.debug("post_tool_call hook error: %s", _hook_exc)
+
+        return result
+
+    def _invoke_tool_inner(self, function_name: str, function_args: dict, effective_task_id: str) -> str:
+        """Internal tool dispatch — called by _invoke_tool after plugin hooks."""
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
             return _todo_tool(
@@ -5117,6 +5142,12 @@ class AIAgent:
                 except Exception:
                     pass  # never block tool execution
 
+            # ── Plugin hook: pre_tool_call ────────────────────────────
+            try:
+                invoke_hook("pre_tool_call", tool_name=function_name, tool_args=function_args)
+            except Exception as _hook_exc:
+                logger.debug("pre_tool_call hook error: %s", _hook_exc)
+
             tool_start_time = time.time()
 
             if function_name == "todo":
@@ -5271,6 +5302,12 @@ class AIAgent:
                     + f"\n\n[Truncated: tool response was {original_len:,} chars, "
                     f"exceeding the {MAX_TOOL_RESULT_CHARS:,} char limit]"
                 )
+
+            # ── Plugin hook: post_tool_call ───────────────────────────
+            try:
+                invoke_hook("post_tool_call", tool_name=function_name, tool_args=function_args, result=function_result)
+            except Exception as _hook_exc:
+                logger.debug("post_tool_call hook error: %s", _hook_exc)
 
             tool_msg = {
                 "role": "tool",
@@ -5571,6 +5608,12 @@ class AIAgent:
         # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
         # Installed once, transparent when streams are healthy, prevents crash on write.
         _install_safe_stdio()
+
+        # ── Plugin hook: on_session_start ────────────────────────────────
+        try:
+            invoke_hook("on_session_start", session_id=self.session_id, agent=self)
+        except Exception as exc:
+            logger.debug("on_session_start hook error (non-fatal): %s", exc)
 
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback
@@ -5919,6 +5962,12 @@ class AIAgent:
                     if os.getenv("HERMES_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
 
+                    # ── Plugin hook: pre_llm_call ────────────────────────
+                    try:
+                        invoke_hook("pre_llm_call", model=self.model, messages=api_messages)
+                    except Exception as _hook_exc:
+                        logger.debug("pre_llm_call hook error: %s", _hook_exc)
+
                     if self._has_stream_consumers():
                         # Streaming path: fire delta callbacks for real-time
                         # token delivery to CLI display, gateway, or TTS.
@@ -5946,6 +5995,12 @@ class AIAgent:
                     if self.thinking_callback:
                         self.thinking_callback("")
                     
+                    # ── Plugin hook: post_llm_call ───────────────────────
+                    try:
+                        invoke_hook("post_llm_call", model=self.model, response=response)
+                    except Exception as _hook_exc:
+                        logger.debug("post_llm_call hook error: %s", _hook_exc)
+
                     if not self.quiet_mode:
                         self._vprint(f"{self.log_prefix}⏱️  API call completed in {api_duration:.2f}s")
                     
@@ -7257,6 +7312,18 @@ class AIAgent:
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
+
+        # ── Plugin hook: on_session_end ──────────────────────────────────
+        try:
+            invoke_hook(
+                "on_session_end",
+                session_id=self.session_id,
+                agent=self,
+                final_response=final_response,
+                interrupted=interrupted,
+            )
+        except Exception as exc:
+            logger.debug("on_session_end hook error (non-fatal): %s", exc)
 
         # Build result with interrupt info if applicable
         result = {

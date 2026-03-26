@@ -934,6 +934,13 @@ class GatewayRunner:
             write_runtime_status(gateway_state="starting", exit_reason=None)
         except Exception:
             pass
+
+        # Discover and load plugins before any agent sessions start
+        try:
+            from hermes_cli.plugins import discover_plugins
+            discover_plugins()
+        except Exception as exc:
+            logger.debug("Plugin discovery failed (non-fatal): %s", exc)
         
         # Warn if no user allowlists are configured and open access is not opted in
         _any_allowlist = any(
