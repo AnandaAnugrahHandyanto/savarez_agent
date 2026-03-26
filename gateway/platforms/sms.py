@@ -107,7 +107,7 @@ class SmsAdapter(BasePlatformAdapter):
         site = web.TCPSite(self._runner, "0.0.0.0", self._webhook_port)
         await site.start()
         self._http_session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30),
+            timeout=aiohttp.ClientTimeout(total=30)
         )
         self._running = True
 
@@ -147,7 +147,7 @@ class SmsAdapter(BasePlatformAdapter):
         }
 
         session = self._http_session or aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30),
+            timeout=aiohttp.ClientTimeout(total=30)
         )
         try:
             for chunk in chunks:
@@ -265,9 +265,7 @@ class SmsAdapter(BasePlatformAdapter):
         )
 
         # Non-blocking: Twilio expects a fast response
-        task = asyncio.create_task(self.handle_message(event))
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        asyncio.create_task(self.handle_message(event))
 
         # Return empty TwiML — we send replies via the REST API, not inline TwiML
         return web.Response(
