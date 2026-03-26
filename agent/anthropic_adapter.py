@@ -144,6 +144,67 @@ def build_anthropic_client(api_key: str, base_url: str = None):
     return _anthropic_sdk.Anthropic(**kwargs)
 
 
+def _is_wsl() -> bool:
+    """Detect if running inside Windows Subsystem for Linux."""
+    try:
+        return "microsoft" in Path("/proc/version").read_text().lower()
+    except (OSError, IOError):
+        return False
+
+
+def _wsl_windows_credential_path() -> Optional[Path]:
+    """Resolve the Windows-side Claude credentials path from WSL.
+
+    Claude Code on Windows writes credentials to %USERPROFILE%\\.claude\\.credentials.json.
+    From WSL, this is accessible via /mnt/c/Users/<username>/.claude/.credentials.json.
+    """
+    import subprocess as _sp
+
+    try:
+        result = _sp.run(
+            ["cmd.exe", "/C", "echo", "%USERPROFILE%"],
+            capture_output=True, timeout=5,
+        )
+        result = _sp.CompletedProcess(
+            result.args, result.returncode,
+            result.stdout.decode("utf-8", errors="replace"),
+            result.stderr.decode("utf-8", errors="replace"),
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            win_profile = result.stdout.strip().replace("\\", "/")
+            # Convert C:/Users/name to /mnt/c/Users/name
+            if len(win_profile) >= 2 and win_profile[1] == ":":
+                drive = win_profile[0].lower()
+                rest = win_profile[2:]
+                wsl_path = Path(f"/mnt/{drive}{rest}") / ".claude" / ".credentials.json"
+                if wsl_path.exists():
+                    return wsl_path
+    except (OSError, FileNotFoundError, _sp.TimeoutExpired):
+        pass
+
+    # Fallback: enumerate /mnt/c/Users/ directly
+    mnt_users = Path("/mnt/c/Users")
+    if mnt_users.is_dir():
+        for user_dir in mnt_users.iterdir():
+            if user_dir.name in ("Public", "Default", "Default User", "All Users"):
+                continue
+            cred = user_dir / ".claude" / ".credentials.json"
+            if cred.exists():
+                return cred
+
+    return None
+
+
+def _get_credential_paths() -> list:
+    """Return candidate paths for .credentials.json, including WSL cross-filesystem."""
+    paths = [Path.home() / ".claude" / ".credentials.json"]
+    if _is_wsl():
+        wsl_path = _wsl_windows_credential_path()
+        if wsl_path:
+            paths.append(wsl_path)
+    return paths
+
+
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials from ~/.claude/.credentials.json.
 
@@ -152,24 +213,28 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     and native direct Anthropic provider usage should follow that path rather
     than auto-detecting Claude's first-party managed key.
 
+    On WSL, also checks the Windows-side credential file if the native Linux
+    path doesn't exist, since Claude Code on Windows writes credentials to
+    the Windows user profile.
+
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
-    cred_path = Path.home() / ".claude" / ".credentials.json"
-    if cred_path.exists():
-        try:
-            data = json.loads(cred_path.read_text(encoding="utf-8"))
-            oauth_data = data.get("claudeAiOauth")
-            if oauth_data and isinstance(oauth_data, dict):
-                access_token = oauth_data.get("accessToken", "")
-                if access_token:
-                    return {
-                        "accessToken": access_token,
-                        "refreshToken": oauth_data.get("refreshToken", ""),
-                        "expiresAt": oauth_data.get("expiresAt", 0),
-                        "source": "claude_code_credentials_file",
-                    }
-        except (json.JSONDecodeError, OSError, IOError) as e:
-            logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
+    for cred_path in _get_credential_paths():
+        if cred_path.exists():
+            try:
+                data = json.loads(cred_path.read_text(encoding="utf-8"))
+                oauth_data = data.get("claudeAiOauth")
+                if oauth_data and isinstance(oauth_data, dict):
+                    access_token = oauth_data.get("accessToken", "")
+                    if access_token:
+                        return {
+                            "accessToken": access_token,
+                            "refreshToken": oauth_data.get("refreshToken", ""),
+                            "expiresAt": oauth_data.get("expiresAt", 0),
+                            "source": "claude_code_credentials_file",
+                        }
+            except (json.JSONDecodeError, OSError, IOError) as e:
+                logger.debug("Failed to read %s: %s", cred_path, e)
 
     return None
 
@@ -230,7 +295,7 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
     }).encode()
 
     req = urllib.request.Request(
-        "https://console.anthropic.com/v1/oauth/token",
+        "https://platform.claude.com/v1/oauth/token",
         data=data,
         headers={
             "Content-Type": "application/x-www-form-urlencoded",

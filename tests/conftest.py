@@ -38,6 +38,13 @@ def _isolate_hermes_home(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_NAME", raising=False)
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    # Disable WSL detection in tests — prevents cmd.exe calls and
+    # cross-filesystem credential lookups during unit tests.
+    try:
+        import agent.anthropic_adapter as _aa
+        monkeypatch.setattr(_aa, "_is_wsl", lambda: False)
+    except Exception:
+        pass
 
 
 @pytest.fixture()
