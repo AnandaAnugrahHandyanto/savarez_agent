@@ -269,7 +269,6 @@ DEFAULT_CONFIG = {
         "streaming": False,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
-        "tool_progress_command": False,  # Enable /verbose command in messaging gateway
     },
 
     # Privacy settings
@@ -1858,8 +1857,16 @@ def set_config_value(key: str, value: str):
     
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
-    with open(config_path, 'w', encoding="utf-8") as f:
-        yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+    # Write atomically via temp file + os.replace() to prevent config corruption
+    # if the process crashes mid-write.
+    _config_dir = config_path.parent if hasattr(config_path, 'parent') else os.path.dirname(str(config_path))
+    with tempfile.NamedTemporaryFile(
+        mode='w', encoding='utf-8', suffix='.tmp',
+        dir=_config_dir, delete=False
+    ) as _tmp:
+        yaml.dump(user_config, _tmp, default_flow_style=False, sort_keys=False)
+        _tmp_path = _tmp.name
+    os.replace(_tmp_path, config_path)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
