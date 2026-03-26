@@ -2157,6 +2157,7 @@ class GatewayRunner:
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
                                 )
+                                _hyg_agent._print_fn = lambda *a, **kw: None
 
                                 loop = asyncio.get_event_loop()
                                 _compressed, _ = await loop.run_in_executor(
@@ -3841,6 +3842,7 @@ class GatewayRunner:
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
             )
+            tmp_agent._print_fn = lambda *a, **kw: None
 
             loop = asyncio.get_event_loop()
             compressed, _ = await loop.run_in_executor(
