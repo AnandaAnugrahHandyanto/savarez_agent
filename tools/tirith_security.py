@@ -603,15 +603,22 @@ _MAX_SUMMARY_LEN = 500
 
 def _is_safe_readonly_http(command: str) -> bool:
     cmd = command.strip().lower()
+    parts = cmd.split()
 
-    return (
-        cmd.startswith("curl ")
-        and ("http://" in cmd or "https://" in cmd)
-        and "-x " not in cmd
-        and "--request " not in cmd
-        and not any(x in cmd for x in ["--data", "-d", "--upload-file", "-t"])
-        and not any(x in cmd for x in ["|", ">", ">>"])
-    )
+    if len(parts) != 2 or parts[0] != "curl":
+        return False
+
+    url = parts[1]
+
+    # Only allow HTTPS
+    if not url.startswith("https://"):
+        return False
+
+    # Block shorteners / suspicious domains
+    if any(x in url for x in ["bit.ly", "tinyurl", "goo.gl"]):
+        return False
+
+    return True
 
 def check_command_security(command: str) -> dict:
     """Run tirith security scan on a command.
@@ -624,8 +631,9 @@ def check_command_security(command: str) -> dict:
         {"action": "allow"|"warn"|"block", "findings": [...], "summary": str}
     """
 
-    # Allow safe read-only HTTP requests (e.g., curl GET)
-    if _is_safe_readonly_http(command):
+    is_safe_http = _is_safe_readonly_http(command)
+
+    if is_safe_http:
         return {
             "action": "allow",
             "findings": [],
