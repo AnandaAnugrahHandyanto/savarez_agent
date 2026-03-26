@@ -223,6 +223,12 @@ PLATFORM_HINTS = {
         "only — no markdown, no formatting. SMS messages are limited to ~1600 "
         "characters, so be brief and direct."
     ),
+    "rabbit_r1": (
+        "The user is on a Rabbit R1 device with a small 2.88-inch touchscreen. "
+        "Keep responses concise and conversational — no markdown, no long lists. "
+        "The device has voice output so short spoken-style answers work best. "
+        "Aim for 1-3 sentences unless the user asks for detail."
+    ),
 }
 
 CONTEXT_FILE_MAX_CHARS = 20_000

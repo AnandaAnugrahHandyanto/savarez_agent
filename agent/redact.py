@@ -81,6 +81,9 @@ _DB_CONNSTR_RE = re.compile(
 # Negative lookahead prevents matching hex strings or identifiers
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
 
+# Rabbit R1 device IDs (64-char hex strings)
+_R1_DEVICE_ID_RE = re.compile(r"(?<![A-Za-z0-9])[a-f0-9]{64}(?![A-Za-z0-9])")
+
 # Compile known prefix patterns into one alternation
 _PREFIX_RE = re.compile(
     r"(?<![A-Za-z0-9_-])(" + "|".join(_PREFIX_PATTERNS) + r")(?![A-Za-z0-9_-])"
@@ -142,6 +145,9 @@ def redact_sensitive_text(text: str) -> str:
 
     # Database connection string passwords
     text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
+
+    # Rabbit R1 device IDs (64-char hex)
+    text = _R1_DEVICE_ID_RE.sub("[R1_DEVICE_ID]", text)
 
     # E.164 phone numbers (Signal, WhatsApp)
     def _redact_phone(m):

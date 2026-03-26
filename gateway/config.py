@@ -55,6 +55,7 @@ class Platform(Enum):
     EMAIL = "email"
     SMS = "sms"
     DINGTALK = "dingtalk"
+    RABBIT_R1 = "rabbit_r1"
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
 
@@ -255,6 +256,9 @@ class GatewayConfig:
                 continue
             # Platforms that use token/api_key auth
             if config.token or config.api_key:
+                connected.append(platform)
+            # Rabbit R1 uses enabled flag only (token is auto-generated if not set)
+            elif platform == Platform.RABBIT_R1:
                 connected.append(platform)
             # WhatsApp uses enabled flag only (bridge handles auth)
             elif platform == Platform.WHATSAPP:
@@ -802,6 +806,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 pass
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
+
+    # Rabbit R1
+    rabbit_r1_token = os.getenv("RABBIT_R1_TOKEN")
+    if rabbit_r1_token:
+        if Platform.RABBIT_R1 not in config.platforms:
+            config.platforms[Platform.RABBIT_R1] = PlatformConfig()
+        config.platforms[Platform.RABBIT_R1].enabled = True
+        config.platforms[Platform.RABBIT_R1].token = rabbit_r1_token
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

@@ -130,6 +130,7 @@ def _handle_send(args):
         "dingtalk": Platform.DINGTALK,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "rabbit_r1": Platform.RABBIT_R1,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -343,6 +344,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_email(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SMS:
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
+        elif platform == Platform.RABBIT_R1:
+            result = await _send_rabbit_r1(chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -664,6 +667,18 @@ async def _send_sms(auth_token, chat_id, message):
                 return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": msg_sid}
     except Exception as e:
         return {"error": f"SMS send failed: {e}"}
+
+
+async def _send_rabbit_r1(chat_id: str, message: str):
+    """Send via the Rabbit R1 gateway adapter (WebSocket push to connected device).
+
+    The R1 adapter is a WebSocket server — messages can only be pushed to
+    devices over an open connection managed by the gateway runner.  When
+    sending from a cron job or the CLI, the gateway must be running with
+    the R1 adapter active; the cron scheduler routes delivery through the
+    adapter's send() method directly.
+    """
+    return {"error": "Rabbit R1 direct sending requires the gateway to be running. Use cron deliver='rabbit_r1' or send from the gateway context."}
 
 
 def _check_send_message():
