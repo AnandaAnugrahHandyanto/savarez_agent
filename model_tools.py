@@ -158,6 +158,7 @@ def _discover_tools():
         "tools.send_message_tool",
         "tools.honcho_tools",
         "tools.homeassistant_tool",
+        "tools.secrets_tool",
     ]
     import importlib
     for mod_name in _modules:
