@@ -374,10 +374,9 @@ class TestSkillsShSource:
 
         assert bundle is not None
         assert bundle.identifier == "skills-sh/owner/repo/product-designer"
-        assert mock_fetch.call_args_list == [
-            (("owner/repo/product-designer",), {}),
-            ((resolved_identifier,), {}),
-        ]
+        # All candidate identifiers are tried before falling back to discovery
+        assert mock_fetch.call_args_list[-1] == ((resolved_identifier,), {})
+        assert mock_fetch.call_args_list[0] == (("owner/repo/product-designer",), {})
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
