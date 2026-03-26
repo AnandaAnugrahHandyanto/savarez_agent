@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 import os
 import random
 import re
+import sqlite3
 import sys
 import tempfile
 import time
@@ -892,6 +893,9 @@ class AIAgent:
                     },
                     user_id=None,
                 )
+            except sqlite3.IntegrityError:
+                # Session already exists (e.g. gateway restart reusing session ID) — benign
+                logger.debug("Session %s already exists in DB — reusing", self.session_id)
             except Exception as e:
                 logger.warning("Session DB create_session failed — messages will NOT be indexed: %s", e)
                 self._session_db = None  # prevent silent data loss on every subsequent flush
