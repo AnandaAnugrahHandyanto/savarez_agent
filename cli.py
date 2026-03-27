@@ -790,6 +790,57 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     return _RichText.from_ansi(text or "")
 
 
+def _hex_to_rich_color(hex_color):
+    """Convert a hex color string to a Rich Style object for Panel borders.
+    
+    Rich's Panel.border_style parameter needs a proper Style object (or
+    recognized style string), not a raw hex string or Color object. This helper
+    converts hex colors like '#00FF41' to a Style that Rich can use.
+    
+    Args:
+        hex_color: Hex color string (e.g., '#00FF41')
+        
+    Returns:
+        Rich Style object if hex_color is valid hex, otherwise the original string
+    """
+    import re
+    from rich.color import Color
+    from rich.style import Style
+    
+    # Check if it's a valid hex color
+    if isinstance(hex_color, str) and re.match(r'^#[0-9A-Fa-f]{6}$', hex_color):
+        try:
+            color = Color.parse(hex_color)
+            return Style(color=color)
+        except Exception:
+            pass
+    return hex_color
+
+
+def _color_to_hex(color):
+    """Convert a Rich Style/Color object or hex string back to hex string for Rich markup.
+    
+    Args:
+        color: Either a hex string, Rich Color object, or Rich Style object
+        
+    Returns:
+        Hex string suitable for Rich markup (e.g., in title formatting)
+    """
+    from rich.style import Style
+    
+    # Handle Style object (wraps a Color)
+    if isinstance(color, Style):
+        if color.color and color.color.triplet:
+            return f"#{color.color.triplet.red:02X}{color.color.triplet.green:02X}{color.color.triplet.blue:02X}"
+    # Handle Color object directly
+    elif hasattr(color, 'triplet') and color.triplet is not None:
+        return f"#{color.triplet.red:02X}{color.triplet.green:02X}{color.triplet.blue:02X}"
+    # Handle hex string
+    elif isinstance(color, str):
+        return color
+    return "#FFD700"  # fallback
+
+
 def _cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
 
@@ -1765,9 +1816,11 @@ class HermesCLI:
                 _skin = get_active_skin()
                 label = _skin.get_branding("response_label", "⚕ Hermes")
                 _text_hex = _skin.get_color("banner_text", "#FFF8DC")
+                _border_hex = _skin.get_color("response_border", "#CD7F32")
             except Exception:
                 label = "⚕ Hermes"
                 _text_hex = "#FFF8DC"
+                _border_hex = "#CD7F32"
             # Build a true-color ANSI escape for the response text color
             # so streamed content matches the Rich Panel appearance.
             try:
@@ -1777,9 +1830,17 @@ class HermesCLI:
                 self._stream_text_ansi = f"\033[38;2;{_r};{_g};{_b}m"
             except (ValueError, IndexError):
                 self._stream_text_ansi = ""
+            # Build ANSI escape for border color
+            try:
+                _br = int(_border_hex[1:3], 16)
+                _bg = int(_border_hex[3:5], 16)
+                _bb = int(_border_hex[5:7], 16)
+                self._border_ansi = f"\033[38;2;{_br};{_bg};{_bb}m"
+            except (ValueError, IndexError):
+                self._border_ansi = _GOLD
             w = shutil.get_terminal_size().columns
             fill = w - 2 - len(label)
-            _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+            _cprint(f"\n{self._border_ansi}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
         self._stream_buf += text
 
@@ -1802,7 +1863,9 @@ class HermesCLI:
         # Close the response box
         if self._stream_box_opened:
             w = shutil.get_terminal_size().columns
-            _cprint(f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
+            # Use _border_ansi if available, otherwise fall back to _GOLD
+            _border_color = getattr(self, '_border_ansi', _GOLD)
+            _cprint(f"{_border_color}╰{'─' * (w - 2)}╯{_RST}")
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
@@ -4051,6 +4114,8 @@ class HermesCLI:
                         label = _skin.get_branding("response_label", "⚕ Hermes")
                         _resp_color = _skin.get_color("response_border", "#CD7F32")
                         _resp_text = _skin.get_color("banner_text", "#FFF8DC")
+                        # Convert hex color to Rich Color object for proper border rendering
+                        _resp_color = _hex_to_rich_color(_resp_color)
                     except Exception:
                         label = "⚕ Hermes"
                         _resp_color = "#CD7F32"
@@ -4059,7 +4124,7 @@ class HermesCLI:
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
                         _rich_text_from_ansi(response),
-                        title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
+                        title=f"[{_color_to_hex(_resp_color)} bold]{label} (background #{task_num})[/]",
                         title_align="left",
                         border_style=_resp_color,
                         style=_resp_text,
@@ -5578,7 +5643,18 @@ class HermesCLI:
                         w = self.console.width
                         label = " ⚕ Hermes "
                         fill = w - 2 - len(label)
-                        _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+                        # Get border color from skin
+                        try:
+                            from hermes_cli.skin_engine import get_active_skin
+                            _skin = get_active_skin()
+                            _border_hex = _skin.get_color("response_border", "#CD7F32")
+                            _br = int(_border_hex[1:3], 16)
+                            _bg = int(_border_hex[3:5], 16)
+                            _bb = int(_border_hex[5:7], 16)
+                            _border_ansi = f"\033[38;2;{_br};{_bg};{_bb}m"
+                        except (ValueError, IndexError, Exception):
+                            _border_ansi = _GOLD
+                        _cprint(f"\n{_border_ansi}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
                     _cprint(sentence.rstrip())
 
                 tts_thread = threading.Thread(
@@ -5764,6 +5840,8 @@ class HermesCLI:
                     label = _skin.get_branding("response_label", "⚕ Hermes")
                     _resp_color = _skin.get_color("response_border", "#CD7F32")
                     _resp_text = _skin.get_color("banner_text", "#FFF8DC")
+                    # Convert hex color to Rich Color object for proper border rendering
+                    _resp_color = _hex_to_rich_color(_resp_color)
                 except Exception:
                     label = "⚕ Hermes"
                     _resp_color = "#CD7F32"
@@ -5774,7 +5852,18 @@ class HermesCLI:
                 if use_streaming_tts and _streaming_box_opened and not is_error_response:
                     # Text was already printed sentence-by-sentence; just close the box
                     w = shutil.get_terminal_size().columns
-                    _cprint(f"\n{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
+                    # Get border color from skin
+                    try:
+                        from hermes_cli.skin_engine import get_active_skin
+                        _skin = get_active_skin()
+                        _border_hex = _skin.get_color("response_border", "#CD7F32")
+                        _br = int(_border_hex[1:3], 16)
+                        _bg = int(_border_hex[3:5], 16)
+                        _bb = int(_border_hex[5:7], 16)
+                        _border_ansi = f"\033[38;2;{_br};{_bg};{_bb}m"
+                    except (ValueError, IndexError, Exception):
+                        _border_ansi = _GOLD
+                    _cprint(f"\n{_border_ansi}╰{'─' * (w - 2)}╯{_RST}")
                 elif already_streamed:
                     # Response was already streamed token-by-token with box framing;
                     # _flush_stream() already closed the box. Skip Rich Panel.
@@ -5783,7 +5872,7 @@ class HermesCLI:
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
                         _rich_text_from_ansi(response),
-                        title=f"[{_resp_color} bold]{label}[/]",
+                        title=f"[{_color_to_hex(_resp_color)} bold]{label}[/]",
                         title_align="left",
                         border_style=_resp_color,
                         style=_resp_text,
