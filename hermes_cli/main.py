@@ -45,11 +45,15 @@ Usage:
 
 import argparse
 import os
+from datetime import datetime
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
-
+from datetime import datetime
+def get_timestamp():
+    return f"[{datetime.now().strftime('%H:%M:%S')}] "
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -374,11 +378,11 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
         title = (s.get("title") or "").strip()
         preview = (s.get("preview") or "").strip()
         label = title or preview or s["id"]
-        if len(label) > 50:
+        import datetime; print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {i + 1:>3}. {label:<50} {last_active:<10} {src}")
             label = label[:47] + "..."
         last_active = _relative_time(s.get("last_active"))
         src = s.get("source", "")[:6]
-        print(f"  {i + 1:>3}. {label:<50}  {last_active:<10}  {src}")
+        print(f"{get_timestamp()}{i + 1:>3}. {label:<50} {last_active:<10} {src}")
 
     while True:
         try:

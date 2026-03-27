@@ -116,8 +116,6 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
     if isinstance(cfg_provider, str) and cfg_provider.strip():
         return cfg_provider.strip().lower()
 
-    # Prefer the persisted config selection over any stale shell/.env
-    # provider override so chat uses the endpoint the user last saved.
     env_provider = os.getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower()
     if env_provider:
         return env_provider
@@ -130,9 +128,6 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     if not requested_norm or requested_norm == "custom":
         return None
 
-    # Raw names should only map to custom providers when they are not already
-    # valid built-in providers or aliases. Explicit menu keys like
-    # ``custom:local`` always target the saved custom provider.
     if requested_norm == "auto":
         return None
     if not requested_norm.startswith("custom:"):
@@ -235,15 +230,10 @@ def _resolve_openrouter_runtime(
             if (not cfg_provider or cfg_provider == "auto") and not env_openai_base_url:
                 use_config_base_url = True
         elif requested_norm == "custom" and cfg_provider == "custom":
-            # provider: custom — use base_url from config (Fixes #1760).
             use_config_base_url = True
 
-    # When the user explicitly requested the openrouter provider, skip
-    # OPENAI_BASE_URL — it typically points to a custom / non-OpenRouter
-    # endpoint and would prevent switching back to OpenRouter (#874).
     skip_openai_base = requested_norm == "openrouter"
 
-    # For custom, prefer config base_url over env so config.yaml is honored (#1760).
     base_url = (
         (explicit_base_url or "").strip()
         or (cfg_base_url.strip() if use_config_base_url else "")
@@ -252,11 +242,6 @@ def _resolve_openrouter_runtime(
         or OPENROUTER_BASE_URL
     ).rstrip("/")
 
-    # Choose API key based on whether the resolved base_url targets OpenRouter.
-    # When hitting OpenRouter, prefer OPENROUTER_API_KEY (issue #289).
-    # When hitting a custom endpoint (e.g. Z.ai, local LLM), prefer
-    # OPENAI_API_KEY so the OpenRouter key doesn't leak to an unrelated
-    # provider (issues #420, #560).
     _is_openrouter_url = "openrouter.ai" in base_url
     if _is_openrouter_url:
         api_key_candidates = [
@@ -272,6 +257,7 @@ def _resolve_openrouter_runtime(
             os.getenv("OPENAI_API_KEY"),
             os.getenv("OPENROUTER_API_KEY"),
         ]
+
     api_key = next(
         (str(candidate or "").strip() for candidate in api_key_candidates if has_usable_secret(candidate)),
         "",
@@ -371,9 +357,6 @@ def resolve_runtime_provider(
                 "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
                 "run 'claude setup-token', or authenticate with 'claude /login'."
             )
-        # Allow base URL override from config.yaml model.base_url, but only
-        # when the configured provider is anthropic — otherwise a non-Anthropic
-        # base_url (e.g. Codex endpoint) would leak into Anthropic requests.
         model_cfg = _get_model_config()
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = ""
@@ -389,6 +372,25 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
+    # Alibaba Cloud / DashScope (Düzeltildi)
+    if provider == "alibaba":
+        creds = resolve_api_key_provider_credentials(provider)
+        model_cfg = _get_model_config()
+        base_url = (model_cfg.get("base_url") or "").strip().rstrip("/") or creds.get("base_url", "").rstrip("/") or "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+        
+        api_mode = "anthropic_messages"
+        if "compatible-mode" in base_url or "v1" in base_url:
+            api_mode = "chat_completions"
+            
+        return {
+            "provider": "alibaba",
+            "api_mode": api_mode,
+            "base_url": base_url,
+            "api_key": creds.get("api_key", ""),
+            "source": creds.get("source", "env"),
+            "requested_provider": requested_provider,
+        }
+
     # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
@@ -399,16 +401,11 @@ def resolve_runtime_provider(
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
         else:
-            # Check explicit api_mode from model config first
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if configured_mode:
                 api_mode = configured_mode
-            # Auto-detect Anthropic-compatible endpoints by URL convention
-            # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
             elif base_url.rstrip("/").endswith("/anthropic"):
                 api_mode = "anthropic_messages"
-            # MiniMax providers always use Anthropic Messages API.
-            # Auto-correct stale /v1 URLs (from old .env or config) to /anthropic.
             elif provider in ("minimax", "minimax-cn"):
                 api_mode = "anthropic_messages"
                 if base_url.rstrip("/").endswith("/v1"):
