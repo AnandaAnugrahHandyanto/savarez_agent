@@ -4346,8 +4346,8 @@ class HermesCLI:
             print("  Prompt + TUI colors updated.")
 
     def _toggle_verbose(self):
-        """Cycle tool progress mode: off → new → all → verbose → off."""
-        cycle = ["off", "new", "all", "verbose"]
+        """Cycle tool progress mode: off → new → all → verbose → log → off."""
+        cycle = ["off", "new", "all", "verbose", "log"]
         try:
             idx = cycle.index(self.tool_progress_mode)
         except ValueError:
@@ -4370,6 +4370,7 @@ class HermesCLI:
             "new": f"{_Colors.YELLOW}Tool progress: NEW{_Colors.RESET} — show each new tool (skip repeats).",
             "all": f"{_Colors.GREEN}Tool progress: ALL{_Colors.RESET} — show every tool call.",
             "verbose": f"{_Colors.BOLD}{_Colors.GREEN}Tool progress: VERBOSE{_Colors.RESET} — full args, results, think blocks, and debug logs.",
+            "log": f"{_Colors.DIM}Tool progress: LOG{_Colors.RESET} — write tool calls to ~/.hermes/logs/tool_progress.log (gateway audit mode).",
         }
         _cprint(labels.get(self.tool_progress_mode, ""))
 

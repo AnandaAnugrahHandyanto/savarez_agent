@@ -133,3 +133,51 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     ]
     assert adapter.edits
     assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.typing)
+
+
+@pytest.mark.asyncio
+async def test_log_mode_writes_to_file_not_provider(monkeypatch, tmp_path):
+    """log mode must write tool calls to a file and send nothing to the provider."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "log")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key="agent:main:telegram:group:-1001:17585",
+    )
+
+    assert result["final_response"] == "done"
+
+    # Nothing sent to the provider
+    assert adapter.sent == []
+    assert adapter.edits == []
+
+    # Tool calls written to log file
+    log_file = tmp_path / "logs" / "tool_progress.log"
+    assert log_file.exists(), "tool_progress.log should be created in log mode"
+    content = log_file.read_text(encoding="utf-8")
+    assert 'terminal: "pwd"' in content
+    assert 'browser_navigate: "https://example.com"' in content
