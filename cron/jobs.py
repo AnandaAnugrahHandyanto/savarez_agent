@@ -14,6 +14,7 @@ import re
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
+from hermes_constants import get_hermes_home
 from typing import Optional, Dict, List, Any
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ except ImportError:
 # Configuration
 # =============================================================================
 
-HERMES_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+HERMES_DIR = get_hermes_home()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 OUTPUT_DIR = CRON_DIR / "output"
@@ -383,6 +384,10 @@ def create_job(
     """
     parsed_schedule = parse_schedule(schedule)
 
+    # Normalize repeat: treat 0 or negative values as None (infinite)
+    if repeat is not None and repeat <= 0:
+        repeat = None
+
     # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:
         repeat = 1
@@ -571,7 +576,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
                 # Check if we've hit the repeat limit
                 times = job["repeat"].get("times")
                 completed = job["repeat"]["completed"]
-                if times is not None and completed >= times:
+                if times is not None and times > 0 and completed >= times:
                     # Remove the job (limit reached)
                     jobs.pop(i)
                     save_jobs(jobs)
