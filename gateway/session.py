@@ -762,14 +762,14 @@ class SessionStore:
             if session_key in self._entries:
                 entry = self._entries[session_key]
                 entry.updated_at = _now()
-                entry.input_tokens += input_tokens
-                entry.output_tokens += output_tokens
-                entry.cache_read_tokens += cache_read_tokens
-                entry.cache_write_tokens += cache_write_tokens
+                entry.input_tokens = input_tokens
+                entry.output_tokens = output_tokens
+                entry.cache_read_tokens = cache_read_tokens
+                entry.cache_write_tokens = cache_write_tokens
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
                 if estimated_cost_usd is not None:
-                    entry.estimated_cost_usd += estimated_cost_usd
+                    entry.estimated_cost_usd = estimated_cost_usd
                 if cost_status:
                     entry.cost_status = cost_status
                 entry.total_tokens = (
@@ -783,7 +783,7 @@ class SessionStore:
 
         if self._db and db_session_id:
             try:
-                self._db.update_token_counts(
+                self._db.set_token_counts(
                     db_session_id,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
