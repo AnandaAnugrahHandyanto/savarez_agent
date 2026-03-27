@@ -795,6 +795,7 @@ def cmd_model(args):
         "ai-gateway": "AI Gateway",
         "kilocode": "Kilo Code",
         "alibaba": "Alibaba Cloud (DashScope)",
+        "huggingface": "Hugging Face",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active)
@@ -821,6 +822,7 @@ def cmd_model(args):
         ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
         ("alibaba", "Alibaba Cloud / DashScope (Qwen models, Anthropic-compatible)"),
+        ("huggingface", "Hugging Face Inference Providers (20+ open models)"),
     ]
 
     # Add user-defined custom providers from config.yaml
@@ -893,7 +895,7 @@ def cmd_model(args):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba"):
+    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
@@ -1502,6 +1504,18 @@ _PROVIDER_MODELS = {
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
     ],
+    # Curated HF model list — only agentic models that map to OpenRouter defaults.
+    # Format: HF model ID → OpenRouter equivalent noted in comment
+    "huggingface": [
+        "Qwen/Qwen3.5-397B-A17B",                  # ↔ qwen/qwen3.5-plus
+        "Qwen/Qwen3.5-35B-A3B",                     # ↔ qwen/qwen3.5-35b-a3b
+        "deepseek-ai/DeepSeek-V3.2",                # ↔ deepseek/deepseek-chat
+        "moonshotai/Kimi-K2.5",                      # ↔ moonshotai/kimi-k2.5
+        "MiniMaxAI/MiniMax-M2.5",                    # ↔ minimax/minimax-m2.5
+        "zai-org/GLM-5",                             # ↔ z-ai/glm-5
+        "XiaomiMiMo/MiMo-V2-Flash",                 # ↔ xiaomi/mimo-v2-pro
+        "moonshotai/Kimi-K2-Thinking",               # ↔ moonshotai/kimi-k2-thinking
+    ],
 }
 
 
@@ -2031,19 +2045,25 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         save_env_value(base_url_env, override)
         effective_base = override
 
-    # Model selection — try live /models endpoint first, fall back to defaults
-    from hermes_cli.models import fetch_api_models
-    api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
-    live_models = fetch_api_models(api_key_for_probe, effective_base)
+    # Model selection — try live /models endpoint first, fall back to defaults.
+    # Providers with large live catalogs (100+ models) use a curated list instead
+    # so users see familiar model names rather than an overwhelming dump.
+    curated = _PROVIDER_MODELS.get(provider_id, [])
+    if curated and len(curated) >= 8:
+        # Curated list is substantial — use it directly, skip live probe
+        live_models = None
+    else:
+        from hermes_cli.models import fetch_api_models
+        api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
+        live_models = fetch_api_models(api_key_for_probe, effective_base)
 
     if live_models:
         model_list = live_models
         print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
     else:
-        model_list = _PROVIDER_MODELS.get(provider_id, [])
+        model_list = curated
         if model_list:
-            print("  ⚠ Could not auto-detect models from API — showing defaults.")
-            print("    Use \"Enter custom model name\" if you don't see your model.")
+            print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
         # else: no defaults either, will fall through to raw input
 
     if model_list:
@@ -3122,7 +3142,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
         default=None,
         help="Inference provider (default: auto)"
     )
