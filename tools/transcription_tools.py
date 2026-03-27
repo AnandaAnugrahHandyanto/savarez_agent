@@ -265,6 +265,52 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
 
     return None
 
+
+# ---------------------------------------------------------------------------
+# Provider: local (openai-whisper)
+# ---------------------------------------------------------------------------
+
+def _transcribe_local_fallback(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using vanilla openai-whisper (local, free)."""
+    global _local_model, _local_model_name
+
+    try:
+        import whisper
+        from typing import Dict, Any
+        from pathlib import Path
+        # Lazy-load the model
+        if _local_model is None or _local_model_name != model_name:
+            logger.info("Loading vanilla whisper model '%s'...", model_name)
+            # Vanilla whisper automatically detects CUDA; 
+            # use device="cpu" if you want to force CPU
+            _local_model = whisper.load_model(model_name)
+            _local_model_name = model_name
+
+        # Transcribe returns a dict containing 'text', 'segments', and 'language'
+        # fp16 parameter removed - not supported in newer faster-whisper versions
+        result = _local_model.transcribe(file_path, beam_size=5)
+
+        transcript = result["text"].strip()
+        language = result.get("language", "unknown")
+
+        logger.info(
+            "Transcribed %s via local vanilla whisper (%s, lang=%s)",
+            Path(file_path).name, model_name, language
+        )
+
+        return {
+            "success": True,
+            "transcript": transcript,
+            "provider": "local",
+            "language": language
+        }
+
+    except Exception as e:
+        logger.error("Local fallback transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
+
+
+
 # ---------------------------------------------------------------------------
 # Provider: local (faster-whisper)
 # ---------------------------------------------------------------------------
@@ -296,8 +342,8 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": True, "transcript": transcript, "provider": "local"}
 
     except Exception as e:
-        logger.error("Local transcription failed: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
+        logger.warn("Local transcription failed: %s\nFalling back to openai-whisper", e)
+        return _transcribe_local_fallback(file_path, model_name)
 
 
 def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], Optional[str]]:
