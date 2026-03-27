@@ -61,6 +61,29 @@ def _skin_branding(key: str, fallback: str) -> str:
         return fallback
 
 
+def _tint_default_banner_art(markup: str) -> str:
+    """Retint legacy gold banner art to the active skin palette.
+
+    Only used when a skin does not define custom banner_logo/banner_hero.
+    """
+    try:
+        title = _skin_color("banner_title", "#FFD700")
+        accent = _skin_color("banner_accent", "#FFBF00")
+        border = _skin_color("banner_border", "#CD7F32")
+        dim = _skin_color("banner_dim", "#B8860B")
+        text = _skin_color("banner_text", "#FFF8DC")
+        return (
+            markup
+            .replace("#FFD700", title)
+            .replace("#FFBF00", accent)
+            .replace("#CD7F32", border)
+            .replace("#B8860B", dim)
+            .replace("#FFF8DC", text)
+        )
+    except Exception:
+        return markup
+
+
 # =========================================================================
 # ASCII Art & Branding
 # =========================================================================
@@ -284,7 +307,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     try:
         from hermes_cli.skin_engine import get_active_skin
         _bskin = get_active_skin()
-        _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else HERMES_CADUCEUS
+        _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else _tint_default_banner_art(HERMES_CADUCEUS)
     except Exception:
         _bskin = None
         _hero = HERMES_CADUCEUS
@@ -433,7 +456,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     console.print()
     term_width = shutil.get_terminal_size().columns
     if term_width >= 95:
-        _logo = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else HERMES_AGENT_LOGO
+        _logo = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else _tint_default_banner_art(HERMES_AGENT_LOGO)
         console.print(_logo)
         console.print()
     console.print(outer_panel)

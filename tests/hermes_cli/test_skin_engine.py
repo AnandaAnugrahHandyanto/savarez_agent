@@ -226,13 +226,23 @@ class TestDisplayIntegration:
         from agent.display import get_cute_tool_message
         set_active_skin("ares")
         msg = get_cute_tool_message("terminal", {"command": "ls"}, 0.5)
-        assert msg.startswith("╎")
+        assert "╎" in msg
         assert "┊" not in msg
+
+    def test_tool_message_uses_skin_colors(self):
+        from hermes_cli.skin_engine import set_active_skin
+        from agent.display import get_cute_tool_message
+
+        set_active_skin("mono")
+        msg = get_cute_tool_message("terminal", {"command": "ls"}, 0.5)
+
+        # ANSI escape present for themed prefix and duration tokens
+        assert "\x1b[" in msg
 
     def test_tool_message_default_prefix(self):
         from agent.display import get_cute_tool_message
         msg = get_cute_tool_message("terminal", {"command": "ls"}, 0.5)
-        assert msg.startswith("┊")
+        assert "┊" in msg
 
 
 class TestCliBrandingHelpers:
@@ -315,16 +325,16 @@ class TestCliBrandingHelpers:
         skin = get_active_skin()
         overrides = get_prompt_toolkit_style_overrides()
         assert overrides["prompt"] == skin.get_color("prompt")
-        assert overrides["status-bar"] == f"bg:#1a1a2e {skin.get_color('banner_text')}"
-        assert overrides["status-bar-strong"] == f"bg:#1a1a2e {skin.get_color('banner_title')} bold"
-        assert overrides["status-bar-dim"] == f"bg:#1a1a2e {skin.get_color('banner_dim')}"
-        assert overrides["status-bar-good"] == "bg:#1a1a2e #8FBC8F bold"
-        assert overrides["status-bar-warn"] == "bg:#1a1a2e #FFD700 bold"
-        assert overrides["status-bar-bad"] == "bg:#1a1a2e #FF8C00 bold"
-        assert overrides["status-bar-critical"] == "bg:#1a1a2e #FF6B6B bold"
-        assert overrides["completion-menu"] == f"bg:#1a1a2e {skin.get_color('banner_text')}"
-        assert overrides["completion-menu.completion.current"] == f"bg:#333355 {skin.get_color('banner_title')}"
-        assert overrides["completion-menu.meta.completion.current"] == f"bg:#333355 {skin.get_color('ui_label')}"
+        assert overrides["status-bar"] == skin.get_color("banner_text")
+        assert overrides["status-bar-strong"] == f"{skin.get_color('banner_title')} bold"
+        assert overrides["status-bar-dim"] == skin.get_color("banner_dim")
+        assert overrides["status-bar-good"] == "#8FBC8F bold"
+        assert overrides["status-bar-warn"] == "#FFD700 bold"
+        assert overrides["status-bar-bad"] == "#FF8C00 bold"
+        assert overrides["status-bar-critical"] == "#FF6B6B bold"
+        assert overrides["completion-menu"] == skin.get_color("banner_text")
+        assert overrides["completion-menu.completion.current"] == f"{skin.get_color('banner_title')} bold underline"
+        assert overrides["completion-menu.meta.completion.current"] == f"{skin.get_color('ui_label')} bold underline"
         assert overrides["input-rule"] == skin.get_color("input_rule")
         assert overrides["clarify-title"] == f"{skin.get_color('banner_title')} bold"
         assert overrides["sudo-prompt"] == f"{skin.get_color('ui_error')} bold"

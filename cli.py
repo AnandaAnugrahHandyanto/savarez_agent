@@ -817,6 +817,51 @@ def _accent_hex() -> str:
         return "#FFBF00"
 
 
+def _status_dot_hex() -> str:
+    """Primary dot color for status line."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin().get_color("banner_title", "#FFD700")
+    except Exception:
+        return "#FFD700"
+
+
+def _status_dim_hex() -> str:
+    """Muted separator color for status line."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin().get_color("banner_dim", "#B8860B")
+    except Exception:
+        return "#B8860B"
+
+
+def _status_label_hex() -> str:
+    """Label color for status metadata labels (toolsets/provider/auth)."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin().get_color("session_label", "#CD7F32")
+    except Exception:
+        return "#CD7F32"
+
+
+def _status_text_hex() -> str:
+    """Main body text color for status line."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin().get_color("banner_text", "#FFF8DC")
+    except Exception:
+        return "#FFF8DC"
+
+
+def _status_tools_hex() -> str:
+    """Color for tool-count token in status line."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin().get_color("ui_label", "#87CEEB")
+    except Exception:
+        return "#87CEEB"
+
+
 def _rich_text_from_ansi(text: str) -> _RichText:
     """Safely render assistant/tool output that may contain ANSI escapes.
 
@@ -902,21 +947,37 @@ COMPACT_BANNER = """
 
 def _build_compact_banner() -> str:
     """Build a compact banner that fits the current terminal width."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        _skin = get_active_skin()
+        border_c = _skin.get_color("banner_border", "#FFD700")
+        accent_c = _skin.get_color("banner_accent", "#FFBF00")
+        dim_c = _skin.get_color("banner_dim", "#B8860B")
+        agent_name = _skin.get_branding("agent_name", "Hermes Agent")
+    except Exception:
+        border_c = "#FFD700"
+        accent_c = "#FFBF00"
+        dim_c = "#B8860B"
+        agent_name = "Hermes Agent"
+
+    safe_agent = _escape(agent_name)
+
     w = min(shutil.get_terminal_size().columns - 2, 64)
     if w < 30:
-        return "\n[#FFBF00]⚕ NOUS HERMES[/] [dim #B8860B]- Nous Research[/]\n"
+        return f"\n[{accent_c}]⚕ {safe_agent}[/] [dim {dim_c}]- Nous Research[/]\n"
+
     inner = w - 2  # inside the box border
     bar = "═" * w
-    line1 = "⚕ NOUS HERMES - AI Agent Framework"
+    line1 = f"⚕ {safe_agent} - AI Agent Framework"
     line2 = "Messenger of the Digital Gods  ·  Nous Research"
     # Truncate and pad to fit
     line1 = line1[:inner - 2].ljust(inner - 2)
     line2 = line2[:inner - 2].ljust(inner - 2)
     return (
-        f"\n[bold #FFD700]╔{bar}╗[/]\n"
-        f"[bold #FFD700]║[/] [#FFBF00]{line1}[/] [bold #FFD700]║[/]\n"
-        f"[bold #FFD700]║[/] [dim #B8860B]{line2}[/] [bold #FFD700]║[/]\n"
-        f"[bold #FFD700]╚{bar}╝[/]\n"
+        f"\n[bold {border_c}]╔{bar}╗[/]\n"
+        f"[bold {border_c}]║[/] [{accent_c}]{line1}[/] [bold {border_c}]║[/]\n"
+        f"[bold {border_c}]║[/] [dim {dim_c}]{line2}[/] [bold {border_c}]║[/]\n"
+        f"[bold {border_c}]╚{bar}╝[/]\n"
     )
 
 
@@ -2623,24 +2684,35 @@ class HermesCLI:
         if len(model_short) > 30:
             model_short = model_short[:27] + "..."
         
-        # Get API status indicator
-        if self.api_key:
-            api_indicator = "[green bold]●[/]"
-        else:
-            api_indicator = "[red bold]●[/]"
-        
-        # Build status line with proper markup
+        # Skin-aware status colors
+        c_dot = _status_dot_hex()
+        c_dim = _status_dim_hex()
+        c_label = _status_label_hex()
+        c_text = _status_text_hex()
+        c_tools = _status_tools_hex()
+        c_model = _accent_hex()
+
+        # Build status line with skin-consistent markup
         toolsets_info = ""
         if self.enabled_toolsets and "all" not in self.enabled_toolsets:
-            toolsets_info = f" [dim #B8860B]·[/] [#CD7F32]toolsets: {', '.join(self.enabled_toolsets)}[/]"
+            toolsets_info = (
+                f" [dim {c_dim}]·[/] "
+                f"[{c_label}]toolsets:[/] [{c_text}]{', '.join(self.enabled_toolsets)}[/]"
+            )
 
-        provider_info = f" [dim #B8860B]·[/] [dim]provider: {self.provider}[/]"
+        provider_info = (
+            f" [dim {c_dim}]·[/] "
+            f"[{c_label}]provider:[/] [dim {c_text}]{self.provider}[/]"
+        )
         if self._provider_source:
-            provider_info += f" [dim #B8860B]·[/] [dim]auth: {self._provider_source}[/]"
+            provider_info += (
+                f" [dim {c_dim}]·[/] "
+                f"[{c_label}]auth:[/] [dim {c_text}]{self._provider_source}[/]"
+            )
 
         self.console.print(
-            f"  {api_indicator} [#FFBF00]{model_short}[/] "
-            f"[dim #B8860B]·[/] [bold cyan]{tool_count} tools[/]"
+            f"  [bold {c_dot}]●[/] [{c_model}]{model_short}[/] "
+            f"[dim {c_dim}]·[/] [bold {c_tools}]{tool_count} tools[/]"
             f"{toolsets_info}{provider_info}"
         )
     

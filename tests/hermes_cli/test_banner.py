@@ -68,3 +68,31 @@ def test_build_welcome_banner_uses_normalized_toolset_names():
     assert "homeassistant_tools:" not in output
     assert "honcho_tools:" not in output
     assert "web_tools:" not in output
+
+
+def test_tint_default_banner_art_replaces_legacy_gold_palette():
+    sample = "[bold #FFD700]A[/] [#FFBF00]B[/] [#CD7F32]C[/] [dim #B8860B]D[/] [#FFF8DC]E[/]"
+
+    with patch.object(
+        banner,
+        "_skin_color",
+        side_effect=lambda key, fallback: {
+            "banner_title": "#111111",
+            "banner_accent": "#222222",
+            "banner_border": "#333333",
+            "banner_dim": "#444444",
+            "banner_text": "#555555",
+        }.get(key, fallback),
+    ):
+        tinted = banner._tint_default_banner_art(sample)
+
+    assert "#111111" in tinted
+    assert "#222222" in tinted
+    assert "#333333" in tinted
+    assert "#444444" in tinted
+    assert "#555555" in tinted
+    assert "#FFD700" not in tinted
+    assert "#FFBF00" not in tinted
+    assert "#CD7F32" not in tinted
+    assert "#B8860B" not in tinted
+    assert "#FFF8DC" not in tinted

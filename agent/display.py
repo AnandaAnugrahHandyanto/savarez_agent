@@ -15,6 +15,35 @@ import time
 _RED = "\033[31m"
 _RESET = "\033[0m"
 
+
+def _skin_hex_to_ansi(color_hex: str, *, bold: bool = False, fallback: str = "") -> str:
+    """Convert #RRGGBB to truecolor ANSI escape sequence."""
+    try:
+        c = (color_hex or "").strip()
+        if not c.startswith("#") or len(c) != 7:
+            return fallback
+        r = int(c[1:3], 16)
+        g = int(c[3:5], 16)
+        b = int(c[5:7], 16)
+        prefix = "1;" if bold else ""
+        return f"\033[{prefix}38;2;{r};{g};{b}m"
+    except Exception:
+        return fallback
+
+
+def _tool_line_ansi_tokens() -> tuple[str, str, str]:
+    """Return ANSI colors for tool completion lines.
+
+    Returns: (accent, dim, reset)
+    """
+    skin = _get_skin()
+    if not skin:
+        return "", "", _RESET
+
+    accent = _skin_hex_to_ansi(skin.get_color("ui_accent", ""), bold=True)
+    dim = _skin_hex_to_ansi(skin.get_color("banner_dim", ""))
+    return accent, dim, _RESET
+
 logger = logging.getLogger(__name__)
 
 
@@ -491,9 +520,22 @@ def get_cute_tool_message(
         return ("..." + p[-(n-3):]) if len(p) > n else p
 
     def _wrap(line: str) -> str:
-        """Apply skin tool prefix and failure suffix."""
+        """Apply skin tool prefix, skin colors, and failure suffix."""
         if skin_prefix != "┊":
             line = line.replace("┊", skin_prefix, 1)
+
+        accent_ansi, dim_ansi, reset_ansi = _tool_line_ansi_tokens()
+        if accent_ansi or dim_ansi:
+            if line.startswith(skin_prefix):
+                line = f"{accent_ansi}{skin_prefix}{reset_ansi}{line[len(skin_prefix):]}"
+            elif line.startswith("┊"):
+                line = f"{accent_ansi}┊{reset_ansi}{line[1:]}"
+            # Color trailing duration token (final '  0.0s') dimly when present
+            if "  " in line:
+                head, tail = line.rsplit("  ", 1)
+                if tail.endswith("s"):
+                    line = f"{head}  {dim_ansi}{tail}{reset_ansi}"
+
         if not is_failure:
             return line
         return f"{line}{failure_suffix}"
