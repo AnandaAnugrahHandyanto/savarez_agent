@@ -568,7 +568,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
         response = web.StreamResponse(
             status=200,
-            headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"},
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                **_CORS_HEADERS,  # add CORS headers to streaming responses
+            },
         )
         await response.prepare(request)
 
