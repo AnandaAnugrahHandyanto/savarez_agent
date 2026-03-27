@@ -552,6 +552,23 @@ class DiscordAdapter(BasePlatformAdapter):
                             return
                     # "all" falls through to handle_message
                 
+                # Family chat filtering: if one family member is talking directly
+                # to the other (by @mention) without also mentioning the bot,
+                # stay silent and let them have a private conversation.
+                _JIESI_ID = 300446557428252673
+                _WIFE_ID  = 567796233070968833
+                _author_id = message.author.id
+                _mention_ids = {u.id for u in message.mentions}
+                _bot_mentioned = (
+                    self._client.user is not None
+                    and self._client.user.id in _mention_ids
+                )
+                if not _bot_mentioned:
+                    if _author_id == _JIESI_ID and _WIFE_ID in _mention_ids:
+                        return  # Jiesi talking to wife, don't interrupt
+                    if _author_id == _WIFE_ID and _JIESI_ID in _mention_ids:
+                        return  # Wife talking to Jiesi, don't interrupt
+
                 await self._handle_message(message)
 
             @self._client.event
