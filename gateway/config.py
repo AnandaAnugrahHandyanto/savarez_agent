@@ -531,6 +531,15 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+                channel_routing = discord_cfg.get("channel_routing")
+                if (
+                    isinstance(channel_routing, dict)
+                    and channel_routing
+                    and not os.getenv("DISCORD_CHANNEL_ROUTING")
+                ):
+                    os.environ["DISCORD_CHANNEL_ROUTING"] = json.dumps(
+                        {str(k): str(v) for k, v in channel_routing.items() if str(v)}
+                    )
     except Exception as e:
         logger.warning(
             "Failed to process config.yaml — falling back to .env / gateway.json values. "

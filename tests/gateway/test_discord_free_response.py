@@ -358,3 +358,37 @@ async def test_discord_thread_participation_tracked_on_dispatch(adapter, monkeyp
     await adapter._handle_message(message)
 
     assert "777" in adapter._bot_participated_threads
+
+
+@pytest.mark.asyncio
+async def test_discord_channel_routing_prefix_from_env(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_CHANNEL_ROUTING", '{"123":"You are Quill.\\n\\n"}')
+
+    adapter._channel_routing = adapter._load_channel_routing()
+    message = make_message(channel=FakeTextChannel(channel_id=123), content="write a poem")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "You are Quill.\n\nwrite a poem"
+
+
+@pytest.mark.asyncio
+async def test_discord_channel_routing_prefix_applies_via_parent_for_thread(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_CHANNEL_ROUTING", '{"222":"You are Intel.\\n\\n"}')
+
+    adapter._channel_routing = adapter._load_channel_routing()
+    parent = FakeTextChannel(channel_id=222)
+    thread = FakeThread(channel_id=333, parent=parent)
+    message = make_message(channel=thread, content="investigate this")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "You are Intel.\n\ninvestigate this"

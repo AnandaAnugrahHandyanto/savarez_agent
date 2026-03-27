@@ -430,6 +430,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
+        self._channel_routing: Dict[str, str] = self._load_channel_routing()
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
@@ -448,6 +449,62 @@ class DiscordAdapter(BasePlatformAdapter):
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         # Cap to prevent unbounded growth (Discord threads get archived).
         self._MAX_TRACKED_THREADS = 500
+
+    def _load_channel_routing(self) -> Dict[str, str]:
+        """Load channel->prefix routing from config.extra and env var."""
+        routing: Dict[str, str] = {}
+
+        from_config = self.config.extra.get("channel_routing", {})
+        if isinstance(from_config, dict):
+            for channel_id, prefix in from_config.items():
+                channel_key = str(channel_id).strip()
+                if not channel_key:
+                    continue
+                if isinstance(prefix, str) and prefix:
+                    routing[channel_key] = prefix
+        elif from_config:
+            logger.warning(
+                "[%s] Ignoring invalid discord channel_routing in platform extra (expected dict)",
+                self.name,
+            )
+
+        routing_env = os.getenv("DISCORD_CHANNEL_ROUTING", "").strip()
+        if routing_env:
+            try:
+                parsed = json.loads(routing_env)
+                if not isinstance(parsed, dict):
+                    raise ValueError("must be a JSON object")
+                for channel_id, prefix in parsed.items():
+                    channel_key = str(channel_id).strip()
+                    if not channel_key:
+                        continue
+                    if isinstance(prefix, str) and prefix:
+                        routing[channel_key] = prefix
+            except Exception as e:
+                logger.warning(
+                    "[%s] Invalid DISCORD_CHANNEL_ROUTING JSON, ignoring value: %s",
+                    self.name,
+                    e,
+                )
+
+        if routing:
+            logger.info("[%s] Loaded Discord channel routing for %d channel(s)", self.name, len(routing))
+        return routing
+
+    def _get_routing_prefix(self, message: DiscordMessage) -> str:
+        """Return a routing prefix based on channel or parent thread channel."""
+        if not self._channel_routing:
+            return ""
+
+        channel_id = str(getattr(message.channel, "id", "")).strip()
+        if channel_id and channel_id in self._channel_routing:
+            return self._channel_routing[channel_id]
+
+        parent_channel_id = self._get_parent_channel_id(message.channel)
+        if parent_channel_id and parent_channel_id in self._channel_routing:
+            return self._channel_routing[parent_channel_id]
+
+        return ""
     
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -2094,6 +2151,9 @@ class DiscordAdapter(BasePlatformAdapter):
         event_text = message.content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
+        routing_prefix = self._get_routing_prefix(message)
+        if routing_prefix:
+            event_text = f"{routing_prefix}{event_text}" if event_text else routing_prefix
 
         event = MessageEvent(
             text=event_text,
