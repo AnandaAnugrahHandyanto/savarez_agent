@@ -178,6 +178,89 @@ if canonical == "mycommand":
 
 ---
 
+## Adding a Memory Provider
+
+Hermes supports pluggable persistent memory via the `MemoryProvider` interface (`memory_provider.py`). Providers hook into the agent lifecycle at 4 points: session start, system prompt enrichment, per-turn retrieval, and session end.
+
+### Architecture
+
+```
+memory_provider.py          # MemoryProvider ABC + MemoryProviderRegistry + helpers
+providers/                  # Provider implementations
+├── __init__.py
+├── mindgraph_provider.py   # MindGraph semantic graph memory
+└── honcho_provider.py      # Honcho cross-session modeling (stub — Phase 2)
+```
+
+Providers are separate from tools. A memory system can register tools via `tools/registry.py` (for explicit agent actions like `mindgraph_journal`) AND register a provider (for invisible lifecycle hooks like proactive retrieval). Both are independently toggleable.
+
+### Creating a provider
+
+**1. Implement `MemoryProvider`** in `providers/your_provider.py`:
+
+```python
+from memory_provider import MemoryProvider
+
+class YourProvider(MemoryProvider):
+
+    @property
+    def name(self) -> str:
+        return "yourprovider"
+
+    def is_available(self) -> bool:
+        return bool(os.getenv("YOUR_API_KEY"))
+
+    def on_session_start(self, session_id: str, label: str = ""):
+        # Open sessions, init state
+
+    def get_session_context(self) -> str | None:
+        # Goals, policies, user profile — baked into system prompt once
+        return "## Your Context\n..."
+
+    def get_turn_context(self, user_message: str) -> str | None:
+        # Semantic retrieval per user message — injected ephemerally
+        return relevant_context_or_none
+
+    def on_session_end(self, summary="", transcript=None, session_title=None):
+        # Close sessions, ingest transcripts
+```
+
+**2. Register in `create_default_registry()`** in `memory_provider.py`:
+
+```python
+def create_default_registry() -> MemoryProviderRegistry:
+    reg = MemoryProviderRegistry()
+    # Priority order: first registered = highest priority
+    try:
+        from providers.your_provider import YourProvider
+        reg.register(YourProvider())
+    except Exception:
+        pass
+    return reg
+```
+
+### How providers are called
+
+| Hook | Where | When |
+|------|-------|------|
+| `on_session_start()` | `run_agent.py` — first turn | New conversation (no history) |
+| `get_session_context()` | `run_agent.py` — system prompt assembly | Once per session, cached |
+| `get_turn_context()` | `run_agent.py` — before each API call | Every turn |
+| `on_session_end()` | `gateway/run.py` — expiry/reset | Session expires or user resets |
+
+**Turn context** is injected ephemerally into the user message at API-call time. It is never persisted to conversation history or the session DB. This keeps the system prompt cache prefix stable.
+
+All provider calls are wrapped in try/except — a failing provider never breaks the conversation.
+
+### Design principles
+
+- **Per-agent instance**: Each `AIAgent` gets its own registry. No shared state across concurrent gateway conversations.
+- **Lazy imports**: Provider modules are imported inside methods, not at module level. Missing dependencies don't break agent startup.
+- **Registration order = priority**: First provider's context appears first in concatenated output.
+- **Non-fatal**: Every provider call is wrapped. Failures are logged at debug level and silently skipped.
+
+---
+
 ## Adding New Tools
 
 Requires changes in **3 files**:

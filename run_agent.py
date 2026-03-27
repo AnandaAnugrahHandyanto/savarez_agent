@@ -995,6 +995,16 @@ class AIAgent:
                 self._user_profile_enabled = False
                 logger.debug("peer %s memory_mode=honcho: local USER.md writes disabled", _hcfg.peer_name or "user")
 
+        # ── Memory providers (pluggable persistent memory) ──
+        # Providers register via MemoryProviderRegistry. Each provider is
+        # checked for availability (env vars, API keys) and only activated
+        # if ready. Registration order = priority order.
+        from memory_provider import MemoryProviderRegistry, create_default_registry
+        if skip_memory:
+            self._memory_providers = MemoryProviderRegistry()  # empty
+        else:
+            self._memory_providers = create_default_registry()
+
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10
         try:
@@ -2333,6 +2343,12 @@ class AIAgent:
                 "  hermes honcho setup                     — full interactive wizard"
             )
             prompt_parts.append(honcho_block)
+
+        # Memory provider session context (goals, policies, user profile, etc.)
+        # Collected from all active providers, baked into cached system prompt.
+        memory_provider_context = self._memory_providers.get_session_context()
+        if memory_provider_context:
+            prompt_parts.append(memory_provider_context)
 
         # Note: ephemeral_system_prompt is NOT included here. It's injected at
         # API-call time only so it stays out of the cached/stored system prompt.
@@ -5507,6 +5523,13 @@ class AIAgent:
             except Exception as e:
                 logger.debug("Honcho prefetch failed (non-fatal): %s", e)
 
+        # Memory provider per-turn context (proactive retrieval, topic recall).
+        # Always injected at API-call time (never into system prompt) to keep
+        # the cache prefix stable.
+        self._memory_provider_turn_context = self._memory_providers.get_turn_context(
+            original_user_message
+        )
+
         # Add user message
         user_msg = {"role": "user", "content": user_message}
         messages.append(user_msg)
@@ -5558,6 +5581,13 @@ class AIAgent:
                         logger.debug("Session DB update_system_prompt failed: %s", e)
 
         active_system_prompt = self._cached_system_prompt
+
+        # ── Memory provider session open ──
+        # Notify all providers on the first turn of a new conversation.
+        if not conversation_history:
+            self._memory_providers.on_session_start(
+                self.session_id or "", label=f"hermes-{(self.session_id or '')[:8]}"
+            )
 
         # ── Preflight context compression ──
         # Before entering the main loop, check if the loaded conversation
@@ -5665,10 +5695,16 @@ class AIAgent:
             for idx, msg in enumerate(messages):
                 api_msg = msg.copy()
 
-                if idx == current_turn_user_idx and msg.get("role") == "user" and self._honcho_turn_context:
-                    api_msg["content"] = _inject_honcho_turn_context(
-                        api_msg.get("content", ""), self._honcho_turn_context
-                    )
+                if idx == current_turn_user_idx and msg.get("role") == "user":
+                    if self._honcho_turn_context:
+                        api_msg["content"] = _inject_honcho_turn_context(
+                            api_msg.get("content", ""), self._honcho_turn_context
+                        )
+                    if self._memory_provider_turn_context:
+                        from memory_provider import inject_provider_context
+                        api_msg["content"] = inject_provider_context(
+                            api_msg.get("content", ""), self._memory_provider_turn_context
+                        )
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved

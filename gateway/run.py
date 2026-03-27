@@ -376,6 +376,10 @@ class GatewayRunner:
         self._honcho_managers: Dict[str, Any] = {}
         self._honcho_configs: Dict[str, Any] = {}
 
+        # Lazily-created memory provider registry for session cleanup.
+        # Only instantiated when needed (first session expiry/reset).
+        self._memory_provider_registry = None
+
         # Ensure tirith security scanner is available (downloads if needed)
         try:
             from tools.tirith_security import ensure_installed
@@ -456,7 +460,19 @@ class GatewayRunner:
             return
         for session_key in list(managers.keys()):
             self._shutdown_gateway_honcho(session_key)
-    
+
+    def _get_memory_providers(self):
+        """Return the shared memory provider registry (lazy-init)."""
+        if self._memory_provider_registry is None:
+            try:
+                from memory_provider import create_default_registry
+                self._memory_provider_registry = create_default_registry()
+            except Exception as e:
+                logger.debug("Memory provider registry init failed: %s", e)
+                from memory_provider import MemoryProviderRegistry
+                self._memory_provider_registry = MemoryProviderRegistry()
+        return self._memory_provider_registry
+
     # -- Setup skill availability ----------------------------------------
 
     def _has_setup_skill(self) -> bool:
@@ -1155,6 +1171,16 @@ class GatewayRunner:
                         await self._async_flush_memories(entry.session_id, key)
                         self._shutdown_gateway_honcho(key)
                         self.session_store._pre_flushed_sessions.add(entry.session_id)
+                        # Close memory provider sessions on expiry
+                        try:
+                            transcript = self.session_store.load_transcript(entry.session_id)
+                            self._get_memory_providers().on_session_end(
+                                summary=f"Session {entry.session_id} expired after inactivity",
+                                transcript=transcript or None,
+                                session_title=f"Hermes session {entry.session_id[:8]}",
+                            )
+                        except Exception as mp_e:
+                            logger.debug("Memory provider session close on expiry failed (non-fatal): %s", mp_e)
                     except Exception as e:
                         logger.debug("Proactive memory flush failed for %s: %s", entry.session_id, e)
             except Exception as e:
@@ -2684,6 +2710,19 @@ class GatewayRunner:
 
         self._shutdown_gateway_honcho(session_key)
         self._evict_cached_agent(session_key)
+
+        # Close memory provider sessions on explicit reset
+        try:
+            old_entry = self.session_store._entries.get(session_key)
+            transcript = self.session_store.load_transcript(old_entry.session_id) if old_entry else None
+            session_title = f"Hermes session {old_entry.session_id[:8]}" if old_entry else None
+            self._get_memory_providers().on_session_end(
+                summary="Session explicitly reset by user",
+                transcript=transcript or None,
+                session_title=session_title,
+            )
+        except Exception as e:
+            logger.debug("Memory provider session close on reset failed (non-fatal): %s", e)
         
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
