@@ -58,7 +58,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.config import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
-load_hermes_dotenv(project_env=PROJECT_ROOT / '.env')
+load_hermes_dotenv(project_env=PROJECT_ROOT / '.env', cwd_env=True)
 
 
 import logging
