@@ -32,7 +32,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     pricing_version TEXT,
     title TEXT,
     exit_summary TEXT,
+    cwd TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -336,6 +337,13 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
+            if current_version < 7:
+                # v7: add cwd column for directory-scoped session continuity
+                try:
+                    cursor.execute("ALTER TABLE sessions ADD COLUMN cwd TEXT")
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                cursor.execute("UPDATE schema_version SET version = 7")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -368,13 +376,14 @@ class SessionDB:
         system_prompt: str = None,
         user_id: str = None,
         parent_session_id: str = None,
+        cwd: str = None,
     ) -> str:
         """Create a new session record. Returns the session_id."""
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   system_prompt, parent_session_id, started_at, cwd)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
@@ -384,6 +393,7 @@ class SessionDB:
                     system_prompt,
                     parent_session_id,
                     time.time(),
+                    cwd,
                 ),
             )
         self._execute_write(_do)
@@ -421,24 +431,39 @@ class SessionDB:
         source: str = "cli",
         max_age_seconds: float = 14400,
         min_messages: int = 5,
+        cwd: str = None,
+        cwd_scope: str = "exact",
     ) -> Optional[Dict[str, Any]]:
         """Return the most recent session with an exit summary.
 
-        Filters by source, recency, and minimum message count.
+        Filters by source, recency, minimum message count, and optionally
+        working directory.
+
+        cwd_scope:
+          - "exact" (default): only sessions with cwd == provided cwd
+          - "directory_root": sessions in cwd and descendants (cwd/*)
         Returns None if no qualifying session exists.
         """
         cutoff = time.time() - max_age_seconds
+        query = (
+            "SELECT id, title, exit_summary, started_at, message_count "
+            "FROM sessions "
+            "WHERE exit_summary IS NOT NULL "
+            "  AND source = ? "
+            "  AND message_count >= ? "
+            "  AND started_at > ? "
+        )
+        params: list = [source, min_messages, cutoff]
+        if cwd is not None:
+            if cwd_scope == "directory_root":
+                query += "  AND (cwd = ? OR cwd LIKE ? OR cwd LIKE ?) "
+                params.extend([cwd, f"{cwd}/%", f"{cwd}\\%"])
+            else:
+                query += "  AND cwd = ? "
+                params.append(cwd)
+        query += "ORDER BY started_at DESC LIMIT 1"
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT id, title, exit_summary, started_at, message_count "
-                "FROM sessions "
-                "WHERE exit_summary IS NOT NULL "
-                "  AND source = ? "
-                "  AND message_count >= ? "
-                "  AND started_at > ? "
-                "ORDER BY started_at DESC LIMIT 1",
-                (source, min_messages, cutoff),
-            )
+            cursor = self._conn.execute(query, params)
             row = cursor.fetchone()
         if row is None:
             return None

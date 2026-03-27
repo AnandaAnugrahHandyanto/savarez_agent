@@ -546,6 +546,30 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
     return None
 
 
+def _resolve_cli_lineage_root(cwd: str) -> str:
+    """Resolve CLI lineage root for continuity scoping.
+
+    Uses git to scope by repo root when available; otherwise falls back to cwd.
+    """
+    resolved = os.path.realpath(os.path.abspath(cwd))
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=resolved,
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+        if proc.returncode == 0:
+            top = (proc.stdout or "").strip()
+            if top:
+                return os.path.realpath(os.path.abspath(top))
+    except Exception:
+        pass
+    return resolved
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
     # Resolve --continue into --resume with the latest CLI session or by name
@@ -578,18 +602,33 @@ def cmd_chat(args):
         # If resolution fails, keep the original value — _init_agent will
         # report "Session not found" with the original input
 
-    # Session continuity: offer to resume last session or silently inject summary
+    # Session continuity: offer to resume last session and optionally inject summary
     if not getattr(args, "resume", None):
         try:
             from hermes_state import SessionDB
             from hermes_cli.config import load_config as _load_cont_cfg
-            _cont_cfg = _load_cont_cfg().get("continuity", {})
+            _cfg = _load_cont_cfg()
+            _cont_cfg = _cfg.get("continuity", {})
+            _session_cfg = _cfg.get("session", {})
+            _inject_previous = bool(_session_cfg.get("inject_previous_summary", False))
+            _lineage_scope = (_session_cfg.get("lineage_scope", "directory_root") or "directory_root").strip().lower()
+
+            _cwd = os.getcwd()
+            if _lineage_scope == "exact_cwd":
+                _lineage_cwd = os.path.realpath(os.path.abspath(_cwd))
+                _cwd_scope = "exact"
+            else:
+                _lineage_cwd = _resolve_cli_lineage_root(_cwd)
+                _cwd_scope = "directory_root"
+
             if _cont_cfg.get("enabled", True):
                 _cont_db = SessionDB()
                 _last = _cont_db.get_last_summarized_session(
                     source="cli",
                     max_age_seconds=_cont_cfg.get("recency_hours", 4) * 3600,
                     min_messages=_cont_cfg.get("min_messages", 5),
+                    cwd=_lineage_cwd,
+                    cwd_scope=_cwd_scope,
                 )
                 _cont_db.close()
                 if _last:
@@ -609,13 +648,13 @@ def cmd_chat(args):
                             _reply = ""
                         if _reply in ("y", "yes"):
                             args.resume = _last["id"]
-                        else:
+                        elif _inject_previous:
                             # Inject summary silently for continuity
                             args._last_session_summary = _last.get("exit_summary")
                             args._last_session_time = _last.get("started_at")
                         print()
-                    else:
-                        # Non-interactive: just inject summary silently
+                    elif _inject_previous:
+                        # Non-interactive: inject summary only when explicitly enabled
                         args._last_session_summary = _last.get("exit_summary")
                         args._last_session_time = _last.get("started_at")
         except Exception:

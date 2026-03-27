@@ -1387,6 +1387,10 @@ class HermesCLI:
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
 
+        # Workspace footer cache (directory/repo/branch line below input)
+        self._workspace_footer_cache: Optional[Dict[str, Any]] = None
+        self._workspace_footer_last_refresh: float = 0.0
+
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
@@ -1613,6 +1617,128 @@ class HermesCLI:
             return frags
         except Exception:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]
+
+    def _workspace_path_label(self, path: str, max_len: int = 56) -> str:
+        """Render a compact cwd label with home-dir shortening and truncation."""
+        if not path:
+            return "?"
+        try:
+            home = str(Path.home())
+            if path.startswith(home):
+                path = "~" + path[len(home):]
+        except Exception:
+            pass
+        if len(path) <= max_len:
+            return path
+        keep = max(12, max_len // 2)
+        return f"{path[:keep]}…{path[-keep:]}"
+
+    def _detect_github_slug(self, remote_url: str) -> Optional[str]:
+        """Extract owner/repo slug from a GitHub remote URL when possible."""
+        if not remote_url:
+            return None
+        raw = remote_url.strip()
+        if "github.com" not in raw:
+            return None
+        suffix = raw.split("github.com", 1)[1].lstrip(":/")
+        if suffix.endswith(".git"):
+            suffix = suffix[:-4]
+        parts = [p for p in suffix.split("/") if p]
+        if len(parts) < 2:
+            return None
+        return f"{parts[0]}/{parts[1]}"
+
+    def _get_workspace_footer_snapshot(self, refresh_interval: float = 2.0) -> Dict[str, Any]:
+        """Return cached cwd/git context for the footer under the input area."""
+        import subprocess as _subprocess
+        import time as _time
+
+        now = _time.monotonic()
+        cwd = os.getcwd()
+        cache = self._workspace_footer_cache
+        if (
+            cache
+            and cache.get("cwd") == cwd
+            and (now - self._workspace_footer_last_refresh) < refresh_interval
+        ):
+            return cache
+
+        snapshot: Dict[str, Any] = {
+            "cwd": cwd,
+            "path_label": self._workspace_path_label(cwd),
+            "is_git": False,
+            "branch": None,
+            "github_slug": None,
+        }
+
+        try:
+            inside = _subprocess.run(
+                ["git", "rev-parse", "--is-inside-work-tree"],
+                capture_output=True,
+                text=True,
+                timeout=1.5,
+                cwd=cwd,
+            )
+            if inside.returncode == 0 and inside.stdout.strip().lower() == "true":
+                snapshot["is_git"] = True
+
+                branch = _subprocess.run(
+                    ["git", "branch", "--show-current"],
+                    capture_output=True,
+                    text=True,
+                    timeout=1.5,
+                    cwd=cwd,
+                )
+                branch_name = branch.stdout.strip()
+                if not branch_name:
+                    head = _subprocess.run(
+                        ["git", "rev-parse", "--short", "HEAD"],
+                        capture_output=True,
+                        text=True,
+                        timeout=1.5,
+                        cwd=cwd,
+                    )
+                    if head.returncode == 0 and head.stdout.strip():
+                        branch_name = f"detached@{head.stdout.strip()}"
+                snapshot["branch"] = branch_name or None
+
+                remote = _subprocess.run(
+                    ["git", "config", "--get", "remote.origin.url"],
+                    capture_output=True,
+                    text=True,
+                    timeout=1.5,
+                    cwd=cwd,
+                )
+                if remote.returncode == 0 and remote.stdout.strip():
+                    snapshot["github_slug"] = self._detect_github_slug(remote.stdout.strip())
+        except Exception:
+            pass
+
+        self._workspace_footer_cache = snapshot
+        self._workspace_footer_last_refresh = now
+        return snapshot
+
+    def _get_workspace_footer_fragments(self):
+        """Styled fragments for footer under input with cwd + GitHub context."""
+        snap = self._get_workspace_footer_snapshot()
+        frags = [
+            ("class:workspace-bar", " 📁 "),
+            ("class:workspace-path", snap.get("path_label") or "?"),
+        ]
+        if snap.get("github_slug") and snap.get("branch"):
+            frags.extend([
+                ("class:workspace-dim", "  ·  "),
+                ("class:workspace-strong", snap["github_slug"]),
+                ("class:workspace-dim", "  ·  ⎇ "),
+                ("class:workspace-strong", snap["branch"]),
+            ])
+        elif snap.get("is_git") and snap.get("branch"):
+            frags.extend([
+                ("class:workspace-dim", "  ·  git  ·  ⎇ "),
+                ("class:workspace-strong", snap["branch"]),
+            ])
+        frags.append(("class:workspace-bar", " "))
+        return frags
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Normalize provider-specific model IDs and routing."""
@@ -3255,6 +3381,7 @@ class HermesCLI:
                             "max_iterations": self.max_turns,
                             "reasoning_config": self.reasoning_config,
                         },
+                        cwd=os.getcwd(),
                     )
                 except Exception:
                     pass
@@ -6688,6 +6815,7 @@ class HermesCLI:
         image_bar,
         input_area,
         input_rule_bot,
+        workspace_footer,
         voice_status_bar,
         completions_menu,
     ) -> list:
@@ -6711,6 +6839,7 @@ class HermesCLI:
             image_bar,
             input_area,
             input_rule_bot,
+            workspace_footer,
             voice_status_bar,
             completions_menu,
         ]
@@ -7743,6 +7872,11 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._status_bar_visible),
         )
 
+        workspace_footer = Window(
+            content=FormattedTextControl(lambda: cli_ref._get_workspace_footer_fragments()),
+            height=1,
+        )
+
         # Allow wrapper CLIs to register extra keybindings.
         self._register_extra_tui_keybindings(kb, input_area=input_area)
 
@@ -7765,6 +7899,7 @@ class HermesCLI:
                     image_bar=image_bar,
                     input_area=input_area,
                     input_rule_bot=input_rule_bot,
+                    workspace_footer=workspace_footer,
                     voice_status_bar=voice_status_bar,
                     completions_menu=completions_menu,
                 )
@@ -7789,6 +7924,11 @@ class HermesCLI:
             'input-rule': '#CD7F32',
             # Clipboard image attachment badges
             'image-badge': '#87CEEB bold',
+            # Workspace footer (below input)
+            'workspace-bar': '#6E6A66',
+            'workspace-path': '#BDB7AA',
+            'workspace-dim': '#6E6A66',
+            'workspace-strong': '#87CEEB',
             'completion-menu': 'bg:#1a1a2e #FFF8DC',
             'completion-menu.completion': 'bg:#1a1a2e #FFF8DC',
             'completion-menu.completion.current': 'bg:#333355 #FFD700',
