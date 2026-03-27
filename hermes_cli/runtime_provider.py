@@ -396,7 +396,9 @@ def resolve_runtime_provider(
         model_cfg = _get_model_config()
         base_url = creds.get("base_url", "").rstrip("/")
         api_mode = "chat_completions"
-        if provider == "copilot":
+        if provider == "google":
+            api_mode = "google_genai"
+        elif provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
         else:
             # Check explicit api_mode from model config first

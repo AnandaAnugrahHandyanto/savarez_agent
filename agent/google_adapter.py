@@ -28,14 +28,12 @@ def convert_messages_to_google(messages: list):
         if tool_calls:
             for tc in tool_calls:
                 func_name = tc["function"]["name"]
-                func_args = json.loads(tc["function"]["arguments"])
-                parts.append(types.Part.from_function_call(name=func_name, args=func_args))
+                func_args = tc["function"]["arguments"]
+                parts.append(types.Part.from_text(text=f"Action: I called {func_name} with arguments {func_args}"))
                 
         if role == "tool":
-            parts.append(types.Part.from_function_response(
-                name=msg.get("name", "unknown_tool"),
-                response={"result": msg.get("content", "")}
-            ))
+            role = "user"
+            parts.append(types.Part.from_text(text=f"Observation from {msg.get('name', 'tool')}: {msg.get('content', '')}"))
             
         g_role = "user" if role in ("user", "tool") else "model"
         if parts:
@@ -66,8 +64,10 @@ def build_google_kwargs(model: str, messages: list, tools: list = None, max_toke
     if g_tools:
         config.tools = [types.Tool(function_declarations=g_tools)]
         
+    req_model = model.replace("google/", "").replace("google:", "") if model.startswith("google/") or model.startswith("google:") else model
+        
     return {
-        "model": model,
+        "model": req_model,
         "contents": contents,
         "config": config
     }
@@ -93,4 +93,4 @@ def normalize_google_response(response, model: str):
         model=model,
         choices=[SimpleNamespace(message=message, finish_reason="stop")],
         usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0)
-    )
+    ), "stop" 
