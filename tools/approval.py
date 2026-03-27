@@ -40,6 +40,9 @@ DANGEROUS_PATTERNS = [
     (r'\bsystemctl\s+(stop|disable|mask)\b', "stop/disable system service"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
     (r'\bpkill\s+-9\b', "force kill processes"),
+    # Self-termination: pkill/killall targeting hermes/gateway/cli.py processes
+    # Catches 'pkill -f "cli.py --gateway"', 'killall hermes', 'pkill gateway', etc.
+    (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Any shell invocation via -c or combined flags like -lc, -ic, etc.
     (r'\b(bash|sh|zsh|ksh)\s+-[^\s]*c(\s+|$)', "shell command via -c/-lc flag"),
