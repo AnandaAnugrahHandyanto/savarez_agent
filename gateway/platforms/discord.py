@@ -2119,6 +2119,28 @@ class DiscordAdapter(BasePlatformAdapter):
                     mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                     ext = mime_to_ext.get(content_type, "")
                 if ext not in SUPPORTED_DOCUMENT_TYPES:
+                    # Fallback: if no recognized extension and file is small,
+                    # try to download and treat as plain text
+                    if att.size and att.size <= 100 * 1024:
+                        try:
+                            import aiohttp
+                            async with aiohttp.ClientSession() as session:
+                                async with session.get(
+                                    att.url,
+                                    timeout=aiohttp.ClientTimeout(total=30),
+                                ) as resp:
+                                    if resp.status == 200:
+                                        raw = await resp.read()
+                                        raw.decode("utf-8")  # test if valid text
+                                        ext = ".txt"  # treat as text
+                                        logger.info(
+                                            "[Discord] No recognized ext for '%s', "
+                                            "but file is valid UTF-8 — treating as .txt",
+                                            att.filename,
+                                        )
+                        except (UnicodeDecodeError, Exception):
+                            pass
+                if ext not in SUPPORTED_DOCUMENT_TYPES:
                     logger.warning(
                         "[Discord] Unsupported document type '%s' (%s), skipping",
                         ext or "unknown", content_type,
@@ -2148,29 +2170,40 @@ class DiscordAdapter(BasePlatformAdapter):
                             media_urls.append(cached_path)
                             media_types.append(doc_mime)
                             logger.info("[Discord] Cached user document: %s", cached_path)
-                            # Inject text content for .txt/.md files (capped at 100 KB)
-                            MAX_TEXT_INJECT_BYTES = 100 * 1024
-                            if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
-                                try:
-                                    text_content = raw_bytes.decode("utf-8")
-                                    display_name = att.filename or f"document{ext}"
-                                    display_name = re.sub(r'[^\w.\- ]', '_', display_name)
-                                    injection = f"[Content of {display_name}]:\n{text_content}"
-                                    if pending_text_injection:
-                                        pending_text_injection = f"{pending_text_injection}\n\n{injection}"
-                                    else:
-                                        pending_text_injection = injection
-                                except UnicodeDecodeError:
-                                    pass
                         except Exception as e:
                             logger.warning(
                                 "[Discord] Failed to cache document %s: %s",
                                 att.filename, e, exc_info=True,
                             )
         
+        # If we cached document files but msg_type is still TEXT (e.g. unknown
+        # extension that was auto-detected as UTF-8 text), upgrade to DOCUMENT
+        # so the gateway's document enrichment path fires correctly.
+        if msg_type == MessageType.TEXT and media_urls:
+            for _i, _mt in enumerate(media_types):
+                if _mt.startswith("text/") or _mt.startswith("application/"):
+                    msg_type = MessageType.DOCUMENT
+                    break
+
         event_text = message.content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
+
+        # Extract reply context (like Telegram does) so the agent sees
+        # what message the user is replying to.
+        reply_to_id = None
+        reply_to_text = None
+        if message.reference and message.reference.message_id:
+            reply_to_id = str(message.reference.message_id)
+            # Try cached resolved message first, then fetch
+            ref_msg = message.reference.resolved
+            if ref_msg is None:
+                try:
+                    ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                except Exception:
+                    pass
+            if ref_msg and ref_msg.content:
+                reply_to_text = ref_msg.content
 
         event = MessageEvent(
             text=event_text,

@@ -2322,18 +2322,10 @@ class GatewayRunner:
                 import re as _re
                 display_name = _re.sub(r'[^\w.\- ]', '_', display_name)
 
-                if mtype.startswith("text/"):
-                    context_note = (
-                        f"[The user sent a text document: '{display_name}'. "
-                        f"Its content has been included below. "
-                        f"The file is also saved at: {path}]"
-                    )
-                else:
-                    context_note = (
-                        f"[The user sent a document: '{display_name}'. "
-                        f"The file is saved at: {path}. "
-                        f"Ask the user what they'd like you to do with it.]"
-                    )
+                context_note = (
+                    f"[The user sent a file: '{display_name}'. "
+                    f"Saved at: {path} — use read_file to view its contents.]"
+                )
                 message_text = f"{context_note}\n\n{message_text}"
 
         # -----------------------------------------------------------------
