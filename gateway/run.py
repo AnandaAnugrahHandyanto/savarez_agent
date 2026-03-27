@@ -4925,27 +4925,46 @@ class GatewayRunner:
             or "all"
         )
         tool_progress_enabled = progress_mode != "off"
-        
-        # Queue for progress messages (thread-safe)
-        progress_queue = queue.Queue() if tool_progress_enabled else None
+        tool_progress_log_mode = progress_mode == "log"
+
+        # Queue for progress messages (thread-safe).
+        # Not needed in log mode — events go directly to file.
+        progress_queue = queue.Queue() if (tool_progress_enabled and not tool_progress_log_mode) else None
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
-        
+
+        # Log-mode file writer
+        if tool_progress_log_mode:
+            import threading as _tp_threading
+            _tp_log_lock = _tp_threading.Lock()
+            _tp_log_path = _hermes_home / "logs" / "tool_progress.log"
+
+            def _append_tool_log(msg: str):
+                try:
+                    _tp_log_path.parent.mkdir(parents=True, exist_ok=True)
+                    from datetime import datetime as _dt
+                    ts = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+                    with _tp_log_lock:
+                        with open(_tp_log_path, "a", encoding="utf-8") as _lf:
+                            _lf.write(f"[{ts}] {msg}\n")
+                except Exception:
+                    pass
+
         def progress_callback(tool_name: str, preview: str = None, args: dict = None):
             """Callback invoked by agent when a tool is called."""
-            if not progress_queue:
+            if not tool_progress_enabled:
                 return
-            
+
             # "new" mode: only report when tool changes
             if progress_mode == "new" and tool_name == last_tool[0]:
                 return
             last_tool[0] = tool_name
-            
+
             # Build progress message with primary argument preview
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")
-            
+
             # Verbose mode: show detailed arguments
             if progress_mode == "verbose" and args:
                 import json as _json
@@ -4955,7 +4974,7 @@ class GatewayRunner:
                 msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
                 progress_queue.put(msg)
                 return
-            
+
             if preview:
                 # Truncate preview to keep messages clean
                 if len(preview) > 80:
@@ -4963,7 +4982,12 @@ class GatewayRunner:
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
-            
+
+            # Log mode: write to file instead of sending to provider
+            if tool_progress_log_mode:
+                _append_tool_log(msg)
+                return
+
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
             # code (same boilerplate imports → identical previews).
@@ -4975,7 +4999,7 @@ class GatewayRunner:
                 return
             last_progress_msg[0] = msg
             repeat_count[0] = 0
-            
+
             progress_queue.put(msg)
         
         # Background task to send progress messages
@@ -5419,9 +5443,9 @@ class GatewayRunner:
                 "session_id": effective_session_id,
             }
         
-        # Start progress message sender if enabled
+        # Start progress message sender if enabled (not needed in log mode)
         progress_task = None
-        if tool_progress_enabled:
+        if progress_queue:
             progress_task = asyncio.create_task(send_progress_messages())
 
         # Start stream consumer task — polls for consumer creation since it

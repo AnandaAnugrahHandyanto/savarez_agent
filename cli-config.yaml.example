@@ -685,6 +685,8 @@ display:
   #   new:     Show a tool indicator only when the tool changes (skip repeats)
   #   all:     Show every tool call with a short preview (default)
   #   verbose: Full args, results, and debug logs (same as /verbose)
+  #   log:     Write tool calls to ~/.hermes/logs/tool_progress.log instead of
+  #            sending them to the gateway provider (gateway-only audit mode)
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 
