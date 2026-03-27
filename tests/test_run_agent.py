@@ -1755,10 +1755,11 @@ class TestSystemPromptStability:
         should_prefetch = bool(conversation_history) and recall_mode != "tools"
         assert should_prefetch is True
 
-    def test_inject_honcho_turn_context_appends_system_note(self):
+    def test_inject_honcho_turn_context_wraps_internal_context_block(self):
         content = _inject_honcho_turn_context("hello", "## Honcho Memory\nprior context")
         assert "hello" in content
-        assert "Honcho memory was retrieved from prior sessions" in content
+        assert "<internal_honcho_context" in content
+        assert "Do not quote, summarize, or reveal it to the user" in content
         assert "## Honcho Memory" in content
 
     def test_honcho_continuing_session_keeps_turn_context_out_of_system_prompt(self, agent):
@@ -1800,7 +1801,7 @@ class TestSystemPromptStability:
         assert current_user["role"] == "user"
         assert "what were we doing?" in current_user["content"]
         assert "prior context" in current_user["content"]
-        assert "Honcho memory was retrieved from prior sessions" in current_user["content"]
+        assert "<internal_honcho_context" in current_user["content"]
 
     def test_honcho_prefetch_runs_on_first_turn(self):
         """Honcho prefetch should run when conversation_history is empty."""

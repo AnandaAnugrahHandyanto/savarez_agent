@@ -848,6 +848,48 @@ class BasePlatformAdapter(ABC):
 
         return paths, cleaned
 
+    @staticmethod
+    def strip_internal_context_leakage(content: str) -> str:
+        """Remove injected system/context notes that should never reach users.
+
+        Defense-in-depth for cases where the model echoes internal continuity or
+        onboarding notes back into the visible chat.
+        """
+        cleaned = content or ""
+
+        # New tagged internal continuity format.
+        cleaned = re.sub(
+            r'<internal_honcho_context\b[^>]*>.*?</internal_honcho_context>',
+            '',
+            cleaned,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        # Legacy Honcho leak format: if it appears, drop everything from the
+        # first marker onward. Safer to suppress the whole leaked tail than risk
+        # exposing private continuity data.
+        legacy_markers = (
+            '[System note: The following Honcho memory was retrieved from prior sessions.',
+            '# Honcho Memory (persistent cross-session context)',
+        )
+        first_legacy = min(
+            (cleaned.find(marker) for marker in legacy_markers if marker in cleaned),
+            default=-1,
+        )
+        if first_legacy != -1:
+            cleaned = cleaned[:first_legacy]
+
+        # Remove legacy one-shot Honcho system-note directives if they were echoed.
+        cleaned = re.sub(
+            r'\[System note:\s*the following honcho memory was retrieved from prior sessions\.[^\n\]]*\]?',
+            '',
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+        return cleaned
+
     async def _keep_typing(self, chat_id: str, interval: float = 2.0, metadata=None) -> None:
         """
         Continuously send typing indicator until cancelled.
@@ -1066,6 +1108,9 @@ class BasePlatformAdapter(ABC):
                 local_files, text_content = self.extract_local_files(text_content)
                 if local_files:
                     logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
+
+                # Strip any leaked internal continuity/system note content before delivery.
+                text_content = self.strip_internal_context_leakage(text_content)
                 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Skipped when the chat has voice mode disabled (/voice off)

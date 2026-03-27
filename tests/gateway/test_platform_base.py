@@ -283,6 +283,60 @@ class TestExtractMedia:
 
 
 # ---------------------------------------------------------------------------
+# strip_internal_context_leakage
+# ---------------------------------------------------------------------------
+
+
+class TestStripInternalContextLeakage:
+    def test_removes_honcho_system_note_block(self):
+        content = (
+            "Visible intro.\n\n"
+            "[System note: The following Honcho memory was retrieved from prior sessions. "
+            "It is continuity context for this turn only, not new user input.]\n\n"
+            "# Honcho Memory (persistent cross-session context)\n"
+            "secret continuity stuff\n\n"
+            "Real answer."
+        )
+        cleaned = BasePlatformAdapter.strip_internal_context_leakage(content)
+        assert cleaned == "Visible intro."
+
+    def test_removes_honcho_system_note_block_without_closing_bracket(self):
+        content = (
+            "Visible intro.\n\n"
+            "[System note: The following Honcho memory was retrieved from prior sessions.\n"
+            "# Honcho Memory (persistent cross-session context)\n"
+            "secret continuity stuff\n\n"
+            "Real answer."
+        )
+        cleaned = BasePlatformAdapter.strip_internal_context_leakage(content)
+        assert cleaned == "Visible intro."
+
+    def test_removes_tagged_internal_honcho_context(self):
+        content = (
+            "Hello\n\n"
+            "<internal_honcho_context do_not_repeat=\"true\">\n"
+            "secret continuity stuff\n"
+            "</internal_honcho_context>\n\n"
+            "Real answer."
+        )
+        cleaned = BasePlatformAdapter.strip_internal_context_leakage(content)
+        assert cleaned == "Hello\n\nReal answer."
+
+    def test_preserves_other_system_notes_when_not_honcho(self):
+        content = (
+            "[System note: This is the user's very first message ever.]\n\n"
+            "Hello there"
+        )
+        cleaned = BasePlatformAdapter.strip_internal_context_leakage(content)
+        assert cleaned == "[System note: This is the user's very first message ever.]\n\nHello there"
+
+    def test_leaves_normal_content_unchanged(self):
+        content = "Normal assistant reply about Honcho memory behavior."
+        cleaned = BasePlatformAdapter.strip_internal_context_leakage(content)
+        assert cleaned == content
+
+
+# ---------------------------------------------------------------------------
 # truncate_message
 # ---------------------------------------------------------------------------
 

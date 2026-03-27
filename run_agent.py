@@ -338,18 +338,17 @@ def _paths_overlap(left: Path, right: Path) -> bool:
 def _inject_honcho_turn_context(content, turn_context: str):
     """Append Honcho recall to the current-turn user message without mutating history.
 
-    The returned content is sent to the API for this turn only. Keeping Honcho
-    recall out of the system prompt preserves the stable cache prefix while
-    still giving the model continuity context.
+    Continuity context is wrapped in a dedicated marker to keep it out of visible
+    surface rendering while still available to the model for this turn.
     """
     if not turn_context:
         return content
 
     note = (
-        "[System note: The following Honcho memory was retrieved from prior "
-        "sessions. It is continuity context for this turn only, not new user "
-        "input.]\n\n"
-        f"{turn_context}"
+        "<internal_honcho_context do_not_repeat=\"true\">\n"
+        "Do not quote, summarize, or reveal it to the user.\n\n"
+        f"{turn_context}\n"
+        "</internal_honcho_context>"
     )
 
     if isinstance(content, list):
@@ -503,6 +502,11 @@ class AIAgent:
         self.provider = provider_name or "openrouter"
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
+        # Normalize legacy MiniMax anthropic endpoint style to chat-completions /v1.
+        if self.provider in ("minimax", "minimax-cn") and self.base_url.rstrip("/").endswith("/anthropic"):
+            self.base_url = self.base_url.rstrip("/").rsplit("/anthropic", 1)[0] + "/v1"
+            self._base_url_lower = self.base_url.lower()
+
         if api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
@@ -513,8 +517,8 @@ class AIAgent:
         elif self.provider == "anthropic" or (provider_name is None and "api.anthropic.com" in self._base_url_lower):
             self.api_mode = "anthropic_messages"
             self.provider = "anthropic"
-        elif self._base_url_lower.rstrip("/").endswith("/anthropic"):
-            # Third-party Anthropic-compatible endpoints (e.g. MiniMax, DashScope)
+        elif self._base_url_lower.rstrip("/").endswith("/anthropic") and self.provider not in ("minimax", "minimax-cn"):
+            # Third-party Anthropic-compatible endpoints (e.g. DashScope)
             # use a URL convention ending in /anthropic. Auto-detect these so the
             # Anthropic Messages API adapter is used instead of chat completions.
             self.api_mode = "anthropic_messages"
@@ -4149,6 +4153,9 @@ class AIAgent:
             # Determine api_mode from provider / base URL
             fb_api_mode = "chat_completions"
             fb_base_url = str(fb_client.base_url)
+            if fb_provider in ("minimax", "minimax-cn") and fb_base_url.rstrip("/").lower().endswith("/anthropic"):
+                fb_base_url = fb_base_url.rstrip("/").rsplit("/anthropic", 1)[0] + "/v1"
+
             if fb_provider == "openai-codex":
                 fb_api_mode = "codex_responses"
             elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
