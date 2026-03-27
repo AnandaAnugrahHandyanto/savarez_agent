@@ -4942,7 +4942,7 @@ class GatewayRunner:
             # "log" mode: write to file without sending chat messages
             if progress_mode == "log":
                 if log_queue:
-                    import datetime
+                    from datetime import datetime
                     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     preview_str = f'"{preview}"' if preview else ""
                     log_line = f"{timestamp}  {tool_name}: {preview_str}".rstrip()
@@ -5109,19 +5109,21 @@ class GatewayRunner:
                         tool_logger.info("%s", line)
                     except queue.Empty:
                         await asyncio.sleep(0.3)
-                    except asyncio.CancelledError:
-                        while not log_queue.empty():
-                            try:
-                                line = log_queue.get_nowait()
-                                tool_logger.info("%s", line)
-                            except queue.Empty:
-                                break
-                        return
                     except Exception as e:
                         logger.error("write_tool_log error: %s", e)
                         await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                pass
             finally:
+                # Drain any remaining entries before closing
+                while not log_queue.empty():
+                    try:
+                        line = log_queue.get_nowait()
+                        tool_logger.info("%s", line)
+                    except queue.Empty:
+                        break
                 tool_logger.removeHandler(file_handler)
+                file_handler.flush()
                 file_handler.close()
 
         # We need to share the agent instance for interrupt support
