@@ -373,7 +373,7 @@ class TestInit:
             patch("agent.anthropic_adapter._anthropic_sdk") as mock_anthropic,
         ):
             agent = AIAgent(
-                api_key="test-key-1234567890",
+                api_key="test-k...7890",
                 base_url="https://api.anthropic.com/v1/",
                 quiet_mode=True,
                 skip_context_files=True,
@@ -381,6 +381,23 @@ class TestInit:
             )
             assert agent.api_mode == "anthropic_messages"
             mock_anthropic.Anthropic.assert_called_once()
+
+    def test_minimax_anthropic_proxy_url_normalized_to_v1(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                provider="minimax",
+                base_url="https://api.minimax.io/anthropic",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert agent.api_mode == "chat_completions"
+            assert agent.base_url == "https://api.minimax.io/v1"
 
     def test_prompt_caching_claude_openrouter(self):
         """Claude model via OpenRouter should enable prompt caching."""
