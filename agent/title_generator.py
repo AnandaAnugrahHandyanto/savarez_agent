@@ -5,6 +5,7 @@ adds latency to the user-facing reply.
 """
 
 import logging
+import os
 import threading
 from typing import Optional
 
@@ -19,7 +20,7 @@ _TITLE_PROMPT = (
 )
 
 
-def generate_title(user_message: str, assistant_response: str, timeout: float = 15.0) -> Optional[str]:
+def generate_title(user_message: str, assistant_response: str, timeout: float = float(os.environ.get("HERMES_AUX_TIMEOUT", 90.0))) -> Optional[str]:
     """Generate a session title from the first exchange.
 
     Uses the auxiliary LLM client (cheapest/fastest available model).

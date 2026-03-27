@@ -1407,7 +1407,7 @@ def _build_call_kwargs(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     tools: Optional[list] = None,
-    timeout: float = 30.0,
+    timeout: float = float(os.environ.get("HERMES_AUX_TIMEOUT", 90.0)),
     extra_body: Optional[dict] = None,
     base_url: Optional[str] = None,
 ) -> dict:
@@ -1457,7 +1457,7 @@ def call_llm(
     temperature: float = None,
     max_tokens: int = None,
     tools: list = None,
-    timeout: float = 30.0,
+    timeout: float = float(os.environ.get("HERMES_AUX_TIMEOUT", 90.0)),
     extra_body: dict = None,
 ) -> Any:
     """Centralized synchronous LLM call.
@@ -1569,7 +1569,7 @@ async def async_call_llm(
     temperature: float = None,
     max_tokens: int = None,
     tools: list = None,
-    timeout: float = 30.0,
+    timeout: float = float(os.environ.get("HERMES_AUX_TIMEOUT", 90.0)),
     extra_body: dict = None,
 ) -> Any:
     """Centralized asynchronous LLM call.

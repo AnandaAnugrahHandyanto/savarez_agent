@@ -14,6 +14,7 @@ Improvements over v1:
 """
 
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm
@@ -347,7 +348,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.3,
                 "max_tokens": summary_budget * 2,
-                "timeout": 45.0,
+                "timeout": float(os.environ.get("HERMES_COMPRESSION_TIMEOUT", 120.0)),
             }
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
