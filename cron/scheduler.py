@@ -25,15 +25,16 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from hermes_constants import get_hermes_home
 from typing import Optional
+
+# Add parent directory to path for imports — MUST be before hermes_constants
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from hermes_constants import get_hermes_home
 
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
-
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
 
