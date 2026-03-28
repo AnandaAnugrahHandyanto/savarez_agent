@@ -14,12 +14,14 @@ prerequisites:
 
 # Mail Auto-Draft with Himalaya
 
-Build a local inbound email automation workflow that:
+Build a practical local inbound email automation workflow that:
 - reads new mail from INBOX via Himalaya
 - classifies simple inbound requests
 - automatically replies only to safe standard cases
 - avoids self-reply loops
 - runs continuously via systemd user timers
+
+This skill is intentionally optional. It is highly useful for users who want mailbox automation, but it depends on local mail account setup, machine-specific deployment choices, and provider-specific operational details.
 
 ## When to Use
 
@@ -32,6 +34,15 @@ Typical requests:
 - "Make it safe enough for production"
 
 This skill is for user-owned mailboxes, not agent-owned inboxes like AgentMail.
+
+## Quick Reference
+
+Typical flow:
+1. configure Himalaya for the mailbox
+2. create or adapt `process_inbox.py` and `config.yaml`
+3. test in draft mode
+4. enable auto-send only for safe whitelisted categories
+5. run continuously with a `systemd --user` timer
 
 ## Requirements
 
@@ -228,6 +239,14 @@ Manual run:
 python3 process_inbox.py --limit 1
 ```
 
+## Example Workflow
+
+Example use case:
+- a user wants automatic replies for simple inbound messages such as information requests, lightweight appointment requests, or simple acknowledgements
+- Hermes helps configure Himalaya and the local processing script
+- the workflow only auto-sends safe standard categories
+- anything uncertain stays out of the auto-send path
+
 ## Troubleshooting
 
 ### It replies to itself repeatedly
@@ -265,3 +284,4 @@ A successful setup should show:
 ## References
 
 - `references/production-checklist.md`
+- `references/setup-commands.md`
