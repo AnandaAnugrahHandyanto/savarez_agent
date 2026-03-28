@@ -1220,6 +1220,25 @@ _PLATFORMS = [
              "help": "The AppSecret from your DingTalk application credentials."},
         ],
     },
+    {
+        "key": "rabbit_r1",
+        "label": "Rabbit R1",
+        "emoji": "🐰",
+        "token_var": "RABBIT_R1_TOKEN",
+        "setup_instructions": [
+            "1. The Rabbit R1 adapter runs a WebSocket server that your R1 connects to",
+            "2. A tunnel (Tailscale Funnel or Cloudflare) makes it reachable from anywhere",
+            "3. On startup, a QR code is displayed — scan it with your R1 to pair",
+            "4. Token is auto-generated if not set (or set RABBIT_R1_TOKEN for a fixed one)",
+        ],
+        "vars": [
+            {"name": "RABBIT_R1_TOKEN", "prompt": "Auth token (leave empty to auto-generate)", "password": True,
+             "help": "64-char hex token. Leave empty and one will be generated on startup."},
+            {"name": "RABBIT_R1_ALLOWED_USERS", "prompt": "Allowed device IDs (comma-separated, or empty for all)", "password": False,
+             "is_allowlist": True,
+             "help": "Device IDs to allow. Leave empty to allow any device with the correct token."},
+        ],
+    },
 ]
 
 
