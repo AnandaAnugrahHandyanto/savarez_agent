@@ -206,6 +206,10 @@ def load_cli_config() -> Dict[str, Any]:
             "show_reasoning": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
+            # Optional visual mode for translucent terminals.
+            # false = keep dark bg for status/completion panels (default)
+            # true  = no forced bg for status/completion panels
+            "transparent_ui": False,
 
             "skin": "default",
         },
@@ -786,10 +790,35 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
 # - Dim: #B8860B (muted text)
 
 # ANSI building blocks for conversation display
-_GOLD = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — matches Rich Panel gold
+_GOLD = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — default fallback
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RST = "\033[0m"
+
+
+def _hex_to_ansi(color_hex: str, *, bold: bool = False, fallback: str = "") -> str:
+    """Convert #RRGGBB to truecolor ANSI escape sequence."""
+    try:
+        c = (color_hex or "").strip()
+        if not c.startswith("#") or len(c) != 7:
+            return fallback
+        r = int(c[1:3], 16)
+        g = int(c[3:5], 16)
+        b = int(c[5:7], 16)
+        prefix = "1;" if bold else ""
+        return f"\033[{prefix}38;2;{r};{g};{b}m"
+    except Exception:
+        return fallback
+
+
+def _stream_border_ansi() -> str:
+    """Return ANSI color for streamed response box borders from active skin."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        border_hex = get_active_skin().get_color("response_border", "#FFD700")
+    except Exception:
+        border_hex = "#FFD700"
+    return _hex_to_ansi(border_hex, bold=True, fallback=_GOLD)
 
 def _accent_hex() -> str:
     """Return the active skin accent color for legacy CLI output lines."""
@@ -798,6 +827,71 @@ def _accent_hex() -> str:
         return get_active_skin().get_color("ui_accent", "#FFBF00")
     except Exception:
         return "#FFBF00"
+
+
+def _status_dot_hex() -> str:
+    """Primary dot color for status line."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin().get_color("banner_title", "#FFD700")
+    except Exception:
+        return "#FFD700"
+
+
+def _status_dim_hex() -> str:
+    """Muted separator color for status line."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin().get_color("banner_dim", "#B8860B")
+    except Exception:
+        return "#B8860B"
+
+
+def _status_label_hex() -> str:
+    """Label color for status metadata labels (toolsets/provider/auth)."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin().get_color("session_label", "#CD7F32")
+    except Exception:
+        return "#CD7F32"
+
+
+def _status_text_hex() -> str:
+    """Main body text color for status line."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin().get_color("banner_text", "#FFF8DC")
+    except Exception:
+        return "#FFF8DC"
+
+
+def _status_tools_hex() -> str:
+    """Color for tool-count token in status line."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin().get_color("ui_label", "#87CEEB")
+    except Exception:
+        return "#87CEEB"
+
+
+def _status_symbol() -> str:
+    """Primary status glyph shown in status rows and activity prompts."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+
+        skin = get_active_skin()
+        explicit = skin.get_branding("status_symbol", "").strip()
+        if explicit:
+            return explicit
+
+        label = skin.get_branding("response_label", "").strip()
+        if label:
+            token = label.split()[0]
+            if token and any(not ch.isalnum() for ch in token):
+                return token
+    except Exception:
+        pass
+    return "⚕"
 
 
 def _rich_text_from_ansi(text: str) -> _RichText:
@@ -885,21 +979,37 @@ COMPACT_BANNER = """
 
 def _build_compact_banner() -> str:
     """Build a compact banner that fits the current terminal width."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        _skin = get_active_skin()
+        border_c = _skin.get_color("banner_border", "#FFD700")
+        accent_c = _skin.get_color("banner_accent", "#FFBF00")
+        dim_c = _skin.get_color("banner_dim", "#B8860B")
+        agent_name = _skin.get_branding("agent_name", "Hermes Agent")
+    except Exception:
+        border_c = "#FFD700"
+        accent_c = "#FFBF00"
+        dim_c = "#B8860B"
+        agent_name = "Hermes Agent"
+
+    safe_agent = _escape(agent_name)
+
     w = min(shutil.get_terminal_size().columns - 2, 64)
     if w < 30:
-        return "\n[#FFBF00]⚕ NOUS HERMES[/] [dim #B8860B]- Nous Research[/]\n"
+        return f"\n[{accent_c}]⚕ {safe_agent}[/] [dim {dim_c}]- Nous Research[/]\n"
+
     inner = w - 2  # inside the box border
     bar = "═" * w
-    line1 = "⚕ NOUS HERMES - AI Agent Framework"
+    line1 = f"⚕ {safe_agent} - AI Agent Framework"
     line2 = "Messenger of the Digital Gods  ·  Nous Research"
     # Truncate and pad to fit
     line1 = line1[:inner - 2].ljust(inner - 2)
     line2 = line2[:inner - 2].ljust(inner - 2)
     return (
-        f"\n[bold #FFD700]╔{bar}╗[/]\n"
-        f"[bold #FFD700]║[/] [#FFBF00]{line1}[/] [bold #FFD700]║[/]\n"
-        f"[bold #FFD700]║[/] [dim #B8860B]{line2}[/] [bold #FFD700]║[/]\n"
-        f"[bold #FFD700]╚{bar}╝[/]\n"
+        f"\n[bold {border_c}]╔{bar}╗[/]\n"
+        f"[bold {border_c}]║[/] [{accent_c}]{line1}[/] [bold {border_c}]║[/]\n"
+        f"[bold {border_c}]║[/] [dim {dim_c}]{line2}[/] [bold {border_c}]║[/]\n"
+        f"[bold {border_c}]╚{bar}╝[/]\n"
     )
 
 
@@ -1062,6 +1172,8 @@ class HermesCLI:
         self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
+        # transparent_ui: do not force dark backgrounds for status/completion UI
+        self.transparent_ui = CLI_CONFIG["display"].get("transparent_ui", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
         # busy_input_mode: "interrupt" (Enter interrupts current run) or "queue" (Enter queues for next turn)
@@ -1368,10 +1480,11 @@ class HermesCLI:
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
 
+            symbol = _status_symbol()
             if width < 52:
-                return f"⚕ {snapshot['model_short']} · {duration_label}"
+                return f"{symbol} {snapshot['model_short']} · {duration_label}"
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"{symbol} {snapshot['model_short']}", percent_label]
                 parts.append(duration_label)
                 return " · ".join(parts)
 
@@ -1382,11 +1495,11 @@ class HermesCLI:
             else:
                 context_label = "ctx --"
 
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"{symbol} {snapshot['model_short']}", context_label, percent_label]
             parts.append(duration_label)
             return " │ ".join(parts)
         except Exception:
-            return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
+            return f"{_status_symbol()} {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
     def _get_status_bar_fragments(self):
         if not self._status_bar_visible:
@@ -1404,10 +1517,11 @@ class HermesCLI:
             except Exception:
                 width = shutil.get_terminal_size((80, 24)).columns
             duration_label = snapshot["duration"]
+            symbol = _status_symbol()
 
             if width < 52:
                 return [
-                    ("class:status-bar", " ⚕ "),
+                    ("class:status-bar", f" {symbol} "),
                     ("class:status-bar-strong", snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
@@ -1418,7 +1532,7 @@ class HermesCLI:
             percent_label = f"{percent}%" if percent is not None else "--"
             if width < 76:
                 frags = [
-                    ("class:status-bar", " ⚕ "),
+                    ("class:status-bar", f" {symbol} "),
                     ("class:status-bar-strong", snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
                     (self._status_bar_context_style(percent), percent_label),
@@ -1439,7 +1553,7 @@ class HermesCLI:
 
             bar_style = self._status_bar_context_style(percent)
             frags = [
-                ("class:status-bar", " ⚕ "),
+                ("class:status-bar", f" {symbol} "),
                 ("class:status-bar-strong", snapshot["model_short"]),
                 ("class:status-bar-dim", " │ "),
                 ("class:status-bar-dim", context_label),
@@ -1794,16 +1908,11 @@ class HermesCLI:
                 _text_hex = "#FFF8DC"
             # Build a true-color ANSI escape for the response text color
             # so streamed content matches the Rich Panel appearance.
-            try:
-                _r = int(_text_hex[1:3], 16)
-                _g = int(_text_hex[3:5], 16)
-                _b = int(_text_hex[5:7], 16)
-                self._stream_text_ansi = f"\033[38;2;{_r};{_g};{_b}m"
-            except (ValueError, IndexError):
-                self._stream_text_ansi = ""
+            self._stream_text_ansi = _hex_to_ansi(_text_hex)
+            self._stream_border_ansi = _stream_border_ansi()
             w = shutil.get_terminal_size().columns
             fill = w - 2 - len(label)
-            _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+            _cprint(f"\n{self._stream_border_ansi}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
         self._stream_buf += text
 
@@ -1826,7 +1935,8 @@ class HermesCLI:
         # Close the response box
         if self._stream_box_opened:
             w = shutil.get_terminal_size().columns
-            _cprint(f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
+            _border = getattr(self, "_stream_border_ansi", _stream_border_ansi())
+            _cprint(f"{_border}╰{'─' * (w - 2)}╯{_RST}")
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
@@ -1835,6 +1945,7 @@ class HermesCLI:
         self._stream_box_opened = False
         self._reasoning_stream_started = False
         self._stream_text_ansi = ""
+        self._stream_border_ansi = ""
         self._stream_prefilt = ""
         self._in_reasoning_block = False
         self._reasoning_box_opened = False
@@ -2613,24 +2724,35 @@ class HermesCLI:
         if len(model_short) > 30:
             model_short = model_short[:27] + "..."
         
-        # Get API status indicator
-        if self.api_key:
-            api_indicator = "[green bold]●[/]"
-        else:
-            api_indicator = "[red bold]●[/]"
-        
-        # Build status line with proper markup
+        # Skin-aware status colors
+        c_dot = _status_dot_hex()
+        c_dim = _status_dim_hex()
+        c_label = _status_label_hex()
+        c_text = _status_text_hex()
+        c_tools = _status_tools_hex()
+        c_model = _accent_hex()
+
+        # Build status line with skin-consistent markup
         toolsets_info = ""
         if self.enabled_toolsets and "all" not in self.enabled_toolsets:
-            toolsets_info = f" [dim #B8860B]·[/] [#CD7F32]toolsets: {', '.join(self.enabled_toolsets)}[/]"
+            toolsets_info = (
+                f" [dim {c_dim}]·[/] "
+                f"[{c_label}]toolsets:[/] [{c_text}]{', '.join(self.enabled_toolsets)}[/]"
+            )
 
-        provider_info = f" [dim #B8860B]·[/] [dim]provider: {self.provider}[/]"
+        provider_info = (
+            f" [dim {c_dim}]·[/] "
+            f"[{c_label}]provider:[/] [dim {c_text}]{self.provider}[/]"
+        )
         if self._provider_source:
-            provider_info += f" [dim #B8860B]·[/] [dim]auth: {self._provider_source}[/]"
+            provider_info += (
+                f" [dim {c_dim}]·[/] "
+                f"[{c_label}]auth:[/] [dim {c_text}]{self._provider_source}[/]"
+            )
 
         self.console.print(
-            f"  {api_indicator} [#FFBF00]{model_short}[/] "
-            f"[dim #B8860B]·[/] [bold cyan]{tool_count} tools[/]"
+            f"  [bold {c_dot}]●[/] [{c_model}]{model_short}[/] "
+            f"[dim {c_dim}]·[/] [bold {c_tools}]{tool_count} tools[/]"
             f"{toolsets_info}{provider_info}"
         )
     
@@ -5627,9 +5749,15 @@ class HermesCLI:
                     if not _streaming_box_opened:
                         _streaming_box_opened = True
                         w = self.console.width
-                        label = " ⚕ Hermes "
+                        try:
+                            from hermes_cli.skin_engine import get_active_skin
+                            _skin = get_active_skin()
+                            label = _skin.get_branding("response_label", " ⚕ Hermes ")
+                        except Exception:
+                            label = " ⚕ Hermes "
+                        border = _stream_border_ansi()
                         fill = w - 2 - len(label)
-                        _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+                        _cprint(f"\n{border}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
                     _cprint(sentence.rstrip())
 
                 tts_thread = threading.Thread(
@@ -5840,7 +5968,8 @@ class HermesCLI:
                 if use_streaming_tts and _streaming_box_opened and not is_error_response:
                     # Text was already printed sentence-by-sentence; just close the box
                     w = shutil.get_terminal_size().columns
-                    _cprint(f"\n{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
+                    _border = _stream_border_ansi()
+                    _cprint(f"\n{_border}╰{'─' * (w - 2)}╯{_RST}")
                 elif already_streamed:
                     # Response was already streamed token-by-token with box framing;
                     # _flush_stream() already closed the box. Skip Rich Panel.
@@ -6024,7 +6153,7 @@ class HermesCLI:
         if self._command_running:
             return [("class:prompt-working", f"{self._command_spinner_frame()} {state_suffix}")]
         if self._agent_running:
-            return [("class:prompt-working", f"⚕ {state_suffix}")]
+            return [("class:prompt-working", f"{_status_symbol()} {state_suffix}")]
         if self._voice_mode:
             return [("class:voice-prompt", f"🎤 {state_suffix}")]
         return [("class:prompt", symbol)]
@@ -6038,7 +6167,11 @@ class HermesCLI:
         style_dict = dict(getattr(self, "_tui_style_base", {}) or {})
         try:
             from hermes_cli.skin_engine import get_prompt_toolkit_style_overrides
-            style_dict.update(get_prompt_toolkit_style_overrides())
+            style_dict.update(
+                get_prompt_toolkit_style_overrides(
+                    transparent_ui=getattr(self, "transparent_ui", False)
+                )
+            )
         except Exception:
             pass
         return style_dict

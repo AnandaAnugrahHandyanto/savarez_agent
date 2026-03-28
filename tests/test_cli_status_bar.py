@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
-from cli import HermesCLI
+from cli import HermesCLI, _status_symbol
 
 
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
@@ -105,7 +105,7 @@ class TestCLIStatusBar:
 
         text = cli_obj._build_status_bar_text(width=60)
 
-        assert "⚕" in text
+        assert text.startswith(_status_symbol())
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
         assert "200K" not in text
@@ -115,7 +115,7 @@ class TestCLIStatusBar:
 
         text = cli_obj._build_status_bar_text(width=100)
 
-        assert "⚕" in text
+        assert text.startswith(_status_symbol())
         assert "claude-sonnet-4-20250514" in text
 
 
@@ -273,3 +273,23 @@ class TestStatusBarWidthSource:
         mock_get_app.assert_not_called()
         mock_shutil.assert_not_called()
         assert len(text) > 0
+
+
+class TestStatusSymbolBranding:
+    def test_status_bar_uses_skin_response_label_symbol(self):
+        from hermes_cli.skin_engine import set_active_skin
+
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=12_000,
+            completion_tokens=400,
+            total_tokens=12_400,
+            api_calls=7,
+            context_tokens=12_400,
+            context_length=200_000,
+        )
+
+        set_active_skin("ares")
+        text = cli_obj._build_status_bar_text(width=60)
+
+        assert text.startswith("⚔")

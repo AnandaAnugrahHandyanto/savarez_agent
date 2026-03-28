@@ -68,3 +68,85 @@ def test_build_welcome_banner_uses_normalized_toolset_names():
     assert "homeassistant_tools:" not in output
     assert "honcho_tools:" not in output
     assert "web_tools:" not in output
+
+
+def test_tint_default_banner_art_replaces_legacy_gold_palette():
+    sample = "[bold #FFD700]A[/] [#FFBF00]B[/] [#CD7F32]C[/] [dim #B8860B]D[/] [#FFF8DC]E[/]"
+
+    with patch.object(
+        banner,
+        "_skin_color",
+        side_effect=lambda key, fallback: {
+            "banner_title": "#111111",
+            "banner_accent": "#222222",
+            "banner_border": "#333333",
+            "banner_dim": "#444444",
+            "banner_text": "#555555",
+        }.get(key, fallback),
+    ):
+        tinted = banner._tint_default_banner_art(sample)
+
+    assert "#111111" in tinted
+    assert "#222222" in tinted
+    assert "#333333" in tinted
+    assert "#444444" in tinted
+    assert "#555555" in tinted
+    assert "#FFD700" not in tinted
+    assert "#FFBF00" not in tinted
+    assert "#CD7F32" not in tinted
+    assert "#B8860B" not in tinted
+    assert "#FFF8DC" not in tinted
+
+
+def test_build_welcome_banner_uses_skin_blue_for_info_and_section_headers():
+    with (
+        patch.object(
+            model_tools,
+            "check_tool_availability",
+            return_value=(
+                ["web"],
+                [
+                    {"name": "web", "tools": ["web_search"]},
+                ],
+            ),
+        ),
+        patch.object(banner, "get_available_skills", return_value={"creative": ["ascii-art"]}),
+        patch.object(banner, "get_update_result", return_value=None),
+        patch.object(tools.mcp_tool, "get_mcp_status", return_value=[]),
+        patch.object(
+            banner,
+            "_skin_color",
+            side_effect=lambda key, fallback: {
+                "banner_accent": "#89B4FA",  # catppuccin blue
+                "banner_title": "#CBA6F7",   # catppuccin mauve
+                "ui_accent": "#B4BEFE",      # catppuccin lavender
+                "banner_dim": "#6C7086",
+                "banner_text": "#CDD6F4",
+            }.get(key, fallback),
+        ),
+    ):
+        console = Console(record=True, force_terminal=True, color_system="truecolor", width=180)
+        banner.build_welcome_banner(
+            console=console,
+            model="Nous Research/hime/gpt-5.3-codex",
+            cwd="/ethan",
+            tools=[{"function": {"name": "web_search"}}],
+            session_id="ethan",
+            get_toolset_for_tool=lambda _name: "web",
+        )
+
+    output = console.export_text(styles=True)
+
+    # Rich export contains ANSI escapes (not markup tags). Accept bold/non-bold forms.
+    def has_blue_segment(label: str) -> bool:
+        return (
+            f"\x1b[38;2;137;180;250m{label}" in output
+            or f"\x1b[1;38;2;137;180;250m{label}" in output
+        )
+
+    assert has_blue_segment("Available Tools")
+    assert has_blue_segment("Available Skills")
+    assert has_blue_segment("gpt-5.3-codex")
+    assert has_blue_segment("Nous Research")
+    assert has_blue_segment("/ethan")
+    assert f"\x1b[38;2;108;112;134mSession: ethan" in output

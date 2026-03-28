@@ -730,6 +730,11 @@ display:
   # Stream tokens to the terminal in real-time. Disable to wait for full responses.
   streaming: true
 
+  # Optional visual mode for translucent terminals.
+  # false (default): keep dark backgrounds for status bar and slash completion menu
+  # true: remove forced backgrounds so terminal translucency shows through
+  transparent_ui: false
+
   # ───────────────────────────────────────────────────────────────────────────
   # Skin / Theme
   # ───────────────────────────────────────────────────────────────────────────
