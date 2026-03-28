@@ -2187,8 +2187,14 @@ class AIAgent:
     # ── Honcho integration helpers ──
 
     def _honcho_should_activate(self, hcfg) -> bool:
-        """Return True when remote Honcho should be active."""
-        if not hcfg or not hcfg.enabled or not hcfg.api_key:
+        """Return True when Honcho should be active.
+
+        Self-hosted Honcho may be configured with a base_url and no API key,
+        so activation should accept either credential style.
+        """
+        if not hcfg or not hcfg.enabled:
+            return False
+        if not (hcfg.api_key or hcfg.base_url):
             return False
         return True
 

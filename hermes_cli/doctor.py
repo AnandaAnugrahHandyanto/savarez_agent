@@ -56,7 +56,7 @@ def _honcho_is_configured_for_doctor() -> bool:
         from honcho_integration.client import HonchoClientConfig
 
         cfg = HonchoClientConfig.from_global_config()
-        return bool(cfg.enabled and cfg.api_key)
+        return bool(cfg.enabled and (cfg.api_key or cfg.base_url))
     except Exception:
         return False
 
