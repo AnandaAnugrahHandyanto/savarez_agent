@@ -79,6 +79,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
+    CommandDef("model", "Switch model for this session", "Configuration",
+               gateway_only=True, args_hint="[provider:model]"),
     CommandDef("provider", "Show available providers and current provider",
                "Configuration"),
     CommandDef("prompt", "View/set custom system prompt", "Configuration",
@@ -128,6 +130,16 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                gateway_only=True),
+
+    # Agents
+    CommandDef("create-agent", "Create a named agent with isolated environment", "Agents",
+               gateway_only=True, args_hint="<name>", aliases=("create_agent",)),
+    CommandDef("bind-agent", "Bind a named agent to this thread/topic", "Agents",
+               gateway_only=True, args_hint="<name>", aliases=("bind_agent",)),
+    CommandDef("unbind-agent", "Unbind the named agent from this thread/topic", "Agents",
+               gateway_only=True, aliases=("unbind_agent",)),
+    CommandDef("list-agents", "List all named agents and their bindings", "Agents",
+               gateway_only=True, aliases=("list_agents",)),
 
     # Exit
     CommandDef("quit", "Exit the CLI", "Exit",

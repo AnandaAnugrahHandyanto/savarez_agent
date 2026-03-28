@@ -207,6 +207,15 @@ _configured_cwd = os.environ.get("TERMINAL_CWD", "")
 if not _configured_cwd or _configured_cwd in (".", "auto", "cwd"):
     messaging_cwd = os.getenv("MESSAGING_CWD") or str(Path.home())
     os.environ["TERMINAL_CWD"] = messaging_cwd
+else:
+    messaging_cwd = _configured_cwd
+
+# Also chdir so context file loaders (AGENTS.md, HERMES.md, etc.)
+# pick up files from the messaging working directory, not the repo dir.
+try:
+    os.chdir(messaging_cwd)
+except OSError:
+    pass
 
 from gateway.config import (
     Platform,
@@ -273,6 +282,149 @@ def _load_gateway_config() -> dict:
     except Exception:
         logger.debug("Could not load gateway config from %s", _hermes_home / 'config.yaml')
     return {}
+
+
+# ---------------------------------------------------------------------------
+# Named agent helpers
+# ---------------------------------------------------------------------------
+
+_AGENT_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9-]*$')
+
+
+def _resolve_agent_binding(session_key: str, config: dict | None = None) -> "Path | None":
+    """Return the hermes_home Path for a bound named agent, or None for default."""
+    if config is None:
+        config = _load_gateway_config()
+    bindings = config.get("agent_bindings") or {}
+    agent_name = bindings.get(session_key)
+    if not agent_name:
+        return None
+    agent_dir = _hermes_home / "agents" / agent_name
+    if not agent_dir.is_dir():
+        logger.warning("Agent binding %s -> %s but directory missing", session_key, agent_name)
+        return None
+    return agent_dir
+
+
+def _save_agent_binding(session_key: str, agent_name: str) -> None:
+    """Persist an agent binding to config.yaml."""
+    import yaml
+    config = _load_gateway_config()
+    bindings = config.setdefault("agent_bindings", {})
+    bindings[session_key] = agent_name
+    config_path = _hermes_home / 'config.yaml'
+    with open(config_path, 'w', encoding='utf-8') as f:
+        yaml.safe_dump(config, f, default_flow_style=False)
+
+
+def _remove_agent_binding(session_key: str) -> bool:
+    """Remove an agent binding. Returns True if a binding was removed."""
+    import yaml
+    config = _load_gateway_config()
+    bindings = config.get("agent_bindings") or {}
+    if session_key not in bindings:
+        return False
+    del bindings[session_key]
+    config["agent_bindings"] = bindings
+    config_path = _hermes_home / 'config.yaml'
+    with open(config_path, 'w', encoding='utf-8') as f:
+        yaml.safe_dump(config, f, default_flow_style=False)
+    return True
+
+
+def _create_agent_directory(name: str) -> Path:
+    """Scaffold a new named agent directory. Returns the agent home path."""
+    agent_dir = _hermes_home / "agents" / name
+    agent_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create memories/ with empty MEMORY.md and copy USER.md from parent
+    mem_dir = agent_dir / "memories"
+    mem_dir.mkdir(exist_ok=True)
+    (mem_dir / "MEMORY.md").touch()
+    parent_user = _hermes_home / "memories" / "USER.md"
+    if parent_user.exists():
+        import shutil
+        shutil.copy2(parent_user, mem_dir / "USER.md")
+
+    # Create sessions/ and inbox/
+    (agent_dir / "sessions").mkdir(exist_ok=True)
+    (agent_dir / "inbox").mkdir(exist_ok=True)
+
+    # Symlink skills/ -> parent skills/
+    skills_link = agent_dir / "skills"
+    if not skills_link.exists():
+        parent_skills = _hermes_home / "skills"
+        if parent_skills.exists():
+            skills_link.symlink_to(parent_skills)
+
+    # Write AGENTS.md from template
+    template_path = _hermes_home / "skills" / "persistent-agents" / "templates" / "AGENTS.md.template"
+    if template_path.exists():
+        content = template_path.read_text(encoding="utf-8").replace("{{name}}", name)
+    else:
+        # Inline fallback if skill not installed
+        content = f"# Agent: {name}\n\nYou are **{name}** — a specialized persistent agent.\n"
+    (agent_dir / "AGENTS.md").write_text(content, encoding="utf-8")
+
+    return agent_dir
+
+
+def _list_agents() -> list[dict]:
+    """List all named agents with their binding info."""
+    agents_root = _hermes_home / "agents"
+    if not agents_root.is_dir():
+        return []
+
+    config = _load_gateway_config()
+    bindings = config.get("agent_bindings") or {}
+    # Invert: agent_name -> list of bound keys
+    agent_bindings: dict[str, list[str]] = {}
+    for key, aname in bindings.items():
+        agent_bindings.setdefault(aname, []).append(key)
+
+    result = []
+    for entry in sorted(agents_root.iterdir()):
+        if not entry.is_dir():
+            continue
+        name = entry.name
+        agents_md = entry / "AGENTS.md"
+        memory_md = entry / "memories" / "MEMORY.md"
+        info: dict = {"name": name}
+        info["bindings"] = agent_bindings.get(name, [])
+        try:
+            info["memory_size"] = memory_md.stat().st_size if memory_md.exists() else 0
+        except OSError:
+            info["memory_size"] = 0
+        try:
+            info["has_agents_md"] = agents_md.exists()
+        except OSError:
+            info["has_agents_md"] = False
+        result.append(info)
+    return result
+
+
+def _build_agent_roster() -> str:
+    """Build a one-line-per-agent roster from Status lines in agent AGENTS.md files."""
+    agents_root = _hermes_home / "agents"
+    if not agents_root.is_dir():
+        return ""
+    lines = []
+    for entry in sorted(agents_root.iterdir()):
+        if not entry.is_dir():
+            continue
+        agents_md = entry / "AGENTS.md"
+        if not agents_md.exists():
+            continue
+        try:
+            first_line = agents_md.read_text(encoding="utf-8").split("\n", 1)[0]
+            if first_line.startswith("Status:"):
+                status = first_line[7:].strip()
+                lines.append(f"  {entry.name}: {status}")
+        except OSError:
+            continue
+    if not lines:
+        return ""
+    return "Active agents:\n" + "\n".join(lines)
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
@@ -373,6 +525,11 @@ class GatewayRunner:
         # the primary model succeeds again or the user switches via /model.
         self._effective_model: Optional[str] = None
         self._effective_provider: Optional[str] = None
+
+        # Per-session model overrides (set via /model, cleared on /new).
+        # Key: session_key, Value: {"provider": str, "model": str}
+        # Session-scoped: no config.yaml writes, dies with session expiry.
+        self._session_model_overrides: Dict[str, Dict[str, str]] = {}
 
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
@@ -1731,6 +1888,9 @@ class GatewayRunner:
         if canonical == "verbose":
             return await self._handle_verbose_command(event)
 
+        if canonical == "model":
+            return await self._handle_model_command(event)
+
         if canonical == "provider":
             return await self._handle_provider_command(event)
         
@@ -1803,6 +1963,18 @@ class GatewayRunner:
 
         if canonical == "voice":
             return await self._handle_voice_command(event)
+
+        if canonical == "create-agent":
+            return await self._handle_create_agent_command(event)
+
+        if canonical == "bind-agent":
+            return await self._handle_bind_agent_command(event)
+
+        if canonical == "unbind-agent":
+            return await self._handle_unbind_agent_command(event)
+
+        if canonical == "list-agents":
+            return await self._handle_list_agents_command(event)
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
@@ -2856,6 +3028,7 @@ class GatewayRunner:
 
         self._shutdown_gateway_honcho(session_key)
         self._evict_cached_agent(session_key)
+        self._session_model_overrides.pop(session_key, None)
         
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
@@ -2964,6 +3137,120 @@ class GatewayRunner:
             pass
         return "\n".join(lines)
     
+    async def _handle_model_command(self, event: MessageEvent) -> str:
+        """Handle /model command — session-scoped model override.
+
+        Usage:
+            /model                          — show current model + override status
+            /model provider:model-name      — switch for this session
+            /model reset                    — clear override, revert to config default
+
+        No config.yaml writes. Override lives in memory, scoped to the
+        session key. Dies on /new, session expiry, or gateway restart.
+        """
+        import yaml
+        from hermes_cli.models import (
+            parse_model_input,
+            normalize_provider,
+            curated_models_for_provider,
+            _PROVIDER_LABELS,
+        )
+
+        args = event.get_command_args().strip()
+        source = event.source or event
+        session_entry = self.session_store.get_or_create_session(source)
+        session_key = session_entry.session_key
+
+        # Resolve config defaults
+        config_path = _hermes_home / 'config.yaml'
+        config_model = os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
+        config_provider = "openrouter"
+        try:
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, str):
+                    config_model = model_cfg
+                elif isinstance(model_cfg, dict):
+                    config_model = model_cfg.get("default", config_model)
+                    config_provider = model_cfg.get("provider", config_provider)
+        except Exception:
+            pass
+        config_provider = normalize_provider(config_provider)
+
+        override = self._session_model_overrides.get(session_key)
+
+        # No args → show status
+        if not args:
+            if override:
+                provider_label = _PROVIDER_LABELS.get(override["provider"], override["provider"])
+                lines = [
+                    f"🤖 Session override active:",
+                    f"  Model: {override['model']}",
+                    f"  Provider: {provider_label}",
+                    "",
+                    f"Config default: {config_model} ({config_provider})",
+                    "",
+                    "Reset: /model reset",
+                    "Change: /model provider:model-name",
+                ]
+            else:
+                provider_label = _PROVIDER_LABELS.get(config_provider, config_provider)
+                lines = [
+                    f"🤖 Current model: {config_model}",
+                    f"Provider: {provider_label}",
+                    "",
+                    "No session override active.",
+                    "",
+                    "Switch: /model provider:model-name",
+                ]
+                curated = curated_models_for_provider(config_provider)
+                if curated:
+                    lines.append(f"\nAvailable ({provider_label}):")
+                    for mid, desc in curated:
+                        marker = " <-" if mid == config_model else ""
+                        label = f"  {desc}" if desc else ""
+                        lines.append(f"  {mid}{label}{marker}")
+            return "\n".join(lines)
+
+        # /model reset → clear override
+        if args.lower() in ("reset", "clear", "default"):
+            removed = self._session_model_overrides.pop(session_key, None)
+            self._evict_cached_agent(session_key)
+            if removed:
+                return f"🤖 Session override cleared. Back to config default: {config_model} ({config_provider})"
+            return "No session override was active."
+
+        # Parse provider:model
+        target_provider, new_model = parse_model_input(args, config_provider)
+        if not new_model:
+            return "Usage: /model provider:model-name\nExample: /model anthropic:claude-haiku-4"
+
+        # Validate the provider can resolve credentials
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        try:
+            resolve_runtime_provider(requested=target_provider)
+        except Exception as exc:
+            return f"⚠️ Provider '{target_provider}' auth failed: {exc}"
+
+        # Store the override
+        self._session_model_overrides[session_key] = {
+            "provider": target_provider,
+            "model": new_model,
+        }
+
+        # Evict cached agent so next message uses the new model
+        self._evict_cached_agent(session_key)
+
+        provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
+        return (
+            f"🤖 Model switched to {new_model}\n"
+            f"Provider: {provider_label}\n"
+            f"Scope: this session only\n"
+            f"\n/model reset to revert"
+        )
+
     async def _handle_provider_command(self, event: MessageEvent) -> str:
         """Handle /provider command - show available providers."""
         import yaml
@@ -3272,6 +3559,92 @@ class GatewayRunner:
                 if adapter:
                     self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
                 return "Voice mode disabled."
+
+    # ── Named agent commands ─────────────────────────────────────────────
+
+    async def _handle_create_agent_command(self, event: MessageEvent) -> str:
+        """Handle /create-agent <name>."""
+        name = event.get_command_args().strip().lower()
+        if not name:
+            return "Usage: /create-agent <name>\nName must be lowercase alphanumeric + hyphens."
+        if not _AGENT_NAME_RE.match(name):
+            return f"Invalid agent name '{name}'. Use lowercase letters, digits, and hyphens."
+        agent_dir = _hermes_home / "agents" / name
+        if agent_dir.exists():
+            return f"Agent '{name}' already exists."
+
+        _create_agent_directory(name)
+
+        # Auto-bind to current thread
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        _save_agent_binding(session_key, name)
+
+        # Evict cached agent for this session so next message uses the new binding
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        _cache = getattr(self, "_agent_cache", None)
+        if _cache_lock and _cache is not None:
+            with _cache_lock:
+                _cache.pop(session_key, None)
+
+        return (
+            f"Agent '{name}' created and bound to this thread.\n"
+            f"Home: {agent_dir}\n"
+            f"Next message here will use the '{name}' agent."
+        )
+
+    async def _handle_bind_agent_command(self, event: MessageEvent) -> str:
+        """Handle /bind-agent <name>."""
+        name = event.get_command_args().strip().lower()
+        if not name:
+            return "Usage: /bind-agent <name>"
+        agent_dir = _hermes_home / "agents" / name
+        if not agent_dir.is_dir():
+            return f"Agent '{name}' does not exist. Create it first with /create-agent {name}"
+
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        _save_agent_binding(session_key, name)
+
+        # Evict cached agent so next message picks up the binding
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        _cache = getattr(self, "_agent_cache", None)
+        if _cache_lock and _cache is not None:
+            with _cache_lock:
+                _cache.pop(session_key, None)
+
+        return f"Agent '{name}' bound to this thread. Next message will use it."
+
+    async def _handle_unbind_agent_command(self, event: MessageEvent) -> str:
+        """Handle /unbind-agent."""
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        removed = _remove_agent_binding(session_key)
+
+        if not removed:
+            return "No agent is bound to this thread."
+
+        # Evict cached agent
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        _cache = getattr(self, "_agent_cache", None)
+        if _cache_lock and _cache is not None:
+            with _cache_lock:
+                _cache.pop(session_key, None)
+
+        return "Agent unbound. Next message will use the default agent."
+
+    async def _handle_list_agents_command(self, event: MessageEvent) -> str:
+        """Handle /list-agents."""
+        agents = _list_agents()
+        if not agents:
+            return "No named agents found. Create one with /create-agent <name>"
+
+        lines = ["Named agents:"]
+        for a in agents:
+            bindings_str = ", ".join(a["bindings"]) if a["bindings"] else "unbound"
+            mem_kb = a["memory_size"] / 1024
+            lines.append(f"  {a['name']} — {bindings_str} (memory: {mem_kb:.1f}KB)")
+        return "\n".join(lines)
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""
@@ -3998,16 +4371,25 @@ class GatewayRunner:
             loop = asyncio.get_event_loop()
             compressed, _ = await loop.run_in_executor(
                 None,
-                lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens),
+                lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens)
             )
 
-            self.session_store.rewrite_transcript(session_entry.session_id, compressed)
+            # _compress_context already ended the old session (preserving its
+            # full transcript) and created a new session_id.  Write the
+            # compressed messages into the NEW session, not the old one.
+            new_session_id = tmp_agent.session_id
+            if new_session_id != session_entry.session_id:
+                # Point the session store at the new session
+                session_entry.session_id = new_session_id
+                self.session_store._save()
+
+            self.session_store.rewrite_transcript(new_session_id, compressed)
             # Reset stored token count — transcript changed, old value is stale
             self.session_store.update_session(
-                session_entry.session_key, last_prompt_tokens=0,
+                session_entry.session_key, last_prompt_tokens=0
             )
             new_count = len(compressed)
-            new_tokens = estimate_messages_tokens_rough(compressed)
+            new_tokens=estimate_messages_tokens_rough(compressed)
 
             return (
                 f"🗜️ Compressed: {original_count} → {new_count} messages\n"
@@ -4977,11 +5359,11 @@ class GatewayRunner:
         # Accumulates tool lines into a single message that gets edited.
         #
         # Threading metadata is platform-specific:
-        # - Slack DM threading needs event_message_id fallback (reply thread)
+        # - Slack/Discord DM threading needs event_message_id fallback (reply thread)
         # - Telegram uses message_thread_id only for forum topics; passing a
         #   normal DM/group message id as thread_id causes send failures
         # - Other platforms should use explicit source.thread_id only
-        if source.platform == Platform.SLACK:
+        if source.platform in (Platform.SLACK, Platform.DISCORD):
             _progress_thread_id = source.thread_id or event_message_id
         else:
             _progress_thread_id = source.thread_id
@@ -5134,6 +5516,11 @@ class GatewayRunner:
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
 
+            # Inject agent roster for the default agent (not for named agents)
+            _agent_roster = _build_agent_roster()
+            if _agent_roster:
+                combined_ephemeral = (combined_ephemeral + "\n\n" + _agent_roster).strip()
+
             # Re-read .env and config for fresh credentials (gateway is long-lived,
             # keys may change without restart).
             try:
@@ -5154,6 +5541,27 @@ class GatewayRunner:
                     "api_calls": 0,
                     "tools": [],
                 }
+
+            # Apply per-session model override (set via /model command).
+            # Overrides both model and provider credentials for this turn.
+            _model_override = self._session_model_overrides.get(session_key)
+            if _model_override:
+                model = _model_override["model"]
+                try:
+                    from hermes_cli.runtime_provider import resolve_runtime_provider as _rtp_override
+                    _override_runtime = _rtp_override(requested=_model_override["provider"])
+                    runtime_kwargs = {
+                        "api_key": _override_runtime.get("api_key"),
+                        "base_url": _override_runtime.get("base_url"),
+                        "provider": _override_runtime.get("provider"),
+                        "api_mode": _override_runtime.get("api_mode"),
+                        "command": _override_runtime.get("command"),
+                        "args": list(_override_runtime.get("args") or []),
+                    }
+                except Exception as exc:
+                    logger.warning("Session model override provider failed: %s — falling back to config", exc)
+                    # Clear broken override so it doesn't keep failing
+                    self._session_model_overrides.pop(session_key, None)
 
             pr = self._provider_routing
             honcho_manager, honcho_config = self._get_or_create_gateway_honcho(session_key)
@@ -5190,14 +5598,26 @@ class GatewayRunner:
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
 
+            # Resolve named agent binding for this session
+            _agent_home = _resolve_agent_binding(session_key, user_config)
+
+            # Set the contextvar so get_hermes_home() returns the agent's dir
+            # everywhere downstream — no parameter threading needed.
+            from hermes_constants import _hermes_home_override
+            _hermes_home_token = _hermes_home_override.set(_agent_home)  # noqa: reset in finally
+
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
             # schemas for prompt cache hits.
+            # Include agent home in ephemeral so cache invalidates on binding change
+            _ephemeral_for_sig = combined_ephemeral or ""
+            if _agent_home:
+                _ephemeral_for_sig += f"\n__agent_home__={_agent_home}"
             _sig = self._agent_config_signature(
                 turn_route["model"],
                 turn_route["runtime"],
                 enabled_toolsets,
-                combined_ephemeral,
+                _ephemeral_for_sig,
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
@@ -5620,6 +6040,12 @@ class GatewayRunner:
                     except asyncio.CancelledError:
                         pass
             
+            # Reset named agent contextvar (guard: import may not have been reached)
+            try:
+                _hermes_home_override.reset(_hermes_home_token)
+            except NameError:
+                pass
+
             # Clean up tracking
             tracking_task.cancel()
             if session_key and session_key in self._running_agents:

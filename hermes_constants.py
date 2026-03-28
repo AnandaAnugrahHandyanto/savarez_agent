@@ -4,16 +4,30 @@ Import-safe module with no dependencies — can be imported from anywhere
 without risk of circular imports.
 """
 
+import contextvars
 import os
 from pathlib import Path
+
+# Per-task override for named agents. When set, get_hermes_home() returns
+# this value instead of the process-global HERMES_HOME env var.
+# The gateway sets this via _hermes_home_override.set(agent_dir) before
+# processing a message, so every downstream call automatically resolves
+# to the agent's own directory — no parameter threading needed.
+_hermes_home_override: contextvars.ContextVar["Path | None"] = contextvars.ContextVar(
+    "_hermes_home_override", default=None
+)
 
 
 def get_hermes_home() -> Path:
     """Return the Hermes home directory (default: ~/.hermes).
 
-    Reads HERMES_HOME env var, falls back to ~/.hermes.
+    Checks the per-task contextvar override first (set by the gateway for
+    named agents), then HERMES_HOME env var, then falls back to ~/.hermes.
     This is the single source of truth — all other copies should import this.
     """
+    override = _hermes_home_override.get()
+    if override is not None:
+        return override
     return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 
 
