@@ -826,6 +826,10 @@ def resolve_provider_client(
         provider = "openai-codex"
     if provider == "main":
         provider = "custom"
+    if provider == "minimax" and not explicit_base_url:
+        import os
+        if not os.getenv("MINIMAX_API_BASE") and not os.getenv("MINIMAX_BASE_URL"):
+            explicit_base_url = "https://api.minimax.chat/v1"  
 
     # ── Auto: try all providers in priority order ────────────────────
     if provider == "auto":
