@@ -5565,6 +5565,54 @@ class HermesCLI:
                 pass
 
 
+    def _ensure_current_session_indexed(self, *, model_override: str = None) -> None:
+        """Create the current CLI session row before the first agent turn.
+
+        The interactive UI exposes ``self.session_id`` before the model has fully
+        initialized. If the first turn is interrupted or agent init fails, we still
+        want ``hermes sessions list`` / ``--resume`` to recognize that session ID.
+        ``INSERT OR IGNORE`` keeps this safe to call repeatedly.
+        """
+        if self._resumed or not self._session_db:
+            return
+        try:
+            self._session_db.create_session(
+                session_id=self.session_id,
+                source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                model=model_override or self.model,
+                model_config={
+                    "max_iterations": self.max_turns,
+                    "reasoning_config": self.reasoning_config,
+                },
+            )
+        except Exception as e:
+            logger.debug("Could not pre-index CLI session %s: %s", self.session_id, e)
+
+    def _persist_session_on_exit(self) -> None:
+        """Flush any in-memory history to SQLite before closing the CLI session."""
+        if not self._session_db:
+            return
+
+        if self.agent and self.conversation_history:
+            flush_fn = getattr(self.agent, "_flush_messages_to_session_db", None)
+            if callable(flush_fn):
+                try:
+                    flush_fn(self.conversation_history)
+                except (Exception, KeyboardInterrupt) as e:
+                    logger.debug("Could not flush pending session history on exit: %s", e)
+
+        session_id = None
+        if self.agent and getattr(self.agent, "session_id", None):
+            session_id = self.agent.session_id
+        elif getattr(self, "session_id", None):
+            session_id = self.session_id
+
+        if session_id:
+            try:
+                self._session_db.end_session(session_id, "cli_close")
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug("Could not close session in DB: %s", e)
+
     def chat(self, message, images: list = None) -> Optional[str]:
         """
         Send a message to the agent and get a response.
@@ -5595,6 +5643,8 @@ class HermesCLI:
         turn_route = self._resolve_turn_agent_config(message)
         if turn_route["signature"] != self._active_agent_route_signature:
             self.agent = None
+
+        self._ensure_current_session_indexed(model_override=turn_route["model"])
 
         # Initialize agent if needed
         if self.agent is None:
@@ -7503,12 +7553,7 @@ class HermesCLI:
                     self.agent._honcho.shutdown()
                 except (Exception, KeyboardInterrupt):
                     pass
-            # Close session in SQLite
-            if hasattr(self, '_session_db') and self._session_db and self.agent:
-                try:
-                    self._session_db.end_session(self.agent.session_id, "cli_close")
-                except (Exception, KeyboardInterrupt) as e:
-                    logger.debug("Could not close session in DB: %s", e)
+            self._persist_session_on_exit()
             _run_cleanup()
             self._print_exit_summary()
 
