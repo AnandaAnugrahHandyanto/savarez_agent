@@ -58,3 +58,6 @@ mini-swe-agent/
 # Nix
 .direnv/
 result
+MainE1-N-2-Overmind-V1.0/
+mainE1-2025-v0.1/
+analysis_agent_architecture_blind_spot.md
