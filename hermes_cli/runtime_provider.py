@@ -63,7 +63,10 @@ def _get_model_config() -> Dict[str, Any]:
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
         cfg = dict(model_cfg)
-        default = cfg.get("default", "").strip()
+        # Accept both "default" and "model" keys for the model name so that
+        # config.yaml entries like ``model: { provider: x, model: y }`` work
+        # alongside the canonical ``model: { provider: x, default: y }`` form.
+        default = (cfg.get("default") or cfg.get("model") or "").strip()
         base_url = cfg.get("base_url", "").strip()
         is_local = "localhost" in base_url or "127.0.0.1" in base_url
         is_fallback = not default or default == "anthropic/claude-opus-4.6"
