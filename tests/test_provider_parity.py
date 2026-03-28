@@ -286,6 +286,18 @@ class TestBuildApiKwargsCodex:
         assert "name" in tools[0]
         assert "function" not in tools[0]
 
+    def test_includes_service_tier_when_configured(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"service_tier": "fast"}},
+            raising=False,
+        )
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["service_tier"] == "fast"
+
 
 # ── Message conversion tests ────────────────────────────────────────────────
 

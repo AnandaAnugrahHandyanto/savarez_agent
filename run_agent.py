@@ -921,6 +921,18 @@ class AIAgent:
         except Exception:
             _agent_cfg = {}
 
+        # Optional Responses API execution tier for OpenAI-compatible endpoints.
+        # Currently used only on the codex_responses path.
+        _model_cfg_for_tier = _agent_cfg.get("model", {})
+        if isinstance(_model_cfg_for_tier, dict):
+            _service_tier = _model_cfg_for_tier.get("service_tier")
+            if isinstance(_service_tier, str) and _service_tier.strip():
+                self.service_tier = _service_tier.strip()
+            else:
+                self.service_tier = None
+        else:
+            self.service_tier = None
+
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
         self._memory_enabled = False
@@ -3062,6 +3074,7 @@ class AIAgent:
             "model", "instructions", "input", "tools", "store",
             "reasoning", "include", "max_output_tokens", "temperature",
             "tool_choice", "parallel_tool_calls", "prompt_cache_key",
+            "service_tier",
         }
         normalized: Dict[str, Any] = {
             "model": model,
@@ -3092,6 +3105,10 @@ class AIAgent:
             val = api_kwargs.get(passthrough_key)
             if val is not None:
                 normalized[passthrough_key] = val
+
+        service_tier = api_kwargs.get("service_tier")
+        if isinstance(service_tier, str) and service_tier.strip():
+            normalized["service_tier"] = service_tier.strip()
 
         if allow_stream:
             stream = api_kwargs.get("stream")
@@ -4445,6 +4462,9 @@ class AIAgent:
 
             if self.max_tokens is not None:
                 kwargs["max_output_tokens"] = self.max_tokens
+
+            if isinstance(getattr(self, "service_tier", None), str) and self.service_tier.strip():
+                kwargs["service_tier"] = self.service_tier.strip()
 
             return kwargs
 
