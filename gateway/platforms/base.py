@@ -333,7 +333,11 @@ class MessageEvent:
             return None
         # Split on space and get first word, strip the /
         parts = self.text.split(maxsplit=1)
-        return parts[0][1:].lower() if parts else None
+        cmd = parts[0][1:].lower() if parts else None
+        # Strip @botname suffix (Telegram appends it in groups, e.g. /model@MyBot_bot)
+        if cmd and '@' in cmd:
+            cmd = cmd.split('@')[0]
+        return cmd
     
     def get_command_args(self) -> str:
         """Get the arguments after a command."""
