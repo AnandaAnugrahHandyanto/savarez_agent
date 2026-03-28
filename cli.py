@@ -4146,6 +4146,47 @@ class HermesCLI:
         except Exception:
             return False
 
+    @staticmethod
+    def _discover_chrome_cdp_url() -> str | None:
+        """Auto-discover Chrome's CDP endpoint from DevToolsActivePort file.
+
+        The file contains two lines:
+          Line 1: port number
+          Line 2: WebSocket path (e.g. /devtools/browser/<guid>)
+
+        Returns a full ``ws://localhost:{port}{path}`` URL if found, or ``None``.
+        """
+        import platform as _plat
+        from pathlib import Path
+
+        sys_name = _plat.system()
+        if sys_name == "Darwin":
+            user_data = Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
+        elif sys_name == "Windows":
+            user_data = Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data"
+        else:
+            user_data = Path.home() / ".config" / "google-chrome"
+
+        port_file = user_data / "DevToolsActivePort"
+        if not port_file.exists():
+            return None
+
+        try:
+            lines = port_file.read_text().strip().splitlines()
+            port = int(lines[0].strip())
+            # Verify port is actually responding
+            import socket
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(1)
+            s.connect(("127.0.0.1", port))
+            s.close()
+            # Build full WebSocket URL if path is available (line 2)
+            if len(lines) > 1 and lines[1].strip().startswith("/"):
+                return f"ws://localhost:{port}{lines[1].strip()}"
+            return f"http://localhost:{port}"
+        except (ValueError, IndexError, OSError):
+            return None
+
     def _handle_browser_command(self, cmd: str):
         """Handle /browser connect|disconnect|status — manage live Chrome CDP connection."""
         import platform as _plat
@@ -4159,7 +4200,16 @@ class HermesCLI:
         if sub.startswith("connect"):
             # Optionally accept a custom CDP URL: /browser connect ws://host:port
             connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
-            cdp_url = connect_parts[2].strip() if len(connect_parts) > 2 else _DEFAULT_CDP
+            if len(connect_parts) > 2:
+                cdp_url = connect_parts[2].strip()
+            else:
+                # Auto-discover Chrome's real CDP endpoint from DevToolsActivePort
+                discovered = self._discover_chrome_cdp_url()
+                if discovered:
+                    cdp_url = discovered
+                    print(f"\n   Auto-discovered Chrome CDP at {cdp_url}")
+                else:
+                    cdp_url = _DEFAULT_CDP
 
             # Clear any existing browser sessions so the next tool call uses the new backend
             try:
@@ -4291,7 +4341,11 @@ class HermesCLI:
             elif os.environ.get("BROWSERBASE_API_KEY"):
                 print("🌐 Browser: Browserbase (cloud)")
             else:
-                print("🌐 Browser: local headless Chromium (agent-browser)")
+                try:
+                    from tools.browser_tool import _get_backend
+                    print(f"🌐 Browser: local headless Chromium ({_get_backend().cli_name})")
+                except Exception:
+                    print("🌐 Browser: local headless Chromium")
             print()
             print("   /browser connect      — connect to your live Chrome")
             print("   /browser disconnect   — revert to default")
