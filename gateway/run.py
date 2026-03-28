@@ -2204,6 +2204,15 @@ class GatewayRunner:
                                     ),
                                 )
 
+                                # _compress_context ends the old session and creates
+                                # a new session_id.  Write compressed messages into
+                                # the NEW session so the old transcript stays intact
+                                # and searchable via session_search.
+                                _hyg_new_sid = _hyg_agent.session_id
+                                if _hyg_new_sid != session_entry.session_id:
+                                    session_entry.session_id = _hyg_new_sid
+                                    self.session_store._save()
+
                                 self.session_store.rewrite_transcript(
                                     session_entry.session_id, _compressed
                                 )
@@ -3998,13 +4007,22 @@ class GatewayRunner:
             loop = asyncio.get_event_loop()
             compressed, _ = await loop.run_in_executor(
                 None,
-                lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens),
+                lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens)
             )
 
-            self.session_store.rewrite_transcript(session_entry.session_id, compressed)
+            # _compress_context already calls end_session() on the old session
+            # (preserving its full transcript in SQLite) and creates a new
+            # session_id for the continuation.  Write the compressed messages
+            # into the NEW session so the original history stays searchable.
+            new_session_id = tmp_agent.session_id
+            if new_session_id != session_entry.session_id:
+                session_entry.session_id = new_session_id
+                self.session_store._save()
+
+            self.session_store.rewrite_transcript(new_session_id, compressed)
             # Reset stored token count — transcript changed, old value is stale
             self.session_store.update_session(
-                session_entry.session_key, last_prompt_tokens=0,
+                session_entry.session_key, last_prompt_tokens=0
             )
             new_count = len(compressed)
             new_tokens = estimate_messages_tokens_rough(compressed)
@@ -4974,12 +4992,17 @@ class GatewayRunner:
             progress_queue.put(msg)
         
         # Background task to send progress messages
-        # Accumulates tool lines into a single message that gets edited
-        # For DM top-level Slack messages, source.thread_id is None but the
-        # final reply will be threaded under the original message via reply_to.
-        # Use event_message_id as fallback so progress messages land in the
-        # same thread as the final response instead of going to the DM root.
-        _progress_thread_id = source.thread_id or event_message_id
+        # Accumulates tool lines into a single message that gets edited.
+        #
+        # Threading metadata is platform-specific:
+        # - Slack DM threading needs event_message_id fallback (reply thread)
+        # - Telegram uses message_thread_id only for forum topics; passing a
+        #   normal DM/group message id as thread_id causes send failures
+        # - Other platforms should use explicit source.thread_id only
+        if source.platform == Platform.SLACK:
+            _progress_thread_id = source.thread_id or event_message_id
+        else:
+            _progress_thread_id = source.thread_id
         _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
 
         async def send_progress_messages():

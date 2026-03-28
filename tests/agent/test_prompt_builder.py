@@ -18,7 +18,8 @@ from agent.prompt_builder import (
     build_context_files_prompt,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
-    GPT_TOOL_USE_GUIDANCE,
+    TOOL_USE_ENFORCEMENT_GUIDANCE,
+    TOOL_USE_ENFORCEMENT_MODELS,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
@@ -930,20 +931,29 @@ class TestBuildSkillsSystemPromptConditional:
 
 
 # =========================================================================
-# GPT tool-use guidance
+# Tool-use enforcement guidance
 # =========================================================================
 
 
-class TestGPTToolUseGuidance:
+class TestToolUseEnforcementGuidance:
     def test_guidance_mentions_tool_calls(self):
-        assert "tool call" in GPT_TOOL_USE_GUIDANCE.lower()
+        assert "tool call" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
 
     def test_guidance_forbids_description_only(self):
-        assert "describe" in GPT_TOOL_USE_GUIDANCE.lower()
-        assert "promise" in GPT_TOOL_USE_GUIDANCE.lower()
+        assert "describe" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+        assert "promise" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
 
     def test_guidance_requires_action(self):
-        assert "MUST" in GPT_TOOL_USE_GUIDANCE
+        assert "MUST" in TOOL_USE_ENFORCEMENT_GUIDANCE
+
+    def test_enforcement_models_includes_gpt(self):
+        assert "gpt" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_includes_codex(self):
+        assert "codex" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_is_tuple(self):
+        assert isinstance(TOOL_USE_ENFORCEMENT_MODELS, tuple)
 
 
 # =========================================================================

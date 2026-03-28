@@ -169,7 +169,7 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
-GPT_TOOL_USE_GUIDANCE = (
+TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "
     "or plan to do without actually doing it. When you say you will perform an "
@@ -183,6 +183,10 @@ GPT_TOOL_USE_GUIDANCE = (
     "(b) deliver a final result to the user. Responses that only describe intentions "
     "without acting are not acceptable."
 )
+
+# Model name substrings that trigger tool-use enforcement guidance.
+# Add new patterns here when a model family needs explicit steering.
+TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex")
 
 PLATFORM_HINTS = {
     "whatsapp": (
