@@ -452,8 +452,8 @@ def test_anthropic_messages_in_valid_api_modes():
     assert rp._parse_api_mode("anthropic_messages") == "anthropic_messages"
 
 
-def test_api_key_provider_anthropic_url_auto_detection(monkeypatch):
-    """API-key providers with /anthropic base URL should auto-detect anthropic_messages mode."""
+def test_api_key_provider_anthropic_url_normalized(monkeypatch):
+    """Legacy /anthropic MiniMax base URLs should normalize to /v1 chat completions."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
@@ -462,8 +462,8 @@ def test_api_key_provider_anthropic_url_auto_detection(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="minimax")
 
     assert resolved["provider"] == "minimax"
-    assert resolved["api_mode"] == "anthropic_messages"
-    assert resolved["base_url"] == "https://api.minimax.io/anthropic"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://api.minimax.io/v1"
 
 
 def test_api_key_provider_explicit_api_mode_config(monkeypatch):
@@ -479,8 +479,8 @@ def test_api_key_provider_explicit_api_mode_config(monkeypatch):
     assert resolved["api_mode"] == "anthropic_messages"
 
 
-def test_minimax_default_url_uses_anthropic_messages(monkeypatch):
-    """MiniMax with default /anthropic URL should auto-detect anthropic_messages mode."""
+def test_minimax_default_url_uses_chat_completions(monkeypatch):
+    """MiniMax with default /v1 URL should use chat completions mode."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
@@ -489,12 +489,12 @@ def test_minimax_default_url_uses_anthropic_messages(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="minimax")
 
     assert resolved["provider"] == "minimax"
-    assert resolved["api_mode"] == "anthropic_messages"
-    assert resolved["base_url"] == "https://api.minimax.io/anthropic"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://api.minimax.io/v1"
 
 
-def test_minimax_stale_v1_url_auto_corrected(monkeypatch):
-    """MiniMax with stale /v1 base URL should be auto-corrected to /anthropic."""
+def test_minimax_v1_url_is_preserved(monkeypatch):
+    """MiniMax with explicit /v1 base URL should preserve chat completions mode."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
@@ -503,12 +503,12 @@ def test_minimax_stale_v1_url_auto_corrected(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="minimax")
 
     assert resolved["provider"] == "minimax"
-    assert resolved["api_mode"] == "anthropic_messages"
-    assert resolved["base_url"] == "https://api.minimax.io/anthropic"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://api.minimax.io/v1"
 
 
-def test_minimax_cn_stale_v1_url_auto_corrected(monkeypatch):
-    """MiniMax-CN with stale /v1 base URL should be auto-corrected to /anthropic."""
+def test_minimax_cn_v1_url_is_preserved(monkeypatch):
+    """MiniMax-CN with explicit /v1 base URL should preserve chat completions mode."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax-cn")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("MINIMAX_CN_API_KEY", "test-minimax-cn-key")
@@ -517,8 +517,8 @@ def test_minimax_cn_stale_v1_url_auto_corrected(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="minimax-cn")
 
     assert resolved["provider"] == "minimax-cn"
-    assert resolved["api_mode"] == "anthropic_messages"
-    assert resolved["base_url"] == "https://api.minimaxi.com/anthropic"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://api.minimaxi.com/v1"
 
 
 def test_minimax_explicit_api_mode_respected(monkeypatch):

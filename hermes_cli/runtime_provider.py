@@ -403,16 +403,16 @@ def resolve_runtime_provider(
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if configured_mode:
                 api_mode = configured_mode
+            elif provider in ("minimax", "minimax-cn"):
+                # MiniMax now uses OpenAI-compatible chat completions, and the
+                # global endpoint is /v1. Older .env/config values may still
+                # contain /anthropic; normalize those to /v1 for compatibility.
+                if base_url.rstrip("/").endswith("/anthropic"):
+                    base_url = base_url.rstrip("/").rsplit("/anthropic", 1)[0] + "/v1"
             # Auto-detect Anthropic-compatible endpoints by URL convention
-            # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
+            # (e.g. https://dashscope.../anthropic)
             elif base_url.rstrip("/").endswith("/anthropic"):
                 api_mode = "anthropic_messages"
-            # MiniMax providers always use Anthropic Messages API.
-            # Auto-correct stale /v1 URLs (from old .env or config) to /anthropic.
-            elif provider in ("minimax", "minimax-cn"):
-                api_mode = "anthropic_messages"
-                if base_url.rstrip("/").endswith("/v1"):
-                    base_url = base_url.rstrip("/")[:-3] + "/anthropic"
         return {
             "provider": provider,
             "api_mode": api_mode,
