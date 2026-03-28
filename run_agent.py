@@ -3895,6 +3895,25 @@ class AIAgent:
                         ),
                     ))
 
+            # Fallback: if no structured tool_calls were streamed but the
+            # accumulated content contains <tool_call> XML tags, parse them.
+            # This handles providers (e.g. Nous Portal) that stream tool
+            # calls as text content instead of tool_call deltas.
+            if not mock_tool_calls and full_content and "<tool_call>" in full_content:
+                try:
+                    from environments.tool_call_parsers import get_parser
+                    _fb_parser = get_parser("hermes")
+                    _fb_content, _fb_calls = _fb_parser.parse(full_content)
+                    if _fb_calls:
+                        mock_tool_calls = _fb_calls
+                        full_content = _fb_content
+                        logger.info(
+                            "Streaming fallback parser extracted %d tool call(s) from text",
+                            len(_fb_calls),
+                        )
+                except Exception:
+                    pass
+
             full_reasoning = "".join(reasoning_parts) or None
             mock_message = SimpleNamespace(
                 role=role,
@@ -7135,6 +7154,33 @@ class AIAgent:
                 elif hasattr(self, "_codex_incomplete_retries"):
                     self._codex_incomplete_retries = 0
                 
+                # Fallback: if response has no structured tool_calls but content
+                # contains raw <tool_call> XML tags, parse them using the Hermes
+                # parser.  This handles providers (e.g. Nous Portal) that return
+                # tool calls as text instead of structured API tool_calls.
+                if (
+                    not assistant_message.tool_calls
+                    and assistant_message.content
+                    and self.tools
+                    and "<tool_call>" in (assistant_message.content or "")
+                ):
+                    try:
+                        from environments.tool_call_parsers import get_parser
+                        fallback_parser = get_parser("hermes")
+                        parsed_content, parsed_calls = fallback_parser.parse(
+                            assistant_message.content
+                        )
+                        if parsed_calls:
+                            assistant_message.tool_calls = parsed_calls
+                            if parsed_content is not None:
+                                assistant_message.content = parsed_content
+                            logger.info(
+                                "Fallback parser extracted %d tool call(s) from text content",
+                                len(parsed_calls),
+                            )
+                    except Exception as e:
+                        logger.debug("Fallback tool call parsing failed: %s", e)
+
                 # Check for tool calls
                 if assistant_message.tool_calls:
                     if not self.quiet_mode:
