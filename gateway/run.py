@@ -5516,10 +5516,13 @@ class GatewayRunner:
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
 
-            # Inject agent roster for the default agent (not for named agents)
-            _agent_roster = _build_agent_roster()
-            if _agent_roster:
-                combined_ephemeral = (combined_ephemeral + "\n\n" + _agent_roster).strip()
+            # Inject agent roster for the default agent only.
+            # Named agents shouldn't see the roster — they have their own identity.
+            _pre_binding = _resolve_agent_binding(session_key, user_config)
+            if not _pre_binding:
+                _agent_roster = _build_agent_roster()
+                if _agent_roster:
+                    combined_ephemeral = (combined_ephemeral + "\n\n" + _agent_roster).strip()
 
             # Re-read .env and config for fresh credentials (gateway is long-lived,
             # keys may change without restart).
