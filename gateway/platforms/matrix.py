@@ -92,6 +92,12 @@ class MatrixAdapter(BasePlatformAdapter):
             "encryption",
             os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes"),
         )
+        self._device_id: str = (
+            config.extra.get("device_id", "")
+            or os.getenv("MATRIX_DEVICE_ID", "")
+        )
+        allowed_users_str = config.extra.get("allowed_users", "") or os.getenv("MATRIX_ALLOWED_USERS", "")
+        self._allowed_users: list[str] = [u.strip() for u in allowed_users_str.split(",") if u.strip()]
 
         self._client: Any = None  # nio.AsyncClient
         self._sync_task: Optional[asyncio.Task] = None
@@ -142,6 +148,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 client = nio.AsyncClient(
                     self._homeserver,
                     self._user_id or "",
+                    device_id=self._device_id or None,
                     store_path=store_path,
                 )
                 logger.info("Matrix: E2EE enabled (store: %s)", store_path)
@@ -152,9 +159,9 @@ class MatrixAdapter(BasePlatformAdapter):
                     "pip install 'matrix-nio[e2e]'",
                     exc,
                 )
-                client = nio.AsyncClient(self._homeserver, self._user_id or "")
+                client = nio.AsyncClient(self._homeserver, self._user_id or "", device_id=self._device_id or None)
         else:
-            client = nio.AsyncClient(self._homeserver, self._user_id or "")
+            client = nio.AsyncClient(self._homeserver, self._user_id or "", device_id=self._device_id or None)
 
         self._client = client
 
@@ -181,6 +188,7 @@ class MatrixAdapter(BasePlatformAdapter):
             resp = await client.login(
                 self._password,
                 device_name="Hermes Agent",
+                device_id=self._device_id or None,
             )
             if isinstance(resp, nio.LoginResponse):
                 logger.info("Matrix: logged in as %s", self._user_id)
@@ -214,6 +222,11 @@ class MatrixAdapter(BasePlatformAdapter):
         if self._encryption and hasattr(client, "olm"):
             client.add_event_callback(
                 self._on_room_message, nio.MegolmEvent
+            )
+            client.add_to_device_callback(
+                self._on_key_verification,
+                (nio.KeyVerificationStart, nio.KeyVerificationCancel,
+                 nio.KeyVerificationKey, nio.KeyVerificationMac)
             )
 
         # Initial sync to catch up, then start background sync.
@@ -801,6 +814,38 @@ class MatrixAdapter(BasePlatformAdapter):
                 )
         except Exception as exc:
             logger.warning("Matrix: error joining %s: %s", room.room_id, exc)
+
+async def _on_key_verification(self, event: Any) -> None:
+        """Auto-accept device verification from allowed users."""
+        import nio
+
+        if not self._client:
+            return
+
+        # Sadece izin verilen kullanicilarin cihazlarini dogrula
+        if self._allowed_users and event.sender not in self._allowed_users and "*" not in self._allowed_users:
+            logger.warning("Matrix: ignoring verification from unauthorized user %s", event.sender)
+            return
+
+        if isinstance(event, nio.KeyVerificationStart):
+            logger.info("Matrix: auto-accepting verification from %s", event.sender)
+            try:
+                await self._client.accept_key_verification(event.transaction_id)
+            except Exception as e:
+                logger.error("Matrix: failed to accept verification: %s", e)
+
+        elif isinstance(event, nio.KeyVerificationCancel):
+            logger.warning("Matrix: verification cancelled by %s", event.sender)
+
+        elif isinstance(event, nio.KeyVerificationKey):
+            logger.info("Matrix: received verification key from %s, confirming...", event.sender)
+            try:
+                await self._client.confirm_short_auth_string(event.transaction_id)
+            except Exception as e:
+                logger.error("Matrix: failed to confirm SAS: %s", e)
+
+        elif isinstance(event, nio.KeyVerificationMac):
+            logger.info("Matrix: verification MAC received from %s", event.sender)
 
     # ------------------------------------------------------------------
     # Helpers
