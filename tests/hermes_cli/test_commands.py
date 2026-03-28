@@ -88,6 +88,7 @@ class TestResolveCommand:
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
         assert resolve_command("/bg").name == "background"
+        assert resolve_command("/provider").name == "provider"
 
     def test_unknown_returns_none(self):
         assert resolve_command("nonexistent") is None
