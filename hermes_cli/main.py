@@ -3373,12 +3373,12 @@ For more help on a command:
         "setup",
         help="Interactive setup wizard",
         description="Configure Hermes Agent with an interactive wizard. "
-                    "Run a specific section: hermes setup model|terminal|gateway|tools|agent"
+                    "Run a specific section: hermes setup model|terminal|gateway|tools|agent|remote"
     )
     setup_parser.add_argument(
         "section",
         nargs="?",
-        choices=["model", "terminal", "gateway", "tools", "agent"],
+        choices=["model", "terminal", "gateway", "tools", "agent", "remote"],
         default=None,
         help="Run a specific setup section instead of the full wizard"
     )

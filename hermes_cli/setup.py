@@ -725,6 +725,7 @@ def _print_setup_summary(config: dict, hermes_home):
     print(f"   {color('hermes setup terminal', Colors.GREEN)} Change terminal backend")
     print(f"   {color('hermes setup gateway', Colors.GREEN)}  Configure messaging")
     print(f"   {color('hermes setup tools', Colors.GREEN)}    Configure tool providers")
+    print(f"   {color('hermes setup remote', Colors.GREEN)}   Manage remote delegation agents")
     print()
     print(f"   {color('hermes config', Colors.GREEN)}         View current settings")
     print(
@@ -2994,6 +2995,147 @@ def setup_tools(config: dict, first_install: bool = False):
     tools_command(first_install=first_install, config=config)
 
 
+def setup_remote_agents(config: dict):
+    """Manage remote Hermes instances used by delegate_task(agent=...)."""
+    print_header("Remote Agents")
+    print_info("Select a configured remote agent to edit it, add a new one, or remove one.")
+    print_info("Each agent uses an OpenAI-compatible base endpoint (e.g. http://host:8080/v1).")
+
+    def _normalize_agent_config(agent: Any) -> Dict[str, Any]:
+        if isinstance(agent, dict):
+            return dict(agent)
+        if isinstance(agent, str):
+            return {"endpoint": agent}
+        return {}
+
+    def _prompt_agent_fields(name: str, existing_cfg: Dict[str, Any]) -> Dict[str, Any] | None:
+        endpoint = prompt(
+            "Endpoint base URL",
+            str(existing_cfg.get("endpoint") or "http://localhost:8080/v1"),
+        ).strip().rstrip("/")
+        if not endpoint:
+            print_warning("Endpoint is required.")
+            return None
+
+        existing_api_key = str(existing_cfg.get("api_key") or "").strip()
+        if existing_api_key:
+            keep_existing = prompt_yes_no("Keep existing API key?", default=True)
+            if keep_existing:
+                api_key = existing_api_key
+            else:
+                api_key = prompt(
+                    "API key (literal or ${ENV_VAR}; leave blank for none)",
+                    password=True,
+                ).strip()
+        else:
+            api_key = prompt(
+                "API key (literal or ${ENV_VAR}; leave blank for none)",
+                password=True,
+            ).strip()
+
+        model = prompt(
+            "Model",
+            str(existing_cfg.get("model") or "hermes-agent"),
+        ).strip()
+
+        timeout_default = str(existing_cfg.get("timeout") or 300)
+        timeout_raw = prompt("Timeout in seconds", timeout_default).strip()
+        try:
+            timeout = int(timeout_raw)
+            if timeout <= 0:
+                raise ValueError
+        except ValueError:
+            print_warning("Invalid timeout; using 300 seconds.")
+            timeout = 300
+
+        description = prompt(
+            "Description",
+            str(existing_cfg.get("description") or f"Remote agent: {name}"),
+        ).strip()
+
+        return {
+            "endpoint": endpoint,
+            "api_key": api_key,
+            "model": model or "hermes-agent",
+            "timeout": timeout,
+            "description": description or f"Remote agent: {name}",
+        }
+
+    while True:
+        remote_agents = config.get("remote_agents")
+        if not isinstance(remote_agents, dict):
+            remote_agents = {}
+            config["remote_agents"] = remote_agents
+
+        agent_names = sorted(remote_agents.keys())
+        menu_choices = []
+        for name in agent_names:
+            agent = _normalize_agent_config(remote_agents.get(name))
+            endpoint = str(agent.get("endpoint") or "(no endpoint)")
+            model = str(agent.get("model") or "hermes-agent")
+            menu_choices.append(f"{name} — {endpoint} [{model}]")
+
+        menu_choices.append("Add new remote agent")
+        menu_choices.append("Back")
+
+        default_idx = len(agent_names) if not agent_names else 0
+        selection = prompt_choice("Remote agents:", menu_choices, default_idx)
+
+        add_idx = len(agent_names)
+        back_idx = len(agent_names) + 1
+
+        if selection == back_idx:
+            return
+
+        if selection == add_idx:
+            print()
+            name = prompt("Agent name (used in delegate_task(agent=...))").strip()
+            if not name:
+                print_warning("Agent name cannot be empty.")
+                continue
+
+            existing_cfg = _normalize_agent_config(remote_agents.get(name))
+            if name in remote_agents and not prompt_yes_no(
+                f"Agent '{name}' already exists. Edit it?", default=True
+            ):
+                continue
+
+            updated = _prompt_agent_fields(name, existing_cfg)
+            if updated is None:
+                continue
+            remote_agents[name] = updated
+            print_success(f"Saved remote agent '{name}'.")
+            continue
+
+        # Existing agent selected -> edit/remove submenu
+        name = agent_names[selection]
+        existing_cfg = _normalize_agent_config(remote_agents.get(name))
+        action = prompt_choice(
+            f"Agent '{name}':",
+            ["Edit agent", "Remove agent", "Back"],
+            0,
+        )
+
+        if action == 0:
+            updated = _prompt_agent_fields(name, existing_cfg)
+            if updated is None:
+                continue
+            remote_agents[name] = updated
+            print_success(f"Saved remote agent '{name}'.")
+            continue
+
+        if action == 1:
+            if prompt_yes_no(f"Remove remote agent '{name}'?", default=False):
+                remote_agents.pop(name, None)
+                if not remote_agents:
+                    config["remote_agents"] = {}
+                print_success(f"Removed remote agent '{name}'.")
+            continue
+
+        # Back from agent submenu
+        continue
+
+
 # =============================================================================
 # Post-Migration Section Skip Logic
 # =============================================================================
@@ -3202,6 +3344,7 @@ SETUP_SECTIONS = [
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
     ("agent", "Agent Settings", setup_agent_settings),
+    ("remote", "Remote Agents", setup_remote_agents),
 ]
 
 
@@ -3215,6 +3358,7 @@ def run_setup_wizard(args):
       hermes setup gateway   — just messaging platforms
       hermes setup tools     — just tool configuration
       hermes setup agent     — just agent settings
+      hermes setup remote    — manage remote delegated agents
     """
     from hermes_cli.config import is_managed, managed_error
     if is_managed():
@@ -3328,6 +3472,7 @@ def run_setup_wizard(args):
             "Messaging Platforms (Gateway)",
             "Tools",
             "Agent Settings",
+            "Remote Agents",
             "---",
             "Exit",
         ]
@@ -3343,18 +3488,18 @@ def run_setup_wizard(args):
         elif choice == 1:
             # Full setup — fall through to run all sections
             pass
-        elif choice in (2, 8):
+        elif choice in (2, 9):
             # Separator — treat as exit
             print_info("Exiting. Run 'hermes setup' again when ready.")
             return
-        elif choice == 9:
+        elif choice == 10:
             print_info("Exiting. Run 'hermes setup' again when ready.")
             return
-        elif 3 <= choice <= 7:
+        elif 3 <= choice <= 8:
             # Individual section — map by key, not by position.
             # SETUP_SECTIONS includes TTS but the returning-user menu skips it,
             # so positional indexing (choice - 3) would dispatch the wrong section.
-            _RETURNING_USER_SECTION_KEYS = ["model", "terminal", "gateway", "tools", "agent"]
+            _RETURNING_USER_SECTION_KEYS = ["model", "terminal", "gateway", "tools", "agent", "remote"]
             section_key = _RETURNING_USER_SECTION_KEYS[choice - 3]
             section = next((s for s in SETUP_SECTIONS if s[0] == section_key), None)
             if section:
