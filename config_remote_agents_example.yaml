@@ -6,7 +6,7 @@ remote_agents:
   coding:
     endpoint: "http://coding-agent:8080/v1"
     api_key: "${CODING_AGENT_KEY}"
-    model: "qwen3.5"
+    model: "hermes-agent"
     timeout: 300
     description: "Specialized coding agent for code generation and debugging"
 
@@ -14,7 +14,7 @@ remote_agents:
   research:
     endpoint: "http://research-agent:8080/v1"
     api_key: "${RESEARCH_AGENT_KEY}"
-    model: "gpt-5"
+    model: "hermes-agent"
     timeout: 600
     description: "Research and analysis agent with web access"
 
@@ -22,7 +22,7 @@ remote_agents:
   fast:
     endpoint: "http://fast-agent:8080/v1"
     api_key: "${FAST_AGENT_KEY}"
-    model: "gemma-2b"
+    model: "hermes-agent"
     timeout: 60
     description: "Fast, cheap agent for simple tasks"
 
