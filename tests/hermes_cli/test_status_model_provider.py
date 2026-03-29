@@ -22,6 +22,7 @@ def _patch_common_status_deps(monkeypatch, status_mod, tmp_path, *, openai_base_
         "run",
         lambda *args, **kwargs: SimpleNamespace(stdout="inactive\n", returncode=3),
     )
+    monkeypatch.setattr(status_mod.shutil, "which", lambda _name: "/bin/systemctl")
 
 
 def test_show_status_displays_configured_dict_model_and_provider_label(monkeypatch, capsys, tmp_path):
@@ -59,3 +60,21 @@ def test_show_status_displays_legacy_string_model_and_custom_endpoint(monkeypatc
     out = capsys.readouterr().out
     assert "Model:        qwen3:latest" in out
     assert "Provider:     Custom endpoint" in out
+
+
+def test_show_status_handles_linux_without_systemctl(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+
+    _patch_common_status_deps(monkeypatch, status_mod, tmp_path)
+    monkeypatch.setattr(status_mod, "load_config", lambda: {}, raising=False)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "auto", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openrouter", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: provider, raising=False)
+    monkeypatch.setattr(status_mod.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(status_mod.sys, "platform", "linux")
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    out = capsys.readouterr().out
+    assert "Status:       N/A" in out
+    assert "Manager:      systemd unavailable in this runtime" in out
