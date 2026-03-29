@@ -164,14 +164,17 @@ def _deliver_result(job: dict, content: str) -> None:
         logger.warning("Job '%s': platform '%s' not configured/enabled", job["id"], platform_name)
         return
 
-    # Wrap the content so the user knows this is a cron delivery and that
-    # the interactive agent has no visibility into it.
+    # Wrap the content so the user knows this is a cron delivery from a
+    # fresh session. The cron agent cannot see follow-up chat messages unless
+    # they are included in the job prompt, but it can still act on external
+    # systems when the prompt provides the required details.
     task_name = job.get("name", job["id"])
     wrapped = (
+        f"[CRONJOB AUTO-REPLY]\n"
         f"Cronjob Response: {task_name}\n"
         f"-------------\n\n"
         f"{content}\n\n"
-        f"Note: The agent cannot see this message, and therefore cannot respond to it."
+        f"Note: This cron run executed in a fresh session. It cannot see messages from this chat unless they were included in the job prompt, but it can still perform requested actions, such as posting to GitHub, when the prompt includes the necessary details."
     )
 
     # Run the async send in a fresh event loop (safe from any thread)
@@ -291,6 +294,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
         if origin.get("chat_name"):
             os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
+
+    # Force UTF-8 process I/O for cron runs so external replies posted via
+    # terminal/gh/curl are consistently encoded even on hosts with odd locale
+    # inheritance. Restore the previous environment after the run.
+    encoding_env_overrides = {
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
+    }
+    previous_encoding_env = {key: os.environ.get(key) for key in encoding_env_overrides}
+    os.environ.update(encoding_env_overrides)
 
     try:
         # Re-read .env and config.yaml fresh every run so provider/key
@@ -471,6 +486,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
         ):
             os.environ.pop(key, None)
+        for key, previous_value in previous_encoding_env.items():
+            if previous_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous_value
         if _session_db:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")

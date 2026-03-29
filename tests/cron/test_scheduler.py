@@ -120,8 +120,8 @@ class TestResolveDeliveryTarget:
 class TestDeliverResultWrapping:
     """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""
 
-    def test_delivery_wraps_content_with_header_and_footer(self):
-        """Delivered content should include task name header and agent-invisible note."""
+    def test_delivery_wraps_content_with_header_and_fresh_session_note(self):
+        """Delivered content should include task name header and fresh-session note."""
         from gateway.config import Platform
 
         pconfig = MagicMock()
@@ -141,10 +141,13 @@ class TestDeliverResultWrapping:
 
         send_mock.assert_called_once()
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert sent_content.startswith("[CRONJOB AUTO-REPLY]\n")
         assert "Cronjob Response: daily-report" in sent_content
         assert "-------------" in sent_content
         assert "Here is today's summary." in sent_content
-        assert "The agent cannot see this message" in sent_content
+        assert "executed in a fresh session" in sent_content
+        assert "cannot see messages from this chat" in sent_content
+        assert "posting to GitHub" in sent_content
 
     def test_delivery_uses_job_id_when_no_name(self):
         """When a job has no name, the wrapper should fall back to job id."""
@@ -165,6 +168,7 @@ class TestDeliverResultWrapping:
             _deliver_result(job, "Output.")
 
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert sent_content.startswith("[CRONJOB AUTO-REPLY]\n")
         assert "Cronjob Response: abc-123" in sent_content
 
     def test_no_mirror_to_session_call(self):
@@ -258,6 +262,62 @@ class TestRunJobSessionPersistence:
         call_args = fake_db.end_session.call_args
         assert call_args[0][0].startswith("cron_test-job_")
         assert call_args[0][1] == "cron_complete"
+        fake_db.close.assert_called_once()
+
+    def test_run_job_forces_utf8_encoding_env_and_restores_afterward(self, tmp_path, monkeypatch):
+        job = {
+            "id": "encoding-job",
+            "name": "encoding test",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+        seen = {}
+
+        monkeypatch.setenv("LANG", "ja_JP.UTF-8")
+        monkeypatch.setenv("LC_ALL", "ja_JP.UTF-8")
+        monkeypatch.setenv("PYTHONIOENCODING", "cp932")
+        monkeypatch.setenv("PYTHONUTF8", "0")
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run_conversation(self, *args, **kwargs):
+                seen["LANG"] = os.getenv("LANG")
+                seen["LC_ALL"] = os.getenv("LC_ALL")
+                seen["PYTHONIOENCODING"] = os.getenv("PYTHONIOENCODING")
+                seen["PYTHONUTF8"] = os.getenv("PYTHONUTF8")
+                return {"final_response": "ok"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent", FakeAgent):
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert seen == {
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONUTF8": "1",
+        }
+        assert os.getenv("LANG") == "ja_JP.UTF-8"
+        assert os.getenv("LC_ALL") == "ja_JP.UTF-8"
+        assert os.getenv("PYTHONIOENCODING") == "cp932"
+        assert os.getenv("PYTHONUTF8") == "0"
         fake_db.close.assert_called_once()
 
     def test_run_job_empty_response_returns_empty_not_placeholder(self, tmp_path):
