@@ -43,9 +43,10 @@ class TestDiscoverAndLoad:
         with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
             reg.discover_and_load()
 
-        assert len(reg.loaded_hooks) == 1
-        assert reg.loaded_hooks[0]["name"] == "my-hook"
-        assert "agent:start" in reg.loaded_hooks[0]["events"]
+        user_hooks = [h for h in reg.loaded_hooks if h.get("path") != "(builtin)"]
+        assert len(user_hooks) == 1
+        assert user_hooks[0]["name"] == "my-hook"
+        assert "agent:start" in user_hooks[0]["events"]
 
     def test_skips_missing_hook_yaml(self, tmp_path):
         hook_dir = tmp_path / "bad-hook"
@@ -56,7 +57,7 @@ class TestDiscoverAndLoad:
         with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
             reg.discover_and_load()
 
-        assert len(reg.loaded_hooks) == 0
+        assert len([h for h in reg.loaded_hooks if h.get("path") != "(builtin)"]) == 0
 
     def test_skips_missing_handler_py(self, tmp_path):
         hook_dir = tmp_path / "bad-hook"
@@ -67,7 +68,7 @@ class TestDiscoverAndLoad:
         with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
             reg.discover_and_load()
 
-        assert len(reg.loaded_hooks) == 0
+        assert len([h for h in reg.loaded_hooks if h.get("path") != "(builtin)"]) == 0
 
     def test_skips_no_events(self, tmp_path):
         hook_dir = tmp_path / "empty-hook"
@@ -79,7 +80,7 @@ class TestDiscoverAndLoad:
         with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
             reg.discover_and_load()
 
-        assert len(reg.loaded_hooks) == 0
+        assert len([h for h in reg.loaded_hooks if h.get("path") != "(builtin)"]) == 0
 
     def test_skips_no_handle_function(self, tmp_path):
         hook_dir = tmp_path / "no-handle"
@@ -91,14 +92,14 @@ class TestDiscoverAndLoad:
         with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
             reg.discover_and_load()
 
-        assert len(reg.loaded_hooks) == 0
+        assert len([h for h in reg.loaded_hooks if h.get("path") != "(builtin)"]) == 0
 
     def test_nonexistent_hooks_dir(self, tmp_path):
         reg = HookRegistry()
         with patch("gateway.hooks.HOOKS_DIR", tmp_path / "nonexistent"), _patch_no_builtins(reg):
             reg.discover_and_load()
 
-        assert len(reg.loaded_hooks) == 0
+        assert len([h for h in reg.loaded_hooks if h.get("path") != "(builtin)"]) == 0
 
     def test_multiple_hooks(self, tmp_path):
         _create_hook(tmp_path, "hook-a", '["agent:start"]',
@@ -110,7 +111,7 @@ class TestDiscoverAndLoad:
         with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
             reg.discover_and_load()
 
-        assert len(reg.loaded_hooks) == 2
+        assert len([h for h in reg.loaded_hooks if h.get("path") != "(builtin)"]) == 2
 
 
 class TestEmit:

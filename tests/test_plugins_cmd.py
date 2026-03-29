@@ -151,6 +151,7 @@ class TestPluginsCommandDispatch:
         mock_list.assert_called_once()
 
     @patch("hermes_cli.plugins_cmd.cmd_toggle")
+    @patch("hermes_cli.plugins_cmd.cmd_toggle")
     def test_none_falls_through_to_toggle(self, mock_toggle):
         args = self._make_args(None)
         plugins_command(args)
