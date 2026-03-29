@@ -403,6 +403,8 @@ def delegate_task(
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -429,6 +431,11 @@ def delegate_task(
 
     # Load config
     cfg = _load_config()
+    # Per-call model/provider override (from tool params) takes precedence
+    if model:
+        cfg["model"] = model
+    if provider:
+        cfg["provider"] = provider
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
 
@@ -590,28 +597,37 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             or os.getenv("OPENAI_API_KEY", "").strip()
         )
         if not api_key:
-            raise ValueError(
-                "Delegation base_url is configured but no API key was found. "
-                "Set delegation.api_key or OPENAI_API_KEY."
-            )
+            if configured_provider:
+                # base_url set but no api_key — fall through to provider
+                # resolution which checks provider-specific env vars.
+                logger.debug(
+                    "delegation base_url set but no api_key; "
+                    "falling through to provider resolution (%s)",
+                    configured_provider,
+                )
+            else:
+                raise ValueError(
+                    "Delegation base_url is configured but no API key was found. "
+                    "Set delegation.api_key, delegation.provider, or OPENAI_API_KEY."
+                )
+        else:
+            base_lower = configured_base_url.lower()
+            provider = "custom"
+            api_mode = "chat_completions"
+            if "chatgpt.com/backend-api/codex" in base_lower:
+                provider = "openai-codex"
+                api_mode = "codex_responses"
+            elif "api.anthropic.com" in base_lower:
+                provider = "anthropic"
+                api_mode = "anthropic_messages"
 
-        base_lower = configured_base_url.lower()
-        provider = "custom"
-        api_mode = "chat_completions"
-        if "chatgpt.com/backend-api/codex" in base_lower:
-            provider = "openai-codex"
-            api_mode = "codex_responses"
-        elif "api.anthropic.com" in base_lower:
-            provider = "anthropic"
-            api_mode = "anthropic_messages"
-
-        return {
-            "model": configured_model,
-            "provider": provider,
-            "base_url": configured_base_url,
-            "api_key": api_key,
-            "api_mode": api_mode,
-        }
+            return {
+                "model": configured_model,
+                "provider": provider,
+                "base_url": configured_base_url,
+                "api_key": api_key,
+                "api_mode": api_mode,
+            }
 
     if not configured_provider:
         # No provider override — child inherits everything from parent
@@ -766,6 +782,21 @@ DELEGATE_TASK_SCHEMA = {
                     "Only set lower for simple tasks."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Override model for this delegation. "
+                    "Takes precedence over delegation.model in config."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Override provider for this delegation. "
+                    "Takes precedence over delegation.provider in config. "
+                    "Resolves full credentials (base_url, api_key) automatically."
+                ),
+            },
         },
         "required": [],
     },
@@ -785,6 +816,8 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        model=args.get("model"),
+        provider=args.get("provider"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",
