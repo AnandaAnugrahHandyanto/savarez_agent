@@ -10,7 +10,7 @@ natively in the editor UI.
 ## Prerequisites
 
 - Hermes Agent installed and configured (`hermes setup` completed)
-- An API key / provider set up in `~/.hermes/.env` or via `hermes login`
+- An API key / provider set up in `~/.hermes/.env` or via `hermes model`
 - Python 3.11+
 
 Install the ACP extra:

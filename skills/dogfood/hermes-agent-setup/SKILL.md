@@ -44,7 +44,7 @@ hermes model                    Interactive model/provider selection
 hermes config                   View current configuration
 hermes config edit              Open config.yaml in $EDITOR
 hermes config set KEY VALUE     Set a config value directly
-hermes login                    Authenticate with a provider
+hermes model                    Authenticate with a provider
 hermes logout                   Clear stored auth
 hermes doctor                   Check configuration and dependencies
 ```
@@ -287,7 +287,7 @@ Edit with `hermes config edit` or `hermes config set KEY VALUE`.
 
 ### Model/provider issues
 1. Run `hermes doctor` to check configuration
-2. Run `hermes login` to re-authenticate
+2. Run `hermes model` to re-authenticate
 3. Check the env file has the right API key
 
 ### Changes not taking effect

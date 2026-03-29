@@ -14,7 +14,7 @@ model:
   #   "auto"       - Use Nous Portal if logged in, otherwise OpenRouter/env vars (default)
   #   "nous-api"   - Use Nous Portal via API key (requires: NOUS_API_KEY)
   #   "openrouter" - Always use OpenRouter API key from OPENROUTER_API_KEY
-  #   "nous"       - Always use Nous Portal (requires: hermes login)
+  #   "nous"       - Always use Nous Portal (requires: hermes model)
   #   "zai"        - Use z.ai / ZhipuAI GLM models (requires: GLM_API_KEY)
   #   "kimi-coding"- Use Kimi / Moonshot AI models (requires: KIMI_API_KEY)
   #   "minimax"    - Use MiniMax global endpoint (requires: MINIMAX_API_KEY)
@@ -293,7 +293,7 @@ compression:
 # Provider options:
 #   "auto"       - Best available: OpenRouter → Nous Portal → main endpoint (default)
 #   "openrouter" - Force OpenRouter (requires OPENROUTER_API_KEY)
-#   "nous"       - Force Nous Portal (requires: hermes login)
+#   "nous"       - Force Nous Portal (requires: hermes model)
 #   "codex"      - Force Codex OAuth (requires: hermes model → Codex).
 #                  Uses gpt-5.3-codex which supports vision.
 #   "main"       - Use your custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY).

@@ -840,7 +840,7 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     state = _load_provider_state(auth_store, "openai-codex")
     if not state:
         raise AuthError(
-            "No Codex credentials stored. Run `hermes login` to authenticate.",
+            "No Codex credentials stored. Run `hermes model` to authenticate.",
             provider="openai-codex",
             code="codex_auth_missing",
             relogin_required=True,
@@ -848,7 +848,7 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     tokens = state.get("tokens")
     if not isinstance(tokens, dict):
         raise AuthError(
-            "Codex auth state is missing tokens. Run `hermes login` to re-authenticate.",
+            "Codex auth state is missing tokens. Run `hermes model` to re-authenticate.",
             provider="openai-codex",
             code="codex_auth_invalid_shape",
             relogin_required=True,
@@ -857,14 +857,14 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     refresh_token = tokens.get("refresh_token")
     if not isinstance(access_token, str) or not access_token.strip():
         raise AuthError(
-            "Codex auth is missing access_token. Run `hermes login` to re-authenticate.",
+            "Codex auth is missing access_token. Run `hermes model` to re-authenticate.",
             provider="openai-codex",
             code="codex_auth_missing_access_token",
             relogin_required=True,
         )
     if not isinstance(refresh_token, str) or not refresh_token.strip():
         raise AuthError(
-            "Codex auth is missing refresh_token. Run `hermes login` to re-authenticate.",
+            "Codex auth is missing refresh_token. Run `hermes model` to re-authenticate.",
             provider="openai-codex",
             code="codex_auth_missing_refresh_token",
             relogin_required=True,
@@ -900,7 +900,7 @@ def _refresh_codex_auth_tokens(
     refresh_token = tokens.get("refresh_token")
     if not isinstance(refresh_token, str) or not refresh_token.strip():
         raise AuthError(
-            "Codex auth is missing refresh_token. Run `hermes login` to re-authenticate.",
+            "Codex auth is missing refresh_token. Run `hermes model` to re-authenticate.",
             provider="openai-codex",
             code="codex_auth_missing_refresh_token",
             relogin_required=True,
@@ -1015,7 +1015,7 @@ def resolve_codex_runtime_credentials(
             logger.info("Migrating Codex credentials from ~/.codex/ to Hermes auth store")
             print("⚠️  Migrating Codex credentials to Hermes's own auth store.")
             print("   This avoids conflicts with Codex CLI and VS Code.")
-            print("   Run `hermes login` to create a fully independent session.\n")
+            print("   Run `hermes model` to create a fully independent session.\n")
             _save_codex_tokens(cli_tokens)
             data = _read_codex_tokens()
         else:
@@ -1772,7 +1772,7 @@ def detect_external_credentials() -> List[Dict[str, Any]]:
         found.append({
             "provider": "openai-codex",
             "path": str(codex_path),
-            "label": f"Codex CLI credentials found ({codex_path}) — run `hermes login` to create a separate session",
+            "label": f"Codex CLI credentials found ({codex_path}) — run `hermes model` to create a separate session",
         })
 
     return found
