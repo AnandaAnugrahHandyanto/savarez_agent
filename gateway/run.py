@@ -1442,6 +1442,13 @@ class GatewayRunner:
             adapter = WebhookAdapter(config)
             adapter.gateway_runner = self  # For cross-platform delivery
             return adapter
+        elif platform == Platform.QQ:
+            from gateway.platforms.qq import QQAdapter, check_qq_requirements
+
+            if not check_qq_requirements():
+                logger.warning("QQ: QQ_BOT_APP_ID or QQ_BOT_APP_SECRET not configured")
+                return None
+            return QQAdapter(config)
 
         return None
     
