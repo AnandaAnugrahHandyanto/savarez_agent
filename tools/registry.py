@@ -115,7 +115,13 @@ class ToolRegistry:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)
                     continue
-            result.append({"type": "function", "function": entry.schema})
+            # Ensure schema has a "name" field: use entry.name as the canonical
+            # name so callers (model_tools.py etc.) can always access
+            # schema["name"] without a KeyError.  #3729
+            schema = dict(entry.schema) if isinstance(entry.schema, dict) else dict(entry.schema)
+            if "name" not in schema:
+                schema["name"] = entry.name
+            result.append({"type": "function", "function": schema})
         return result
 
     # ------------------------------------------------------------------
