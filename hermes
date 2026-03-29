@@ -6,7 +6,70 @@ This is a convenience wrapper to launch the Hermes CLI.
 Usage: ./hermes [options]
 """
 
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def _find_local_venv_python(project_root: Path) -> Path | None:
+    """Prefer the repo-local venv (if present), then re-exec in it."""
+    for venv_dir in (project_root / "venv", project_root / ".venv"):
+        if not venv_dir.exists():
+            continue
+        candidate = venv_dir / "bin" / "python3"
+        if candidate.exists():
+            return candidate
+        candidate = venv_dir / "bin" / "python"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _ensure_local_venv_if_available() -> None:
+    if os.environ.get("HERMES_LAUNCHER_REEXEC") == "1":
+        return
+
+    local_python = _find_local_venv_python(_project_root())
+    if local_python is None:
+        return
+
+    current = Path(sys.executable).resolve()
+    if current == local_python.resolve():
+        return
+
+    os.environ["HERMES_LAUNCHER_REEXEC"] = "1"
+    os.execv(str(local_python), [str(local_python), *sys.argv])
+
+
+def _format_dependency_message(module_name: str | None) -> str:
+    if not module_name:
+        return (
+            "Hermes dependencies are not installed in the active Python environment.\n"
+            "Run `pip install -e \".[all]\"` from the repo root, then retry."
+        )
+    return (
+        f"Failed to import required module `{module_name}`.\n"
+        "This usually means the Hermes dependencies are not installed in the active environment.\n"
+        "From the repo root, run:\n"
+        "  source venv/bin/activate\n"
+        "  pip install -e \".[all]\"\n"
+        "Then run `./hermes` again."
+    )
+
+
 if __name__ == "__main__":
-    from cli import main
-    import fire
-    fire.Fire(main)
+    _ensure_local_venv_if_available()
+
+    try:
+        from hermes_cli.main import main
+    except ModuleNotFoundError as exc:
+        print(_format_dependency_message(exc.name))
+        raise SystemExit(1) from exc
+
+    sys.exit(main())
