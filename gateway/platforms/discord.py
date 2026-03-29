@@ -2334,14 +2334,21 @@ if DISCORD_AVAILABLE:
             if not self.selected_provider or not self.selected_model:
                 await interaction.response.send_message("No model selected.", ephemeral=True)
                 return
+            # Defer immediately — Discord requires response within 3 seconds
+            await interaction.response.defer(ephemeral=True)
             # Gateway-level model override — does NOT write to config.yaml.
             # Config keeps the user's hard default. Override persists across
             # /new and session resets, clears only on gateway restart.
             try:
                 runtime = resolve_runtime_provider(requested=self.selected_provider)
                 base_url = (runtime.get("base_url") or "").rstrip("/")
+                # Strip provider prefix from model ID (models.yaml uses "ollama-cloud/glm-5"
+                # but the API expects just "glm-5")
+                model_name = self.selected_model
+                if "/" in model_name:
+                    model_name = model_name.split("/", 1)[1]
                 from gateway.run import set_session_model
-                set_session_model(self.selected_provider, self.selected_model, base_url)
+                set_session_model(self.selected_provider, model_name, base_url)
                 ok = True
                 message = "_(persists until gateway restart)_"
             except Exception as e:
@@ -2369,9 +2376,9 @@ if DISCORD_AVAILABLE:
             else:
                 desc = f"Failed: {message}"
                 color = discord.Color.red()
-            await interaction.response.edit_message(
+            await interaction.followup.send(
                 embed=discord.Embed(title="Model Picker", description=desc, color=color),
-                view=None,
+                ephemeral=True,
             )
 
     class _CancelButton(discord.ui.Button):
