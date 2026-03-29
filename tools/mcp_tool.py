@@ -1489,6 +1489,19 @@ def _select_utility_schemas(server_name: str, server: MCPServerTask, config: dic
                 required_method,
             )
             continue
+        # Some servers (e.g. gitmcp) have the method on the session object but
+        # return "Method not found" at the transport layer. Only register if
+        # the server advertises the capability in its server_info.
+        server_info = getattr(server.session, "server_info", None) or getattr(server, "_server_info", None)
+        if server_info is not None:
+            capabilities = getattr(server_info, "capabilities", None) or {}
+            if isinstance(capabilities, dict):
+                if handler_key in {"list_resources", "read_resource"} and not capabilities.get("resources"):
+                    logger.debug("MCP server '%s': skipping '%s' (server capabilities missing 'resources')", server_name, handler_key)
+                    continue
+                if handler_key in {"list_prompts", "get_prompt"} and not capabilities.get("prompts"):
+                    logger.debug("MCP server '%s': skipping '%s' (server capabilities missing 'prompts')", server_name, handler_key)
+                    continue
         selected.append(entry)
     return selected
 
