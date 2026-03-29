@@ -6,6 +6,7 @@ Shows the status of all Hermes Agent components.
 
 import os
 import sys
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -277,20 +278,31 @@ def show_status(args):
     print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
     
     if sys.platform.startswith('linux'):
-        try:
-            from hermes_cli.gateway import get_service_name
-            _gw_svc = get_service_name()
-        except Exception:
-            _gw_svc = "hermes-gateway"
-        result = subprocess.run(
-            ["systemctl", "--user", "is-active", _gw_svc],
-            capture_output=True,
-            text=True
-        )
-        is_active = result.stdout.strip() == "active"
-        print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
-        print("  Manager:      systemd (user)")
-        
+        systemctl_path = shutil.which("systemctl")
+        if systemctl_path:
+            try:
+                from hermes_cli.gateway import get_service_name
+                _gw_svc = get_service_name()
+            except Exception:
+                _gw_svc = "hermes-gateway"
+            
+            try:
+                result = subprocess.run(
+                    [systemctl_path, "--user", "is-active", _gw_svc],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                is_active = result.stdout.strip() == "active"
+                print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
+                print("  Manager:      systemd (user)")
+            except Exception as e:
+                print(f"  Status:       {color('Error', Colors.RED)}")
+                print(f"  Manager:      systemd (failed: {e})")
+        else:
+            print(f"  Status:       {color('N/A', Colors.DIM)}")
+            print("  Manager:      systemd unavailable in this runtime")
+            
     elif sys.platform == 'darwin':
         from hermes_cli.gateway import get_launchd_label
         result = subprocess.run(
