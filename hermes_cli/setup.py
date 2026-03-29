@@ -618,7 +618,9 @@ def _print_setup_summary(config: dict, hermes_home):
 
     # TTS — show configured provider
     tts_provider = config.get("tts", {}).get("provider", "edge")
-    if tts_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
+    if tts_provider == "none":
+        tool_status.append(("Text-to-Speech", False, "disabled — run 'hermes setup tts' to enable"))
+    elif tts_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
         tool_status.append(("Text-to-Speech (ElevenLabs)", True, None))
     elif tts_provider == "openai" and get_env_value("VOICE_TOOLS_OPENAI_KEY"):
         tool_status.append(("Text-to-Speech (OpenAI)", True, None))
@@ -1058,6 +1060,16 @@ def setup_model_provider(config: dict):
         # and custom_providers. Keep selected_provider = "custom" so
         # the model selection step below is skipped (line 1631 check)
         # but vision and TTS setup still run.
+        #
+        # IMPORTANT: _model_flow_custom writes to disk via its own fresh
+        # load_config() + save_config() call — the outer `config` dict is
+        # NOT updated in-place.  If we don't reload here, the final
+        # save_config(config) at the bottom of run_setup_wizard() will
+        # overwrite what _model_flow_custom just wrote, losing
+        # model.provider and model.base_url from config.yaml (issue #3415).
+        from hermes_cli.config import load_config as _reload_config
+        config.clear()
+        config.update(_reload_config())
 
     elif provider_idx == 4:  # Z.AI / GLM
         selected_provider = "zai"
@@ -1876,6 +1888,7 @@ def _setup_tts_provider(config: dict):
         "elevenlabs": "ElevenLabs",
         "openai": "OpenAI TTS",
         "neutts": "NeuTTS",
+        "none": "None (disabled)",
     }
     current_label = provider_labels.get(current_provider, current_provider)
 
@@ -1889,14 +1902,15 @@ def _setup_tts_provider(config: dict):
         "ElevenLabs (premium quality, needs API key)",
         "OpenAI TTS (good quality, needs API key)",
         "NeuTTS (local on-device, free, ~300MB model download)",
+        "None (disable TTS entirely)",
         f"Keep current ({current_label})",
     ]
     idx = prompt_choice("Select TTS provider:", choices, len(choices) - 1)
 
-    if idx == 4:  # Keep current
+    if idx == 5:  # Keep current
         return
 
-    providers = ["edge", "elevenlabs", "openai", "neutts"]
+    providers = ["edge", "elevenlabs", "openai", "neutts", "none"]
     selected = providers[idx]
 
     if selected == "neutts":
