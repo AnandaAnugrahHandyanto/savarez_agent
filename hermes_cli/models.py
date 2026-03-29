@@ -33,8 +33,8 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("openai/gpt-5.4-mini",             ""),
     ("xiaomi/mimo-v2-pro",               ""),
     ("openai/gpt-5.3-codex",            ""),
-    ("google/gemini-3-pro-preview",     ""),
-    ("google/gemini-3-flash-preview",   ""),
+    ("google/gemini-3.1-pro-preview",     ""),
+    ("google/gemini-3.1-flash-lite-preview",   ""),
     ("qwen/qwen3.5-plus-02-15",         ""),
     ("qwen/qwen3.5-35b-a3b",            ""),
     ("stepfun/step-3.5-flash",          ""),
@@ -60,8 +60,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-5.4-mini",
         "xiaomi/mimo-v2-pro",
         "openai/gpt-5.3-codex",
-        "google/gemini-3-pro-preview",
-        "google/gemini-3-flash-preview",
+        "google/gemini-3.1-pro-preview",
+        "google/gemini-3.1-flash-lite-preview",
         "qwen/qwen3.5-plus-02-15",
         "qwen/qwen3.5-35b-a3b",
         "stepfun/step-3.5-flash",
@@ -166,9 +166,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-sonnet-4",
         "claude-haiku-4-5",
         "claude-3-5-haiku",
-        "gemini-3.1-pro",
-        "gemini-3-pro",
-        "gemini-3-flash",
+        "gemini-3.1-pro-preview",
+        "gemini-3.1-flash-lite-preview",
         "minimax-m2.7",
         "minimax-m2.5",
         "minimax-m2.5-free",
@@ -193,10 +192,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "anthropic/claude-sonnet-4.5",
         "anthropic/claude-haiku-4.5",
         "openai/gpt-5",
-        "openai/gpt-4.1",
-        "openai/gpt-4.1-mini",
-        "google/gemini-3-pro-preview",
-        "google/gemini-3-flash",
+        \"openai/gpt-4.1\",\n        \"openai/gpt-4.1-mini\",
+        "google/gemini-3.1-pro-preview",
+        "google/gemini-3.1-flash-lite-preview",
         "google/gemini-2.5-pro",
         "google/gemini-2.5-flash",
         "deepseek/deepseek-v3.2",
@@ -205,8 +203,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",
-        "google/gemini-3-pro-preview",
-        "google/gemini-3-flash-preview",
+        "google/gemini-3.1-pro-preview",
+        "google/gemini-3.1-flash-lite-preview",
     ],
     # Alibaba DashScope Coding platform (coding-intl) — default endpoint.
     # Supports Qwen models + third-party providers (GLM, Kimi, MiniMax).
@@ -424,7 +422,7 @@ def curated_models_for_provider(provider: Optional[str]) -> list[tuple[str, str]
     # Try live API first (Codex, Nous, etc. all support /models)
     live = provider_model_ids(normalized)
     if live:
-        return [(m, "") for m in live]
+        return [(m, "")] for m in live]
 
     # Fallback to static catalog
     models = _PROVIDER_MODELS.get(normalized, [])
