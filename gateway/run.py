@@ -289,6 +289,9 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
         model = model_cfg
     elif isinstance(model_cfg, dict):
         model = model_cfg.get("default") or model_cfg.get("model") or model
+        provider = model_cfg.get("provider")
+        if provider and model and "/" not in model:
+            model = f"{provider}/{model}"
     return model
 
 
