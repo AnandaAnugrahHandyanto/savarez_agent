@@ -896,16 +896,25 @@ class AIAgent:
             except Exception as e:
                 raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
         
-        # Provider fallback — a single backup model/provider tried when the
-        # primary is exhausted (rate-limit, overload, connection failure).
-        # Config shape: {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
-        self._fallback_model = fallback_model if isinstance(fallback_model, dict) else None
+        # Provider fallback chain — one or more backup model/providers tried
+        # in order when the primary is exhausted (rate-limit, overload, etc.).
+        # Config shape: {"provider": "...", "model": "...", "_chain": [{...}, ...]}
+        # The first entry is popped into _fallback_model; _chain holds the rest.
+        self._fallback_chain: list[dict] = []
+        self._fallback_model = None
         self._fallback_activated = False
-        if self._fallback_model:
+        if isinstance(fallback_model, dict):
+            # Extract chain if present, then set first fallback
+            chain_rest = fallback_model.pop("_chain", None) or []
+            self._fallback_model = fallback_model
+            self._fallback_chain = list(chain_rest)
+        if self._fallback_model and not self.quiet_mode:
             fb_p = self._fallback_model.get("provider", "")
             fb_m = self._fallback_model.get("model", "")
-            if fb_p and fb_m and not self.quiet_mode:
-                print(f"🔄 Fallback model: {fb_m} ({fb_p})")
+            chain_len = len(self._fallback_chain)
+            chain_suffix = f" (+{chain_len} more)" if chain_len else ""
+            if fb_p and fb_m:
+                print(f"🔄 Fallback model: {fb_m} ({fb_p}){chain_suffix}")
 
         # Get available tools with filtering
         self.tools = get_tool_definitions(
@@ -4318,18 +4327,29 @@ class AIAgent:
     # ── Provider fallback ──────────────────────────────────────────────────
 
     def _try_activate_fallback(self) -> bool:
-        """Switch to the configured fallback model/provider.
+        """Switch to the next fallback model/provider in the chain.
 
-        Called when the primary model is failing after retries.  Swaps the
+        Called when the current model is failing after retries.  Swaps the
         OpenAI client, model slug, and provider in-place so the retry loop
-        can continue with the new backend.  One-shot: returns False if
-        already activated or not configured.
+        can continue with the new backend.
+
+        Supports a fallback chain: if the current fallback is already active
+        and there are more entries in ``_fallback_chain``, the next one is
+        tried.  Returns False only when all fallbacks are exhausted.
 
         Uses the centralized provider router (resolve_provider_client) for
         auth resolution and client construction — no duplicated provider→key
         mappings.
         """
-        if self._fallback_activated or not self._fallback_model:
+        if self._fallback_activated:
+            # Already on a fallback — try the next one in the chain
+            if self._fallback_chain:
+                self._fallback_model = self._fallback_chain.pop(0)
+                self._fallback_activated = False  # reset so the logic below runs
+            else:
+                return False  # chain exhausted
+
+        if not self._fallback_model:
             return False
 
         fb = self._fallback_model

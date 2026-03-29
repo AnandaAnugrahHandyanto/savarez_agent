@@ -921,8 +921,14 @@ class GatewayRunner:
     def _load_fallback_model() -> dict | None:
         """Load fallback model config from config.yaml.
 
-        Returns a dict with 'provider' and 'model' keys, or None if
-        not configured / both fields empty.
+        Supports both single ``fallback_model`` (dict) and
+        ``fallback_models`` (list of dicts).  The list form is
+        preferred — each entry is tried in order when the previous
+        provider is exhausted.  The legacy single-dict form is wrapped
+        into a one-element list for uniform handling.
+
+        Returns a dict with 'provider' and 'model' keys (and an
+        optional '_chain' key holding additional fallbacks), or None.
         """
         try:
             import yaml as _y
@@ -930,9 +936,27 @@ class GatewayRunner:
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
-                fb = cfg.get("fallback_model", {}) or {}
-                if fb.get("provider") and fb.get("model"):
-                    return fb
+
+                chain: list[dict] = []
+
+                # New list form: fallback_models
+                fb_list = cfg.get("fallback_models")
+                if isinstance(fb_list, list):
+                    for entry in fb_list:
+                        if isinstance(entry, dict) and entry.get("provider") and entry.get("model"):
+                            chain.append(entry)
+
+                # Legacy single form: fallback_model
+                if not chain:
+                    fb = cfg.get("fallback_model", {}) or {}
+                    if fb.get("provider") and fb.get("model"):
+                        chain.append(fb)
+
+                if chain:
+                    first = dict(chain[0])
+                    if len(chain) > 1:
+                        first["_chain"] = chain[1:]
+                    return first
         except Exception:
             pass
         return None
