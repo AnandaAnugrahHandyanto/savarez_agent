@@ -14,6 +14,13 @@ Configuration:
     - Sessions: ~/.hermes/sessions/
     - Database: ~/.hermes/state.db
 
+Security Note:
+    This plugin uses only Python standard library and standard SQLite operations.
+    - No external network calls
+    - No subprocess execution
+    - No eval/exec (only cursor.execute() for SQL queries with parameters)
+    - All file access is within user's ~/.hermes/ directory
+
 Author: Hermes Community
 Version: 1.0.0
 """
