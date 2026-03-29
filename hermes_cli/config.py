@@ -45,6 +45,13 @@ _EXTRA_ENV_KEYS = frozenset({
 })
 import yaml
 
+try:
+    import keyring as _keyring
+    _KEYRING_AVAILABLE = True
+except ImportError:
+    _keyring = None  # type: ignore[assignment]
+    _KEYRING_AVAILABLE = False
+
 from hermes_cli.colors import Colors, color
 from hermes_cli.default_soul import DEFAULT_SOUL_MD
 
@@ -154,18 +161,48 @@ def get_project_root() -> Path:
     """Get the project installation directory."""
     return Path(__file__).parent.parent.resolve()
 
-def _secure_dir(path):
-    """Set directory to owner-only access (0700). No-op on Windows."""
+def _win_restrict_acl(path_str: str) -> bool:
+    """Restrict a file/dir to the current user only via icacls (Windows).
+
+    Removes inherited permissions, grants the current user full control,
+    and denies access to everyone else. Returns True on success.
+    """
     try:
-        os.chmod(path, 0o700)
+        username = os.environ.get("USERNAME", "")
+        if not username:
+            return False
+        # Disable inheritance, remove all inherited ACEs, grant current user full
+        subprocess.run(
+            ["icacls", path_str, "/inheritance:r",
+             "/grant:r", f"{username}:(OI)(CI)F" if os.path.isdir(path_str) else f"{username}:F",
+             "/remove:g", "Everyone", "/remove:g", "BUILTIN\\Users",
+             "/remove:g", "Authenticated Users"],
+            capture_output=True, timeout=10,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _secure_dir(path):
+    """Set directory to owner-only access (0700 on Unix, icacls on Windows)."""
+    try:
+        if _IS_WINDOWS:
+            _win_restrict_acl(str(path))
+        else:
+            os.chmod(path, 0o700)
     except (OSError, NotImplementedError):
         pass
 
 
 def _secure_file(path):
-    """Set file to owner-only read/write (0600). No-op on Windows."""
+    """Set file to owner-only read/write (0600 on Unix, icacls on Windows)."""
     try:
-        if os.path.exists(str(path)):
+        if not os.path.exists(str(path)):
+            return
+        if _IS_WINDOWS:
+            _win_restrict_acl(str(path))
+        else:
             os.chmod(path, 0o600)
     except (OSError, NotImplementedError):
         pass
@@ -726,14 +763,6 @@ OPTIONAL_ENV_VARS = {
     },
 
     # ── Tool API keys ──
-    "EXA_API_KEY": {
-        "description": "Exa API key for AI-native web search and contents",
-        "prompt": "Exa API key",
-        "url": "https://exa.ai/",
-        "tools": ["web_search", "web_extract"],
-        "password": True,
-        "category": "tool",
-    },
     "PARALLEL_API_KEY": {
         "description": "Parallel API key for AI-native web search and extract",
         "prompt": "Parallel API key",
@@ -1460,6 +1489,49 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+# =============================================================================
+# Keyring integration (OS-native secret storage)
+# =============================================================================
+
+_KEYRING_SERVICE = "hermes-agent"
+
+
+def save_secret_keyring(key: str, value: str) -> bool:
+    """Store a secret in the OS keychain. Returns True on success.
+
+    Uses Windows Credential Manager (DPAPI), macOS Keychain, or
+    Linux SecretService. Falls back gracefully in headless environments.
+    """
+    if not _KEYRING_AVAILABLE:
+        return False
+    try:
+        _keyring.set_password(_KEYRING_SERVICE, key, value)
+        return True
+    except Exception:
+        return False
+
+
+def get_secret_keyring(key: str) -> str | None:
+    """Retrieve a secret from the OS keychain. Returns None if not found."""
+    if not _KEYRING_AVAILABLE:
+        return None
+    try:
+        return _keyring.get_password(_KEYRING_SERVICE, key)
+    except Exception:
+        return None
+
+
+def delete_secret_keyring(key: str) -> bool:
+    """Delete a secret from the OS keychain. Returns True on success."""
+    if not _KEYRING_AVAILABLE:
+        return False
+    try:
+        _keyring.delete_password(_KEYRING_SERVICE, key)
+        return True
+    except Exception:
+        return False
+
+
 def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize legacy root-level max_turns into agent.max_turns."""
     config = dict(config)
@@ -1827,21 +1899,29 @@ def save_anthropic_api_key(value: str, save_fn=None):
 
 
 def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
-    save_env_value(key, value)
+    # Try OS keychain first (DPAPI on Windows, SecretService on Linux, Keychain on macOS)
+    keyring_ok = save_secret_keyring(key, value)
+    if not keyring_ok:
+        # Fall through to file-based secure storage
+        save_env_value(key, value)
     return {
         "success": True,
         "stored_as": key,
         "validated": False,
+        "backend": "keyring" if keyring_ok else "file",
     }
 
 
 
 def get_env_value(key: str) -> Optional[str]:
-    """Get a value from ~/.hermes/.env or environment."""
-    # Check environment first
+    """Get a value from keyring, environment, or ~/.hermes/.env."""
+    # Check OS keychain first
+    v = get_secret_keyring(key)
+    if v is not None:
+        return v
+    # Check environment
     if key in os.environ:
         return os.environ[key]
-    
     # Then check .env file
     env_vars = load_env()
     return env_vars.get(key)
@@ -1883,7 +1963,6 @@ def show_config():
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
         ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
-        ("EXA_API_KEY", "Exa"),
         ("PARALLEL_API_KEY", "Parallel"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
         ("TAVILY_API_KEY", "Tavily"),

@@ -69,10 +69,23 @@ hermes gateway uninstall # Remove the scheduled task
 
 The task appears as "HermesGateway" in Task Scheduler.
 
+**Secrets in config.yaml:**
+Use `${ENV_VAR}` syntax to reference environment variables instead of embedding
+secrets directly in config.yaml:
+```yaml
+mcpServers:
+  myserver:
+    env:
+      API_KEY: ${MY_SERVICE_API_KEY}
+```
+Set the variable in your shell profile or Windows environment variables.
+Unresolved references are left as-is (no silent empty substitution).
+
 **Credential storage:**
-With keyring installed (`pip install keyring`), API keys are stored in
-Windows Credential Manager instead of `~/.hermes/.env`. View stored
-credentials in Control Panel → Credential Manager → Windows Credentials.
+With keyring installed (`pip install "hermes-agent[keyring]"`), API keys are
+stored in Windows Credential Manager (DPAPI-encrypted, tied to your user
+account) instead of `~/.hermes/.env`. View stored credentials in
+Control Panel → Credential Manager → Windows Credentials.
 
 ## Troubleshooting
 
