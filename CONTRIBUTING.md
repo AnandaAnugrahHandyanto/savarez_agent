@@ -189,7 +189,7 @@ hermes-agent/
 | `~/.hermes/.env` | API keys and secrets |
 | `~/.hermes/auth.json` | OAuth credentials (Nous Portal) |
 | `~/.hermes/skills/` | All active skills (bundled + hub-installed + agent-created) |
-| `~/.hermes/memories/` | Persistent memory (MEMORY.md, USER.md) |
+| `~/.hermes/memories/` | Persistent memory (MEMORY.md, USER.md kept as read-only backups; primary store is state.db `memories` table) |
 | `~/.hermes/state.db` | SQLite session database |
 | `~/.hermes/sessions/` | JSON session logs |
 | `~/.hermes/cron/` | Scheduled job data |

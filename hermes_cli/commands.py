@@ -119,6 +119,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     # Info
     CommandDef("help", "Show available commands", "Info"),
+    CommandDef("profile", "Show your saved user profile", "Info"),
+    CommandDef("memories", "Show your saved memory notes", "Info"),
+    CommandDef("compact-memory", "Compact memory entries using LLM consolidation", "Info"),
     CommandDef("usage", "Show token usage for the current session", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]"),

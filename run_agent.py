@@ -1036,9 +1036,16 @@ class AIAgent:
                 self._memory_flush_min_turns = int(mem_config.get("flush_min_turns", 6))
                 if self._memory_enabled or self._user_profile_enabled:
                     from tools.memory_tool import MemoryStore
+                    try:
+                        from hermes_state import DEFAULT_DB_PATH
+                        _db_path = DEFAULT_DB_PATH
+                    except Exception:
+                        _db_path = None
                     self._memory_store = MemoryStore(
                         memory_char_limit=mem_config.get("memory_char_limit", 2200),
                         user_char_limit=mem_config.get("user_char_limit", 1375),
+                        db_path=_db_path,
+                        config=_agent_cfg,
                     )
                     self._memory_store.load_from_disk()
             except Exception:
@@ -5141,6 +5148,46 @@ class AIAgent:
             if messages and messages[-1].get("_flush_sentinel") == _sentinel:
                 messages.pop()
 
+    def _compact_memories_if_needed(self) -> None:
+        """Compact memory entries using the auxiliary LLM if fill exceeds threshold.
+
+        Runs after flush_memories() in _compress_context() so we compact with
+        the freshest possible state. Uses the auxiliary client (cheap/fast model)
+        following the same pattern as context compression.
+
+        Silent on failure — compaction is a best-effort optimization.
+        """
+        if not self._memory_store:
+            return
+
+        try:
+            from agent.auxiliary_client import call_llm as _call_llm
+
+            for target in ("memory", "user"):
+                # DB mode: trigger on warm tier size
+                # Flat file mode: trigger on fill ratio
+                if self._memory_store._db_path is not None:
+                    should_compact = (
+                        self._memory_store.warm_entry_count(target)
+                        >= self._memory_store.warm_compaction_threshold
+                    )
+                else:
+                    should_compact = (
+                        self._memory_store.fill_ratio(target)
+                        >= self._memory_store.compaction_threshold
+                    )
+                if should_compact:
+                    result = self._memory_store.compact(target, call_llm=_call_llm)
+                    if result.get("success"):
+                        logger.info(
+                            "Memory compaction: %s %d→%d entries (%.0f%% reduction)",
+                            target, result["old_count"], result["new_count"], result.get("reduction_pct", 0),
+                        )
+                    else:
+                        logger.debug("Memory compaction skipped for %s: %s", target, result.get("error"))
+        except Exception:
+            logger.debug("Memory compaction failed (non-fatal)", exc_info=True)
+
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default") -> tuple:
         """Compress conversation context and split the session in SQLite.
 
@@ -5149,6 +5196,9 @@ class AIAgent:
         """
         # Pre-compression memory flush: let the model save memories before they're lost
         self.flush_memories(messages, min_turns=0)
+
+        # Post-flush compaction: if memory is near the limit, consolidate with LLM
+        self._compact_memories_if_needed()
 
         compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
 

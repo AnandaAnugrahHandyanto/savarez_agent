@@ -344,6 +344,29 @@ memory:
   # For exit/reset, only fires if the session had at least this many user turns.
   flush_min_turns: 6        # Min user turns to trigger flush on exit/reset (0 = disabled)
 
+  # =============================================================================
+  # RAG Memory: Semantic Search + LLM Compaction (Optional)
+  # =============================================================================
+  # When enabled, memory entries are stored in SQLite with vector embeddings
+  # for semantic search. The agent can search memory by meaning, not just
+  # keyword. Requires sqlite-vec: pip install sqlite-vec (or hermes-agent[rag])
+  #
+  # Compaction: when memory approaches the char limit, an LLM call consolidates
+  # entries automatically. Also available via /compact-memory command.
+  #
+  # embedding_enabled: false         # Set true to enable vector embeddings
+  # embedding_provider: "openrouter" # Provider for embedding model
+  # embedding_model: "openai/text-embedding-3-small"  # Embedding model
+  #
+  # Hot tier — what gets auto-injected into the system prompt each session
+  # hot_entry_count: 10              # Max recent entries to inject per target
+  # hot_char_limit: 2200             # Max chars injected for memory target
+  # hot_char_limit_user: 1375        # Max chars injected for user target
+  #
+  # Warm tier — older entries stay in DB, searchable via memory_search
+  # warm_compaction_threshold: 20    # Compact warm tier when it exceeds N entries
+  # compaction_threshold: 0.80       # Flat file mode only: compact at 80% fill
+
 # =============================================================================
 # Session Reset Policy (Messaging Platforms)
 # =============================================================================

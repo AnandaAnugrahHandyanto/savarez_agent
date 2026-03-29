@@ -214,6 +214,46 @@ The registry handles schema collection, dispatch, availability checking, and err
 
 ---
 
+## Memory System (DB-backed, tiered)
+
+Memory entries are stored in `~/.hermes/state.db` in a `memories` table (schema v7).
+Two targets: `memory` (agent notes) and `user` (user profile).
+
+### Three-tier model
+
+| Tier | Level | What it is | How accessed |
+|------|-------|------------|--------------|
+| **Hot** | `level=1`, most recent N | Auto-injected into system prompt each session | Always present |
+| **Warm** | `level=1`, older entries | Stored in DB, NOT injected | `memory_search` tool |
+| **Cold** | `level=2` | Compacted/archived | `memory_search` tool |
+
+**Hot tier** is controlled by `memory.hot_entry_count` (default: 10) and
+`memory.hot_char_limit` / `memory.hot_char_limit_user` (default: 2200/1375 chars).
+Storage is unlimited in DB mode — only the injection budget is bounded.
+
+**Flat file migration:** On first load, entries in `~/.hermes/memories/MEMORY.md` and
+`USER.md` are automatically migrated to DB. Flat files kept as read-only backups.
+
+**Compaction:** Triggered when warm tier exceeds `memory.warm_compaction_threshold`
+entries (default: 20). LLM consolidates all level=1 entries; old ones become `level=2`.
+Trigger manually with `/compact-memory`. Requires auxiliary LLM client (same as context
+compression — no separate config needed).
+
+**Semantic search:** If `sqlite-vec` is installed and `memory.embedding_enabled: true`,
+embeddings are stored in `memories_vec` vec0 virtual table. `memory_search` tool uses
+KNN search; falls back to SQLite LIKE search when embeddings are unavailable.
+
+**New slash commands:** `/profile`, `/memories`, `/compact-memory`
+
+**New tool:** `memory_search` — search all tiers by semantic similarity or keyword.
+
+**Schema migration:** `hermes_state.py` SCHEMA_VERSION = 7. Migration adds `memories`
+table and attempts `memories_vec` (skipped silently if sqlite-vec unavailable).
+
+**Optional dependency:** `pip install sqlite-vec` or `pip install hermes-agent[rag]`
+
+---
+
 ## Adding Configuration
 
 ### config.yaml options:

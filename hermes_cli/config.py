@@ -346,6 +346,15 @@ DEFAULT_CONFIG = {
         "user_profile_enabled": True,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        "embedding_provider": "openrouter",   # provider for embeddings
+        "embedding_model": "openai/text-embedding-3-small",  # embedding model
+        "embedding_enabled": False,           # disabled by default until user configures
+        # Hot/warm tier config (DB mode only)
+        "hot_entry_count": 10,               # max entries auto-injected per target
+        "hot_char_limit": 2200,              # max chars injected for memory target
+        "hot_char_limit_user": 1375,         # max chars injected for user target
+        "warm_compaction_threshold": 20,     # compact warm tier when it exceeds this many entries
+        "compaction_threshold": 0.80,        # compact at 80% fill (flat file / legacy mode)
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

@@ -1733,6 +1733,15 @@ class GatewayRunner:
         
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "profile":
+            return await self._handle_profile_command(event)
+
+        if canonical == "memories":
+            return await self._handle_memories_command(event)
+
+        if canonical == "compact-memory":
+            return await self._handle_compact_memory_command(event)
         
         if canonical == "stop":
             return await self._handle_stop_command(event)
@@ -2937,6 +2946,138 @@ class GatewayRunner:
         
         return "\n".join(lines)
     
+    def _read_memory_entries(self, target: str) -> list:
+        """Read hot tier memory entries from DB, falling back to flat files.
+
+        Returns only the hot tier (most recent N entries within char budget) —
+        the same entries that get injected into the system prompt.
+        """
+        try:
+            from hermes_state import DEFAULT_DB_PATH
+            from tools.memory_tool import MemoryStore
+            import yaml
+            cfg = {}
+            config_path = _hermes_home / "config.yaml"
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+            memory_cfg = cfg.get("memory", {})
+            store = MemoryStore(
+                memory_char_limit=memory_cfg.get("memory_char_limit", 2200),
+                user_char_limit=memory_cfg.get("user_char_limit", 1375),
+                db_path=DEFAULT_DB_PATH,
+                config=cfg,
+            )
+            store.load_from_disk()
+            return store.memory_entries if target == "memory" else store.user_entries
+        except Exception:
+            pass
+
+        # Flat file fallback
+        filename = "USER.md" if target == "user" else "MEMORY.md"
+        flat_path = _hermes_home / "memories" / filename
+        try:
+            raw = flat_path.read_text(encoding="utf-8").strip()
+            if raw:
+                return [e.strip() for e in raw.split("\n§\n") if e.strip()]
+        except Exception:
+            pass
+        return []
+
+    async def _handle_profile_command(self, event: MessageEvent) -> str:
+        """Handle /profile command — show saved user profile."""
+        entries = self._read_memory_entries("user")
+        if not entries:
+            return "No user profile saved yet."
+        return "Your profile:\n\n" + "\n\n".join(entries)
+
+    async def _handle_memories_command(self, event: MessageEvent) -> str:
+        """Handle /memories command — show saved memory notes."""
+        entries = self._read_memory_entries("memory")
+        if not entries:
+            return "No memories saved yet."
+        return "My notes:\n\n" + "\n\n".join(entries)
+
+    async def _handle_compact_memory_command(self, event: MessageEvent) -> str:
+        """Handle /compact-memory — trigger LLM compaction of memory entries.
+
+        Delegates to the agent's _compact_memories_if_needed() pattern using
+        the auxiliary client (same as context compression). Requires an active
+        agent session so the configured LLM client is available.
+        """
+        try:
+            source = event.source
+            session_entry = self.session_store.get_or_create_session(source)
+            session_key = session_entry.session_key
+
+            # Get store from running agent if available
+            agent = self._running_agents.get(session_key)
+            store = None
+            if agent and agent is not _AGENT_PENDING_SENTINEL:
+                store = getattr(agent, "_memory_store", None)
+
+            # Fall back to building a store from the DB directly
+            if store is None:
+                try:
+                    from hermes_state import DEFAULT_DB_PATH
+                    from tools.memory_tool import MemoryStore
+                    import yaml
+                    cfg = {}
+                    config_path = _hermes_home / "config.yaml"
+                    if config_path.exists():
+                        with open(config_path, encoding="utf-8") as f:
+                            cfg = yaml.safe_load(f) or {}
+                    memory_cfg = cfg.get("memory", {})
+                    store = MemoryStore(
+                        memory_char_limit=memory_cfg.get("memory_char_limit", 2200),
+                        user_char_limit=memory_cfg.get("user_char_limit", 1375),
+                        db_path=DEFAULT_DB_PATH,
+                        config=cfg,
+                    )
+                    store.load_from_disk()
+                except Exception as e:
+                    return f"Failed to load memory store: {e}"
+
+            # Use the auxiliary client — same as context compression and flush_memories
+            try:
+                from agent.auxiliary_client import call_llm as _call_llm
+            except Exception as e:
+                return f"Cannot compact: auxiliary LLM client unavailable ({e})"
+
+            lines = ["Memory compaction results:"]
+            total_old = total_new = total_before = total_after = 0
+
+            for target in ("memory", "user"):
+                entries = store.memory_entries if target == "memory" else store.user_entries
+                if not entries:
+                    lines.append(f"\n{target}: no entries")
+                    continue
+                result = store.compact(target, call_llm=_call_llm)
+                if result.get("success"):
+                    old_c = result.get("old_count", 0)
+                    new_c = result.get("new_count", 0)
+                    cb = result.get("chars_before", 0)
+                    ca = result.get("chars_after", 0)
+                    total_old += old_c; total_new += new_c
+                    total_before += cb; total_after += ca
+                    lines.append(
+                        f"\n{target}: {old_c} → {new_c} entries, {cb:,} → {ca:,} chars"
+                    )
+                else:
+                    lines.append(f"\n{target}: {result.get('error', 'unknown error')}")
+
+            if total_old > 0:
+                lines.append(
+                    f"\nTotal: {total_old} → {total_new} entries, "
+                    f"{total_before:,} → {total_after:,} chars"
+                )
+
+            return "\n".join(lines)
+
+        except Exception as e:
+            logger.exception("Failed to handle /compact-memory command")
+            return f"Compaction failed: {e}"
+
     async def _handle_stop_command(self, event: MessageEvent) -> str:
         """Handle /stop command - interrupt a running agent.
 
