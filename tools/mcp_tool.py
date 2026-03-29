@@ -1009,6 +1009,26 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     ``handler(args_dict, **kwargs) -> str``
     """
 
+    def _coerce_json_strings(args: dict) -> dict:
+        """Coerce string values that are valid JSON into native types.
+
+        LLMs sometimes emit array/bool/number params as JSON-encoded strings.
+        MCP servers validate against inputSchema and reject string where array/bool/int expected.
+        """
+        coerced = {}
+        for k, v in args.items():
+            if isinstance(v, str):
+                try:
+                    parsed = json.loads(v)
+                    # Only coerce if result is a non-string type (list, dict, bool, int, float)
+                    if not isinstance(parsed, str):
+                        coerced[k] = parsed
+                        continue
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            coerced[k] = v
+        return coerced
+
     def _handler(args: dict, **kwargs) -> str:
         with _lock:
             server = _servers.get(server_name)
@@ -1018,7 +1038,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             })
 
         async def _call():
-            result = await server.session.call_tool(tool_name, arguments=args)
+            result = await server.session.call_tool(tool_name, arguments=_coerce_json_strings(args))
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
                 error_text = ""
