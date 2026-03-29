@@ -1557,6 +1557,45 @@ The delegation provider uses the same credential resolution as CLI/gateway start
 
 **Precedence:** `delegation.base_url` in config → `delegation.provider` in config → parent provider (inherited). `delegation.model` in config → parent model (inherited). Setting just `model` without `provider` changes only the model name while keeping the parent's credentials (useful for switching models within the same provider like OpenRouter).
 
+### Task-Type Model Routing
+
+Route different task categories to different models without per-call overrides. Set `delegation.task_models` to map task types to model names:
+
+```yaml
+delegation:
+  provider: zai
+  model: glm-5-turbo           # Fallback when no task_type matches
+  task_models:
+    coding: glm-5.1            # Code generation, debugging, implementation
+    research: glm-5            # Web research, documentation, analysis
+    reasoning: glm-5           # Math, logic, complex problem-solving
+    writing: glm-5-turbo       # Content creation, editing
+```
+
+Then use `delegate_task(task_type="coding", goal="...")` — or in batch mode, set `task_type` per task:
+
+```json
+{
+  "tasks": [
+    {"goal": "Implement auth middleware", "task_type": "coding", "toolsets": ["terminal", "file"]},
+    {"goal": "Research WebGPU adoption trends", "task_type": "research", "toolsets": ["web"]}
+  ]
+}
+```
+
+**Resolution order (highest to lowest precedence):**
+
+1. Per-call `model` param — overrides everything, applies to all tasks
+2. Per-task `model` field (batch mode only) — overrides for that specific task
+3. `delegation.task_models[task_type]` — looked up from config
+4. `delegation.model` — fallback default from config
+5. Parent agent's model — inherited when nothing is configured
+
+**Key points:**
+- `task_models` only selects the model name. The provider is always `delegation.provider` (or the per-call `provider`, or parent's provider).
+- Any key is valid in `task_models` — `coding`, `research`, `reasoning` are common conventions, not enforced types.
+- Per-call `model` always wins — use it for one-off overrides when you need a specific model regardless of task type.
+
 ## Clarify
 
 Configure the clarification prompt behavior:

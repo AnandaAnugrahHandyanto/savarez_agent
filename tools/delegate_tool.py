@@ -405,6 +405,12 @@ def _run_single_child(
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 
+# Well-known task types for task_models routing.
+# Not enforced — any key in task_models is valid. These are hints for
+# documentation, config examples, and the tool description shown to the LLM.
+KNOWN_TASK_TYPES = ("coding", "research", "reasoning", "writing", "review", "testing")
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -413,14 +419,25 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     model: Optional[str] = None,
     provider: Optional[str] = None,
+    task_type: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets)
-      - Batch:  provide tasks array [{goal, context, toolsets}, ...]
+      - Single: provide goal (+ optional context, toolsets, task_type)
+      - Batch:  provide tasks array [{goal, context, toolsets, task_type}, ...]
+
+    Model resolution per task (highest to lowest precedence):
+      1. Per-call ``model`` param (top-level, applies to all tasks)
+      2. Per-task ``model`` field (batch mode only)
+      3. ``delegation.task_models[task_type]`` from config
+      4. ``delegation.model`` from config (fallback default)
+      5. Parent agent's model (inherit)
+
+    Provider resolution is separate — ``delegation.provider`` (or per-call
+    ``provider``) always applies. ``task_models`` only selects the model name.
 
     Returns JSON with results array, one entry per task.
     """
@@ -439,29 +456,51 @@ def delegate_task(
 
     # Load config
     cfg = _load_config()
-    # Per-call model/provider override (from tool params) takes precedence
-    if model:
-        cfg["model"] = model
+    # Per-call provider override (from tool params) takes precedence
     if provider:
         cfg["provider"] = provider
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
+    # Load task_models map from config for task-type routing
+    task_models = cfg.get("task_models") or {}
+
+    # Resolve delegation credentials (provider + base fallback model).
+    # The base model here is delegation.model (or None if unconfigured).
+    # Per-task model resolution (via task_type or per-task model) happens
+    # below after we have the credential bundle.
     try:
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
         return json.dumps({"error": str(exc)})
 
+    # --- Helper: resolve the effective model for a single task ---
+    def _resolve_model_for_task(task: Dict[str, Any]) -> Optional[str]:
+        """Resolve model: per-call model > per-task model > task_models > delegation.model."""
+        # 1. Per-call model override (top-level param, applies to all tasks)
+        if model:
+            return model
+        # 2. Per-task model override (batch mode only)
+        task_model = str(task.get("model") or "").strip()
+        if task_model:
+            return task_model
+        # 3. Task-type model from config
+        tt = str(task.get("task_type") or task_type or "").strip()
+        if tt and task_models:
+            mapped = str(task_models.get(tt) or "").strip()
+            if mapped:
+                logger.debug(
+                    "task_models routing: task_type=%s -> model=%s", tt, mapped
+                )
+                return mapped
+        # 4. delegation.model from config (already in creds["model"])
+        return None  # signals "use creds model" (which may also be None → parent inherit)
+
     # Normalize to task list
     if tasks and isinstance(tasks, list):
         task_list = tasks[:MAX_CONCURRENT_CHILDREN]
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
+        task_list = [{"goal": goal, "context": context, "toolsets": toolsets, "task_type": task_type}]
     else:
         return json.dumps({"error": "Provide either 'goal' (single task) or 'tasks' (batch)."})
 
@@ -492,9 +531,13 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            # Resolve model for this specific task
+            task_model = _resolve_model_for_task(t)
+            effective_model = task_model or creds["model"]
+
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
+                toolsets=t.get("toolsets") or toolsets, model=effective_model,
                 max_iterations=effective_max_iter, parent_agent=parent_agent,
                 override_provider=creds["provider"], override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
@@ -724,6 +767,7 @@ DELEGATE_TASK_SCHEMA = {
         "- Single tool call -> just call the tool directly\n"
         "- Tasks needing user interaction -> subagents cannot use clarify\n\n"
         "IMPORTANT:\n"
+        "- Always set task_type (coding/research/reasoning/etc) for correct model routing.\n"
         "- Subagents have NO memory of your conversation. Pass all relevant "
         "info (file paths, error messages, constraints) via the 'context' field.\n"
         "- Subagents CANNOT call: delegate_task, clarify, memory, send_message, "
@@ -773,6 +817,20 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": "Toolsets for this specific task",
                         },
+                        "task_type": {
+                            "type": "string",
+                            "description": (
+                                "Task category for model routing via task_models config. "
+                                "Overrides top-level task_type. Common: coding, research, reasoning."
+                            ),
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Override model for this specific task only. "
+                                "Takes precedence over task_type routing."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -793,8 +851,9 @@ DELEGATE_TASK_SCHEMA = {
             "model": {
                 "type": "string",
                 "description": (
-                    "Override model for this delegation. "
-                    "Takes precedence over delegation.model in config."
+                    "Override model for ALL tasks in this delegation. "
+                    "Takes highest precedence — overrides task_models routing "
+                    "and delegation.model. Use for one-off model overrides."
                 ),
             },
             "provider": {
@@ -803,6 +862,17 @@ DELEGATE_TASK_SCHEMA = {
                     "Override provider for this delegation. "
                     "Takes precedence over delegation.provider in config. "
                     "Resolves full credentials (base_url, api_key) automatically."
+                ),
+            },
+            "task_type": {
+                "type": "string",
+                "description": (
+                    "IMPORTANT: Always provide this for correct model routing. "
+                    "Task category for model routing via delegation.task_models "
+                    "in config. Common types: coding, research, reasoning, "
+                    "writing, review, testing. Any key in task_models works. "
+                    "Ignored when per-call 'model' is set (it takes precedence). "
+                    "In batch mode, per-task task_type overrides this."
                 ),
             },
         },
@@ -826,6 +896,7 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         model=args.get("model"),
         provider=args.get("provider"),
+        task_type=args.get("task_type"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",

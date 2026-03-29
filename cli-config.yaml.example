@@ -668,6 +668,15 @@ delegation:
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  #
+  # Task-type model routing — map task categories to specific models.
+  # When delegate_task is called with task_type="coding", the model is looked
+  # up from this map. Any key is valid; common types: coding, research, reasoning.
+  # Resolution order: per-call model > task_models[type] > delegation.model > parent model
+  # task_models:
+  #   coding: "glm-5.1"
+  #   research: "glm-5"
+  #   reasoning: "glm-5"
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

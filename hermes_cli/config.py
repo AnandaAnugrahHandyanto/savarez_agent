@@ -359,6 +359,12 @@ DEFAULT_CONFIG = {
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
+        # Task-type model routing — map task categories to specific models.
+        # When delegate_task is called with task_type="coding", the model is
+        # resolved from this map. Per-call model param still takes top precedence.
+        # Provider is always delegation.provider (or parent's if unconfigured).
+        # Resolution: per-call model > task_models[task_type] > delegation.model > parent model
+        "task_models": {},  # e.g. {"coding": "glm-5.1", "research": "glm-5", "reasoning": "glm-5"}
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
