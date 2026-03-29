@@ -357,7 +357,15 @@ class EmailAdapter(BasePlatformAdapter):
                 if status != "OK":
                     continue
 
-                raw_email = msg_data[0][1]
+                # IMAP fetch can return unexpected structures (e.g. a single
+                # bytes item instead of a list of tuples).  Guard against
+                # IndexError / TypeError so one malformed response doesn't
+                # crash the entire polling loop.
+                try:
+                    raw_email = msg_data[0][1]
+                except (IndexError, TypeError):
+                    logger.warning("[Email] Unexpected IMAP response structure for UID %s, skipping", uid)
+                    continue
                 msg = email_lib.message_from_bytes(raw_email)
 
                 sender_raw = msg.get("From", "")
@@ -497,7 +505,8 @@ class EmailAdapter(BasePlatformAdapter):
             msg["In-Reply-To"] = original_msg_id
             msg["References"] = original_msg_id
 
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
+        domain = self._address.rsplit("@", 1)[-1] if "@" in self._address else "localhost"
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{domain}>"
         msg["Message-ID"] = msg_id
 
         msg.attach(MIMEText(body, "plain", "utf-8"))
@@ -573,7 +582,8 @@ class EmailAdapter(BasePlatformAdapter):
             msg["In-Reply-To"] = original_msg_id
             msg["References"] = original_msg_id
 
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
+        domain = self._address.rsplit("@", 1)[-1] if "@" in self._address else "localhost"
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{domain}>"
         msg["Message-ID"] = msg_id
 
         if body:
