@@ -41,7 +41,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567', 'imessage:+15551234567'"
             },
             "message": {
                 "type": "string",
@@ -130,6 +130,7 @@ def _handle_send(args):
         "dingtalk": Platform.DINGTALK,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "imessage": Platform.IMESSAGE,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -343,6 +344,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_email(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SMS:
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
+        elif platform == Platform.IMESSAGE:
+            result = await _send_imessage(pconfig.extra, pconfig.api_key, chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -664,6 +667,67 @@ async def _send_sms(auth_token, chat_id, message):
                 return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": msg_sid}
     except Exception as e:
         return {"error": f"SMS send failed: {e}"}
+
+
+async def _send_imessage(extra, api_key, chat_id, message):
+    """Send via iMessage — AppleScript locally or HTTP proxy remotely.
+
+    Chunking is handled by _send_to_platform() before this is called.
+    """
+    import platform as platform_mod
+
+    local = extra.get("local", True)
+    server_url = extra.get("server_url", "")
+
+    if local:
+        if platform_mod.system() != "Darwin":
+            return {"error": "iMessage local mode requires macOS"}
+        import subprocess
+        escaped_recipient = chat_id.replace("\\", "\\\\").replace('"', '\\"')
+        escaped_text = message.replace("\\", "\\\\").replace('"', '\\"')
+        script = (
+            f'tell application "Messages"\n'
+            f"  set targetService to 1st account whose service type = iMessage\n"
+            f'  set targetBuddy to participant "{escaped_recipient}" of targetService\n'
+            f'  send "{escaped_text}" to targetBuddy\n'
+            f"end tell"
+        )
+        try:
+            subprocess.run(
+                ["osascript", "-e", script],
+                check=True, capture_output=True, timeout=15,
+            )
+            return {"success": True, "platform": "imessage", "chat_id": chat_id}
+        except Exception as e:
+            return {"error": f"AppleScript send failed: {e}"}
+
+    if not server_url or not api_key:
+        return {"error": "iMessage remote mode requires IMESSAGE_SERVER_URL and IMESSAGE_API_KEY"}
+
+    import base64 as b64
+    try:
+        decoded = b64.b64decode(api_key, validate=True).decode()
+        token = api_key if "|" in decoded else b64.b64encode(f"{server_url}|{api_key}".encode()).decode()
+    except Exception:
+        token = b64.b64encode(f"{server_url}|{api_key}".encode()).decode()
+
+    try:
+        import httpx
+    except ImportError:
+        return {"error": "httpx not installed. Run: pip install httpx"}
+
+    try:
+        async with httpx.AsyncClient(
+            base_url=server_url.rstrip("/"),
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30.0,
+        ) as client:
+            resp = await client.post("/send", json={"to": chat_id, "text": message, "service": "iMessage"})
+            if not resp.is_success:
+                return {"error": f"iMessage proxy error ({resp.status_code}): {resp.text[:200]}"}
+            return {"success": True, "platform": "imessage", "chat_id": chat_id}
+    except Exception as e:
+        return {"error": f"iMessage send failed: {e}"}
 
 
 def _check_send_message():

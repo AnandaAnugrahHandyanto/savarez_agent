@@ -1319,6 +1319,29 @@ _PLATFORMS = [
              "help": "The AppSecret from your DingTalk application credentials."},
         ],
     },
+    {
+        "key": "imessage",
+        "label": "iMessage",
+        "emoji": "💬",
+        "token_var": "IMESSAGE_SERVER_URL",
+        "setup_instructions": [
+            "Enter your Photon endpoint and API key from photon.codes.",
+            "Hermes connects to iMessage automatically via the Photon proxy.",
+            "",
+            "LOCAL MODE (macOS only, no Photon account needed):",
+            "  Leave endpoint blank, set IMESSAGE_ENABLED=true instead.",
+            "  Requires Full Disk Access (System Settings -> Privacy).",
+        ],
+        "vars": [
+            {"name": "IMESSAGE_SERVER_URL", "prompt": "Photon endpoint", "password": False,
+             "help": "e.g., https://abc123.imsgd.photon.codes"},
+            {"name": "IMESSAGE_API_KEY", "prompt": "Photon API key", "password": True,
+             "help": "API key from photon.codes"},
+            {"name": "IMESSAGE_ALLOWED_USERS", "prompt": "Allowed phone numbers / Apple IDs (comma-separated)", "password": False,
+             "is_allowlist": True,
+             "help": "Phone numbers (e.g., +15551234567) or Apple ID emails allowed to talk to Hermes."},
+        ],
+    },
 ]
 
 

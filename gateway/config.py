@@ -55,6 +55,7 @@ class Platform(Enum):
     EMAIL = "email"
     SMS = "sms"
     DINGTALK = "dingtalk"
+    IMESSAGE = "imessage"
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
 
@@ -267,6 +268,9 @@ class GatewayConfig:
                 connected.append(platform)
             # SMS uses api_key (Twilio auth token) — SID checked via env
             elif platform == Platform.SMS and os.getenv("TWILIO_ACCOUNT_SID"):
+                connected.append(platform)
+            # iMessage — local mode needs only macOS; remote needs server_url
+            elif platform == Platform.IMESSAGE:
                 connected.append(platform)
             # API Server uses enabled flag only (no token needed)
             elif platform == Platform.API_SERVER:
@@ -769,6 +773,27 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.SMS,
                 chat_id=sms_home,
                 name=os.getenv("SMS_HOME_CHANNEL_NAME", "Home"),
+            )
+
+    # iMessage (macOS local or remote via advanced-imessage-http-proxy)
+    imessage_enabled = os.getenv("IMESSAGE_ENABLED", "").lower() in ("true", "1", "yes")
+    imessage_server = os.getenv("IMESSAGE_SERVER_URL", "")
+    imessage_key = os.getenv("IMESSAGE_API_KEY", "")
+    if imessage_enabled or imessage_server:
+        if Platform.IMESSAGE not in config.platforms:
+            config.platforms[Platform.IMESSAGE] = PlatformConfig()
+        config.platforms[Platform.IMESSAGE].enabled = True
+        if imessage_server:
+            config.platforms[Platform.IMESSAGE].extra["server_url"] = imessage_server
+            config.platforms[Platform.IMESSAGE].extra["local"] = False
+        if imessage_key:
+            config.platforms[Platform.IMESSAGE].api_key = imessage_key
+        imessage_home = os.getenv("IMESSAGE_HOME_CHANNEL")
+        if imessage_home:
+            config.platforms[Platform.IMESSAGE].home_channel = HomeChannel(
+                platform=Platform.IMESSAGE,
+                chat_id=imessage_home,
+                name="iMessage",
             )
 
     # API Server

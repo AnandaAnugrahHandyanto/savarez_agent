@@ -254,11 +254,15 @@ def show_status(args):
         "Slack": ("SLACK_BOT_TOKEN", None),
         "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
         "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
+        "iMessage": ("IMESSAGE_SERVER_URL", "IMESSAGE_HOME_CHANNEL"),
     }
     
     for name, (token_var, home_var) in platforms.items():
         token = os.getenv(token_var, "")
         has_token = bool(token)
+
+        if name == "iMessage":
+            has_token = has_token or os.getenv("IMESSAGE_ENABLED", "").lower() in ("true", "1", "yes")
         
         home_channel = ""
         if home_var:
