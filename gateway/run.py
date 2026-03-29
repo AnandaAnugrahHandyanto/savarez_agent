@@ -81,10 +81,43 @@ _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
-from dotenv import load_dotenv  # backward-compat for tests that monkeypatch this symbol
+from dotenv import load_dotenv, dotenv_values  # backward-compat for tests that monkeypatch this symbol
 from hermes_cli.env_loader import load_hermes_dotenv
 _env_path = _hermes_home / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
+
+
+def _external_env_names_from_dotenv(path: Path) -> set[str]:
+    try:
+        vals = dotenv_values(path)
+        return {str(k) for k, v in (vals or {}).items() if k and v not in (None, "")}
+    except Exception:
+        return set()
+
+
+def _inject_keystore_env(force: bool = False, external_managed_names: set[str] | None = None) -> None:
+    """Inject keystore-backed secrets into os.environ when available.
+
+    Args:
+        force: If True, refresh previously keystore-injected values.
+        external_managed_names: Names sourced externally during the current
+            gateway refresh cycle (currently `.env`-tracked names passed by
+            gateway orchestration). These remain authoritative even during
+            forced refresh.
+
+    Runs independently of config.yaml so gateway/headless deployments using
+    only a keystore (with stubbed .env) still receive credentials.
+    """
+    try:
+        from keystore.client import get_keystore
+        _ks = get_keystore()
+        if _ks.is_initialized and _ks.ensure_unlocked(interactive=False):
+            _ks.inject_env(force=force, external_managed_names=external_managed_names)
+    except ImportError:
+        pass
+    except Exception as _e:
+        logging.getLogger(__name__).debug("Gateway keystore injection skipped: %s", _e)
+
 
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.
@@ -136,6 +169,7 @@ if _config_path.exists():
                         os.environ[_env_var] = str(_val)
         # Compression config is read directly from config.yaml by run_agent.py
         # and auxiliary_client.py — no env var bridging needed.
+
         # Auxiliary model/direct-endpoint overrides (vision, web_extract).
         # Each task has provider/model/base_url/api_key; bridge non-default values to env vars.
         _auxiliary_cfg = _cfg.get("auxiliary", {})
@@ -193,6 +227,11 @@ if _config_path.exists():
                 os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
     except Exception:
         pass  # Non-fatal; gateway can still run with .env values
+
+# Inject keystore-backed secrets regardless of whether config.yaml exists.
+# This lets headless / gateway-only installs run with a stubbed .env after
+# secrets are migrated into the encrypted keystore.
+_inject_keystore_env()
 
 # Gateway runs in quiet mode - suppress debug output and use cwd directly (no temp dirs)
 os.environ["HERMES_QUIET"] = "1"
@@ -2602,6 +2641,32 @@ class GatewayRunner:
                     response = (response or "") + approval_hint
             except Exception as e:
                 logger.debug("Failed to check pending approvals: %s", e)
+
+            # Check for pending wallet transaction approvals
+            try:
+                from wallet.approval import pop_pending as pop_wallet_pending
+                import time as _wtime
+                wallet_pending = pop_wallet_pending(session_key)
+                if wallet_pending:
+                    wallet_pending["timestamp"] = _wtime.time()
+                    wallet_pending["_type"] = "wallet_tx"
+                    self._pending_approvals[session_key] = wallet_pending
+                    amt = wallet_pending.get("amount", "?")
+                    sym = wallet_pending.get("symbol", "?")
+                    to_addr = wallet_pending.get("to_address", "?")
+                    chain = wallet_pending.get("chain", "?")
+                    from_label = wallet_pending.get("wallet_label", "?")
+                    approval_hint = (
+                        f"\n\n💰 **Wallet transaction requires approval:**\n"
+                        f"Send **{amt} {sym}** → `{to_addr}`\n"
+                        f"From: {from_label} on {chain}\n\n"
+                        f"Reply `/approve` to execute or `/deny` to cancel."
+                    )
+                    response = (response or "") + approval_hint
+            except ImportError:
+                pass  # wallet not installed
+            except Exception as e:
+                logger.debug("Failed to check wallet pending approvals: %s", e)
             
             # Save the full conversation to the transcript, including tool calls.
             # This preserves the complete agent loop (tool_calls, tool results,
@@ -4358,6 +4423,32 @@ class GatewayRunner:
             return "⚠️ Approval expired (timed out after 5 minutes). Ask the agent to try again."
 
         self._pending_approvals.pop(session_key)
+
+        # Wallet transaction approval — different dispatch from command approval
+        if approval.get("_type") == "wallet_tx":
+            try:
+                from wallet.approval import execute_approved
+                result_json = execute_approved(session_key, approval)
+                import json as _json
+                result = _json.loads(result_json)
+                if result.get("status") == "submitted":
+                    tx_hash = result.get("tx_hash", "")
+                    explorer = result.get("explorer_url", "")
+                    amt = result.get("amount", "?")
+                    sym = result.get("symbol", "?")
+                    msg = f"✅ Transaction approved and sent!\n\n"
+                    msg += f"**{amt} {sym}** → `{result.get('to', '')}`\n"
+                    if tx_hash:
+                        msg += f"TX: `{tx_hash}`\n"
+                    if explorer:
+                        msg += f"[View on explorer]({explorer})"
+                    return msg
+                else:
+                    return f"❌ Transaction failed: {result.get('error', 'unknown error')}"
+            except Exception as e:
+                logger.error("Wallet approval execution failed: %s", e)
+                return f"❌ Transaction execution failed: {e}"
+
         cmd = approval["command"]
         pattern_keys = approval.get("pattern_keys", [])
         if not pattern_keys:
@@ -5170,6 +5261,16 @@ class GatewayRunner:
                 load_dotenv(_env_path, override=True, encoding="utf-8")
             except UnicodeDecodeError:
                 load_dotenv(_env_path, override=True, encoding="latin-1")
+            except Exception:
+                pass
+
+            # Re-inject keystore secrets too so rotated values take effect
+            # without requiring a gateway restart. Names explicitly sourced
+            # from .env during this refresh remain authoritative even when a
+            # previously keystore-owned secret has the same string value.
+            try:
+                _external_names = _external_env_names_from_dotenv(_env_path)
+                _inject_keystore_env(force=True, external_managed_names=_external_names)
             except Exception:
                 pass
 

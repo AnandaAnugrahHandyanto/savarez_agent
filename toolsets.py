@@ -208,6 +208,13 @@ TOOLSETS = {
         "includes": []
     },
 
+    "wallet": {
+        "description": "Cryptocurrency wallet — check balances, send tokens, view history, manage networks",
+        "tools": ["wallet_list", "wallet_balance", "wallet_send", "wallet_history",
+                  "wallet_estimate_gas", "wallet_address", "wallet_networks"],
+        "includes": []
+    },
+
 
     # Scenario-specific toolsets
     
