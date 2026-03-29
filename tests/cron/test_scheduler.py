@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -214,6 +215,50 @@ class TestDeliverResultWrapping:
 
         send_mock.assert_called_once()
         assert send_mock.call_args.kwargs["thread_id"] == "17585"
+
+    def test_delivery_uses_live_gateway_adapter_when_available(self):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.MATRIX: pconfig}
+
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+        fake_loop = MagicMock()
+        fake_loop.is_running.return_value = True
+
+        future = MagicMock()
+        future.result.return_value = SimpleNamespace(success=True, message_id="$event123", error=None)
+
+        def _submit(coro, loop):
+            coro.close()
+            return future
+
+        job = {
+            "id": "matrix-job",
+            "name": "matrix-report",
+            "deliver": "origin",
+            "origin": {
+                "platform": "matrix",
+                "chat_id": "!room:example.org",
+                "thread_id": "$thread123",
+            },
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.asyncio.run_coroutine_threadsafe", side_effect=_submit) as submit_mock, \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            _deliver_result(job, "hello", adapters={Platform.MATRIX: adapter}, loop=fake_loop)
+
+        submit_mock.assert_called_once()
+        adapter.send.assert_called_once()
+        send_mock.assert_not_called()
+        call = adapter.send.call_args
+        assert call.args[0] == "!room:example.org"
+        assert "Cronjob Response: matrix-report" in call.args[1]
+        assert call.kwargs["metadata"] == {"thread_id": "$thread123"}
 
 
 class TestRunJobSessionPersistence:

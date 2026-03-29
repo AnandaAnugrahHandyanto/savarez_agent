@@ -27,6 +27,7 @@ except ImportError:
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Optional
+from concurrent.futures import TimeoutError as FutureTimeoutError
 
 from hermes_time import now as _hermes_now
 
@@ -111,12 +112,14 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     }
 
 
-def _deliver_result(job: dict, content: str) -> None:
+def _deliver_result(job: dict, content: str, adapters: Optional[dict] = None, loop=None) -> None:
     """
     Deliver job output to the configured target (origin chat, specific platform, etc.).
 
-    Uses the standalone platform send functions from send_message_tool so delivery
-    works whether or not the gateway is running.
+    Prefer a live gateway adapter + event loop when available so encrypted platforms
+    (notably Matrix) reuse the active session/device state instead of spinning up a
+    second transient client. Fall back to standalone platform send helpers when the
+    gateway runtime context is unavailable.
     """
     target = _resolve_delivery_target(job)
     if not target:
@@ -174,23 +177,44 @@ def _deliver_result(job: dict, content: str) -> None:
         f"Note: The agent cannot see this message, and therefore cannot respond to it."
     )
 
-    # Run the async send in a fresh event loop (safe from any thread)
-    coro = _send_to_platform(platform, pconfig, chat_id, wrapped, thread_id=thread_id)
-    try:
-        result = asyncio.run(coro)
-    except RuntimeError:
-        # asyncio.run() checks for a running loop before awaiting the coroutine;
-        # when it raises, the original coro was never started — close it to
-        # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
-        # fresh thread that has no running loop.
-        coro.close()
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, wrapped, thread_id=thread_id))
-            result = future.result(timeout=30)
-    except Exception as e:
-        logger.error("Job '%s': delivery to %s:%s failed: %s", job["id"], platform_name, chat_id, e)
-        return
+    runtime_adapter = (adapters or {}).get(platform)
+    if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
+        send_metadata = {"thread_id": thread_id} if thread_id else None
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                runtime_adapter.send(chat_id, wrapped, metadata=send_metadata),
+                loop,
+            )
+            send_result = future.result(timeout=60)
+            result = {
+                "success": getattr(send_result, "success", False),
+                "message_id": getattr(send_result, "message_id", None),
+                "error": getattr(send_result, "error", None),
+            }
+        except FutureTimeoutError:
+            logger.error("Job '%s': delivery via live adapter timed out for %s:%s", job["id"], platform_name, chat_id)
+            return
+        except Exception as e:
+            logger.error("Job '%s': delivery via live adapter failed for %s:%s: %s", job["id"], platform_name, chat_id, e)
+            return
+    else:
+        # Run the async send in a fresh event loop (safe from any thread)
+        coro = _send_to_platform(platform, pconfig, chat_id, wrapped, thread_id=thread_id)
+        try:
+            result = asyncio.run(coro)
+        except RuntimeError:
+            # asyncio.run() checks for a running loop before awaiting the coroutine;
+            # when it raises, the original coro was never started — close it to
+            # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
+            # fresh thread that has no running loop.
+            coro.close()
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, wrapped, thread_id=thread_id))
+                result = future.result(timeout=30)
+        except Exception as e:
+            logger.error("Job '%s': delivery to %s:%s failed: %s", job["id"], platform_name, chat_id, e)
+            return
 
     if result and result.get("error"):
         logger.error("Job '%s': delivery error: %s", job["id"], result["error"])
@@ -482,7 +506,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
 
-def tick(verbose: bool = True) -> int:
+def tick(verbose: bool = True, adapters: Optional[dict] = None, loop=None) -> int:
     """
     Check and run all due jobs.
     
@@ -491,6 +515,8 @@ def tick(verbose: bool = True) -> int:
     
     Args:
         verbose: Whether to print status messages
+        adapters: Optional mapping of active gateway adapters by Platform
+        loop: Optional running gateway event loop for thread-safe adapter sends
     
     Returns:
         Number of jobs executed (0 if another tick is already running)
@@ -547,7 +573,7 @@ def tick(verbose: bool = True) -> int:
 
                 if should_deliver:
                     try:
-                        _deliver_result(job, deliver_content)
+                        _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
                     except Exception as de:
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
 
