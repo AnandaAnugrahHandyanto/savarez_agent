@@ -1067,11 +1067,20 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     )
                 })
 
-            # Collect text from content blocks
+            # Collect text from content blocks.
+            # MCP tools may return TextContent (block.text) or
+            # EmbeddedResource (block.resource.text).  Handle both.
             parts: List[str] = []
             for block in (result.content or []):
                 if hasattr(block, "text"):
                     parts.append(block.text)
+                elif hasattr(block, "resource"):
+                    res = block.resource
+                    text = getattr(res, "text", None)
+                    if text:
+                        parts.append(text)
+                    elif hasattr(res, "blob"):
+                        parts.append(f"[binary resource: {getattr(res, 'uri', 'unknown')}]")
             return json.dumps({"result": "\n".join(parts) if parts else ""})
 
         try:
