@@ -240,14 +240,20 @@ def _resolve_runtime_agent_kwargs() -> dict:
         format_runtime_provider_error,
     )
 
+    # Gateway-level model override takes priority (set by /models picker)
+    _override = get_session_model()
+    requested_provider = None
+    if _override and _override.get("provider"):
+        requested_provider = _override["provider"]
+
     try:
         runtime = resolve_runtime_provider(
-            requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
+            requested=requested_provider or os.getenv("HERMES_INFERENCE_PROVIDER"),
         )
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
-    return {
+    result = {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
@@ -255,6 +261,12 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
     }
+
+    # Override base_url from session if set
+    if _override and _override.get("base_url"):
+        result["base_url"] = _override["base_url"]
+
+    return result
 
 
 def _platform_config_key(platform: "Platform") -> str:
@@ -275,6 +287,33 @@ def _load_gateway_config() -> dict:
     return {}
 
 
+# ---------------------------------------------------------------------------
+# Gateway-level model override — restores session-scoped switching removed in
+# commit 9783c9d5 (v0.5.0).  The /models picker sets this instead of writing
+# config.yaml, so config keeps the user's hard default.  The override persists
+# across /new and session resets (it lives in the gateway process, not in a
+# session) and clears on gateway restart (reloads config default).
+# ---------------------------------------------------------------------------
+_session_model_override: dict | None = None  # {"provider": ..., "model": ..., "base_url": ...}
+
+
+def set_session_model(provider: str, model: str, base_url: str = "") -> None:
+    """Set a gateway-level model override (does not write to config.yaml)."""
+    global _session_model_override
+    _session_model_override = {"provider": provider, "model": model, "base_url": base_url}
+
+
+def clear_session_model() -> None:
+    """Clear the gateway-level model override (reverts to config.yaml default)."""
+    global _session_model_override
+    _session_model_override = None
+
+
+def get_session_model() -> dict | None:
+    """Return the current gateway-level model override, or None."""
+    return _session_model_override
+
+
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from env/config — mirrors the resolution in _run_agent_sync.
 
@@ -282,6 +321,10 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     back to the hardcoded default ("anthropic/claude-opus-4.6") which fails
     when the active provider is openai-codex.
     """
+    # Gateway-level override takes priority (set by /models picker)
+    if _session_model_override and _session_model_override.get("model"):
+        return _session_model_override["model"]
+
     model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
     cfg = config if config is not None else _load_gateway_config()
     model_cfg = cfg.get("model", {})
@@ -2849,8 +2892,11 @@ class GatewayRunner:
         else:
             ctx_display = str(context_length)
 
+        _override = get_session_model()
+        _override_note = " _(via /models)_" if _override and _override.get("model") else ""
+
         lines = [
-            f"◆ Model: `{model}`",
+            f"◆ Model: `{model}`{_override_note}",
             f"◆ Provider: {provider or 'openrouter'}",
             f"◆ Context: {ctx_display} tokens ({ctx_source})",
         ]
@@ -3103,10 +3149,10 @@ class GatewayRunner:
         return "\n".join(lines)
 
     async def _handle_model_status_command(self, event: MessageEvent) -> str:
-        """Handle /model-status — show configured vs actual model."""
+        """Handle /model-status — show configured vs active vs last-used model."""
         import yaml
 
-        # What is CONFIGURED
+        # What is CONFIGURED (hard default in config.yaml)
         config_model = "(not set)"
         config_provider = "(not set)"
         config_path = _hermes_home / "config.yaml"
@@ -3123,13 +3169,22 @@ class GatewayRunner:
         except Exception:
             pass
 
-        # What ACTUALLY ran last
-        # _effective_model is set only when fallback activates (primary model failed)
-        # If None, the configured model is what ran
-        if self._effective_model:
-            last_model = f"{self._effective_model} (fallback)"
+        # What is ACTIVE (gateway override from /models picker, or config default)
+        _override = get_session_model()
+        if _override and _override.get("model"):
+            active_model = _override["model"]
+            active_provider = _override.get("provider", config_provider)
+            active_source = "via /models picker"
         else:
-            last_model = f"{config_model} (primary)" if config_model != "(not set)" else "no response yet"
+            active_model = config_model
+            active_provider = config_provider
+            active_source = "from config.yaml"
+
+        # What ACTUALLY ran last (fallback detection)
+        if self._effective_model:
+            last_model = f"{self._effective_model} (fallback activated)"
+        else:
+            last_model = f"{active_model}" if active_model != "(not set)" else "no response yet"
 
         # Cron model
         cron_model = "(check jobs.json)"
@@ -3150,17 +3205,12 @@ class GatewayRunner:
             pass
 
         lines = [
-            "🔍 **Model Status**",
+            "**Model Status**",
             "",
-            "**Configured (config.yaml):**",
-            f"  Model: `{config_model}`",
-            f"  Provider: `{config_provider}`",
-            "",
-            "**Last used (this session):**",
-            f"  Model: `{last_model}`",
-            "",
-            "**Cron jobs:**",
-            f"  {cron_model}",
+            f"**Default** (config.yaml): `{config_provider}/{config_model}`",
+            f"**Active**: `{active_provider}/{active_model}` ({active_source})",
+            f"**Last reply**: `{last_model}`",
+            f"**Cron**: {cron_model}",
         ]
         return "\n".join(lines)
 

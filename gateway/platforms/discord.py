@@ -2329,12 +2329,25 @@ if DISCORD_AVAILABLE:
             return embed
 
         async def apply_selection(self, interaction: discord.Interaction):
-            from hermes_cli.model_picker_config import apply_model_selection, format_model_selection
+            from hermes_cli.model_picker_config import format_model_selection
+            from hermes_cli.runtime_provider import resolve_runtime_provider
             if not self.selected_provider or not self.selected_model:
                 await interaction.response.send_message("No model selected.", ephemeral=True)
                 return
-            ok, message, _details = apply_model_selection(self.selected_provider, self.selected_model)
-            # Also save reasoning effort to config.yaml
+            # Gateway-level model override — does NOT write to config.yaml.
+            # Config keeps the user's hard default. Override persists across
+            # /new and session resets, clears only on gateway restart.
+            try:
+                runtime = resolve_runtime_provider(requested=self.selected_provider)
+                base_url = (runtime.get("base_url") or "").rstrip("/")
+                from gateway.run import set_session_model
+                set_session_model(self.selected_provider, self.selected_model, base_url)
+                ok = True
+                message = "_(persists until gateway restart)_"
+            except Exception as e:
+                ok = False
+                message = str(e)
+            # Save reasoning effort to config.yaml (reasoning SHOULD persist)
             reasoning_msg = ""
             try:
                 import yaml
