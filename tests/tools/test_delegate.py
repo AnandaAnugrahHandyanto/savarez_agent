@@ -27,6 +27,7 @@ from tools.delegate_tool import (
     _build_child_system_prompt,
     _strip_blocked_tools,
     _resolve_delegation_credentials,
+    _delegate_to_remote,
 )
 
 
@@ -248,6 +249,109 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["api_key"], parent.api_key)
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
+
+
+class TestRemoteDelegation(unittest.TestCase):
+    def test_delegate_task_remote_routes_to_remote_helper(self):
+        """delegate_task(agent=...) should route through _delegate_to_remote."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._delegate_to_remote") as mock_remote:
+            mock_remote.return_value = json.dumps({"success": True, "type": "remote"})
+
+            result = json.loads(
+                delegate_task(
+                    goal="Inspect codebase",
+                    context="Use strict review",
+                    toolsets=["terminal", "file"],
+                    agent=" BSHA ",
+                    parent_agent=parent,
+                )
+            )
+
+            self.assertEqual(result["success"], True)
+            mock_remote.assert_called_once_with(
+                agent_name="BSHA",
+                goal="Inspect codebase",
+                context="Use strict review",
+                toolsets=["terminal", "file"],
+            )
+
+    def test_delegate_task_remote_requires_goal(self):
+        """Remote mode should reject missing goal before calling helper."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._delegate_to_remote") as mock_remote:
+            result = json.loads(delegate_task(agent="BSHA", parent_agent=parent))
+
+        self.assertIn("error", result)
+        self.assertIn("requires a 'goal'", result["error"])
+        mock_remote.assert_not_called()
+
+    def test_delegate_task_remote_ignores_depth_limit(self):
+        """Remote delegation check runs before local depth-limit guard."""
+        parent = _make_mock_parent(depth=MAX_DEPTH)
+
+        with patch("tools.delegate_tool._delegate_to_remote") as mock_remote:
+            mock_remote.return_value = json.dumps({"success": True, "type": "remote"})
+            result = json.loads(delegate_task(goal="hi", agent="bsha", parent_agent=parent))
+
+        self.assertTrue(result.get("success"))
+        mock_remote.assert_called_once()
+
+    @patch("tools.delegate_tool.REMOTE_AGENTS_AVAILABLE", True)
+    @patch("tools.delegate_tool.get_remote_agents")
+    @patch("tools.delegate_tool.call_remote_agent")
+    def test_delegate_to_remote_success_includes_resolved_endpoint(
+        self, mock_call_remote, mock_get_remote
+    ):
+        mock_get_remote.return_value = {
+            "bsha": {
+                "endpoint": "http://bsha:8080/v1",
+                "model": "hermes-agent",
+                "api_key": "${BSHA_API_KEY}",
+            }
+        }
+        mock_call_remote.return_value = {"content": "done"}
+
+        result = json.loads(
+            _delegate_to_remote(
+                agent_name="bsha",
+                goal="Run task",
+                context="ctx",
+                toolsets=["terminal"],
+            )
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["type"], "remote")
+        self.assertEqual(result["agent"], "bsha")
+        self.assertEqual(result["resolved_endpoint"], "http://bsha:8080/v1")
+        self.assertEqual(result["result"], "done")
+
+    @patch("tools.delegate_tool.REMOTE_AGENTS_AVAILABLE", True)
+    @patch("tools.delegate_tool.get_remote_agents")
+    def test_delegate_to_remote_unknown_agent_reports_available(self, mock_get_remote):
+        mock_get_remote.return_value = {
+            "alpha": {"endpoint": "http://alpha/v1"},
+            "beta": {"endpoint": "http://beta/v1"},
+        }
+
+        result = json.loads(
+            _delegate_to_remote(
+                agent_name="missing",
+                goal="Run task",
+                context=None,
+                toolsets=None,
+            )
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("Unknown remote agent", result["error"])
+        self.assertIn("alpha", result["error"])
+        self.assertIn("beta", result["error"])
+        self.assertEqual(result["type"], "remote")
+        self.assertEqual(result["resolved_endpoint"], None)
 
 
 class TestToolNamePreservation(unittest.TestCase):
