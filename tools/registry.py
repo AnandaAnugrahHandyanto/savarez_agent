@@ -66,6 +66,11 @@ class ToolRegistry:
         emoji: str = "",
     ):
         """Register a tool.  Called at module-import time by each tool file."""
+        # External/plugin tools sometimes omit schema["name"]. The registry
+        # already has the canonical tool name, so normalize the schema here
+        # instead of letting downstream callers crash on startup.
+        if "name" not in schema:
+            schema = {**schema, "name": name}
         existing = self._tools.get(name)
         if existing and existing.toolset != toolset:
             logger.warning(

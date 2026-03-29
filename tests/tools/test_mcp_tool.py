@@ -2792,6 +2792,28 @@ class TestRegistryCollisionWarning:
 
         assert not any("collision" in r.message.lower() for r in caplog.records)
 
+    def test_missing_schema_name_is_filled_from_registry_name(self):
+        """Tools without schema['name'] should still produce valid definitions."""
+        from tools.registry import ToolRegistry
+
+        reg = ToolRegistry()
+        schema = {"description": "test", "parameters": {"type": "object", "properties": {}}}
+        handler = lambda args, **kw: "{}"
+
+        reg.register(name="my_tool", toolset="builtin", schema=schema, handler=handler)
+
+        defs = reg.get_definitions({"my_tool"})
+        assert defs == [
+            {
+                "type": "function",
+                "function": {
+                    "name": "my_tool",
+                    "description": "test",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+
 
 class TestMCPBuiltinCollisionGuard:
     """MCP tools that collide with built-in tool names are skipped."""
