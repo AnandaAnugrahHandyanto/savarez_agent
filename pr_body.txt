@@ -1,0 +1,14 @@
+This PR implements the Boot Orchestrator CLI, tests, and CI workflow.
+
+OPERATING_RULES report:
+- What I did: Created tools/boot_orchestrator.py that validates runtime/boot_order.d YAML files; added tests/tests_boot.py; added .github/workflows/boot.yml to run tests and CLI.
+- Why: Implements tasks 3 & 4 from the plan (Boot Orchestrator).
+- Notes: The CLI depends on PyYAML.
+
+OUTPUT_SCHEMA:
+{
+  "branch": "forge/boot-orchestrator",
+  "orchestrator": "tools/boot_orchestrator.py",
+  "tests": ["tests/boot_test.py"],
+  "ci": ".github/workflows/boot.yml"
+}
