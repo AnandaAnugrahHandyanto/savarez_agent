@@ -19,13 +19,16 @@ Storage: ~/.hermes/pairing/
 """
 
 import json
+import logging
 import os
 import secrets
 import time
 from pathlib import Path
 from typing import Optional
 
-from hermes_constants import get_hermes_dir
+from hermes_cli.config import get_hermes_home
+
+logger = logging.getLogger(__name__)
 
 
 # Unambiguous alphabet -- excludes 0/O, 1/I to prevent confusion
@@ -41,7 +44,7 @@ LOCKOUT_SECONDS = 3600              # Lockout duration after too many failures
 MAX_PENDING_PER_PLATFORM = 3        # Max pending codes per platform
 MAX_FAILED_ATTEMPTS = 5             # Failed approvals before lockout
 
-PAIRING_DIR = get_hermes_dir("platforms/pairing", "pairing")
+PAIRING_DIR = get_hermes_home() / "pairing"
 
 
 def _secure_write(path: Path, data: str) -> None:
@@ -253,8 +256,7 @@ class PairingStore:
             lockout_key = f"_lockout:{platform}"
             limits[lockout_key] = time.time() + LOCKOUT_SECONDS
             limits[fail_key] = 0  # Reset counter
-            print(f"[pairing] Platform {platform} locked out for {LOCKOUT_SECONDS}s "
-                  f"after {MAX_FAILED_ATTEMPTS} failed attempts", flush=True)
+            logger.warning("[pairing] Platform %s locked out for %ds after %d failed attempts", platform, LOCKOUT_SECONDS, MAX_FAILED_ATTEMPTS)
         self._save_json(self._rate_limit_path(), limits)
 
     # ----- Cleanup -----
