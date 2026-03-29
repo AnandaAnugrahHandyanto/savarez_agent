@@ -56,6 +56,7 @@ VALID_HOOKS: Set[str] = {
     "post_llm_call",
     "on_session_start",
     "on_session_end",
+    "pre_context_compress",  # Allow alternative context assembly before compression
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
@@ -72,6 +73,7 @@ def _env_enabled(name: str) -> bool:
 # Data classes
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class PluginManifest:
     """Parsed representation of a plugin.yaml manifest."""
@@ -83,7 +85,7 @@ class PluginManifest:
     requires_env: List[str] = field(default_factory=list)
     provides_tools: List[str] = field(default_factory=list)
     provides_hooks: List[str] = field(default_factory=list)
-    source: str = ""        # "user", "project", or "entrypoint"
+    source: str = ""  # "user", "project", or "entrypoint"
     path: Optional[str] = None
 
 
@@ -102,6 +104,7 @@ class LoadedPlugin:
 # ---------------------------------------------------------------------------
 # PluginContext  – handed to each plugin's ``register()`` function
 # ---------------------------------------------------------------------------
+
 
 class PluginContext:
     """Facade given to plugins so they can register tools and hooks."""
@@ -151,8 +154,7 @@ class PluginContext:
         """
         if hook_name not in VALID_HOOKS:
             logger.warning(
-                "Plugin '%s' registered unknown hook '%s' "
-                "(valid: %s)",
+                "Plugin '%s' registered unknown hook '%s' (valid: %s)",
                 self.manifest.name,
                 hook_name,
                 ", ".join(sorted(VALID_HOOKS)),
@@ -164,6 +166,7 @@ class PluginContext:
 # ---------------------------------------------------------------------------
 # PluginManager
 # ---------------------------------------------------------------------------
+
 
 class PluginManager:
     """Central manager that discovers, loads, and invokes plugins."""
@@ -232,7 +235,9 @@ class PluginManager:
 
             try:
                 if yaml is None:
-                    logger.warning("PyYAML not installed – cannot load %s", manifest_file)
+                    logger.warning(
+                        "PyYAML not installed – cannot load %s", manifest_file
+                    )
                     continue
                 data = yaml.safe_load(manifest_file.read_text()) or {}
                 manifest = PluginManifest(
@@ -306,8 +311,10 @@ class PluginManager:
                 ctx = PluginContext(manifest, self)
                 register_fn(ctx)
                 loaded.tools_registered = [
-                    t for t in self._plugin_tool_names
-                    if t not in {
+                    t
+                    for t in self._plugin_tool_names
+                    if t
+                    not in {
                         n
                         for name, p in self._plugins.items()
                         for n in p.tools_registered
