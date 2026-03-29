@@ -32,6 +32,8 @@ from hermes_cli.clipboard import (
     _wayland_save,
     _wayland_has_image,
     _convert_to_png,
+    _CF_PNG,
+    _get_cf_png,
 )
 
 FAKE_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
@@ -875,3 +877,70 @@ class TestQueueRouting:
         is_command = isinstance(user_input, str) and user_input.startswith("/")
         assert is_command is False
         assert len(submit_images) == 1
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Level 9: CF_PNG custom format registration and priority
+# ═════════════════════════════════════════════════════════════════════════
+
+class TestCFPngFormat:
+    """CF_PNG custom format registration and priority."""
+
+    def test_cf_png_registered_on_windows(self):
+        """_CF_PNG should be a non-zero int on Windows, None elsewhere."""
+        if sys.platform == "win32":
+            assert _CF_PNG is not None
+            assert isinstance(_CF_PNG, int)
+            assert _CF_PNG > 0
+        else:
+            assert _CF_PNG is None
+
+    def test_get_cf_png_returns_none_on_non_windows(self):
+        """_get_cf_png should return None on non-Windows platforms."""
+        with patch("hermes_cli.clipboard.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            assert _get_cf_png() is None
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+    def test_has_image_checks_cf_png_first(self):
+        """CF_PNG availability should short-circuit DIB checks."""
+        import hermes_cli.clipboard as clipboard
+        fake_id = 49161  # typical registered format ID
+        with patch.object(clipboard, "_CF_PNG", fake_id):
+            mock_u32 = MagicMock()
+            mock_u32.IsClipboardFormatAvailable.side_effect = lambda fmt: fmt == fake_id
+            with patch("ctypes.windll") as mock_windll:
+                mock_windll.user32 = mock_u32
+                with patch.object(clipboard, "_win32_api_configured", True):
+                    result = clipboard._windows_has_image()
+        assert result is True
+        # First format checked should be CF_PNG
+        first_call_fmt = mock_u32.IsClipboardFormatAvailable.call_args_list[0][0][0]
+        assert first_call_fmt == fake_id
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+    def test_save_image_uses_cf_png_bytes_directly(self, tmp_path):
+        """When CF_PNG available, _windows_save writes raw bytes without PowerShell."""
+        import hermes_cli.clipboard as clipboard
+        dest = tmp_path / "out.png"
+        fake_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20
+        fake_id = 49161
+
+        mock_u32 = MagicMock()
+        mock_u32.IsClipboardFormatAvailable.return_value = True
+        mock_u32.OpenClipboard.return_value = 1
+        mock_u32.GetClipboardData.return_value = 0x1000
+
+        mock_k32 = MagicMock()
+        mock_k32.GlobalSize.return_value = len(fake_png)
+        mock_k32.GlobalLock.return_value = 0x2000
+
+        with patch.object(clipboard, "_CF_PNG", fake_id):
+            with patch.object(clipboard, "_win32_api_configured", True):
+                with patch("ctypes.windll") as mock_windll:
+                    mock_windll.user32 = mock_u32
+                    mock_windll.kernel32 = mock_k32
+                    with patch("ctypes.string_at", return_value=fake_png):
+                        result = clipboard._windows_save(dest)
+        assert result is True
+        assert dest.read_bytes() == fake_png

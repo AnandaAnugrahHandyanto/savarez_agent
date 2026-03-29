@@ -225,6 +225,22 @@ _CF_UNICODETEXT = 13
 _CF_TEXT = 1
 _GMEM_MOVEABLE = 0x0002
 
+# Custom registered formats (Windows)
+# CF_PNG is placed on the clipboard by Chrome, Firefox, Word, and Snipping Tool.
+# It preserves alpha channels losslessly — always prefer it over DIB formats.
+# The format ID varies per Windows session, so we register at runtime.
+def _get_cf_png():
+    """Get the clipboard format ID for PNG (registered by Chrome/Firefox/Word)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        return ctypes.windll.user32.RegisterClipboardFormatW("PNG")
+    except Exception:
+        return None
+
+_CF_PNG: int | None = _get_cf_png()  # None on non-Windows
+
 
 # ── Native win32 clipboard via ctypes (64-bit safe) ─────────────────────
 #
@@ -258,6 +274,8 @@ def _configure_win32_api():
         k32.GlobalLock.restype = ctypes.c_void_p
         k32.GlobalUnlock.argtypes = [ctypes.wintypes.HGLOBAL]
         k32.GlobalUnlock.restype = ctypes.wintypes.BOOL
+        k32.GlobalSize.argtypes = [ctypes.wintypes.HGLOBAL]
+        k32.GlobalSize.restype = ctypes.c_size_t
 
         _win32_api_configured = True
     except Exception:
@@ -270,12 +288,14 @@ def _windows_has_image() -> bool:
         import ctypes
         _configure_win32_api()
         u32 = ctypes.windll.user32
-        # Check without opening — IsClipboardFormatAvailable is thread-safe
-        return bool(
-            u32.IsClipboardFormatAvailable(_CF_BITMAP)
-            or u32.IsClipboardFormatAvailable(_CF_DIB)
-            or u32.IsClipboardFormatAvailable(_CF_DIBV5)
-        )
+        # Check CF_PNG first (Chrome/Firefox/Word store alpha-correct PNG here)
+        if _CF_PNG and u32.IsClipboardFormatAvailable(_CF_PNG):
+            return True
+        # Fall back to DIB formats
+        for fmt in (_CF_DIBV5, _CF_DIB, _CF_BITMAP):
+            if u32.IsClipboardFormatAvailable(fmt):
+                return True
+        return False
     except Exception as e:
         logger.debug("Win32 clipboard image check failed: %s", e)
     return False
@@ -372,11 +392,40 @@ def _find_powershell_native() -> str:
 def _windows_save(dest: Path) -> bool:
     """Extract clipboard image on native Windows.
 
-    Uses ctypes for the quick has-image check, then PowerShell for the
-    actual PNG extraction (DIB→PNG conversion needs .NET).
+    Tries CF_PNG first (direct raw bytes, no conversion needed), then
+    falls back to PowerShell for DIB→PNG conversion via .NET.
     """
     if not _windows_has_image():
         return False
+
+    # Try CF_PNG first — direct bytes, no PowerShell needed
+    if _CF_PNG:
+        try:
+            import ctypes
+            _configure_win32_api()
+            u32 = ctypes.windll.user32
+            k32 = ctypes.windll.kernel32
+            if u32.IsClipboardFormatAvailable(_CF_PNG):
+                u32.OpenClipboard(0)
+                try:
+                    h = u32.GetClipboardData(_CF_PNG)
+                    if h:
+                        size = k32.GlobalSize(h)
+                        ptr = k32.GlobalLock(h)
+                        if ptr and size:
+                            data = ctypes.string_at(ptr, size)
+                            k32.GlobalUnlock(h)
+                            u32.CloseClipboard()
+                            dest.write_bytes(data)
+                            return True
+                        k32.GlobalUnlock(h)
+                finally:
+                    try:
+                        u32.CloseClipboard()
+                    except Exception:
+                        pass
+        except Exception:
+            pass  # Fall through to PowerShell/DIB path below
 
     try:
         ps = _find_powershell_native()
