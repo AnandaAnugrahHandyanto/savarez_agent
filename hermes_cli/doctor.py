@@ -125,6 +125,79 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
         check_warn("Could not verify systemd linger", f"({linger_detail})")
 
 
+def _check_windows_platform(issues: list[str]) -> None:
+    """Windows-specific health checks. Only called on sys.platform == 'win32'."""
+    import platform as _platform
+
+    print()
+    print(color("◆ Windows Platform", Colors.CYAN, Colors.BOLD))
+
+    # 1. Windows build (AF_UNIX requires build 17063+)
+    try:
+        build = int(_platform.version().split(".")[-1])
+        if build >= 17063:
+            check_ok("Windows build", f"(Build {build}, AF_UNIX supported)")
+        else:
+            check_warn("Windows build", f"(Build {build} — AF_UNIX sockets unavailable, need 17063+)")
+            check_info("Update Windows via Settings > Windows Update")
+            issues.append("Update Windows to build 17063+ for AF_UNIX socket support")
+    except Exception:
+        check_warn("Windows build", "(could not determine build number)")
+
+    # 2. WSL availability
+    wsl = shutil.which("wsl.exe") or shutil.which("wsl")
+    if wsl:
+        try:
+            r = subprocess.run([wsl, "--status"], capture_output=True, timeout=5)
+            if r.returncode == 0:
+                check_ok("WSL", "(available)")
+            else:
+                check_warn("WSL", "(wsl.exe found but --status failed)")
+                check_info("Try: wsl --install")
+        except Exception as e:
+            check_warn("WSL", f"(check failed: {e})")
+    else:
+        check_warn("WSL", "(not installed — optional, needed for some tools)")
+        check_info("Install with: wsl --install")
+
+    # 3. Windows Terminal
+    wt_path = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WindowsApps\wt.exe")
+    if os.path.exists(wt_path) or shutil.which("wt.exe") or shutil.which("wt"):
+        check_ok("Windows Terminal", "(installed)")
+    else:
+        check_warn("Windows Terminal", "(not found — some display features work best in Windows Terminal)")
+        check_info("Install with: winget install Microsoft.WindowsTerminal")
+
+    # 4. Windows Defender scanning (best-effort)
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows Defender\Real-Time Protection"
+        )
+        val, _ = winreg.QueryValueEx(key, "DisableRealtimeMonitoring")
+        winreg.CloseKey(key)
+        if val:
+            check_ok("Windows Defender", "(real-time scanning disabled)")
+        else:
+            venv = os.environ.get("VIRTUAL_ENV", "")
+            check_warn("Windows Defender", "(real-time scanning active — may slow file I/O)")
+            if venv:
+                check_info(f'Exclude venv: Add-MpPreference -ExclusionPath "{venv}"')
+            else:
+                check_info("Exclude Python: Add-MpPreference -ExclusionProcess python.exe")
+    except Exception:
+        pass  # can't read defender status, skip silently
+
+    # 5. keyring availability
+    try:
+        import keyring  # noqa: F401
+        check_ok("keyring", "(available — API keys stored in Windows Credential Manager)")
+    except ImportError:
+        check_warn("keyring", "(not installed — API keys stored in plaintext files)")
+        check_info('Install with: pip install "hermes-agent[keyring]"')
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
@@ -381,7 +454,10 @@ def run_doctor(args):
         check_info(f"{_DHH}/state.db not created yet (will be created on first session)")
 
     _check_gateway_service_linger(issues)
-    
+
+    if sys.platform == "win32":
+        _check_windows_platform(issues)
+
     # =========================================================================
     # Check: External tools
     # =========================================================================
