@@ -108,6 +108,26 @@ The agent runs these instructions in a background thread so it doesn't block gat
 No BOOT.md? The hook silently skips — zero overhead. Create the file whenever you need startup automation, delete it when you don't.
 :::
 
+#### Gateway Restart Notification — Practical Example
+
+A common problem with restarting the gateway via a messaging platform (Discord, Telegram, etc.) is that the restart kills the connection before the confirmation message can be delivered. The user has no way to know if the gateway came back online.
+
+BOOT.md solves this cleanly — on every startup, send a one-line confirmation back to your home channel:
+
+**Create `~/.hermes/BOOT.md`:**
+
+```markdown
+# Boot Notification
+
+Send one short message to the home Discord channel: "✅ Hermes is back online."
+
+Keep it to one line. No extra commentary.
+```
+
+Now when you run `hermes gateway restart` from Discord, the connection drops — but when it comes back up, BOOT.md fires automatically and posts the confirmation. You'll know exactly when it's safe to resume.
+
+This pattern works for any platform (Telegram, Slack, WhatsApp) — the agent uses `send_message` to deliver to your configured home channel.
+
 #### Telegram Alert on Long Tasks
 
 Send yourself a message when the agent takes more than 10 steps:
