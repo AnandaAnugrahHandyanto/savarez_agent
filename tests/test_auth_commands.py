@@ -320,10 +320,11 @@ def test_auth_list_does_not_call_mutating_select(monkeypatch, capsys):
     class _Entry:
         id = "cred-1"
         label = "primary"
-        auth_type = "api_key"
+        auth_type="***"
         source = "manual"
         last_status = None
         last_error_code = None
+        last_status_at = None
 
     class _Pool:
         def entries(self):
@@ -348,3 +349,35 @@ def test_auth_list_does_not_call_mutating_select(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "openrouter (1 credentials):" in out
     assert "primary" in out
+
+
+def test_auth_list_shows_exhausted_cooldown(monkeypatch, capsys):
+    from hermes_cli.auth_commands import auth_list_command
+
+    class _Entry:
+        id = "cred-1"
+        label = "primary"
+        auth_type = "api_key"
+        source = "manual"
+        last_status = "exhausted"
+        last_error_code = 429
+        last_status_at = 1000.0
+
+    class _Pool:
+        def entries(self):
+            return [_Entry()]
+
+        def peek(self):
+            return None
+
+    monkeypatch.setattr("hermes_cli.auth_commands.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr("hermes_cli.auth_commands.time.time", lambda: 1030.0)
+
+    class _Args:
+        provider = "openrouter"
+
+    auth_list_command(_Args())
+
+    out = capsys.readouterr().out
+    assert "exhausted (429)" in out
+    assert "59m 30s left" in out

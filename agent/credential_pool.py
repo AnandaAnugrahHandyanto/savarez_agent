@@ -260,15 +260,10 @@ class CredentialPool:
                 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
             )
         if self.provider == "nous":
-            if _is_expiring(entry.expires_at, ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
-                return True
-            return not _agent_key_is_usable(
-                {
-                    "agent_key": entry.agent_key,
-                    "agent_key_expires_at": entry.agent_key_expires_at,
-                },
-                DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
-            )
+            # Nous refresh/mint can require network access and should happen when
+            # runtime credentials are actually resolved, not merely when the pool
+            # is enumerated for listing, migration, or selection.
+            return False
         return False
 
     def select(self) -> Optional[PooledCredential]:

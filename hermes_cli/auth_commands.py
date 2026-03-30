@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from getpass import getpass
+import math
+import time
 import uuid
 
 from agent.credential_pool import (
@@ -13,6 +15,7 @@ from agent.credential_pool import (
     PooledCredential,
     label_from_token,
     load_pool,
+    _exhausted_ttl,
 )
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
@@ -43,6 +46,26 @@ def _api_key_default_label(count: int) -> str:
 
 def _display_source(source: str) -> str:
     return source.split(":", 1)[1] if source.startswith("manual:") else source
+
+
+def _format_exhausted_status(entry) -> str:
+    if entry.last_status != STATUS_EXHAUSTED:
+        return ""
+    code = f" ({entry.last_error_code})" if entry.last_error_code else ""
+    if not entry.last_status_at:
+        return f" exhausted{code}"
+    remaining = max(0, int(math.ceil((entry.last_status_at + _exhausted_ttl(entry.last_error_code)) - time.time())))
+    if remaining <= 0:
+        return f" exhausted{code} (ready to retry)"
+    minutes, seconds = divmod(remaining, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        wait = f"{hours}h {minutes}m"
+    elif minutes:
+        wait = f"{minutes}m {seconds}s"
+    else:
+        wait = f"{seconds}s"
+    return f" exhausted{code} ({wait} left)"
 
 
 def auth_add_command(args) -> None:
@@ -177,9 +200,7 @@ def auth_list_command(args) -> None:
             marker = "  "
             if current is not None and entry.id == current.id:
                 marker = "← "
-            status = ""
-            if entry.last_status == STATUS_EXHAUSTED:
-                status = f" exhausted ({entry.last_error_code})"
+            status = _format_exhausted_status(entry)
             source = _display_source(entry.source)
             print(f"  #{idx}  {entry.label:<20} {entry.auth_type:<7} {source}{status} {marker}".rstrip())
         print()
