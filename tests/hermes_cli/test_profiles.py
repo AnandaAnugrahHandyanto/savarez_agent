@@ -5,6 +5,7 @@ management, export/import, renaming, alias collision checks, profile isolation,
 and shell completion generation.
 """
 
+import io
 import json
 import os
 import tarfile
@@ -452,6 +453,35 @@ class TestExportImport:
     def test_export_nonexistent_raises(self, profile_env, tmp_path):
         with pytest.raises(FileNotFoundError):
             export_profile("nonexistent", str(tmp_path / "out.tar.gz"))
+
+    def test_import_flat_archive_wraps_files_under_requested_name(self, profile_env, tmp_path):
+        archive_path = tmp_path / "export" / "flat.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with tarfile.open(archive_path, "w:gz") as tf:
+            for name, payload in [("config.yaml", b"model: x\n"), ("marker.txt", b"hello")]:
+                info = tarfile.TarInfo(name=name)
+                info.size = len(payload)
+                tf.addfile(info, io.BytesIO(payload))
+
+        imported = import_profile(str(archive_path), name="coder")
+        assert imported.is_dir()
+        assert (imported / "config.yaml").read_text() == "model: x\n"
+        assert (imported / "marker.txt").read_text() == "hello"
+        assert not ((_get_profiles_root()) / "config.yaml").exists()
+
+    def test_import_rejects_unsafe_member_paths(self, profile_env, tmp_path):
+        archive_path = tmp_path / "export" / "unsafe.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with tarfile.open(archive_path, "w:gz") as tf:
+            info = tarfile.TarInfo(name="../escape.txt")
+            payload = b"nope"
+            info.size = len(payload)
+            tf.addfile(info, io.BytesIO(payload))
+
+        with pytest.raises(ValueError, match="Unsafe archive member path"):
+            import_profile(str(archive_path), name="coder")
 
 
 # ===================================================================

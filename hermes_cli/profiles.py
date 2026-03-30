@@ -26,8 +26,9 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import List, Optional
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -702,6 +703,25 @@ def export_profile(name: str, output_path: str) -> Path:
     return Path(result)
 
 
+def _inspect_profile_archive(archive: Path) -> set[str]:
+    """Validate archive members and return discovered top-level names."""
+    import tarfile
+
+    top_names: set[str] = set()
+    with tarfile.open(archive, "r:gz") as tf:
+        for member in tf.getmembers():
+            member_path = PurePosixPath(member.name)
+            parts = member_path.parts
+            if not parts:
+                continue
+            if member_path.is_absolute() or any(part in ("", ".", "..") for part in parts):
+                raise ValueError(f"Unsafe archive member path: {member.name}")
+            if member.issym() or member.islnk():
+                raise ValueError(f"Archive contains unsupported link entry: {member.name}")
+            top_names.add(parts[0])
+    return top_names
+
+
 def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     """Import a profile from a tar.gz archive.
 
@@ -714,13 +734,9 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     if not archive.exists():
         raise FileNotFoundError(f"Archive not found: {archive}")
 
-    # Peek at the archive to find the top-level directory name
-    with tarfile.open(archive, "r:gz") as tf:
-        top_dirs = {m.name.split("/")[0] for m in tf.getmembers() if "/" in m.name}
-        if not top_dirs:
-            top_dirs = {m.name for m in tf.getmembers() if m.isdir()}
+    top_dirs = _inspect_profile_archive(archive)
 
-    inferred_name = name or (top_dirs.pop() if len(top_dirs) == 1 else None)
+    inferred_name = name or (next(iter(top_dirs)) if len(top_dirs) == 1 else None)
     if not inferred_name:
         raise ValueError(
             "Cannot determine profile name from archive. "
@@ -735,12 +751,21 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     profiles_root = _get_profiles_root()
     profiles_root.mkdir(parents=True, exist_ok=True)
 
-    shutil.unpack_archive(str(archive), str(profiles_root))
+    with tempfile.TemporaryDirectory(dir=profiles_root, prefix=".profile-import-") as tmpdir:
+        extract_root = Path(tmpdir)
+        with tarfile.open(archive, "r:gz") as tf:
+            tf.extractall(extract_root, filter="data")
 
-    # If the archive extracted under a different name, rename
-    extracted = profiles_root / (top_dirs.pop() if top_dirs else inferred_name)
-    if extracted != profile_dir and extracted.exists():
-        extracted.rename(profile_dir)
+        extracted_items = list(extract_root.iterdir())
+        if not extracted_items:
+            raise ValueError(f"Archive is empty: {archive}")
+
+        if len(extracted_items) == 1 and extracted_items[0].is_dir():
+            extracted_items[0].rename(profile_dir)
+        else:
+            profile_dir.mkdir(parents=True, exist_ok=False)
+            for item in extracted_items:
+                item.rename(profile_dir / item.name)
 
     return profile_dir
 
