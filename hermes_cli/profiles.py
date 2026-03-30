@@ -698,7 +698,8 @@ def export_profile(name: str, output_path: str) -> Path:
     output = Path(output_path)
     # shutil.make_archive wants the base name without extension
     base = str(output).removesuffix(".tar.gz").removesuffix(".tgz")
-    result = shutil.make_archive(base, "gztar", str(profile_dir.parent), name)
+    archive_root = profile_dir.name
+    result = shutil.make_archive(base, "gztar", str(profile_dir.parent), archive_root)
     return Path(result)
 
 

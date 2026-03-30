@@ -418,6 +418,19 @@ class TestExportImport:
         assert Path(result).exists()
         assert tarfile.is_tarfile(str(result))
 
+    def test_export_default_profile_uses_default_directory(self, profile_env, tmp_path):
+        default_home = get_profile_dir("default")
+        (default_home / "marker.txt").write_text("hello")
+
+        output = tmp_path / "export" / "default.tar.gz"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        result = export_profile("default", str(output))
+
+        assert Path(result).exists()
+        with tarfile.open(result, "r:gz") as tf:
+            names = tf.getnames()
+        assert ".hermes/marker.txt" in names
+
     def test_import_restores_from_archive(self, profile_env, tmp_path):
         # Create and export a profile
         create_profile("coder", no_alias=True)
