@@ -82,6 +82,28 @@ model:
 #     model: google/gemini-2.5-flash
 
 # =============================================================================
+# Optional CaMeL Guard
+# =============================================================================
+# Plain `hermes` stays in legacy/off mode by default.
+# To opt in globally, set enabled: true and choose monitor or enforce.
+#
+# camel_guard:
+#   enabled: false
+#   mode: monitor          # off | monitor | enforce
+#   trace_enabled: true
+#   trace_preview_chars: 220
+#
+# Optional cheap auxiliary model just for CaMeL policy classification.
+# If omitted, Hermes falls back to the main provider's auxiliary/default model.
+#
+# auxiliary:
+#   camel_guard:
+#     provider: auto
+#     model: ""
+#     base_url: ""
+#     api_key: ""
+
+# =============================================================================
 # Git Worktree Isolation
 # =============================================================================
 # When enabled, each CLI session creates an isolated git worktree so multiple

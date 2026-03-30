@@ -63,6 +63,7 @@ from agent.usage_pricing import (
     format_duration_compact,
     format_token_count_compact,
 )
+from agent.camel_guard import normalize_camel_guard_mode
 from hermes_cli.banner import _format_context_length
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -1034,6 +1035,7 @@ class HermesCLI:
         resume: str = None,
         checkpoints: bool = False,
         pass_session_id: bool = False,
+        camel_guard: str = None,
     ):
         """
         Initialize the Hermes CLI.
@@ -1049,6 +1051,7 @@ class HermesCLI:
             compact: Use compact display mode
             resume: Session ID to resume (restores conversation history from SQLite)
             pass_session_id: Include the session ID in the agent's system prompt
+            camel_guard: Optional runtime override ("monitor", "enforce", or "off"). None preserves legacy/off unless config explicitly enables CaMeL.
         """
         # Initialize Rich console
         self.console = Console()
@@ -1069,6 +1072,11 @@ class HermesCLI:
         self.busy_input_mode = "queue" if str(_bim).strip().lower() == "queue" else "interrupt"
 
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
+        camel_cfg = self.config.get("camel_guard", {}) if isinstance(self.config, dict) else {}
+        config_mode = normalize_camel_guard_mode(camel_cfg.get("mode", "monitor"), default="monitor")
+        if not camel_cfg.get("enabled", False):
+            config_mode = "off"
+        self.camel_guard_mode = normalize_camel_guard_mode(camel_guard, default=config_mode)
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
@@ -2122,6 +2130,7 @@ class HermesCLI:
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
                 pass_session_id=self.pass_session_id,
+                camel_guard_mode=self.camel_guard_mode,
                 tool_progress_callback=self._on_tool_progress,
                 stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
@@ -2136,6 +2145,7 @@ class HermesCLI:
                 runtime.get("api_mode"),
                 runtime.get("command"),
                 tuple(runtime.get("args") or ()),
+                self.camel_guard_mode,
             )
 
             if self._pending_title and self._session_db:
@@ -4080,6 +4090,7 @@ class HermesCLI:
                     provider_require_parameters=self._provider_require_params,
                     provider_data_collection=self._provider_data_collection,
                     fallback_model=self._fallback_model,
+                    camel_guard_mode=self.camel_guard_mode,
                 )
                 # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
                 bg_agent._print_fn = lambda *_a, **_kw: None
@@ -7499,6 +7510,7 @@ def main(
     w: bool = False,
     checkpoints: bool = False,
     pass_session_id: bool = False,
+    camel_guard: str = None,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -7520,6 +7532,7 @@ def main(
         resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
         worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
         w: Shorthand for --worktree
+        camel_guard: Optional CaMeL runtime mode override for this process. None preserves legacy/off by default.
     
     Examples:
         python cli.py                            # Start interactive mode
@@ -7606,6 +7619,7 @@ def main(
         resume=resume,
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
+        camel_guard=camel_guard,
     )
 
     if parsed_skills:
