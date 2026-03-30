@@ -48,7 +48,7 @@ hermes              # start chatting!
 
 ## Deploy on Railway
 
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.com/deploy/hermes-agent-1?referralCode=uXzB-u)
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.com/deploy/hermes-agent-1)
 
 One-click deploy; complete the web setup, then chat with Hermes on Telegram.
 
