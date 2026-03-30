@@ -13,10 +13,13 @@ from hermes_cli.commands import (
     SlashCommandAutoSuggest,
     SlashCommandCompleter,
     gateway_help_lines,
+    rebuild_lookups,
     resolve_command,
     slack_subcommand_map,
     telegram_bot_commands,
+    telegram_menu_commands,
 )
+import hermes_cli.commands as commands_mod
 
 
 def _completions(completer: SlashCommandCompleter, text: str):
@@ -158,6 +161,9 @@ class TestGatewayKnownCommands:
         assert "bg" in GATEWAY_KNOWN_COMMANDS
         assert "background" in GATEWAY_KNOWN_COMMANDS
 
+    def test_commands_is_known_gateway_command(self):
+        assert "commands" in GATEWAY_KNOWN_COMMANDS
+
     def test_is_frozenset(self):
         assert isinstance(GATEWAY_KNOWN_COMMANDS, frozenset)
 
@@ -201,6 +207,30 @@ class TestTelegramBotCommands:
             if cmd.cli_only and not cmd.gateway_config_gate:
                 tg_name = cmd.name.replace("-", "_")
                 assert tg_name not in names
+
+    def test_commands_is_present_in_telegram_menu(self):
+        names = {name for name, _ in telegram_bot_commands()}
+        assert "commands" in names
+
+    def test_menu_helper_caps_overflow(self):
+        original_registry = list(commands_mod.COMMAND_REGISTRY)
+        try:
+            extra = [
+                CommandDef(f"extra{i}", f"Extra command {i}", "Info", gateway_only=True)
+                for i in range(120)
+            ]
+            commands_mod.COMMAND_REGISTRY[:] = [*original_registry, *extra]
+            rebuild_lookups()
+
+            menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
+
+            assert len(menu_commands) == 100
+            assert hidden_count > 0
+            assert menu_commands[0][0] == "new"
+            assert "commands" in {name for name, _ in menu_commands}
+        finally:
+            commands_mod.COMMAND_REGISTRY[:] = original_registry
+            rebuild_lookups()
 
 
 class TestSlackSubcommandMap:

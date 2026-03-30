@@ -118,6 +118,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills", cli_only=True),
 
     # Info
+    CommandDef("commands", "Browse all available commands in pages", "Info",
+               gateway_only=True, args_hint="[page]"),
     CommandDef("help", "Show available commands", "Info"),
     CommandDef("usage", "Show token usage for the current session", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
@@ -359,6 +361,17 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
         tg_name = cmd.name.replace("-", "_")
         result.append((tg_name, cmd.description))
     return result
+
+
+def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str]], int]:
+    """Return Telegram menu commands capped to the Bot API limit.
+
+    Commands beyond ``max_commands`` remain callable in the gateway; they are
+    just omitted from Telegram's native slash-command picker.
+    """
+    all_commands = telegram_bot_commands()
+    hidden_count = max(0, len(all_commands) - max_commands)
+    return all_commands[:max_commands], hidden_count
 
 
 def slack_subcommand_map() -> dict[str, str]:

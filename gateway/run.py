@@ -1817,6 +1817,9 @@ class GatewayRunner:
         
         if canonical == "help":
             return await self._handle_help_command(event)
+
+        if canonical == "commands":
+            return await self._handle_commands_command(event)
         
         if canonical == "status":
             return await self._handle_status_command(event)
@@ -3059,6 +3062,7 @@ class GatewayRunner:
         from hermes_cli.commands import gateway_help_lines
         lines = [
             "📖 **Hermes Commands**\n",
+            "Use `/commands` for a paginated list when the full command set is too long.\n",
             *gateway_help_lines(),
         ]
         try:
@@ -3070,6 +3074,54 @@ class GatewayRunner:
                     lines.append(f"`{cmd}` — {skill_cmds[cmd]['description']}")
         except Exception:
             pass
+        return "\n".join(lines)
+
+    async def _handle_commands_command(self, event: MessageEvent) -> str:
+        """Handle /commands command - show the full command list in pages."""
+        from gateway.config import Platform
+        from hermes_cli.commands import gateway_help_lines
+
+        raw_args = event.get_command_args().strip()
+        if raw_args:
+            try:
+                requested_page = int(raw_args)
+            except ValueError:
+                return "Usage: `/commands [page]`"
+        else:
+            requested_page = 1
+
+        entries = list(gateway_help_lines())
+        try:
+            from agent.skill_commands import get_skill_commands
+
+            skill_cmds = get_skill_commands()
+            for name in sorted(skill_cmds):
+                desc = skill_cmds[name].get("description", "").strip() or "Skill command"
+                entries.append(f"`{name}` -- {desc}")
+        except Exception:
+            pass
+
+        if not entries:
+            return "No gateway commands are available."
+
+        page_size = 10 if event.source.platform == Platform.TELEGRAM else 15
+        total_pages = max(1, (len(entries) + page_size - 1) // page_size)
+        page = max(1, min(requested_page, total_pages))
+        start = (page - 1) * page_size
+        page_entries = entries[start:start + page_size]
+
+        lines = [
+            f"📚 **Commands** ({len(entries)} total, page {page}/{total_pages})",
+            "",
+            *page_entries,
+        ]
+        if total_pages > 1:
+            lines.extend([
+                "",
+                f"Use `/commands {max(1, page - 1)}` or `/commands {min(total_pages, page + 1)}` to move between pages.",
+            ])
+        if page != requested_page:
+            lines.append(f"Requested page {requested_page} was out of range, showing page {page}.")
         return "\n".join(lines)
     
     async def _handle_provider_command(self, event: MessageEvent) -> str:
