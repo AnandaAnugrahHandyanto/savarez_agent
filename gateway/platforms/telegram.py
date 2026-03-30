@@ -722,6 +722,29 @@ class TelegramAdapter(BasePlatformAdapter):
         else:  # "first" (default)
             return chunk_index == 0
 
+    def _get_effective_thread_id(self, chat_id: str, thread_id: Optional[str]) -> Optional[int]:
+        """Get the effective thread_id for sending, clearing it for DMs.
+        
+        Telegram DMs (chat_id > 0) don't support message_thread_id and will
+        error if it's passed. This helper proactively clears thread_id for DMs
+        as a defense-in-depth measure.
+        
+        Args:
+            chat_id: The chat ID to send to
+            thread_id: The requested thread ID (may be None)
+            
+        Returns:
+            The thread_id as int if it should be used, None otherwise
+        """
+        if thread_id is None:
+            return None
+        chat_id_int = int(chat_id)
+        # DMs have positive chat_ids, groups/channels have negative
+        # If this is a DM, don't use thread_id even if provided
+        if chat_id_int > 0:
+            return None
+        return int(thread_id)
+
     async def send(
         self,
         chat_id: str,
@@ -762,7 +785,9 @@ class TelegramAdapter(BasePlatformAdapter):
             for i, chunk in enumerate(chunks):
                 should_thread = self._should_thread_reply(reply_to, i)
                 reply_to_id = int(reply_to) if should_thread else None
-                effective_thread_id = int(thread_id) if thread_id else None
+                
+                # Get effective thread_id, clearing it for DMs (chat_id > 0)
+                effective_thread_id = self._get_effective_thread_id(chat_id, thread_id)
 
                 msg = None
                 for _send_attempt in range(3):
@@ -770,7 +795,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         # Try Markdown first, fall back to plain text if it fails
                         try:
                             msg = await self._bot.send_message(
-                                chat_id=int(chat_id),
+                                chat_id=chat_id_int,
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
@@ -798,13 +823,16 @@ class TelegramAdapter(BasePlatformAdapter):
                         # specific cases instead of blindly retrying.
                         if _BadReq and isinstance(send_err, _BadReq):
                             err_lower = str(send_err).lower()
-                            if "thread not found" in err_lower and effective_thread_id is not None:
+                            # Check for various thread-related error messages
+                            thread_errors = ["thread not found", "message thread not found", 
+                                           "invalid message thread", "forum thread not found"]
+                            if any(err in err_lower for err in thread_errors) and effective_thread_id is not None:
                                 # Thread doesn't exist — retry without
                                 # message_thread_id so the message still
                                 # reaches the chat.
                                 logger.warning(
-                                    "[%s] Thread %s not found, retrying without message_thread_id",
-                                    self.name, effective_thread_id,
+                                    "[%s] Thread %s not found (error: %s), retrying without message_thread_id",
+                                    self.name, effective_thread_id, send_err,
                                 )
                                 effective_thread_id = None
                                 continue
@@ -940,22 +968,24 @@ class TelegramAdapter(BasePlatformAdapter):
                 # .ogg files -> send as voice (round playable bubble)
                 if audio_path.endswith(".ogg") or audio_path.endswith(".opus"):
                     _voice_thread = metadata.get("thread_id") if metadata else None
+                    effective_voice_thread = self._get_effective_thread_id(chat_id, _voice_thread)
                     msg = await self._bot.send_voice(
                         chat_id=int(chat_id),
                         voice=audio_file,
                         caption=caption[:1024] if caption else None,
                         reply_to_message_id=int(reply_to) if reply_to else None,
-                        message_thread_id=int(_voice_thread) if _voice_thread else None,
+                        message_thread_id=effective_voice_thread,
                     )
                 else:
                     # .mp3 and others -> send as audio file
                     _audio_thread = metadata.get("thread_id") if metadata else None
+                    effective_audio_thread = self._get_effective_thread_id(chat_id, _audio_thread)
                     msg = await self._bot.send_audio(
                         chat_id=int(chat_id),
                         audio=audio_file,
                         caption=caption[:1024] if caption else None,
                         reply_to_message_id=int(reply_to) if reply_to else None,
-                        message_thread_id=int(_audio_thread) if _audio_thread else None,
+                        message_thread_id=effective_audio_thread,
                     )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -986,13 +1016,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=f"Image file not found: {image_path}")
 
             _thread = metadata.get("thread_id") if metadata else None
+            effective_thread = self._get_effective_thread_id(chat_id, _thread)
             with open(image_path, "rb") as image_file:
                 msg = await self._bot.send_photo(
                     chat_id=int(chat_id),
                     photo=image_file,
                     caption=caption[:1024] if caption else None,
                     reply_to_message_id=int(reply_to) if reply_to else None,
-                    message_thread_id=int(_thread) if _thread else None,
+                    message_thread_id=effective_thread,
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -1024,6 +1055,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
             display_name = file_name or os.path.basename(file_path)
             _thread = metadata.get("thread_id") if metadata else None
+            effective_thread = self._get_effective_thread_id(chat_id, _thread)
 
             with open(file_path, "rb") as f:
                 msg = await self._bot.send_document(
@@ -1032,7 +1064,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     filename=display_name,
                     caption=caption[:1024] if caption else None,
                     reply_to_message_id=int(reply_to) if reply_to else None,
-                    message_thread_id=int(_thread) if _thread else None,
+                    message_thread_id=effective_thread,
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -1057,13 +1089,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=f"Video file not found: {video_path}")
 
             _thread = metadata.get("thread_id") if metadata else None
+            effective_thread = self._get_effective_thread_id(chat_id, _thread)
             with open(video_path, "rb") as f:
                 msg = await self._bot.send_video(
                     chat_id=int(chat_id),
                     video=f,
                     caption=caption[:1024] if caption else None,
                     reply_to_message_id=int(reply_to) if reply_to else None,
-                    message_thread_id=int(_thread) if _thread else None,
+                    message_thread_id=effective_thread,
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -1089,12 +1122,13 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             # Telegram can send photos directly from URLs (up to ~5MB)
             _photo_thread = metadata.get("thread_id") if metadata else None
+            effective_thread = self._get_effective_thread_id(chat_id, _photo_thread)
             msg = await self._bot.send_photo(
                 chat_id=int(chat_id),
                 photo=image_url,
                 caption=caption[:1024] if caption else None,  # Telegram caption limit
                 reply_to_message_id=int(reply_to) if reply_to else None,
-                message_thread_id=int(_photo_thread) if _photo_thread else None,
+                message_thread_id=effective_thread,
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -1143,12 +1177,13 @@ class TelegramAdapter(BasePlatformAdapter):
         
         try:
             _anim_thread = metadata.get("thread_id") if metadata else None
+            effective_thread = self._get_effective_thread_id(chat_id, _anim_thread)
             msg = await self._bot.send_animation(
                 chat_id=int(chat_id),
                 animation=animation_url,
                 caption=caption[:1024] if caption else None,
                 reply_to_message_id=int(reply_to) if reply_to else None,
-                message_thread_id=int(_anim_thread) if _anim_thread else None,
+                message_thread_id=effective_thread,
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -1166,10 +1201,11 @@ class TelegramAdapter(BasePlatformAdapter):
         if self._bot:
             try:
                 _typing_thread = metadata.get("thread_id") if metadata else None
+                effective_thread = self._get_effective_thread_id(chat_id, _typing_thread)
                 await self._bot.send_chat_action(
                     chat_id=int(chat_id),
                     action="typing",
-                    message_thread_id=int(_typing_thread) if _typing_thread else None,
+                    message_thread_id=effective_thread,
                 )
             except Exception as e:
                 # Typing failures are non-fatal; log at debug level only.
