@@ -14,6 +14,7 @@ import sys
 import types
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from gateway.config import PlatformConfig, Platform
@@ -33,11 +34,16 @@ class FakeBadRequest(FakeNetworkError):
     pass
 
 
+class FakeTimedOut(FakeNetworkError):
+    pass
+
+
 # Build a fake telegram module tree so the adapter's internal imports work
 _fake_telegram = types.ModuleType("telegram")
 _fake_telegram_error = types.ModuleType("telegram.error")
 _fake_telegram_error.NetworkError = FakeNetworkError
 _fake_telegram_error.BadRequest = FakeBadRequest
+_fake_telegram_error.TimedOut = FakeTimedOut
 _fake_telegram.error = _fake_telegram_error
 _fake_telegram_constants = types.ModuleType("telegram.constants")
 _fake_telegram_constants.ParseMode = SimpleNamespace(MARKDOWN_V2="MarkdownV2")
@@ -146,7 +152,7 @@ async def test_send_without_thread_id_unaffected():
 
 @pytest.mark.asyncio
 async def test_send_retries_network_errors_normally():
-    """Real transient network errors (not BadRequest) should still be retried."""
+    """Connect-stage network errors should still be retried."""
     adapter = _make_adapter()
 
     attempt = [0]
@@ -154,7 +160,9 @@ async def test_send_retries_network_errors_normally():
     async def mock_send_message(**kwargs):
         attempt[0] += 1
         if attempt[0] < 3:
-            raise FakeNetworkError("Connection reset")
+            raise FakeNetworkError("httpx.ConnectError: Connection reset") from httpx.ConnectError(
+                "Connection reset"
+            )
         return SimpleNamespace(message_id=200)
 
     adapter._bot = SimpleNamespace(send_message=mock_send_message)
@@ -166,6 +174,31 @@ async def test_send_retries_network_errors_normally():
 
     assert result.success is True
     assert attempt[0] == 3  # Two retries then success
+
+
+@pytest.mark.asyncio
+async def test_send_does_not_retry_ambiguous_timeouts():
+    """Read/write timeouts may happen after delivery starts, so don't resend."""
+    adapter = _make_adapter()
+
+    attempt = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        raise FakeTimedOut("Timed out waiting for Telegram response") from httpx.ReadTimeout(
+            "read timeout"
+        )
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="test message",
+    )
+
+    assert result.success is False
+    assert "Timed out waiting for Telegram response" in result.error
+    assert attempt[0] == 1
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ Uses python-telegram-bot library for:
 """
 
 import asyncio
+import httpx
 import json
 import logging
 import os
@@ -177,6 +178,27 @@ class TelegramAdapter(BasePlatformAdapter):
         except ImportError:
             pass
         return isinstance(error, OSError)
+
+    @staticmethod
+    def _is_retryable_send_network_error(error: Exception) -> bool:
+        """Retry only when the request clearly never reached Telegram.
+
+        PTB wraps underlying httpx failures in higher-level telegram errors.
+        Connect/pool failures are safe to retry because no request was
+        delivered. Read/write timeouts are ambiguous and can duplicate sends.
+        """
+        if "Request was *not* sent to Telegram" in str(error):
+            return True
+
+        current: BaseException | None = error
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if isinstance(current, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)):
+                return True
+            current = current.__cause__ or current.__context__
+
+        return False
 
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
@@ -839,6 +861,8 @@ class TelegramAdapter(BasePlatformAdapter):
                                 reply_to_id = None
                                 continue
                             # Other BadRequest errors are permanent — don't retry
+                            raise
+                        if not self._is_retryable_send_network_error(send_err):
                             raise
                         if _send_attempt < 2:
                             wait = 2 ** _send_attempt
