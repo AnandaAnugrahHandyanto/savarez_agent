@@ -101,6 +101,21 @@ class TestGeneratedSystemdUnits:
         assert "TimeoutStopSec=60" in unit
         assert "WantedBy=multi-user.target" in unit
 
+    def test_system_unit_uses_target_user_hermes_home_not_root(self, monkeypatch):
+        """When installed via sudo, HERMES_HOME must point to the target user's
+        home directory, not /root/.hermes (the installing user)."""
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True)
+
+        assert 'HERMES_HOME=/home/alice/.hermes' in unit
+        assert '/root/.hermes' not in unit
+
 
 class TestGatewayStopCleanup:
     def test_stop_sweeps_manual_gateway_processes_after_service_stop(self, tmp_path, monkeypatch):

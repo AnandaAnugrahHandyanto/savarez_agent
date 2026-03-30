@@ -484,6 +484,11 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
+        # When installing via sudo, get_hermes_home() resolves to /root/.hermes
+        # because Path.home() returns root's home.  For system services we need
+        # the *target* user's HERMES_HOME instead.
+        if not os.getenv("HERMES_HOME"):
+            hermes_home = str(Path(home_dir) / ".hermes")
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)
