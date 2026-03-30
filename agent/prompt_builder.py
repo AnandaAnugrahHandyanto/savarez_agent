@@ -240,6 +240,11 @@ PLATFORM_HINTS = {
         "is preserved for threading. Do not include greetings or sign-offs unless "
         "contextually appropriate."
     ),
+    "ntfy": (
+        "You are communicating via ntfy push notifications. Keep responses concise; "
+        "ntfy messages are push notifications delivered to the user's device. "
+        "Use plain text unless the channel is configured with markdown enabled."
+    ),
     "cron": (
         "You are running as a scheduled cron job. There is no user present — you "
         "cannot ask questions, request clarification, or wait for follow-up. Execute "
