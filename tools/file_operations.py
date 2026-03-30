@@ -529,8 +529,11 @@ class ShellFileOperations(FileOperations):
         if read_result.exit_code != 0:
             return ReadResult(error=f"Failed to read file: {read_result.stdout}")
         
-        # Get total line count
-        wc_cmd = f"wc -l < {self._escape_shell_arg(path)}"
+        # Get total line count.
+        # grep -c '' counts lines correctly regardless of trailing newline.
+        # wc -l counts newline characters, undercounting by 1 for files that
+        # do not end with a newline.
+        wc_cmd = f"grep -c '' {self._escape_shell_arg(path)}"
         wc_result = self._exec(wc_cmd)
         try:
             total_lines = int(wc_result.stdout.strip())
