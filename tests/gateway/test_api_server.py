@@ -24,8 +24,10 @@ from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
+    MAX_REQUEST_BYTES,
     ResponseStore,
     _CORS_HEADERS,
+    body_limit_middleware,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -215,8 +217,8 @@ def _make_adapter(api_key: str = "", cors_origins=None) -> APIServerAdapter:
 
 def _create_app(adapter: APIServerAdapter) -> web.Application:
     """Create the aiohttp app from the adapter (without starting the full server)."""
-    mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
-    app = web.Application(middlewares=mws)
+    mws = [mw for mw in (cors_middleware, security_headers_middleware, body_limit_middleware) if mw is not None]
+    app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
     app["api_server_adapter"] = adapter
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_get("/v1/health", adapter._handle_health)
@@ -318,6 +320,33 @@ class TestModelsEndpoint:
 
 
 class TestChatCompletionsEndpoint:
+    @pytest.mark.asyncio
+    async def test_chunked_oversize_body_returns_413(self, adapter):
+        """Chunked requests must not bypass the request-body size limit."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                over = "x" * (MAX_REQUEST_BYTES + 200)
+                payload = json.dumps(
+                    {"model": "hermes-agent", "messages": [{"role": "user", "content": over}]}
+                ).encode("utf-8")
+
+                async def _chunked():
+                    chunk_size = 65536
+                    for idx in range(0, len(payload), chunk_size):
+                        yield payload[idx : idx + chunk_size]
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    data=_chunked(),
+                    headers={"Content-Type": "application/json"},
+                )
+
+            assert resp.status == 413
+            data = await resp.json()
+            assert data["error"]["code"] == "body_too_large"
+            mock_run.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_invalid_json_returns_400(self, adapter):
         app = _create_app(adapter)

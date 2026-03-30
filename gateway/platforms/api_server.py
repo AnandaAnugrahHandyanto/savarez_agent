@@ -207,6 +207,40 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
+async def _read_json_request(
+    request: "web.Request",
+    *,
+    openai_style: bool = False,
+) -> tuple[Optional[Dict[str, Any]], Optional["web.Response"]]:
+    """Parse a JSON request body with consistent oversized-body handling."""
+    try:
+        body = await request.json()
+    except web.HTTPRequestEntityTooLarge:
+        if openai_style:
+            return None, web.json_response(
+                _openai_error("Request body too large.", code="body_too_large"),
+                status=413,
+            )
+        return None, web.json_response({"error": "Request body too large"}, status=413)
+    except (json.JSONDecodeError, Exception):
+        if openai_style:
+            return None, web.json_response(
+                _openai_error("Invalid JSON in request body"),
+                status=400,
+            )
+        return None, web.json_response({"error": "Invalid JSON in request body"}, status=400)
+
+    if not isinstance(body, dict):
+        if openai_style:
+            return None, web.json_response(
+                _openai_error("Invalid JSON in request body"),
+                status=400,
+            )
+        return None, web.json_response({"error": "Invalid JSON in request body"}, status=400)
+
+    return body, None
+
+
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
@@ -219,7 +253,13 @@ if AIOHTTP_AVAILABLE:
                         return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
                 except ValueError:
                     return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
-        return await handler(request)
+        try:
+            return await handler(request)
+        except web.HTTPRequestEntityTooLarge:
+            return web.json_response(
+                _openai_error("Request body too large.", code="body_too_large"),
+                status=413,
+            )
 else:
     body_limit_middleware = None  # type: ignore[assignment]
 
@@ -450,11 +490,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
-        # Parse request body
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, Exception):
-            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+        body, error = await _read_json_request(request, openai_style=True)
+        if error:
+            return error
 
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
@@ -701,14 +739,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
-        # Parse request body
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, Exception):
-            return web.json_response(
-                {"error": {"message": "Invalid JSON in request body", "type": "invalid_request_error"}},
-                status=400,
-            )
+        body, error = await _read_json_request(request, openai_style=True)
+        if error:
+            return error
 
         raw_input = body.get("input")
         if raw_input is None:
@@ -964,7 +997,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if cron_err:
             return cron_err
         try:
-            body = await request.json()
+            body, error = await _read_json_request(request)
+            if error:
+                return error
             name = (body.get("name") or "").strip()
             schedule = (body.get("schedule") or "").strip()
             prompt = body.get("prompt", "")
@@ -1034,7 +1069,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         try:
-            body = await request.json()
+            body, error = await _read_json_request(request)
+            if error:
+                return error
             # Whitelist allowed fields to prevent arbitrary key injection
             sanitized = {k: v for k, v in body.items() if k in self._UPDATE_ALLOWED_FIELDS}
             if not sanitized:
@@ -1241,8 +1278,8 @@ class APIServerAdapter(BasePlatformAdapter):
             return False
 
         try:
-            mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
-            self._app = web.Application(middlewares=mws)
+            mws = [mw for mw in (cors_middleware, security_headers_middleware, body_limit_middleware) if mw is not None]
+            self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/v1/health", self._handle_health)
