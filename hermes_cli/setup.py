@@ -1516,7 +1516,7 @@ def setup_agent_settings(config: dict):
     )
     print_info("Maximum tool-calling iterations per conversation.")
     print_info("Higher = more complex tasks, but costs more tokens.")
-    print_info("Recommended: 30-60 for most tasks, 100+ for open exploration.")
+    print_info("Default is 90, which works for most tasks. Use 150+ for open exploration.")
 
     max_iter_str = prompt("Max iterations", current_max)
     try:
