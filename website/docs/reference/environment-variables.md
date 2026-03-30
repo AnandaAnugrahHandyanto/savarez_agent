@@ -25,6 +25,14 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `COPILOT_CLI_PATH` | Alias for `HERMES_COPILOT_ACP_COMMAND` |
 | `HERMES_COPILOT_ACP_ARGS` | Override Copilot ACP arguments (default: `--acp --stdio`) |
 | `COPILOT_ACP_BASE_URL` | Override Copilot ACP base URL |
+| `HERMES_CLAUDE_CODE_COMMAND` | Override Claude Code CLI binary path (default: `claude`) |
+| `CLAUDE_CODE_PATH` | Alias for `HERMES_CLAUDE_CODE_COMMAND` |
+| `HERMES_CLAUDE_CODE_ARGS` | Override Claude Code CLI arguments prepended before `-p` |
+| `HERMES_CLAUDE_CODE_ALLOWED_TOOLS` | Comma-separated Claude Code tools allowed in headless mode (toolset-derived by default) |
+| `HERMES_CLAUDE_CODE_PERMISSION_MODE` | Optional Claude Code permission mode for headless runs (defaults to `acceptEdits`) |
+| `HERMES_CLAUDE_CODE_MAX_TURNS` | Max inner Claude Code agentic turns per Hermes request (default: `10`) |
+| `HERMES_CLAUDE_CODE_HERMES_MCP_TOOLS` | Comma-separated Hermes-native tools bridged into Claude Code via local MCP (default: `session_search`; use `off` to disable) |
+| `CLAUDE_CODE_CLI_BASE_URL` | Override Claude Code CLI marker base URL |
 | `GLM_API_KEY` | z.ai / ZhipuAI GLM API key ([z.ai](https://z.ai)) |
 | `ZAI_API_KEY` | Alias for `GLM_API_KEY` |
 | `Z_AI_API_KEY` | Alias for `GLM_API_KEY` |
@@ -42,7 +50,7 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `ANTHROPIC_API_KEY` | Anthropic Console API key ([console.anthropic.com](https://console.anthropic.com/)) |
 | `ANTHROPIC_TOKEN` | Manual or legacy Anthropic OAuth/setup-token override |
 | `DASHSCOPE_API_KEY` | Alibaba Cloud DashScope API key for Qwen models ([modelstudio.console.alibabacloud.com](https://modelstudio.console.alibabacloud.com/)) |
-| `DASHSCOPE_BASE_URL` | Custom DashScope base URL (default: `https://coding-intl.dashscope.aliyuncs.com/v1`) |
+| `DASHSCOPE_BASE_URL` | Custom DashScope base URL (default: international endpoint) |
 | `DEEPSEEK_API_KEY` | DeepSeek API key for direct DeepSeek access ([platform.deepseek.com](https://platform.deepseek.com/api_keys)) |
 | `DEEPSEEK_BASE_URL` | Custom DeepSeek API base URL |
 | `OPENCODE_ZEN_API_KEY` | OpenCode Zen API key — pay-as-you-go access to curated models ([opencode.ai](https://opencode.ai/auth)) |
@@ -63,7 +71,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 
 | Variable | Description |
 |----------|-------------|
-| `HERMES_INFERENCE_PROVIDER` | Override provider selection: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `kilocode`, `alibaba` (default: `auto`) |
+| `HERMES_INFERENCE_PROVIDER` | Override provider selection: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `claude-code-cli`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `kilocode`, `alibaba` (default: `auto`) |
 | `HERMES_PORTAL_BASE_URL` | Override Nous Portal URL (for development/testing) |
 | `NOUS_INFERENCE_BASE_URL` | Override Nous inference API URL |
 | `HERMES_NOUS_MIN_KEY_TTL_SECONDS` | Min agent key TTL before re-mint (default: 1800 = 30min) |

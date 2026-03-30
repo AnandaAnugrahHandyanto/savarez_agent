@@ -26,6 +26,32 @@ def test_resolve_runtime_provider_codex(monkeypatch):
     assert resolved["requested_provider"] == "openai-codex"
 
 
+def test_resolve_runtime_provider_claude_code_cli(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "claude-code-cli")
+    monkeypatch.setattr(
+        rp,
+        "resolve_external_process_provider_credentials",
+        lambda provider_id: {
+            "provider": provider_id,
+            "api_key": "claude-code-cli",
+            "base_url": "acp://claude-code-cli",
+            "command": "/usr/bin/claude",
+            "args": ["--debug"],
+            "source": "process",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="claude-code-cli")
+
+    assert resolved["provider"] == "claude-code-cli"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "acp://claude-code-cli"
+    assert resolved["api_key"] == "claude-code-cli"
+    assert resolved["command"] == "/usr/bin/claude"
+    assert resolved["args"] == ["--debug"]
+    assert resolved["requested_provider"] == "claude-code-cli"
+
+
 def test_resolve_runtime_provider_ai_gateway(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "ai-gateway")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})

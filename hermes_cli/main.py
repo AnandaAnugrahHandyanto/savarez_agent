@@ -44,6 +44,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -122,11 +123,10 @@ def _has_any_provider_configured() -> bool:
         except Exception:
             pass
 
-    # Check provider-specific auth fallbacks (for example, Copilot via gh auth).
+    # Check provider-specific auth fallbacks (OAuth, external-process providers,
+    # and API-key providers that expose a logged_in snapshot).
     try:
         for provider_id, pconfig in PROVIDER_REGISTRY.items():
-            if pconfig.auth_type != "api_key":
-                continue
             status = get_auth_status(provider_id)
             if status.get("logged_in"):
                 return True
@@ -436,6 +436,74 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
     return None
 
 
+def _load_session_resume_runtime(session_id: str) -> dict[str, str]:
+    """Recover model/provider hints for a resumed session from SessionDB."""
+    runtime: dict[str, str] = {}
+    if not session_id:
+        return runtime
+
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            session = db.get_session(session_id)
+        finally:
+            db.close()
+    except Exception:
+        return runtime
+
+    if not session:
+        return runtime
+
+    model = str(session.get("model") or "").strip()
+    if model:
+        runtime["model"] = model
+
+    provider = str(session.get("billing_provider") or "").strip()
+    base_url = str(session.get("billing_base_url") or "").strip()
+
+    raw_model_config = session.get("model_config")
+    if raw_model_config:
+        try:
+            model_config = json.loads(raw_model_config)
+        except (TypeError, json.JSONDecodeError):
+            model_config = None
+        if isinstance(model_config, dict):
+            provider = str(model_config.get("provider") or provider).strip()
+            base_url = str(model_config.get("base_url") or base_url).strip()
+            if not model:
+                restored_model = str(model_config.get("model") or "").strip()
+                if restored_model:
+                    runtime["model"] = restored_model
+
+    if not provider and base_url.startswith("acp://claude-code-cli"):
+        provider = "claude-code-cli"
+    elif not provider and base_url.startswith("acp://copilot"):
+        provider = "copilot-acp"
+
+    if provider:
+        runtime["provider"] = provider
+    if base_url:
+        runtime["base_url"] = base_url
+    return runtime
+
+
+def _hydrate_resume_runtime_args(args) -> None:
+    """Populate provider/model hints from a resumed session when absent."""
+    session_id = getattr(args, "resume", None)
+    if not session_id:
+        return
+
+    runtime = _load_session_resume_runtime(str(session_id))
+    if runtime.get("provider") and not getattr(args, "provider", None):
+        args.provider = runtime["provider"]
+    if runtime.get("model") and not getattr(args, "model", None):
+        args.model = runtime["model"]
+    if runtime.get("base_url") and not getattr(args, "base_url", None):
+        args.base_url = runtime["base_url"]
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
     # Resolve --continue into --resume with the latest CLI session or by name
@@ -467,6 +535,8 @@ def cmd_chat(args):
             args.resume = resolved
         # If resolution fails, keep the original value — _init_agent will
         # report "Session not found" with the original input
+
+    _hydrate_resume_runtime_args(args)
 
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
@@ -524,6 +594,7 @@ def cmd_chat(args):
     kwargs = {
         "model": args.model,
         "provider": getattr(args, "provider", None),
+        "base_url": getattr(args, "base_url", None),
         "toolsets": args.toolsets,
         "skills": getattr(args, "skills", None),
         "verbose": args.verbose,
@@ -784,6 +855,7 @@ def cmd_model(args):
         "nous": "Nous Portal",
         "openai-codex": "OpenAI Codex",
         "copilot-acp": "GitHub Copilot ACP",
+        "claude-code-cli": "Claude Code CLI",
         "copilot": "GitHub Copilot",
         "anthropic": "Anthropic",
         "zai": "Z.AI / GLM",
@@ -811,6 +883,7 @@ def cmd_model(args):
         ("nous", "Nous Portal (Nous Research subscription)"),
         ("openai-codex", "OpenAI Codex"),
         ("copilot-acp", "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
+        ("claude-code-cli", "Claude Code CLI (spawns `claude -p`)"),
         ("copilot", "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
         ("anthropic", "Anthropic (Claude models — API key or Claude Code)"),
         ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
@@ -883,6 +956,8 @@ def cmd_model(args):
         _model_flow_openai_codex(config, current_model)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
+    elif selected_provider == "claude-code-cli":
+        _model_flow_claude_code_cli(config, current_model)
     elif selected_provider == "copilot":
         _model_flow_copilot(config, current_model)
     elif selected_provider == "custom":
@@ -1451,6 +1526,12 @@ _PROVIDER_MODELS = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    "claude-code-cli": [
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-haiku-4-5",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -1873,6 +1954,77 @@ def _model_flow_copilot_acp(config, current_model=""):
         catalog=catalog,
         api_key=catalog_api_key,
     ) or selected
+    _save_model_choice(selected)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    model["base_url"] = effective_base
+    model["api_mode"] = "chat_completions"
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Default model set to: {selected} (via {pconfig.name})")
+
+
+def _model_flow_claude_code_cli(config, current_model=""):
+    """Claude Code CLI flow using the local `claude -p` command."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+        get_external_process_provider_status,
+        resolve_external_process_provider_credentials,
+    )
+    from hermes_cli.config import load_config, save_config
+
+    del config
+
+    provider_id = "claude-code-cli"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+
+    status = get_external_process_provider_status(provider_id)
+    resolved_command = status.get("resolved_command") or status.get("command") or "claude"
+    effective_base = status.get("base_url") or pconfig.inference_base_url
+
+    print("  Claude Code CLI delegates Hermes turns to `claude -p`.")
+    print("  Hermes starts a short-lived Claude Code process for each request.")
+    print("  Claude may use Claude Code tools internally and then returns a final answer to Hermes.")
+    print(f"  Command: {resolved_command}")
+    print(f"  Backend marker: {effective_base}")
+    print("  Default allowed tools: derived from Hermes toolsets (fallback: Read,Glob,Grep)")
+    print("  Inner turn cap: HERMES_CLAUDE_CODE_MAX_TURNS (default: 10)")
+    print()
+
+    try:
+        creds = resolve_external_process_provider_credentials(provider_id)
+    except Exception as exc:
+        print(f"  ⚠ {exc}")
+        print("  Set HERMES_CLAUDE_CODE_COMMAND or CLAUDE_CODE_PATH if Claude Code is installed elsewhere.")
+        return
+
+    effective_base = creds.get("base_url") or effective_base
+
+    model_list = _PROVIDER_MODELS.get(provider_id, [])
+    if model_list:
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model,
+        )
+    else:
+        try:
+            selected = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if not selected:
+        print("No change.")
+        return
+
     _save_model_choice(selected)
 
     cfg = load_config()
@@ -3248,7 +3400,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "claude-code-cli", "copilot", "anthropic", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
         default=None,
         help="Inference provider (default: auto)"
     )

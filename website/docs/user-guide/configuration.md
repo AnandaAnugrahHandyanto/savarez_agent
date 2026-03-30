@@ -81,6 +81,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
 | **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
+| **Claude Code CLI** | `hermes model` (spawns local `claude -p`) |
 | **Anthropic** | `hermes model` (Claude Pro/Max via Claude Code auth, Anthropic API key, or manual setup-token) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
@@ -193,6 +194,27 @@ model:
 | `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API (first priority) |
 | `HERMES_COPILOT_ACP_COMMAND` | Override the Copilot CLI binary path (default: `copilot`) |
 | `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio`) |
+
+**`claude-code-cli` — Claude Code CLI backend**. Spawns the local Claude Code CLI as a subprocess:
+
+```bash
+hermes chat --provider claude-code-cli --model claude-sonnet-4-6
+# Requires Claude Code CLI in PATH and an existing Claude Code login session
+```
+
+| Environment variable | Description |
+|---------------------|-------------|
+| `HERMES_CLAUDE_CODE_COMMAND` | Override the Claude Code CLI binary path (default: `claude`) |
+| `CLAUDE_CODE_PATH` | Alias for `HERMES_CLAUDE_CODE_COMMAND` |
+| `HERMES_CLAUDE_CODE_ARGS` | Extra CLI args to prepend before `-p` |
+| `HERMES_CLAUDE_CODE_HERMES_MCP_TOOLS` | Optional Hermes-native tools exposed to Claude Code through a local MCP bridge (default: `session_search`) |
+| `HERMES_CLAUDE_CODE_ALLOWED_TOOLS` | Override Claude Code headless tools. By default Hermes derives a conservative set from enabled Hermes toolsets. |
+| `HERMES_CLAUDE_CODE_PERMISSION_MODE` | Optional permission mode passed to Claude Code in headless mode (defaults to `acceptEdits`) |
+| `HERMES_CLAUDE_CODE_MAX_TURNS` | Max inner Claude Code turns per Hermes request (default: `10`) |
+
+When the local MCP bridge is enabled, Claude Code also receives a small
+Hermes-native tool catalog helper so it can discover which native Hermes tools
+exist and ask for additional bridges explicitly when needed.
 
 ### First-Class Chinese AI Providers
 

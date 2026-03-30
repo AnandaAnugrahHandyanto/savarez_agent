@@ -967,11 +967,17 @@ class TestStripBudgetWarningsFromHistory:
         from run_agent import _strip_budget_warnings_from_history
 
         messages = [
-            {"role": "tool", "tool_call_id": "c1", "content": json.dumps({
-                "output": "hello",
-                "exit_code": 0,
-                "_budget_warning": "[BUDGET: Iteration 55/60. 5 iterations left. Start consolidating your work.]",
-            })},
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": json.dumps(
+                    {
+                        "output": "hello",
+                        "exit_code": 0,
+                        "_budget_warning": "[BUDGET: Iteration 55/60. 5 iterations left. Start consolidating your work.]",
+                    }
+                ),
+            },
         ]
         _strip_budget_warnings_from_history(messages)
         parsed = json.loads(messages[0]["content"])
@@ -983,8 +989,16 @@ class TestStripBudgetWarningsFromHistory:
         from run_agent import _strip_budget_warnings_from_history
 
         messages = [
-            {"role": "tool", "tool_call_id": "c1",
-             "content": "some result\n\n[BUDGET WARNING: Iteration 58/60. Only 2 iteration(s) left. Provide your final response NOW. No more tool calls unless absolutely critical.]"},
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": (
+                    "some result\n\n"
+                    "[BUDGET WARNING: Iteration 58/60. Only 2 iteration(s) left. "
+                    "Provide your final response NOW. No more tool calls unless "
+                    "absolutely critical.]"
+                ),
+            },
         ]
         _strip_budget_warnings_from_history(messages)
         assert messages[0]["content"] == "some result"
@@ -993,12 +1007,19 @@ class TestStripBudgetWarningsFromHistory:
         from run_agent import _strip_budget_warnings_from_history
 
         messages = [
-            {"role": "assistant", "content": "[BUDGET WARNING: Iteration 58/60. Only 2 iteration(s) left. Provide your final response NOW. No more tool calls unless absolutely critical.]"},
+            {
+                "role": "assistant",
+                "content": (
+                    "[BUDGET WARNING: Iteration 58/60. Only 2 iteration(s) left. "
+                    "Provide your final response NOW. No more tool calls unless "
+                    "absolutely critical.]"
+                ),
+            },
             {"role": "user", "content": "hello"},
         ]
-        original_contents = [m["content"] for m in messages]
+        original_contents = [message["content"] for message in messages]
         _strip_budget_warnings_from_history(messages)
-        assert [m["content"] for m in messages] == original_contents
+        assert [message["content"] for message in messages] == original_contents
 
     def test_handles_empty_and_missing_content(self):
         from run_agent import _strip_budget_warnings_from_history
@@ -1015,10 +1036,16 @@ class TestStripBudgetWarningsFromHistory:
         from run_agent import _strip_budget_warnings_from_history
 
         messages = [
-            {"role": "tool", "tool_call_id": "c1", "content": json.dumps({
-                "output": "ok",
-                "_budget_warning": "[BUDGET: Iteration 42/60. 18 iterations left. Start consolidating your work.]",
-            })},
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": json.dumps(
+                    {
+                        "output": "ok",
+                        "_budget_warning": "[BUDGET: Iteration 42/60. 18 iterations left. Start consolidating your work.]",
+                    }
+                ),
+            },
         ]
         _strip_budget_warnings_from_history(messages)
         parsed = json.loads(messages[0]["content"])

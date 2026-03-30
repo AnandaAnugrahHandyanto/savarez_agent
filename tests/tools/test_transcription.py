@@ -13,6 +13,16 @@ from unittest.mock import MagicMock, patch, mock_open
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def clean_env(monkeypatch):
+    """Ensure host API keys do not leak into provider-selection tests."""
+    monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
+    monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+
+
 # ---------------------------------------------------------------------------
 # Provider selection
 # ---------------------------------------------------------------------------

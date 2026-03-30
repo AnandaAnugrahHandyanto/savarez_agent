@@ -573,6 +573,13 @@ class AIAgent:
         self.background_review_callback = None  # Optional sync callback for gateway delivery
         self.skip_context_files = skip_context_files
         self.pass_session_id = pass_session_id
+        resolved_session_start = datetime.now()
+        if session_id:
+            resolved_session_id = session_id
+        else:
+            timestamp_str = resolved_session_start.strftime("%Y%m%d_%H%M%S")
+            short_uuid = uuid.uuid4().hex[:6]
+            resolved_session_id = f"{timestamp_str}_{short_uuid}"
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -807,9 +814,15 @@ class AIAgent:
                 # Explicit credentials from CLI/gateway — construct directly.
                 # The runtime provider resolver already handled auth for us.
                 client_kwargs = {"api_key": api_key, "base_url": base_url}
-                if self.provider == "copilot-acp":
+                if self.provider in {"copilot-acp", "claude-code-cli"}:
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
+                if self.provider == "claude-code-cli":
+                    client_kwargs["session_id"] = resolved_session_id
+                    client_kwargs["enabled_toolsets"] = self.enabled_toolsets
+                    client_kwargs["tool_progress_callback"] = self.tool_progress_callback
+                    client_kwargs["status_callback"] = self.status_callback
+                    client_kwargs["thinking_callback"] = self.thinking_callback
                 effective_base = base_url
                 if "openrouter" in effective_base.lower():
                     client_kwargs["default_headers"] = {
@@ -952,16 +965,8 @@ class AIAgent:
             print(f"💾 Prompt caching: ENABLED ({source}, {self._cache_ttl} TTL)")
         
         # Session logging setup - auto-save conversation trajectories for debugging
-        self.session_start = datetime.now()
-        if session_id:
-            # Use provided session ID (e.g., from CLI)
-            self.session_id = session_id
-        else:
-            # Generate a new session ID
-            timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
-            short_uuid = uuid.uuid4().hex[:6]
-            self.session_id = f"{timestamp_str}_{short_uuid}"
-        
+        self.session_start = resolved_session_start
+        self.session_id = resolved_session_id
         # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
         hermes_home = get_hermes_home()
         self.logs_dir = hermes_home / "sessions"
@@ -3459,6 +3464,17 @@ class AIAgent:
             client = CopilotACPClient(**client_kwargs)
             logger.info(
                 "Copilot ACP client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
+            return client
+        if self.provider == "claude-code-cli" or str(client_kwargs.get("base_url", "")).startswith("acp://claude-code-cli"):
+            from agent.claude_code_cli_client import ClaudeCodeCLIClient
+
+            client = ClaudeCodeCLIClient(**client_kwargs)
+            logger.info(
+                "Claude Code CLI client created (%s, shared=%s) %s",
                 reason,
                 shared,
                 self._client_log_context(),

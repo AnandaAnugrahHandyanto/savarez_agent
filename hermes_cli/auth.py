@@ -69,6 +69,7 @@ DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
+DEFAULT_CLAUDE_CODE_CLI_BASE_URL = "acp://claude-code-cli"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
@@ -124,6 +125,29 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="external_process",
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
+        extra={
+            "command_env_vars": ("HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH"),
+            "default_command": "copilot",
+            "args_env_var": "HERMES_COPILOT_ACP_ARGS",
+            "default_args": ["--acp", "--stdio"],
+            "missing_command_code": "missing_copilot_cli",
+            "install_hint": "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
+        },
+    ),
+    "claude-code-cli": ProviderConfig(
+        id="claude-code-cli",
+        name="Claude Code CLI",
+        auth_type="external_process",
+        inference_base_url=DEFAULT_CLAUDE_CODE_CLI_BASE_URL,
+        base_url_env_var="CLAUDE_CODE_CLI_BASE_URL",
+        extra={
+            "command_env_vars": ("HERMES_CLAUDE_CODE_COMMAND", "CLAUDE_CODE_PATH"),
+            "default_command": "claude",
+            "args_env_var": "HERMES_CLAUDE_CODE_ARGS",
+            "default_args": [],
+            "missing_command_code": "missing_claude_code_cli",
+            "install_hint": "Install Claude Code CLI or set HERMES_CLAUDE_CODE_COMMAND/CLAUDE_CODE_PATH.",
+        },
     ),
     "zai": ProviderConfig(
         id="zai",
@@ -688,6 +712,7 @@ def resolve_provider(
         "kimi": "kimi-coding", "moonshot": "kimi-coding",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
+        "claude-cli": "claude-code-cli", "claude-p": "claude-code-cli",
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
@@ -1635,13 +1660,7 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    command, args = _resolve_external_process_command(pconfig)
     base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
     if not base_url:
         base_url = pconfig.inference_base_url
@@ -1662,14 +1681,14 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
 def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Generic auth status dispatcher."""
     target = provider_id or get_active_provider()
+    pconfig = PROVIDER_REGISTRY.get(target)
     if target == "nous":
         return get_nous_auth_status()
     if target == "openai-codex":
         return get_codex_auth_status()
-    if target == "copilot-acp":
+    if pconfig and pconfig.auth_type == "external_process":
         return get_external_process_provider_status(target)
     # API-key providers
-    pconfig = PROVIDER_REGISTRY.get(target)
     if pconfig and pconfig.auth_type == "api_key":
         return get_api_key_provider_status(target)
     return {"logged_in": False}
@@ -1725,30 +1744,45 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     if not base_url:
         base_url = pconfig.inference_base_url
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    command, args = _resolve_external_process_command(pconfig)
     resolved_command = shutil.which(command) if command else None
     if not resolved_command and not base_url.startswith("acp+tcp://"):
+        install_hint = str(pconfig.extra.get("install_hint") or "").strip()
         raise AuthError(
-            f"Could not find the Copilot CLI command '{command}'. "
-            "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
+            f"Could not find the {pconfig.name} command '{command}'. "
+            f"{install_hint}".strip(),
             provider=provider_id,
-            code="missing_copilot_cli",
+            code=str(pconfig.extra.get("missing_command_code") or "missing_external_process_cli"),
         )
 
     return {
         "provider": provider_id,
-        "api_key": "copilot-acp",
+        "api_key": provider_id,
         "base_url": base_url.rstrip("/"),
         "command": resolved_command or command,
         "args": args,
         "source": "process",
     }
+
+
+def _resolve_external_process_command(pconfig: ProviderConfig) -> tuple[str, list[str]]:
+    command_env_vars = tuple(pconfig.extra.get("command_env_vars") or ())
+    default_command = str(pconfig.extra.get("default_command") or "").strip()
+    args_env_var = str(pconfig.extra.get("args_env_var") or "").strip()
+    default_args = list(pconfig.extra.get("default_args") or [])
+
+    command = ""
+    for env_var in command_env_vars:
+        value = os.getenv(str(env_var), "").strip()
+        if value:
+            command = value
+            break
+    if not command:
+        command = default_command
+
+    raw_args = os.getenv(args_env_var, "").strip() if args_env_var else ""
+    args = shlex.split(raw_args) if raw_args else list(default_args)
+    return command, args
 
 
 # =============================================================================

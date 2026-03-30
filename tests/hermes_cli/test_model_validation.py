@@ -157,6 +157,7 @@ class TestProviderLabel:
         assert provider_label("kimi") == "Kimi / Moonshot"
         assert provider_label("copilot") == "GitHub Copilot"
         assert provider_label("copilot-acp") == "GitHub Copilot ACP"
+        assert provider_label("claude-code-cli") == "Claude Code CLI"
         assert provider_label("auto") == "Auto"
 
     def test_unknown_provider_preserves_original_name(self):
@@ -194,6 +195,11 @@ class TestProviderModelIds:
 
         assert "gpt-5.4" in ids
         assert "copilot-acp" not in ids
+
+    def test_claude_code_cli_returns_curated_claude_models(self):
+        ids = provider_model_ids("claude-code-cli")
+        assert "claude-opus-4-6" in ids
+        assert "claude-sonnet-4-6" in ids
 
 
 # -- fetch_api_models --------------------------------------------------------

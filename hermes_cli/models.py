@@ -86,6 +86,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    "claude-code-cli": [
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-haiku-4-5",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -240,6 +246,7 @@ _PROVIDER_LABELS = {
     "openrouter": "OpenRouter",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
+    "claude-code-cli": "Claude Code CLI",
     "nous": "Nous Portal",
     "copilot": "GitHub Copilot",
     "zai": "Z.AI / GLM",
@@ -268,6 +275,8 @@ _PROVIDER_ALIASES = {
     "github-model": "copilot",
     "github-copilot-acp": "copilot-acp",
     "copilot-acp-agent": "copilot-acp",
+    "claude-cli": "claude-code-cli",
+    "claude-p": "claude-code-cli",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
     "minimax-china": "minimax-cn",
@@ -324,7 +333,7 @@ def list_available_providers() -> list[dict[str, str]]:
     """
     # Canonical providers in display order
     _PROVIDER_ORDER = [
-        "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
+        "openrouter", "nous", "openai-codex", "copilot", "copilot-acp", "claude-code-cli",
         "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
@@ -481,6 +490,11 @@ def detect_provider_for_model(
     for pid, models in _PROVIDER_MODELS.items():
         if pid == current_provider or pid in _AGGREGATORS:
             continue
+        if pid == "claude-code-cli":
+            # Claude model names should continue to map to Anthropic as the
+            # canonical direct provider unless the user explicitly selects the
+            # CLI backend.
+            continue
         if any(name_lower == m.lower() for m in models):
             direct_match = pid
             break
@@ -606,6 +620,8 @@ def provider_model_ids(provider: Optional[str]) -> list[str]:
             pass
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
+    if normalized == "claude-code-cli":
+        return list(_PROVIDER_MODELS.get("claude-code-cli", []))
     if normalized == "nous":
         # Try live Nous Portal /models endpoint
         try:
