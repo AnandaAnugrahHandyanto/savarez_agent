@@ -2192,4 +2192,4 @@ class TelegramAdapter(BasePlatformAdapter):
             raw_message=query,
             message_id=str(query.message.message_id) if query.message else None,
         )
-        await self._message_handler(event)
+        await self.handle_message(event)

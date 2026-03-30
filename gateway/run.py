@@ -84,6 +84,9 @@ _hermes_home = get_hermes_home()
 # UUID action map for inline keyboard callbacks (chat_id, user_id, action_id) -> action dict
 _keyboard_actions: Dict[tuple[str, str, str], Dict] = {}
 
+# Pending text input map for wizard flows (chat_id, user_id) -> input expectation dict
+_pending_text_input: Dict[tuple[str, str], Dict] = {}
+
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
 from dotenv import load_dotenv  # backward-compat for tests that monkeypatch this symbol
@@ -386,6 +389,7 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
 
 _MODELS_PER_PAGE = 8
 _KEYBOARD_ACTION_TTL = 900  # 15 minutes
+_PENDING_TEXT_TTL = 300  # 5 minutes for text input wizards
 
 
 def _prune_keyboard_actions() -> None:
@@ -396,33 +400,82 @@ def _prune_keyboard_actions() -> None:
         del _keyboard_actions[k]
 
 
-def _model_providers_keyboard(chat_id: str, user_id: str, current_model: str) -> tuple[str, List[List[Dict]]]:
-    """Build provider selection keyboard."""
-    from hermes_cli.models import providers
+def _prune_pending_text_input() -> None:
+    """Remove expired pending text input entries."""
+    cutoff = time.time() - _PENDING_TEXT_TTL
+    expired = [k for k, v in _pending_text_input.items() if v.get("_ts", 0) < cutoff]
+    for k in expired:
+        del _pending_text_input[k]
+
+
+def _register_keyboard_action(chat_id: str, user_id: str, action: Dict) -> str:
+    """Register a keyboard action and return the action_id (callback_data)."""
+    action_id = uuid.uuid4().hex[:16]
+    action["_ts"] = action.get("_ts", time.time())
+    _keyboard_actions[(chat_id, user_id, action_id)] = action
+    return action_id
+
+
+def _register_pending_text(chat_id: str, user_id: str, input_type: str, data: Dict = None) -> None:
+    """Register a pending text input expectation for a wizard flow."""
+    _pending_text_input[(chat_id, user_id)] = {
+        "type": input_type,
+        "data": data or {},
+        "_ts": time.time(),
+    }
+
+
+def _cancel_pending_text(chat_id: str, user_id: str) -> bool:
+    """Cancel any pending text input for a user. Returns True if there was one."""
+    return _pending_text_input.pop((chat_id, user_id), None) is not None
+
+
+# ---------------------------------------------------------------------------
+# Keyboard builders
+# ---------------------------------------------------------------------------
+
+def _model_providers_keyboard(chat_id: str, user_id: str, current_model: str, current_provider: str = "") -> tuple[str, List[List[Dict]]]:
+    """Build provider selection keyboard with auth status indicators."""
+    from hermes_cli.models import list_available_providers, _PROVIDER_LABELS
     ts = time.time()
     rows: List[List[Dict]] = []
     pair: List[Dict] = []
-    for prov in providers():
-        action_id = uuid.uuid4().hex[:16]
-        _keyboard_actions[(chat_id, user_id, action_id)] = {
-            "type": "model_provider", "provider": prov, "current_model": current_model, "_ts": ts,
-        }
-        btn_label = f"* {prov}" if prov in current_model else prov
+
+    for prov_info in list_available_providers():
+        pid = prov_info["id"]
+        label = prov_info["label"]
+        has_creds = prov_info.get("authenticated", False)
+        is_current = pid == current_provider
+
+        # Mark current provider and auth status
+        prefix = ""
+        if is_current:
+            prefix += ">> "
+        prefix += "✓ " if has_creds else "✗ "
+        btn_label = f"{prefix}{label}"
+
+        action_id = _register_keyboard_action(chat_id, user_id, {
+            "type": "model_provider", "provider": pid, "current_model": current_model, "_ts": ts,
+        })
         pair.append({"text": btn_label, "callback_data": action_id})
         if len(pair) == 2:
             rows.append(pair)
             pair = []
     if pair:
         rows.append(pair)
-    cancel_id = uuid.uuid4().hex[:16]
-    _keyboard_actions[(chat_id, user_id, cancel_id)] = {"type": "model_cancel", "_ts": ts}
+
+    # Add Provider button
+    add_id = _register_keyboard_action(chat_id, user_id, {"type": "model_add_start", "_ts": ts})
+    rows.append([{"text": "+ Add Provider", "callback_data": add_id}])
+
+    cancel_id = _register_keyboard_action(chat_id, user_id, {"type": "model_cancel", "_ts": ts})
     rows.append([{"text": "Cancel", "callback_data": cancel_id}])
     return f"Current: {current_model}\n\nSelect provider:", rows
 
 
 def _model_list_keyboard(chat_id: str, user_id: str, provider: str, current_model: str, page: int = 0) -> tuple[str, List[List[Dict]]]:
-    """Build paginated model list keyboard."""
-    from hermes_cli.models import models_for_provider
+    """Build paginated model list keyboard for a given provider."""
+    from hermes_cli.models import models_for_provider, _PROVIDER_LABELS
     ts = time.time()
     all_models = models_for_provider(provider)
     if not all_models:
@@ -432,32 +485,128 @@ def _model_list_keyboard(chat_id: str, user_id: str, provider: str, current_mode
     rows: List[List[Dict]] = []
     pair: List[Dict] = []
     for mid in page_models:
-        action_id = uuid.uuid4().hex[:16]
-        _keyboard_actions[(chat_id, user_id, action_id)] = {"type": "model_select", "model_id": mid, "_ts": ts}
-        label = f"* {mid}" if mid == current_model else mid
-        display = label[:30] + "…" if len(label) > 30 else label
+        is_current = mid == current_model
+        display = ("✓ " if is_current else "") + (mid[:28] + "…" if len(mid) > 28 else mid)
+        action_id = _register_keyboard_action(chat_id, user_id, {
+            "type": "model_select", "model_id": mid, "provider": provider, "_ts": ts,
+        })
         pair.append({"text": display, "callback_data": action_id})
         if len(pair) == 2:
             rows.append(pair)
             pair = []
     if pair:
         rows.append(pair)
+
+    # Pagination nav
     nav: List[Dict] = []
     if page > 0:
-        pid = uuid.uuid4().hex[:16]
-        _keyboard_actions[(chat_id, user_id, pid)] = {"type": "model_page", "provider": provider, "current_model": current_model, "page": page - 1, "_ts": ts}
+        pid = _register_keyboard_action(chat_id, user_id, {
+            "type": "model_page", "provider": provider, "current_model": current_model, "page": page - 1, "_ts": ts,
+        })
         nav.append({"text": "< Prev", "callback_data": pid})
     if (page + 1) * _MODELS_PER_PAGE < total:
-        nid = uuid.uuid4().hex[:16]
-        _keyboard_actions[(chat_id, user_id, nid)] = {"type": "model_page", "provider": provider, "current_model": current_model, "page": page + 1, "_ts": ts}
+        nid = _register_keyboard_action(chat_id, user_id, {
+            "type": "model_page", "provider": provider, "current_model": current_model, "page": page + 1, "_ts": ts,
+        })
         nav.append({"text": "Next >", "callback_data": nid})
     if nav:
         rows.append(nav)
-    back_id = uuid.uuid4().hex[:16]
-    _keyboard_actions[(chat_id, user_id, back_id)] = {"type": "model_back", "current_model": current_model, "_ts": ts}
+
+    # Back button
+    back_id = _register_keyboard_action(chat_id, user_id, {
+        "type": "model_back", "current_model": current_model, "current_provider": provider, "_ts": ts,
+    })
     rows.append([{"text": "<< Providers", "callback_data": back_id}])
+
     total_pages = max(1, (total + _MODELS_PER_PAGE - 1) // _MODELS_PER_PAGE)
-    return f"Provider: {provider} ({total} models) — page {page+1}/{total_pages}\nCurrent: {current_model}", rows
+    provider_label = _PROVIDER_LABELS.get(provider, provider)
+    return f"Provider: {provider_label} ({total} models) — page {page+1}/{total_pages}\nCurrent: {current_model}", rows
+
+
+def _reasoning_keyboard(chat_id: str, user_id: str, current_effort: str, show_reasoning: bool) -> tuple[str, List[List[Dict]]]:
+    """Build reasoning settings keyboard."""
+    ts = time.time()
+    rows: List[List[Dict]] = []
+
+    # Effort level buttons
+    effort_levels = ["none", "low", "minimal", "medium", "high", "xhigh"]
+    effort_row: List[Dict] = []
+    for level in effort_levels:
+        is_current = level == current_effort
+        label = f"{'>> ' if is_current else ''}{level.capitalize()}"
+        action_id = _register_keyboard_action(chat_id, user_id, {
+            "type": "reasoning_effort", "effort": level, "_ts": ts,
+        })
+        effort_row.append({"text": label, "callback_data": action_id})
+        if len(effort_row) == 3:
+            rows.append(effort_row)
+            effort_row = []
+    if effort_row:
+        rows.append(effort_row)
+
+    rows.append([])  # spacer
+
+    # Display toggle buttons
+    show_label = "✓ Show Reasoning" if show_reasoning else "Show Reasoning"
+    hide_label = "✓ Hide Reasoning" if not show_reasoning else "Hide Reasoning"
+    show_id = _register_keyboard_action(chat_id, user_id, {"type": "reasoning_display", "value": True, "_ts": ts})
+    hide_id = _register_keyboard_action(chat_id, user_id, {"type": "reasoning_display", "value": False, "_ts": ts})
+    rows.append([
+        {"text": show_label, "callback_data": show_id},
+        {"text": hide_label, "callback_data": hide_id},
+    ])
+
+    cancel_id = _register_keyboard_action(chat_id, user_id, {"type": "settings_cancel", "_ts": ts})
+    rows.append([{"text": "Close", "callback_data": cancel_id}])
+
+    effort_display = current_effort if current_effort else "medium (default)"
+    display_state = "on" if show_reasoning else "off"
+    return (
+        f"Reasoning Settings\n\n"
+        f"Effort: {effort_display}\n"
+        f"Display: {display_state}"
+    ), rows
+
+
+def _settings_keyboard(chat_id: str, user_id: str, bg_mode: str, tool_progress: str) -> tuple[str, List[List[Dict]]]:
+    """Build gateway settings keyboard."""
+    ts = time.time()
+    rows: List[List[Dict]] = []
+
+    # Background notification buttons
+    bg_modes = ["all", "result", "error", "off"]
+    bg_row: List[Dict] = []
+    for mode in bg_modes:
+        is_current = mode == bg_mode
+        label = f"{'>> ' if is_current else ''}{mode.capitalize()}"
+        action_id = _register_keyboard_action(chat_id, user_id, {
+            "type": "settings_bg_notifications", "value": mode, "_ts": ts,
+        })
+        bg_row.append({"text": label, "callback_data": action_id})
+    rows.append(bg_row)
+
+    rows.append([])  # spacer
+
+    # Tool progress buttons
+    tp_modes = ["off", "new", "all", "verbose"]
+    tp_row: List[Dict] = []
+    for mode in tp_modes:
+        is_current = mode == tool_progress
+        label = f"{'>> ' if is_current else ''}{mode.capitalize()}"
+        action_id = _register_keyboard_action(chat_id, user_id, {
+            "type": "settings_tool_progress", "value": mode, "_ts": ts,
+        })
+        tp_row.append({"text": label, "callback_data": action_id})
+    rows.append(tp_row)
+
+    cancel_id = _register_keyboard_action(chat_id, user_id, {"type": "settings_cancel", "_ts": ts})
+    rows.append([{"text": "Close", "callback_data": cancel_id}])
+
+    return (
+        f"Gateway Settings\n\n"
+        f"Background Notifications: {bg_mode}\n"
+        f"Tool Progress: {tool_progress}"
+    ), rows
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
@@ -1929,7 +2078,13 @@ class GatewayRunner:
 
         # Inline keyboard callback — text is a uuid hex with no "/" prefix
         if not command and event.text and (event.source.chat_id, event.source.user_id or "", event.text.strip()) in _keyboard_actions:
-            return await self._handle_model_callback(event)
+            return await self._handle_keyboard_callback(event)
+
+        # Pending text input interception (wizard flows for add/edit provider)
+        if not command and event.text and event.text.strip():
+            pending_key = (event.source.chat_id, event.source.user_id or "")
+            if pending_key in _pending_text_input:
+                return await self._handle_text_input(event)
 
         # Emit command:* hook for any recognized slash command.
         # GATEWAY_KNOWN_COMMANDS is derived from the central COMMAND_REGISTRY
@@ -1968,6 +2123,9 @@ class GatewayRunner:
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
 
+        if canonical == "settings":
+            return await self._handle_settings_command(event)
+
         if canonical == "verbose":
             return await self._handle_verbose_command(event)
 
@@ -1976,6 +2134,9 @@ class GatewayRunner:
 
         if canonical == "provider":
             return await self._handle_provider_command(event)
+
+        if canonical == "model":
+            return await self._handle_model_command(event)
         
         if canonical == "personality":
             return await self._handle_personality_command(event)
@@ -3382,7 +3543,7 @@ class GatewayRunner:
             adapter = self.adapters.get(source.platform) if source.platform else None
             if adapter and hasattr(adapter, "send_keyboard"):
                 try:
-                    text, rows = _model_providers_keyboard(source.chat_id, source.user_id or "", current)
+                    text, rows = _model_providers_keyboard(source.chat_id, source.user_id or "", current, current_provider)
                     await adapter.send_keyboard(source.chat_id, text, rows)
                     return None
                 except Exception:
@@ -3524,8 +3685,8 @@ class GatewayRunner:
 
         return f"🤖 Model changed to `{new_model}` ({persist_note}){provider_note}{warning}{custom_hint}\n_(takes effect on next message)_"
 
-    async def _handle_model_callback(self, event: MessageEvent) -> None:
-        """Handle inline keyboard callbacks for model selection."""
+    async def _handle_keyboard_callback(self, event: MessageEvent) -> None:
+        """Handle inline keyboard callbacks for all panels (model, reasoning, settings)."""
         import yaml
         _prune_keyboard_actions()
         chat_id = event.source.chat_id
@@ -3537,6 +3698,8 @@ class GatewayRunner:
         msg_id = event.message_id
 
         t = action.get("type")
+
+        # ---- Model panel callbacks ----
         if t == "model_provider":
             text, rows = _model_list_keyboard(chat_id, user_id, action["provider"], action["current_model"])
             if adapter:
@@ -3546,18 +3709,13 @@ class GatewayRunner:
             if adapter:
                 await adapter.send_keyboard(chat_id, text, rows, message_id=msg_id)
         elif t == "model_back":
-            text, rows = _model_providers_keyboard(chat_id, user_id, action["current_model"])
+            current_provider = action.get("current_provider", "")
+            text, rows = _model_providers_keyboard(chat_id, user_id, action["current_model"], current_provider)
             if adapter:
                 await adapter.send_keyboard(chat_id, text, rows, message_id=msg_id)
         elif t == "model_select":
             new_model = action["model_id"]
-            from hermes_cli.models import OPENROUTER_MODELS
-            known = {mid for mid, _ in OPENROUTER_MODELS}
-            if new_model not in known:
-                logger.warning("[keyboard] Rejected unknown model_id from action dict: %s", new_model)
-                if adapter:
-                    await adapter.send_keyboard(chat_id, "Unknown model — selection rejected.", [], message_id=msg_id)
-                return
+            provider = action.get("provider", "")
             config_path = _hermes_home / "config.yaml"
             try:
                 user_config = {}
@@ -3567,11 +3725,15 @@ class GatewayRunner:
                 if not isinstance(user_config.get("model"), dict):
                     user_config["model"] = {}
                 user_config["model"]["default"] = new_model
+                if provider:
+                    user_config["model"]["provider"] = provider
                 tmp = config_path.with_suffix(".tmp")
                 with open(tmp, "w", encoding="utf-8") as f:
                     yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
                 os.replace(tmp, config_path)
                 os.environ["HERMES_MODEL"] = new_model
+                if provider:
+                    os.environ["HERMES_INFERENCE_PROVIDER"] = provider
                 confirm = f"✓ Switched to: {new_model}\n(takes effect on next message)"
                 if adapter:
                     await adapter.send_keyboard(chat_id, confirm, [], message_id=msg_id)
@@ -3582,6 +3744,371 @@ class GatewayRunner:
         elif t == "model_cancel":
             if adapter:
                 await adapter.send_keyboard(chat_id, "Cancelled.", [], message_id=msg_id)
+        elif t == "model_add_start":
+            # Start the add provider wizard — ask for name
+            _register_pending_text(chat_id, user_id, "add_provider_name")
+            prompt = (
+                "Add Custom Provider (1/3)\n\n"
+                "Send a display name for this provider.\n"
+                "Example: My Local LLM, RunPod, LM Studio\n\n"
+                "Send the name as your next message, or tap Cancel."
+            )
+            cancel_id = _register_keyboard_action(chat_id, user_id, {"type": "model_cancel", "_ts": time.time()})
+            if adapter:
+                await adapter.send_keyboard(chat_id, prompt, [[{"text": "Cancel", "callback_data": cancel_id}]], message_id=msg_id)
+        elif t == "model_edit_start":
+            # Show current provider config and prompt for updates
+            provider_name = action.get("provider", "")
+            config_path = _hermes_home / "config.yaml"
+            try:
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                custom_providers = cfg.get("custom_providers", [])
+                provider_entry = None
+                for entry in custom_providers:
+                    if isinstance(entry, dict) and entry.get("name", "").lower() == provider_name.lower():
+                        provider_entry = entry
+                        break
+                if not provider_entry:
+                    if adapter:
+                        await adapter.send_keyboard(chat_id, f"Provider '{provider_name}' not found in custom providers.", [], message_id=msg_id)
+                    return
+                current_url = provider_entry.get("base_url", "")
+                current_key = provider_entry.get("api_key", "")
+                key_display = current_key[:4] + "..." + current_key[-4:] if len(current_key) > 8 else ("***" if current_key else "(none)")
+                _register_pending_text(chat_id, user_id, "edit_provider", {"name": provider_name})
+                prompt = (
+                    f"Edit Provider: {provider_name}\n\n"
+                    f"Current URL: {current_url}\n"
+                    f"Current Key: {key_display}\n\n"
+                    f"Send new values as: url | api_key\n"
+                    f"Or send just a URL to update only the URL.\n"
+                    f"Or send 'cancel' to go back."
+                )
+                cancel_id = _register_keyboard_action(chat_id, user_id, {"type": "model_cancel", "_ts": time.time()})
+                if adapter:
+                    await adapter.send_keyboard(chat_id, prompt, [[{"text": "Cancel", "callback_data": cancel_id}]], message_id=msg_id)
+            except Exception as e:
+                logger.warning("[keyboard] Failed to read provider config: %s", e)
+                if adapter:
+                    await adapter.send_keyboard(chat_id, f"Failed to read config: {e}", [], message_id=msg_id)
+        elif t == "model_remove_confirm":
+            # Confirm removal of a custom provider
+            provider_name = action.get("provider", "")
+            confirm_id = _register_keyboard_action(chat_id, user_id, {
+                "type": "model_remove_execute", "provider": provider_name, "_ts": time.time(),
+            })
+            cancel_id = _register_keyboard_action(chat_id, user_id, {"type": "model_cancel", "_ts": time.time()})
+            prompt = (
+                f"Remove Provider: {provider_name}\n\n"
+                f"This will remove the provider from your config.\n"
+                f"The model will reset to the default if this was active."
+            )
+            if adapter:
+                await adapter.send_keyboard(chat_id, prompt, [
+                    [{"text": "Remove", "callback_data": confirm_id}],
+                    [{"text": "Cancel", "callback_data": cancel_id}],
+                ], message_id=msg_id)
+        elif t == "model_remove_execute":
+            provider_name = action.get("provider", "")
+            config_path = _hermes_home / "config.yaml"
+            try:
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                custom_providers = cfg.get("custom_providers", [])
+                cfg["custom_providers"] = [
+                    e for e in custom_providers
+                    if not (isinstance(e, dict) and e.get("name", "").lower() == provider_name.lower())
+                ]
+                atomic_yaml_write(config_path, cfg)
+                confirm = f"✓ Removed provider: {provider_name}"
+                if adapter:
+                    await adapter.send_keyboard(chat_id, confirm, [], message_id=msg_id)
+            except Exception as e:
+                logger.warning("[keyboard] Failed to remove provider: %s", e)
+                if adapter:
+                    await adapter.send_keyboard(chat_id, f"Failed to remove provider: {e}", [], message_id=msg_id)
+
+        # ---- Reasoning panel callbacks ----
+        elif t == "reasoning_effort":
+            effort = action.get("effort", "medium")
+            if effort == "none":
+                parsed = {"enabled": False}
+            else:
+                parsed = {"enabled": True, "effort": effort}
+            self._reasoning_config = parsed
+            config_path = _hermes_home / "config.yaml"
+            try:
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                if "agent" not in user_config or not isinstance(user_config["agent"], dict):
+                    user_config["agent"] = {}
+                user_config["agent"]["reasoning_effort"] = effort
+                atomic_yaml_write(config_path, user_config)
+            except Exception as e:
+                logger.warning("[keyboard] Failed to save reasoning config: %s", e)
+            # Refresh keyboard with new state
+            text, rows = _reasoning_keyboard(chat_id, user_id, effort, self._show_reasoning)
+            if adapter:
+                await adapter.send_keyboard(chat_id, text, rows, message_id=msg_id)
+        elif t == "reasoning_display":
+            show = action.get("value", False)
+            self._show_reasoning = show
+            config_path = _hermes_home / "config.yaml"
+            try:
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                if "display" not in user_config or not isinstance(user_config["display"], dict):
+                    user_config["display"] = {}
+                user_config["display"]["show_reasoning"] = show
+                atomic_yaml_write(config_path, user_config)
+            except Exception as e:
+                logger.warning("[keyboard] Failed to save reasoning display: %s", e)
+            # Refresh keyboard with new state
+            current_effort = ""
+            rc = self._reasoning_config
+            if rc is None:
+                current_effort = ""
+            elif not rc.get("enabled"):
+                current_effort = "none"
+            else:
+                current_effort = rc.get("effort", "medium")
+            text, rows = _reasoning_keyboard(chat_id, user_id, current_effort, show)
+            if adapter:
+                await adapter.send_keyboard(chat_id, text, rows, message_id=msg_id)
+
+        # ---- Settings panel callbacks ----
+        elif t == "settings_bg_notifications":
+            mode = action.get("value", "all")
+            config_path = _hermes_home / "config.yaml"
+            try:
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                if "display" not in user_config or not isinstance(user_config["display"], dict):
+                    user_config["display"] = {}
+                user_config["display"]["background_process_notifications"] = mode
+                atomic_yaml_write(config_path, user_config)
+                os.environ["HERMES_BACKGROUND_NOTIFICATIONS"] = mode
+            except Exception as e:
+                logger.warning("[keyboard] Failed to save bg notifications: %s", e)
+            # Refresh keyboard
+            current_tp = "all"
+            try:
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                raw_tp = cfg.get("display", {}).get("tool_progress", "all")
+                current_tp = str(raw_tp).lower() if raw_tp else "all"
+                if current_tp not in ("off", "new", "all", "verbose"):
+                    current_tp = "all"
+            except Exception:
+                pass
+            text, rows = _settings_keyboard(chat_id, user_id, mode, current_tp)
+            if adapter:
+                await adapter.send_keyboard(chat_id, text, rows, message_id=msg_id)
+        elif t == "settings_tool_progress":
+            mode = action.get("value", "all")
+            config_path = _hermes_home / "config.yaml"
+            try:
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                if "display" not in user_config or not isinstance(user_config["display"], dict):
+                    user_config["display"] = {}
+                user_config["display"]["tool_progress"] = mode
+                atomic_yaml_write(config_path, user_config)
+            except Exception as e:
+                logger.warning("[keyboard] Failed to save tool_progress: %s", e)
+            # Refresh keyboard
+            current_bg = "all"
+            try:
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                raw_bg = cfg.get("display", {}).get("background_process_notifications", "all")
+                current_bg = str(raw_bg).lower() if raw_bg else "all"
+                if current_bg not in ("all", "result", "error", "off"):
+                    current_bg = "all"
+            except Exception:
+                pass
+            text, rows = _settings_keyboard(chat_id, user_id, current_bg, mode)
+            if adapter:
+                await adapter.send_keyboard(chat_id, text, rows, message_id=msg_id)
+        elif t == "settings_cancel":
+            if adapter:
+                await adapter.send_keyboard(chat_id, "Closed.", [], message_id=msg_id)
+
+    async def _handle_text_input(self, event: MessageEvent) -> str:
+        """Handle pending text input from wizard flows (add/edit provider)."""
+        import yaml
+        _prune_pending_text_input()
+        chat_id = event.source.chat_id
+        user_id = event.source.user_id or ""
+        pending_key = (chat_id, user_id)
+        pending = _pending_text_input.pop(pending_key, None)
+        if not pending:
+            return None
+
+        adapter = self.adapters.get(event.source.platform) if event.source.platform else None
+        text = event.text.strip()
+        input_type = pending.get("type", "")
+        data = pending.get("data", {})
+
+        cancel_id = _register_keyboard_action(chat_id, user_id, {"type": "model_cancel", "_ts": time.time()})
+
+        if input_type == "add_provider_name":
+            if not text or len(text) > 60:
+                msg = "Invalid name. Send a display name (1-60 chars) or tap Cancel."
+                if adapter:
+                    await adapter.send_keyboard(chat_id, msg, [[{"text": "Cancel", "callback_data": cancel_id}]])
+                return None
+            _register_pending_text(chat_id, user_id, "add_provider_url", {"name": text})
+            msg = (
+                f"Add Custom Provider (2/3)\n"
+                f"Name: {text}\n\n"
+                f"Send the API base URL.\n"
+                f"Example: http://localhost:11434/v1\n\n"
+                f"Send the URL as your next message, or tap Cancel."
+            )
+            if adapter:
+                await adapter.send_keyboard(chat_id, msg, [[{"text": "Cancel", "callback_data": cancel_id}]])
+
+        elif input_type == "add_provider_url":
+            # Validate URL format
+            url = text
+            if not url.startswith(("http://", "https://")):
+                # Re-register so the user can try again
+                _register_pending_text(chat_id, user_id, "add_provider_url", data)
+                msg = "URL must start with http:// or https://. Try again or tap Cancel."
+                if adapter:
+                    await adapter.send_keyboard(chat_id, msg, [[{"text": "Cancel", "callback_data": cancel_id}]])
+                return None
+            name = data.get("name", "Custom")
+            _register_pending_text(chat_id, user_id, "add_provider_key", {"name": name, "url": url})
+            msg = (
+                f"Add Custom Provider (3/3)\n"
+                f"Name: {name}\n"
+                f"URL: {url}\n\n"
+                f"Send the API key, or send 'skip' to continue without one."
+            )
+            if adapter:
+                await adapter.send_keyboard(chat_id, msg, [[{"text": "Skip (no key)", "callback_data": cancel_id}]])
+
+        elif input_type == "add_provider_key":
+            name = data.get("name", "Custom")
+            url = data.get("url", "")
+            api_key = "" if text.lower() == "skip" else text
+            config_path = _hermes_home / "config.yaml"
+            try:
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                if "custom_providers" not in user_config or not isinstance(user_config.get("custom_providers"), list):
+                    user_config["custom_providers"] = []
+                user_config["custom_providers"].append({
+                    "name": name,
+                    "base_url": url,
+                    **({"api_key": api_key} if api_key else {}),
+                })
+                atomic_yaml_write(config_path, user_config)
+                key_display = " (key set)" if api_key else ""
+                msg = f"✓ Provider '{name}' added{key_display}.\nURL: {url}\n\nUse /model to select a model from this provider."
+                if adapter:
+                    await adapter.send_keyboard(chat_id, msg, [])
+            except Exception as e:
+                logger.warning("[keyboard] Failed to save custom provider: %s", e)
+                if adapter:
+                    await adapter.send_keyboard(chat_id, f"Failed to save provider: {e}", [])
+
+        elif input_type == "edit_provider":
+            if text.lower() == "cancel":
+                if adapter:
+                    await adapter.send_keyboard(chat_id, "Cancelled.", [], message_id=event.message_id)
+                return None
+            provider_name = data.get("name", "")
+            config_path = _hermes_home / "config.yaml"
+            try:
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                custom_providers = cfg.get("custom_providers", [])
+                # Find and update the provider
+                updated = False
+                for entry in custom_providers:
+                    if isinstance(entry, dict) and entry.get("name", "").lower() == provider_name.lower():
+                        if "|" in text:
+                            parts = text.split("|", 1)
+                            new_url = parts[0].strip()
+                            new_key = parts[1].strip() if len(parts) > 1 else ""
+                            if new_url:
+                                entry["base_url"] = new_url
+                            if new_key:
+                                entry["api_key"] = new_key
+                        else:
+                            # Just a URL update
+                            entry["base_url"] = text.strip()
+                        updated = True
+                        break
+                if updated:
+                    cfg["custom_providers"] = custom_providers
+                    atomic_yaml_write(config_path, cfg)
+                    msg = f"✓ Provider '{provider_name}' updated."
+                else:
+                    msg = f"Provider '{provider_name}' not found."
+                if adapter:
+                    await adapter.send_keyboard(chat_id, msg, [], message_id=event.message_id)
+            except Exception as e:
+                logger.warning("[keyboard] Failed to update provider: %s", e)
+                if adapter:
+                    await adapter.send_keyboard(chat_id, f"Failed to update provider: {e}", [], message_id=event.message_id)
+
+        return None
+
+    async def _handle_settings_command(self, event: MessageEvent) -> str:
+        """Handle /settings command — show gateway settings panel with inline keyboard."""
+        source = event.source
+        adapter = self.adapters.get(source.platform) if source.platform else None
+
+        # Load current settings
+        bg_mode = self._load_background_notifications_mode()
+        tool_progress = "all"
+        try:
+            import yaml
+            config_path = _hermes_home / "config.yaml"
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                raw_tp = cfg.get("display", {}).get("tool_progress", "all")
+                if raw_tp is False:
+                    tool_progress = "off"
+                elif raw_tp is True:
+                    tool_progress = "all"
+                else:
+                    tool_progress = str(raw_tp).lower()
+                if tool_progress not in ("off", "new", "all", "verbose"):
+                    tool_progress = "all"
+        except Exception:
+            pass
+
+        if adapter and hasattr(adapter, "send_keyboard"):
+            try:
+                text, rows = _settings_keyboard(source.chat_id, source.user_id or "", bg_mode, tool_progress)
+                await adapter.send_keyboard(source.chat_id, text, rows)
+                return None
+            except Exception:
+                pass
+
+        return (
+            f"Gateway Settings\n\n"
+            f"Background Notifications: {bg_mode}\n"
+            f"Tool Progress: {tool_progress}\n\n"
+            f"Use /settings in a platform with keyboard support (e.g. Telegram) for interactive configuration."
+        )
 
     async def _handle_provider_command(self, event: MessageEvent) -> str:
         """Handle /provider command - show available providers."""
@@ -4464,18 +4991,35 @@ class GatewayRunner:
                 return False
 
         if not args:
-            # Show current state
+            # Show current state — use keyboard if adapter supports it
             rc = self._reasoning_config
             if rc is None:
-                level = "medium (default)"
+                level = ""
             elif rc.get("enabled") is False:
-                level = "none (disabled)"
+                level = "none"
             else:
                 level = rc.get("effort", "medium")
+
+            source = event.source
+            adapter = self.adapters.get(source.platform) if source.platform else None
+            if adapter and hasattr(adapter, "send_keyboard"):
+                try:
+                    text, rows = _reasoning_keyboard(source.chat_id, source.user_id or "", level, self._show_reasoning)
+                    await adapter.send_keyboard(source.chat_id, text, rows)
+                    return None
+                except Exception:
+                    pass
+
+            if rc is None:
+                level_display = "medium (default)"
+            elif rc.get("enabled") is False:
+                level_display = "none (disabled)"
+            else:
+                level_display = rc.get("effort", "medium")
             display_state = "on ✓" if self._show_reasoning else "off"
             return (
                 "🧠 **Reasoning Settings**\n\n"
-                f"**Effort:** `{level}`\n"
+                f"**Effort:** `{level_display}`\n"
                 f"**Display:** {display_state}\n\n"
                 "_Usage:_ `/reasoning <none|low|medium|high|xhigh|show|hide>`"
             )
