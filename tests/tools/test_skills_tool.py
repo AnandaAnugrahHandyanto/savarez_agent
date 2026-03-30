@@ -836,6 +836,33 @@ class TestSkillViewPrerequisites:
         assert result["missing_required_environment_variables"] == []
         assert result["readiness_status"] == "available"
 
+
+class TestRedTeamCategoryGate:
+    def test_red_team_skill_requires_env_opt_in(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_ENABLE_RED_TEAM_SKILLS", raising=False)
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "red-team-skill", category="red-teaming")
+            raw = skill_view("red-team-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "disabled" in result["error"].lower()
+        assert "HERMES_ENABLE_RED_TEAM_SKILLS" in result["error"]
+
+    def test_red_team_skill_allowed_when_env_opt_in_true(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_ENABLE_RED_TEAM_SKILLS", "true")
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "red-team-skill-ok", category="red-teaming")
+            raw = skill_view("red-team-skill-ok")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["name"] == "red-team-skill-ok"
+        assert "content" in result
+        assert "red-team-skill-ok" in result["content"]
+
     def test_no_setup_metadata_when_no_required_envs(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "plain-skill")
