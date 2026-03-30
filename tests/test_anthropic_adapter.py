@@ -77,9 +77,22 @@ class TestBuildAnthropicClient:
 
     def test_custom_base_url(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
-            build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
+            build_anthropic_client("***", base_url="https://custom.api.com")
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://custom.api.com"
+
+    def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "minimax-secret-123",
+                base_url="https://api.minimax.io/anthropic",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["auth_token"] == "minimax-secret-123"
+            assert "api_key" not in kwargs
+            assert kwargs["default_headers"] == {
+                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+            }
 
 
 class TestReadClaudeCodeCredentials:
@@ -88,16 +101,16 @@ class TestReadClaudeCodeCredentials:
         cred_file.parent.mkdir(parents=True)
         cred_file.write_text(json.dumps({
             "claudeAiOauth": {
-                "accessToken": "sk-ant-oat01-token",
-                "refreshToken": "sk-ant-oat01-refresh",
+                "accessToken": "sk-ant...oken",
+                "refreshToken": "sk-ant...resh",
                 "expiresAt": int(time.time() * 1000) + 3600_000,
             }
         }))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         creds = read_claude_code_credentials()
         assert creds is not None
-        assert creds["accessToken"] == "sk-ant-oat01-token"
-        assert creds["refreshToken"] == "sk-ant-oat01-refresh"
+        assert creds["accessToken"] == "sk-ant...oken"
+        assert creds["refreshToken"] == "sk-ant...resh"
         assert creds["source"] == "claude_code_credentials_file"
 
     def test_ignores_primary_api_key_for_native_anthropic_resolution(self, tmp_path, monkeypatch):
