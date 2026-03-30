@@ -254,6 +254,9 @@ def show_status(args):
         "Slack": ("SLACK_BOT_TOKEN", None),
         "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
         "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
+        "DingTalk": ("DINGTALK_CLIENT_ID", None),
+        "Feishu": ("FEISHU_APP_ID", "FEISHU_HOME_CHANNEL"),
+        "WeCom": ("WECOM_BOT_ID", "WECOM_HOME_CHANNEL"),
     }
     
     for name, (token_var, home_var) in platforms.items():
@@ -289,20 +292,21 @@ def show_status(args):
         )
         is_active = result.stdout.strip() == "active"
         print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
-        print(f"  Manager:      systemd (user)")
+        print("  Manager:      systemd (user)")
         
     elif sys.platform == 'darwin':
+        from hermes_cli.gateway import get_launchd_label
         result = subprocess.run(
-            ["launchctl", "list", "ai.hermes.gateway"],
+            ["launchctl", "list", get_launchd_label()],
             capture_output=True,
             text=True
         )
         is_loaded = result.returncode == 0
         print(f"  Status:       {check_mark(is_loaded)} {'loaded' if is_loaded else 'not loaded'}")
-        print(f"  Manager:      launchd")
+        print("  Manager:      launchd")
     else:
         print(f"  Status:       {color('N/A', Colors.DIM)}")
-        print(f"  Manager:      (not supported on this platform)")
+        print("  Manager:      (not supported on this platform)")
     
     # =========================================================================
     # Cron Jobs
@@ -320,9 +324,9 @@ def show_status(args):
                 enabled_jobs = [j for j in jobs if j.get("enabled", True)]
                 print(f"  Jobs:         {len(enabled_jobs)} active, {len(jobs)} total")
         except Exception:
-            print(f"  Jobs:         (error reading jobs file)")
+            print("  Jobs:         (error reading jobs file)")
     else:
-        print(f"  Jobs:         0")
+        print("  Jobs:         0")
     
     # =========================================================================
     # Sessions
@@ -338,9 +342,9 @@ def show_status(args):
                 data = json.load(f)
                 print(f"  Active:       {len(data)} session(s)")
         except Exception:
-            print(f"  Active:       (error reading sessions file)")
+            print("  Active:       (error reading sessions file)")
     else:
-        print(f"  Active:       0")
+        print("  Active:       0")
     
     # =========================================================================
     # Deep checks
