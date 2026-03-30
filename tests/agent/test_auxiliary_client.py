@@ -28,6 +28,7 @@ def _clean_env(monkeypatch):
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
         "OPENAI_MODEL", "LLM_MODEL", "NOUS_INFERENCE_BASE_URL",
         "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+        "FIREWORKS_API_KEY", "FIREWORKS_BASE_URL",
         # Per-task provider/model/direct-endpoint overrides
         "AUXILIARY_VISION_PROVIDER", "AUXILIARY_VISION_MODEL",
         "AUXILIARY_VISION_BASE_URL", "AUXILIARY_VISION_API_KEY",
@@ -618,6 +619,56 @@ class TestVisionClientFallback:
         assert client is not None
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
         assert model == "claude-haiku-4-5-20251001"
+
+    def test_vision_auto_includes_fireworks_when_configured(self, monkeypatch):
+        monkeypatch.setenv("FIREWORKS_API_KEY", "fw-key")
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.auxiliary_client._read_codex_access_token", return_value=None),
+            patch("agent.auxiliary_client._try_anthropic", return_value=(None, None)),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            backends = get_available_vision_backends()
+            client, model = get_vision_auxiliary_client()
+
+        assert "fireworks" in backends
+        assert client is not None
+        assert model == "accounts/fireworks/models/kimi-k2p5"
+        assert "api.fireworks.ai/inference/v1" in mock_openai.call_args.kwargs["base_url"]
+
+    def test_selected_fireworks_provider_is_preferred_for_vision_auto(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.setenv("FIREWORKS_API_KEY", "fw-key")
+
+        def fake_load_config():
+            return {"model": {"provider": "fireworks", "default": "accounts/fireworks/models/kimi-k2p5"}}
+
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.auxiliary_client._read_codex_access_token", return_value=None),
+            patch("agent.auxiliary_client._try_anthropic", return_value=(None, None)),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            patch("hermes_cli.config.load_config", fake_load_config),
+        ):
+            provider, client, model = resolve_vision_provider_client()
+
+        assert provider == "fireworks"
+        assert client is not None
+        assert model == "accounts/fireworks/models/kimi-k2p5"
+        assert "api.fireworks.ai/inference/v1" in mock_openai.call_args.kwargs["base_url"]
+
+    def test_forced_fireworks_alias_can_use_fire_pass_router_for_vision(self, monkeypatch):
+        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "fw")
+        monkeypatch.setenv("AUXILIARY_VISION_MODEL", "accounts/fireworks/routers/kimi-k2p5-turbo")
+        monkeypatch.setenv("FIREWORKS_API_KEY", "fw-key")
+
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            provider, client, model = resolve_vision_provider_client()
+
+        assert provider == "fireworks"
+        assert client is not None
+        assert model == "accounts/fireworks/routers/kimi-k2p5-turbo"
+        assert "api.fireworks.ai/inference/v1" in mock_openai.call_args.kwargs["base_url"]
 
     def test_selected_anthropic_provider_is_preferred_for_vision_auto(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")

@@ -249,6 +249,12 @@ model:
 
 The base URL can be overridden with `FIREWORKS_BASE_URL`.
 
+Hermes can also use Fireworks for auxiliary vision/image-analysis tasks. The
+default Fireworks vision backend is `accounts/fireworks/models/kimi-k2p5`.
+If you have Fire Pass enabled, point `AUXILIARY_VISION_MODEL` at
+`accounts/fireworks/routers/kimi-k2p5-turbo` to use the Fire Pass router for
+vision-capable coding flows with the same Fireworks provider credentials.
+
 ### Hugging Face Inference Providers
 
 [Hugging Face Inference Providers](https://huggingface.co/docs/inference-providers) routes to 20+ open models through a unified OpenAI-compatible endpoint (`router.huggingface.co/v1`). Requests are automatically routed to the fastest available backend (Groq, Together, SambaNova, etc.) with automatic failover.

@@ -20,8 +20,9 @@ Resolution order for vision/multimodal tasks (auto mode):
   3. Nous Portal
   4. Codex OAuth (gpt-5.3-codex supports vision via Responses API)
   5. Native Anthropic
-  6. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
-  7. None
+  6. Fireworks AI (Kimi K2.5)
+  7. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
+  8. None
 
 Per-task provider overrides (e.g. AUXILIARY_VISION_PROVIDER,
 CONTEXT_COMPRESSION_PROVIDER) can force a specific provider for each task.
@@ -64,6 +65,13 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
+}
+
+# Known-good multimodal defaults for providers Hermes can auto-route for vision.
+# Fire Pass users can override this with
+# AUXILIARY_VISION_MODEL=accounts/fireworks/routers/kimi-k2p5-turbo.
+_VISION_PROVIDER_MODELS: Dict[str, str] = {
+    "fireworks": "accounts/fireworks/models/kimi-k2p5",
 }
 
 # OpenRouter app attribution headers
@@ -1032,6 +1040,7 @@ _VISION_AUTO_PROVIDER_ORDER = (
     "nous",
     "openai-codex",
     "anthropic",
+    "fireworks",
     "custom",
 )
 
@@ -1042,6 +1051,8 @@ def _normalize_vision_provider(provider: Optional[str]) -> str:
         return "openai-codex"
     if provider == "main":
         return "custom"
+    if provider in ("fireworks-ai", "fireworksai", "fw"):
+        return "fireworks"
     return provider
 
 
@@ -1055,6 +1066,11 @@ def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Option
         return _try_codex()
     if provider == "anthropic":
         return _try_anthropic()
+    if provider == "fireworks":
+        return resolve_provider_client(
+            "fireworks",
+            model=_VISION_PROVIDER_MODELS["fireworks"],
+        )
     if provider == "custom":
         return _try_custom_endpoint()
     return None, None

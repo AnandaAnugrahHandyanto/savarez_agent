@@ -80,6 +80,11 @@ Set `AI_GATEWAY_API_KEY` in `~/.hermes/.env` and run with `--provider ai-gateway
 
 Set `FIREWORKS_API_KEY` in `~/.hermes/.env` and run with `--provider fireworks`. Hermes uses Fireworks' OpenAI-compatible endpoint at `https://api.fireworks.ai/inference/v1` and supports `FIREWORKS_BASE_URL` for explicit overrides.
 
+For auxiliary vision routing, Hermes treats Fireworks as a known-good
+multimodal backend and defaults to `accounts/fireworks/models/kimi-k2p5`.
+Fire Pass remains a model-level override: users who want the Fire Pass router
+can set `AUXILIARY_VISION_MODEL=accounts/fireworks/routers/kimi-k2p5-turbo`.
+
 ## OpenRouter, AI Gateway, Fireworks, and custom OpenAI-compatible base URLs
 
 Hermes contains logic to avoid leaking the wrong API key to a custom endpoint when multiple provider keys exist (e.g. `OPENROUTER_API_KEY`, `AI_GATEWAY_API_KEY`, `FIREWORKS_API_KEY`, and `OPENAI_API_KEY`).
