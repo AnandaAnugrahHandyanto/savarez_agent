@@ -377,6 +377,7 @@ class SendResult:
     error: Optional[str] = None
     raw_response: Any = None
     retryable: bool = False  # True for transient errors (network, timeout) — base will retry automatically
+    delivery_uncertain: bool = False  # True when the send timed out and the platform may have already delivered the message; suppresses all retries to prevent duplicates
 
 
 # Error substrings that indicate a transient network failure worth retrying
@@ -932,6 +933,13 @@ class BasePlatformAdapter(ABC):
         )
 
         if result.success:
+            return result
+
+        if result.delivery_uncertain:
+            logger.warning(
+                "[%s] Send timed out — delivery uncertain, suppressing retries to avoid duplicate messages",
+                self.name,
+            )
             return result
 
         error_str = result.error or ""

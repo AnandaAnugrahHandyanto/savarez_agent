@@ -175,6 +175,23 @@ class TelegramAdapter(BasePlatformAdapter):
             pass
         return isinstance(error, OSError)
 
+    @staticmethod
+    def _looks_like_send_timeout(error: Exception) -> bool:
+        """Return True when a send call timed out and delivery is ambiguous.
+
+        Telegram's Bot API may have accepted and delivered the message even
+        though the HTTP client timed out waiting for the response.  Callers
+        should NOT retry in this case to avoid duplicate messages.
+        """
+        try:
+            from telegram.error import TimedOut
+            if isinstance(error, TimedOut):
+                return True
+        except ImportError:
+            pass
+        combined = (type(error).__name__ + str(error)).lower()
+        return any(t in combined for t in ("timeout", "timedout", "readtimeout", "writetimeout"))
+
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
 
@@ -781,7 +798,11 @@ class TelegramAdapter(BasePlatformAdapter):
             
         except Exception as e:
             logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
-            return SendResult(success=False, error=str(e))
+            return SendResult(
+                success=False,
+                error=str(e),
+                delivery_uncertain=self._looks_like_send_timeout(e),
+            )
 
     async def edit_message(
         self,
