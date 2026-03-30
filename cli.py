@@ -3233,7 +3233,106 @@ class HermesCLI:
             print("  Run: hermes setup")
             print()
 
-        print("  To change model or provider, use: hermes model")
+        print("  To change model or provider, use: /model provider:model or hermes model")
+
+    def _handle_model_command(self, cmd: str):
+        """Handle /model for in-session inspection and switching."""
+        from hermes_cli.auth import (
+            _save_model_choice,
+            _update_config_for_provider,
+            deactivate_provider,
+        )
+        from hermes_cli.model_switch import switch_model, switch_to_custom_provider
+        from hermes_cli.models import provider_label
+
+        parts = cmd.strip().split(maxsplit=1)
+        raw_arg = parts[1].strip() if len(parts) > 1 else ""
+        current_provider = (
+            self.requested_provider
+            if isinstance(self.requested_provider, str)
+            and self.requested_provider.startswith("custom:")
+            else (self.provider or self.requested_provider or "openrouter")
+        )
+
+        if not raw_arg:
+            print(f"Current model: {self.model}")
+            print(f"Provider: {provider_label(current_provider)}")
+            if self.base_url and (
+                "localhost" in self.base_url
+                or "127.0.0.1" in self.base_url
+                or "0.0.0.0" in self.base_url
+            ):
+                print(f"Endpoint: {self.base_url}")
+            print("Usage: /model list")
+            print("       /model provider:model")
+            print("Run `hermes model` for the full interactive picker.")
+            return
+
+        lowered = raw_arg.lower()
+        if lowered == "list":
+            self._show_model_and_providers()
+            return
+
+        if lowered == "custom":
+            auto = switch_to_custom_provider()
+            if not auto.success:
+                _cprint(f"\033[1;31m{auto.error_message}{_RST}")
+                return
+
+            result_model = auto.model
+            result_provider = (
+                self.requested_provider
+                if isinstance(self.requested_provider, str)
+                and self.requested_provider.startswith("custom:")
+                else "custom"
+            )
+            result_base_url = auto.base_url
+            result_api_key = auto.api_key
+            result_provider_label = provider_label(result_provider)
+            warning_message = ""
+        else:
+            result = switch_model(
+                raw_arg,
+                current_provider=current_provider,
+                current_base_url=self.base_url or "",
+                current_api_key=self.api_key or "",
+            )
+            if not result.success:
+                _cprint(f"\033[1;31m{result.error_message}{_RST}")
+                return
+
+            result_model = result.new_model
+            result_provider = result.target_provider
+            result_base_url = result.base_url
+            result_api_key = result.api_key
+            result_provider_label = result.provider_label or provider_label(result.target_provider)
+            warning_message = result.warning_message or ""
+
+        _update_config_for_provider(result_provider, result_base_url)
+        _save_model_choice(result_model)
+        if result_provider not in {"nous", "openai-codex"}:
+            deactivate_provider()
+
+        self.model = result_model
+        self.requested_provider = result_provider
+        self.provider = result_provider
+        self.base_url = result_base_url or self.base_url
+        self.api_key = result_api_key or self.api_key
+        self._model_is_default = False
+        self.agent = None
+        self._active_agent_route_signature = None
+
+        if not self._ensure_runtime_credentials():
+            _cprint(
+                f"{_DIM}Model selection was saved, but runtime credentials need attention. "
+                f"Use /provider or hermes model to review the active provider.{_RST}"
+            )
+            return
+
+        print(f"Switched model to: {self.model}")
+        print(f"Provider: {result_provider_label}")
+        if warning_message:
+            print(f"Warning: {warning_message}")
 
     def _handle_prompt_command(self, cmd: str):
         """Handle the /prompt command to view or set system prompt."""
@@ -3806,6 +3905,8 @@ class HermesCLI:
             self._handle_resume_command(cmd_original)
         elif canonical == "provider":
             self._show_model_and_providers()
+        elif canonical == "model":
+            self._handle_model_command(cmd_original)
         elif canonical == "prompt":
             # Use original case so prompt text isn't lowercased
             self._handle_prompt_command(cmd_original)

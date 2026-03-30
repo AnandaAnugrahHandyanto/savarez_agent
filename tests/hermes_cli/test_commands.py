@@ -75,6 +75,7 @@ class TestResolveCommand:
     def test_canonical_name_resolves(self):
         assert resolve_command("help").name == "help"
         assert resolve_command("background").name == "background"
+        assert resolve_command("model").name == "model"
 
     def test_alias_resolves_to_canonical(self):
         assert resolve_command("bg").name == "background"
@@ -310,6 +311,10 @@ class TestSlashCommandCompleter:
         assert "reset" in texts
         assert "retry" in texts
         assert "reload-mcp" in texts
+
+    def test_model_command_autocompletes(self):
+        completions = _completions(SlashCommandCompleter(), "/mo")
+        assert [item.text for item in completions] == ["model"]
 
     def test_builtin_completion_display_meta_shows_description(self):
         completions = _completions(SlashCommandCompleter(), "/help")
