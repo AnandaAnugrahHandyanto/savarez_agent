@@ -9,6 +9,7 @@ runs at a time if multiple processes overlap.
 """
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
@@ -148,6 +149,13 @@ def _deliver_result(job: dict, content: str) -> None:
     platform_name = target["platform"]
     chat_id = target["chat_id"]
     thread_id = target.get("thread_id")
+
+    # Load .env before load_gateway_config() to get platform tokens
+    from dotenv import load_dotenv
+    try:
+        load_dotenv(str(_hermes_home / ".env"), override=True, encoding="utf-8")
+    except UnicodeDecodeError:
+        load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
 
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
@@ -520,6 +528,9 @@ def tick(verbose: bool = True) -> int:
     Uses a file lock so only one tick runs at a time, even if the gateway's
     in-process ticker and a standalone daemon or manual tick overlap.
     
+    If config.yaml has cron.parallel_jobs: true, due jobs run concurrently using
+    a thread pool. Otherwise, they run sequentially (default, safe for legacy setups).
+    
     Args:
         verbose: Whether to print status messages
     
@@ -552,8 +563,21 @@ def tick(verbose: bool = True) -> int:
         if verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
-        executed = 0
-        for job in due_jobs:
+        # Check for parallel execution config
+        _parallel_cfg = {}
+        try:
+            import yaml
+            _cfg_path = str(_hermes_home / "config.yaml")
+            if os.path.exists(_cfg_path):
+                with open(_cfg_path) as _f:
+                    _parallel_cfg = yaml.safe_load(_f) or {}
+        except Exception:
+            pass
+        parallel_jobs = _parallel_cfg.get("cron", {}).get("parallel_jobs", False)
+
+        def _run_single_job(job: dict) -> dict:
+            """Execute a single job and return result dict."""
+            result = {"job_id": job["id"], "success": False, "error": None}
             try:
                 # For recurring jobs (cron/interval), advance next_run_at to the
                 # next future occurrence BEFORE execution.  This way, if the
@@ -562,6 +586,8 @@ def tick(verbose: bool = True) -> int:
                 advance_next_run(job["id"])
 
                 success, output, final_response, error = run_job(job)
+                result["success"] = success
+                result["error"] = error
 
                 output_file = save_job_output(job["id"], output)
                 if verbose:
@@ -583,11 +609,35 @@ def tick(verbose: bool = True) -> int:
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
 
                 mark_job_run(job["id"], success, error)
-                executed += 1
 
             except Exception as e:
                 logger.error("Error processing job %s: %s", job['id'], e)
                 mark_job_run(job["id"], False, str(e))
+                result["error"] = str(e)
+            
+            return result
+
+        executed = 0
+        if parallel_jobs and len(due_jobs) > 1:
+            # Parallel execution: run jobs concurrently in a thread pool
+            logger.info("Running %d jobs in parallel (parallel_jobs=true)", len(due_jobs))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(due_jobs)) as executor:
+                futures = {executor.submit(_run_single_job, job): job for job in due_jobs}
+                for future in concurrent.futures.as_completed(futures):
+                    job = futures[future]
+                    try:
+                        result = future.result()
+                        if result["success"]:
+                            executed += 1
+                    except Exception as e:
+                        logger.error("Job %s raised exception: %s", job['id'], e)
+                        mark_job_run(job["id"], False, str(e))
+        else:
+            # Sequential execution (legacy default): run jobs one at a time
+            for job in due_jobs:
+                result = _run_single_job(job)
+                if result["success"]:
+                    executed += 1
 
         return executed
     finally:
