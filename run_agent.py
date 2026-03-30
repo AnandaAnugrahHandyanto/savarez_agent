@@ -6388,8 +6388,46 @@ class AIAgent:
 
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)
-            approx_tokens = total_chars // 4  # Rough estimate: 4 chars per token
-            
+            approx_tokens=*** // 4  # Rough estimate: 4 chars per token
+
+            # ── Preflight compression check (before API call) ──────────
+            # If context is dangerously large, compress BEFORE calling the
+            # API.  Without this, the model may fail or hang (e.g. thinking
+            # block only, then timeout) because the prompt exceeds its
+            # effective capacity.  The existing post-tool compress only fires
+            # AFTER a successful API round-trip, so it never catches the case
+            # where the prompt is already too large.
+            if (
+                self.compression_enabled
+                and hasattr(self, "context_compressor")
+                and self.context_compressor
+                and self.context_compressor.context_length > 0
+            ):
+                _preflight_threshold = int(
+                    self.context_compressor.context_length * 0.90
+                )
+                if approx_tokens >= _preflight_threshold:
+                    self._vprint(
+                        f"{self.log_prefix}⚠️  Preflight: context ~{approx_tokens:,} tokens "
+                        f"exceeds 90% ({_preflight_threshold:,}) — compressing before API call"
+                    )
+                    messages, system_message = self._compress_context(
+                        messages, system_message,
+                        approx_tokens=approx_tokens,
+                        task_id=effective_task_id,
+                    )
+                    # Rebuild api_messages after compression
+                    api_messages = self._build_api_messages(messages, system_message)
+                    if self._use_prompt_caching:
+                        api_messages = apply_anthropic_cache_control(
+                            api_messages, cache_ttl=self._cache_ttl,
+                            native_anthropic=(self.api_mode == 'anthropic_messages'),
+                        )
+                    api_messages = self._sanitize_api_messages(api_messages)
+                    # Recalculate after compression
+                    total_chars = sum(len(str(msg)) for msg in api_messages)
+                    approx_tokens=*** // 4
+
             # Thinking spinner for quiet mode (animated during API call)
             thinking_spinner = None
             
