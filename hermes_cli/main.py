@@ -45,6 +45,7 @@ Usage:
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -66,6 +67,9 @@ def _require_tty(command_name: str) -> None:
         )
         sys.exit(1)
 
+# Absolute path to launchctl. UV's bundled Python can ship with a minimal PATH
+# that doesn't include /bin, causing FileNotFoundError when running launchctl.
+_LAUNCHCTL = shutil.which("launchctl") or "/bin/launchctl"
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -3350,7 +3354,7 @@ def cmd_update(args):
                     plist_path = get_launchd_plist_path()
                     if plist_path.exists():
                         check = subprocess.run(
-                            ["launchctl", "list", get_launchd_label()],
+                            [_LAUNCHCTL, "list", get_launchd_label()],
                             capture_output=True, text=True, timeout=5,
                         )
                         has_launchd_service = check.returncode == 0
@@ -3423,11 +3427,11 @@ def cmd_update(args):
                     print("→ Restarting gateway service...")
                     _launchd_label = get_launchd_label()
                     stop = subprocess.run(
-                        ["launchctl", "stop", _launchd_label],
+                        [_LAUNCHCTL, "stop", _launchd_label],
                         capture_output=True, text=True, timeout=10,
                     )
                     start = subprocess.run(
-                        ["launchctl", "start", _launchd_label],
+                        [_LAUNCHCTL, "start", _launchd_label],
                         capture_output=True, text=True, timeout=10,
                     )
                     if start.returncode == 0:

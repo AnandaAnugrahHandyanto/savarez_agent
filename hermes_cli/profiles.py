@@ -28,6 +28,10 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
+
+# Absolute path to launchctl. UV's bundled Python can ship with a minimal PATH
+# that doesn't include /bin, causing FileNotFoundError when running launchctl.
+_LAUNCHCTL = shutil.which("launchctl") or "/bin/launchctl"
 from typing import List, Optional
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -591,7 +595,7 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
             plist_path = get_launchd_plist_path()
             if plist_path.exists():
                 subprocess.run(
-                    ["launchctl", "unload", str(plist_path)],
+                    [_LAUNCHCTL, "unload", str(plist_path)],
                     capture_output=True, check=False, timeout=10,
                 )
                 plist_path.unlink(missing_ok=True)

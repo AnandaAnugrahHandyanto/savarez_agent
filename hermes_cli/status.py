@@ -5,11 +5,16 @@ Shows the status of all Hermes Agent components.
 """
 
 import os
+import shutil
 import sys
 import subprocess
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+
+# Absolute path to launchctl. UV's bundled Python can ship with a minimal PATH
+# that doesn't include /bin, causing FileNotFoundError when running launchctl.
+_LAUNCHCTL = shutil.which("launchctl") or "/bin/launchctl"
 
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
@@ -329,7 +334,7 @@ def show_status(args):
         from hermes_cli.gateway import get_launchd_label
         try:
             result = subprocess.run(
-                ["launchctl", "list", get_launchd_label()],
+                [_LAUNCHCTL, "list", get_launchd_label()],
                 capture_output=True,
                 text=True,
                 timeout=5

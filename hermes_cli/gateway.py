@@ -14,6 +14,11 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
+# Absolute path to launchctl. UV's bundled Python can ship with a minimal PATH
+# that doesn't include /bin, causing FileNotFoundError when running launchctl.
+# Use shutil.which() first, then fall back to the standard macOS location.
+_LAUNCHCTL = shutil.which("launchctl") or "/bin/launchctl"
+
 from hermes_cli.config import get_env_value, get_hermes_home, save_env_value, is_managed, managed_error
 # display_hermes_home is imported lazily at call sites to avoid ImportError
 # when hermes_constants is cached from a pre-update version during `hermes update`.
@@ -933,8 +938,8 @@ def refresh_launchd_plist_if_needed() -> bool:
 
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     # Unload/reload so launchd picks up the new definition
-    subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
-    subprocess.run(["launchctl", "load", str(plist_path)], check=False)
+    subprocess.run([_LAUNCHCTL, "unload", str(plist_path)], check=False)
+    subprocess.run([_LAUNCHCTL, "load", str(plist_path)], check=False)
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
     return True
 
@@ -956,7 +961,7 @@ def launchd_install(force: bool = False):
     print(f"Installing launchd service to: {plist_path}")
     plist_path.write_text(generate_launchd_plist())
     
-    subprocess.run(["launchctl", "load", str(plist_path)], check=True)
+    subprocess.run([_LAUNCHCTL, "load", str(plist_path)], check=True)
     
     print()
     print("✓ Service installed and loaded!")
@@ -968,7 +973,7 @@ def launchd_install(force: bool = False):
 
 def launchd_uninstall():
     plist_path = get_launchd_plist_path()
-    subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
+    subprocess.run([_LAUNCHCTL, "unload", str(plist_path)], check=False)
     
     if plist_path.exists():
         plist_path.unlink()
@@ -985,25 +990,25 @@ def launchd_start():
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-        subprocess.run(["launchctl", "load", str(plist_path)], check=True)
-        subprocess.run(["launchctl", "start", label], check=True)
+        subprocess.run([_LAUNCHCTL, "load", str(plist_path)], check=True)
+        subprocess.run([_LAUNCHCTL, "start", label], check=True)
         print("✓ Service started")
         return
 
     refresh_launchd_plist_if_needed()
     try:
-        subprocess.run(["launchctl", "start", label], check=True)
+        subprocess.run([_LAUNCHCTL, "start", label], check=True)
     except subprocess.CalledProcessError as e:
         if e.returncode != 3:
             raise
         print("↻ launchd job was unloaded; reloading service definition")
-        subprocess.run(["launchctl", "load", str(plist_path)], check=True)
-        subprocess.run(["launchctl", "start", label], check=True)
+        subprocess.run([_LAUNCHCTL, "load", str(plist_path)], check=True)
+        subprocess.run([_LAUNCHCTL, "start", label], check=True)
     print("✓ Service started")
 
 def launchd_stop():
     label = get_launchd_label()
-    subprocess.run(["launchctl", "stop", label], check=True)
+    subprocess.run([_LAUNCHCTL, "stop", label], check=True)
     print("✓ Service stopped")
 
 def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
@@ -1060,7 +1065,7 @@ def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
     result = subprocess.run(
-        ["launchctl", "list", label],
+        [_LAUNCHCTL, "list", label],
         capture_output=True,
         text=True
     )
@@ -1620,7 +1625,7 @@ def _is_service_running() -> bool:
         return False
     elif is_macos() and get_launchd_plist_path().exists():
         result = subprocess.run(
-            ["launchctl", "list", get_launchd_label()],
+            [_LAUNCHCTL, "list", get_launchd_label()],
             capture_output=True, text=True
         )
         return result.returncode == 0

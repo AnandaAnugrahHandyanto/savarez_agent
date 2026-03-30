@@ -316,7 +316,7 @@ class TestCmdUpdateLaunchdRestart:
         # Verify launchctl stop + start were called (not manual SIGTERM)
         launchctl_calls = [
             c for c in mock_run.call_args_list
-            if len(c.args[0]) > 0 and c.args[0][0] == "launchctl"
+            if len(c.args[0]) > 0 and "launchctl" in c.args[0][0]
         ]
         stop_calls = [c for c in launchctl_calls if "stop" in c.args[0]]
         start_calls = [c for c in launchctl_calls if "start" in c.args[0]]
