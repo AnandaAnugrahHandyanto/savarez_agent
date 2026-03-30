@@ -782,10 +782,11 @@ class TelegramAdapter(BasePlatformAdapter):
             except ImportError:
                 _BadReq = None  # type: ignore[assignment,misc]
 
+            chat_id_int = int(chat_id)
+            
             for i, chunk in enumerate(chunks):
                 should_thread = self._should_thread_reply(reply_to, i)
                 reply_to_id = int(reply_to) if should_thread else None
-                
                 # Get effective thread_id, clearing it for DMs (chat_id > 0)
                 effective_thread_id = self._get_effective_thread_id(chat_id, thread_id)
 
@@ -807,7 +808,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
                                 plain_chunk = _strip_mdv2(chunk)
                                 msg = await self._bot.send_message(
-                                    chat_id=int(chat_id),
+                                    chat_id=chat_id_int,
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
