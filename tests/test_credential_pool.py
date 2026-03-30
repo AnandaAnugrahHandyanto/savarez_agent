@@ -28,7 +28,7 @@ def test_fill_first_selection_skips_recently_exhausted_entry(tmp_path, monkeypat
                         "auth_type": "api_key",
                         "priority": 0,
                         "source": "manual",
-                        "access_token": "sk-ant-api-primary",
+                        "access_token": "***",
                         "last_status": "exhausted",
                         "last_status_at": time.time(),
                         "last_error_code": 402,
@@ -39,7 +39,7 @@ def test_fill_first_selection_skips_recently_exhausted_entry(tmp_path, monkeypat
                         "auth_type": "api_key",
                         "priority": 1,
                         "source": "manual",
-                        "access_token": "sk-ant-api-secondary",
+                        "access_token": "***",
                         "last_status": "ok",
                         "last_status_at": None,
                         "last_error_code": None,
@@ -57,6 +57,126 @@ def test_fill_first_selection_skips_recently_exhausted_entry(tmp_path, monkeypat
     assert entry is not None
     assert entry.id == "cred-2"
     assert pool.current().id == "cred-2"
+
+
+def test_select_clears_expired_exhaustion(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1",
+                        "label": "old",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - 90000,
+                        "last_error_code": 402,
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.last_status == "ok"
+
+
+def test_round_robin_strategy_rotates_priorities(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "secondary",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "***",
+                    },
+                ]
+            },
+        },
+    )
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text("credential_pool_strategies:\n  openrouter: round_robin\n")
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openrouter")
+    first = pool.select()
+    assert first is not None
+    assert first.id == "cred-1"
+
+    reloaded = load_pool("openrouter")
+    second = reloaded.select()
+    assert second is not None
+    assert second.id == "cred-2"
+
+
+def test_random_strategy_uses_random_choice(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "secondary",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "***",
+                    },
+                ]
+            },
+        },
+    )
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text("credential_pool_strategies:\n  openrouter: random\n")
+
+    monkeypatch.setattr("agent.credential_pool.random.choice", lambda entries: entries[-1])
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openrouter")
+    selected = pool.select()
+    assert selected is not None
+    assert selected.id == "cred-2"
+
 
 
 def test_exhausted_entry_resets_after_ttl(tmp_path, monkeypatch):

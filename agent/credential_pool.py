@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import time
 import uuid
 import os
@@ -38,6 +39,15 @@ AUTH_TYPE_OAUTH = "oauth"
 AUTH_TYPE_API_KEY = "api_key"
 
 SOURCE_MANUAL = "manual"
+
+STRATEGY_FILL_FIRST = "fill_first"
+STRATEGY_ROUND_ROBIN = "round_robin"
+STRATEGY_RANDOM = "random"
+SUPPORTED_POOL_STRATEGIES = {
+    STRATEGY_FILL_FIRST,
+    STRATEGY_ROUND_ROBIN,
+    STRATEGY_RANDOM,
+}
 
 # Cooldown before retrying an exhausted credential.
 # 429 (rate-limited) cools down faster since quotas reset frequently.
@@ -139,11 +149,31 @@ def _exhausted_ttl(error_code: Optional[int]) -> int:
     return EXHAUSTED_TTL_DEFAULT_SECONDS
 
 
+def get_pool_strategy(provider: str) -> str:
+    """Return the configured selection strategy for a provider."""
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+    except Exception:
+        return STRATEGY_FILL_FIRST
+
+    strategies = config.get("credential_pool_strategies")
+    if not isinstance(strategies, dict):
+        return STRATEGY_FILL_FIRST
+
+    strategy = str(strategies.get(provider, "") or "").strip().lower()
+    if strategy in SUPPORTED_POOL_STRATEGIES:
+        return strategy
+    return STRATEGY_FILL_FIRST
+
+
 class CredentialPool:
     def __init__(self, provider: str, entries: List[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
         self._current_id: Optional[str] = None
+        self._strategy = get_pool_strategy(provider)
 
     def has_credentials(self) -> bool:
         return bool(self._entries)
@@ -269,6 +299,7 @@ class CredentialPool:
     def select(self) -> Optional[PooledCredential]:
         now = time.time()
         cleared_any = False
+        available: List[PooledCredential] = []
         for entry in self._entries:
             if entry.last_status == STATUS_EXHAUSTED:
                 ttl = _exhausted_ttl(entry.last_error_code)
@@ -283,14 +314,31 @@ class CredentialPool:
                 if refreshed is None:
                     continue
                 entry = refreshed
-            if cleared_any:
-                self._persist()
-            self._current_id = entry.id
-            return entry
+            available.append(entry)
+
         if cleared_any:
             self._persist()
-        self._current_id = None
-        return None
+        if not available:
+            self._current_id = None
+            return None
+
+        if self._strategy == STRATEGY_RANDOM:
+            entry = random.choice(available)
+            self._current_id = entry.id
+            return entry
+
+        if self._strategy == STRATEGY_ROUND_ROBIN and len(available) > 1:
+            entry = available[0]
+            rotated = [candidate for candidate in self._entries if candidate.id != entry.id]
+            rotated.append(replace(entry, priority=len(self._entries) - 1))
+            self._entries = [replace(candidate, priority=idx) for idx, candidate in enumerate(rotated)]
+            self._persist()
+            self._current_id = entry.id
+            return self.current() or entry
+
+        entry = available[0]
+        self._current_id = entry.id
+        return entry
 
     def peek(self) -> Optional[PooledCredential]:
         current = self.current()
