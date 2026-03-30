@@ -20,7 +20,8 @@ def _make_adapter():
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(TelegramAdapter)
-    adapter._platform = Platform.TELEGRAM
+    # Use 'platform' not '_platform' - that's what the base class defines
+    adapter.platform = Platform.TELEGRAM
     adapter.config = config
     adapter._pending_text_batches = {}
     adapter._pending_text_batch_tasks = {}
@@ -205,7 +206,8 @@ class TestBuildMessageEventForChannels:
             pytest.skip("python-telegram-bot not installed")
         
         adapter = _make_adapter()
-        adapter.name = "telegram"
+        # Note: adapter.name is a read-only property derived from platform.value.title()
+        # Since we set platform = Platform.TELEGRAM, adapter.name is automatically "Telegram"
         
         msg = _make_channel_message(text="Channel content")
         # Mock ChatType for the test
