@@ -95,6 +95,9 @@ from agent.display import (
     get_cute_tool_message as _get_cute_tool_message_impl,
     _detect_tool_failure,
     get_tool_emoji as _get_tool_emoji,
+    get_skin_faces,
+    get_skin_verbs,
+    get_skin_wings,
 )
 from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
@@ -6399,17 +6402,25 @@ class AIAgent:
                 self._vprint(f"{self.log_prefix}   🔧 Available tools: {len(self.tools) if self.tools else 0}")
             else:
                 # Animated thinking spinner in quiet mode
-                face = random.choice(KawaiiSpinner.KAWAII_THINKING)
-                verb = random.choice(KawaiiSpinner.THINKING_VERBS)
+                faces = get_skin_faces("thinking_faces", KawaiiSpinner.KAWAII_THINKING)
+                verbs = get_skin_verbs()
+                face = random.choice(faces)
+                verb = random.choice(verbs)
+                wings = get_skin_wings()
+                if wings:
+                    left, right = random.choice(wings)
+                    thinking_line = f"{left} {face} {verb}... {right}"
+                else:
+                    thinking_line = f"{face} {verb}..."
                 if self.thinking_callback:
                     # CLI TUI mode: use prompt_toolkit widget instead of raw spinner
                     # (works in both streaming and non-streaming modes)
-                    self.thinking_callback(f"{face} {verb}...")
+                    self.thinking_callback(thinking_line)
                 elif not self._has_stream_consumers():
                     # Raw KawaiiSpinner only when no streaming consumers
                     # (would conflict with streamed token output)
                     spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
-                    thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type, print_fn=self._print_fn)
+                    thinking_spinner = KawaiiSpinner(thinking_line, spinner_type=spinner_type, print_fn=self._print_fn)
                     thinking_spinner.start()
             
             # Log request details if verbose

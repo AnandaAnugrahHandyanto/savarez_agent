@@ -308,6 +308,27 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "help_header": "(^_^)? Available Commands",
         },
         "tool_prefix": "┊",
+        "banner_logo": """[bold #7eb8f6]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
+[bold #7eb8f6]██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
+[#8EA8FF]███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
+[#8EA8FF]██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
+[#4169e1]██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
+[#4169e1]╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]""",
+        "banner_hero": """[#4169e1]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#4169e1]⠀⠀⠀⠀⠀⠀⢀⣠⣴⣾⣿⣿⣇⠸⣿⣿⠇⣸⣿⣿⣷⣦⣄⡀⠀⠀⠀⠀⠀⠀[/]
+[#8EA8FF]⠀⢀⣠⣴⣶⠿⠋⣩⡿⣿⡿⠻⣿⡇⢠⡄⢸⣿⠟⢿⣿⢿⣍⠙⠿⣶⣦⣄⡀⠀[/]
+[#8EA8FF]⠀⠀⠉⠉⠁⠶⠟⠋⠀⠉⠀⢀⣈⣁⡈⢁⣈⣁⡀⠀⠉⠀⠙⠻⠶⠈⠉⠉⠀⠀[/]
+[#7eb8f6]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⡿⠛⢁⡈⠛⢿⣿⣦⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#7eb8f6]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠿⣿⣦⣤⣈⠁⢠⣴⣿⠿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#8EA8FF]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠻⢿⣿⣦⡉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#8EA8FF]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⢷⣦⣈⠛⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#4169e1]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣴⠦⠈⠙⠿⣦⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#4169e1]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⣿⣤⡈⠁⢤⣿⠇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#4b5563]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠛⠷⠄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#4b5563]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⠑⢶⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#4b5563]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⠁⢰⡆⠈⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#4b5563]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⠈⣡⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#4b5563]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]""",
     },
     "poseidon": {
         "name": "poseidon",
@@ -670,12 +691,16 @@ def get_active_goodbye(fallback: str = "Goodbye! ⚕") -> str:
         return fallback
 
 
-
-def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
+def get_prompt_toolkit_style_overrides(*, transparent_ui: bool = False) -> Dict[str, str]:
     """Return prompt_toolkit style overrides derived from the active skin.
 
-    These are layered on top of the CLI's base TUI style so /skin can refresh
-    the live prompt_toolkit UI immediately without rebuilding the app.
+    These keys map to class names used by the custom TUI controls in cli.py,
+    allowing skins to recolor input area, status bars, completion menus, and
+    interactive approval/clarify prompts without touching CLI logic.
+
+    Args:
+        transparent_ui: If True, use terminal-default backgrounds for
+            status/completion UI so panels blend with the emulator theme.
     """
     try:
         skin = get_active_skin()
@@ -688,8 +713,37 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     text = skin.get_color("banner_text", prompt)
     dim = skin.get_color("banner_dim", "#555555")
     label = skin.get_color("ui_label", title)
+    accent = skin.get_color("ui_accent", label)
     warn = skin.get_color("ui_warn", "#FF8C00")
     error = skin.get_color("ui_error", "#FF6B6B")
+
+    if transparent_ui:
+        status_bar = f"bg:default {text}"
+        status_bar_strong = f"bg:default {title} bold"
+        status_bar_dim = f"bg:default {dim}"
+        status_bar_good = f"bg:default {skin.get_color('ui_ok', '#8FBC8F')} bold"
+        status_bar_warn = f"bg:default {skin.get_color('ui_warn', '#FFD700')} bold"
+        status_bar_bad = f"bg:default {skin.get_color('ui_error', '#FF8C00')} bold"
+        status_bar_critical = f"bg:default {skin.get_color('ui_error', '#FF6B6B')} bold"
+        completion_menu = f"bg:default {accent}"
+        completion_menu_item = f"bg:default {accent}"
+        # Keep selection visible while still inheriting terminal background.
+        completion_current = f"bg:default {title} bold reverse"
+        completion_meta = f"bg:default {title}"
+        completion_meta_current = f"bg:default {label} bold reverse"
+    else:
+        status_bar = f"bg:#1a1a2e {text}"
+        status_bar_strong = f"bg:#1a1a2e {title} bold"
+        status_bar_dim = f"bg:#1a1a2e {dim}"
+        status_bar_good = f"bg:#1a1a2e {skin.get_color('ui_ok', '#8FBC8F')} bold"
+        status_bar_warn = f"bg:#1a1a2e {skin.get_color('ui_warn', '#FFD700')} bold"
+        status_bar_bad = f"bg:#1a1a2e {skin.get_color('ui_error', '#FF8C00')} bold"
+        status_bar_critical = f"bg:#1a1a2e {skin.get_color('ui_error', '#FF6B6B')} bold"
+        completion_menu = f"bg:#1a1a2e {accent}"
+        completion_menu_item = f"bg:#1a1a2e {accent}"
+        completion_current = f"bg:#333355 {title}"
+        completion_meta = f"bg:#1a1a2e {title}"
+        completion_meta_current = f"bg:#333355 {label}"
 
     return {
         "input-area": prompt,
@@ -697,13 +751,20 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         "prompt": prompt,
         "prompt-working": f"{dim} italic",
         "hint": f"{dim} italic",
+        "status-bar": status_bar,
+        "status-bar-strong": status_bar_strong,
+        "status-bar-dim": status_bar_dim,
+        "status-bar-good": status_bar_good,
+        "status-bar-warn": status_bar_warn,
+        "status-bar-bad": status_bar_bad,
+        "status-bar-critical": status_bar_critical,
         "input-rule": input_rule,
         "image-badge": f"{label} bold",
-        "completion-menu": f"bg:#1a1a2e {text}",
-        "completion-menu.completion": f"bg:#1a1a2e {text}",
-        "completion-menu.completion.current": f"bg:#333355 {title}",
-        "completion-menu.meta.completion": f"bg:#1a1a2e {dim}",
-        "completion-menu.meta.completion.current": f"bg:#333355 {label}",
+        "completion-menu": completion_menu,
+        "completion-menu.completion": completion_menu_item,
+        "completion-menu.completion.current": completion_current,
+        "completion-menu.meta.completion": completion_meta,
+        "completion-menu.meta.completion.current": completion_meta_current,
         "clarify-border": input_rule,
         "clarify-title": f"{title} bold",
         "clarify-question": f"{text} bold",

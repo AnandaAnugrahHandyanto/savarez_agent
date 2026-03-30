@@ -61,6 +61,29 @@ def _skin_branding(key: str, fallback: str) -> str:
         return fallback
 
 
+def _tint_default_banner_art(markup: str) -> str:
+    """Retint legacy gold banner art to the active skin palette.
+
+    Only used when a skin does not define custom banner_logo/banner_hero.
+    """
+    try:
+        title = _skin_color("banner_title", "#FFD700")
+        accent = _skin_color("banner_accent", "#FFBF00")
+        border = _skin_color("banner_border", "#CD7F32")
+        dim = _skin_color("banner_dim", "#B8860B")
+        text = _skin_color("banner_text", "#FFF8DC")
+        return (
+            markup
+            .replace("#FFD700", title)
+            .replace("#FFBF00", accent)
+            .replace("#CD7F32", border)
+            .replace("#B8860B", dim)
+            .replace("#FFF8DC", text)
+        )
+    except Exception:
+        return markup
+
+
 # =========================================================================
 # ASCII Art & Branding
 # =========================================================================
@@ -284,17 +307,27 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     layout_table.add_column("left", justify="center")
     layout_table.add_column("right", justify="left")
 
-    # Resolve skin colors once for the entire banner
+    # Resolve skin colors once for the entire banner.
     accent = _skin_color("banner_accent", "#FFBF00")
     dim = _skin_color("banner_dim", "#B8860B")
     text = _skin_color("banner_text", "#FFF8DC")
-    session_color = _skin_color("session_border", "#8B8682")
+
+    # Catppuccin-aligned blue used for model/provider/path/session labels.
+    info_blue = _skin_color("banner_accent", accent)
+    section_header_color = info_blue
+    session_gray = _skin_color("banner_dim", dim)
+
+    # Keep tool + skill sections visually aligned.
+    tools_category_color = _skin_color("banner_title", accent)
+    tools_name_color = _skin_color("ui_accent", text)
+    skills_category_color = tools_category_color
+    skills_name_color = tools_name_color
 
     # Use skin's custom caduceus art if provided
     try:
         from hermes_cli.skin_engine import get_active_skin
         _bskin = get_active_skin()
-        _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else HERMES_CADUCEUS
+        _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else _tint_default_banner_art(HERMES_CADUCEUS)
     except Exception:
         _bskin = None
         _hero = HERMES_CADUCEUS
@@ -305,13 +338,13 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     if len(model_short) > 28:
         model_short = model_short[:25] + "..."
     ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
-    left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
-    left_lines.append(f"[dim {dim}]{cwd}[/]")
+    left_lines.append(f"[{info_blue}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [{info_blue}]Nous Research[/]")
+    left_lines.append(f"[{info_blue}]{cwd}[/]")
     if session_id:
-        left_lines.append(f"[dim {session_color}]Session: {session_id}[/]")
+        left_lines.append(f"[{session_gray}]Session: {session_id}[/]")
     left_content = "\n".join(left_lines)
 
-    right_lines = [f"[bold {accent}]Available Tools[/]"]
+    right_lines = [f"[bold {section_header_color}]Available Tools[/]"]
     toolsets_dict: Dict[str, list] = {}
 
     for tool in tools:
@@ -341,7 +374,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
             elif name in lazy_tools:
                 colored_names.append(f"[yellow]{name}[/]")
             else:
-                colored_names.append(f"[{text}]{name}[/]")
+                colored_names.append(f"[{tools_name_color}]{name}[/]")
 
         tools_str = ", ".join(colored_names)
         if len(", ".join(sorted(tool_names))) > 45:
@@ -362,10 +395,10 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                 elif name in lazy_tools:
                     colored_names.append(f"[yellow]{name}[/]")
                 else:
-                    colored_names.append(f"[{text}]{name}[/]")
+                    colored_names.append(f"[{tools_name_color}]{name}[/]")
             tools_str = ", ".join(colored_names)
 
-        right_lines.append(f"[dim {dim}]{toolset}:[/] {tools_str}")
+        right_lines.append(f"[{tools_category_color}]{toolset}:[/] {tools_str}")
 
     if remaining_toolsets > 0:
         right_lines.append(f"[dim {dim}](and {remaining_toolsets} more toolsets...)[/]")
@@ -393,7 +426,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                 )
 
     right_lines.append("")
-    right_lines.append(f"[bold {accent}]Available Skills[/]")
+    right_lines.append(f"[bold {section_header_color}]Available Skills[/]")
     skills_by_category = get_available_skills()
     total_skills = sum(len(s) for s in skills_by_category.values())
 
@@ -407,7 +440,10 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                 skills_str = ", ".join(skill_names)
             if len(skills_str) > 50:
                 skills_str = skills_str[:47] + "..."
-            right_lines.append(f"[dim {dim}]{category}:[/] [{text}]{skills_str}[/]")
+            right_lines.append(
+                f"[{skills_category_color}]{category}:[/] "
+                f"[{skills_name_color}]{skills_str}[/]"
+            )
     else:
         right_lines.append(f"[dim {dim}]No skills installed[/]")
 
@@ -456,7 +492,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     console.print()
     term_width = shutil.get_terminal_size().columns
     if term_width >= 95:
-        _logo = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else HERMES_AGENT_LOGO
+        _logo = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else _tint_default_banner_art(HERMES_AGENT_LOGO)
         console.print(_logo)
         console.print()
     console.print(outer_panel)

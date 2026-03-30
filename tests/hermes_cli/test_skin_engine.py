@@ -226,13 +226,23 @@ class TestDisplayIntegration:
         from agent.display import get_cute_tool_message
         set_active_skin("ares")
         msg = get_cute_tool_message("terminal", {"command": "ls"}, 0.5)
-        assert msg.startswith("╎")
+        assert "╎" in msg
         assert "┊" not in msg
+
+    def test_tool_message_uses_skin_colors(self):
+        from hermes_cli.skin_engine import set_active_skin
+        from agent.display import get_cute_tool_message
+
+        set_active_skin("mono")
+        msg = get_cute_tool_message("terminal", {"command": "ls"}, 0.5)
+
+        # ANSI escape present for themed prefix and duration tokens
+        assert "\x1b[" in msg
 
     def test_tool_message_default_prefix(self):
         from agent.display import get_cute_tool_message
         msg = get_cute_tool_message("terminal", {"command": "ls"}, 0.5)
-        assert msg.startswith("┊")
+        assert "┊" in msg
 
 
 class TestCliBrandingHelpers:
@@ -270,6 +280,13 @@ class TestCliBrandingHelpers:
             "prompt",
             "prompt-working",
             "hint",
+            "status-bar",
+            "status-bar-strong",
+            "status-bar-dim",
+            "status-bar-good",
+            "status-bar-warn",
+            "status-bar-bad",
+            "status-bar-critical",
             "input-rule",
             "image-badge",
             "completion-menu",
@@ -308,7 +325,40 @@ class TestCliBrandingHelpers:
         skin = get_active_skin()
         overrides = get_prompt_toolkit_style_overrides()
         assert overrides["prompt"] == skin.get_color("prompt")
+        assert overrides["status-bar"] == f"bg:#1a1a2e {skin.get_color('banner_text')}"
+        assert overrides["status-bar-strong"] == f"bg:#1a1a2e {skin.get_color('banner_title')} bold"
+        assert overrides["status-bar-dim"] == f"bg:#1a1a2e {skin.get_color('banner_dim')}"
+        assert overrides["status-bar-good"] == f"bg:#1a1a2e {skin.get_color('ui_ok')} bold"
+        assert overrides["status-bar-warn"] == f"bg:#1a1a2e {skin.get_color('ui_warn')} bold"
+        assert overrides["status-bar-bad"] == f"bg:#1a1a2e {skin.get_color('ui_error')} bold"
+        assert overrides["status-bar-critical"] == f"bg:#1a1a2e {skin.get_color('ui_error')} bold"
+        assert overrides["completion-menu"] == f"bg:#1a1a2e {skin.get_color('ui_accent', skin.get_color('ui_label'))}"
+        assert overrides["completion-menu.completion"] == f"bg:#1a1a2e {skin.get_color('ui_accent', skin.get_color('ui_label'))}"
+        assert overrides["completion-menu.completion.current"] == f"bg:#333355 {skin.get_color('banner_title')}"
+        assert overrides["completion-menu.meta.completion"] == f"bg:#1a1a2e {skin.get_color('banner_title')}"
+        assert overrides["completion-menu.meta.completion.current"] == f"bg:#333355 {skin.get_color('ui_label')}"
         assert overrides["input-rule"] == skin.get_color("input_rule")
         assert overrides["clarify-title"] == f"{skin.get_color('banner_title')} bold"
         assert overrides["sudo-prompt"] == f"{skin.get_color('ui_error')} bold"
         assert overrides["approval-title"] == f"{skin.get_color('ui_warn')} bold"
+
+    def test_prompt_toolkit_style_overrides_transparent_ui(self):
+        from hermes_cli.skin_engine import (
+            set_active_skin,
+            get_active_skin,
+            get_prompt_toolkit_style_overrides,
+        )
+
+        set_active_skin("mono")
+        skin = get_active_skin()
+        overrides = get_prompt_toolkit_style_overrides(transparent_ui=True)
+
+        assert overrides["status-bar"] == f"bg:default {skin.get_color('banner_text')}"
+        assert overrides["status-bar-strong"] == f"bg:default {skin.get_color('banner_title')} bold"
+        assert overrides["status-bar-dim"] == f"bg:default {skin.get_color('banner_dim')}"
+        assert overrides["status-bar-good"] == f"bg:default {skin.get_color('ui_ok')} bold"
+        assert overrides["completion-menu"] == f"bg:default {skin.get_color('ui_accent', skin.get_color('ui_label'))}"
+        assert overrides["completion-menu.completion"] == f"bg:default {skin.get_color('ui_accent', skin.get_color('ui_label'))}"
+        assert overrides["completion-menu.completion.current"] == f"bg:default {skin.get_color('banner_title')} bold reverse"
+        assert overrides["completion-menu.meta.completion"] == f"bg:default {skin.get_color('banner_title')}"
+        assert overrides["completion-menu.meta.completion.current"] == f"bg:default {skin.get_color('ui_label')} bold reverse"
