@@ -347,6 +347,41 @@ def test_setup_same_provider_fallback_can_add_another_credential(tmp_path, monke
     assert config["credential_pool_strategies"]["openrouter"] == "fill_first"
 
 
+def test_setup_copilot_acp_skips_same_provider_pool_step(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    config = load_config()
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select your inference provider:":
+            return 15  # GitHub Copilot ACP
+        if question == "Select default model:":
+            return 0
+        if question == "Configure vision:":
+            return len(choices) - 1
+        tts_idx = _maybe_keep_current_tts(question, choices)
+        if tts_idx is not None:
+            return tts_idx
+        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+
+    def fake_prompt_yes_no(question, default=True):
+        if question == "Add another credential for same-provider fallback?":
+            raise AssertionError("same-provider pool prompt should not appear for copilot-acp")
+        return False
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", fake_prompt_yes_no)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
+    monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    setup_model_provider(config)
+
+    assert config.get("credential_pool_strategies", {}) == {}
+
+
 def test_setup_copilot_uses_gh_auth_and_saves_provider(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _clear_provider_env(monkeypatch)
