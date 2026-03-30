@@ -463,6 +463,10 @@ class GatewayRunner:
         self._effective_model: Optional[str] = None
         self._effective_provider: Optional[str] = None
 
+        # Graceful shutdown: set True in stop() so _run_agent() can
+        # emergency-persist transcripts before the process dies.
+        self._shutting_down = False
+
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
@@ -1408,6 +1412,7 @@ class GatewayRunner:
         """Stop the gateway and disconnect all adapters."""
         logger.info("Stopping gateway...")
         self._running = False
+        self._shutting_down = True  # Signal _run_agent to emergency-persist
 
         for session_key, agent in list(self._running_agents.items()):
             if agent is _AGENT_PENDING_SENTINEL:
@@ -1417,6 +1422,30 @@ class GatewayRunner:
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key[:20])
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
+
+        # Grace period: wait for active _run_agent() finally blocks to
+        # emergency-persist their transcripts before we tear down adapters.
+        if self._running_agents:
+            _active = sum(1 for a in self._running_agents.values()
+                          if a is not _AGENT_PENDING_SENTINEL)
+            if _active:
+                logger.info(
+                    "Waiting up to 5s for %d active session(s) to persist...",
+                    _active,
+                )
+                for _ in range(50):  # 5s in 100ms steps
+                    _still = sum(1 for a in self._running_agents.values()
+                                 if a is not _AGENT_PENDING_SENTINEL)
+                    if not _still:
+                        break
+                    await asyncio.sleep(0.1)
+                _remaining = sum(1 for a in self._running_agents.values()
+                                 if a is not _AGENT_PENDING_SENTINEL)
+                if _remaining:
+                    logger.warning(
+                        "%d session(s) didn't finish persisting in time",
+                        _remaining,
+                    )
 
         for platform, adapter in list(self.adapters.items()):
             try:
@@ -6112,6 +6141,43 @@ class GatewayRunner:
                         await stream_task
                     except asyncio.CancelledError:
                         pass
+
+            # ── Emergency transcript persistence on shutdown ──────────
+            # If the gateway is shutting down and we have agent messages,
+            # persist them NOW — the caller (_handle_message) may never
+            # regain control before the process exits.
+            if getattr(self, '_shutting_down', False) and result_holder[0]:
+                try:
+                    _emer_result = result_holder[0]
+                    _emer_msgs = _emer_result.get("messages", [])
+                    _emer_offset = _emer_result.get("history_offset", len(history))
+                    _emer_new = (
+                        _emer_msgs[_emer_offset:]
+                        if len(_emer_msgs) > _emer_offset
+                        else []
+                    )
+                    if _emer_new:
+                        _emer_ts = datetime.now().isoformat()
+                        _emer_count = 0
+                        for _msg in _emer_new:
+                            if _msg.get("role") == "system":
+                                continue
+                            _msg.setdefault("timestamp", _emer_ts)
+                            self.session_store.append_to_transcript(
+                                session_id, _msg,
+                            )
+                            _emer_count += 1
+                        if _emer_count:
+                            logger.info(
+                                "Emergency persist: saved %d messages for "
+                                "session %s before shutdown",
+                                _emer_count, session_id[:30],
+                            )
+                except Exception as _emer_exc:
+                    logger.error(
+                        "Emergency persist failed for %s: %s",
+                        session_id[:30], _emer_exc,
+                    )
             
             # Clean up tracking
             tracking_task.cancel()
