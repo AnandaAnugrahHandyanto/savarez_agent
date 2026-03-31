@@ -1259,6 +1259,38 @@ class TestPathsOverlap:
         assert not _paths_overlap(Path("src/a.py"), Path(""))
 
 
+class TestParallelScopePathNormalization:
+    def test_extract_parallel_scope_path_normalizes_relative_to_cwd(self, tmp_path, monkeypatch):
+        from run_agent import _extract_parallel_scope_path
+
+        monkeypatch.chdir(tmp_path)
+
+        scoped = _extract_parallel_scope_path("write_file", {"path": "./notes.txt"})
+
+        assert scoped == tmp_path / "notes.txt"
+
+    def test_extract_parallel_scope_path_treats_relative_and_absolute_same_file_as_same_scope(self, tmp_path, monkeypatch):
+        from run_agent import _extract_parallel_scope_path, _paths_overlap
+
+        monkeypatch.chdir(tmp_path)
+        abs_path = tmp_path / "notes.txt"
+
+        rel_scoped = _extract_parallel_scope_path("write_file", {"path": "notes.txt"})
+        abs_scoped = _extract_parallel_scope_path("write_file", {"path": str(abs_path)})
+
+        assert rel_scoped == abs_scoped
+        assert _paths_overlap(rel_scoped, abs_scoped)
+
+    def test_should_parallelize_tool_batch_rejects_same_file_with_mixed_path_spellings(self, tmp_path, monkeypatch):
+        from run_agent import _should_parallelize_tool_batch
+
+        monkeypatch.chdir(tmp_path)
+        tc1 = _mock_tool_call(name="write_file", arguments='{"path":"notes.txt","content":"one"}', call_id="c1")
+        tc2 = _mock_tool_call(name="write_file", arguments=f'{{"path":"{tmp_path / "notes.txt"}","content":"two"}}', call_id="c2")
+
+        assert not _should_parallelize_tool_batch([tc1, tc2])
+
+
 class TestHandleMaxIterations:
     def test_returns_summary(self, agent):
         resp = _mock_response(content="Here is a summary of what I did.")
