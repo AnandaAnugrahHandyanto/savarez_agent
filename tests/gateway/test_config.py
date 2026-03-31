@@ -6,6 +6,7 @@ from gateway.config import (
     Platform,
     PlatformConfig,
     SessionResetPolicy,
+    _coerce_bool,
     load_gateway_config,
 )
 
@@ -90,6 +91,21 @@ class TestSessionResetPolicy:
         assert restored.mode == "both"
         assert restored.at_hour == 4
         assert restored.idle_minutes == 1440
+
+
+class TestCoerceBool:
+    def test_recognized_values(self):
+        assert _coerce_bool("true", False) is True
+        assert _coerce_bool("off", True) is False
+        assert _coerce_bool(1, False) is True
+        assert _coerce_bool(0, True) is False
+
+    def test_invalid_values_preserve_default(self):
+        assert _coerce_bool("maybe", True) is True
+        assert _coerce_bool("maybe", False) is False
+        assert _coerce_bool(2, True) is True
+        assert _coerce_bool(-1, False) is False
+        assert _coerce_bool(object(), True) is True
 
 
 class TestGatewayConfigRoundtrip:

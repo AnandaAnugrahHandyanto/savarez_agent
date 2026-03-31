@@ -28,8 +28,19 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
-        return value.strip().lower() in ("true", "1", "yes", "on")
-    return bool(value)
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+        return default
+    if isinstance(value, int):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+        return default
+    return default
 
 
 def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> str:
