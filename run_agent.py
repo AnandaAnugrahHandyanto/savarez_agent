@@ -3498,6 +3498,27 @@ class AIAgent:
                 self._client_log_context(),
             )
             return client
+        # Inject a connection timeout on the underlying httpx transport unless
+        # the caller already supplied an explicit http_client.  Without this,
+        # a host that is unreachable but not actively refusing connections (no
+        # TCP RST) causes the SDK to hang indefinitely before Hermes ever sees
+        # an error — which means the fallback chain is never triggered.
+        #
+        # HERMES_CONNECT_TIMEOUT controls the TCP connect timeout in seconds
+        # (default: 10).  Set to 0 to disable (restores the old behaviour).
+        if "http_client" not in client_kwargs:
+            import httpx as _httpx
+            _connect_timeout = float(os.getenv("HERMES_CONNECT_TIMEOUT", "10.0"))
+            if _connect_timeout > 0:
+                client_kwargs = dict(client_kwargs)
+                client_kwargs["http_client"] = _httpx.Client(
+                    timeout=_httpx.Timeout(
+                        connect=_connect_timeout,
+                        read=float(os.getenv("HERMES_STREAM_READ_TIMEOUT", "60.0")),
+                        write=float(os.getenv("HERMES_API_TIMEOUT", "1800.0")),
+                        pool=30.0,
+                    )
+                )
         client = OpenAI(**client_kwargs)
         logger.info(
             "OpenAI client created (%s, shared=%s) %s",
