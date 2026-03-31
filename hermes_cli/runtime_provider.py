@@ -419,6 +419,29 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
+    # Custom endpoint (local Ollama, vLLM, llama.cpp, etc.)
+    # The user set model.provider: "custom" in config.yaml — resolve from
+    # model.base_url and OPENAI_BASE_URL, not from OpenRouter (#4172).
+    if provider == "custom":
+        model_cfg = _get_model_config()
+        cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+        env_base_url = (explicit_base_url or "").strip() or os.getenv("OPENAI_BASE_URL", "").strip()
+        base_url = cfg_base_url or env_base_url
+        if base_url:
+            api_key = (
+                (explicit_api_key or "").strip()
+                or os.getenv("OPENAI_API_KEY", "").strip()
+                or "no-key-required"
+            )
+            return {
+                "provider": "custom",
+                "api_mode": _detect_api_mode_for_url(base_url) or "chat_completions",
+                "base_url": base_url.rstrip("/"),
+                "api_key": api_key,
+                "source": "config:model.provider=custom",
+                "requested_provider": requested_provider,
+            }
+
     runtime = _resolve_openrouter_runtime(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,

@@ -719,6 +719,18 @@ def resolve_provider(
     if explicit_api_key or explicit_base_url:
         return "openrouter"
 
+    # Check config.yaml model.provider — explicit user choice takes priority
+    # over stale API keys lingering in the environment (#4172).
+    try:
+        from hermes_cli.config import load_config as _load_cfg
+        _cfg = _load_cfg()
+        _cfg_provider = str((_cfg.get("model") or {}).get("provider") or "").strip().lower()
+        if _cfg_provider and _cfg_provider not in ("auto", ""):
+            # Normalize through the same alias map used above (line 686+)
+            return _PROVIDER_ALIASES.get(_cfg_provider, _cfg_provider)
+    except Exception:
+        pass
+
     # Check auth store for an active OAuth provider
     try:
         auth_store = _load_auth_store()

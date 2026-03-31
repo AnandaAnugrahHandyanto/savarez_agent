@@ -1295,6 +1295,12 @@ def _model_flow_custom(config):
         save_config(cfg)
         deactivate_provider()
 
+        # Clear stale OpenRouter key that would override the custom
+        # endpoint in auto-detection (#4172).  Don't clear OPENAI_API_KEY —
+        # the custom endpoint itself may use it.
+        if get_env_value("OPENROUTER_API_KEY"):
+            save_env_value("OPENROUTER_API_KEY", "")
+
         print(f"Default model set to: {model_name} (via {effective_url})")
     else:
         if base_url or api_key:
