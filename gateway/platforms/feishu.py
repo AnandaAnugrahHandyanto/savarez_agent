@@ -93,6 +93,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    TEXT_INJECTABLE_EXTENSIONS,
     cache_document_from_bytes,
     cache_image_from_url,
     cache_audio_from_bytes,
@@ -2350,7 +2351,7 @@ class FeishuAdapter(BasePlatformAdapter):
             if os.path.getsize(cached_path) > _MAX_TEXT_INJECT_BYTES:
                 return ""
             ext = Path(cached_path).suffix.lower()
-            if ext not in {".txt", ".md"} and media_type not in {"text/plain", "text/markdown"}:
+            if ext not in TEXT_INJECTABLE_EXTENSIONS and media_type not in {"text/plain", "text/markdown", "text/csv", "application/json"}:
                 return ""
             content = Path(cached_path).read_text(encoding="utf-8")
             display_name = self._display_name_from_cached_path(cached_path)

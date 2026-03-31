@@ -61,6 +61,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
+    TEXT_INJECTABLE_EXTENSIONS,
 )
 from gateway.platforms.telegram_network import (
     TelegramFallbackTransport,
@@ -1834,7 +1835,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 # For text files, inject content into event.text (capped at 100 KB)
                 MAX_TEXT_INJECT_BYTES = 100 * 1024
-                if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                if ext in TEXT_INJECTABLE_EXTENSIONS and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                     try:
                         text_content = raw_bytes.decode("utf-8")
                         display_name = original_filename or f"document{ext}"

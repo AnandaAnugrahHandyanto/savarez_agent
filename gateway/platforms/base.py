@@ -235,10 +235,18 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
     ".md": "text/markdown",
     ".txt": "text/plain",
+    ".csv": "text/csv",
+    ".json": "application/json",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
+
+# Extensions eligible for inline text injection into event.text.
+# Files with these extensions are decoded as UTF-8 and prepended to the
+# user's message so the agent can read the content without a tool call.
+# Capped at 100 KB per file (MAX_TEXT_INJECT_BYTES in each adapter).
+TEXT_INJECTABLE_EXTENSIONS = frozenset({".md", ".txt", ".csv", ".json"})
 
 
 def get_document_cache_dir() -> Path:
