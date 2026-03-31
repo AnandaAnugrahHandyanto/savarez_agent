@@ -3110,6 +3110,59 @@ class HermesCLI:
         """Reset the conversation by starting a new session."""
         self.new_session()
     
+    def _handle_copy_command(self, cmd: str):
+        """Copy the Nth-latest assistant response to the system clipboard."""
+        import subprocess as _sp
+        import shutil
+        parts = cmd.split()
+        n = 1
+        if len(parts) > 1:
+            try:
+                n = int(parts[1])
+            except ValueError:
+                _cprint(f"  Usage: /copy [N] — copy the Nth-latest assistant response")
+                return
+        # Collect assistant responses in reverse order
+        assistant_msgs = [
+            m for m in self.conversation_history
+            if isinstance(m, dict) and m.get("role") == "assistant"
+        ]
+        if not assistant_msgs:
+            _cprint(f"  {_DIM}No assistant responses to copy.{_RST}")
+            return
+        if n < 1 or n > len(assistant_msgs):
+            _cprint(f"  {_DIM}Only {len(assistant_msgs)} assistant response(s) available.{_RST}")
+            return
+        msg = assistant_msgs[-n]
+        text = msg.get("content", "")
+        if isinstance(text, list):
+            text = "\n".join(p.get("text", "") for p in text if isinstance(p, dict))
+        if not text.strip():
+            _cprint(f"  {_DIM}Response is empty (may be tool-only).{_RST}")
+            return
+        # Copy to clipboard
+        clip_cmd = None
+        if shutil.which("pbcopy"):
+            clip_cmd = ["pbcopy"]
+        elif shutil.which("xclip"):
+            clip_cmd = ["xclip", "-selection", "clipboard"]
+        elif shutil.which("xsel"):
+            clip_cmd = ["xsel", "--clipboard", "--input"]
+        elif shutil.which("clip.exe"):
+            clip_cmd = ["clip.exe"]
+        if not clip_cmd:
+            _cprint(f"  {_DIM}No clipboard utility found (pbcopy/xclip/xsel/clip.exe).{_RST}")
+            return
+        try:
+            _sp.run(clip_cmd, input=text, text=True, timeout=5, check=True)
+            preview = text[:80].replace("\n", " ")
+            if len(text) > 80:
+                preview += "..."
+            label = "" if n == 1 else f" (#{n})"
+            _cprint(f"  {_DIM}Copied{label}: {preview}{_RST}")
+        except Exception as e:
+            _cprint(f"  {_DIM}Clipboard error: {e}{_RST}")
+
     def save_conversation(self):
         """Save the current conversation to a file."""
         if not self.conversation_history:
@@ -3866,6 +3919,8 @@ class HermesCLI:
             self._handle_reasoning_command(cmd_original)
         elif canonical == "compress":
             self._manual_compress()
+        elif canonical == "copy":
+            self._handle_copy_command(cmd_original)
         elif canonical == "usage":
             self._show_usage()
         elif canonical == "insights":
