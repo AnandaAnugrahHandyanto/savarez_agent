@@ -4464,10 +4464,25 @@ class AIAgent:
         # Use centralized router for client construction.
         # raw_codex=True because the main agent needs direct responses.stream()
         # access for Codex providers.
+        # Important: explicit fallback endpoint settings must be forwarded,
+        # otherwise custom fallbacks can silently resolve back to the primary
+        # provider config and fail with model-not-found errors.
         try:
             from agent.auxiliary_client import resolve_provider_client
+
+            fb_explicit_base_url = (fb.get("base_url") or "").strip() or None
+            fb_explicit_api_key = (fb.get("api_key") or "").strip() or None
+            fb_api_key_env = (fb.get("api_key_env") or "").strip()
+            if not fb_explicit_api_key and fb_api_key_env:
+                fb_explicit_api_key = os.getenv(fb_api_key_env, "").strip() or None
+
             fb_client, _ = resolve_provider_client(
-                fb_provider, model=fb_model, raw_codex=True)
+                fb_provider,
+                model=fb_model,
+                raw_codex=True,
+                explicit_base_url=fb_explicit_base_url,
+                explicit_api_key=fb_explicit_api_key,
+            )
             if fb_client is None:
                 logging.warning(
                     "Fallback to %s failed: provider not configured",

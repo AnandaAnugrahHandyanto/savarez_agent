@@ -26,6 +26,7 @@ from pathlib import Path
 
 import fire
 import yaml
+from hermes_constants import get_hermes_home, OPENROUTER_BASE_URL
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
@@ -60,8 +61,6 @@ from tools.rl_training_tool import get_missing_keys
 # Config Loading
 # ============================================================================
 
-from hermes_constants import get_hermes_home, OPENROUTER_BASE_URL
-
 DEFAULT_MODEL = "anthropic/claude-opus-4.5"
 DEFAULT_BASE_URL = OPENROUTER_BASE_URL
 
@@ -91,8 +90,12 @@ def load_hermes_config() -> dict:
                     config["model"] = file_config["model"]
                 elif isinstance(file_config["model"], dict):
                     config["model"] = file_config["model"].get("default", DEFAULT_MODEL)
+                    if file_config["model"].get("base_url"):
+                        config["base_url"] = file_config["model"]["base_url"]
+                    elif file_config["model"].get("provider") == "openrouter":
+                        config["base_url"] = OPENROUTER_BASE_URL
             
-            # Get base_url if specified
+            # Get top-level base_url if specified
             if "base_url" in file_config:
                 config["base_url"] = file_config["base_url"]
                 
