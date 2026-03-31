@@ -5622,6 +5622,11 @@ class AIAgent:
                     f"exceeding the {MAX_TOOL_RESULT_CHARS:,} char limit]"
                 )
 
+            # Redact secrets before entering LLM context (concurrent path)
+            if isinstance(function_result, str):
+                from agent.redact import redact_sensitive_text
+                function_result = redact_sensitive_text(function_result)
+
             # Append tool result message in order
             tool_msg = {
                 "role": "tool",
@@ -5876,6 +5881,14 @@ class AIAgent:
                     + f"\n\n[Truncated: tool response was {original_len:,} chars, "
                     f"exceeding the {MAX_TOOL_RESULT_CHARS:,} char limit]"
                 )
+
+            # Redact secrets from tool output before it enters LLM context.
+            # Defense-in-depth: individual tools (terminal, file_tools) also
+            # redact, but this catches any tool that doesn't (e.g. execute_code,
+            # browser, MCP tools). Prevents secret exfiltration via prompt injection.
+            if isinstance(function_result, str):
+                from agent.redact import redact_sensitive_text
+                function_result = redact_sensitive_text(function_result)
 
             tool_msg = {
                 "role": "tool",

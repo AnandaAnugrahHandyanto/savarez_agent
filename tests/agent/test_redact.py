@@ -252,3 +252,77 @@ class TestElevenLabsTavilyExaKeys:
         assert "XYZ789abcdef" not in result
         assert "HOME=/home/user" in result
         assert "SHELL=/bin/bash" in result
+
+
+class TestCodeExecutionRedaction:
+    """Verify execute_code output is redacted before reaching LLM context."""
+
+    def test_env_var_in_stdout_is_redacted(self):
+        """Secrets printed via os.environ should be masked."""
+        text = "ANTHROPIC_API_KEY=sk-ant-api03-abc123def456ghi789jkl012mno345"
+        result = redact_sensitive_text(text)
+        assert "sk-ant-api03-abc123def456ghi789jkl012mno345" not in result
+        assert "ANTHROPIC_API_KEY=" in result
+        assert "***" in result or "..." in result
+
+    def test_openrouter_key_in_stdout_is_redacted(self):
+        """OpenRouter keys in script output should be masked."""
+        text = "sk-or-v1-abc123def456ghi789jkl012mno345pqr678stu901"
+        result = redact_sensitive_text(text)
+        assert "abc123def456" not in result
+
+    def test_multiple_keys_in_environ_dump(self):
+        """Full os.environ dump should redact all known key formats."""
+        text = (
+            "OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl\n"
+            "GROQ_API_KEY=gsk_abc123def456ghi789jkl012\n"
+            "DISCORD_BOT_TOKEN=MTIzNDU2Nzg5MDEyMzQ1Njc4.abc.def\n"
+            "DATABASE_URL=postgres://user:secretpass123@host/db\n"
+        )
+        result = redact_sensitive_text(text)
+        assert "sk-proj-abc123" not in result
+        assert "secretpass123" not in result
+
+    def test_non_secret_output_unchanged(self):
+        """Regular script output should pass through unmodified."""
+        text = "Hello world\nResult: 42\nProcessed 100 items"
+        result = redact_sensitive_text(text)
+        assert result == text
+
+
+class TestMemoryAndSkillSecretBlocking:
+    """Verify secrets are blocked from being written to memory and skills."""
+
+    def test_memory_blocks_api_key(self):
+        from tools.memory_tool import _scan_memory_content
+        result = _scan_memory_content("Found key: sk-ant-api03-abc123def456ghi789jkl012mno345")
+        assert result is not None
+        assert "API key" in result or "Blocked" in result
+
+    def test_memory_blocks_env_assignment(self):
+        from tools.memory_tool import _scan_memory_content
+        result = _scan_memory_content("OPENAI_API_KEY=sk-proj-abc123def456ghi789")
+        assert result is not None
+        assert "Blocked" in result
+
+    def test_memory_allows_normal_content(self):
+        from tools.memory_tool import _scan_memory_content
+        result = _scan_memory_content("User prefers dark mode and uses TypeScript.")
+        assert result is None
+
+    def test_skill_blocks_api_key(self):
+        from tools.skill_manager_tool import _scan_skill_for_secrets
+        result = _scan_skill_for_secrets("Use this key: sk-ant-api03-abc123def456ghi789jkl012mno345")
+        assert result is not None
+        assert "Blocked" in result
+
+    def test_skill_blocks_env_assignment(self):
+        from tools.skill_manager_tool import _scan_skill_for_secrets
+        result = _scan_skill_for_secrets("ANTHROPIC_TOKEN=sk-ant-oat01-abc123def456ghi789")
+        assert result is not None
+        assert "Blocked" in result
+
+    def test_skill_allows_normal_content(self):
+        from tools.skill_manager_tool import _scan_skill_for_secrets
+        result = _scan_skill_for_secrets("# My Skill\n\nThis skill helps with coding tasks.")
+        assert result is None
