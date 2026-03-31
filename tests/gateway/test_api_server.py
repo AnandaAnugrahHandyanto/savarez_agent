@@ -196,6 +196,20 @@ class TestAuth:
         assert result is not None
         assert result.status == 401
 
+    def test_auth_uses_compare_digest(self):
+        """Token comparison must go through hmac.compare_digest (timing-safe)."""
+        import gateway.platforms.api_server as api_server_mod
+        config = PlatformConfig(enabled=True, extra={"key": "sk-secret"})
+        adapter = APIServerAdapter(config)
+        mock_request = MagicMock()
+        mock_request.headers = {"Authorization": "Bearer sk-secret"}
+        with MagicMock() as _m:
+            import unittest.mock as _um
+            with _um.patch("gateway.platforms.api_server.hmac.compare_digest",
+                           wraps=api_server_mod.hmac.compare_digest) as spy:
+                adapter._check_auth(mock_request)
+                spy.assert_called_once_with("sk-secret", "sk-secret")
+
 
 # ---------------------------------------------------------------------------
 # Helpers for HTTP tests
