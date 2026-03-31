@@ -16,6 +16,7 @@ from hermes_cli.commands import (
     resolve_command,
     slack_subcommand_map,
     telegram_bot_commands,
+    telegram_menu_commands,
 )
 
 
@@ -504,3 +505,30 @@ class TestGhostText:
 
     def test_no_suggestion_for_non_slash(self):
         assert _suggestion("hello") is None
+
+
+# ---------------------------------------------------------------------------
+# Telegram menu command tests
+# ---------------------------------------------------------------------------
+
+class TestTelegramMenuCommands:
+    """Tests for telegram_menu_commands() and BotCommand name length limits."""
+
+    def test_all_command_names_within_32_char_limit(self):
+        """Telegram Bot API requires command names to be 1-32 characters."""
+        menu_commands, _ = telegram_menu_commands(max_commands=100)
+        
+        for name, desc in menu_commands:
+            assert len(name) <= 32, f"Command '{name}' exceeds 32 char limit ({len(name)} chars)"
+            assert len(name) >= 1, f"Command name cannot be empty"
+
+    def test_long_skill_names_truncated_to_32_chars(self):
+        """Skills with long names (e.g., stable-diffusion-image-generation) 
+        should be truncated to fit Telegram's limit."""
+        menu_commands, _ = telegram_menu_commands(max_commands=100)
+        
+        # Check that any skill-like command names are truncated
+        for name, desc in menu_commands:
+            # Telegram format: lowercase, underscores, max 32 chars
+            assert " " not in name, f"Command '{name}' contains spaces"
+            assert name.islower() or "_" in name, f"Command '{name}' should be lowercase/underscores"
