@@ -115,6 +115,16 @@ DEFAULT_CONFIG = {
     "stt": {
         "enabled": True,
         "model": "whisper-1",
+        # Optional openai sub-section for local/custom endpoints.
+        # When set, these values are used as fallbacks when the
+        # VOICE_TOOLS_OPENAI_KEY env var is not present.
+        #
+        # Example (whisper.cpp HTTP server):
+        #   openai:
+        #     base_url: "http://127.0.0.1:8001/v1"
+        #     api_key: "local-token"
+        #     model: "whisper-large-v3-turbo"
+        "openai": {},
     },
     
     "human_delay": {

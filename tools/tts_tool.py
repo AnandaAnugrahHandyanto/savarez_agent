@@ -200,23 +200,51 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
 # ===========================================================================
 def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """
-    Generate audio using OpenAI TTS.
+    Generate audio using an OpenAI-compatible TTS endpoint.
+
+    Reads the API key and base URL from ``tts_config`` (populated from
+    ``~/.hermes/config.yaml``) so that local OpenAI-compatible servers
+    work without requiring environment variables:
+
+    .. code-block:: yaml
+
+        tts:
+          provider: openai
+          openai:
+            model: tts-1
+            voice: alloy
+            base_url: http://127.0.0.1:8002/v1
+            api_key: "local-token"
+
+    The ``VOICE_TOOLS_OPENAI_KEY`` environment variable still takes
+    precedence over ``tts.openai.api_key`` in config, so existing
+    deployments are unaffected.
 
     Args:
         text: Text to convert.
         output_path: Where to save the audio file.
-        tts_config: TTS config dict.
+        tts_config: TTS config dict (from ``_load_tts_config()``).
 
     Returns:
         Path to the saved audio file.
     """
-    api_key = os.getenv("VOICE_TOOLS_OPENAI_KEY", "")
-    if not api_key:
-        raise ValueError("VOICE_TOOLS_OPENAI_KEY not set. Get one at https://platform.openai.com/api-keys")
-
     oai_config = tts_config.get("openai", {})
+
+    # Resolve API key: env var wins, fall back to config value
+    api_key = os.getenv("VOICE_TOOLS_OPENAI_KEY", "") or oai_config.get("api_key", "")
+    if not api_key:
+        raise ValueError(
+            "No API key configured for OpenAI TTS. Set VOICE_TOOLS_OPENAI_KEY "
+            "or add tts.openai.api_key to ~/.hermes/config.yaml"
+        )
+
     model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
     voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
+
+    # Resolve base URL: config value wins (supports local endpoints),
+    # fall back to the public OpenAI API.
+    configured_url = oai_config.get("base_url", "").strip()
+    base_url = configured_url if configured_url else "https://api.openai.com/v1"
 
     # Determine response format from extension
     if output_path.endswith(".ogg"):
@@ -224,7 +252,7 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     else:
         response_format = "mp3"
 
-    client = OpenAIClient(api_key=api_key, base_url="https://api.openai.com/v1")
+    client = OpenAIClient(api_key=api_key, base_url=base_url)
     response = client.audio.speech.create(
         model=model,
         voice=voice,
@@ -392,8 +420,17 @@ def check_tts_requirements() -> bool:
         return True
     if _HAS_ELEVENLABS and os.getenv("ELEVENLABS_API_KEY"):
         return True
-    if _HAS_OPENAI and os.getenv("VOICE_TOOLS_OPENAI_KEY"):
-        return True
+    if _HAS_OPENAI:
+        # Accept key from env var OR from config
+        if os.getenv("VOICE_TOOLS_OPENAI_KEY"):
+            return True
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            if cfg.get("tts", {}).get("openai", {}).get("api_key", ""):
+                return True
+        except Exception:
+            pass
     return False
 
 
@@ -409,7 +446,17 @@ if __name__ == "__main__":
     print(f"  ElevenLabs: {'✅ installed' if _HAS_ELEVENLABS else '❌ not installed (pip install elevenlabs)'}")
     print(f"    API Key:  {'✅ set' if os.getenv('ELEVENLABS_API_KEY') else '❌ not set'}")
     print(f"  OpenAI:     {'✅ installed' if _HAS_OPENAI else '❌ not installed'}")
-    print(f"    API Key:  {'✅ set' if os.getenv('VOICE_TOOLS_OPENAI_KEY') else '❌ not set (VOICE_TOOLS_OPENAI_KEY)'}")
+    _oai_key_env = os.getenv("VOICE_TOOLS_OPENAI_KEY")
+    _oai_key_cfg = config.get("openai", {}).get("api_key", "")
+    if _oai_key_env:
+        _oai_key_status = "✅ set (VOICE_TOOLS_OPENAI_KEY)"
+    elif _oai_key_cfg:
+        _oai_key_status = "✅ set (tts.openai.api_key in config)"
+    else:
+        _oai_key_status = "❌ not set (VOICE_TOOLS_OPENAI_KEY or tts.openai.api_key)"
+    print(f"    API Key:  {_oai_key_status}")
+    _oai_base = config.get("openai", {}).get("base_url", "")
+    print(f"    Base URL: {_oai_base if _oai_base else 'https://api.openai.com/v1 (default)'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")
 

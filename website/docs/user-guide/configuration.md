@@ -461,10 +461,31 @@ display:
 
 ```yaml
 stt:
-  provider: "openai"           # STT provider
+  enabled: true
+  model: "whisper-1"           # Default STT model
+  openai:
+    base_url: ""               # Optional: custom endpoint (e.g. local whisper.cpp server)
+    api_key: ""                # Optional: API key (falls back to VOICE_TOOLS_OPENAI_KEY env var)
 ```
 
-Requires `VOICE_TOOLS_OPENAI_KEY` in `.env` for OpenAI STT.
+The `VOICE_TOOLS_OPENAI_KEY` environment variable takes precedence over `stt.openai.api_key`
+in config, so existing deployments are unaffected.
+
+### Using a local Whisper endpoint
+
+To use a local OpenAI-compatible STT server (whisper.cpp, LocalAI, oMLX, etc.), set
+`stt.openai.base_url` and `stt.openai.api_key` in `~/.hermes/config.yaml`:
+
+```yaml
+stt:
+  enabled: true
+  model: "whisper-large-v3-turbo"
+  openai:
+    base_url: "http://127.0.0.1:8001/v1"
+    api_key: "local-token"
+```
+
+No environment variable is needed when `stt.openai.api_key` is set in config.
 
 ## Human Delay
 
