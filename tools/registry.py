@@ -184,7 +184,6 @@ class ToolRegistry:
     def iter_entries(self) -> List[ToolEntry]:
         """Return registered tool entries sorted by tool name."""
         return [self._tools[name] for name in sorted(self._tools.keys())]
-
     def get_toolset_for_tool(self, name: str) -> Optional[str]:
         """Return the toolset a tool belongs to, or None."""
         entry = self._tools.get(name)

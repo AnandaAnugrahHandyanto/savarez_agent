@@ -21,6 +21,7 @@ from rich.table import Table
 
 # Lazy imports to avoid circular dependencies and slow startup.
 # tools.skills_hub and tools.skills_guard are imported inside functions.
+from hermes_constants import display_hermes_home
 
 _console = Console()
 
@@ -353,7 +354,14 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     extra_metadata.update(getattr(bundle, "metadata", {}) or {})
 
     # Quarantine the bundle
-    q_path = quarantine_bundle(bundle)
+    try:
+        q_path = quarantine_bundle(bundle)
+    except ValueError as exc:
+        c.print(f"[bold red]Installation blocked:[/] {exc}\n")
+        from tools.skills_hub import append_audit_log
+        append_audit_log("BLOCKED", bundle.name, bundle.source,
+                         bundle.trust_level, "invalid_path", str(exc))
+        return
     c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
 
     # Scan
@@ -388,7 +396,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                 "[bold bright_cyan]This is an official optional skill maintained by Nous Research.[/]\n\n"
                 "It ships with hermes-agent but is not activated by default.\n"
                 "Installing will copy it to your skills directory where the agent can use it.\n\n"
-                f"Files will be at: [cyan]~/.hermes/skills/{category + '/' if category else ''}{bundle.name}/[/]",
+                f"Files will be at: [cyan]{display_hermes_home()}/skills/{category + '/' if category else ''}{bundle.name}/[/]",
                 title="Official Skill",
                 border_style="bright_cyan",
             ))
@@ -398,7 +406,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                 "External skills can contain instructions that influence agent behavior,\n"
                 "shell commands, and scripts. Even after automated scanning, you should\n"
                 "review the installed files before use.\n\n"
-                f"Files will be at: [cyan]~/.hermes/skills/{category + '/' if category else ''}{bundle.name}/[/]",
+                f"Files will be at: [cyan]{display_hermes_home()}/skills/{category + '/' if category else ''}{bundle.name}/[/]",
                 title="Disclaimer",
                 border_style="yellow",
             ))
@@ -413,7 +421,15 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             return
 
     # Install
-    install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
+    try:
+        install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
+    except ValueError as exc:
+        c.print(f"[bold red]Installation blocked:[/] {exc}\n")
+        shutil.rmtree(q_path, ignore_errors=True)
+        from tools.skills_hub import append_audit_log
+        append_audit_log("BLOCKED", bundle.name, bundle.source,
+                         bundle.trust_level, "invalid_path", str(exc))
+        return
     from tools.skills_hub import SKILLS_DIR
     c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
@@ -744,7 +760,7 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
         auth = GitHubAuth()
         if not auth.is_authenticated():
             c.print("[bold red]Error:[/] GitHub authentication required.\n"
-                    "Set GITHUB_TOKEN in ~/.hermes/.env or run 'gh auth login'.\n")
+                    f"Set GITHUB_TOKEN in {display_hermes_home()}/.env or run 'gh auth login'.\n")
             return
 
         c.print(f"[bold]Publishing '{name}' to {repo}...[/]")
@@ -887,10 +903,15 @@ def do_snapshot_export(output_path: str, console: Optional[Console] = None) -> N
         "taps": tap_list,
     }
 
-    out = Path(output_path)
-    out.write_text(json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n")
-    c.print(f"[bold green]Snapshot exported:[/] {out}")
-    c.print(f"[dim]{len(installed)} skill(s), {len(tap_list)} tap(s)[/]\n")
+    payload = json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n"
+    if output_path == "-":
+        import sys
+        sys.stdout.write(payload)
+    else:
+        out = Path(output_path)
+        out.write_text(payload)
+        c.print(f"[bold green]Snapshot exported:[/] {out}")
+        c.print(f"[dim]{len(installed)} skill(s), {len(tap_list)} tap(s)[/]\n")
 
 
 def do_snapshot_import(input_path: str, force: bool = False,

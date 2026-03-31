@@ -17,6 +17,20 @@ def get_hermes_home() -> Path:
     return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 
 
+def get_optional_skills_dir(default: Path | None = None) -> Path:
+    """Return the optional-skills directory, honoring package-manager wrappers.
+
+    Packaged installs may ship ``optional-skills`` outside the Python package
+    tree and expose it via ``HERMES_OPTIONAL_SKILLS``.
+    """
+    override = os.getenv("HERMES_OPTIONAL_SKILLS", "").strip()
+    if override:
+        return Path(override)
+    if default is not None:
+        return default
+    return get_hermes_home() / "optional-skills"
+
+
 def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
     """Resolve a Hermes subdirectory with backward compatibility.
 
@@ -36,6 +50,26 @@ def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
     if old_path.exists():
         return old_path
     return home / new_subpath
+
+
+def display_hermes_home() -> str:
+    """Return a user-friendly display string for the current HERMES_HOME.
+
+    Uses ``~/`` shorthand for readability::
+
+        default:  ``~/.hermes``
+        profile:  ``~/.hermes/profiles/coder``
+        custom:   ``/opt/hermes-custom``
+
+    Use this in **user-facing** print/log messages instead of hardcoding
+    ``~/.hermes``.  For code that needs a real ``Path``, use
+    :func:`get_hermes_home` instead.
+    """
+    home = get_hermes_home()
+    try:
+        return "~/" + str(home.relative_to(Path.home()))
+    except ValueError:
+        return str(home)
 
 
 VALID_REASONING_EFFORTS = ("xhigh", "high", "medium", "low", "minimal")
