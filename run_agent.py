@@ -1044,6 +1044,9 @@ class AIAgent:
         self._memory_nudge_interval = 10
         self._memory_flush_min_turns = 6
         self._turns_since_memory = 0
+        self._auto_extract_enabled = False
+        self._extract_interval = 3
+        self._turns_since_extraction = 0
         self._iters_since_skill = 0
         if not skip_memory:
             try:
@@ -1052,6 +1055,8 @@ class AIAgent:
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
                 self._memory_flush_min_turns = int(mem_config.get("flush_min_turns", 6))
+                self._auto_extract_enabled = mem_config.get("auto_extract", False)
+                self._extract_interval = int(mem_config.get("extract_interval", 3))
                 if self._memory_enabled or self._user_profile_enabled:
                     from tools.memory_tool import MemoryStore
                     _engine = None
@@ -6256,6 +6261,7 @@ class AIAgent:
                 and "memory" in self.valid_tool_names
                 and self._memory_store):
             self._turns_since_memory += 1
+            self._turns_since_extraction += 1
             if self._turns_since_memory >= self._memory_nudge_interval:
                 _should_review_memory = True
                 self._turns_since_memory = 0
@@ -8252,6 +8258,25 @@ class AIAgent:
                 )
             except Exception:
                 pass  # Background review is best-effort
+
+        # Auto-extraction: lightweight memory extraction via auxiliary LLM
+        # Runs independently of the nudge-based background review above.
+        if (final_response and not interrupted
+                and self._memory_store and getattr(self._memory_store, '_engine', None)
+                and getattr(self, '_auto_extract_enabled', False)
+                and getattr(self, '_turns_since_extraction', 0) >= getattr(self, '_extract_interval', 3)):
+            try:
+                from agent.memory_extractor import extract_memories_background
+                _aux = getattr(self, '_auxiliary_client', None)
+                extract_memories_background(
+                    recent_messages=list(messages[-20:]),  # last 20 messages
+                    memory_store=self._memory_store,
+                    auxiliary_client=_aux,
+                    session_id=self.session_id,
+                )
+                self._turns_since_extraction = 0
+            except Exception:
+                pass  # Extraction is best-effort
 
         # Plugin hook: on_session_end
         # Fired at the very end of every run_conversation call.
