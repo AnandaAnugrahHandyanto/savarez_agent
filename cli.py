@@ -1279,18 +1279,16 @@ class HermesCLI:
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
-    def _extract_silent_fallback(self, fallback_model) -> bool:
-        """Extract silent_fallback from fallback_model config.
-
-        For a single dict, returns the silent_fallback value (default False).
-        For a list, returns True only if ALL providers have silent_fallback=True.
-        """
-        if not fallback_model:
-            return False
+    @staticmethod
+    def _extract_silent_fallback(fallback_model) -> bool:
+        """Extract silent_fallback flag from fallback_model config."""
         if isinstance(fallback_model, dict):
-            return bool(fallback_model.get("silent_fallback", False))
+            return fallback_model.get("silent_fallback", False)
         if isinstance(fallback_model, list):
-            return all(bool(f.get("silent_fallback", False)) for f in fallback_model if isinstance(f, dict))
+            return bool(fallback_model) and all(
+                isinstance(f, dict) and f.get("silent_fallback", False)
+                for f in fallback_model
+            )
         return False
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
