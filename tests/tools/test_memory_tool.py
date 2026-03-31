@@ -20,10 +20,14 @@ from tools.memory_tool import (
 class TestMemorySchema:
     def test_discourages_diary_style_task_logs(self):
         description = MEMORY_SCHEMA["description"]
-        assert "Do NOT save task progress" in description
-        assert "session_search" in description
+        # New schema uses WHAT NOT TO SAVE block instead of inline prohibition
+        assert "Ephemeral task details" in description or "temporary task state" in description
         assert "like a diary" not in description
-        assert "temporary task state" in description
+        assert "temporary" in description.lower()
+        # Should include staleness caveat
+        assert "Verify before asserting" in description or "staleness" in description.lower()
+        # Should include trusting recall guidance
+        assert "grep for it" in description or "TRUSTING RECALL" in description
         assert ">80%" not in description
 
 

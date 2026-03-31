@@ -12,13 +12,16 @@ Design principles:
 - WAL mode for concurrent access (CLI + gateway + cron)
 """
 
+import hashlib
 import json
 import logging
 import math
 import os
+import re
 import sqlite3
 import threading
 import uuid
+from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,7 +61,12 @@ ARCHIVE_MIN_STRENGTH = 1.1
 # We want to catch near-exact rephrases (score ~5+) but not topical overlap.
 DEDUP_THRESHOLD = 5.0
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+# Chunking constants (from HiveMind memory.rs)
+CHUNK_MAX_CHARS = 1600
+CHUNK_OVERLAP_CHARS = 320
+CHUNK_MIN_CONTENT_LEN = 500
 
 # Type tag prefixes for prompt rendering
 TYPE_TAGS = {
@@ -119,6 +127,71 @@ CREATE TABLE IF NOT EXISTS memory_meta (
     key     TEXT PRIMARY KEY,
     value   TEXT NOT NULL
 );
+
+-- Graph / chunking / embedding tables (V2)
+
+CREATE TABLE IF NOT EXISTS chunks (
+    id          TEXT PRIMARY KEY,
+    memory_id   TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    content     TEXT NOT NULL,
+    start_line  INTEGER NOT NULL,
+    end_line    INTEGER NOT NULL,
+    hash        TEXT NOT NULL,
+    FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS embeddings (
+    chunk_id    TEXT PRIMARY KEY,
+    embedding   BLOB,
+    model       TEXT,
+    created_at  TEXT NOT NULL,
+    FOREIGN KEY (chunk_id) REFERENCES chunks(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS edges (
+    source_id   TEXT NOT NULL,
+    target_id   TEXT NOT NULL,
+    relation    TEXT NOT NULL,
+    weight      REAL NOT NULL DEFAULT 0.5,
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (source_id, target_id, relation)
+);
+
+CREATE TABLE IF NOT EXISTS entities (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    metadata    TEXT NOT NULL DEFAULT '{}',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+-- FTS5 for chunks
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+    content,
+    content='chunks', content_rowid='rowid',
+    tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS chunks_fts_insert AFTER INSERT ON chunks BEGIN
+    INSERT INTO chunks_fts(rowid, content) VALUES (new.rowid, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS chunks_fts_delete AFTER DELETE ON chunks BEGIN
+    INSERT INTO chunks_fts(chunks_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS chunks_fts_update AFTER UPDATE OF content ON chunks BEGIN
+    INSERT INTO chunks_fts(chunks_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+    INSERT INTO chunks_fts(rowid, content) VALUES (new.rowid, new.content);
+END;
+
+CREATE INDEX IF NOT EXISTS idx_chunks_memory_id ON chunks(memory_id);
+CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
+CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
+CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(entity_type);
+CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
 """
 
 _META_DEFAULTS = {
@@ -130,8 +203,356 @@ _META_DEFAULTS = {
 
 
 # ---------------------------------------------------------------------------
+# Module-level utilities (ported from HiveMind memory.rs)
+# ---------------------------------------------------------------------------
+
+
+def cosine_similarity(a: list, b: list) -> float:
+    """Cosine similarity between two vectors. Pure Python, no numpy.
+
+    Ported from HiveMind memory.rs lines 539-556.
+    Returns 0.0 on empty, mismatched dims, or near-zero norms.
+    """
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = 0.0
+    norm_a = 0.0
+    norm_b = 0.0
+    for i in range(len(a)):
+        dot += a[i] * b[i]
+        norm_a += a[i] * a[i]
+        norm_b += b[i] * b[i]
+    if norm_a < 1e-10 or norm_b < 1e-10:
+        return 0.0
+    return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
+
+
+def chunk_text(
+    content: str,
+    max_chars: int = CHUNK_MAX_CHARS,
+    overlap_chars: int = CHUNK_OVERLAP_CHARS,
+) -> list:
+    """Split text into overlapping chunks for indexing.
+
+    Ported from HiveMind memory.rs lines 455-504.
+    Returns list of (start_line, end_line, text) tuples.
+    Line numbers are 1-based.
+    """
+    lines = content.split("\n")
+    if not lines:
+        return []
+
+    chunks = []
+    current_lines = []  # list of (line_index, line_text)
+    current_chars = 0
+
+    def flush():
+        if not current_lines:
+            return
+        start = current_lines[0][0] + 1
+        end = current_lines[-1][0] + 1
+        text = "\n".join(l for _, l in current_lines)
+        chunks.append((start, end, text))
+
+    for i, line in enumerate(lines):
+        line_size = len(line) + 1
+
+        if current_chars + line_size > max_chars and current_lines:
+            flush()
+
+            if overlap_chars > 0:
+                acc = 0
+                kept_start = len(current_lines)
+                for j in range(len(current_lines) - 1, -1, -1):
+                    acc += len(current_lines[j][1]) + 1
+                    kept_start = j
+                    if acc >= overlap_chars:
+                        break
+                current_lines = current_lines[kept_start:]
+                current_chars = sum(len(l) + 1 for _, l in current_lines)
+            else:
+                current_lines = []
+                current_chars = 0
+
+        current_lines.append((i, line))
+        current_chars += line_size
+
+    flush()
+    return chunks
+
+
+# ---------------------------------------------------------------------------
+# Keyword extraction (YAKE — ported from HiveMind memory.rs)
+# ---------------------------------------------------------------------------
+
+_KEYWORD_STOPWORDS = frozenset([
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "need", "must", "ought",
+    "i", "you", "he", "she", "it", "we", "they", "me", "him", "her",
+    "us", "them", "my", "your", "his", "its", "our", "their", "mine",
+    "this", "that", "these", "those", "what", "which", "who", "whom",
+    "and", "but", "or", "nor", "not", "no", "so", "if", "then", "than",
+    "too", "very", "just", "about", "above", "after", "again", "all",
+    "also", "any", "because", "before", "between", "both", "by", "come",
+    "each", "few", "for", "from", "get", "got", "here", "how", "in",
+    "into", "like", "make", "many", "more", "most", "much", "of", "on",
+    "one", "only", "other", "out", "over", "said", "same", "see", "some",
+    "still", "such", "take", "tell", "there", "to", "up", "use", "want",
+    "way", "when", "where", "with", "don't", "i'm", "it's", "that's",
+    "let", "let's", "sure", "going", "think", "know", "thing", "things",
+    "really", "actually", "basically", "yes", "yeah", "okay", "well",
+    "right", "good", "new", "now", "even", "back", "first", "last",
+    "long", "great", "little", "own", "old", "big", "high", "different",
+    "small", "large", "next", "early", "young", "important", "public",
+    "bad", "same", "able", "try", "ask", "keep", "around", "however",
+    "work", "using", "used", "also", "while", "something", "without",
+])
+
+_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{2,30}")
+
+
+def extract_keywords(content: str, max_keywords: int = 8) -> list:
+    """YAKE keyword extraction. Ported from HiveMind memory.rs.
+
+    Returns up to max_keywords keywords (lower YAKE score = better keyword).
+    """
+    if not content or not content.strip():
+        return []
+
+    # 1. Sentence segmentation
+    sentences = [s for s in re.split(r"[.!?\n]", content) if len(s.split()) >= 2]
+    if not sentences:
+        sentences = [content]
+    n_sentences = max(len(sentences), 1)
+
+    # 2. Tokenize each sentence
+    sentence_tokens = [_TOKEN_RE.findall(s) for s in sentences]
+
+    # 3. Per-word statistics
+    stats = {}  # key -> {tf, tf_upper, tf_acronym, sent_positions, left_ctx, right_ctx}
+    for sent_idx, tokens in enumerate(sentence_tokens):
+        for tok_idx, token in enumerate(tokens):
+            key = token.lower()
+            if len(key) < 2 or key in _KEYWORD_STOPWORDS:
+                continue
+            if key.isdigit():
+                continue
+
+            if key not in stats:
+                stats[key] = {
+                    "tf": 0.0, "tf_upper": 0.0, "tf_acronym": 0.0,
+                    "sent_positions": [], "left_ctx": set(), "right_ctx": set(),
+                }
+            ws = stats[key]
+            ws["tf"] += 1.0
+            ws["sent_positions"].append(sent_idx)
+
+            if tok_idx > 0 and token[0].isupper():
+                ws["tf_upper"] += 1.0
+            alpha_chars = [c for c in token if c.isalpha()]
+            if len(alpha_chars) >= 2 and all(c.isupper() for c in alpha_chars):
+                ws["tf_acronym"] += 1.0
+
+            if tok_idx > 0:
+                prev = tokens[tok_idx - 1].lower()
+                if len(prev) >= 2 and prev not in _KEYWORD_STOPWORDS:
+                    ws["left_ctx"].add(prev)
+            if tok_idx + 1 < len(tokens):
+                nxt = tokens[tok_idx + 1].lower()
+                if len(nxt) >= 2 and nxt not in _KEYWORD_STOPWORDS:
+                    ws["right_ctx"].add(nxt)
+
+    if not stats:
+        return []
+
+    # 4. Global TF statistics
+    tfs = [ws["tf"] for ws in stats.values()]
+    mean_tf = sum(tfs) / len(tfs)
+    std_tf = math.sqrt(sum((t - mean_tf) ** 2 for t in tfs) / len(tfs))
+
+    # 5. YAKE score per word
+    word_scores = {}
+    for word, ws in stats.items():
+        t_case = max(max(ws["tf_upper"], ws["tf_acronym"]) / (1.0 + math.log(1.0 + ws["tf"])), 0.01)
+        positions = sorted(ws["sent_positions"])
+        median_pos = positions[len(positions) // 2]
+        t_pos = max(math.log(math.log(3.0 + median_pos)), 0.01)
+        t_freq = ws["tf"] / (mean_tf + std_tf + 1.0)
+        t_rel = 1.0 + (len(ws["left_ctx"]) + len(ws["right_ctx"])) / (2.0 * ws["tf"] + 1.0)
+        unique_sents = len(set(ws["sent_positions"]))
+        t_dif = unique_sents / n_sentences
+
+        score = (t_rel * t_pos) / (t_case + t_freq / t_rel + t_dif / t_rel + 0.001)
+        word_scores[word] = score
+
+    # 6. N-gram candidates
+    candidates = [(w, s) for w, s in word_scores.items()]
+
+    for tokens in sentence_tokens:
+        lower_tokens = [t.lower() for t in tokens]
+        for n in (2, 3):
+            if len(lower_tokens) < n:
+                continue
+            for i in range(len(lower_tokens) - n + 1):
+                gram = lower_tokens[i:i + n]
+                if any(w in _KEYWORD_STOPWORDS or len(w) < 2 or w.isdigit() for w in gram):
+                    continue
+                scores = [word_scores[w] for w in gram if w in word_scores]
+                if len(scores) != n:
+                    continue
+                product = 1.0
+                for s in scores:
+                    product *= s
+                ng_score = product / (1.0 + sum(scores))
+                candidates.append((" ".join(gram), ng_score))
+
+    # 7. Sort (lower = better)
+    candidates.sort(key=lambda x: x[1])
+
+    # 8. Deduplicate
+    result = []
+    for cand, _ in candidates:
+        if len(result) >= max_keywords:
+            break
+        if any(r in cand or cand in r for r in result):
+            continue
+        result.append(cand)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Topic classification (ported from HiveMind memory.rs lines 1186-1370)
+# ---------------------------------------------------------------------------
+
+_TECH_KEYWORDS = frozenset([
+    "function", "class", "api", "database", "server", "deploy", "code",
+    "debug", "error", "bug", "compile", "build", "test", "config",
+    "docker", "git", "rust", "typescript", "python", "javascript",
+    "react", "tauri", "sql", "http", "endpoint", "backend", "frontend",
+    "algorithm", "struct", "module", "import", "dependency", "package",
+    "binary", "runtime", "compiler", "lint", "refactor", "migration",
+    "schema", "query", "index", "cache", "thread", "async", "mutex",
+    "vector", "embedding", "model", "inference", "gpu", "vram", "cuda",
+    "wsl", "linux", "windows", "terminal", "bash", "command",
+])
+
+_PROJECT_KEYWORDS = frozenset([
+    "plan", "roadmap", "phase", "milestone", "priority", "design",
+    "architecture", "approach", "strategy", "goal", "requirement",
+    "feature", "sprint", "task", "ticket", "issue",
+])
+
+_PERSONAL_KEYWORDS = frozenset([
+    "prefer", "like", "hate", "favorite", "hobby", "style",
+    "morning", "evening", "feel", "mood", "name", "birthday",
+])
+
+_PROJECT_TAGS = frozenset(["decision", "instruction", "correction"])
+_PERSONAL_TAGS = frozenset(["preference"])
+
+
+def classify_topic(content: str, keywords: list = None, tags: list = None) -> str:
+    """Keyword-based topic classification. Ported from HiveMind memory.rs.
+
+    Returns one of MEMORY_TYPES: 'general', 'preference', 'project', 'reference'.
+    Maps topic:technical -> 'general', topic:personal -> 'preference',
+    topic:project -> 'project'.
+    """
+    if keywords is None:
+        keywords = extract_keywords(content)
+    if tags is None:
+        tags = []
+
+    lower = content.lower()
+    kw_set = [k.lower() for k in keywords]
+    tag_set = [t.lower() for t in tags]
+
+    # Technical score
+    tech_score = sum(1 for k in kw_set if k in _TECH_KEYWORDS)
+    has_code = any(marker in lower for marker in ["```", "fn ", "const ", "import ", "class ", "def "])
+    tech_total = tech_score + (2 if has_code else 0)
+
+    # Project score
+    project_tag_score = sum(1 for t in tag_set if t in _PROJECT_TAGS)
+    project_kw = sum(1 for k in kw_set if k in _PROJECT_KEYWORDS)
+    project_total = project_tag_score + project_kw
+
+    # Personal score
+    personal_tag_score = sum(1 for t in tag_set if t in _PERSONAL_TAGS)
+    personal_kw = sum(1 for k in kw_set if k in _PERSONAL_KEYWORDS)
+    personal_total = personal_tag_score + personal_kw
+
+    scores = [
+        (tech_total, "general"),      # topic:technical -> general type
+        (project_total, "project"),
+        (personal_total, "preference"),
+    ]
+    best = max(scores, key=lambda x: x[0])
+
+    if best[0] >= 2:
+        return best[1]
+    elif tech_total >= 1:
+        return "general"
+    else:
+        return "general"
+
+
+# ---------------------------------------------------------------------------
+# Embedding stub (content-hash caching pattern from HiveMind)
+# ---------------------------------------------------------------------------
+
+
+def generate_embedding(content: str) -> list:
+    """Generate embedding for content. Stub — returns empty list.
+
+    Actual embedding providers (fastembed, OpenAI, Ollama) will be added
+    as optional dependencies. Includes content-hash caching pattern.
+    """
+    # Content-hash caching pattern (from HiveMind memory.rs):
+    # 1. Hash the content with SHA256
+    # 2. Check if a chunk with same hash already has an embedding stored
+    # 3. If so, reuse it instead of calling the API
+    # For now, just return empty (graceful degradation to FTS5-only search)
+    return []
+
+
+def _hash_text(text: str) -> str:
+    """SHA256 hash of text content."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
 # MemoryEngine
 # ---------------------------------------------------------------------------
+
+
+def _memory_staleness_suffix(mem: dict, now: datetime = None) -> str:
+    """Return a staleness warning suffix for memories >7 days old.
+
+    Ported from Claude Code's memoryAge.ts: memoryAgeDays / memoryFreshnessText.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    updated_str = mem.get("updated_at") or mem.get("created_at")
+    if not updated_str:
+        return ""
+
+    try:
+        updated = datetime.fromisoformat(updated_str)
+        # Ensure timezone-aware comparison
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=timezone.utc)
+        delta_days = max(0, (now - updated).days)
+    except (ValueError, TypeError):
+        return ""
+
+    if delta_days <= 7:
+        return ""
+
+    return f"({delta_days}d old \u2014 verify)"
 
 
 class MemoryEngine:
@@ -233,6 +654,18 @@ class MemoryEngine:
         if type not in MEMORY_TYPES:
             type = "general"
 
+        # Auto-classify type if type=='general' using keyword-based classification
+        if type == "general":
+            keywords = extract_keywords(content)
+            classified = classify_topic(content, keywords=keywords)
+            if classified in MEMORY_TYPES:
+                type = classified
+            # Auto-extract keywords and merge with existing tags
+            if keywords:
+                existing_tags = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+                merged = list(dict.fromkeys(existing_tags + keywords[:5]))  # dedup, keep order
+                tags = ",".join(merged)
+
         # Exact duplicate check (fast, reliable)
         conn = self._get_conn()
         exact = conn.execute(
@@ -256,7 +689,24 @@ class MemoryEngine:
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (memory_id, content, target, type, source, tags, now, now, session_id),
         )
+
+        # Chunk long content and insert into chunks table
+        if len(content) > CHUNK_MIN_CONTENT_LEN:
+            chunks = chunk_text(content)
+            for idx, (start_line, end_line, chunk_content) in enumerate(chunks):
+                chunk_id = f"{memory_id}:chunk_{idx}"
+                chunk_hash = _hash_text(chunk_content)
+                conn.execute(
+                    """INSERT INTO chunks (id, memory_id, chunk_index, content,
+                       start_line, end_line, hash)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (chunk_id, memory_id, idx, chunk_content, start_line, end_line, chunk_hash),
+                )
+
         conn.commit()
+
+        # Auto-create edges via keyword overlap (port from HiveMind lines 1372-1437)
+        self._auto_create_edges(memory_id, content)
 
         # Check for supersession candidates
         self._check_supersession(memory_id, content, target)
@@ -394,7 +844,26 @@ class MemoryEngine:
                 scored.append(mem)
 
         scored.sort(key=lambda m: m["relevance_score"], reverse=True)
-        return scored[:limit]
+        top_results = scored[:limit]
+
+        # Graph-augmented expansion: 1-hop traversal with 0.5x weight boost
+        if top_results:
+            seen_ids = {m["id"] for m in top_results}
+            graph_additions = []
+            for mem in top_results[:3]:  # expand from top 3 only
+                related = self.get_related(mem["id"], hops=1)
+                for rel in related:
+                    if rel["id"] not in seen_ids:
+                        seen_ids.add(rel["id"])
+                        rel["relevance_score"] = round(mem["relevance_score"] * 0.5, 4)
+                        rel["graph_expanded"] = True
+                        graph_additions.append(rel)
+            if graph_additions:
+                top_results.extend(graph_additions)
+                top_results.sort(key=lambda m: m["relevance_score"], reverse=True)
+                top_results = top_results[:limit]
+
+        return top_results
 
     # -- Lifecycle -----------------------------------------------------------
 
@@ -457,6 +926,170 @@ class MemoryEngine:
                     c["id"][:8], new_id[:8], c["bm25_score"],
                 )
 
+    # -- Graph operations (MAGMA-inspired) ------------------------------------
+
+    def _auto_create_edges(self, memory_id: str, content: str):
+        """Auto-create edges between memories sharing keywords.
+
+        Ported from HiveMind memory.rs auto_create_edges().
+        """
+        keywords = extract_keywords(content)
+        if not keywords:
+            return
+
+        # Use top 3 keywords to find related memories via FTS5
+        query_terms = [f'"{k}"' for k in keywords[:3]]
+        fts_query = " OR ".join(query_terms)
+
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT DISTINCT m.id FROM memories m
+                   JOIN memories_fts ON memories_fts.rowid = m.rowid
+                   WHERE memories_fts MATCH ? LIMIT 10""",
+                (fts_query,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return
+
+        now = datetime.now(timezone.utc).isoformat()
+        for row in rows:
+            related_id = row["id"]
+            if related_id == memory_id:
+                continue
+
+            # Check if edge already exists
+            existing = conn.execute(
+                "SELECT 1 FROM edges WHERE source_id = ? AND target_id = ? AND relation = ?",
+                (memory_id, related_id, "related_to"),
+            ).fetchone()
+            if existing:
+                continue
+
+            conn.execute(
+                """INSERT OR IGNORE INTO edges (source_id, target_id, relation, weight, created_at)
+                   VALUES (?, ?, 'related_to', 0.5, ?)""",
+                (memory_id, related_id, now),
+            )
+        conn.commit()
+
+    def add_edge(self, source_id: str, target_id: str, relation: str, weight: float = 0.5) -> dict:
+        """Add a typed edge between two memories."""
+        conn = self._get_conn()
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            conn.execute(
+                """INSERT OR REPLACE INTO edges (source_id, target_id, relation, weight, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (source_id, target_id, relation, weight, now),
+            )
+            conn.commit()
+            return {"success": True, "source_id": source_id, "target_id": target_id, "relation": relation}
+        except sqlite3.Error as e:
+            return {"success": False, "error": str(e)}
+
+    def get_edges(self, memory_id: str, relation: str = None) -> list:
+        """Get all edges for a memory (both outgoing and incoming)."""
+        conn = self._get_conn()
+        if relation:
+            rows = conn.execute(
+                """SELECT * FROM edges
+                   WHERE (source_id = ? OR target_id = ?) AND relation = ?""",
+                (memory_id, memory_id, relation),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM edges WHERE source_id = ? OR target_id = ?",
+                (memory_id, memory_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_related(self, memory_id: str, hops: int = 1) -> list:
+        """BFS traversal to find related memories up to N hops away."""
+        conn = self._get_conn()
+        visited = {memory_id}
+        frontier = {memory_id}
+
+        for _ in range(hops):
+            next_frontier = set()
+            for nid in frontier:
+                # Outgoing
+                rows = conn.execute(
+                    "SELECT target_id FROM edges WHERE source_id = ? LIMIT 20",
+                    (nid,),
+                ).fetchall()
+                for r in rows:
+                    tid = r["target_id"]
+                    if tid not in visited:
+                        next_frontier.add(tid)
+                        visited.add(tid)
+
+                # Incoming
+                rows = conn.execute(
+                    "SELECT source_id FROM edges WHERE target_id = ? LIMIT 20",
+                    (nid,),
+                ).fetchall()
+                for r in rows:
+                    sid = r["source_id"]
+                    if sid not in visited:
+                        next_frontier.add(sid)
+                        visited.add(sid)
+            frontier = next_frontier
+
+        # Fetch the actual memory records (exclude the start node)
+        visited.discard(memory_id)
+        results = []
+        for mid in visited:
+            mem = self.get(mid)
+            if mem:
+                results.append(mem)
+        return results
+
+    def track_entity(self, name: str, entity_type: str, metadata: dict = None) -> dict:
+        """Track or update an entity."""
+        conn = self._get_conn()
+        now = datetime.now(timezone.utc).isoformat()
+        entity_id = str(uuid.uuid4())
+        meta_json = json.dumps(metadata or {})
+
+        # Upsert: check if entity with same name+type exists
+        existing = conn.execute(
+            "SELECT id FROM entities WHERE name = ? AND entity_type = ?",
+            (name, entity_type),
+        ).fetchone()
+
+        if existing:
+            entity_id = existing["id"]
+            conn.execute(
+                "UPDATE entities SET metadata = ?, updated_at = ? WHERE id = ?",
+                (meta_json, now, entity_id),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO entities (id, name, entity_type, metadata, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (entity_id, name, entity_type, meta_json, now, now),
+            )
+        conn.commit()
+        return {"id": entity_id, "name": name, "entity_type": entity_type, "metadata": metadata or {}}
+
+    def search_entities(self, query: str) -> list:
+        """Search entities by name (LIKE match)."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM entities WHERE name LIKE ? ORDER BY updated_at DESC LIMIT 20",
+            (f"%{query}%",),
+        ).fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["metadata"] = json.loads(d.get("metadata", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                d["metadata"] = {}
+            results.append(d)
+        return results
+
     # -- Retrieval for prompts -----------------------------------------------
 
     def get_active_memories(self, target: str, limit: int = None) -> list:
@@ -473,16 +1106,24 @@ class MemoryEngine:
         """Format memories for system prompt injection.
 
         Adds type tags, respects budget, returns None if empty.
+        Memories older than 7 days get a staleness suffix (from Claude Code memoryAge.ts).
         """
         memories = self.get_active_memories(target)
         if not memories:
             return None
 
+        now = datetime.now(timezone.utc)
         lines = []
         total_chars = 0
         for mem in memories:
             tag = TYPE_TAGS.get(mem.get("type", "general"), "gen")
             line = f"[{tag}] {mem['content']}"
+
+            # Staleness caveat: memories >7 days old get age suffix
+            staleness = _memory_staleness_suffix(mem, now)
+            if staleness:
+                line = f"{line} {staleness}"
+
             if char_budget and total_chars + len(line) + 3 > char_budget:
                 break
             lines.append(line)

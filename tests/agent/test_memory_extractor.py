@@ -1,11 +1,20 @@
 """Tests for automatic memory extraction."""
 
 import json
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.memory_extractor import _do_extraction, _format_messages
+from agent.memory_extractor import (
+    _do_extraction,
+    _format_messages,
+    _run_extraction,
+    extract_memories_background,
+    get_extractor_state,
+    reset_extractor_state,
+)
 
 
 @pytest.fixture
@@ -161,3 +170,178 @@ class TestDoExtraction:
             auxiliary_client=mock_aux_client,
         )
         mock_engine.add.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Cursor Tracking Tests
+# ---------------------------------------------------------------------------
+
+
+class TestCursorTracking:
+    def setup_method(self):
+        reset_extractor_state()
+
+    def test_cursor_advances_after_extraction(self, mock_engine, mock_aux_client):
+        """Cursor should advance to the last message index after successful extraction."""
+        mock_aux_client.call_llm.return_value = "NONE"
+        messages = [
+            {"role": "user", "content": "msg1"},
+            {"role": "assistant", "content": "resp1"},
+            {"role": "user", "content": "msg2"},
+        ]
+
+        from agent.memory_extractor import _run_extraction
+        _run_extraction(
+            recent_messages=messages,
+            engine=mock_engine,
+            auxiliary_client=mock_aux_client,
+        )
+        state = get_extractor_state()
+        assert state.last_extracted_message_index == 2  # len(messages) - 1
+
+    def test_cursor_skips_already_processed(self, mock_engine, mock_aux_client):
+        """Second extraction should only process new messages."""
+        call_count = 0
+        prompts_seen = []
+
+        def track_calls(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            prompts_seen.append(kwargs.get("prompt", ""))
+            return "NONE"
+
+        mock_aux_client.call_llm.side_effect = track_calls
+        state = get_extractor_state()
+
+        messages_1 = [
+            {"role": "user", "content": "first message"},
+            {"role": "assistant", "content": "first response"},
+        ]
+
+        from agent.memory_extractor import _run_extraction
+        _run_extraction(
+            recent_messages=messages_1,
+            engine=mock_engine,
+            auxiliary_client=mock_aux_client,
+        )
+        assert call_count == 1
+
+        # Add new messages
+        messages_2 = messages_1 + [
+            {"role": "user", "content": "second message"},
+            {"role": "assistant", "content": "second response"},
+        ]
+
+        _run_extraction(
+            recent_messages=messages_2,
+            engine=mock_engine,
+            auxiliary_client=mock_aux_client,
+        )
+        assert call_count == 2
+        # Second call should only contain the new messages
+        assert "second message" in prompts_seen[1]
+
+    def test_cursor_reset_processes_all(self, mock_engine, mock_aux_client):
+        """After reset, all messages should be processed."""
+        mock_aux_client.call_llm.return_value = "NONE"
+        messages = [{"role": "user", "content": "test"}]
+
+        from agent.memory_extractor import _run_extraction
+        _run_extraction(
+            recent_messages=messages,
+            engine=mock_engine,
+            auxiliary_client=mock_aux_client,
+        )
+        reset_extractor_state()
+        mock_aux_client.call_llm.reset_mock()
+
+        _run_extraction(
+            recent_messages=messages,
+            engine=mock_engine,
+            auxiliary_client=mock_aux_client,
+        )
+        # Should have been called since cursor was reset
+        mock_aux_client.call_llm.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Mutual Exclusion Tests
+# ---------------------------------------------------------------------------
+
+
+class TestMutualExclusion:
+    def setup_method(self):
+        reset_extractor_state()
+
+    def test_agent_wrote_memory_skips_extraction(self, mock_engine, mock_aux_client):
+        """When agent wrote memories this turn, extraction should be skipped."""
+        state = get_extractor_state()
+        state.mark_agent_wrote_memory()
+
+        mock_store = MagicMock()
+        mock_store._engine = mock_engine
+
+        messages = [{"role": "user", "content": "test"}]
+        extract_memories_background(
+            recent_messages=messages,
+            memory_store=mock_store,
+            auxiliary_client=mock_aux_client,
+        )
+        # Give the background thread time (it shouldn't start)
+        time.sleep(0.1)
+        mock_aux_client.call_llm.assert_not_called()
+
+    def test_agent_wrote_memory_advances_cursor(self, mock_engine, mock_aux_client):
+        """When skipped due to agent write, cursor should still advance."""
+        state = get_extractor_state()
+        state.mark_agent_wrote_memory()
+
+        mock_store = MagicMock()
+        mock_store._engine = mock_engine
+
+        messages = [
+            {"role": "user", "content": "msg1"},
+            {"role": "assistant", "content": "resp1"},
+        ]
+        extract_memories_background(
+            recent_messages=messages,
+            memory_store=mock_store,
+            auxiliary_client=mock_aux_client,
+        )
+        time.sleep(0.1)
+        assert state.last_extracted_message_index == 1
+
+    def test_clear_agent_wrote_memory(self):
+        """Flag should be clearable."""
+        state = get_extractor_state()
+        state.mark_agent_wrote_memory()
+        assert state.agent_wrote_memory is True
+        state.clear_agent_wrote_memory()
+        assert state.agent_wrote_memory is False
+
+    def test_stash_trailing_run(self, mock_engine, mock_aux_client):
+        """When extraction is in progress, context should be stashed."""
+        state = get_extractor_state()
+
+        # Simulate in-progress by setting the flag directly
+        with state._lock:
+            state._in_progress = True
+
+        mock_store = MagicMock()
+        mock_store._engine = mock_engine
+
+        messages = [{"role": "user", "content": "stashed message"}]
+        extract_memories_background(
+            recent_messages=messages,
+            memory_store=mock_store,
+            auxiliary_client=mock_aux_client,
+        )
+
+        # Should have stashed, not started a new thread
+        assert state._pending_context is not None
+        assert state._pending_context["recent_messages"] == messages
+
+        # Clean up
+        with state._lock:
+            state._in_progress = False
+            state._pending_context = None

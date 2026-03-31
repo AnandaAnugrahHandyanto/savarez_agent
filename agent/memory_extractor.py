@@ -6,6 +6,9 @@ Cannibalized from Claude Code (services/extractMemories/) and adapted for Hermes
 - Pre-injects manifest of existing memories to prevent duplicates
 - Processes only messages since last extraction (cursor tracking)
 - Lightweight: structured JSON output, no tool calls needed
+- Cursor tracking: only process NEW messages since last extraction
+- Mutual exclusion: skip if main agent wrote memories this turn
+- Trailing run stash: coalesce overlapping extraction requests
 
 Triggered after every N assistant responses (configurable via extract_interval).
 """
@@ -53,6 +56,65 @@ If nothing is worth saving, output exactly: NONE
 Output ONLY the JSON lines or NONE, no other text."""
 
 
+# ---------------------------------------------------------------------------
+# Extractor state — module-level closure state (ported from Claude Code)
+# ---------------------------------------------------------------------------
+
+class _ExtractorState:
+    """Mutable state for the extraction subsystem.
+
+    Ported from Claude Code's initExtractMemories() closure:
+    - last_extracted_message_index: cursor so each run only considers new messages
+    - _agent_wrote_memory: set by the main agent when it writes memories this turn
+    - _in_progress: True while extraction is running
+    - _pending_context: stashed context for trailing run when overlapping
+    - _lock: mutual exclusion for state access
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.last_extracted_message_index: int = -1
+        self._agent_wrote_memory: bool = False
+        self._in_progress: bool = False
+        self._pending_context: Optional[Dict] = None
+        self._turns_since_last_extraction: int = 0
+
+    def mark_agent_wrote_memory(self):
+        """Called by the main agent when it writes memories this turn."""
+        with self._lock:
+            self._agent_wrote_memory = True
+
+    def clear_agent_wrote_memory(self):
+        """Reset the flag at the start of a new turn."""
+        with self._lock:
+            self._agent_wrote_memory = False
+
+    @property
+    def agent_wrote_memory(self) -> bool:
+        with self._lock:
+            return self._agent_wrote_memory
+
+    @property
+    def in_progress(self) -> bool:
+        with self._lock:
+            return self._in_progress
+
+
+# Module-level singleton
+_state = _ExtractorState()
+
+
+def get_extractor_state() -> _ExtractorState:
+    """Access the module-level extractor state (for testing or external use)."""
+    return _state
+
+
+def reset_extractor_state():
+    """Reset extractor state (for testing)."""
+    global _state
+    _state = _ExtractorState()
+
+
 def extract_memories_background(
     recent_messages: List[Dict],
     memory_store,
@@ -78,14 +140,113 @@ def extract_memories_background(
         logger.debug("No MemoryEngine — skipping memory extraction (flat mode)")
         return
 
+    state = _state
+
+    # Mutual exclusion: if the main agent wrote memories this turn, skip
+    # extraction and advance the cursor past these messages
+    if state.agent_wrote_memory:
+        with state._lock:
+            state.last_extracted_message_index = len(recent_messages) - 1
+            logger.debug(
+                "[extractMemories] skipping — agent already wrote to memory this turn"
+            )
+        return
+
+    # If extraction is already in progress, stash context for trailing run
+    if state.in_progress:
+        with state._lock:
+            logger.debug(
+                "[extractMemories] extraction in progress — stashing for trailing run"
+            )
+            state._pending_context = {
+                "recent_messages": recent_messages,
+                "memory_store": memory_store,
+                "auxiliary_client": auxiliary_client,
+                "model": model,
+                "session_id": session_id,
+                "engine": engine,
+            }
+        return
+
     def _extract():
-        try:
-            _do_extraction(recent_messages, engine, auxiliary_client, model, session_id)
-        except Exception as e:
-            logger.warning("Memory extraction failed: %s", e)
+        _run_extraction(
+            recent_messages=recent_messages,
+            engine=engine,
+            auxiliary_client=auxiliary_client,
+            model=model,
+            session_id=session_id,
+            is_trailing_run=False,
+        )
 
     t = threading.Thread(target=_extract, daemon=True, name="memory-extractor")
     t.start()
+
+
+def _run_extraction(
+    recent_messages: List[Dict],
+    engine,
+    auxiliary_client,
+    model: str = None,
+    session_id: str = None,
+    is_trailing_run: bool = False,
+):
+    """Perform extraction with cursor tracking, mutual exclusion, and trailing run support."""
+    state = _state
+
+    with state._lock:
+        state._in_progress = True
+
+    try:
+        # Cursor tracking: only process messages since last extraction
+        cursor = state.last_extracted_message_index
+        if cursor >= 0 and cursor < len(recent_messages) - 1:
+            new_messages = recent_messages[cursor + 1:]
+        elif cursor >= len(recent_messages) - 1:
+            # No new messages since last extraction
+            logger.debug("[extractMemories] no new messages since cursor %d", cursor)
+            return
+        else:
+            # cursor == -1 or invalid — process all
+            new_messages = recent_messages
+
+        if not new_messages:
+            return
+
+        # Perform the actual extraction
+        _do_extraction(
+            recent_messages=new_messages,
+            engine=engine,
+            auxiliary_client=auxiliary_client,
+            model=model,
+            session_id=session_id,
+        )
+
+        # Advance cursor on success
+        with state._lock:
+            state.last_extracted_message_index = len(recent_messages) - 1
+
+    except Exception as e:
+        logger.warning("Memory extraction failed: %s", e)
+    finally:
+        # Check for trailing run
+        trailing = None
+        with state._lock:
+            state._in_progress = False
+            trailing = state._pending_context
+            state._pending_context = None
+
+        if trailing:
+            logger.debug(
+                "[extractMemories] running trailing extraction for stashed context"
+            )
+            _run_extraction(
+                recent_messages=trailing["recent_messages"],
+                engine=trailing["engine"],
+                auxiliary_client=trailing["auxiliary_client"],
+                model=trailing.get("model"),
+                session_id=trailing.get("session_id"),
+                is_trailing_run=True,
+            )
 
 
 def _do_extraction(

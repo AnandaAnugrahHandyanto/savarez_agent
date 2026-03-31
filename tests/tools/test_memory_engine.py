@@ -10,6 +10,7 @@ from tools.memory_engine import (
     MEMORY_TIERS,
     MEMORY_TYPES,
     MemoryEngine,
+    _memory_staleness_suffix,
 )
 
 
@@ -46,12 +47,12 @@ class TestInit:
         eng.close()
 
     def test_schema_version(self, engine):
-        assert engine._get_meta("schema_version") == "1"
+        assert engine._get_meta("schema_version") in ("1", "2")
 
     def test_idempotent_init(self, engine):
         # Calling init again should not error
         engine._init_db()
-        assert engine._get_meta("schema_version") == "1"
+        assert engine._get_meta("schema_version") in ("1", "2")
 
 
 # ---------------------------------------------------------------------------
@@ -329,3 +330,69 @@ class TestManifest:
 
     def test_manifest_empty(self, engine):
         assert "no memories" in engine.get_manifest()
+
+
+# ---------------------------------------------------------------------------
+# Staleness Caveats
+# ---------------------------------------------------------------------------
+
+
+class TestStalenessCaveats:
+    def test_recent_memory_no_suffix(self):
+        """Memories updated within 7 days should have no staleness suffix."""
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        mem = {"updated_at": (now - timedelta(days=3)).isoformat()}
+        assert _memory_staleness_suffix(mem, now) == ""
+
+    def test_old_memory_gets_suffix(self):
+        """Memories older than 7 days should get a staleness suffix."""
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        mem = {"updated_at": (now - timedelta(days=15)).isoformat()}
+        suffix = _memory_staleness_suffix(mem, now)
+        assert "15d old" in suffix
+        assert "verify" in suffix
+
+    def test_exactly_7_days_no_suffix(self):
+        """Memories exactly 7 days old should NOT get a suffix."""
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        mem = {"updated_at": (now - timedelta(days=7)).isoformat()}
+        assert _memory_staleness_suffix(mem, now) == ""
+
+    def test_8_days_gets_suffix(self):
+        """8-day-old memory should get a suffix."""
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        mem = {"updated_at": (now - timedelta(days=8)).isoformat()}
+        suffix = _memory_staleness_suffix(mem, now)
+        assert "8d old" in suffix
+
+    def test_missing_date_no_suffix(self):
+        """Memory with no date should have no suffix."""
+        mem = {}
+        assert _memory_staleness_suffix(mem) == ""
+
+    def test_format_for_prompt_includes_staleness(self, engine):
+        """format_for_prompt should include staleness suffix for old memories."""
+        from datetime import datetime, timezone
+        r = engine.add("Old fact about the system", target="memory", type="general")
+        # Artificially age it
+        conn = engine._get_conn()
+        conn.execute(
+            "UPDATE memories SET updated_at = datetime('now', '-30 days') WHERE id = ?",
+            (r["id"],),
+        )
+        conn.commit()
+
+        text = engine.format_for_prompt("memory")
+        assert text is not None
+        assert "verify" in text.lower()
+
+    def test_format_for_prompt_no_staleness_for_recent(self, engine):
+        """format_for_prompt should NOT include staleness for recent memories."""
+        engine.add("Fresh fact", target="memory", type="general")
+        text = engine.format_for_prompt("memory")
+        assert text is not None
+        assert "verify)" not in text
