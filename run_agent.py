@@ -1204,6 +1204,9 @@ class AIAgent:
         self.compression_enabled = compression_enabled
         self._user_turn_count = 0
 
+        # Copilot x-initiator: True for first API call of user turn, False for follow-ups.
+        self._is_user_initiated_turn = False
+
         # Cumulative token usage for the session
         self.session_prompt_tokens = 0
         self.session_completion_tokens = 0
@@ -1258,6 +1261,9 @@ class AIAgent:
         
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
+
+        # Copilot x-initiator flag
+        self._is_user_initiated_turn = False
 
         # Context compressor internal counters (if present)
         if hasattr(self, "context_compressor") and self.context_compressor:
@@ -1336,6 +1342,13 @@ class AIAgent:
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
         return "openrouter" in self._base_url_lower
+
+    def _is_copilot_url(self) -> bool:
+        """Return True when the base URL targets GitHub Copilot or GitHub Models."""
+        return (
+            "api.githubcopilot.com" in self._base_url_lower
+            or "models.github.ai" in self._base_url_lower
+        )
 
     def _is_anthropic_url(self) -> bool:
         """Return True when the base URL targets Anthropic (native or /anthropic proxy path)."""
@@ -3617,8 +3630,11 @@ class AIAgent:
         """Fallback path for stream completion edge cases on Codex-style Responses backends."""
         active_client = client or self._ensure_primary_openai_client(reason="codex_create_stream_fallback")
         fallback_kwargs = dict(api_kwargs)
+        saved_extra_headers = fallback_kwargs.pop("extra_headers", None)
         fallback_kwargs["stream"] = True
         fallback_kwargs = self._preflight_codex_api_kwargs(fallback_kwargs, allow_stream=True)
+        if saved_extra_headers is not None:
+            fallback_kwargs["extra_headers"] = saved_extra_headers
         stream_or_response = active_client.responses.create(**fallback_kwargs)
 
         # Compatibility shim for mocks or providers that still return a concrete response.
@@ -6077,6 +6093,7 @@ class AIAgent:
         
         # Track user turns for memory flush and periodic nudge logic
         self._user_turn_count += 1
+        self._is_user_initiated_turn = True
 
         # Preserve the original user message (no nudge injection).
         # Honcho should receive the actual user input, not system nudges.
@@ -6436,6 +6453,12 @@ class AIAgent:
                     api_kwargs = self._build_api_kwargs(api_messages)
                     if self.api_mode == "codex_responses":
                         api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
+
+                    # Copilot x-initiator: first API call of a user turn is "user",
+                    # subsequent (tool-loop) calls default to "agent" via normal headers.
+                    if self._is_copilot_url() and self._is_user_initiated_turn:
+                        api_kwargs["extra_headers"] = {"x-initiator": "user"}
+                        self._is_user_initiated_turn = False
 
                     if os.getenv("HERMES_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
