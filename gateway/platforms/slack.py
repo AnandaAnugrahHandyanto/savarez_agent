@@ -9,6 +9,7 @@ Uses slack-bolt (Python) with Socket Mode for:
 """
 
 import asyncio
+import inspect
 import logging
 import os
 import re
@@ -96,7 +97,17 @@ class SlackAdapter(BasePlatformAdapter):
             self._app = AsyncApp(token=bot_token)
 
             # Get our own bot user ID for mention detection
-            auth_response = await self._app.client.auth_test()
+            auth_response = {}
+            auth_test_fn = getattr(self._app.client, "auth_test", None)
+            if callable(auth_test_fn):
+                maybe_result = auth_test_fn()
+                resolved = await maybe_result if inspect.isawaitable(maybe_result) else maybe_result
+                if isinstance(resolved, dict):
+                    auth_response = resolved
+                else:
+                    data = getattr(resolved, "data", None)
+                    if isinstance(data, dict):
+                        auth_response = data
             self._bot_user_id = auth_response.get("user_id")
             bot_name = auth_response.get("user", "unknown")
 
