@@ -2945,6 +2945,17 @@ def cmd_update(args):
 
         print(f"→ Found {commit_count} new commit(s)")
 
+        # Detect local commits before pulling so we can rebase instead of
+        # discarding them when fast-forward is not possible.
+        local_ahead = subprocess.run(
+            git_cmd + ["rev-list", "--count", f"origin/{branch}..HEAD"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        local_commit_count = int(local_ahead.stdout.strip())
+
         print("→ Pulling updates...")
         update_succeeded = False
         try:
@@ -2955,22 +2966,52 @@ def cmd_update(args):
                 text=True,
             )
             if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print("  ⚠ Fast-forward not possible (history diverged), resetting to match remote...")
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
-                    print("  Try manually: git fetch origin && git reset --hard origin/main")
-                    sys.exit(1)
+                # ff-only failed. If there are local commits, try rebase to
+                # preserve them on top of the new upstream. Otherwise reset.
+                if local_commit_count > 0:
+                    print(f"  ⚠ Fast-forward not possible (have {local_commit_count} local commit(s)), rebasing...")
+                    rebase_result = subprocess.run(
+                        git_cmd + ["rebase", f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if rebase_result.returncode != 0:
+                        # Rebase hit conflicts — abort and report
+                        subprocess.run(
+                            git_cmd + ["rebase", "--abort"],
+                            cwd=PROJECT_ROOT,
+                            capture_output=True,
+                        )
+                        # Gather which commits were being rebased
+                        print("✗ Rebase failed due to merge conflicts.")
+                        print(f"  Your {local_commit_count} local commit(s) were NOT lost.")
+                        print(f"  Stashed changes are preserved (ref: {auto_stash_ref}).")
+                        print()
+                        print("  To resolve manually:")
+                        print(f"    git rebase origin/{branch}")
+                        print("    # fix conflicts, then: git rebase --continue")
+                        if auto_stash_ref:
+                            print(f"    git stash apply {auto_stash_ref}")
+                        sys.exit(1)
+                else:
+                    print("  ⚠ Fast-forward not possible (history diverged), resetting to match remote...")
+                    reset_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if reset_result.returncode != 0:
+                        print(f"✗ Failed to reset to origin/{branch}.")
+                        if reset_result.stderr.strip():
+                            print(f"  {reset_result.stderr.strip()}")
+                        print("  Try manually: git fetch origin && git reset --hard origin/main")
+                        sys.exit(1)
+            else:
+                # ff-only pull succeeded
+                if local_commit_count > 0:
+                    print(f"  ✓ Pulled {commit_count} upstream commit(s), preserved {local_commit_count} local commit(s)")
             update_succeeded = True
         finally:
             if auto_stash_ref is not None:
