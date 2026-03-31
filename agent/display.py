@@ -27,6 +27,8 @@ _ANSI_FILE = "\033[38;2;180;160;255m"
 _ANSI_HUNK = "\033[38;2;120;120;140m"
 _ANSI_MINUS = "\033[38;2;255;255;255;48;2;120;20;20m"
 _ANSI_PLUS = "\033[38;2;255;255;255;48;2;20;90;20m"
+_MAX_INLINE_DIFF_FILES = 6
+_MAX_INLINE_DIFF_LINES = 80
 
 
 @dataclass
@@ -415,6 +417,69 @@ def _render_inline_unified_diff(diff: str) -> list[str]:
     return rendered
 
 
+def _split_unified_diff_sections(diff: str) -> list[str]:
+    """Split a unified diff into per-file sections."""
+    sections: list[list[str]] = []
+    current: list[str] = []
+
+    for line in diff.splitlines():
+        if line.startswith("--- ") and current:
+            sections.append(current)
+            current = [line]
+            continue
+        current.append(line)
+
+    if current:
+        sections.append(current)
+
+    return ["\n".join(section) for section in sections if section]
+
+
+def _summarize_rendered_diff_sections(
+    diff: str,
+    *,
+    max_files: int = _MAX_INLINE_DIFF_FILES,
+    max_lines: int = _MAX_INLINE_DIFF_LINES,
+) -> list[str]:
+    """Render diff sections while capping file count and total line count."""
+    sections = _split_unified_diff_sections(diff)
+    rendered: list[str] = []
+    omitted_files = 0
+    omitted_lines = 0
+
+    for idx, section in enumerate(sections):
+        if idx >= max_files:
+            omitted_files += 1
+            omitted_lines += len(_render_inline_unified_diff(section))
+            continue
+
+        section_lines = _render_inline_unified_diff(section)
+        remaining_budget = max_lines - len(rendered)
+        if remaining_budget <= 0:
+            omitted_lines += len(section_lines)
+            omitted_files += 1
+            continue
+
+        if len(section_lines) <= remaining_budget:
+            rendered.extend(section_lines)
+            continue
+
+        rendered.extend(section_lines[:remaining_budget])
+        omitted_lines += len(section_lines) - remaining_budget
+        omitted_files += 1 + max(0, len(sections) - idx - 1)
+        for leftover in sections[idx + 1:]:
+            omitted_lines += len(_render_inline_unified_diff(leftover))
+        break
+
+    if omitted_files or omitted_lines:
+        summary = f"… omitted {omitted_lines} diff line(s)"
+        if omitted_files:
+            summary += f" across {omitted_files} additional file(s)/section(s)"
+        rendered.append(f"{_ANSI_HUNK}{summary}{_ANSI_RESET}")
+
+    return rendered
+
+
 def render_edit_diff_with_delta(
     tool_name: str,
     result: str | None,
@@ -433,7 +498,7 @@ def render_edit_diff_with_delta(
     if not diff:
         return False
     try:
-        rendered_lines = _render_inline_unified_diff(diff)
+        rendered_lines = _summarize_rendered_diff_sections(diff)
     except Exception as exc:
         logger.debug("Could not render inline diff: %s", exc)
         return False

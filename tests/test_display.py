@@ -8,6 +8,7 @@ from agent.display import (
     capture_local_edit_snapshot,
     extract_edit_diff,
     _render_inline_unified_diff,
+    _summarize_rendered_diff_sections,
     render_edit_diff_with_delta,
 )
 
@@ -139,6 +140,28 @@ class TestEditDiffPreview:
         assert "-old" in diff
         assert "+new" in diff
 
+    def test_extract_edit_diff_uses_local_snapshot_for_skill_manage_create(self, tmp_path, monkeypatch):
+        skill_dir = tmp_path / "software-development" / "teknium-dev"
+
+        monkeypatch.setattr("tools.skill_manager_tool._resolve_skill_dir", lambda name, category=None: skill_dir)
+
+        args = {"action": "create", "name": "teknium-dev", "category": "software-development"}
+        snapshot = capture_local_edit_snapshot("skill_manage", args)
+
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\\nname: teknium-dev\\ndescription: test\\n---\\nbody\\n", encoding="utf-8")
+
+        diff = extract_edit_diff(
+            "skill_manage",
+            '{"success": true, "message": "created"}',
+            function_args=args,
+            snapshot=snapshot,
+        )
+
+        assert diff is not None
+        assert "SKILL.md" in diff
+        assert "+---" in diff
+
     def test_extract_edit_diff_uses_local_snapshot_for_skill_manage_patch(self, tmp_path, monkeypatch):
         skill_dir = tmp_path / "teknium-dev"
         skill_dir.mkdir()
@@ -166,6 +189,62 @@ class TestEditDiffPreview:
         assert "SKILL.md" in diff
         assert "old" in diff
         assert "new" in diff
+
+    def test_extract_edit_diff_uses_local_snapshot_for_skill_manage_write_file(self, tmp_path, monkeypatch):
+        skill_dir = tmp_path / "teknium-dev"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("---\\nname: test\\n---\\nbody\\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            "tools.skill_manager_tool._find_skill",
+            lambda name: {"path": skill_dir} if name == "teknium-dev" else None,
+        )
+
+        args = {"action": "write_file", "name": "teknium-dev", "file_path": "references/notes.md"}
+        snapshot = capture_local_edit_snapshot("skill_manage", args)
+
+        target = skill_dir / "references" / "notes.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("notes\\n", encoding="utf-8")
+
+        diff = extract_edit_diff(
+            "skill_manage",
+            '{"success": true, "message": "written"}',
+            function_args=args,
+            snapshot=snapshot,
+        )
+
+        assert diff is not None
+        assert "references/notes.md" in diff
+        assert "+notes" in diff
+
+    def test_extract_edit_diff_uses_local_snapshot_for_skill_manage_remove_file(self, tmp_path, monkeypatch):
+        skill_dir = tmp_path / "teknium-dev"
+        references_dir = skill_dir / "references"
+        references_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\\nname: test\\n---\\nbody\\n", encoding="utf-8")
+        (references_dir / "notes.md").write_text("notes\\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            "tools.skill_manager_tool._find_skill",
+            lambda name: {"path": skill_dir} if name == "teknium-dev" else None,
+        )
+
+        args = {"action": "remove_file", "name": "teknium-dev", "file_path": "references/notes.md"}
+        snapshot = capture_local_edit_snapshot("skill_manage", args)
+
+        (references_dir / "notes.md").unlink()
+
+        diff = extract_edit_diff(
+            "skill_manage",
+            '{"success": true, "message": "removed"}',
+            function_args=args,
+            snapshot=snapshot,
+        )
+
+        assert diff is not None
+        assert "references/notes.md" in diff
+        assert "-notes" in diff
 
     def test_extract_edit_diff_uses_local_snapshot_for_skill_manage_delete(self, tmp_path, monkeypatch):
         skill_dir = tmp_path / "teknium-dev"
@@ -238,7 +317,7 @@ class TestEditDiffPreview:
     def test_render_edit_diff_with_delta_handles_inline_renderer_errors(self, monkeypatch):
         printer = MagicMock()
 
-        monkeypatch.setattr("agent.display._render_inline_unified_diff", MagicMock(side_effect=RuntimeError("boom")))
+        monkeypatch.setattr("agent.display._summarize_rendered_diff_sections", MagicMock(side_effect=RuntimeError("boom")))
 
         rendered = render_edit_diff_with_delta(
             "patch",
@@ -248,3 +327,25 @@ class TestEditDiffPreview:
 
         assert rendered is False
         assert printer.call_count == 0
+
+    def test_summarize_rendered_diff_sections_truncates_large_diff(self):
+        diff = "--- a/x.py\n+++ b/x.py\n" + "".join(f"+line{i}\n" for i in range(120))
+
+        rendered = _summarize_rendered_diff_sections(diff, max_lines=20)
+
+        assert len(rendered) == 21
+        assert "omitted" in rendered[-1]
+
+    def test_summarize_rendered_diff_sections_limits_file_count(self):
+        diff = "".join(
+            f"--- a/file{i}.py\n+++ b/file{i}.py\n+line{i}\n"
+            for i in range(8)
+        )
+
+        rendered = _summarize_rendered_diff_sections(diff, max_files=3, max_lines=50)
+
+        assert any("a/file0.py" in line for line in rendered)
+        assert any("a/file1.py" in line for line in rendered)
+        assert any("a/file2.py" in line for line in rendered)
+        assert not any("a/file7.py" in line for line in rendered)
+        assert "additional file" in rendered[-1]
