@@ -1623,7 +1623,7 @@ def _setup_signal():
         print_warning("signal-cli not found on PATH.")
         print_info("  Signal requires signal-cli running as an HTTP daemon.")
         print_info("  Install options:")
-        print_info("    Linux:  sudo apt install signal-cli")
+        print_info("    Linux:  snap install signal-cli")
         print_info("            or download from https://github.com/AsamK/signal-cli")
         print_info("    macOS:  brew install signal-cli")
         print_info("    Docker: bbernhard/signal-cli-rest-api")

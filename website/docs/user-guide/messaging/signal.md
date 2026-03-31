@@ -26,7 +26,7 @@ The Signal adapter uses `httpx` (already a core Hermes dependency) for all commu
 
 ```bash
 # Linux (Debian/Ubuntu)
-sudo apt install signal-cli
+sudo snap install signal-cli
 
 # macOS
 brew install signal-cli
