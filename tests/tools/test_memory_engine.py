@@ -396,3 +396,50 @@ class TestStalenessCaveats:
         text = engine.format_for_prompt("memory")
         assert text is not None
         assert "verify)" not in text
+
+
+# ---------------------------------------------------------------------------
+# Embedding and Cosine Similarity
+# ---------------------------------------------------------------------------
+
+
+class TestCosineSimilarity:
+    def test_cosine_similarity_identical(self):
+        """Identical vectors should have cosine similarity of 1.0."""
+        from tools.memory_engine import cosine_similarity
+        vec = [1.0, 2.0, 3.0, 4.0, 5.0]
+        result = cosine_similarity(vec, vec)
+        assert abs(result - 1.0) < 1e-6
+
+    def test_cosine_similarity_orthogonal(self):
+        """Orthogonal vectors should have cosine similarity of 0.0."""
+        from tools.memory_engine import cosine_similarity
+        a = [1.0, 0.0, 0.0]
+        b = [0.0, 1.0, 0.0]
+        result = cosine_similarity(a, b)
+        assert abs(result) < 1e-6
+
+    def test_cosine_similarity_empty(self):
+        """Empty vectors should return 0.0."""
+        from tools.memory_engine import cosine_similarity
+        assert cosine_similarity([], []) == 0.0
+        assert cosine_similarity([], [1.0]) == 0.0
+        assert cosine_similarity([1.0], []) == 0.0
+
+
+class TestEmbeddings:
+    def test_generate_embedding_graceful_failure(self):
+        """generate_embedding should return [] when no API key is available."""
+        from tools.memory_engine import generate_embedding
+        result = generate_embedding("test content")
+        assert isinstance(result, list)
+        # Without API key, should gracefully return empty list
+        assert result == []
+
+    def test_search_degrades_gracefully_without_embeddings(self, populated_engine):
+        """search() should still return BM25 results when embeddings are unavailable."""
+        results = populated_engine.search("Python WSL")
+        assert len(results) > 0
+        assert any("Python" in r["content"] for r in results)
+        # All results should have relevance scores
+        assert all("relevance_score" in r for r in results)

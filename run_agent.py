@@ -1041,6 +1041,7 @@ class AIAgent:
         self._memory_store = None
         self._memory_enabled = False
         self._user_profile_enabled = False
+        self._session_memory = None
         self._memory_nudge_interval = 10
         self._memory_flush_min_turns = 6
         self._turns_since_memory = 0
@@ -1072,6 +1073,13 @@ class AIAgent:
                         engine=_engine,
                     )
                     self._memory_store.load_from_disk()
+                    # Session memory (structured 9-section notes) — only with SQLite engine
+                    if _engine is not None:
+                        try:
+                            from agent.session_memory import SessionMemory
+                            self._session_memory = SessionMemory()
+                        except Exception as _sm_err:
+                            logger.warning("SessionMemory init failed: %s", _sm_err)
             except Exception:
                 pass  # Memory is optional -- don't break agent init
         
@@ -2724,6 +2732,17 @@ class AIAgent:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
                     prompt_parts.append(user_block)
+
+        # Session memory: structured running notes about this conversation
+        if getattr(self, '_session_memory', None) and self._session_memory.is_initialized:
+            _sm_summary = self._session_memory.get_summary()
+            if _sm_summary:
+                prompt_parts.append(
+                    f"{'═' * 46}\n"
+                    f"SESSION NOTES (auto-maintained running context)\n"
+                    f"{'═' * 46}\n"
+                    f"{_sm_summary}"
+                )
 
         # Working state: cross-session context (active tasks, decisions, blockers)
         if not self.skip_context_files:
@@ -6266,6 +6285,15 @@ class AIAgent:
                 _should_review_memory = True
                 self._turns_since_memory = 0
 
+        # Session memory update (structured per-session notes, from Claude Code)
+        if getattr(self, '_session_memory', None) and messages:
+            try:
+                _aux = getattr(self, '_auxiliary_client', None)
+                _token_count = getattr(self, '_session_total_input_tokens', 0) + getattr(self, '_session_total_output_tokens', 0)
+                self._session_memory.update(messages, _token_count, api_call_count, _aux)
+            except Exception:
+                pass  # Session memory is best-effort
+
         # Honcho prefetch consumption:
         # - First turn: bake into cached system prompt (stable for the session).
         # - Later turns: attach recall to the current-turn user message at
@@ -8293,6 +8321,15 @@ class AIAgent:
             )
         except Exception as exc:
             logger.warning("on_session_end hook failed: %s", exc)
+
+        # Increment consolidation session counter (for autoDream-style gating)
+        try:
+            _eng = getattr(self._memory_store, '_engine', None) if self._memory_store else None
+            if _eng:
+                from agent.memory_consolidator import increment_session_count
+                increment_session_count(_eng)
+        except Exception:
+            pass
 
         return result
 

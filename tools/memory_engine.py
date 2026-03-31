@@ -208,23 +208,32 @@ _META_DEFAULTS = {
 
 
 def cosine_similarity(a: list, b: list) -> float:
-    """Cosine similarity between two vectors. Pure Python, no numpy.
+    """Cosine similarity between two vectors. Uses numpy when available, pure Python fallback.
 
     Ported from HiveMind memory.rs lines 539-556.
     Returns 0.0 on empty, mismatched dims, or near-zero norms.
     """
     if not a or not b or len(a) != len(b):
         return 0.0
-    dot = 0.0
-    norm_a = 0.0
-    norm_b = 0.0
-    for i in range(len(a)):
-        dot += a[i] * b[i]
-        norm_a += a[i] * a[i]
-        norm_b += b[i] * b[i]
-    if norm_a < 1e-10 or norm_b < 1e-10:
-        return 0.0
-    return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
+    try:
+        import numpy as np
+        a_arr, b_arr = np.array(a, dtype=float), np.array(b, dtype=float)
+        norm_a, norm_b = np.linalg.norm(a_arr), np.linalg.norm(b_arr)
+        if norm_a < 1e-10 or norm_b < 1e-10:
+            return 0.0
+        return float(np.dot(a_arr, b_arr) / (norm_a * norm_b))
+    except ImportError:
+        # Pure Python fallback
+        dot = 0.0
+        norm_a = 0.0
+        norm_b = 0.0
+        for i in range(len(a)):
+            dot += a[i] * b[i]
+            norm_a += a[i] * a[i]
+            norm_b += b[i] * b[i]
+        if norm_a < 1e-10 or norm_b < 1e-10:
+            return 0.0
+        return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
 
 
 def chunk_text(
@@ -504,18 +513,19 @@ def classify_topic(content: str, keywords: list = None, tags: list = None) -> st
 # ---------------------------------------------------------------------------
 
 
-def generate_embedding(content: str) -> list:
-    """Generate embedding for content. Stub — returns empty list.
+def generate_embedding(content: str, model: str = None) -> list:
+    """Generate embedding vector. Uses litellm for provider-agnostic embedding.
 
-    Actual embedding providers (fastembed, OpenAI, Ollama) will be added
-    as optional dependencies. Includes content-hash caching pattern.
+    Cascade: configured model -> text-embedding-3-small -> empty (graceful degradation).
     """
-    # Content-hash caching pattern (from HiveMind memory.rs):
-    # 1. Hash the content with SHA256
-    # 2. Check if a chunk with same hash already has an embedding stored
-    # 3. If so, reuse it instead of calling the API
-    # For now, just return empty (graceful degradation to FTS5-only search)
-    return []
+    try:
+        from litellm import embedding as litellm_embedding
+        model = model or 'text-embedding-3-small'
+        response = litellm_embedding(model=model, input=[content])
+        return response.data[0]['embedding']
+    except Exception as e:
+        logger.debug('Embedding generation failed (graceful degradation): %s', e)
+        return []
 
 
 def _hash_text(text: str) -> str:
@@ -634,6 +644,104 @@ class MemoryEngine:
         )
         conn.commit()
 
+    # -- Embedding management -------------------------------------------------
+
+    def _get_or_create_embedding(self, chunk_id: str, content: str) -> list:
+        """Get cached embedding or generate and store a new one.
+
+        Content-hash caching pattern from HiveMind: avoids redundant API calls.
+        """
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT embedding FROM embeddings WHERE chunk_id = ?", (chunk_id,)
+        ).fetchone()
+        if row and row["embedding"]:
+            try:
+                return json.loads(row["embedding"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Generate new embedding
+        vec = generate_embedding(content)
+        if vec:
+            now = datetime.now(timezone.utc).isoformat()
+            blob = json.dumps(vec)
+            conn.execute(
+                """INSERT OR REPLACE INTO embeddings (chunk_id, embedding, model, created_at)
+                   VALUES (?, ?, ?, ?)""",
+                (chunk_id, blob, "text-embedding-3-small", now),
+            )
+            conn.commit()
+        return vec
+
+    def _generate_embeddings_background(self, memory_id: str, content: str, chunk_ids: list = None):
+        """Fire-and-forget embedding generation in a background thread."""
+        def _worker():
+            try:
+                if chunk_ids:
+                    conn = self._get_conn()
+                    for cid in chunk_ids:
+                        row = conn.execute(
+                            "SELECT content FROM chunks WHERE id = ?", (cid,)
+                        ).fetchone()
+                        if row:
+                            self._get_or_create_embedding(cid, row["content"])
+                else:
+                    self._get_or_create_embedding(memory_id, content)
+            except Exception as e:
+                logger.debug("Background embedding generation failed: %s", e)
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+    def search_by_embedding(self, query_embedding: list, target: str = None, limit: int = 10) -> list:
+        """Search memories by embedding cosine similarity.
+
+        Returns top-N memories sorted by cosine similarity to query_embedding.
+        """
+        if not query_embedding:
+            return []
+
+        conn = self._get_conn()
+        # Get all embeddings with their associated memory data
+        sql = """
+            SELECT e.chunk_id, e.embedding, m.*
+            FROM embeddings e
+            JOIN memories m ON (e.chunk_id = m.id OR e.chunk_id LIKE m.id || ':chunk_%')
+            WHERE m.tier = 'active'
+        """
+        params = []
+        if target:
+            sql += " AND m.target = ?"
+            params.append(target)
+
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+        scored = []
+        seen_ids = set()
+        for row in rows:
+            try:
+                stored_emb = json.loads(row["embedding"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            sim = cosine_similarity(query_embedding, stored_emb)
+            mem_dict = dict(row)
+            # Remove embedding blob from result
+            mem_dict.pop("embedding", None)
+            mem_dict.pop("chunk_id", None)
+            mid = mem_dict.get("id")
+            if mid in seen_ids:
+                continue
+            seen_ids.add(mid)
+            mem_dict["cosine_score"] = sim
+            scored.append(mem_dict)
+
+        scored.sort(key=lambda x: x["cosine_score"], reverse=True)
+        return scored[:limit]
+
     # -- Core CRUD -----------------------------------------------------------
 
     def add(
@@ -679,6 +787,31 @@ class MemoryEngine:
                 "duplicate_id": exact["id"],
             }
 
+        # Near-duplicate detection via embeddings (HiveMind threshold: cosine > 0.92)
+        new_embedding = generate_embedding(content)
+        if new_embedding:
+            # Check against active memories in same target
+            active_rows = conn.execute(
+                """SELECT e.chunk_id, e.embedding, m.id, m.content
+                   FROM embeddings e
+                   JOIN memories m ON (e.chunk_id = m.id OR e.chunk_id LIKE m.id || ':chunk_%%')
+                   WHERE m.tier = 'active' AND m.target = ?
+                   LIMIT 200""",
+                (target,),
+            ).fetchall()
+            for row in active_rows:
+                try:
+                    stored_emb = json.loads(row["embedding"])
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                sim = cosine_similarity(new_embedding, stored_emb)
+                if sim > 0.92:
+                    return {
+                        "success": False,
+                        "error": f"Near-duplicate (cosine={sim:.3f}): {row['content'][:80]}...",
+                        "duplicate_id": row["id"],
+                    }
+
         now = datetime.now(timezone.utc).isoformat()
         memory_id = str(uuid.uuid4())
 
@@ -704,6 +837,13 @@ class MemoryEngine:
                 )
 
         conn.commit()
+
+        # Generate embeddings in background (non-blocking)
+        if len(content) > CHUNK_MIN_CONTENT_LEN:
+            chunk_ids = [f"{memory_id}:chunk_{idx}" for idx in range(len(chunk_text(content)))]
+            self._generate_embeddings_background(memory_id, content, chunk_ids=chunk_ids)
+        else:
+            self._generate_embeddings_background(memory_id, content)
 
         # Auto-create edges via keyword overlap (port from HiveMind lines 1372-1437)
         self._auto_create_edges(memory_id, content)
@@ -817,8 +957,19 @@ class MemoryEngine:
         now = datetime.now(timezone.utc)
 
         scored = []
+        # Hybrid search: if embeddings available, use HiveMind formula
+        # Final score = (0.7 * cosine + 0.3 * normalized_bm25) * recency * strength * tier_w * type_w
+        query_embedding = generate_embedding(query)
+        # Normalize BM25 scores for blending
+        bm25_scores = [mem.get("bm25_score", 0) for mem in candidates]
+        max_bm25 = max(bm25_scores) if bm25_scores else 1.0
+        if max_bm25 < 1e-10:
+            max_bm25 = 1.0
+        has_embeddings = bool(query_embedding)
+
         for mem in candidates:
             bm25 = mem.get("bm25_score", 0)
+            normalized_bm25 = bm25 / max_bm25
 
             # Recency decay (power-law, from HiveMind)
             try:
@@ -838,7 +989,37 @@ class MemoryEngine:
             # Type boost
             type_w = TYPE_BOOSTS.get(mem.get("type", "general"), 1.0)
 
-            score = bm25 * recency * strength * tier_w * type_w
+            # Compute relevance base score
+            if has_embeddings:
+                # Try to get embedding for this candidate
+                mem_embedding = None
+                conn = self._get_conn()
+                # Check memory-level embedding first, then chunk embeddings
+                emb_row = conn.execute(
+                    "SELECT embedding FROM embeddings WHERE chunk_id = ?", (mem["id"],)
+                ).fetchone()
+                if not emb_row:
+                    emb_row = conn.execute(
+                        "SELECT embedding FROM embeddings WHERE chunk_id LIKE ? LIMIT 1",
+                        (mem["id"] + ":chunk_%",),
+                    ).fetchone()
+                if emb_row and emb_row["embedding"]:
+                    try:
+                        mem_embedding = json.loads(emb_row["embedding"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                if mem_embedding:
+                    cos_sim = cosine_similarity(query_embedding, mem_embedding)
+                    base_score = 0.7 * cos_sim + 0.3 * normalized_bm25
+                else:
+                    # No embedding for this candidate, fall back to BM25
+                    base_score = normalized_bm25
+            else:
+                # No query embedding available, pure BM25
+                base_score = bm25
+
+            score = base_score * recency * strength * tier_w * type_w
             if score >= min_relevance:
                 mem["relevance_score"] = round(score, 4)
                 scored.append(mem)
