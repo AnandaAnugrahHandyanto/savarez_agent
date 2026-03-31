@@ -414,9 +414,10 @@ DEFAULT_CONFIG = {
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token (soft limit for prompt budget)
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token (soft limit for prompt budget)
         "engine": "sqlite",          # 'sqlite' (v2: FTS5 search, tiers, lifecycle) or 'flat' (legacy MEMORY.md)
-        "auto_extract": False,       # automatic memory extraction after responses (Phase 5)
-        "extract_interval": 3,       # extract every N turns
-        "consolidation_enabled": False,  # periodic memory consolidation (Phase 6)
+        "auto_extract": True,        # automatic memory extraction after responses
+        "extract_interval": 3,       # extract every N assistant responses
+        "consolidation_enabled": True,   # periodic memory consolidation (merge, archive stale, fix contradictions)
+        "embedding_model": "",       # embedding model (empty = auto-detect from provider; e.g. 'openai/text-embedding-3-small')
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

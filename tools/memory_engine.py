@@ -513,19 +513,60 @@ def classify_topic(content: str, keywords: list = None, tags: list = None) -> st
 # ---------------------------------------------------------------------------
 
 
-def generate_embedding(content: str, model: str = None) -> list:
-    """Generate embedding vector. Uses litellm for provider-agnostic embedding.
+def generate_embedding(content: str, model: str = None, config: dict = None) -> list:
+    """Generate embedding vector using whatever provider Hermes has configured.
 
-    Cascade: configured model -> text-embedding-3-small -> empty (graceful degradation).
+    Provider cascade (adapts to YOUR API keys):
+    1. Configured model from config (memory.embedding_model)
+    2. Auto-detect from available keys:
+       - OPENAI_API_KEY -> text-embedding-3-small
+       - ANTHROPIC_API_KEY -> voyage-3 (via litellm)
+       - OPENROUTER_API_KEY -> openrouter/openai/text-embedding-3-small
+    3. Graceful degradation: no keys / no litellm -> return []
+       (search falls back to BM25-only, which still works)
     """
+    config = config or {}
+
+    # Resolve model from config or auto-detect from available API keys
+    if not model:
+        model = config.get("embedding_model", "")
+    if not model:
+        model = _detect_embedding_model()
+    if not model:
+        return []  # No provider available — BM25 fallback
+
     try:
         from litellm import embedding as litellm_embedding
-        model = model or 'text-embedding-3-small'
         response = litellm_embedding(model=model, input=[content])
-        return response.data[0]['embedding']
-    except Exception as e:
-        logger.debug('Embedding generation failed (graceful degradation): %s', e)
+        return response.data[0]["embedding"]
+    except ImportError:
+        logger.debug("litellm not installed — embeddings disabled")
         return []
+    except Exception as e:
+        logger.debug("Embedding generation failed (%s): %s", model, e)
+        return []
+
+
+def _detect_embedding_model() -> str:
+    """Auto-detect the best embedding model from available API keys.
+
+    Checks environment for provider keys and returns the appropriate
+    embedding model string for litellm. Returns '' if no provider found.
+    """
+    import os
+    if os.environ.get("OPENAI_API_KEY"):
+        return "text-embedding-3-small"
+    if os.environ.get("OPENROUTER_API_KEY"):
+        return "openrouter/openai/text-embedding-3-small"
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        # Anthropic doesn't have native embeddings, but Voyage AI
+        # is available via litellm with VOYAGE_API_KEY
+        if os.environ.get("VOYAGE_API_KEY"):
+            return "voyage/voyage-3-lite"
+        return ""  # Anthropic alone can't do embeddings
+    if os.environ.get("GLM_API_KEY"):
+        return ""  # GLM embeddings not in litellm yet
+    return ""
 
 
 def _hash_text(text: str) -> str:
@@ -662,7 +703,7 @@ class MemoryEngine:
                 pass
 
         # Generate new embedding
-        vec = generate_embedding(content)
+        vec = generate_embedding(content, config=self._config)
         if vec:
             now = datetime.now(timezone.utc).isoformat()
             blob = json.dumps(vec)
@@ -788,7 +829,7 @@ class MemoryEngine:
             }
 
         # Near-duplicate detection via embeddings (HiveMind threshold: cosine > 0.92)
-        new_embedding = generate_embedding(content)
+        new_embedding = generate_embedding(content, config=self._config)
         if new_embedding:
             # Check against active memories in same target
             active_rows = conn.execute(
@@ -959,7 +1000,7 @@ class MemoryEngine:
         scored = []
         # Hybrid search: if embeddings available, use HiveMind formula
         # Final score = (0.7 * cosine + 0.3 * normalized_bm25) * recency * strength * tier_w * type_w
-        query_embedding = generate_embedding(query)
+        query_embedding = generate_embedding(query, config=self._config)
         # Normalize BM25 scores for blending
         bm25_scores = [mem.get("bm25_score", 0) for mem in candidates]
         max_bm25 = max(bm25_scores) if bm25_scores else 1.0
