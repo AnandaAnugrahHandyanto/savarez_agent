@@ -82,6 +82,26 @@ model:
 #     model: google/gemini-2.5-flash
 
 # =============================================================================
+# Fallback Model (optional)
+# =============================================================================
+# Automatic failover to a backup provider when the primary model fails.
+# Supports both single fallback (dict) and fallback chain (list of dicts).
+#
+# fallback_model:
+#   provider: openrouter
+#   model: anthropic/claude-sonnet-4
+#   silent_fallback: true    # Set to true to suppress fallback status messages
+#
+# Or for multiple fallback providers (tried in order):
+# fallback_model:
+#   - provider: openrouter
+#     model: anthropic/claude-sonnet-4
+#     silent_fallback: false
+#   - provider: nous
+#     model: nous-hermes-3
+#     silent_fallback: true
+
+# =============================================================================
 # Git Worktree Isolation
 # =============================================================================
 # When enabled, each CLI session creates an isolated git worktree so multiple

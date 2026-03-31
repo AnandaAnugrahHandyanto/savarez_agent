@@ -1279,6 +1279,20 @@ class HermesCLI:
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
+    def _extract_silent_fallback(self, fallback_model) -> bool:
+        """Extract silent_fallback from fallback_model config.
+
+        For a single dict, returns the silent_fallback value (default False).
+        For a list, returns True only if ALL providers have silent_fallback=True.
+        """
+        if not fallback_model:
+            return False
+        if isinstance(fallback_model, dict):
+            return bool(fallback_model.get("silent_fallback", False))
+        if isinstance(fallback_model, list):
+            return all(bool(f.get("silent_fallback", False)) for f in fallback_model if isinstance(f, dict))
+        return False
+
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
         import time as _time
@@ -2122,6 +2136,7 @@ class HermesCLI:
                 reasoning_callback=self._current_reasoning_callback(),
                 honcho_session_key=None,  # resolved by run_agent via config sessions map / title
                 fallback_model=self._fallback_model,
+                silent_fallback=self._extract_silent_fallback(self._fallback_model),
                 thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,

@@ -27,9 +27,12 @@ Add a `fallback_model` section to `~/.hermes/config.yaml`:
 fallback_model:
   provider: openrouter
   model: anthropic/claude-sonnet-4
+  silent_fallback: false  # Set to true to suppress fallback status messages
 ```
 
 Both `provider` and `model` are **required**. If either is missing, the fallback is disabled.
+
+The `silent_fallback` option (default: `false`) controls whether fallback events are displayed in the chat. When `true`, the "⚠️ Rate limited — switching to fallback provider..." and similar messages are suppressed.
 
 ### Supported Providers
 
@@ -95,6 +98,7 @@ model:
 fallback_model:
   provider: openrouter
   model: anthropic/claude-sonnet-4
+  silent_fallback: true
 ```
 
 **Nous Portal as fallback for OpenRouter:**
@@ -106,6 +110,7 @@ model:
 fallback_model:
   provider: nous
   model: nous-hermes-3
+  silent_fallback: true
 ```
 
 **Local model as fallback for cloud:**
@@ -115,6 +120,7 @@ fallback_model:
   model: llama-3.1-70b
   base_url: http://localhost:8000/v1
   api_key_env: LOCAL_API_KEY
+  silent_fallback: true
 ```
 
 **Codex OAuth as fallback:**
@@ -122,6 +128,18 @@ fallback_model:
 fallback_model:
   provider: openai-codex
   model: gpt-5.3-codex
+  silent_fallback: true
+```
+
+**Multiple fallback providers (chain):**
+```yaml
+fallback_model:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4
+    silent_fallback: false
+  - provider: nous
+    model: nous-hermes-3
+    silent_fallback: true
 ```
 
 ### Where Fallback Works
