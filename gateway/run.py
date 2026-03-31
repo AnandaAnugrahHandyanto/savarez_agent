@@ -654,7 +654,7 @@ class GatewayRunner:
                 "Review the conversation above and:\n"
                 "1. Save any important facts, preferences, or decisions to memory "
                 "(user profile or your notes) that would be useful in future sessions.\n"
-                "2. Only save a skill if ALL of these are true:\n"
+                "2. Only save a skill if ANY 3 of these are true:\n"
                 "   a) Will be reused within days, not months\n"
                 "   b) Has 5+ distinct steps that are easy to misconfigure\n"
                 "   c) Involves unique knowledge (API quirks, workarounds) not in official docs\n"
