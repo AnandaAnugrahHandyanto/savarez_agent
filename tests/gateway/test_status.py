@@ -103,6 +103,34 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["telegram"]["error_code"] == "telegram_polling_conflict"
         assert payload["platforms"]["telegram"]["error_message"] == "another poller is active"
 
+    def test_write_runtime_status_clears_stale_error_fields_on_recovery(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="stopped",
+            exit_reason="telegram conflict",
+            platform="telegram",
+            platform_state="fatal",
+            error_code="telegram_polling_conflict",
+            error_message="another poller is active",
+        )
+
+        status.write_runtime_status(
+            gateway_state="running",
+            exit_reason=None,
+            platform="telegram",
+            platform_state="connected",
+            error_code=None,
+            error_message=None,
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "running"
+        assert payload["exit_reason"] is None
+        assert payload["platforms"]["telegram"]["state"] == "connected"
+        assert payload["platforms"]["telegram"]["error_code"] is None
+        assert payload["platforms"]["telegram"]["error_message"] is None
+
 
 class TestScopedLocks:
     def test_acquire_scoped_lock_rejects_live_other_process(self, tmp_path, monkeypatch):
