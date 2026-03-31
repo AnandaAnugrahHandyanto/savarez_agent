@@ -1054,9 +1054,17 @@ class AIAgent:
                 self._memory_flush_min_turns = int(mem_config.get("flush_min_turns", 6))
                 if self._memory_enabled or self._user_profile_enabled:
                     from tools.memory_tool import MemoryStore
+                    _engine = None
+                    if mem_config.get("engine", "sqlite") == "sqlite":
+                        try:
+                            from tools.memory_engine import MemoryEngine
+                            _engine = MemoryEngine(config=mem_config)
+                        except Exception as _eng_err:
+                            logger.warning("MemoryEngine init failed, falling back to flat files: %s", _eng_err)
                     self._memory_store = MemoryStore(
                         memory_char_limit=mem_config.get("memory_char_limit", 2200),
                         user_char_limit=mem_config.get("user_char_limit", 1375),
+                        engine=_engine,
                     )
                     self._memory_store.load_from_disk()
             except Exception:
@@ -5761,6 +5769,8 @@ class AIAgent:
                     target=target,
                     content=function_args.get("content"),
                     old_text=function_args.get("old_text"),
+                    type=function_args.get("type", "general"),
+                    search_query=function_args.get("search_query"),
                     store=self._memory_store,
                 )
                 # Also send user observations to Honcho when active
