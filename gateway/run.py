@@ -4600,7 +4600,28 @@ class GatewayRunner:
         logger.info("User approved dangerous command via /approve: %s...%s", cmd[:60], scope_msg)
         from tools.terminal_tool import terminal_tool
         result = terminal_tool(command=cmd, force=True)
-        return f"✅ Command approved and executed{scope_msg}.\n\n```\n{result[:3500]}\n```"
+
+        # Send the execution result to the user immediately
+        exec_msg = f"✅ Command approved and executed{scope_msg}.\n\n```\n{result[:3500]}\n```"
+        adapter = self.adapters.get(source.platform)
+        if adapter:
+            _meta = {"thread_id": source.thread_id} if source.thread_id else None
+            await adapter.send(source.chat_id, exec_msg, metadata=_meta)
+
+        # Resume the agent with the command result so it can continue its
+        # chain of thought instead of stopping after the approval.
+        from gateway.platforms.base import MessageEvent as _ME, MessageType as _MT
+        resume_event = _ME(
+            text=(
+                f"[System: The user approved the command. Here is the output]\n"
+                f"```\n{result[:3500]}\n```\n"
+                f"Continue with the task."
+            ),
+            message_type=_MT.TEXT,
+            source=source,
+            message_id=event.message_id,
+        )
+        return await self._handle_message(resume_event)
 
     async def _handle_deny_command(self, event: MessageEvent) -> str:
         """Handle /deny command — reject a pending dangerous command."""

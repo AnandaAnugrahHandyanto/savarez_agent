@@ -85,12 +85,25 @@ class TestApproveCommand:
         runner._pending_approvals[session_key] = _make_pending_approval()
 
         event = _make_event("/approve")
-        with patch("tools.terminal_tool.terminal_tool", return_value="done") as mock_term:
+        with (
+            patch("tools.terminal_tool.terminal_tool", return_value="done") as mock_term,
+            patch.object(runner, "_handle_message", new_callable=AsyncMock, return_value="agent continued") as mock_hm,
+        ):
             result = await runner._handle_approve_command(event)
 
-        assert "✅ Command approved and executed" in result
+        # Command was executed with force=True
         mock_term.assert_called_once_with(command="sudo rm -rf /tmp/test", force=True)
         assert session_key not in runner._pending_approvals
+        # Execution result was sent to user immediately
+        adapter = runner.adapters[Platform.TELEGRAM]
+        adapter.send.assert_called_once()
+        sent_text = adapter.send.call_args[0][1]
+        assert "✅ Command approved and executed" in sent_text
+        # Agent was resumed via _handle_message with a synthetic event
+        mock_hm.assert_called_once()
+        resume_event = mock_hm.call_args[0][0]
+        assert "approved the command" in resume_event.text
+        assert "done" in resume_event.text
 
     @pytest.mark.asyncio
     async def test_approve_session_remembers_pattern(self):
@@ -104,10 +117,13 @@ class TestApproveCommand:
         with (
             patch("tools.terminal_tool.terminal_tool", return_value="done"),
             patch("tools.approval.approve_session") as mock_session,
+            patch.object(runner, "_handle_message", new_callable=AsyncMock, return_value=""),
         ):
             result = await runner._handle_approve_command(event)
 
-        assert "pattern approved for this session" in result
+        adapter = runner.adapters[Platform.TELEGRAM]
+        sent_text = adapter.send.call_args[0][1]
+        assert "pattern approved for this session" in sent_text
         mock_session.assert_called_once_with(session_key, "sudo")
 
     @pytest.mark.asyncio
@@ -122,11 +138,43 @@ class TestApproveCommand:
         with (
             patch("tools.terminal_tool.terminal_tool", return_value="done"),
             patch("tools.approval.approve_permanent") as mock_perm,
+            patch.object(runner, "_handle_message", new_callable=AsyncMock, return_value=""),
         ):
             result = await runner._handle_approve_command(event)
 
-        assert "pattern approved permanently" in result
+        adapter = runner.adapters[Platform.TELEGRAM]
+        sent_text = adapter.send.call_args[0][1]
+        assert "pattern approved permanently" in sent_text
         mock_perm.assert_called_once_with("sudo")
+
+    @pytest.mark.asyncio
+    async def test_approve_resumes_agent_with_command_output(self):
+        """After /approve, the agent loop is re-entered with command output.
+
+        Regression test: previously /approve executed the command but returned
+        a static string without resuming the agent, causing it to stop mid-task.
+        """
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        runner._pending_approvals[session_key] = _make_pending_approval(
+            command="python3 -c 'print(42)'"
+        )
+
+        event = _make_event("/approve")
+        with (
+            patch("tools.terminal_tool.terminal_tool", return_value="42\n") as mock_term,
+            patch.object(runner, "_handle_message", new_callable=AsyncMock, return_value="agent response") as mock_hm,
+        ):
+            result = await runner._handle_approve_command(event)
+
+        # The return value should be the agent's continuation, not a static string
+        assert result == "agent response"
+        # _handle_message was called with a synthetic event containing the output
+        mock_hm.assert_called_once()
+        resume_event = mock_hm.call_args[0][0]
+        assert "42" in resume_event.text
+        assert resume_event.source == source
 
     @pytest.mark.asyncio
     async def test_approve_no_pending(self):
