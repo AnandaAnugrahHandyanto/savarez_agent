@@ -181,7 +181,8 @@ class TestExplicitProviderRespected:
 
     def test_auto_detect_still_falls_back_to_cloud(self, monkeypatch):
         """When no provider is explicitly set, auto-detect cloud fallback works."""
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-real-key")
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-real-key")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
              patch("tools.transcription_tools._has_local_command", return_value=False), \

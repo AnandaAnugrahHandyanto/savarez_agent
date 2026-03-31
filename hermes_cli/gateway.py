@@ -259,7 +259,11 @@ def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, 
     if not username:
         raise ValueError("Could not determine which user the gateway service should run as")
     if username == "root":
-        raise ValueError("Refusing to install the gateway system service as root; pass --run-as USER")
+        fallback = _default_system_service_user()
+        if fallback:
+            username = fallback
+        else:
+            raise ValueError("Refusing to install the gateway system service as root; pass --run-as USER")
 
     try:
         user_info = pwd.getpwnam(username)
@@ -285,6 +289,29 @@ def _default_system_service_user() -> str | None:
     for candidate in (os.getenv("SUDO_USER"), os.getenv("USER"), os.getenv("LOGNAME")):
         if candidate and candidate.strip() and candidate.strip() != "root":
             return candidate.strip()
+
+    try:
+        import pwd
+
+        candidates = []
+        for entry in pwd.getpwall():
+            name = (entry.pw_name or "").strip()
+            shell = (entry.pw_shell or "").strip()
+            home = (entry.pw_dir or "").strip()
+            if not name or name == "root":
+                continue
+            if entry.pw_uid < 1000:
+                continue
+            if not home.startswith("/home/"):
+                continue
+            if shell.endswith("/nologin") or shell.endswith("/false"):
+                continue
+            candidates.append((entry.pw_uid, name))
+        if candidates:
+            candidates.sort()
+            return candidates[0][1]
+    except Exception:
+        pass
     return None
 
 
@@ -453,14 +480,25 @@ def get_hermes_cli_path() -> str:
 # =============================================================================
 
 def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
-    """Return user-local bin dirs that exist and aren't already in *path_entries*."""
+    """Return user-local bin dirs to prepend to PATH.
+
+    ~/.local/bin should always be present so pipx/uvx-installed CLIs remain
+    discoverable even before the directory exists. Other language-specific bin
+    dirs are added opportunistically when present.
+    """
     candidates = [
-        str(home / ".local" / "bin"),       # uv, uvx, pip-installed CLIs
-        str(home / ".cargo" / "bin"),        # Rust/cargo tools
-        str(home / "go" / "bin"),            # Go tools
-        str(home / ".npm-global" / "bin"),   # npm global packages
+        (str(home / ".local" / "bin"), True),       # uv, uvx, pip-installed CLIs
+        (str(home / ".cargo" / "bin"), False),      # Rust/cargo tools
+        (str(home / "go" / "bin"), False),          # Go tools
+        (str(home / ".npm-global" / "bin"), False), # npm global packages
     ]
-    return [p for p in candidates if p not in path_entries and Path(p).exists()]
+    result = []
+    for candidate, always_include in candidates:
+        if candidate in path_entries or candidate in result:
+            continue
+        if always_include or Path(candidate).exists():
+            result.append(candidate)
+    return result
 
 
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:

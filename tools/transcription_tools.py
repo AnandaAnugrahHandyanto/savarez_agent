@@ -117,8 +117,13 @@ def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
 
 
 def _resolve_openai_api_key() -> str:
-    """Prefer the voice-tools key, but fall back to the normal OpenAI key."""
-    return os.getenv("VOICE_TOOLS_OPENAI_KEY", "") or os.getenv("OPENAI_API_KEY", "")
+    """Return the dedicated voice-tools OpenAI key.
+
+    Speech transcription should not silently reuse the main OPENAI_API_KEY,
+    which may belong to unrelated inference workflows with different billing
+    or routing expectations.
+    """
+    return os.getenv("VOICE_TOOLS_OPENAI_KEY", "")
 
 
 def _find_binary(binary_name: str) -> Optional[str]:

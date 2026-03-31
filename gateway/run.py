@@ -363,19 +363,33 @@ def _load_gateway_config() -> dict:
     return {}
 
 
-def _resolve_gateway_model(config: dict | None = None) -> str:
-    """Read model from config.yaml — single source of truth.
+def _resolve_gateway_model(config: dict | None = None, runtime_kwargs: dict | None = None) -> str:
+    """Read model from env/config with provider-aware fallbacks.
 
-    Without this, temporary AIAgent instances (memory flush, /compress) fall
-    back to the hardcoded default which fails when the active provider is
-    openai-codex.
+    The gateway can spin up temporary AIAgent instances before the interactive
+    CLI has persisted a model selection. In that case, provider-specific
+    fallbacks still need a valid model slug (notably Codex Responses).
     """
+    model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or ""
     cfg = config if config is not None else _load_gateway_config()
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, str):
-        return model_cfg
+        model = model_cfg or model
     elif isinstance(model_cfg, dict):
-        return model_cfg.get("default") or model_cfg.get("model") or ""
+        model = model_cfg.get("default") or model_cfg.get("model") or model
+
+    model = (model or "").strip()
+    if model:
+        return model
+
+    runtime = runtime_kwargs or {}
+    provider = str(runtime.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER") or "").strip().lower()
+    api_mode = str(runtime.get("api_mode") or "").strip().lower()
+    base_url = str(runtime.get("base_url") or "").strip().lower()
+
+    if provider == "openai-codex" or api_mode == "codex_responses" or "chatgpt.com/backend-api/codex" in base_url:
+        return "gpt-5.3-codex"
+
     return ""
 
 
@@ -651,7 +665,7 @@ class GatewayRunner:
             # Resolve model from config — AIAgent's default is OpenRouter-
             # formatted ("anthropic/claude-opus-4.6") which fails when the
             # active provider is openai-codex.
-            model = _resolve_gateway_model()
+            model = _resolve_gateway_model(runtime_kwargs=runtime_kwargs)
 
             tmp_agent = AIAgent(
                 **runtime_kwargs,
@@ -2909,11 +2923,12 @@ class GatewayRunner:
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
-        model = _resolve_gateway_model()
         config_context_length = None
         provider = None
         base_url = None
-        api_key = None
+        api_key = ""
+        user_config = None
+        runtime = {}
 
         try:
             cfg_path = _hermes_home / "config.yaml"
@@ -2921,6 +2936,7 @@ class GatewayRunner:
                 import yaml as _info_yaml
                 with open(cfg_path, encoding="utf-8") as f:
                     data = _info_yaml.safe_load(f) or {}
+                user_config = data
                 model_cfg = data.get("model", {})
                 if isinstance(model_cfg, dict):
                     raw_ctx = model_cfg.get("context_length")
@@ -2939,9 +2955,11 @@ class GatewayRunner:
             runtime = _resolve_runtime_agent_kwargs()
             provider = provider or runtime.get("provider")
             base_url = base_url or runtime.get("base_url")
-            api_key = runtime.get("api_key")
+            api_key = runtime.get("api_key") or ""
         except Exception:
-            pass
+            runtime = {}
+
+        model = _resolve_gateway_model(user_config, runtime)
 
         context_length = get_model_context_length(
             model,
@@ -3937,7 +3955,7 @@ class GatewayRunner:
                 return
 
             user_config = _load_gateway_config()
-            model = _resolve_gateway_model(user_config)
+            model = _resolve_gateway_model(user_config, runtime_kwargs)
             platform_key = _platform_config_key(source.platform)
 
             from hermes_cli.tools_config import _get_platform_tools
