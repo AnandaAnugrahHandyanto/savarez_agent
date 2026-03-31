@@ -38,23 +38,24 @@ logger = logging.getLogger(__name__)
 
 SANDBOX_AVAILABLE = sys.platform != "win32"
 
-# The 7 tools allowed inside the sandbox. The intersection of this list
+# The 6 tools allowed inside the sandbox. The intersection of this list
 # and the session's enabled tools determines which stubs are generated.
-SANDBOX_ALLOWED_TOOLS = frozenset([
-    "web_search",
-    "web_extract",
-    "read_file",
-    "write_file",
-    "search_files",
-    "patch",
-    "terminal",
-])
+SANDBOX_ALLOWED_TOOLS = frozenset(
+    [
+        "web_search",
+        "web_extract",
+        "read_file",
+        "write_file",
+        "search_files",
+        "patch",
+    ]
+)
 
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
-DEFAULT_TIMEOUT = 300        # 5 minutes
+DEFAULT_TIMEOUT = 300  # 5 minutes
 DEFAULT_MAX_TOOL_CALLS = 50
-MAX_STDOUT_BYTES = 50_000    # 50 KB
-MAX_STDERR_BYTES = 10_000    # 10 KB
+MAX_STDOUT_BYTES = 50_000  # 50 KB
+MAX_STDERR_BYTES = 10_000  # 10 KB
 
 
 def check_sandbox_requirements() -> bool:
@@ -104,12 +105,6 @@ _TOOL_STUBS = {
         'path: str = None, old_string: str = None, new_string: str = None, replace_all: bool = False, mode: str = "replace", patch: str = None',
         '"""Targeted find-and-replace (mode="replace") or V4A multi-file patches (mode="patch"). Returns dict with status."""',
         '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch}',
-    ),
-    "terminal": (
-        "terminal",
-        "command: str, timeout: int = None, workdir: str = None",
-        '"""Run a shell command (foreground only). Returns dict with "output" and "exit_code"."""',
-        '{"command": command, "timeout": timeout, "workdir": workdir}',
     ),
 }
 
@@ -215,15 +210,12 @@ def _call(tool_name, args):
 # RPC server (runs in a thread inside the parent process)
 # ---------------------------------------------------------------------------
 
-# Terminal parameters that must not be used from ephemeral sandbox scripts
-_TERMINAL_BLOCKED_PARAMS = {"background", "check_interval", "pty"}
-
 
 def _rpc_server_loop(
     server_sock: socket.socket,
     task_id: str,
     tool_call_log: list,
-    tool_call_counter: list,   # mutable [int] so the thread can increment
+    tool_call_counter: list,  # mutable [int] so the thread can increment
     max_tool_calls: int,
     allowed_tools: frozenset,
 ):
@@ -270,30 +262,29 @@ def _rpc_server_loop(
                 # Enforce the allow-list
                 if tool_name not in allowed_tools:
                     available = ", ".join(sorted(allowed_tools))
-                    resp = json.dumps({
-                        "error": (
-                            f"Tool '{tool_name}' is not available in execute_code. "
-                            f"Available: {available}"
-                        )
-                    })
+                    resp = json.dumps(
+                        {
+                            "error": (
+                                f"Tool '{tool_name}' is not available in execute_code. "
+                                f"Available: {available}"
+                            )
+                        }
+                    )
                     conn.sendall((resp + "\n").encode())
                     continue
 
                 # Enforce tool call limit
                 if tool_call_counter[0] >= max_tool_calls:
-                    resp = json.dumps({
-                        "error": (
-                            f"Tool call limit reached ({max_tool_calls}). "
-                            "No more tool calls allowed in this execution."
-                        )
-                    })
+                    resp = json.dumps(
+                        {
+                            "error": (
+                                f"Tool call limit reached ({max_tool_calls}). "
+                                "No more tool calls allowed in this execution."
+                            )
+                        }
+                    )
                     conn.sendall((resp + "\n").encode())
                     continue
-
-                # Strip forbidden terminal parameters
-                if tool_name == "terminal" and isinstance(tool_args, dict):
-                    for param in _TERMINAL_BLOCKED_PARAMS:
-                        tool_args.pop(param, None)
 
                 # Dispatch through the standard tool handler.
                 # Suppress stdout/stderr from internal tool handlers so
@@ -319,11 +310,13 @@ def _rpc_server_loop(
 
                 # Log for observability
                 args_preview = str(tool_args)[:80]
-                tool_call_log.append({
-                    "tool": tool_name,
-                    "args_preview": args_preview,
-                    "duration": round(call_duration, 2),
-                })
+                tool_call_log.append(
+                    {
+                        "tool": tool_name,
+                        "args_preview": args_preview,
+                        "duration": round(call_duration, 2),
+                    }
+                )
 
                 conn.sendall((result + "\n").encode())
 
@@ -342,6 +335,7 @@ def _rpc_server_loop(
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
+
 
 def execute_code(
     code: str,
@@ -362,9 +356,11 @@ def execute_code(
         JSON string with execution results.
     """
     if not SANDBOX_AVAILABLE:
-        return json.dumps({
-            "error": "execute_code is not available on Windows. Use normal tool calls instead."
-        })
+        return json.dumps(
+            {
+                "error": "execute_code is not available on Windows. Use normal tool calls instead."
+            }
+        )
 
     if not code or not code.strip():
         return json.dumps({"error": "No code provided."})
@@ -382,7 +378,7 @@ def execute_code(
     sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
 
     if not sandbox_tools:
-        sandbox_tools = SANDBOX_ALLOWED_TOOLS
+        sandbox_tools = frozenset()
 
     # --- Set up temp directory with hermes_tools.py and script.py ---
     tmpdir = tempfile.mkdtemp(prefix="hermes_sandbox_")
@@ -417,8 +413,12 @@ def execute_code(
         rpc_thread = threading.Thread(
             target=_rpc_server_loop,
             args=(
-                server_sock, task_id, tool_call_log,
-                tool_call_counter, max_tool_calls, sandbox_tools,
+                server_sock,
+                task_id,
+                tool_call_log,
+                tool_call_counter,
+                max_tool_calls,
+                sandbox_tools,
             ),
             daemon=True,
         )
@@ -431,11 +431,32 @@ def execute_code(
         # Exception: env vars declared by loaded skills (via env_passthrough
         # registry) or explicitly allowed by the user in config.yaml
         # (terminal.env_passthrough) are passed through.
-        _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
-                              "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
-                              "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
-        _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
-                              "PASSWD", "AUTH")
+        _SAFE_ENV_PREFIXES = (
+            "PATH",
+            "HOME",
+            "USER",
+            "LANG",
+            "LC_",
+            "TERM",
+            "TMPDIR",
+            "TMP",
+            "TEMP",
+            "SHELL",
+            "LOGNAME",
+            "XDG_",
+            "PYTHONPATH",
+            "VIRTUAL_ENV",
+            "CONDA",
+        )
+        _SECRET_SUBSTRINGS = (
+            "KEY",
+            "TOKEN",
+            "SECRET",
+            "PASSWORD",
+            "CREDENTIAL",
+            "PASSWD",
+            "AUTH",
+        )
         try:
             from tools.env_passthrough import is_env_passthrough as _is_passthrough
         except Exception:
@@ -458,7 +479,9 @@ def execute_code(
         # repo-root modules are available to child scripts.
         _hermes_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         _existing_pp = child_env.get("PYTHONPATH", "")
-        child_env["PYTHONPATH"] = _hermes_root + (os.pathsep + _existing_pp if _existing_pp else "")
+        child_env["PYTHONPATH"] = _hermes_root + (
+            os.pathsep + _existing_pp if _existing_pp else ""
+        )
         # Inject user's configured timezone so datetime.now() in sandboxed
         # code reflects the correct wall-clock time.
         _tz_name = os.getenv("HERMES_TIMEZONE", "").strip()
@@ -483,7 +506,7 @@ def execute_code(
         # For stdout we use a head+tail strategy: keep the first HEAD_BYTES
         # and a rolling window of the last TAIL_BYTES so the final print()
         # output is never lost.  Stderr keeps head-only (errors appear early).
-        _STDOUT_HEAD_BYTES = int(MAX_STDOUT_BYTES * 0.4)   # 40% head
+        _STDOUT_HEAD_BYTES = int(MAX_STDOUT_BYTES * 0.4)  # 40% head
         _STDOUT_TAIL_BYTES = MAX_STDOUT_BYTES - _STDOUT_HEAD_BYTES  # 60% tail
 
         def _drain(pipe, chunks, max_bytes):
@@ -503,10 +526,13 @@ def execute_code(
 
         stdout_total_bytes = [0]  # mutable ref for total bytes seen
 
-        def _drain_head_tail(pipe, head_chunks, tail_chunks, head_bytes, tail_bytes, total_ref):
+        def _drain_head_tail(
+            pipe, head_chunks, tail_chunks, head_bytes, tail_bytes, total_ref
+        ):
             """Drain stdout keeping both head and tail data."""
             head_collected = 0
             from collections import deque
+
             tail_buf = deque()
             tail_collected = 0
             try:
@@ -540,12 +566,20 @@ def execute_code(
 
         stdout_reader = threading.Thread(
             target=_drain_head_tail,
-            args=(proc.stdout, stdout_head_chunks, stdout_tail_chunks,
-                  _STDOUT_HEAD_BYTES, _STDOUT_TAIL_BYTES, stdout_total_bytes),
-            daemon=True
+            args=(
+                proc.stdout,
+                stdout_head_chunks,
+                stdout_tail_chunks,
+                _STDOUT_HEAD_BYTES,
+                _STDOUT_TAIL_BYTES,
+                stdout_total_bytes,
+            ),
+            daemon=True,
         )
         stderr_reader = threading.Thread(
-            target=_drain, args=(proc.stderr, stderr_chunks, MAX_STDERR_BYTES), daemon=True
+            target=_drain,
+            args=(proc.stderr, stderr_chunks, MAX_STDERR_BYTES),
+            daemon=True,
         )
         stdout_reader.start()
         stderr_reader.start()
@@ -593,6 +627,7 @@ def execute_code(
         # Strip ANSI escape sequences so the model never sees terminal
         # formatting — prevents it from copying escapes into file writes.
         from tools.ansi_strip import strip_ansi
+
         stdout_text = strip_ansi(stdout_text)
         stderr_text = strip_ansi(stderr_text)
 
@@ -607,7 +642,9 @@ def execute_code(
         if status == "timeout":
             result["error"] = f"Script timed out after {timeout}s and was killed."
         elif status == "interrupted":
-            result["output"] = stdout_text + "\n[execution interrupted — user sent a new message]"
+            result["output"] = (
+                stdout_text + "\n[execution interrupted — user sent a new message]"
+            )
         elif exit_code != 0:
             result["status"] = "error"
             result["error"] = stderr_text or f"Script exited with code {exit_code}"
@@ -627,12 +664,15 @@ def execute_code(
             exc,
             exc_info=True,
         )
-        return json.dumps({
-            "status": "error",
-            "error": str(exc),
-            "tool_calls_made": tool_call_counter[0],
-            "duration_seconds": duration,
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "status": "error",
+                "error": str(exc),
+                "tool_calls_made": tool_call_counter[0],
+                "duration_seconds": duration,
+            },
+            ensure_ascii=False,
+        )
 
     finally:
         # Cleanup temp dir and socket
@@ -642,6 +682,7 @@ def execute_code(
             except OSError as e:
                 logger.debug("Server socket close error: %s", e)
         import shutil
+
         shutil.rmtree(tmpdir, ignore_errors=True)
         try:
             os.unlink(sock_path)
@@ -674,7 +715,9 @@ def _kill_process_group(proc, escalate: bool = False):
                 else:
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except (ProcessLookupError, PermissionError) as e:
-                logger.debug("Could not kill process group with SIGKILL: %s", e, exc_info=True)
+                logger.debug(
+                    "Could not kill process group with SIGKILL: %s", e, exc_info=True
+                )
                 try:
                     proc.kill()
                 except Exception as e2:
@@ -685,6 +728,7 @@ def _load_config() -> dict:
     """Load code_execution config from CLI_CONFIG if available."""
     try:
         from cli import CLI_CONFIG
+
         return CLI_CONFIG.get("code_execution", {})
     except Exception:
         return {}
@@ -697,27 +741,36 @@ def _load_config() -> dict:
 # Per-tool documentation lines for the execute_code description.
 # Ordered to match the canonical display order.
 _TOOL_DOC_LINES = [
-    ("web_search",
-     "  web_search(query: str, limit: int = 5) -> dict\n"
-     "    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}"),
-    ("web_extract",
-     "  web_extract(urls: list[str]) -> dict\n"
-     "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown"),
-    ("read_file",
-     "  read_file(path: str, offset: int = 1, limit: int = 500) -> dict\n"
-     "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
-    ("write_file",
-     "  write_file(path: str, content: str) -> dict\n"
-     "    Always overwrites the entire file."),
-    ("search_files",
-     "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50) -> dict\n"
-     "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}"),
-    ("patch",
-     "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
-     "    Replaces old_string with new_string in the file."),
-    ("terminal",
-     "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
-     "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),
+    (
+        "web_search",
+        "  web_search(query: str, limit: int = 5) -> dict\n"
+        '    Returns {"data": {"web": [{"url", "title", "description"}, ...]}}',
+    ),
+    (
+        "web_extract",
+        "  web_extract(urls: list[str]) -> dict\n"
+        '    Returns {"results": [{"url", "title", "content", "error"}, ...]} where content is markdown',
+    ),
+    (
+        "read_file",
+        "  read_file(path: str, offset: int = 1, limit: int = 500) -> dict\n"
+        '    Lines are 1-indexed. Returns {"content": "...", "total_lines": N}',
+    ),
+    (
+        "write_file",
+        "  write_file(path: str, content: str) -> dict\n"
+        "    Always overwrites the entire file.",
+    ),
+    (
+        "search_files",
+        '  search_files(pattern: str, target="content", path=".", file_glob=None, limit=50) -> dict\n'
+        '    target: "content" (search inside files) or "files" (find files by name). Returns {"matches": [...]}',
+    ),
+    (
+        "patch",
+        "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
+        "    Replaces old_string with new_string in the file.",
+    ),
 ]
 
 
@@ -737,7 +790,7 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
     )
 
     # Build example import list from enabled tools
-    import_examples = [n for n in ("web_search", "terminal") if n in enabled_sandbox_tools]
+    import_examples = [n for n in ("web_search",) if n in enabled_sandbox_tools]
     if not import_examples:
         import_examples = sorted(enabled_sandbox_tools)[:2]
     if import_examples:
@@ -756,12 +809,11 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
         "or the task requires interactive user input.\n\n"
         f"Available via `from hermes_tools import ...`:\n\n"
         f"{tool_lines}\n\n"
-        "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
-        "terminal() is foreground-only (no background or pty).\n\n"
+        "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script.\n\n"
         "Print your final result to stdout. Use Python stdlib (json, re, math, csv, "
         "datetime, collections, etc.) for processing between tool calls.\n\n"
         "Also available (no import needed — built into hermes_tools):\n"
-        "  json_parse(text: str) — json.loads with strict=False; use for terminal() output with control chars\n"
+        "  json_parse(text: str) — json.loads with strict=False; use for parsing tool output with control chars\n"
         "  shell_quote(s: str) — shlex.quote(); use when interpolating dynamic strings into shell commands\n"
         "  retry(fn, max_attempts=3, delay=2) — retry with exponential backoff for transient failures"
     )
@@ -800,7 +852,8 @@ registry.register(
     handler=lambda args, **kw: execute_code(
         code=args.get("code", ""),
         task_id=kw.get("task_id"),
-        enabled_tools=kw.get("enabled_tools")),
+        enabled_tools=kw.get("enabled_tools"),
+    ),
     check_fn=check_sandbox_requirements,
     emoji="🐍",
 )
