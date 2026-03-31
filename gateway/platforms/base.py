@@ -968,11 +968,18 @@ class BasePlatformAdapter(ABC):
                 # Play TTS audio before text (voice-first experience)
                 if _tts_path and Path(_tts_path).exists():
                     try:
-                        await self.play_tts(
+                        tts_result = await self.play_tts(
                             chat_id=event.source.chat_id,
                             audio_path=_tts_path,
+                            caption=text_content if self.platform.value.lower() == "signal" else None,
                             metadata=_thread_metadata,
                         )
+                        if (
+                            self.platform.value.lower() == "signal"
+                            and getattr(tts_result, "success", False)
+                            and event.message_type == MessageType.VOICE
+                        ):
+                            text_content = ""
                     finally:
                         try:
                             os.remove(_tts_path)

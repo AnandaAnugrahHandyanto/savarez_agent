@@ -22,7 +22,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 import httpx
 
@@ -50,6 +50,7 @@ SSE_RETRY_DELAY_INITIAL = 2.0
 SSE_RETRY_DELAY_MAX = 60.0
 HEALTH_CHECK_INTERVAL = 30.0  # seconds between health checks
 HEALTH_CHECK_STALE_THRESHOLD = 120.0  # seconds without SSE activity before concern
+SIGNAL_ATTACHMENTS_DIR = Path("~/.local/share/signal-cli/attachments").expanduser()
 
 # E.164 phone number pattern for redaction
 _PHONE_RE = re.compile(r"\+[1-9]\d{6,14}")
@@ -85,7 +86,10 @@ def _guess_extension(data: bytes) -> str:
         return ".webp"
     if data[:4] == b"%PDF":
         return ".pdf"
-    if len(data) >= 8 and data[4:8] == b"ftyp":
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        brand = data[8:12]
+        if brand in (b"M4A ", b"M4B ", b"M4P "):
+            return ".m4a"
         return ".mp4"
     if data[:4] == b"OggS":
         return ".ogg"
@@ -116,6 +120,39 @@ _EXT_TO_MIME = {
 def _ext_to_mime(ext: str) -> str:
     """Map file extension to MIME type."""
     return _EXT_TO_MIME.get(ext.lower(), "application/octet-stream")
+
+
+def _resolve_signal_attachment_path(attachment: dict) -> Optional[str]:
+    """Resolve a signal-cli attachment to a local file path when possible."""
+    if not attachment or not isinstance(attachment, dict):
+        return None
+
+    candidate_fields = (
+        "path",
+        "file",
+        "filePath",
+        "localPath",
+        "storedFilename",
+        "storedFileName",
+        "storedFile",
+        "filename",
+        "fileName",
+    )
+
+    for field in candidate_fields:
+        value = attachment.get(field)
+        if not value or not isinstance(value, str):
+            continue
+
+        candidate = Path(value).expanduser()
+        if candidate.exists() and candidate.is_file():
+            return str(candidate)
+
+        fallback = SIGNAL_ATTACHMENTS_DIR / Path(value).name
+        if fallback.exists() and fallback.is_file():
+            return str(fallback)
+
+    return None
 
 
 def _render_mentions(text: str, mentions: list) -> str:
@@ -253,7 +290,7 @@ class SignalAdapter(BasePlatformAdapter):
 
     async def _sse_listener(self) -> None:
         """Listen for SSE events from signal-cli daemon."""
-        url = f"{self.http_url}/api/v1/events?account={self.account}"
+        url = f"{self.http_url}/api/v1/events?account={quote(self.account, safe='')}"
         backoff = SSE_RETRY_DELAY_INITIAL
 
         while self._running:
@@ -448,13 +485,18 @@ class SignalAdapter(BasePlatformAdapter):
             for att in attachments_data:
                 att_id = att.get("id")
                 att_size = att.get("size", 0)
-                if not att_id:
+                if not att_id and not _resolve_signal_attachment_path(att):
                     continue
                 if att_size > SIGNAL_MAX_ATTACHMENT_SIZE:
                     logger.warning("Signal: attachment too large (%d bytes), skipping", att_size)
                     continue
                 try:
-                    cached_path, ext = await self._fetch_attachment(att_id)
+                    cached_path, ext = await self._fetch_attachment(
+                        att_id,
+                        sender=sender,
+                        group_id=group_id,
+                        attachment=att,
+                    )
                     if cached_path:
                         # Use contentType from Signal if available, else map from extension
                         content_type = att.get("contentType") or _ext_to_mime(ext)
@@ -511,12 +553,32 @@ class SignalAdapter(BasePlatformAdapter):
     # Attachment Handling
     # ------------------------------------------------------------------
 
-    async def _fetch_attachment(self, attachment_id: str) -> tuple:
+    async def _fetch_attachment(
+        self,
+        attachment_id: Optional[str],
+        sender: Optional[str] = None,
+        group_id: Optional[str] = None,
+        attachment: Optional[dict] = None,
+    ) -> tuple:
         """Fetch an attachment via JSON-RPC and cache it. Returns (path, ext)."""
-        result = await self._rpc("getAttachment", {
+        local_path = _resolve_signal_attachment_path(attachment or {})
+        if local_path and Path(local_path).exists():
+            ext = Path(local_path).suffix.lower() or ".bin"
+            return local_path, ext
+
+        if not attachment_id:
+            return None, ""
+
+        params = {
             "account": self.account,
-            "attachmentId": attachment_id,
-        })
+            "id": attachment_id,
+        }
+        if group_id:
+            params["groupId"] = group_id
+        elif sender:
+            params["recipient"] = sender
+
+        result = await self._rpc("getAttachment", params)
 
         if not result:
             return None, ""
@@ -677,6 +739,37 @@ class SignalAdapter(BasePlatformAdapter):
             self._track_sent_timestamp(result)
             return SendResult(success=True)
         return SendResult(success=False, error="RPC send with attachment failed")
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send an audio attachment, optionally with a caption."""
+        await self._stop_typing_indicator(chat_id)
+
+        if not Path(audio_path).exists():
+            return SendResult(success=False, error="Audio file not found")
+
+        params: Dict[str, Any] = {
+            "account": self.account,
+            "message": caption or "",
+            "attachments": [audio_path],
+        }
+
+        if chat_id.startswith("group:"):
+            params["groupId"] = chat_id[6:]
+        else:
+            params["recipient"] = [chat_id]
+
+        result = await self._rpc("send", params)
+        if result is not None:
+            self._track_sent_timestamp(result)
+            return SendResult(success=True)
+        return SendResult(success=False, error="RPC send voice failed")
 
     async def send_document(
         self,

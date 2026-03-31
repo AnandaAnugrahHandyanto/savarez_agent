@@ -1,13 +1,17 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import asyncio
 import os
-from unittest.mock import patch
+import sys
+import types
+from unittest.mock import AsyncMock, patch
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
     MessageType,
+    SendResult,
 )
 
 
@@ -410,3 +414,89 @@ class TestGetHumanDelay:
         with patch.dict(os.environ, env):
             delay = BasePlatformAdapter._get_human_delay()
             assert 0.1 <= delay <= 0.2
+
+
+class TestSignalVoiceReplyBehavior:
+    def _adapter(self, platform):
+        class StubAdapter(BasePlatformAdapter):
+            async def connect(self):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, *a, **kw):
+                return SendResult(success=True)
+
+            async def get_chat_info(self, *a):
+                return {}
+
+        from gateway.config import PlatformConfig
+
+        config = PlatformConfig(enabled=True, token="***")
+        return StubAdapter(config=config, platform=platform)
+
+    def _event(self):
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+
+        return MessageEvent(
+            text="hello",
+            message_type=MessageType.VOICE,
+            source=SessionSource(platform=Platform.SIGNAL, chat_id="chat-1", user_id="user-1"),
+        )
+
+    def test_signal_voice_reply_sends_caption_only_once(self, tmp_path):
+        from gateway.config import Platform
+
+        adapter = self._adapter(Platform.SIGNAL)
+        event = self._event()
+        tts_file = tmp_path / "reply.mp3"
+        tts_file.write_bytes(b"audio")
+
+        adapter._message_handler = AsyncMock(return_value="hello from hermes")
+        adapter.play_tts = AsyncMock(return_value=SendResult(success=True))
+        adapter.send = AsyncMock(return_value=SendResult(success=True))
+        adapter._keep_typing = AsyncMock()
+        adapter._run_processing_hook = AsyncMock()
+
+        fake_tts = types.ModuleType("tools.tts_tool")
+        fake_tts.check_tts_requirements = lambda: True
+        fake_tts.text_to_speech_tool = lambda text: '{"file_path": "%s"}' % str(tts_file)
+
+        with patch.dict(sys.modules, {"tools.tts_tool": fake_tts}):
+            asyncio.run(adapter._process_message_background(event, "session-1"))
+
+        assert adapter.play_tts.await_count == 1
+        assert adapter.play_tts.await_args.kwargs["caption"] == "hello from hermes"
+        adapter.send.assert_not_awaited()
+
+    def test_non_signal_voice_reply_still_sends_text_after_tts(self, tmp_path):
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+
+        adapter = self._adapter(Platform.TELEGRAM)
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.VOICE,
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="chat-1", user_id="user-1"),
+        )
+        tts_file = tmp_path / "reply.mp3"
+        tts_file.write_bytes(b"audio")
+
+        adapter._message_handler = AsyncMock(return_value="hello from hermes")
+        adapter.play_tts = AsyncMock(return_value=SendResult(success=True))
+        adapter.send = AsyncMock(return_value=SendResult(success=True))
+        adapter._keep_typing = AsyncMock()
+        adapter._run_processing_hook = AsyncMock()
+
+        fake_tts = types.ModuleType("tools.tts_tool")
+        fake_tts.check_tts_requirements = lambda: True
+        fake_tts.text_to_speech_tool = lambda text: '{"file_path": "%s"}' % str(tts_file)
+
+        with patch.dict(sys.modules, {"tools.tts_tool": fake_tts}):
+            asyncio.run(adapter._process_message_background(event, "session-1"))
+
+        assert adapter.play_tts.await_count == 1
+        assert adapter.play_tts.await_args.kwargs["caption"] is None
+        adapter.send.assert_awaited_once()

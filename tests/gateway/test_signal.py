@@ -1,9 +1,40 @@
 """Tests for Signal messenger platform adapter."""
+import base64
 import json
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
+from urllib.parse import quote
 
 from gateway.config import Platform, PlatformConfig
+
+
+# ---------------------------------------------------------------------------
+# Shared Helpers
+# ---------------------------------------------------------------------------
+
+def _make_signal_adapter(monkeypatch, account="+155****4567", **extra):
+    """Create a SignalAdapter with sensible test defaults."""
+    monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", extra.pop("group_allowed", ""))
+    from gateway.platforms.signal import SignalAdapter
+    config = PlatformConfig()
+    config.enabled = True
+    config.extra = {
+        "http_url": "http://localhost:8080",
+        "account": account,
+        **extra,
+    }
+    return SignalAdapter(config)
+
+
+def _stub_rpc(return_value):
+    """Return an async mock for SignalAdapter._rpc that captures call params."""
+    captured = []
+
+    async def mock_rpc(method, params, rpc_id=None):
+        captured.append({"method": method, "params": dict(params)})
+        return return_value
+
+    return mock_rpc, captured
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +176,10 @@ class TestSignalHelpers:
         from gateway.platforms.signal import _guess_extension
         assert _guess_extension(b"\x00\x00\x00\x18ftypisom" + b"\x00" * 100) == ".mp4"
 
+    def test_guess_extension_m4a(self):
+        from gateway.platforms.signal import _guess_extension
+        assert _guess_extension(b"\x00\x00\x00\x18ftypM4A " + b"\x00" * 100) == ".m4a"
+
     def test_guess_extension_unknown(self):
         from gateway.platforms.signal import _guess_extension
         assert _guess_extension(b"\x00\x01\x02\x03" * 10) == ".bin"
@@ -190,8 +225,141 @@ class TestSignalHelpers:
 
 
 # ---------------------------------------------------------------------------
-# Session Source
+# SSE URL Encoding (Bug Fix: phone numbers with + must be URL-encoded)
 # ---------------------------------------------------------------------------
+
+class TestSignalSSEUrlEncoding:
+    """Verify that phone numbers with + are URL-encoded in the SSE endpoint."""
+
+    def test_sse_url_encodes_plus_in_account(self):
+        """The + in E.164 phone numbers must be percent-encoded in the SSE query string."""
+        encoded = quote("+31612345678", safe="")
+        assert encoded == "%2B31612345678"
+
+    def test_sse_url_encoding_preserves_digits(self):
+        """Digits and country codes should pass through URL encoding unchanged."""
+        assert quote("+15551234567", safe="") == "%2B15551234567"
+
+
+# ---------------------------------------------------------------------------
+# Attachment Fetch (Bug Fix: parameter must be "id" not "attachmentId")
+# ---------------------------------------------------------------------------
+
+class TestSignalAttachmentFetch:
+    """Verify that _fetch_attachment uses the correct RPC parameter name."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_attachment_uses_id_parameter(self, monkeypatch):
+        """RPC getAttachment must use 'id', not 'attachmentId' (signal-cli requirement)."""
+        adapter = _make_signal_adapter(monkeypatch)
+
+        png_data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+        b64_data = base64.b64encode(png_data).decode()
+
+        adapter._rpc, captured = _stub_rpc({"data": b64_data})
+
+        with patch("gateway.platforms.signal.cache_image_from_bytes", return_value="/tmp/test.png"):
+            await adapter._fetch_attachment("attachment-123")
+
+        call = captured[0]
+        assert call["method"] == "getAttachment"
+        assert call["params"]["id"] == "attachment-123"
+        assert "attachmentId" not in call["params"], "Must NOT use 'attachmentId' — causes NullPointerException in signal-cli"
+        assert call["params"]["account"] == "+155****4567"
+
+    @pytest.mark.asyncio
+    async def test_fetch_attachment_returns_none_on_empty(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._rpc, _ = _stub_rpc(None)
+        path, ext = await adapter._fetch_attachment("missing-id")
+        assert path is None
+        assert ext == ""
+
+    @pytest.mark.asyncio
+    async def test_fetch_attachment_uses_recipient_for_dm(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        png_data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+        b64_data = base64.b64encode(png_data).decode()
+        adapter._rpc, captured = _stub_rpc({"data": b64_data})
+
+        with patch("gateway.platforms.signal.cache_image_from_bytes", return_value="/tmp/test.png"):
+            await adapter._fetch_attachment("attachment-123", sender="+155****1111")
+
+        call = captured[0]
+        assert call["params"]["recipient"] == "+155****1111"
+        assert "groupId" not in call["params"]
+
+    @pytest.mark.asyncio
+    async def test_fetch_attachment_uses_group_id_for_groups(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        png_data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+        b64_data = base64.b64encode(png_data).decode()
+        adapter._rpc, captured = _stub_rpc({"data": b64_data})
+
+        with patch("gateway.platforms.signal.cache_image_from_bytes", return_value="/tmp/test.png"):
+            await adapter._fetch_attachment("attachment-123", sender="+155****1111", group_id="group-abc")
+
+        call = captured[0]
+        assert call["params"]["groupId"] == "group-abc"
+        assert "recipient" not in call["params"]
+
+    @pytest.mark.asyncio
+    async def test_fetch_attachment_uses_local_path_when_available(self, monkeypatch, tmp_path):
+        adapter = _make_signal_adapter(monkeypatch)
+        local_file = tmp_path / "voice-note.m4a"
+        local_file.write_bytes(b"audio")
+
+        rpc = AsyncMock(return_value=None)
+        adapter._rpc = rpc
+
+        path, ext = await adapter._fetch_attachment(
+            "attachment-123",
+            attachment={"path": str(local_file)},
+        )
+
+        assert path == str(local_file)
+        assert ext == ".m4a"
+        rpc.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fetch_attachment_uses_local_path_without_id(self, monkeypatch, tmp_path):
+        adapter = _make_signal_adapter(monkeypatch)
+        local_file = tmp_path / "voice-note.m4a"
+        local_file.write_bytes(b"audio")
+
+        rpc = AsyncMock(return_value=None)
+        adapter._rpc = rpc
+
+        path, ext = await adapter._fetch_attachment(
+            None,
+            attachment={"path": str(local_file)},
+        )
+
+        assert path == str(local_file)
+        assert ext == ".m4a"
+        rpc.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fetch_attachment_handles_dict_response(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        pdf_data = b"%PDF-1.4" + b"\x00" * 100
+        b64_data = base64.b64encode(pdf_data).decode()
+
+        adapter._rpc, _ = _stub_rpc({"data": b64_data})
+
+        with patch("gateway.platforms.signal.cache_document_from_bytes", return_value="/tmp/test.pdf"):
+            path, ext = await adapter._fetch_attachment("doc-456")
+
+        assert path == "/tmp/test.pdf"
+        assert ext == ".pdf"
+
+
+# ---------------------------------------------------------------------------
+# Session Source
+
 
 class TestSignalSessionSource:
     def test_session_source_alt_fields(self):
@@ -290,9 +458,26 @@ class TestSignalAuthorization:
 # ---------------------------------------------------------------------------
 
 class TestSignalSendMessage:
+    @pytest.mark.asyncio
+    async def test_send_voice_attaches_caption(self, monkeypatch, tmp_path):
+        adapter = _make_signal_adapter(monkeypatch)
+        audio_file = tmp_path / "reply.m4a"
+        audio_file.write_bytes(b"audio")
+
+        adapter._rpc, captured = _stub_rpc({"timestamp": 123})
+        result = await adapter.send_voice("+15550001111", str(audio_file), caption="hello there")
+
+        assert result.success is True
+        call = captured[0]
+        assert call["method"] == "send"
+        assert call["params"]["message"] == "hello there"
+        assert call["params"]["attachments"] == [str(audio_file)]
+        assert call["params"]["recipient"] == ["+15550001111"]
+
     def test_signal_in_platform_map(self):
         """Signal should be in the send_message tool's platform map."""
+        pytest.importorskip("firecrawl")
         from tools.send_message_tool import send_message_tool
-        # Just verify the import works and Signal is a valid platform
-        from gateway.config import Platform
-        assert Platform.SIGNAL.value == "signal"
+        platform_map = send_message_tool.__globals__.get("PLATFORM_PATTERNS", {})
+        assert "signal" in platform_map
+
