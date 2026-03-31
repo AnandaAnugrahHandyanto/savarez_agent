@@ -170,7 +170,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `SLACK_HOME_CHANNEL_NAME` | Display name for the Slack home channel |
 | `WHATSAPP_ENABLED` | Enable the WhatsApp bridge (`true`/`false`) |
 | `WHATSAPP_MODE` | `bot` (separate number) or `self-chat` (message yourself) |
-| `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers (with country code, no `+`). Leave unset and use `WHATSAPP_ALLOW_ALL_USERS` for open access. `*` is **not** a valid wildcard — it silently blocks all messages. |
+| `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers (with country code, no `+`), or `*` to allow all senders |
 | `WHATSAPP_ALLOW_ALL_USERS` | Allow all WhatsApp senders without an allowlist (`true`/`false`) |
 | `WHATSAPP_DEBUG` | Log raw message events in the bridge for troubleshooting (`true`/`false`) |
 | `SIGNAL_HTTP_URL` | signal-cli daemon HTTP endpoint (for example `http://127.0.0.1:8080`) |
