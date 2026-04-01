@@ -3453,10 +3453,16 @@ class AIAgent:
 
         if isinstance(client, Mock):
             return False
-        if bool(getattr(client, "is_closed", False)):
+        is_closed = getattr(client, "is_closed", None)
+        if callable(is_closed):
+            if is_closed():
+                return True
+        elif bool(is_closed):
             return True
         http_client = getattr(client, "_client", None)
-        return bool(getattr(http_client, "is_closed", False))
+        if http_client is not None:
+            return bool(getattr(http_client, "is_closed", False))
+        return False
 
     def _create_openai_client(self, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
         if self.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
