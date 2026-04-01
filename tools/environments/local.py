@@ -10,6 +10,7 @@ import threading
 import time
 
 _IS_WINDOWS = platform.system() == "Windows"
+_IS_LINUX = platform.system() == "Linux"
 
 from tools.environments.base import BaseEnvironment
 from tools.environments.persistent_shell import PersistentShellMixin
@@ -129,6 +130,32 @@ def _build_provider_env_blocklist() -> frozenset:
 
 
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+
+
+def _have_unshare() -> bool:
+    """Check if unshare(1) is available (Linux only)."""
+    if not _IS_LINUX:
+        return False
+    return shutil.which("unshare") is not None
+
+
+_UNSHARE_AVAILABLE = _have_unshare()
+
+
+def _pidns_wrap(cmd: list[str]) -> list[str]:
+    """Wrap a command in a PID namespace to prevent /proc/environ snooping.
+
+    On Linux, any same-UID process can read /proc/<pid>/environ of the
+    parent and recover env vars that were stripped by the blocklist.
+    Running the child in its own PID namespace (with a remounted /proc)
+    hides the parent's PID entirely.
+
+    Falls back to the unwrapped command on non-Linux or when unshare is
+    unavailable (e.g. restricted containers).
+    """
+    if not _UNSHARE_AVAILABLE:
+        return cmd
+    return ["unshare", "--user", "--pid", "--fork", "--mount-proc"] + cmd
 
 
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
@@ -341,7 +368,7 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         user_shell = _find_bash()
         run_env = _make_run_env(self.env)
         return subprocess.Popen(
-            [user_shell, "-l"],
+            _pidns_wrap([user_shell, "-l"]),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -406,7 +433,7 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         run_env = _make_run_env(self.env)
 
         proc = subprocess.Popen(
-            [user_shell, "-lic", fenced_cmd],
+            _pidns_wrap([user_shell, "-lic", fenced_cmd]),
             text=True,
             cwd=work_dir,
             env=run_env,

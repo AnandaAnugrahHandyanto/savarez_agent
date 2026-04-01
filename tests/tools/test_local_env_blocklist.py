@@ -9,6 +9,7 @@ See: https://github.com/NousResearch/hermes-agent/issues/1264
 """
 
 import os
+import pytest
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -288,6 +289,75 @@ class TestBlocklistCoverage:
             "DAYTONA_API_KEY",
         }
         assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
+
+
+class TestPidNamespaceWrap:
+    """Verify _pidns_wrap wraps commands on Linux and is a no-op elsewhere."""
+
+    def test_wraps_on_linux_with_unshare(self, monkeypatch):
+        from tools.environments import local
+        monkeypatch.setattr(local, "_UNSHARE_AVAILABLE", True)
+        result = local._pidns_wrap(["bash", "-c", "echo hi"])
+        assert result[:5] == ["unshare", "--user", "--pid", "--fork", "--mount-proc"]
+        assert result[5:] == ["bash", "-c", "echo hi"]
+
+    def test_noop_without_unshare(self, monkeypatch):
+        from tools.environments import local
+        monkeypatch.setattr(local, "_UNSHARE_AVAILABLE", False)
+        cmd = ["bash", "-c", "echo hi"]
+        assert local._pidns_wrap(cmd) is cmd
+
+
+import platform
+import shutil
+
+_is_linux = platform.system() == "Linux"
+_has_unshare = _is_linux and shutil.which("unshare") is not None
+
+
+@pytest.mark.skipif(not _is_linux, reason="Linux-only: /proc does not exist on other platforms")
+@pytest.mark.skipif(not _has_unshare, reason="unshare not available")
+class TestProcEnvironIsolation:
+    """Regression test: PID namespace prevents /proc/environ secret recovery."""
+
+    def test_pidns_child_cannot_read_parent_environ(self):
+        """A child in a PID namespace cannot recover stripped env vars via /proc."""
+        import subprocess, sys, tempfile
+        from tools.environments.local import _pidns_wrap
+
+        child_script = (
+            "import os\n"
+            "ppid = os.getppid()\n"
+            "try:\n"
+            "    with open(f'/proc/{ppid}/environ', 'rb') as f:\n"
+            "        raw = f.read()\n"
+            "    env = dict(\n"
+            "        e.decode('utf-8', 'replace').split('=', 1)\n"
+            "        for e in raw.split(b'\\x00') if b'=' in e\n"
+            "    )\n"
+            "    print(env.get('HERMES_TEST_SECRET', 'NOT_FOUND'))\n"
+            "except Exception as e:\n"
+            "    print(f'ERROR:{e}')\n"
+        )
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            f.write(child_script)
+            script = f.name
+
+        parent_env = os.environ.copy()
+        parent_env["HERMES_TEST_SECRET"] = "leaked-value-12345"
+
+        child_env = {"PATH": parent_env.get("PATH", "/usr/bin"), "HOME": "/tmp"}
+        result = subprocess.run(
+            _pidns_wrap([sys.executable, script]),
+            env=child_env,
+            capture_output=True, text=True,
+        )
+        os.unlink(script)
+        output = result.stdout.strip()
+        assert output != "leaked-value-12345", (
+            "Child in PID namespace should NOT be able to recover the secret"
+        )
 
 
 class TestSanePathIncludesHomebrew:

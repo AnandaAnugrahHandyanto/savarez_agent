@@ -36,6 +36,12 @@ from typing import Any, Dict, List, Optional
 # Availability gate: UDS requires a POSIX OS
 logger = logging.getLogger(__name__)
 
+
+try:
+    from tools.environments.local import _pidns_wrap as _pidns_wrap_exec
+except ImportError:
+    _pidns_wrap_exec = lambda cmd: cmd  # noqa: E731
+
 SANDBOX_AVAILABLE = sys.platform != "win32"
 
 # The 7 tools allowed inside the sandbox. The intersection of this list
@@ -466,7 +472,7 @@ def execute_code(
             child_env["TZ"] = _tz_name
 
         proc = subprocess.Popen(
-            [sys.executable, "script.py"],
+            _pidns_wrap_exec([sys.executable, "script.py"]),
             cwd=tmpdir,
             env=child_env,
             stdout=subprocess.PIPE,
