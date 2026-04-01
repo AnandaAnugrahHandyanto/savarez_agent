@@ -93,6 +93,28 @@ def _doctor_load_config() -> dict:
         return {}
 
 
+def _prepare_doctor_runtime_context() -> None:
+    """Normalize cwd/HOME so doctor checks match the live Hermes runtime."""
+    home_dir = HERMES_HOME.parent
+    target_cwd = PROJECT_ROOT if PROJECT_ROOT.exists() else home_dir
+
+    os.environ["HOME"] = str(home_dir)
+    os.environ["PWD"] = str(target_cwd)
+
+    npm_cache = home_dir / ".npm"
+    try:
+        npm_cache.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    os.environ.setdefault("NPM_CONFIG_CACHE", str(npm_cache))
+    os.environ.setdefault("npm_config_cache", str(npm_cache))
+
+    try:
+        os.chdir(target_cwd)
+    except Exception:
+        pass
+
+
 def _configured_provider_ids(config: dict | None = None) -> set[str]:
     """Return explicit provider ids referenced by the active config."""
     cfg = config if isinstance(config, dict) else _doctor_load_config()
@@ -209,6 +231,7 @@ def run_doctor(args):
     # Doctor runs from the interactive CLI, so CLI-gated tool availability
     # checks (like cronjob management) should see the same context as `hermes`.
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
+    _prepare_doctor_runtime_context()
     
     issues = []
     manual_issues = []  # issues that can't be auto-fixed
