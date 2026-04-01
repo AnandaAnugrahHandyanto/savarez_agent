@@ -1535,6 +1535,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         event = self._build_message_event(update.message, MessageType.TEXT)
+        await self._cache_reply_media_context(update.message, event)
         event.text = self._clean_bot_trigger_text(event.text)
         self._enqueue_text_event(event)
     
@@ -1719,10 +1720,15 @@ class TelegramAdapter(BasePlatformAdapter):
             msg_type = MessageType.DOCUMENT
         
         event = self._build_message_event(msg, msg_type)
+        await self._cache_reply_media_context(msg, event)
         
-        # Add caption as text
+        # Add caption as text while preserving any reply-media note added above.
         if msg.caption:
-            event.text = self._clean_bot_trigger_text(msg.caption)
+            cleaned_caption = self._clean_bot_trigger_text(msg.caption)
+            if event.text and cleaned_caption and cleaned_caption not in event.text:
+                event.text = f"{event.text}\n\n{cleaned_caption}"
+            else:
+                event.text = cleaned_caption or event.text
         
         # Handle stickers: describe via vision tool with caching
         if msg.sticker:
@@ -1748,8 +1754,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             break
                 # Save to local cache (for vision tool access)
                 cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
-                event.media_urls = [cached_path]
-                event.media_types = [f"image/{ext.lstrip('.')}" ]
+                self._append_media_to_event(event, cached_path, f"image/{ext.lstrip('.')}")
                 logger.info("[Telegram] Cached user photo at %s", cached_path)
                 media_group_id = getattr(msg, "media_group_id", None)
                 if media_group_id:
@@ -1768,8 +1773,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 file_obj = await msg.voice.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
                 cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".ogg")
-                event.media_urls = [cached_path]
-                event.media_types = ["audio/ogg"]
+                self._append_media_to_event(event, cached_path, "audio/ogg")
                 logger.info("[Telegram] Cached user voice at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache voice: %s", e, exc_info=True)
@@ -1778,8 +1782,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 file_obj = await msg.audio.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
                 cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".mp3")
-                event.media_urls = [cached_path]
-                event.media_types = ["audio/mp3"]
+                self._append_media_to_event(event, cached_path, "audio/mp3")
                 logger.info("[Telegram] Cached user audio at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
@@ -1828,8 +1831,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 raw_bytes = bytes(doc_bytes)
                 cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext}")
                 mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
-                event.media_urls = [cached_path]
-                event.media_types = [mime_type]
+                self._append_media_to_event(event, cached_path, mime_type)
                 logger.info("[Telegram] Cached user document at %s", cached_path)
 
                 # For text files, inject content into event.text (capped at 100 KB)
@@ -2060,6 +2062,92 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Cached DM topic from message: %s -> thread_id=%s",
                 self.name, cache_key, thread_id,
             )
+
+    @staticmethod
+    def _append_media_to_event(event: MessageEvent, cached_path: str, media_type: str) -> None:
+        """Append cached media to an event without discarding existing media context."""
+        if cached_path:
+            event.media_urls.append(cached_path)
+            event.media_types.append(media_type)
+
+    @staticmethod
+    def _prepend_reply_media_note(event: MessageEvent, note: str) -> None:
+        """Mark the event so the agent knows attached media came from a replied-to message."""
+        if not note:
+            return
+        if event.text:
+            if note in event.text:
+                return
+            event.text = f"{note}\n\n{event.text}"
+        else:
+            event.text = note
+
+    @staticmethod
+    def _guess_image_ext(file_path: Optional[str], default: str = ".jpg") -> str:
+        """Infer an image extension from a Telegram file path."""
+        if file_path:
+            lower = file_path.lower()
+            for candidate in [".png", ".webp", ".gif", ".jpeg", ".jpg"]:
+                if lower.endswith(candidate):
+                    return candidate
+        return default
+
+    async def _cache_reply_media_context(self, message: Message, event: MessageEvent) -> None:
+        """Download replied-to image media so Hermes can inspect it in the current turn."""
+        reply = getattr(message, "reply_to_message", None)
+        if not reply:
+            return
+
+        note = None
+
+        try:
+            if getattr(reply, "photo", None):
+                photo = reply.photo[-1]
+                file_obj = await photo.get_file()
+                image_bytes = await file_obj.download_as_bytearray()
+                ext = self._guess_image_ext(getattr(file_obj, "file_path", None), default=".jpg")
+                cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
+                self._append_media_to_event(event, cached_path, f"image/{ext.lstrip('.')}")
+                note = (
+                    "[The user replied to an earlier image. "
+                    "That referenced image is attached for context. "
+                    "If multiple images are attached, the replied-to image comes first.]"
+                )
+                logger.info("[Telegram] Cached replied-to photo at %s", cached_path)
+            elif getattr(reply, "document", None):
+                doc = reply.document
+                original_filename = doc.file_name or ""
+                _, ext = os.path.splitext(original_filename)
+                ext = ext.lower()
+                mime_type = (doc.mime_type or "").lower()
+                if mime_type.startswith("image/") or ext in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+                    file_obj = await doc.get_file()
+                    image_bytes = await file_obj.download_as_bytearray()
+                    ext = ext or self._guess_image_ext(getattr(file_obj, "file_path", None), default=".jpg")
+                    cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
+                    media_type = mime_type if mime_type.startswith("image/") else f"image/{ext.lstrip('.')}"
+                    self._append_media_to_event(event, cached_path, media_type)
+                    note = (
+                        "[The user replied to an earlier image file. "
+                        "That referenced image is attached for context. "
+                        "If multiple images are attached, the replied-to image comes first.]"
+                    )
+                    logger.info("[Telegram] Cached replied-to image document at %s", cached_path)
+            elif getattr(reply, "sticker", None) and not reply.sticker.is_animated and not reply.sticker.is_video:
+                file_obj = await reply.sticker.get_file()
+                image_bytes = await file_obj.download_as_bytearray()
+                cached_path = cache_image_from_bytes(bytes(image_bytes), ext=".webp")
+                self._append_media_to_event(event, cached_path, "image/webp")
+                note = (
+                    "[The user replied to an earlier sticker. "
+                    "That sticker image is attached for context.]"
+                )
+                logger.info("[Telegram] Cached replied-to sticker at %s", cached_path)
+        except Exception as e:
+            logger.warning("[Telegram] Failed to cache replied-to media: %s", e, exc_info=True)
+
+        if note:
+            self._prepend_reply_media_note(event, note)
 
     def _build_message_event(self, message: Message, msg_type: MessageType) -> MessageEvent:
         """Build a MessageEvent from a Telegram message."""
