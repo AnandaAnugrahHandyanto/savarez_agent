@@ -1,43 +1,16 @@
 ## What does this PR do?
 
-Replaces the flat-file memory system (MEMORY.md / USER.md, ~548 lines) with a SQLite-backed knowledge engine, then cleans up the implementation by removing dead code, fixing broken wiring, and tightening the system.
+Adds a structured memory system backed by SQLite + FTS5, replacing the flat-file approach (MEMORY.md / USER.md). The current system appends raw text lines to markdown files with no search capability beyond string matching, no deduplication, no lifecycle management, and no way to surface relevant memories without loading the entire file into context.
 
-The original implementation shipped 2010 lines in memory_engine.py with 15 methods and 3 tables that were never called from any agent path, tool interface, or test. The cleanup commit strips those to 1429 lines, fixes 5 bugs, and ensures every subsystem is properly wired.
-
-Memory V2 provides:
-- **SQLite + FTS5 full-text search** with BM25 ranking
-- **Hybrid retrieval** combining BM25 + optional embedding cosine similarity + recency decay + strength weighting
-- **Tiered lifecycle**: active → archived → superseded → purged, with logarithmic strength reinforcement
-- **Knowledge graph** with auto-edges via keyword overlap and BFS traversal
-- **Auto-extraction** of durable memories from conversations via auxiliary LLM (background thread, importance scoring)
-- **5-gate consolidation** scheduler (adapted from Claude Code's autoDream pattern): merge, update, archive
-- **Session memory** — 9-section structured notes maintained across a conversation
-- **YAKE keyword extraction** — pure Python, zero external dependencies, ported from HiveMind's Rust implementation
-- **Embedding cascade** — local fastembed (BAAI/bge-small-en-v1.5) → configured model → auto-detect from env → BM25 fallback
-- **Budget enforcement** — hard caps (50 memory / 25 user active entries), weakest archived first, corrections/preferences protected
-- **Near-duplicate detection** — BM25 threshold + cosine similarity > 0.92
-- **Security scanning** — prompt injection, exfiltration, invisible unicode detection (carried forward from V1)
-
-Migration from flat files is automatic on first load. Backward compatible — no user action required.
-
-### Design provenance
-
-- **HiveMind / MAGMA** (`memory.rs`, `GraphQueryTool`): SQLite schema, FTS5 search, YAKE keyword extraction, knowledge graph (edges, BFS), power-law recency decay, cosine similarity, text chunking, budget enforcement, tiered lifecycle
-- **Claude Code** (`memdir/`, `autoDream/`, `sessionMemory/`): Memory type taxonomy (general/preference/correction/project/reference), auto-extraction post-response hook with importance scoring, 5-gate consolidation scheduling, session memory 9-section template, staleness suffix, frozen snapshot pattern for prompt cache stability
-- **Original**: Dual-backend architecture (SQLite + flat file fallback), security scanning, embedding provider cascade, graph-augmented search (1-hop expansion at 0.5x weight), strength-protected budget enforcement, auto-supersession via BM25 threshold
-
-### Cleanup (611a546d)
-
-Removed 15 dead methods and 3 unused tables (entities, procedures, events). Fixed 5 bugs: session_memory init, extraction mutual exclusion wiring, consolidation gate wiring, N+1 query in search, connection leak. Engine went from 2010 → 1429 lines.
+Memory V2 stores memories as typed, searchable records with full-text search, optional vector embeddings, a knowledge graph, automatic extraction from conversations, periodic consolidation, and a tiered lifecycle that keeps the memory store lean over time. Migration from existing flat files is automatic on first load.
 
 ## Related Issue
 
-No existing issue. This is a ground-up replacement of the memory subsystem. Previously submitted as PR #4480 (closed).
+No existing issue — this is a new feature.
 
 ## Type of Change
 
 - [x] ✨ New feature (non-breaking change that adds functionality)
-- [x] ♻️ Refactor (no behavior change)
 
 ## Changes Made
 
@@ -45,72 +18,83 @@ No existing issue. This is a ground-up replacement of the memory subsystem. Prev
 
 | File | Lines | Purpose |
 |------|------:|---------|
-| `tools/memory_engine.py` | 1,429 | Core SQLite engine: CRUD, FTS5 search, embedding index, relationship graph, tiered lifecycle, budget enforcement, chunking, migration |
-| `agent/memory_extractor.py` | 428 | Auto-extraction from conversations via auxiliary LLM — importance scoring (1-10, threshold ≥5), cursor tracking, mutual exclusion with manual writes, background thread |
-| `agent/session_memory.py` | 301 | 9-section structured session notes (Title, Current State, Task Spec, Files/Functions, Workflow, Errors, Docs, Learnings, Key Results), updated via auxiliary LLM |
-| `agent/memory_consolidator.py` | 266 | 5-gate consolidation scheduler: feature enabled → hours since last → sessions since last → lock check → run. Actions: merge, update, archive |
-| `agent/yake.py` | 215 | YAKE keyword extraction — 5-feature scoring (casing, position, frequency, context diversity, sentence spread), 1-3 gram candidates, zero external dependencies |
-| `MEMORY_V2_PLAN.md` | 422 | Implementation plan |
-| `docs/MEMORY_V2.md` | ~700 | Full architecture documentation (storage schema, search formula, lifecycle, graph, embeddings, YAKE, security, agent integration, provenance, configuration) |
-| `tests/tools/test_memory_engine.py` | 448 | Engine unit tests |
-| `tests/agent/test_memory_extractor.py` | 347 | Extraction pipeline tests |
-| `tests/agent/test_memory_consolidator.py` | 179 | Consolidation gate tests |
-| `tests/agent/test_session_memory.py` | 153 | Session memory tests |
+| `tools/memory_engine.py` | 1,429 | Core engine: SQLite schema, FTS5 full-text search with BM25 ranking, optional embedding index with cosine similarity, knowledge graph (auto-edges via keyword overlap, BFS traversal), tiered lifecycle (active → archived → superseded → purged), budget enforcement, near-duplicate detection, flat-file migration |
+| `agent/memory_extractor.py` | 428 | Automatic extraction of durable memories from conversations via auxiliary LLM. Runs in a background thread after each agent turn. Scores importance 1–10, only persists memories scoring ≥5. Tracks a cursor so it never re-processes the same messages. Mutual exclusion with manual memory writes |
+| `agent/session_memory.py` | 307 | Maintains 9-section structured session notes (Title, Current State, Task Spec, Key Files/Functions, Workflow, Errors, Docs Referenced, Learnings, Key Results) updated via auxiliary LLM. Provides a compact summary for context restoration across long sessions |
+| `agent/memory_consolidator.py` | 266 | 5-gate consolidation scheduler: feature enabled → hours since last run → sessions since last run → lock check → execute. Actions: merge near-duplicates, update stale entries, archive low-value memories. Runs at session end |
+| `agent/yake.py` | 215 | YAKE keyword extraction — 5-feature scoring (casing, position, frequency, context diversity, sentence spread), 1–3 gram candidates. Pure Python, zero external dependencies |
+| `docs/MEMORY_V2.md` | 742 | Full architecture documentation: storage schema, search formula, lifecycle, graph, embeddings, YAKE, security, agent integration, configuration |
+| `tests/tools/test_memory_engine.py` | 448 | Engine unit tests: CRUD, search, lifecycle transitions, budget enforcement, dedup, migration, graph operations |
+| `tests/agent/test_memory_extractor.py` | 347 | Extraction pipeline tests: importance filtering, cursor tracking, mutual exclusion, error handling |
+| `tests/agent/test_memory_consolidator.py` | 179 | Consolidation gate tests: all 5 gates, merge/update/archive actions |
+| `tests/agent/test_session_memory.py` | 153 | Session memory tests: section parsing, LLM update flow, serialization |
 
 ### Modified files
 
-| File | Δ | Change |
-|------|---|--------|
-| `tools/memory_tool.py` | +145 | Rewired to `MemoryEngine` backend; added `search` action (hybrid FTS5 + embedding); preserved existing tool signatures |
-| `hermes_state.py` | +264 | Memory engine initialization, session memory hooks, consolidator lifecycle; state object carries `memory_engine` and `session_memory` instances |
-| `run_agent.py` | +1,030 | Extraction wired into post-turn hook, session memory into prompt assembly, consolidator into session end; embedding provider resolution for Hermes provider stack |
-| `tests/tools/test_memory_tool.py` | +4 | Fixture updates for new engine backend |
-| `tests/gateway/test_flush_memory_stale_guard.py` | +56 | Updated for new memory wiring |
+| File | Change |
+|------|--------|
+| `tools/memory_tool.py` | Rewired to use `MemoryEngine` as backend. Added `search` action with hybrid FTS5 + embedding retrieval. Existing tool signatures (add/remove/replace) preserved for backward compatibility |
+| `hermes_state.py` | Memory engine initialization, session memory hooks, consolidator lifecycle. State object carries `memory_engine` and `session_memory` instances |
+| `run_agent.py` | Extraction wired into post-turn hook, session memory into prompt assembly, consolidator into session end. Embedding provider resolution for the Hermes provider stack |
 
-### Cleanup commit (611a546d)
+### Architecture overview
 
-Removed from `memory_engine.py`:
-- 3 tables: `entities`, `procedures`, `events` (+ all schema DDL)
-- 15 methods: `search_entities`, `learn_procedure`, `log_event`, `find_path`, `get_subgraph`, `graph_stats`, `search_by_embedding`, `rerank_with_llm`, and 7 associated helpers
-- Net: 2010 → 1429 lines (-581)
+**Search formula**: `score = w1·BM25 + w2·cosine_sim + w3·recency_decay + w4·strength` where recency follows power-law decay and strength uses logarithmic reinforcement on repeated access.
 
-Fixed:
-- session_memory init bug (instantiated but never assigned to state)
-- extraction mutual exclusion (flag set but never checked)
-- consolidation gate wiring (session count never incremented)
-- N+1 query in search (per-candidate embedding lookup → batch IN query)
-- connection leak (new connections created without close tracking → thread-local reuse)
+**Embedding cascade**: local fastembed (BAAI/bge-small-en-v1.5) → configured model provider → auto-detect from environment → graceful BM25-only fallback. Embeddings are optional — the system works without them.
+
+**Knowledge graph**: Memories are connected via keyword overlap edges. Search expands results by traversing 1-hop neighbors at 0.5× weight, surfacing related context the user didn't explicitly query.
+
+**Budget enforcement**: Hard caps (configurable, default 50 memory / 25 user active entries). When exceeded, lowest-strength entries are archived first. Corrections and preferences are protected from archival.
+
+**Security scanning**: Prompt injection detection, exfiltration pattern matching, invisible unicode detection — carried forward from the existing memory system.
+
+**Memory types**: `general`, `preference`, `correction`, `project`, `reference` — classified automatically on write, enabling type-aware retrieval and lifecycle policies.
 
 ### Stats
 
 ```
-476 files changed, 62807 insertions(+), 6530 deletions(-)
+13 files changed, 6,344 insertions(+), 389 deletions(-)
 ```
 
-(Full branch stats — memory V2 is part of a larger feature branch.)
+(Memory system files only. Full branch includes unrelated upstream changes.)
 
 ## How to Test
 
-1. **Automatic migration**: Start a fresh session with existing MEMORY.md/USER.md files. Verify they are imported into SQLite and renamed to `.bak`:
-   ```bash
-   hermes -q "Use the memory tool to search for anything"
-   ls ~/.hermes/memories/  # Should show memory.db + .md.bak files
-   ```
-
-2. **Memory CRUD**: Test add/search/replace/remove:
-   ```bash
-   hermes -q "Save a memory that my favorite color is blue, then search for 'color'"
-   ```
-
-3. **Run the test suite**:
+1. **Run the dedicated test suite**:
    ```bash
    source venv/bin/activate
    python -m pytest tests/tools/test_memory_engine.py tests/agent/test_memory_consolidator.py tests/agent/test_memory_extractor.py tests/agent/test_session_memory.py tests/tools/test_memory_tool.py -q
    ```
 
-4. **Verify backward compat**: Set `memory.engine: flat` in config.yaml, confirm the original flat-file behavior still works.
+2. **Automatic migration**: Start a session with existing MEMORY.md/USER.md files. They are imported into SQLite and renamed to `.bak`:
+   ```bash
+   hermes -q "Use the memory tool to search for anything"
+   ls ~/.hermes/memories/  # Should show memory.db + .md.bak files
+   ```
 
-5. **Full test suite**: `pytest tests/ -q` — 7424 tests pass.
+3. **Memory CRUD**:
+   ```bash
+   hermes -q "Save a memory that my favorite color is blue, then search for 'color'"
+   ```
+
+4. **Full test suite**: `pytest tests/ -q` — 7,424 tests pass.
+
+## Configuration
+
+All settings live under `memory:` in `config.yaml`. Everything has sensible defaults — no configuration required to use the feature.
+
+```yaml
+memory:
+  engine: sqlite          # "sqlite" (default) or "flat" to keep old behavior
+  auto_extract: true      # Enable automatic memory extraction from conversations
+  consolidation: true     # Enable periodic consolidation at session end
+  session_memory: true    # Enable structured session notes
+  embeddings: true        # Enable vector embeddings (falls back to BM25-only if unavailable)
+  max_active_memory: 50   # Budget cap for memory-type active entries
+  max_active_user: 25     # Budget cap for user-type active entries
+  importance_threshold: 5 # Minimum importance score (1-10) for auto-extracted memories
+```
 
 ## Checklist
 
@@ -126,27 +110,8 @@ Fixed:
 
 ### Documentation & Housekeeping
 
-- [x] I've updated relevant documentation (README, `docs/`, docstrings) — `docs/MEMORY_V2.md` updated with cleanup
+- [x] I've updated relevant documentation (README, `docs/`, docstrings) — `docs/MEMORY_V2.md`
 - [ ] I've updated `cli-config.yaml.example` if I added/changed config keys — TODO: add `memory:` section
 - [ ] I've updated `CONTRIBUTING.md` or `AGENTS.md` if I changed architecture or workflows — TODO: update AGENTS.md memory section
 - [x] I've considered cross-platform impact (Windows, macOS) per the [compatibility guide](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md#cross-platform-compatibility) — SQLite is stdlib, fastembed is optional, all paths use `Path` / `get_hermes_home()`
 - [x] I've updated tool descriptions/schemas if I changed tool behavior — `search` action added to memory tool schema
-
-## Commit Log
-
-```
-611a546d refactor(memory): strip dead code, fix broken wiring, tighten system
-948faaa1 docs: rewrite PR description to match upstream template
-5f5abf86 docs: Memory V2 architecture doc and PR description
-3406abcf wire Ollama cloud: nemotron-3-super fallback, ministral-3:3b auxiliary, OLLAMA_API_KEY resolution
-57085719 memory v2: close all gaps — local embeddings, LLM reranker, procedures, events
-d9313997 memory v2: lifecycle hardening — importance scoring, budget enforcement, purge, cursor persistence
-6d1f78fe fix(memory): activate by default + adapt embeddings to Hermes provider stack
-27b53b25 feat(memory): embeddings pipeline, hybrid search, graph tools, full wiring
-1bf81da0 feat(memory): complete memory system — YAKE, graph, chunking, classification, session memory, extraction hardening
-3752e1dd feat(memory): add memory consolidation with 5-gate scheduling
-a443d1d4 feat(memory): add automatic memory extraction via auxiliary LLM
-1da2b76f feat(memory): wire MemoryEngine into MemoryStore + add search action + type taxonomy
-0d8c7637 feat(memory): add MemoryEngine — SQLite-backed memory with FTS5 search and tiered lifecycle
-d66132e2 docs: memory system v2 implementation plan
-```
