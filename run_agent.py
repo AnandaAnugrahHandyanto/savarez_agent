@@ -110,6 +110,14 @@ HONCHO_TOOL_NAMES = {
 }
 
 
+def _coerce_positive_int(value: Any) -> Optional[int]:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError/ValueError from broken pipes.
 
@@ -659,6 +667,20 @@ class AIAgent:
         # Model response configuration
         self.max_tokens = max_tokens  # None = use model default
         self._configured_max_tokens = max_tokens
+        if self.max_tokens is None:
+            try:
+                from hermes_cli.config import load_config as _load_agent_config
+                _agent_model_cfg = (_load_agent_config() or {}).get("model", {})
+                if isinstance(_agent_model_cfg, dict):
+                    for _token_key in ("max_tokens", "max_output_tokens", "max_completion_tokens"):
+                        _resolved_max_tokens = _coerce_positive_int(_agent_model_cfg.get(_token_key))
+                        if _resolved_max_tokens is not None:
+                            self.max_tokens = _resolved_max_tokens
+                            self._configured_max_tokens = _resolved_max_tokens
+                            break
+            except Exception:
+                pass
+        max_tokens = self.max_tokens
         self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         

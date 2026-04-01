@@ -380,6 +380,23 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     return ""
 
 
+def _resolve_gateway_model_max_tokens(config: dict | None = None) -> Optional[int]:
+    """Read the global model output cap from config.yaml."""
+    cfg = config if config is not None else _load_gateway_config()
+    model_cfg = cfg.get("model", {})
+    if not isinstance(model_cfg, dict):
+        return None
+    for key in ("max_tokens", "max_output_tokens", "max_completion_tokens"):
+        value = model_cfg.get(key)
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return None
+
+
 def _resolve_hermes_bin() -> Optional[list[str]]:
     """Resolve the Hermes update command as argv parts.
 
@@ -777,11 +794,18 @@ class GatewayRunner:
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
         )
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        max_tokens: Optional[int] = None,
+    ) -> dict:
         from agent.smart_model_routing import resolve_turn_route
 
         primary = {
             "model": model,
+            "max_tokens": max_tokens,
             "api_key": runtime_kwargs.get("api_key"),
             "base_url": runtime_kwargs.get("base_url"),
             "provider": runtime_kwargs.get("provider"),
@@ -3939,6 +3963,7 @@ class GatewayRunner:
 
             user_config = _load_gateway_config()
             model = _resolve_gateway_model(user_config)
+            model_max_tokens = _resolve_gateway_model_max_tokens(user_config)
             platform_key = _platform_config_key(source.platform)
 
             from hermes_cli.tools_config import _get_platform_tools
@@ -3948,12 +3973,13 @@ class GatewayRunner:
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs, model_max_tokens)
 
             def run_sync():
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
+                    max_tokens=turn_route.get("max_tokens"),
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
@@ -4105,9 +4131,10 @@ class GatewayRunner:
 
             user_config = _load_gateway_config()
             model = _resolve_gateway_model(user_config)
+            model_max_tokens = _resolve_gateway_model_max_tokens(user_config)
             platform_key = _platform_config_key(source.platform)
             reasoning_config = self._load_reasoning_config()
-            turn_route = self._resolve_turn_agent_config(question, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(question, model, runtime_kwargs, model_max_tokens)
             pr = self._provider_routing
 
             # Snapshot history from running agent or stored transcript
@@ -4128,6 +4155,7 @@ class GatewayRunner:
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
+                    max_tokens=turn_route.get("max_tokens"),
                     max_iterations=8,
                     quiet_mode=True,
                     verbose_logging=False,
@@ -5245,6 +5273,7 @@ class GatewayRunner:
     @staticmethod
     def _agent_config_signature(
         model: str,
+        max_tokens: Optional[int],
         runtime: dict,
         enabled_toolsets: list,
         ephemeral_prompt: str,
@@ -5268,6 +5297,7 @@ class GatewayRunner:
         blob = _j.dumps(
             [
                 model,
+                max_tokens,
                 _api_key_fingerprint,
                 runtime.get("base_url", ""),
                 runtime.get("provider", ""),
@@ -5612,13 +5642,15 @@ class GatewayRunner:
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            model_max_tokens = _resolve_gateway_model_max_tokens(user_config)
+            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs, model_max_tokens)
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
             # schemas for prompt cache hits.
             _sig = self._agent_config_signature(
                 turn_route["model"],
+                turn_route.get("max_tokens"),
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
@@ -5638,6 +5670,7 @@ class GatewayRunner:
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
+                    max_tokens=turn_route.get("max_tokens"),
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
