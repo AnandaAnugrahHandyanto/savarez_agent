@@ -86,6 +86,9 @@ TYPE_TAGS = {
     "general": "gen",
 }
 
+# Module-level cache for fastembed local embedder
+_LOCAL_EMBEDDER = None
+
 # ---------------------------------------------------------------------------
 # Schema SQL
 # ---------------------------------------------------------------------------
@@ -201,6 +204,32 @@ CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
 CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(entity_type);
 CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
+
+CREATE TABLE IF NOT EXISTS procedures (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    tool_chain  TEXT NOT NULL DEFAULT '[]',
+    success_count INTEGER NOT NULL DEFAULT 0,
+    fail_count  INTEGER NOT NULL DEFAULT 0,
+    last_used   TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_procedures_name ON procedures(name);
+
+CREATE TABLE IF NOT EXISTS events (
+    id          TEXT PRIMARY KEY,
+    event_type  TEXT NOT NULL,
+    summary     TEXT NOT NULL,
+    details     TEXT NOT NULL DEFAULT '{}',
+    session_id  TEXT,
+    created_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
+CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 """
 
 _META_DEFAULTS = {
@@ -522,10 +551,24 @@ def classify_topic(content: str, keywords: list = None, tags: list = None) -> st
 # ---------------------------------------------------------------------------
 
 
+def _get_local_embedding(content: str) -> list:
+    """Generate embedding locally via fastembed (zero API keys needed)."""
+    try:
+        from fastembed import TextEmbedding
+        global _LOCAL_EMBEDDER
+        if _LOCAL_EMBEDDER is None:
+            _LOCAL_EMBEDDER = TextEmbedding('BAAI/bge-small-en-v1.5')
+        embeddings = list(_LOCAL_EMBEDDER.embed([content]))
+        return list(float(x) for x in embeddings[0])
+    except Exception:
+        return []
+
+
 def generate_embedding(content: str, model: str = None, config: dict = None) -> list:
     """Generate embedding vector using whatever provider Hermes has configured.
 
     Provider cascade (adapts to YOUR API keys):
+    0. Local fastembed (BAAI/bge-small-en-v1.5) — zero API keys, always available
     1. Configured model from config (memory.embedding_model)
     2. Auto-detect from available keys:
        - OPENAI_API_KEY -> text-embedding-3-small
@@ -535,6 +578,12 @@ def generate_embedding(content: str, model: str = None, config: dict = None) -> 
        (search falls back to BM25-only, which still works)
     """
     config = config or {}
+
+    # Try local embeddings first (zero API key, always available)
+    if not model and config.get("embedding_provider", "auto") in ("auto", "local"):
+        local = _get_local_embedding(content)
+        if local:
+            return local
 
     # Resolve model from config or auto-detect from available API keys
     if not model:
@@ -653,10 +702,14 @@ class MemoryEngine:
                 check_same_thread=False,
             )
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA busy_timeout=10000")
             conn.execute("PRAGMA foreign_keys=ON")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.row_factory = sqlite3.Row
+            # Use autocommit mode to avoid implicit transactions holding locks
+            # during slow operations (e.g., fastembed model loading).
+            # All writes use explicit conn.execute("BEGIN") / conn.commit().
+            conn.isolation_level = None
             self._local.conn = conn
         return conn
 
@@ -700,6 +753,7 @@ class MemoryEngine:
         """Get cached embedding or generate and store a new one.
 
         Content-hash caching pattern from HiveMind: avoids redundant API calls.
+        Carefully structured to not hold DB locks during slow embedding generation.
         """
         conn = self._get_conn()
         row = conn.execute(
@@ -711,15 +765,20 @@ class MemoryEngine:
             except (json.JSONDecodeError, TypeError):
                 pass
 
-        # Generate new embedding
+        # Commit any implicit read transaction before slow embedding generation
+        # to avoid holding DB locks (especially during fastembed cold start).
+        conn.commit()
+
         vec = generate_embedding(content, config=self._config)
         if vec:
             now = datetime.now(timezone.utc).isoformat()
             blob = json.dumps(vec)
+            # Detect the model that was actually used
+            used_model = self._config.get("embedding_model", "") or _detect_embedding_model() or "local/bge-small-en-v1.5"
             conn.execute(
                 """INSERT OR REPLACE INTO embeddings (chunk_id, embedding, model, created_at)
                    VALUES (?, ?, ?, ?)""",
-                (chunk_id, blob, "text-embedding-3-small", now),
+                (chunk_id, blob, used_model, now),
             )
             conn.commit()
         return vec
@@ -837,6 +896,9 @@ class MemoryEngine:
                 "duplicate_id": exact["id"],
             }
 
+        # Release read lock before potentially slow embedding generation
+        conn.commit()
+
         # Near-duplicate detection via embeddings (HiveMind threshold: cosine > 0.92)
         new_embedding = generate_embedding(content, config=self._config)
         if new_embedding:
@@ -861,6 +923,10 @@ class MemoryEngine:
                         "error": f"Near-duplicate (cosine={sim:.3f}): {row['content'][:80]}...",
                         "duplicate_id": row["id"],
                     }
+
+        # Commit any implicit read transaction from duplicate checks above
+        # to avoid holding DB locks during concurrent background embedding writes.
+        conn.commit()
 
         now = datetime.now(timezone.utc).isoformat()
         memory_id = str(uuid.uuid4())
@@ -993,12 +1059,57 @@ class MemoryEngine:
 
         return results
 
+    def rerank_with_llm(self, candidates: list, query: str, auxiliary_client=None, top_n: int = 5) -> list:
+        """LLM-based reranking of search results. Port of Claude Code's findRelevantMemories.
+
+        Uses auxiliary_client (cheap model) to select the most relevant memories
+        from search candidates. Falls back to score-based ranking if no client.
+        """
+        if not auxiliary_client or not candidates:
+            return candidates[:top_n]
+
+        # Format candidates for the LLM
+        numbered = []
+        for i, c in enumerate(candidates):
+            numbered.append(f"[{i}] {c['content'][:200]}")
+
+        prompt = f"""Given this query: "{query}"
+
+Which of these memories are most relevant? Return ONLY the numbers of the top {top_n} most relevant, as a JSON array. Example: [0, 3, 7]
+
+Memories:
+{chr(10).join(numbered)}
+
+Return ONLY a JSON array of indices, nothing else."""
+
+        try:
+            from agent.auxiliary_client import call_llm
+            response = call_llm(
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=100,
+                temperature=0.0,
+            )
+            # Parse response - extract the content string
+            if hasattr(response, 'choices'):
+                text = response.choices[0].message.content
+            else:
+                text = str(response)
+            import json as _json
+            indices = _json.loads(text.strip())
+            if isinstance(indices, list):
+                return [candidates[i] for i in indices if 0 <= i < len(candidates)][:top_n]
+        except Exception as e:
+            logger.debug("LLM reranking failed, falling back to score-based: %s", e)
+
+        return candidates[:top_n]
+
     def search(
         self,
         query: str,
         target: str = None,
         limit: int = 10,
         min_relevance: float = DEFAULT_MIN_RELEVANCE,
+        auxiliary_client=None,
     ) -> list:
         """Hybrid search: FTS5 BM25 + recency + strength + tier weighting.
 
@@ -1097,6 +1208,10 @@ class MemoryEngine:
                 top_results.extend(graph_additions)
                 top_results.sort(key=lambda m: m["relevance_score"], reverse=True)
                 top_results = top_results[:limit]
+
+        # Optional LLM reranking (port of Claude Code's findRelevantMemories)
+        if auxiliary_client and len(top_results) > limit:
+            top_results = self.rerank_with_llm(top_results, query, auxiliary_client=auxiliary_client, top_n=limit)
 
         return top_results
 
@@ -1240,6 +1355,13 @@ class MemoryEngine:
 
         conn.commit()
         logger.info("Purged %d dead memories (superseded/archived >%d days)", len(ids), max_age_days)
+
+        # Also purge old episodic events
+        try:
+            self.purge_old_events(max_age_days=90)
+        except Exception as e:
+            logger.debug("Event purge during purge_dead failed: %s", e)
+
         return len(ids)
 
     def _check_supersession(self, new_id: str, content: str, target: str):
@@ -1588,3 +1710,122 @@ class MemoryEngine:
             for mem in self.get_active_memories(t):
                 memories.append(f"[{mem['id'][:8]}|{mem.get('type','gen')}|{mem['target']}] {mem['content'][:120]}")
         return "\n".join(memories) if memories else "(no memories yet)"
+
+    # -- Procedures (tool chain learning) ------------------------------------
+
+    def learn_procedure(self, name: str, description: str, tool_chain: list) -> dict:
+        """Record or update a procedure (tool chain pattern). From HiveMind ProcedureLearnTool."""
+        conn = self._get_conn()
+        now = datetime.now(timezone.utc).isoformat()
+        existing = conn.execute("SELECT id FROM procedures WHERE name = ?", (name,)).fetchone()
+        if existing:
+            proc_id = existing["id"]
+            conn.execute(
+                "UPDATE procedures SET description=?, tool_chain=?, updated_at=? WHERE id=?",
+                (description, json.dumps(tool_chain), now, proc_id),
+            )
+        else:
+            proc_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO procedures (id, name, description, tool_chain, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (proc_id, name, description, json.dumps(tool_chain), now, now),
+            )
+        conn.commit()
+        return {"id": proc_id, "name": name}
+
+    def reinforce_procedure(self, name: str, success: bool) -> dict:
+        """Reinforce a procedure on success/failure. From HiveMind."""
+        conn = self._get_conn()
+        now = datetime.now(timezone.utc).isoformat()
+        col = "success_count" if success else "fail_count"
+        cur = conn.execute(
+            f"UPDATE procedures SET {col} = {col} + 1, last_used = ?, updated_at = ? WHERE name = ?",
+            (now, now, name),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return {"error": f"Procedure '{name}' not found"}
+        return {"name": name, "reinforced": success}
+
+    def get_procedures(self, limit: int = 20) -> list:
+        """Get procedures ordered by success rate."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM procedures ORDER BY success_count DESC, updated_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["tool_chain"] = json.loads(d.get("tool_chain", "[]"))
+            except (json.JSONDecodeError, TypeError):
+                d["tool_chain"] = []
+            results.append(d)
+        return results
+
+    def find_procedure(self, name: str) -> Optional[dict]:
+        """Find a procedure by name (LIKE match)."""
+        conn = self._get_conn()
+        row = conn.execute("SELECT * FROM procedures WHERE name LIKE ?", (f"%{name}%",)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["tool_chain"] = json.loads(d.get("tool_chain", "[]"))
+        except (json.JSONDecodeError, TypeError):
+            d["tool_chain"] = []
+        return d
+
+    # -- Events (episodic memory) --------------------------------------------
+
+    def log_event(self, event_type: str, summary: str, details: dict = None, session_id: str = None) -> dict:
+        """Log an episodic event. From HiveMind MAGMA events table.
+
+        Event types: tool_success, tool_failure, memory_write, session_start, session_end,
+        consolidation, error, milestone
+        """
+        conn = self._get_conn()
+        event_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "INSERT INTO events (id, event_type, summary, details, session_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (event_id, event_type, summary, json.dumps(details or {}), session_id, now),
+        )
+        conn.commit()
+        return {"id": event_id, "event_type": event_type}
+
+    def get_recent_events(self, event_type: str = None, limit: int = 20, session_id: str = None) -> list:
+        """Get recent events, optionally filtered by type or session."""
+        conn = self._get_conn()
+        sql = "SELECT * FROM events WHERE 1=1"
+        params = []
+        if event_type:
+            sql += " AND event_type = ?"
+            params.append(event_type)
+        if session_id:
+            sql += " AND session_id = ?"
+            params.append(session_id)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["details"] = json.loads(d.get("details", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                d["details"] = {}
+            results.append(d)
+        return results
+
+    def purge_old_events(self, max_age_days: int = 90) -> int:
+        """Delete events older than max_age_days. Events are ephemeral by nature."""
+        conn = self._get_conn()
+        cutoff = datetime.now(timezone.utc).isoformat()
+        cur = conn.execute(
+            "DELETE FROM events WHERE julianday(?) - julianday(created_at) > ?",
+            (cutoff, max_age_days),
+        )
+        conn.commit()
+        return cur.rowcount

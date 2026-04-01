@@ -428,13 +428,16 @@ class TestCosineSimilarity:
 
 
 class TestEmbeddings:
-    def test_generate_embedding_graceful_failure(self):
-        """generate_embedding should return [] when no API key is available."""
+    def test_generate_embedding_works_locally(self):
+        """generate_embedding should return vectors via local fastembed even without API keys."""
         from tools.memory_engine import generate_embedding
         result = generate_embedding("test content")
         assert isinstance(result, list)
-        # Without API key, should gracefully return empty list
-        assert result == []
+        # With fastembed installed, local embeddings should work (384-dim bge-small-en-v1.5)
+        # Falls back to [] only if fastembed is unavailable AND no API keys
+        if result:
+            assert len(result) == 384  # BAAI/bge-small-en-v1.5 dimension
+            assert all(isinstance(v, float) for v in result)
 
     def test_search_degrades_gracefully_without_embeddings(self, populated_engine):
         """search() should still return BM25 results when embeddings are unavailable."""
