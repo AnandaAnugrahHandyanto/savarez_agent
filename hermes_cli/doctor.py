@@ -63,17 +63,116 @@ def _honcho_is_configured_for_doctor() -> bool:
         return False
 
 
+def _doctor_active_toolsets():
+    """Return explicitly configured platform toolsets, or None if not configured."""
+    try:
+        from hermes_cli.tools_config import PLATFORMS, _get_platform_tools
+
+        cfg = _doctor_load_config()
+        platform_toolsets = cfg.get("platform_toolsets")
+        if not isinstance(platform_toolsets, dict) or not platform_toolsets:
+            return None
+
+        active = set()
+        for platform in platform_toolsets:
+            if platform in PLATFORMS:
+                active.update(_get_platform_tools(cfg, platform))
+        return active or None
+    except Exception:
+        return None
+
+
+def _doctor_load_config() -> dict:
+    """Return the current Hermes config for doctor checks."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception:
+        return {}
+
+
+def _prepare_doctor_runtime_context() -> None:
+    """Normalize cwd/HOME so doctor checks match the live Hermes runtime."""
+    home_dir = HERMES_HOME.parent
+    target_cwd = PROJECT_ROOT if PROJECT_ROOT.exists() else home_dir
+
+    os.environ["HOME"] = str(home_dir)
+    os.environ["PWD"] = str(target_cwd)
+
+    npm_cache = home_dir / ".npm"
+    try:
+        npm_cache.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    os.environ.setdefault("NPM_CONFIG_CACHE", str(npm_cache))
+    os.environ.setdefault("npm_config_cache", str(npm_cache))
+
+    try:
+        os.chdir(target_cwd)
+    except Exception:
+        pass
+
+
+def _configured_provider_ids(config: dict | None = None) -> set[str]:
+    """Return explicit provider ids referenced by the active config."""
+    cfg = config if isinstance(config, dict) else _doctor_load_config()
+    providers: set[str] = set()
+
+    def add_provider(value) -> None:
+        if not isinstance(value, str):
+            return
+        normalized = value.strip()
+        if normalized and normalized not in {"auto", "main"}:
+            providers.add(normalized)
+
+    model_cfg = cfg.get("model")
+    if isinstance(model_cfg, dict):
+        add_provider(model_cfg.get("provider"))
+    elif isinstance(model_cfg, str):
+        add_provider(model_cfg)
+
+    for entry in cfg.get("fallback_providers") or []:
+        if isinstance(entry, dict):
+            add_provider(entry.get("provider"))
+
+    auxiliary = cfg.get("auxiliary") or {}
+    if isinstance(auxiliary, dict):
+        for aux_cfg in auxiliary.values():
+            if isinstance(aux_cfg, dict):
+                add_provider(aux_cfg.get("provider"))
+
+    return providers
+
+
+def _auth_provider_in_active_path(provider_id: str) -> bool:
+    """Return True when the auth provider is part of the configured runtime path."""
+    return provider_id in _configured_provider_ids()
+
+
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
-    if not _honcho_is_configured_for_doctor():
-        return available, unavailable
+    honcho_enabled = _honcho_is_configured_for_doctor()
+    active_toolsets = _doctor_active_toolsets()
+    configurable_toolsets = set()
+    if active_toolsets is not None:
+        try:
+            from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS
+
+            configurable_toolsets = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+        except Exception:
+            configurable_toolsets = set()
 
     updated_available = list(available)
     updated_unavailable = []
     for item in unavailable:
-        if item.get("name") == "honcho":
+        item_name = item.get("name")
+        if item_name == "honcho" and honcho_enabled:
             if "honcho" not in updated_available:
                 updated_available.append("honcho")
+            continue
+        if active_toolsets is not None and item_name in configurable_toolsets and item_name not in active_toolsets:
             continue
         updated_unavailable.append(item)
     return updated_available, updated_unavailable
@@ -132,6 +231,7 @@ def run_doctor(args):
     # Doctor runs from the interactive CLI, so CLI-gated tool availability
     # checks (like cronjob management) should see the same context as `hermes`.
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
+    _prepare_doctor_runtime_context()
     
     issues = []
     manual_issues = []  # issues that can't be auto-fixed
@@ -267,26 +367,36 @@ def run_doctor(args):
     try:
         from hermes_cli.auth import get_nous_auth_status, get_codex_auth_status
 
+        nous_required = _auth_provider_in_active_path("nous")
+        codex_required = _auth_provider_in_active_path("openai-codex")
+
         nous_status = get_nous_auth_status()
         if nous_status.get("logged_in"):
             check_ok("Nous Portal auth", "(logged in)")
-        else:
+        elif nous_required:
             check_warn("Nous Portal auth", "(not logged in)")
+        else:
+            check_ok("Nous Portal auth", "(not in active provider path)")
 
         codex_status = get_codex_auth_status()
         if codex_status.get("logged_in"):
             check_ok("OpenAI Codex auth", "(logged in)")
-        else:
+        elif codex_required:
             check_warn("OpenAI Codex auth", "(not logged in)")
             if codex_status.get("error"):
                 check_info(codex_status["error"])
+        else:
+            check_ok("OpenAI Codex auth", "(not in active provider path)")
     except Exception as e:
         check_warn("Auth provider status", f"(could not check: {e})")
+        codex_required = True
 
     if shutil.which("codex"):
         check_ok("codex CLI")
-    else:
+    elif codex_required:
         check_warn("codex CLI not found", "(required for openai-codex login)")
+    else:
+        check_ok("codex CLI", "(not required for active provider path)")
 
     # =========================================================================
     # Check: Directory structure

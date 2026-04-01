@@ -381,6 +381,23 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     return ""
 
 
+def _resolve_gateway_model_max_tokens(config: dict | None = None) -> Optional[int]:
+    """Read the global model output cap from config.yaml."""
+    cfg = config if config is not None else _load_gateway_config()
+    model_cfg = cfg.get("model", {})
+    if not isinstance(model_cfg, dict):
+        return None
+    for key in ("max_tokens", "max_output_tokens", "max_completion_tokens"):
+        value = model_cfg.get(key)
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return None
+
+
 def _resolve_hermes_bin() -> Optional[list[str]]:
     """Resolve the Hermes update command as argv parts.
 
@@ -406,6 +423,93 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
         pass
 
     return None
+
+
+def _normalize_reply_lookup_text(text: str) -> str:
+    """Normalize reply text for fuzzy matching against transcript history."""
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", str(text).strip()).lower()
+
+
+def _truncate_reply_context_text(text: str, limit: int = 700) -> str:
+    """Trim reply context text to a compact, single-block snippet."""
+    normalized = re.sub(r"\s+", " ", str(text or "").strip())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[:limit].rstrip() + "..."
+
+
+def _match_reply_target_in_history(
+    history: List[Dict[str, Any]],
+    reply_to_text: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """Best-effort match of a replied-to message against current session history."""
+    reply_norm = _normalize_reply_lookup_text(reply_to_text or "")
+    if not reply_norm:
+        return None
+
+    best_match: Optional[Dict[str, Any]] = None
+    best_score = 0
+
+    for msg in reversed(history or []):
+        role = msg.get("role")
+        if role not in ("assistant", "user", "tool"):
+            continue
+        content = str(msg.get("content") or "").strip()
+        if not content:
+            continue
+        content_norm = _normalize_reply_lookup_text(content)
+        if not content_norm:
+            continue
+
+        score = 0
+        if reply_norm == content_norm:
+            score = 5
+        elif reply_norm in content_norm:
+            score = 4
+        elif content_norm in reply_norm:
+            score = 3
+        else:
+            reply_probe = reply_norm[:220]
+            content_probe = content_norm[:220]
+            if reply_probe and reply_probe in content_norm:
+                score = 2
+            elif content_probe and content_probe in reply_norm:
+                score = 1
+
+        if score > best_score:
+            best_score = score
+            best_match = msg
+            if score == 5:
+                break
+
+    return best_match
+
+
+def _describe_reply_target(event: MessageEvent, matched_role: Optional[str]) -> str:
+    """Return a concise human-readable label for the replied-to message."""
+    if matched_role == "assistant":
+        return "Hermes assistant message"
+    if matched_role == "user":
+        return "your earlier message"
+    if matched_role == "tool":
+        return "tool output"
+
+    raw_reply = getattr(getattr(event, "raw_message", None), "reply_to_message", None)
+    reply_user = getattr(raw_reply, "from_user", None)
+    if reply_user is not None:
+        if getattr(reply_user, "is_bot", False):
+            return "Hermes assistant message"
+        source_user_id = str(getattr(getattr(event, "source", None), "user_id", "") or "")
+        reply_user_id = str(getattr(reply_user, "id", "") or "")
+        if source_user_id and reply_user_id and source_user_id == reply_user_id:
+            return "your earlier message"
+        reply_name = getattr(reply_user, "full_name", None) or getattr(reply_user, "username", None)
+        if reply_name:
+            return f"message from {reply_name}"
+
+    return "earlier message"
 
 
 class GatewayRunner:
@@ -778,11 +882,18 @@ class GatewayRunner:
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
         )
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        max_tokens: Optional[int] = None,
+    ) -> dict:
         from agent.smart_model_routing import resolve_turn_route
 
         primary = {
             "model": model,
+            "max_tokens": max_tokens,
             "api_key": runtime_kwargs.get("api_key"),
             "base_url": runtime_kwargs.get("base_url"),
             "provider": runtime_kwargs.get("provider"),
@@ -2588,21 +2699,41 @@ class GatewayRunner:
                 message_text = f"{context_note}\n\n{message_text}"
 
         # -----------------------------------------------------------------
-        # Inject reply context when user replies to a message not in history.
-        # Telegram (and other platforms) let users reply to specific messages,
-        # but if the quoted message is from a previous session, cron delivery,
-        # or background task, the agent has no context about what's being
-        # referenced. Prepend the quoted text so the agent understands. (#1594)
+        # Inject explicit reply context whenever the platform indicates that
+        # the user replied to a specific prior message. Simply relying on the
+        # surrounding transcript is too weak in Telegram-style reply flows:
+        # the quoted target may still be in history, but the model doesn't
+        # reliably know which exact earlier message the user is pointing at.
         # -----------------------------------------------------------------
-        if getattr(event, 'reply_to_text', None) and event.reply_to_message_id:
-            reply_snippet = event.reply_to_text[:500]
-            found_in_history = any(
-                reply_snippet[:200] in (msg.get("content") or "")
-                for msg in history
-                if msg.get("role") in ("assistant", "user", "tool")
+        if event.reply_to_message_id:
+            matched_reply = _match_reply_target_in_history(history, getattr(event, "reply_to_text", None))
+            matched_role = matched_reply.get("role") if matched_reply else None
+            reply_target_text = (
+                matched_reply.get("content")
+                if matched_reply and matched_reply.get("content")
+                else getattr(event, "reply_to_text", None)
             )
-            if not found_in_history:
-                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+            reply_label = _describe_reply_target(event, matched_role)
+
+            if reply_target_text:
+                reply_snippet = _truncate_reply_context_text(reply_target_text, limit=700)
+                reply_context = (
+                    "[Reply Context]\n"
+                    f"The user sent this message as a direct reply to a previous {reply_label}.\n"
+                    "Treat the new user message as referring specifically to the replied-to message below, "
+                    "even if similar text appears elsewhere in the session.\n"
+                    f"Replied-to message:\n\"\"\"\n{reply_snippet}\n\"\"\"\n"
+                    "[/Reply Context]"
+                )
+            else:
+                reply_context = (
+                    "[Reply Context]\n"
+                    f"The user sent this message as a direct reply to a previous {reply_label}, "
+                    "but the platform did not provide the quoted text. Keep the reply relationship in mind.\n"
+                    "[/Reply Context]"
+                )
+
+            message_text = f"{reply_context}\n\n{message_text}"
 
         try:
             # Emit agent:start hook
@@ -3954,6 +4085,7 @@ class GatewayRunner:
 
             user_config = _load_gateway_config()
             model = _resolve_gateway_model(user_config)
+            model_max_tokens = _resolve_gateway_model_max_tokens(user_config)
             platform_key = _platform_config_key(source.platform)
 
             from hermes_cli.tools_config import _get_platform_tools
@@ -3963,12 +4095,13 @@ class GatewayRunner:
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs, model_max_tokens)
 
             def run_sync():
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
+                    max_tokens=turn_route.get("max_tokens"),
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
@@ -4120,9 +4253,10 @@ class GatewayRunner:
 
             user_config = _load_gateway_config()
             model = _resolve_gateway_model(user_config)
+            model_max_tokens = _resolve_gateway_model_max_tokens(user_config)
             platform_key = _platform_config_key(source.platform)
             reasoning_config = self._load_reasoning_config()
-            turn_route = self._resolve_turn_agent_config(question, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(question, model, runtime_kwargs, model_max_tokens)
             pr = self._provider_routing
 
             # Snapshot history from running agent or stored transcript
@@ -4143,6 +4277,7 @@ class GatewayRunner:
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
+                    max_tokens=turn_route.get("max_tokens"),
                     max_iterations=8,
                     quiet_mode=True,
                     verbose_logging=False,
@@ -5106,20 +5241,27 @@ class GatewayRunner:
                     enriched_parts.append(
                         f"[The user sent an image~ Here's what I can see:\n{description}]\n"
                         f"[If you need a closer look, use vision_analyze with "
-                        f"image_url: {path} ~]"
+                        f"image_url: {path} ~]\n"
+                        f"[If the user wants this exact image edited or enhanced, "
+                        f"use image_generate with image_path: {path} and describe "
+                        f"the requested changes instead of generating a new unrelated image.]"
                     )
                 else:
                     enriched_parts.append(
                         "[The user sent an image but I couldn't quite see it "
                         "this time (>_<) You can try looking at it yourself "
-                        f"with vision_analyze using image_url: {path}]"
+                        f"with vision_analyze using image_url: {path}]\n"
+                        f"[If the user asks to edit this exact image, use "
+                        f"image_generate with image_path: {path}.]"
                     )
             except Exception as e:
                 logger.error("Vision auto-analysis error: %s", e)
                 enriched_parts.append(
                     f"[The user sent an image but something went wrong when I "
                     f"tried to look at it~ You can try examining it yourself "
-                    f"with vision_analyze using image_url: {path}]"
+                    f"with vision_analyze using image_url: {path}]\n"
+                    f"[If the user asks to edit this exact image, use "
+                    f"image_generate with image_path: {path}.]"
                 )
 
         # Combine: vision descriptions first, then the user's original text
@@ -5313,6 +5455,7 @@ class GatewayRunner:
     @staticmethod
     def _agent_config_signature(
         model: str,
+        max_tokens: Optional[int],
         runtime: dict,
         enabled_toolsets: list,
         ephemeral_prompt: str,
@@ -5336,6 +5479,7 @@ class GatewayRunner:
         blob = _j.dumps(
             [
                 model,
+                max_tokens,
                 _api_key_fingerprint,
                 runtime.get("base_url", ""),
                 runtime.get("provider", ""),
@@ -5680,13 +5824,15 @@ class GatewayRunner:
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            model_max_tokens = _resolve_gateway_model_max_tokens(user_config)
+            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs, model_max_tokens)
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
             # schemas for prompt cache hits.
             _sig = self._agent_config_signature(
                 turn_route["model"],
+                turn_route.get("max_tokens"),
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
@@ -5706,6 +5852,7 @@ class GatewayRunner:
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
+                    max_tokens=turn_route.get("max_tokens"),
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,

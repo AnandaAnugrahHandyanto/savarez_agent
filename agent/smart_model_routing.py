@@ -41,6 +41,21 @@ _COMPLEX_KEYWORDS = {
     "cron",
     "docker",
     "kubernetes",
+    "fix",
+    "behebe",
+    "restart",
+    "stop",
+    "kill",
+    "deploy",
+    "rollback",
+    "service",
+    "systemctl",
+    "logs",
+    "watcher",
+    "process",
+    "processes",
+    "pkill",
+    "pgrep",
 }
 
 _URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)
@@ -61,6 +76,20 @@ def _coerce_int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _extract_max_tokens(config: Optional[Dict[str, Any]]) -> Optional[int]:
+    if not isinstance(config, dict):
+        return None
+    for key in ("max_tokens", "max_output_tokens", "max_tokens_cap", "max_completion_tokens"):
+        value = config.get(key)
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return None
 
 
 def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -120,6 +149,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
     if not route:
         return {
             "model": primary.get("model"),
+            "max_tokens": _extract_max_tokens(primary),
             "runtime": {
                 "api_key": primary.get("api_key"),
                 "base_url": primary.get("base_url"),
@@ -132,6 +162,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
             "label": None,
             "signature": (
                 primary.get("model"),
+                _extract_max_tokens(primary),
                 primary.get("provider"),
                 primary.get("base_url"),
                 primary.get("api_mode"),
@@ -178,6 +209,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
 
     return {
         "model": route.get("model"),
+        "max_tokens": _extract_max_tokens(route) or _extract_max_tokens(primary),
         "runtime": {
             "api_key": runtime.get("api_key"),
             "base_url": runtime.get("base_url"),
@@ -189,6 +221,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
         "label": f"smart route → {route.get('model')} ({runtime.get('provider')})",
         "signature": (
             route.get("model"),
+            _extract_max_tokens(route) or _extract_max_tokens(primary),
             runtime.get("provider"),
             runtime.get("base_url"),
             runtime.get("api_mode"),

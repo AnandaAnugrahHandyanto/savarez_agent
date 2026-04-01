@@ -110,6 +110,14 @@ HONCHO_TOOL_NAMES = {
 }
 
 
+def _coerce_positive_int(value: Any) -> Optional[int]:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError/ValueError from broken pipes.
 
@@ -666,6 +674,21 @@ class AIAgent:
         
         # Model response configuration
         self.max_tokens = max_tokens  # None = use model default
+        self._configured_max_tokens = max_tokens
+        if self.max_tokens is None:
+            try:
+                from hermes_cli.config import load_config as _load_agent_config
+                _agent_model_cfg = (_load_agent_config() or {}).get("model", {})
+                if isinstance(_agent_model_cfg, dict):
+                    for _token_key in ("max_tokens", "max_output_tokens", "max_completion_tokens"):
+                        _resolved_max_tokens = _coerce_positive_int(_agent_model_cfg.get(_token_key))
+                        if _resolved_max_tokens is not None:
+                            self.max_tokens = _resolved_max_tokens
+                            self._configured_max_tokens = _resolved_max_tokens
+                            break
+            except Exception:
+                pass
+        max_tokens = self.max_tokens
         self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         
@@ -4676,10 +4699,25 @@ class AIAgent:
         # Use centralized router for client construction.
         # raw_codex=True because the main agent needs direct responses.stream()
         # access for Codex providers.
+        # Important: explicit fallback endpoint settings must be forwarded,
+        # otherwise custom fallbacks can silently resolve back to the primary
+        # provider config and fail with model-not-found errors.
         try:
             from agent.auxiliary_client import resolve_provider_client
+
+            fb_explicit_base_url = (fb.get("base_url") or "").strip() or None
+            fb_explicit_api_key = (fb.get("api_key") or "").strip() or None
+            fb_api_key_env = (fb.get("api_key_env") or "").strip()
+            if not fb_explicit_api_key and fb_api_key_env:
+                fb_explicit_api_key = os.getenv(fb_api_key_env, "").strip() or None
+
             fb_client, _ = resolve_provider_client(
-                fb_provider, model=fb_model, raw_codex=True)
+                fb_provider,
+                model=fb_model,
+                raw_codex=True,
+                explicit_base_url=fb_explicit_base_url,
+                explicit_api_key=fb_explicit_api_key,
+            )
             if fb_client is None:
                 logging.warning(
                     "Fallback to %s failed: provider not configured",
@@ -4702,6 +4740,36 @@ class AIAgent:
             self.base_url = fb_base_url
             self.api_mode = fb_api_mode
             self._fallback_activated = True
+
+            fallback_token_cap = None
+            for key in ("max_tokens_cap", "max_tokens", "max_output_tokens"):
+                value = fb.get(key)
+                if value in (None, ""):
+                    continue
+                try:
+                    parsed = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if parsed > 0:
+                    fallback_token_cap = parsed
+                    break
+            if fallback_token_cap is None and fb_provider == "openrouter":
+                try:
+                    env_cap = int(str(os.getenv("HERMES_OPENROUTER_FALLBACK_MAX_TOKENS", "2048")).strip())
+                except (TypeError, ValueError):
+                    env_cap = 0
+                if env_cap > 0:
+                    fallback_token_cap = env_cap
+
+            if fallback_token_cap is not None:
+                if self.max_tokens is None or self.max_tokens > fallback_token_cap:
+                    self.max_tokens = fallback_token_cap
+                    logging.info(
+                        "Applied fallback max_tokens cap %s for %s (%s)",
+                        fallback_token_cap,
+                        fb_model,
+                        fb_provider,
+                    )
 
             if fb_api_mode == "anthropic_messages":
                 # Build native Anthropic client instead of using OpenAI client
