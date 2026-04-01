@@ -778,7 +778,7 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
     "FAL_KEY": {
-        "description": "FAL API key for image generation",
+        "description": "Optional FAL API key for legacy/fallback image generation",
         "prompt": "FAL API key",
         "url": "https://fal.ai/",
         "tools": ["image_generate"],
@@ -1789,6 +1789,7 @@ def show_config():
     print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
     
     keys = [
+        ("OPENAI_API_KEY", "OpenAI"),
         ("OPENROUTER_API_KEY", "OpenRouter"),
         ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
         ("EXA_API_KEY", "Exa"),
@@ -1797,7 +1798,7 @@ def show_config():
         ("TAVILY_API_KEY", "Tavily"),
         ("BROWSERBASE_API_KEY", "Browserbase"),
         ("BROWSER_USE_API_KEY", "Browser Use"),
-        ("FAL_KEY", "FAL"),
+        ("FAL_KEY", "FAL (optional)"),
     ]
     
     for env_key, name in keys:
