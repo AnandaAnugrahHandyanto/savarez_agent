@@ -422,7 +422,12 @@ def _generate_via_openai(
                 edit_model,
                 len(edit_image_paths),
             )
-            images = [stack.enter_context(path.open("rb")) for path in edit_image_paths]
+            if edit_model == "dall-e-2":
+                prepared_image = _prepare_dalle_edit_image(edit_image_paths[0])
+                images = [stack.enter_context(prepared_image.open("rb"))]
+                size = "1024x1024"
+            else:
+                images = [stack.enter_context(path.open("rb")) for path in edit_image_paths]
             image_input: Union[Any, List[Any]]
             if len(images) == 1:
                 image_input = images[0]
