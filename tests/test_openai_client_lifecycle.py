@@ -187,3 +187,16 @@ def test_streaming_call_recreates_closed_shared_client_before_request(monkeypatc
     assert stale_shared.close_calls >= 1
     assert request_client.close_calls >= 1
     assert len(factory.calls) == 2
+
+
+def test_method_style_is_closed_not_false_positive():
+    """openai SDK is_closed is a method — bool(<bound method>) is always True."""
+
+    class MethodClient:
+        def __init__(self, closed):
+            self._client = SimpleNamespace(is_closed=closed)
+        def is_closed(self):
+            return self._client.is_closed
+
+    assert not run_agent.AIAgent._is_openai_client_closed(MethodClient(closed=False))
+    assert run_agent.AIAgent._is_openai_client_closed(MethodClient(closed=True))

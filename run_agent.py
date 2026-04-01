@@ -3490,7 +3490,12 @@ class AIAgent:
 
         if isinstance(client, Mock):
             return False
-        if bool(getattr(client, "is_closed", False)):
+        # openai SDK exposes is_closed as a method; call it so we check
+        # the return value instead of the always-truthy bound method.
+        is_closed = getattr(client, "is_closed", False)
+        if callable(is_closed):
+            is_closed = is_closed()
+        if bool(is_closed):
             return True
         http_client = getattr(client, "_client", None)
         return bool(getattr(http_client, "is_closed", False))
