@@ -1890,6 +1890,13 @@ class HermesCLI:
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""
 
+    def _finish_agent_turn(self) -> None:
+        """Reset foreground turn state without emitting spacer output."""
+        self._agent_running = False
+        self._spinner_text = ""
+        if self._app:
+            self._app.invalidate()
+
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
         cmd_lower = command.lower().strip()
@@ -7566,22 +7573,7 @@ class HermesCLI:
                     try:
                         self.chat(user_input, images=submit_images or None)
                     finally:
-                        self._agent_running = False
-                        self._spinner_text = ""
-
-                        # Push the input prompt toward the bottom of the
-                        # terminal so it doesn't sit mid-screen after short
-                        # responses.  patch_stdout renders these newlines
-                        # above the input area, creating visual separation
-                        # and anchoring the prompt near the bottom.
-                        try:
-                            _pad = shutil.get_terminal_size().lines // 2
-                            if _pad > 2:
-                                _cprint("\n" * _pad)
-                        except Exception:
-                            pass
-
-                        app.invalidate()  # Refresh status line
+                        self._finish_agent_turn()
 
                         # Continuous voice: auto-restart recording after agent responds.
                         # Dispatch to a daemon thread so play_beep (sd.wait) and
