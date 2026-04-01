@@ -194,6 +194,7 @@ class StreamingConfig:
     edit_interval: float = 0.3    # Seconds between message edits
     buffer_threshold: int = 40    # Chars before forcing an edit
     cursor: str = " ▉"           # Cursor shown during streaming
+    separator: str = "///"       # Custom separator to split message into new bubbles
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -202,6 +203,7 @@ class StreamingConfig:
             "edit_interval": self.edit_interval,
             "buffer_threshold": self.buffer_threshold,
             "cursor": self.cursor,
+            "separator": self.separator,
         }
 
     @classmethod
@@ -214,6 +216,7 @@ class StreamingConfig:
             edit_interval=float(data.get("edit_interval", 0.3)),
             buffer_threshold=int(data.get("buffer_threshold", 40)),
             cursor=data.get("cursor", " ▉"),
+            separator=data.get("separator", "///"),
         )
 
 
