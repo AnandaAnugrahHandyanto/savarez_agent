@@ -1,4 +1,4 @@
-FROM debian:13.4
+FROM debian:trixie-slim
 
 # Install system dependencies in one layer, clear APT cache
 RUN apt-get update && \
@@ -11,13 +11,13 @@ WORKDIR /opt/hermes
 
 # Install Python and Node dependencies in one layer, no cache
 RUN pip install --no-cache-dir -e ".[all]" --break-system-packages && \
-    npm install --prefer-offline --no-audit && \
+    npm ci --production --prefer-offline --no-audit && \
     npx playwright install --with-deps chromium --only-shell && \
     cd /opt/hermes/scripts/whatsapp-bridge && \
-    npm install --prefer-offline --no-audit && \
-    npm cache clean --force
+    npm ci --prefer-offline --no-audit && \
+    npm cache clean --force && \
+    rm -rf /var/lib/apt/lists/*
 
-WORKDIR /opt/hermes
 RUN chmod +x /opt/hermes/docker/entrypoint.sh
 
 ENV HERMES_HOME=/opt/data
