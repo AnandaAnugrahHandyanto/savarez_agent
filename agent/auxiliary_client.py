@@ -1051,6 +1051,33 @@ def resolve_provider_client(
                        "but no endpoint credentials found")
         return None, None
 
+    # ── Check custom_providers (config.yaml) first ─────────────────────
+    # Custom providers (e.g., "google", "ollama", "custom-endpoint") are defined
+    # in config.yaml's custom_providers list and stored in the credential pool.
+    try:
+        from agent.credential_pool import _iter_custom_providers
+        
+        for custom_name, custom_entry in _iter_custom_providers():
+            if custom_name == provider:
+                # Found a matching custom provider
+                custom_base = custom_entry.get("base_url", "").strip().rstrip("/")
+                custom_key = custom_entry.get("api_key", "").strip() or "no-key-required"
+                
+                if not custom_base:
+                    logger.warning(
+                        "resolve_provider_client: custom provider %r has no base_url",
+                        provider
+                    )
+                    return None, None
+                
+                final_model = model or _read_main_model() or "gpt-4o-mini"
+                client = OpenAI(api_key=custom_key, base_url=custom_base)
+                logger.debug("resolve_provider_client: custom_provider %r (%s)", provider, final_model)
+                return (_to_async_client(client, final_model) if async_mode
+                        else (client, final_model))
+    except Exception as exc:
+        logger.debug("resolve_provider_client: error checking custom_providers: %s", exc)
+    
     # ── API-key providers from PROVIDER_REGISTRY ─────────────────────
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
