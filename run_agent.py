@@ -7917,13 +7917,36 @@ class AIAgent:
                             self._response_was_previewed = True
                             break
 
-                        # No fallback available — this is a genuine empty response.
+                        # No fallback available — check if the model used a
+                        # structured reasoning field (reasoning_content) for its
+                        # answer.  Thinking models (Kimi K2.5, DeepSeek-R1, etc.)
+                        # consistently put their full response there and leave
+                        # content empty.  Retrying won't change that behavior —
+                        # use the reasoning immediately instead of wasting API calls.
+                        reasoning_text = self._extract_reasoning(assistant_message)
+                        if reasoning_text and (
+                            getattr(assistant_message, 'reasoning_content', None)
+                            or getattr(assistant_message, 'reasoning', None)
+                        ):
+                            self._vprint(f"{self.log_prefix}ℹ️  Thinking model returned response in reasoning field — using directly.")
+                            final_response = reasoning_text
+                            empty_msg = {
+                                "role": "assistant",
+                                "content": final_response,
+                                "reasoning": reasoning_text,
+                                "finish_reason": finish_reason,
+                            }
+                            messages.append(empty_msg)
+                            if hasattr(self, '_empty_content_retries'):
+                                self._empty_content_retries = 0
+                            break
+
+                        # Genuine empty response (no structured reasoning field).
                         # Retry in case the model just had a bad generation.
                         if not hasattr(self, '_empty_content_retries'):
                             self._empty_content_retries = 0
                         self._empty_content_retries += 1
-                        
-                        reasoning_text = self._extract_reasoning(assistant_message)
+
                         self._vprint(f"{self.log_prefix}⚠️  Response only contains think block with no content after it")
                         if reasoning_text:
                             reasoning_preview = reasoning_text[:500] + "..." if len(reasoning_text) > 500 else reasoning_text
@@ -7931,7 +7954,7 @@ class AIAgent:
                         else:
                             content_preview = final_response[:80] + "..." if len(final_response) > 80 else final_response
                             self._vprint(f"{self.log_prefix}   Content: '{content_preview}'")
-                        
+
                         if self._empty_content_retries < 3:
                             self._vprint(f"{self.log_prefix}🔄 Retrying API call ({self._empty_content_retries}/3)...")
                             continue
