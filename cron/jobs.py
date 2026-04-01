@@ -375,6 +375,7 @@ def create_job(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    wrap_response: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -391,6 +392,7 @@ def create_job(
         model: Optional per-job model override
         provider: Optional per-job provider override
         base_url: Optional per-job base URL override
+        wrap_response: Optional per-job override for delivery wrapping (None = use global config)
 
     Returns:
         The created job dict
@@ -448,6 +450,8 @@ def create_job(
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
+        # Per-job wrap_response override (None = defer to global cron.wrap_response config)
+        "wrap_response": wrap_response,
     }
 
     jobs = load_jobs()
