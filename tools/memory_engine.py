@@ -57,11 +57,20 @@ ARCHIVE_STALE_DAYS = 90
 ARCHIVE_MIN_STRENGTH = 1.1
 
 # Near-duplicate threshold (raw BM25 score — higher = stricter)
-# Exact duplicates score 10+. Topically similar but different content scores 1-3.
-# We want to catch near-exact rephrases (score ~5+) but not topical overlap.
-DEDUP_THRESHOLD = 5.0
+# Exact duplicates score 10+. Topically similar but different content scores 1-5.
+# Near-exact rephrases score ~7+. Topical overlap with different info scores 3-6.
+# Previous threshold of 5.0 caused false supersessions (unrelated entries sharing
+# a few keywords like "Discord" or "HiveMind" got incorrectly superseded).
+DEDUP_THRESHOLD = 8.0
 
 SCHEMA_VERSION = 2
+
+# Hard budget: max active memories per target before forced compaction.
+# memory target: more entries (project facts, references, observations)
+# user target: fewer entries (preferences, profile, corrections)
+# When exceeded, lowest-strength active entries are archived to make room.
+MAX_ACTIVE_MEMORY = 50
+MAX_ACTIVE_USER = 25
 
 # Chunking constants (from HiveMind memory.rs)
 CHUNK_MAX_CHARS = 1600
@@ -892,6 +901,9 @@ class MemoryEngine:
         # Check for supersession candidates
         self._check_supersession(memory_id, content, target)
 
+        # Enforce budget — archive weakest if over cap
+        self.enforce_budget(target)
+
         logger.debug("Memory added: %s [%s/%s] %s", memory_id[:8], target, type, content[:60])
         return {"success": True, "id": memory_id, "target": target, "type": type}
 
@@ -940,11 +952,12 @@ class MemoryEngine:
 
         conn = self._get_conn()
         # Build FTS5 query — tokenize for safety
-        fts_query = " OR ".join(
-            f'"{w}"' for w in query.split() if w and len(w) > 1
-        )
-        if not fts_query:
-            fts_query = f'"{query}"'
+        # Strip quotes/apostrophes that break FTS5 syntax, keep only alnum words
+        words = re.findall(r'[a-zA-Z0-9_]+', query)
+        words = [w for w in words if len(w) > 1]
+        if not words:
+            return []
+        fts_query = " OR ".join(f'"{w}"' for w in words)
 
         sql = """
             SELECT m.*, bm25(memories_fts) AS bm25_rank
@@ -1130,6 +1143,104 @@ class MemoryEngine:
             (new_id, now, old_id),
         )
         conn.commit()
+
+    def enforce_budget(self, target: str = None) -> int:
+        """Archive lowest-strength memories when active count exceeds budget.
+
+        Inspired by Stanford Generative Agents' memory budget + MemoryBank's
+        strength-based pruning. Keeps the most reinforced/important memories alive.
+
+        Returns count of memories archived to make room.
+        """
+        targets = [target] if target else list(MEMORY_TARGETS)
+        total_archived = 0
+        conn = self._get_conn()
+
+        for t in targets:
+            budget = MAX_ACTIVE_USER if t == "user" else MAX_ACTIVE_MEMORY
+            count = self.count_active(t)
+
+            if count <= budget:
+                continue
+
+            overflow = count - budget
+            # Archive the weakest active memories (lowest strength, then oldest)
+            # Corrections and preferences are protected — they cost more to lose
+            rows = conn.execute(
+                """SELECT id FROM memories
+                   WHERE target = ? AND tier = 'active'
+                   ORDER BY
+                       CASE WHEN type IN ('correction', 'preference') THEN 1 ELSE 0 END ASC,
+                       strength ASC,
+                       updated_at ASC
+                   LIMIT ?""",
+                (t, overflow),
+            ).fetchall()
+
+            now = datetime.now(timezone.utc).isoformat()
+            for row in rows:
+                conn.execute(
+                    "UPDATE memories SET tier = 'archived', updated_at = ? WHERE id = ?",
+                    (now, row["id"]),
+                )
+                total_archived += 1
+
+            if rows:
+                conn.commit()
+                logger.info(
+                    "Budget enforcement [%s]: archived %d memories (%d/%d over budget)",
+                    t, len(rows), count, budget,
+                )
+
+        return total_archived
+
+    def purge_dead(self, max_age_days: int = 30) -> int:
+        """Hard-delete superseded and archived memories older than max_age_days.
+
+        This is the only place memories are truly removed from the DB.
+        Prevents monotonic DB growth from supersession and archival.
+        Also cleans up orphaned chunks, embeddings, and edges.
+        """
+        conn = self._get_conn()
+        cutoff = datetime.now(timezone.utc).isoformat()
+
+        # Find memories to purge
+        rows = conn.execute(
+            """SELECT id FROM memories
+               WHERE tier IN ('superseded', 'archived')
+                 AND julianday(?) - julianday(updated_at) > ?""",
+            (cutoff, max_age_days),
+        ).fetchall()
+
+        if not rows:
+            return 0
+
+        ids = [r["id"] for r in rows]
+        placeholders = ",".join("?" for _ in ids)
+
+        # Delete edges referencing these memories
+        conn.execute(
+            f"DELETE FROM edges WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders})",
+            ids + ids,
+        )
+
+        # Delete embeddings for chunks of these memories
+        conn.execute(
+            f"""DELETE FROM embeddings WHERE chunk_id IN (
+                SELECT id FROM chunks WHERE memory_id IN ({placeholders})
+            )""",
+            ids,
+        )
+
+        # Delete chunks
+        conn.execute(f"DELETE FROM chunks WHERE memory_id IN ({placeholders})", ids)
+
+        # Delete the memories themselves
+        conn.execute(f"DELETE FROM memories WHERE id IN ({placeholders})", ids)
+
+        conn.commit()
+        logger.info("Purged %d dead memories (superseded/archived >%d days)", len(ids), max_age_days)
+        return len(ids)
 
     def _check_supersession(self, new_id: str, content: str, target: str):
         """Check if this new memory supersedes an existing one.

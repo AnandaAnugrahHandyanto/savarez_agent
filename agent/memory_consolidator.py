@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 _CONSOLIDATION_PROMPT = """\
 You are a memory maintenance system for an AI agent. Review the current memories \
-and perform consolidation.
+and perform consolidation to keep the memory store healthy.
 
 CURRENT ACTIVE MEMORIES:
 {memories}
@@ -38,18 +38,28 @@ CURRENT ACTIVE MEMORIES:
 MEMORY STATISTICS:
 {stats}
 
-TASKS — perform ALL that apply:
+BUDGET: memory target max {max_memory}, user target max {max_user}. \
+If either target is over budget, you MUST archive low-value entries to get under budget.
 
-1. MERGE: If two or more memories cover the same topic, merge them into one \
-concise entry. Output: {{"action": "merge", "remove_ids": ["id1", "id2"], "new_content": "merged text", "target": "memory"|"user", "type": "preference"|"correction"|"project"|"reference"|"general"}}
+TASKS — perform ALL that apply, in priority order:
 
-2. UPDATE: If any memory has stale relative dates ("yesterday", "last week") \
-or outdated facts, update it. Output: {{"action": "update", "id": "id", "new_content": "updated text"}}
+1. MERGE: If two or more memories cover the same topic or entity, merge them into one \
+concise entry that preserves all unique facts. \
+Output: {{"action": "merge", "remove_ids": ["id1", "id2"], "new_content": "merged text", "target": "memory"|"user", "type": "preference"|"correction"|"project"|"reference"|"general"}}
 
-3. ARCHIVE: If any memory is low-value, too specific to a past task, or no \
-longer relevant, mark for archival. Output: {{"action": "archive", "id": "id", "reason": "why"}}
+2. UPDATE: If any memory has stale relative dates ("yesterday", "last week"), \
+outdated facts, or information contradicted by newer memories, update it. \
+Output: {{"action": "update", "id": "id", "new_content": "updated text"}}
 
-4. NOTHING: If all memories are clean and current, output: NONE
+3. ARCHIVE: If any memory is low-value, too specific to a completed past task, \
+no longer relevant, or redundant with another memory, mark for archival. \
+Prefer archiving: low access_count, low strength, old age, general type over correction/preference. \
+Output: {{"action": "archive", "id": "id", "reason": "why"}}
+
+4. NOTHING: If all memories are clean, current, and within budget, output: NONE
+
+PROTECT corrections and preferences — these are the most valuable. Archive general \
+and project memories first when reducing count.
 
 Output ONE JSON object per line. No other text.
 IMPORTANT: Use the 8-char IDs shown in brackets, not full UUIDs."""
@@ -61,7 +71,7 @@ def check_consolidation_gates(engine, config: dict) -> Optional[str]:
     Gate order follows Claude Code's autoDream pattern (cheapest first).
     """
     # Gate 1: Feature enabled?
-    if not config.get("consolidation_enabled", False):
+    if not config.get("consolidation_enabled", True):
         return "consolidation_enabled is false"
 
     # Gate 2: Time since last consolidation
@@ -70,7 +80,7 @@ def check_consolidation_gates(engine, config: dict) -> Optional[str]:
         try:
             last = datetime.fromisoformat(last_str)
             hours = (datetime.now(timezone.utc) - last).total_seconds() / 3600
-            threshold = config.get("consolidation_interval_hours", 24)
+            threshold = config.get("consolidation_interval_hours", 12)
             if hours < threshold:
                 return f"only {hours:.1f}h since last consolidation (threshold: {threshold}h)"
         except (ValueError, TypeError):
@@ -78,7 +88,7 @@ def check_consolidation_gates(engine, config: dict) -> Optional[str]:
 
     # Gate 3: Enough sessions since last consolidation
     count_str = engine._get_meta("consolidation_session_count") or "0"
-    min_sessions = config.get("consolidation_min_sessions", 5)
+    min_sessions = config.get("consolidation_min_sessions", 3)
     try:
         if int(count_str) < min_sessions:
             return f"only {count_str} sessions since last consolidation (threshold: {min_sessions})"
@@ -139,9 +149,12 @@ def consolidate_memories(
         )
 
     stats = engine.stats()
+    from tools.memory_engine import MAX_ACTIVE_MEMORY, MAX_ACTIVE_USER
     prompt = _CONSOLIDATION_PROMPT.format(
         memories="\n".join(mem_lines),
         stats=json.dumps(stats, indent=2),
+        max_memory=MAX_ACTIVE_MEMORY,
+        max_user=MAX_ACTIVE_USER,
     )
 
     # Step 3: Call LLM for consolidation decisions

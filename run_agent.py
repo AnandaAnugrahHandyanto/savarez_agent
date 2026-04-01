@@ -1045,7 +1045,7 @@ class AIAgent:
         self._memory_nudge_interval = 10
         self._memory_flush_min_turns = 6
         self._turns_since_memory = 0
-        self._auto_extract_enabled = False
+        self._auto_extract_enabled = True
         self._extract_interval = 3
         self._turns_since_extraction = 0
         self._iters_since_skill = 0
@@ -1056,7 +1056,7 @@ class AIAgent:
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
                 self._memory_flush_min_turns = int(mem_config.get("flush_min_turns", 6))
-                self._auto_extract_enabled = mem_config.get("auto_extract", False)
+                self._auto_extract_enabled = mem_config.get("auto_extract", True)
                 self._extract_interval = int(mem_config.get("extract_interval", 3))
                 if self._memory_enabled or self._user_profile_enabled:
                     from tools.memory_tool import MemoryStore
@@ -8322,10 +8322,17 @@ class AIAgent:
         except Exception as exc:
             logger.warning("on_session_end hook failed: %s", exc)
 
-        # Increment consolidation session counter (for autoDream-style gating)
+        # Memory lifecycle maintenance at session end:
+        # 1. Archive stale memories (>90 days, low strength) — runs independently of consolidation
+        # 2. Enforce memory budget (archive weakest if over cap)
+        # 3. Purge dead memories (hard-delete superseded/archived >30 days)
+        # 4. Increment consolidation session counter
         try:
             _eng = getattr(self._memory_store, '_engine', None) if self._memory_store else None
             if _eng:
+                _eng.archive_stale()
+                _eng.enforce_budget()
+                _eng.purge_dead()
                 from agent.memory_consolidator import increment_session_count
                 increment_session_count(_eng)
         except Exception:

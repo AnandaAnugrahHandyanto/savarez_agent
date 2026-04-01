@@ -47,13 +47,22 @@ DO NOT extract:
 - Facts easily re-derived from files or commands
 - Anything already captured in existing memories above
 - Raw data, code snippets, or verbose technical details
+- Conversational artifacts, pleasantries, or reasoning steps
+- Things that are only relevant to the current task and won't matter next session
 
-For each memory worth saving, output a JSON object on its own line:
-{{"target": "memory"|"user", "type": "preference"|"correction"|"project"|"reference"|"general", "content": "concise fact"}}
+IMPORTANCE SCORING (1-10):
+- 1-3: Trivial, task-specific, easily re-derived. DO NOT SAVE.
+- 4-5: Mildly useful but low durability. Only save if very concise.
+- 6-7: Clearly durable fact that will matter in future sessions.
+- 8-10: Critical preference, correction, or architectural decision.
+
+For each memory worth saving (importance >= 5), output a JSON object on its own line:
+{{"target": "memory"|"user", "type": "preference"|"correction"|"project"|"reference"|"general", "importance": 5-10, "content": "concise fact"}}
 
 If nothing is worth saving, output exactly: NONE
 
-Output ONLY the JSON lines or NONE, no other text."""
+Output ONLY the JSON lines or NONE, no other text.
+Maximum 5 entries per extraction. Quality over quantity."""
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +78,7 @@ class _ExtractorState:
     - _in_progress: True while extraction is running
     - _pending_context: stashed context for trailing run when overlapping
     - _lock: mutual exclusion for state access
+    - _engine: optional MemoryEngine reference for persisting cursor to SQLite
     """
 
     def __init__(self):
@@ -78,6 +88,27 @@ class _ExtractorState:
         self._in_progress: bool = False
         self._pending_context: Optional[Dict] = None
         self._turns_since_last_extraction: int = 0
+        self._engine = None  # Set when extraction runs; used for cursor persistence
+
+    def persist_cursor(self, index: int):
+        """Save cursor to SQLite so it survives process restarts."""
+        with self._lock:
+            self.last_extracted_message_index = index
+        if self._engine:
+            try:
+                self._engine._set_meta("extractor_cursor", str(index))
+            except Exception:
+                pass  # Best effort
+
+    def load_cursor(self, engine):
+        """Load persisted cursor from SQLite on startup."""
+        self._engine = engine
+        try:
+            val = engine._get_meta("extractor_cursor")
+            if val is not None:
+                self.last_extracted_message_index = int(val)
+        except (ValueError, TypeError):
+            pass
 
     def mark_agent_wrote_memory(self):
         """Called by the main agent when it writes memories this turn."""
@@ -142,14 +173,17 @@ def extract_memories_background(
 
     state = _state
 
+    # Load persisted cursor from SQLite on first use (survives restart)
+    if state._engine is None:
+        state.load_cursor(engine)
+
     # Mutual exclusion: if the main agent wrote memories this turn, skip
     # extraction and advance the cursor past these messages
     if state.agent_wrote_memory:
-        with state._lock:
-            state.last_extracted_message_index = len(recent_messages) - 1
-            logger.debug(
-                "[extractMemories] skipping — agent already wrote to memory this turn"
-            )
+        state.persist_cursor(len(recent_messages) - 1)
+        logger.debug(
+            "[extractMemories] skipping — agent already wrote to memory this turn"
+        )
         return
 
     # If extraction is already in progress, stash context for trailing run
@@ -221,9 +255,8 @@ def _run_extraction(
             session_id=session_id,
         )
 
-        # Advance cursor on success
-        with state._lock:
-            state.last_extracted_message_index = len(recent_messages) - 1
+        # Advance cursor on success (persisted to SQLite for restart survival)
+        state.persist_cursor(len(recent_messages) - 1)
 
     except Exception as e:
         logger.warning("Memory extraction failed: %s", e)
@@ -293,9 +326,16 @@ def _do_extraction(
         logger.debug("Memory extraction: nothing to save")
         return
 
-    # Parse JSON lines
+    # Parse JSON lines with importance filtering and per-extraction cap
     saved = 0
+    skipped_low_importance = 0
+    max_per_extraction = 5  # Hard cap — quality over quantity
+
     for line in response.split("\n"):
+        if saved >= max_per_extraction:
+            logger.debug("Extraction cap reached (%d), stopping", max_per_extraction)
+            break
+
         line = line.strip()
         if not line or line.upper() == "NONE":
             continue
@@ -312,8 +352,23 @@ def _do_extraction(
         target = entry.get("target", "memory")
         mem_type = entry.get("type", "general")
         content = entry.get("content", "").strip()
+        importance = entry.get("importance", 5)
 
         if not content or target not in ("memory", "user"):
+            continue
+
+        # Importance gate — reject anything below threshold
+        # Corrections and preferences get a +1 bonus (higher value per the research)
+        effective_importance = importance
+        if mem_type in ("correction", "preference"):
+            effective_importance = min(10, importance + 1)
+
+        if effective_importance < 5:
+            skipped_low_importance += 1
+            logger.debug(
+                "Skipped low-importance extraction (score=%d): %s",
+                importance, content[:60],
+            )
             continue
 
         result = engine.add(
@@ -325,11 +380,17 @@ def _do_extraction(
         )
         if result.get("success"):
             saved += 1
-            logger.debug("Auto-extracted [%s/%s]: %s", target, mem_type, content[:60])
+            logger.debug(
+                "Auto-extracted [%s/%s] importance=%d: %s",
+                target, mem_type, importance, content[:60],
+            )
 
     elapsed = time.monotonic() - start
-    if saved:
-        logger.info("Memory extraction: saved %d entries in %.1fs", saved, elapsed)
+    if saved or skipped_low_importance:
+        logger.info(
+            "Memory extraction: saved %d, skipped %d low-importance in %.1fs",
+            saved, skipped_low_importance, elapsed,
+        )
 
 
 def _format_messages(messages: List[Dict], max_chars: int = 8000) -> str:
