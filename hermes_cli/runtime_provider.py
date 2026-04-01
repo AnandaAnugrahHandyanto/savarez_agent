@@ -345,9 +345,12 @@ def _resolve_openrouter_runtime(
         ]
     else:
         # Custom endpoint: use api_key from config when using config base_url (#1760).
-        api_key_candidates = [
+        # Check OLLAMA_API_KEY for Ollama Cloud endpoints (ollama.com != localhost).
+        _ollama_key = os.getenv("OLLAMA_API_KEY", "") if "ollama.com" in base_url.lower() else ""
+        api_key_candidates=[
             explicit_api_key,
             (cfg_api_key if use_config_base_url else ""),
+            _ollama_key,
             os.getenv("OPENAI_API_KEY"),
             os.getenv("OPENROUTER_API_KEY"),
         ]

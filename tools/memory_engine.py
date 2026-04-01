@@ -21,11 +21,11 @@ import re
 import sqlite3
 import threading
 import uuid
-from collections import defaultdict
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+from agent.yake import extract_keywords
 
 logger = logging.getLogger(__name__)
 
@@ -170,15 +170,6 @@ CREATE TABLE IF NOT EXISTS edges (
     PRIMARY KEY (source_id, target_id, relation)
 );
 
-CREATE TABLE IF NOT EXISTS entities (
-    id          TEXT PRIMARY KEY,
-    name        TEXT NOT NULL,
-    entity_type TEXT NOT NULL,
-    metadata    TEXT NOT NULL DEFAULT '{}',
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
-);
-
 -- FTS5 for chunks
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
     content,
@@ -202,34 +193,6 @@ END;
 CREATE INDEX IF NOT EXISTS idx_chunks_memory_id ON chunks(memory_id);
 CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
-CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(entity_type);
-CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
-
-CREATE TABLE IF NOT EXISTS procedures (
-    id          TEXT PRIMARY KEY,
-    name        TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    tool_chain  TEXT NOT NULL DEFAULT '[]',
-    success_count INTEGER NOT NULL DEFAULT 0,
-    fail_count  INTEGER NOT NULL DEFAULT 0,
-    last_used   TEXT,
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_procedures_name ON procedures(name);
-
-CREATE TABLE IF NOT EXISTS events (
-    id          TEXT PRIMARY KEY,
-    event_type  TEXT NOT NULL,
-    summary     TEXT NOT NULL,
-    details     TEXT NOT NULL DEFAULT '{}',
-    session_id  TEXT,
-    created_at  TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
-CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 """
 
 _META_DEFAULTS = {
@@ -329,147 +292,6 @@ def chunk_text(
 
 
 # ---------------------------------------------------------------------------
-# Keyword extraction (YAKE — ported from HiveMind memory.rs)
-# ---------------------------------------------------------------------------
-
-_KEYWORD_STOPWORDS = frozenset([
-    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "shall", "can", "need", "must", "ought",
-    "i", "you", "he", "she", "it", "we", "they", "me", "him", "her",
-    "us", "them", "my", "your", "his", "its", "our", "their", "mine",
-    "this", "that", "these", "those", "what", "which", "who", "whom",
-    "and", "but", "or", "nor", "not", "no", "so", "if", "then", "than",
-    "too", "very", "just", "about", "above", "after", "again", "all",
-    "also", "any", "because", "before", "between", "both", "by", "come",
-    "each", "few", "for", "from", "get", "got", "here", "how", "in",
-    "into", "like", "make", "many", "more", "most", "much", "of", "on",
-    "one", "only", "other", "out", "over", "said", "same", "see", "some",
-    "still", "such", "take", "tell", "there", "to", "up", "use", "want",
-    "way", "when", "where", "with", "don't", "i'm", "it's", "that's",
-    "let", "let's", "sure", "going", "think", "know", "thing", "things",
-    "really", "actually", "basically", "yes", "yeah", "okay", "well",
-    "right", "good", "new", "now", "even", "back", "first", "last",
-    "long", "great", "little", "own", "old", "big", "high", "different",
-    "small", "large", "next", "early", "young", "important", "public",
-    "bad", "same", "able", "try", "ask", "keep", "around", "however",
-    "work", "using", "used", "also", "while", "something", "without",
-])
-
-_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{2,30}")
-
-
-def extract_keywords(content: str, max_keywords: int = 8) -> list:
-    """YAKE keyword extraction. Ported from HiveMind memory.rs.
-
-    Returns up to max_keywords keywords (lower YAKE score = better keyword).
-    """
-    if not content or not content.strip():
-        return []
-
-    # 1. Sentence segmentation
-    sentences = [s for s in re.split(r"[.!?\n]", content) if len(s.split()) >= 2]
-    if not sentences:
-        sentences = [content]
-    n_sentences = max(len(sentences), 1)
-
-    # 2. Tokenize each sentence
-    sentence_tokens = [_TOKEN_RE.findall(s) for s in sentences]
-
-    # 3. Per-word statistics
-    stats = {}  # key -> {tf, tf_upper, tf_acronym, sent_positions, left_ctx, right_ctx}
-    for sent_idx, tokens in enumerate(sentence_tokens):
-        for tok_idx, token in enumerate(tokens):
-            key = token.lower()
-            if len(key) < 2 or key in _KEYWORD_STOPWORDS:
-                continue
-            if key.isdigit():
-                continue
-
-            if key not in stats:
-                stats[key] = {
-                    "tf": 0.0, "tf_upper": 0.0, "tf_acronym": 0.0,
-                    "sent_positions": [], "left_ctx": set(), "right_ctx": set(),
-                }
-            ws = stats[key]
-            ws["tf"] += 1.0
-            ws["sent_positions"].append(sent_idx)
-
-            if tok_idx > 0 and token[0].isupper():
-                ws["tf_upper"] += 1.0
-            alpha_chars = [c for c in token if c.isalpha()]
-            if len(alpha_chars) >= 2 and all(c.isupper() for c in alpha_chars):
-                ws["tf_acronym"] += 1.0
-
-            if tok_idx > 0:
-                prev = tokens[tok_idx - 1].lower()
-                if len(prev) >= 2 and prev not in _KEYWORD_STOPWORDS:
-                    ws["left_ctx"].add(prev)
-            if tok_idx + 1 < len(tokens):
-                nxt = tokens[tok_idx + 1].lower()
-                if len(nxt) >= 2 and nxt not in _KEYWORD_STOPWORDS:
-                    ws["right_ctx"].add(nxt)
-
-    if not stats:
-        return []
-
-    # 4. Global TF statistics
-    tfs = [ws["tf"] for ws in stats.values()]
-    mean_tf = sum(tfs) / len(tfs)
-    std_tf = math.sqrt(sum((t - mean_tf) ** 2 for t in tfs) / len(tfs))
-
-    # 5. YAKE score per word
-    word_scores = {}
-    for word, ws in stats.items():
-        t_case = max(max(ws["tf_upper"], ws["tf_acronym"]) / (1.0 + math.log(1.0 + ws["tf"])), 0.01)
-        positions = sorted(ws["sent_positions"])
-        median_pos = positions[len(positions) // 2]
-        t_pos = max(math.log(math.log(3.0 + median_pos)), 0.01)
-        t_freq = ws["tf"] / (mean_tf + std_tf + 1.0)
-        t_rel = 1.0 + (len(ws["left_ctx"]) + len(ws["right_ctx"])) / (2.0 * ws["tf"] + 1.0)
-        unique_sents = len(set(ws["sent_positions"]))
-        t_dif = unique_sents / n_sentences
-
-        score = (t_rel * t_pos) / (t_case + t_freq / t_rel + t_dif / t_rel + 0.001)
-        word_scores[word] = score
-
-    # 6. N-gram candidates
-    candidates = [(w, s) for w, s in word_scores.items()]
-
-    for tokens in sentence_tokens:
-        lower_tokens = [t.lower() for t in tokens]
-        for n in (2, 3):
-            if len(lower_tokens) < n:
-                continue
-            for i in range(len(lower_tokens) - n + 1):
-                gram = lower_tokens[i:i + n]
-                if any(w in _KEYWORD_STOPWORDS or len(w) < 2 or w.isdigit() for w in gram):
-                    continue
-                scores = [word_scores[w] for w in gram if w in word_scores]
-                if len(scores) != n:
-                    continue
-                product = 1.0
-                for s in scores:
-                    product *= s
-                ng_score = product / (1.0 + sum(scores))
-                candidates.append((" ".join(gram), ng_score))
-
-    # 7. Sort (lower = better)
-    candidates.sort(key=lambda x: x[1])
-
-    # 8. Deduplicate
-    result = []
-    for cand, _ in candidates:
-        if len(result) >= max_keywords:
-            break
-        if any(r in cand or cand in r for r in result):
-            continue
-        result.append(cand)
-
-    return result
-
-
-# ---------------------------------------------------------------------------
 # Topic classification (ported from HiveMind memory.rs lines 1186-1370)
 # ---------------------------------------------------------------------------
 
@@ -540,10 +362,7 @@ def classify_topic(content: str, keywords: list = None, tags: list = None) -> st
 
     if best[0] >= 2:
         return best[1]
-    elif tech_total >= 1:
-        return "general"
-    else:
-        return "general"
+    return "general"
 
 
 # ---------------------------------------------------------------------------
@@ -786,9 +605,24 @@ class MemoryEngine:
     def _generate_embeddings_background(self, memory_id: str, content: str, chunk_ids: list = None):
         """Fire-and-forget embedding generation in a background thread."""
         def _worker():
+            # Create a dedicated connection for this background thread
+            # (thread-local _get_conn would create one anyway, but we need
+            # to ensure it gets closed when the thread finishes).
+            conn = sqlite3.connect(
+                str(self._db_path),
+                timeout=10.0,
+                check_same_thread=False,
+            )
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=10000")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.row_factory = sqlite3.Row
+            conn.isolation_level = None
+            # Temporarily set as thread-local so _get_or_create_embedding works
+            self._local.conn = conn
             try:
                 if chunk_ids:
-                    conn = self._get_conn()
                     for cid in chunk_ids:
                         row = conn.execute(
                             "SELECT content FROM chunks WHERE id = ?", (cid,)
@@ -799,57 +633,12 @@ class MemoryEngine:
                     self._get_or_create_embedding(memory_id, content)
             except Exception as e:
                 logger.debug("Background embedding generation failed: %s", e)
+            finally:
+                conn.close()
+                self._local.conn = None
 
         t = threading.Thread(target=_worker, daemon=True)
         t.start()
-
-    def search_by_embedding(self, query_embedding: list, target: str = None, limit: int = 10) -> list:
-        """Search memories by embedding cosine similarity.
-
-        Returns top-N memories sorted by cosine similarity to query_embedding.
-        """
-        if not query_embedding:
-            return []
-
-        conn = self._get_conn()
-        # Get all embeddings with their associated memory data
-        sql = """
-            SELECT e.chunk_id, e.embedding, m.*
-            FROM embeddings e
-            JOIN memories m ON (e.chunk_id = m.id OR e.chunk_id LIKE m.id || ':chunk_%')
-            WHERE m.tier = 'active'
-        """
-        params = []
-        if target:
-            sql += " AND m.target = ?"
-            params.append(target)
-
-        try:
-            rows = conn.execute(sql, params).fetchall()
-        except sqlite3.OperationalError:
-            return []
-
-        scored = []
-        seen_ids = set()
-        for row in rows:
-            try:
-                stored_emb = json.loads(row["embedding"])
-            except (json.JSONDecodeError, TypeError):
-                continue
-            sim = cosine_similarity(query_embedding, stored_emb)
-            mem_dict = dict(row)
-            # Remove embedding blob from result
-            mem_dict.pop("embedding", None)
-            mem_dict.pop("chunk_id", None)
-            mid = mem_dict.get("id")
-            if mid in seen_ids:
-                continue
-            seen_ids.add(mid)
-            mem_dict["cosine_score"] = sim
-            scored.append(mem_dict)
-
-        scored.sort(key=lambda x: x["cosine_score"], reverse=True)
-        return scored[:limit]
 
     # -- Core CRUD -----------------------------------------------------------
 
@@ -940,6 +729,7 @@ class MemoryEngine:
         )
 
         # Chunk long content and insert into chunks table
+        chunks = None
         if len(content) > CHUNK_MIN_CONTENT_LEN:
             chunks = chunk_text(content)
             for idx, (start_line, end_line, chunk_content) in enumerate(chunks):
@@ -955,8 +745,8 @@ class MemoryEngine:
         conn.commit()
 
         # Generate embeddings in background (non-blocking)
-        if len(content) > CHUNK_MIN_CONTENT_LEN:
-            chunk_ids = [f"{memory_id}:chunk_{idx}" for idx in range(len(chunk_text(content)))]
+        if chunks:
+            chunk_ids = [f"{memory_id}:chunk_{idx}" for idx in range(len(chunks))]
             self._generate_embeddings_background(memory_id, content, chunk_ids=chunk_ids)
         else:
             self._generate_embeddings_background(memory_id, content)
@@ -1059,50 +849,6 @@ class MemoryEngine:
 
         return results
 
-    def rerank_with_llm(self, candidates: list, query: str, auxiliary_client=None, top_n: int = 5) -> list:
-        """LLM-based reranking of search results. Port of Claude Code's findRelevantMemories.
-
-        Uses auxiliary_client (cheap model) to select the most relevant memories
-        from search candidates. Falls back to score-based ranking if no client.
-        """
-        if not auxiliary_client or not candidates:
-            return candidates[:top_n]
-
-        # Format candidates for the LLM
-        numbered = []
-        for i, c in enumerate(candidates):
-            numbered.append(f"[{i}] {c['content'][:200]}")
-
-        prompt = f"""Given this query: "{query}"
-
-Which of these memories are most relevant? Return ONLY the numbers of the top {top_n} most relevant, as a JSON array. Example: [0, 3, 7]
-
-Memories:
-{chr(10).join(numbered)}
-
-Return ONLY a JSON array of indices, nothing else."""
-
-        try:
-            from agent.auxiliary_client import call_llm
-            response = call_llm(
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=100,
-                temperature=0.0,
-            )
-            # Parse response - extract the content string
-            if hasattr(response, 'choices'):
-                text = response.choices[0].message.content
-            else:
-                text = str(response)
-            import json as _json
-            indices = _json.loads(text.strip())
-            if isinstance(indices, list):
-                return [candidates[i] for i in indices if 0 <= i < len(candidates)][:top_n]
-        except Exception as e:
-            logger.debug("LLM reranking failed, falling back to score-based: %s", e)
-
-        return candidates[:top_n]
-
     def search(
         self,
         query: str,
@@ -1132,6 +878,45 @@ Return ONLY a JSON array of indices, nothing else."""
             max_bm25 = 1.0
         has_embeddings = bool(query_embedding)
 
+        # Batch-fetch all embeddings upfront to avoid N+1 queries
+        candidate_embeddings = {}  # memory_id -> embedding vector
+        if has_embeddings:
+            candidate_ids = [mem["id"] for mem in candidates]
+            conn = self._get_conn()
+            if candidate_ids:
+                placeholders = ",".join("?" for _ in candidate_ids)
+                # Fetch memory-level embeddings
+                emb_rows = conn.execute(
+                    f"SELECT chunk_id, embedding FROM embeddings WHERE chunk_id IN ({placeholders})",
+                    candidate_ids,
+                ).fetchall()
+                for row in emb_rows:
+                    try:
+                        candidate_embeddings[row["chunk_id"]] = json.loads(row["embedding"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                # For candidates without memory-level embeddings, try chunk embeddings
+                missing_ids = [mid for mid in candidate_ids if mid not in candidate_embeddings]
+                if missing_ids:
+                    like_patterns = [mid + ":chunk_%" for mid in missing_ids]
+                    # Batch fetch chunk embeddings — one query per missing id
+                    # (SQLite doesn't support LIKE with IN, but we can use OR)
+                    if like_patterns:
+                        like_clauses = " OR ".join("chunk_id LIKE ?" for _ in like_patterns)
+                        chunk_rows = conn.execute(
+                            f"SELECT chunk_id, embedding FROM embeddings WHERE {like_clauses}",
+                            like_patterns,
+                        ).fetchall()
+                        for row in chunk_rows:
+                            # Extract memory_id from chunk_id (format: "memory_id:chunk_N")
+                            mem_id = row["chunk_id"].rsplit(":chunk_", 1)[0]
+                            if mem_id not in candidate_embeddings:
+                                try:
+                                    candidate_embeddings[mem_id] = json.loads(row["embedding"])
+                                except (json.JSONDecodeError, TypeError):
+                                    pass
+
         for mem in candidates:
             bm25 = mem.get("bm25_score", 0)
             normalized_bm25 = bm25 / max_bm25
@@ -1156,24 +941,7 @@ Return ONLY a JSON array of indices, nothing else."""
 
             # Compute relevance base score
             if has_embeddings:
-                # Try to get embedding for this candidate
-                mem_embedding = None
-                conn = self._get_conn()
-                # Check memory-level embedding first, then chunk embeddings
-                emb_row = conn.execute(
-                    "SELECT embedding FROM embeddings WHERE chunk_id = ?", (mem["id"],)
-                ).fetchone()
-                if not emb_row:
-                    emb_row = conn.execute(
-                        "SELECT embedding FROM embeddings WHERE chunk_id LIKE ? LIMIT 1",
-                        (mem["id"] + ":chunk_%",),
-                    ).fetchone()
-                if emb_row and emb_row["embedding"]:
-                    try:
-                        mem_embedding = json.loads(emb_row["embedding"])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-
+                mem_embedding = candidate_embeddings.get(mem["id"])
                 if mem_embedding:
                     cos_sim = cosine_similarity(query_embedding, mem_embedding)
                     base_score = 0.7 * cos_sim + 0.3 * normalized_bm25
@@ -1208,10 +976,6 @@ Return ONLY a JSON array of indices, nothing else."""
                 top_results.extend(graph_additions)
                 top_results.sort(key=lambda m: m["relevance_score"], reverse=True)
                 top_results = top_results[:limit]
-
-        # Optional LLM reranking (port of Claude Code's findRelevantMemories)
-        if auxiliary_client and len(top_results) > limit:
-            top_results = self.rerank_with_llm(top_results, query, auxiliary_client=auxiliary_client, top_n=limit)
 
         return top_results
 
@@ -1356,12 +1120,6 @@ Return ONLY a JSON array of indices, nothing else."""
         conn.commit()
         logger.info("Purged %d dead memories (superseded/archived >%d days)", len(ids), max_age_days)
 
-        # Also purge old episodic events
-        try:
-            self.purge_old_events(max_age_days=90)
-        except Exception as e:
-            logger.debug("Event purge during purge_dead failed: %s", e)
-
         return len(ids)
 
     def _check_supersession(self, new_id: str, content: str, target: str):
@@ -1500,51 +1258,6 @@ Return ONLY a JSON array of indices, nothing else."""
                 results.append(mem)
         return results
 
-    def track_entity(self, name: str, entity_type: str, metadata: dict = None) -> dict:
-        """Track or update an entity."""
-        conn = self._get_conn()
-        now = datetime.now(timezone.utc).isoformat()
-        entity_id = str(uuid.uuid4())
-        meta_json = json.dumps(metadata or {})
-
-        # Upsert: check if entity with same name+type exists
-        existing = conn.execute(
-            "SELECT id FROM entities WHERE name = ? AND entity_type = ?",
-            (name, entity_type),
-        ).fetchone()
-
-        if existing:
-            entity_id = existing["id"]
-            conn.execute(
-                "UPDATE entities SET metadata = ?, updated_at = ? WHERE id = ?",
-                (meta_json, now, entity_id),
-            )
-        else:
-            conn.execute(
-                """INSERT INTO entities (id, name, entity_type, metadata, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (entity_id, name, entity_type, meta_json, now, now),
-            )
-        conn.commit()
-        return {"id": entity_id, "name": name, "entity_type": entity_type, "metadata": metadata or {}}
-
-    def search_entities(self, query: str) -> list:
-        """Search entities by name (LIKE match)."""
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM entities WHERE name LIKE ? ORDER BY updated_at DESC LIMIT 20",
-            (f"%{query}%",),
-        ).fetchall()
-        results = []
-        for r in rows:
-            d = dict(r)
-            try:
-                d["metadata"] = json.loads(d.get("metadata", "{}"))
-            except (json.JSONDecodeError, TypeError):
-                d["metadata"] = {}
-            results.append(d)
-        return results
-
     # -- Retrieval for prompts -----------------------------------------------
 
     def get_active_memories(self, target: str, limit: int = None) -> list:
@@ -1587,7 +1300,7 @@ Return ONLY a JSON array of indices, nothing else."""
         if not lines:
             return None
 
-        content = "\n§\n".join(lines)
+        content = "\n\u00a7\n".join(lines)
         total = self.count_active(target)
         shown = len(lines)
         budget_str = f"{total_chars}" if not char_budget else f"{total_chars}/{char_budget}"
@@ -1631,26 +1344,30 @@ Return ONLY a JSON array of indices, nothing else."""
         return row["c"] if row else 0
 
     def stats(self) -> dict:
-        """Memory statistics."""
+        """Memory statistics: counts per target/tier, total embeddings, total edges."""
         conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT target, tier, type, COUNT(*) as count FROM memories GROUP BY target, tier, type"
-        ).fetchall()
-        total = conn.execute("SELECT COUNT(*) as c FROM memories").fetchone()["c"]
 
-        by_target = {}
-        by_tier = {}
-        by_type = {}
+        # Per-target, per-tier counts
+        rows = conn.execute(
+            "SELECT target, tier, COUNT(*) as count FROM memories GROUP BY target, tier"
+        ).fetchall()
+
+        by_target_tier = {}
         for r in rows:
-            by_target[r["target"]] = by_target.get(r["target"], 0) + r["count"]
-            by_tier[r["tier"]] = by_tier.get(r["tier"], 0) + r["count"]
-            by_type[r["type"]] = by_type.get(r["type"], 0) + r["count"]
+            target = r["target"]
+            if target not in by_target_tier:
+                by_target_tier[target] = {}
+            by_target_tier[target][r["tier"]] = r["count"]
+
+        total_memories = conn.execute("SELECT COUNT(*) as c FROM memories").fetchone()["c"]
+        total_embeddings = conn.execute("SELECT COUNT(*) as c FROM embeddings").fetchone()["c"]
+        total_edges = conn.execute("SELECT COUNT(*) as c FROM edges").fetchone()["c"]
 
         return {
-            "total": total,
-            "by_target": by_target,
-            "by_tier": by_tier,
-            "by_type": by_type,
+            "total_memories": total_memories,
+            "by_target_tier": by_target_tier,
+            "total_embeddings": total_embeddings,
+            "total_edges": total_edges,
             "schema_version": self._get_meta("schema_version"),
         }
 
@@ -1678,7 +1395,7 @@ Return ONLY a JSON array of indices, nothing else."""
             if not text:
                 continue
 
-            entries = [e.strip() for e in text.split("\n§\n") if e.strip()]
+            entries = [e.strip() for e in text.split("\n\u00a7\n") if e.strip()]
             for entry in entries:
                 self.add(
                     content=entry,
@@ -1710,122 +1427,3 @@ Return ONLY a JSON array of indices, nothing else."""
             for mem in self.get_active_memories(t):
                 memories.append(f"[{mem['id'][:8]}|{mem.get('type','gen')}|{mem['target']}] {mem['content'][:120]}")
         return "\n".join(memories) if memories else "(no memories yet)"
-
-    # -- Procedures (tool chain learning) ------------------------------------
-
-    def learn_procedure(self, name: str, description: str, tool_chain: list) -> dict:
-        """Record or update a procedure (tool chain pattern). From HiveMind ProcedureLearnTool."""
-        conn = self._get_conn()
-        now = datetime.now(timezone.utc).isoformat()
-        existing = conn.execute("SELECT id FROM procedures WHERE name = ?", (name,)).fetchone()
-        if existing:
-            proc_id = existing["id"]
-            conn.execute(
-                "UPDATE procedures SET description=?, tool_chain=?, updated_at=? WHERE id=?",
-                (description, json.dumps(tool_chain), now, proc_id),
-            )
-        else:
-            proc_id = str(uuid.uuid4())
-            conn.execute(
-                "INSERT INTO procedures (id, name, description, tool_chain, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (proc_id, name, description, json.dumps(tool_chain), now, now),
-            )
-        conn.commit()
-        return {"id": proc_id, "name": name}
-
-    def reinforce_procedure(self, name: str, success: bool) -> dict:
-        """Reinforce a procedure on success/failure. From HiveMind."""
-        conn = self._get_conn()
-        now = datetime.now(timezone.utc).isoformat()
-        col = "success_count" if success else "fail_count"
-        cur = conn.execute(
-            f"UPDATE procedures SET {col} = {col} + 1, last_used = ?, updated_at = ? WHERE name = ?",
-            (now, now, name),
-        )
-        conn.commit()
-        if cur.rowcount == 0:
-            return {"error": f"Procedure '{name}' not found"}
-        return {"name": name, "reinforced": success}
-
-    def get_procedures(self, limit: int = 20) -> list:
-        """Get procedures ordered by success rate."""
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM procedures ORDER BY success_count DESC, updated_at DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        results = []
-        for r in rows:
-            d = dict(r)
-            try:
-                d["tool_chain"] = json.loads(d.get("tool_chain", "[]"))
-            except (json.JSONDecodeError, TypeError):
-                d["tool_chain"] = []
-            results.append(d)
-        return results
-
-    def find_procedure(self, name: str) -> Optional[dict]:
-        """Find a procedure by name (LIKE match)."""
-        conn = self._get_conn()
-        row = conn.execute("SELECT * FROM procedures WHERE name LIKE ?", (f"%{name}%",)).fetchone()
-        if not row:
-            return None
-        d = dict(row)
-        try:
-            d["tool_chain"] = json.loads(d.get("tool_chain", "[]"))
-        except (json.JSONDecodeError, TypeError):
-            d["tool_chain"] = []
-        return d
-
-    # -- Events (episodic memory) --------------------------------------------
-
-    def log_event(self, event_type: str, summary: str, details: dict = None, session_id: str = None) -> dict:
-        """Log an episodic event. From HiveMind MAGMA events table.
-
-        Event types: tool_success, tool_failure, memory_write, session_start, session_end,
-        consolidation, error, milestone
-        """
-        conn = self._get_conn()
-        event_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            "INSERT INTO events (id, event_type, summary, details, session_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (event_id, event_type, summary, json.dumps(details or {}), session_id, now),
-        )
-        conn.commit()
-        return {"id": event_id, "event_type": event_type}
-
-    def get_recent_events(self, event_type: str = None, limit: int = 20, session_id: str = None) -> list:
-        """Get recent events, optionally filtered by type or session."""
-        conn = self._get_conn()
-        sql = "SELECT * FROM events WHERE 1=1"
-        params = []
-        if event_type:
-            sql += " AND event_type = ?"
-            params.append(event_type)
-        if session_id:
-            sql += " AND session_id = ?"
-            params.append(session_id)
-        sql += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
-        rows = conn.execute(sql, params).fetchall()
-        results = []
-        for r in rows:
-            d = dict(r)
-            try:
-                d["details"] = json.loads(d.get("details", "{}"))
-            except (json.JSONDecodeError, TypeError):
-                d["details"] = {}
-            results.append(d)
-        return results
-
-    def purge_old_events(self, max_age_days: int = 90) -> int:
-        """Delete events older than max_age_days. Events are ephemeral by nature."""
-        conn = self._get_conn()
-        cutoff = datetime.now(timezone.utc).isoformat()
-        cur = conn.execute(
-            "DELETE FROM events WHERE julianday(?) - julianday(created_at) > ?",
-            (cutoff, max_age_days),
-        )
-        conn.commit()
-        return cur.rowcount

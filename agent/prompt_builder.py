@@ -860,15 +860,23 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     cwd_path = Path(cwd).resolve()
     sections = []
 
+    # Skip project context when cwd is the hermes-agent install directory.
+    # The gateway process defaults to this dir, which causes the repo's own
+    # AGENTS.md (~20K chars / ~5K tokens) to be injected into every conversation
+    # regardless of topic — wasting tokens and prompting excessive reasoning.
+    _hermes_home = Path(os.environ.get("HERMES_HOME", "")).resolve()
+    _is_own_repo = _hermes_home and cwd_path == _hermes_home
+
     # Priority-based project context: first match wins
-    project_context = (
-        _load_hermes_md(cwd_path)
-        or _load_agents_md(cwd_path)
-        or _load_claude_md(cwd_path)
-        or _load_cursorrules(cwd_path)
-    )
-    if project_context:
-        sections.append(project_context)
+    if not _is_own_repo:
+        project_context = (
+            _load_hermes_md(cwd_path)
+            or _load_agents_md(cwd_path)
+            or _load_claude_md(cwd_path)
+            or _load_cursorrules(cwd_path)
+        )
+        if project_context:
+            sections.append(project_context)
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:

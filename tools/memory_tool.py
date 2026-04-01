@@ -537,48 +537,8 @@ def memory_tool(
         if not search_query:
             return json.dumps({"success": False, "error": "search_query is required for 'search' action."}, ensure_ascii=False)
         result = store.search(target, search_query)
-
-    elif action == "graph_query":
-        def _resolve_short_id(eng, short):
-            row = eng._get_conn().execute("SELECT id FROM memories WHERE id LIKE ?", (short + "%",)).fetchone()
-            return row["id"] if row else None
-
-        if not store.engine:
-            return json.dumps({"success": False, "error": "graph_query requires engine='sqlite' in config."}, ensure_ascii=False)
-        memory_id = content  # memory_id passed via content param
-        if not memory_id:
-            return json.dumps({"success": False, "error": "content (memory_id) is required for 'graph_query' action."}, ensure_ascii=False)
-        subtype = type if type in ("related", "edges") else "related"
-        # Resolve short ID to full ID
-        full_id = _resolve_short_id(store.engine, memory_id)
-        if not full_id:
-            return json.dumps({"success": False, "error": f"No memory found with ID prefix '{memory_id}'."}, ensure_ascii=False)
-        if subtype == "edges":
-            edges = store.engine.get_edges(full_id)
-            result = {"success": True, "memory_id": memory_id, "subtype": "edges", "edges": edges}
-        else:
-            related = store.engine.get_related(full_id)
-            result = {"success": True, "memory_id": memory_id, "subtype": "related",
-                       "related": [{"id": r["id"][:8], "content": r["content"][:200], "type": r.get("type", "general")} for r in related]}
-
-    elif action == "entity_track":
-        if not store.engine:
-            return json.dumps({"success": False, "error": "entity_track requires engine='sqlite' in config."}, ensure_ascii=False)
-        name = content
-        if not name:
-            return json.dumps({"success": False, "error": "content (entity name) is required for 'entity_track' action."}, ensure_ascii=False)
-        entity_type = type if type not in ("general",) else "unknown"
-        metadata = {}
-        if old_text:
-            try:
-                metadata = json.loads(old_text)
-            except (json.JSONDecodeError, TypeError):
-                metadata = {"note": old_text}
-        tracked = store.engine.track_entity(name, entity_type, metadata)
-        result = {"success": True, "action": "entity_track", "entity": tracked}
-
     else:
-        return json.dumps({"success": False, "error": f"Unknown action '{action}'. Use: add, replace, remove, search, graph_query, entity_track"}, ensure_ascii=False)
+        return json.dumps({"success": False, "error": f"Unknown action '{action}'. Use: add, replace, remove, search"}, ensure_ascii=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -642,7 +602,7 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove", "search", "graph_query", "entity_track"],
+                "enum": ["add", "replace", "remove", "search"],
                 "description": "The action to perform."
             },
             "target": {

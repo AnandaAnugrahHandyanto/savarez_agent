@@ -311,9 +311,9 @@ class TestMigration:
 class TestStats:
     def test_stats(self, populated_engine):
         s = populated_engine.stats()
-        assert s["total"] == 5
-        assert "memory" in s["by_target"]
-        assert "user" in s["by_target"]
+        assert s["total_memories"] == 5
+        assert "memory" in s["by_target_tier"]
+        assert "user" in s["by_target_tier"]
 
     def test_count_active(self, populated_engine):
         assert populated_engine.count_active() == 5

@@ -1,6 +1,6 @@
 """Tests for SessionMemory — structured 9-section session notes."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -11,18 +11,15 @@ from agent.session_memory import (
     _has_valid_sections,
 )
 
-
-@pytest.fixture
-def mock_aux():
-    """Mock auxiliary client."""
-    client = MagicMock()
-    return client
+# Patch targets — _generate_update does a local import from agent.auxiliary_client
+_CALL_LLM = "agent.auxiliary_client.call_llm"
+_EXTRACT = "agent.auxiliary_client.extract_content_or_reasoning"
 
 
 @pytest.fixture
-def session_mem(mock_aux):
-    """SessionMemory with default config and mock aux client."""
-    return SessionMemory(auxiliary_client=mock_aux, config={
+def session_mem():
+    """SessionMemory with low thresholds for testing."""
+    return SessionMemory(config={
         "minimum_tokens_to_init": 100,  # low for testing
         "minimum_tokens_between_update": 50,
         "tool_calls_between_updates": 2,
@@ -31,58 +28,68 @@ def session_mem(mock_aux):
 
 
 class TestBasicUpdate:
-    def test_update_returns_true_when_thresholds_met(self, session_mem, mock_aux):
-        mock_aux.call_llm.return_value = DEFAULT_SESSION_MEMORY_TEMPLATE.replace(
+    @patch(_EXTRACT)
+    @patch(_CALL_LLM)
+    def test_update_returns_true_when_thresholds_met(self, mock_call, mock_extract, session_mem):
+        updated = DEFAULT_SESSION_MEMORY_TEMPLATE.replace(
             "_A short and distinctive", "Porting Memory Features"
         )
+        mock_call.return_value = MagicMock()
+        mock_extract.return_value = updated
         messages = [{"role": "user", "content": "test message"}]
         result = session_mem.update(messages, token_count=200, tool_call_count=5)
         assert result is True
         assert session_mem.update_count == 1
 
-    def test_update_calls_auxiliary_client(self, session_mem, mock_aux):
-        mock_aux.call_llm.return_value = DEFAULT_SESSION_MEMORY_TEMPLATE
+    @patch(_EXTRACT)
+    @patch(_CALL_LLM)
+    def test_update_calls_llm(self, mock_call, mock_extract, session_mem):
+        mock_call.return_value = MagicMock()
+        mock_extract.return_value = DEFAULT_SESSION_MEMORY_TEMPLATE
         messages = [{"role": "user", "content": "hello"}]
         session_mem.update(messages, token_count=200, tool_call_count=5)
-        mock_aux.call_llm.assert_called_once()
+        mock_call.assert_called_once()
 
-    def test_update_preserves_notes_on_success(self, session_mem, mock_aux):
+    @patch(_EXTRACT)
+    @patch(_CALL_LLM)
+    def test_update_preserves_notes_on_success(self, mock_call, mock_extract, session_mem):
         updated_notes = DEFAULT_SESSION_MEMORY_TEMPLATE.replace(
             "_A short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler_",
             "My Updated Title"
         )
-        mock_aux.call_llm.return_value = updated_notes
+        mock_call.return_value = MagicMock()
+        mock_extract.return_value = updated_notes
         messages = [{"role": "user", "content": "hello"}]
         session_mem.update(messages, token_count=200, tool_call_count=5)
         assert "My Updated Title" in session_mem.get_summary()
 
 
 class TestThresholdGating:
-    def test_below_init_threshold_skips(self, session_mem, mock_aux):
+    @patch(_CALL_LLM)
+    def test_below_init_threshold_skips(self, mock_call, session_mem):
         messages = [{"role": "user", "content": "hello"}]
         result = session_mem.update(messages, token_count=50, tool_call_count=5)
         assert result is False
-        mock_aux.call_llm.assert_not_called()
+        mock_call.assert_not_called()
 
-    def test_below_tool_call_threshold_skips(self, session_mem, mock_aux):
+    @patch(_EXTRACT)
+    @patch(_CALL_LLM)
+    def test_below_tool_call_threshold_skips(self, mock_call, mock_extract, session_mem):
         messages = [{"role": "user", "content": "hello"}]
         # First call to initialize
-        mock_aux.call_llm.return_value = DEFAULT_SESSION_MEMORY_TEMPLATE
+        mock_call.return_value = MagicMock()
+        mock_extract.return_value = DEFAULT_SESSION_MEMORY_TEMPLATE
         session_mem.update(messages, token_count=200, tool_call_count=5)
-        mock_aux.call_llm.reset_mock()
+        mock_call.reset_mock()
         # Second call with enough tokens but not enough tool calls
         result = session_mem.update(messages, token_count=260, tool_call_count=6)
         assert result is False
 
-    def test_both_thresholds_needed(self, session_mem, mock_aux):
+    @patch(_CALL_LLM)
+    def test_both_thresholds_needed(self, mock_call, session_mem):
         messages = [{"role": "user", "content": "hello"}]
         # Enough tokens but not enough tool calls since last update
         result = session_mem.update(messages, token_count=200, tool_call_count=1)
-        assert result is False
-
-    def test_no_aux_client_always_false(self):
-        sm = SessionMemory(auxiliary_client=None)
-        result = sm.update([], token_count=99999, tool_call_count=99)
         assert result is False
 
 
@@ -103,8 +110,11 @@ class TestSectionRendering:
     def test_has_valid_sections_fails_for_junk(self):
         assert _has_valid_sections("just some random text") is False
 
-    def test_invalid_response_discarded(self, session_mem, mock_aux):
-        mock_aux.call_llm.return_value = "This has no sections at all."
+    @patch(_EXTRACT)
+    @patch(_CALL_LLM)
+    def test_invalid_response_discarded(self, mock_call, mock_extract, session_mem):
+        mock_call.return_value = MagicMock()
+        mock_extract.return_value = "This has no sections at all."
         messages = [{"role": "user", "content": "hello"}]
         result = session_mem.update(messages, token_count=200, tool_call_count=5)
         assert result is False
@@ -113,8 +123,11 @@ class TestSectionRendering:
 
 
 class TestClear:
-    def test_clear_resets_to_template(self, session_mem, mock_aux):
-        mock_aux.call_llm.return_value = DEFAULT_SESSION_MEMORY_TEMPLATE.replace(
+    @patch(_EXTRACT)
+    @patch(_CALL_LLM)
+    def test_clear_resets_to_template(self, mock_call, mock_extract, session_mem):
+        mock_call.return_value = MagicMock()
+        mock_extract.return_value = DEFAULT_SESSION_MEMORY_TEMPLATE.replace(
             "_A short and distinctive", "Updated Title"
         )
         messages = [{"role": "user", "content": "hello"}]
@@ -126,11 +139,15 @@ class TestClear:
         assert session_mem.is_initialized is False
         assert "# Session Title" in session_mem.get_summary()
 
-    def test_clear_allows_reinit(self, session_mem, mock_aux):
-        mock_aux.call_llm.return_value = DEFAULT_SESSION_MEMORY_TEMPLATE
+    @patch(_EXTRACT)
+    @patch(_CALL_LLM)
+    def test_clear_allows_reinit(self, mock_call, mock_extract, session_mem):
+        mock_call.return_value = MagicMock()
+        mock_extract.return_value = DEFAULT_SESSION_MEMORY_TEMPLATE
         messages = [{"role": "user", "content": "hello"}]
         session_mem.update(messages, token_count=200, tool_call_count=5)
         session_mem.clear()
+        mock_call.reset_mock()
         # Should need to meet init threshold again
         result = session_mem.update(messages, token_count=50, tool_call_count=5)
         assert result is False

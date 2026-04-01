@@ -1405,11 +1405,13 @@ class AIAgent:
         if not content:
             return ""
         # Strip all reasoning tag variants: <think>, <thinking>, <THINKING>,
-        # <reasoning>, <REASONING_SCRATCHPAD>
+        # <reasoning>, <REASONING_SCRATCHPAD>, /think (DashScope/Kimi K2.5)
         content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
         content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL | re.IGNORECASE)
         content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL)
         content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL)
+        # /think ... /think (DashScope Kimi K2.5 — ported from HiveMind strip_thinking)
+        content = re.sub(r'/think\s*.*?\s*/think', '', content, flags=re.DOTALL)
         return content
 
     def _looks_like_codex_intermediate_ack(
@@ -5225,7 +5227,7 @@ class AIAgent:
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
-                if msg.get("role") == "assistant":
+                if msg.get("role") == "assistant" and self.provider != "anthropic":
                     reasoning = msg.get("reasoning")
                     if reasoning:
                         api_msg["reasoning_content"] = reasoning
@@ -5324,6 +5326,13 @@ class AIAgent:
                             old_text=args.get("old_text"),
                             store=self._memory_store,
                         )
+                        # Mark that agent wrote memory this turn (mutual exclusion with auto-extraction)
+                        if args.get("action") in ("add", "replace", "remove"):
+                            try:
+                                from agent.memory_extractor import get_extractor_state
+                                get_extractor_state().mark_agent_wrote_memory()
+                            except Exception:
+                                pass
                         if self._honcho and flush_target == "user" and args.get("action") == "add":
                             self._honcho_save_user_observation(args.get("content", ""))
                         if not self.quiet_mode:
@@ -5468,6 +5477,13 @@ class AIAgent:
                 old_text=function_args.get("old_text"),
                 store=self._memory_store,
             )
+            # Mark that agent wrote memory this turn (mutual exclusion with auto-extraction)
+            if function_args.get("action") in ("add", "replace", "remove"):
+                try:
+                    from agent.memory_extractor import get_extractor_state
+                    get_extractor_state().mark_agent_wrote_memory()
+                except Exception:
+                    pass
             # Also send user observations to Honcho when active
             if self._honcho and target == "user" and function_args.get("action") == "add":
                 self._honcho_save_user_observation(function_args.get("content", ""))
@@ -5801,6 +5817,13 @@ class AIAgent:
                     search_query=function_args.get("search_query"),
                     store=self._memory_store,
                 )
+                # Mark that agent wrote memory this turn (mutual exclusion with auto-extraction)
+                if function_args.get("action") in ("add", "replace", "remove"):
+                    try:
+                        from agent.memory_extractor import get_extractor_state
+                        get_extractor_state().mark_agent_wrote_memory()
+                    except Exception:
+                        pass
                 # Also send user observations to Honcho when active
                 if self._honcho and target == "user" and function_args.get("action") == "add":
                     self._honcho_save_user_observation(function_args.get("content", ""))
@@ -6272,6 +6295,13 @@ class AIAgent:
         # Track user turns for memory flush and periodic nudge logic
         self._user_turn_count += 1
 
+        # Clear extractor mutual-exclusion flag at turn start
+        try:
+            from agent.memory_extractor import get_extractor_state
+            get_extractor_state().clear_agent_wrote_memory()
+        except Exception:
+            pass
+
         # Preserve the original user message (no nudge injection).
         # Honcho should receive the actual user input, not system nudges.
         original_user_message = persist_user_message if persist_user_message is not None else user_message
@@ -6292,9 +6322,8 @@ class AIAgent:
         # Session memory update (structured per-session notes, from Claude Code)
         if getattr(self, '_session_memory', None) and messages:
             try:
-                _aux = getattr(self, '_auxiliary_client', None)
                 _token_count = getattr(self, '_session_total_input_tokens', 0) + getattr(self, '_session_total_output_tokens', 0)
-                self._session_memory.update(messages, _token_count, api_call_count, _aux)
+                self._session_memory.update(messages, _token_count, api_call_count)
             except Exception:
                 pass  # Session memory is best-effort
 
@@ -6538,12 +6567,14 @@ class AIAgent:
                         api_msg.get("content", ""), self._honcho_turn_context
                     )
 
-                # For ALL assistant messages, pass reasoning back to the API
-                # This ensures multi-turn reasoning context is preserved
-                if msg.get("role") == "assistant":
+                # For non-Anthropic assistant messages, pass reasoning back to the API
+                # via reasoning_content (Moonshot AI, Novita, OpenRouter need this).
+                # Anthropic handles thinking natively via thinking blocks — sending
+                # reasoning_content back causes it to accumulate in history, snowballing
+                # input tokens and causing reasoning scratchpad overflow.
+                if msg.get("role") == "assistant" and self.provider != "anthropic":
                     reasoning_text = msg.get("reasoning")
                     if reasoning_text:
-                        # Add reasoning_content for API compatibility (Moonshot AI, Novita, OpenRouter)
                         api_msg["reasoning_content"] = reasoning_text
 
                 # Remove 'reasoning' field - it's for trajectory storage only
@@ -8339,6 +8370,21 @@ class AIAgent:
                 _eng.purge_dead()
                 from agent.memory_consolidator import increment_session_count
                 increment_session_count(_eng)
+                # Check consolidation gates and run if due
+                try:
+                    from agent.memory_consolidator import check_consolidation_gates, consolidate_memories
+                    _mem_cfg = {}
+                    try:
+                        from hermes_cli.config import load_config as _load_agent_config
+                        _mem_cfg = _load_agent_config().get("memory", {})
+                    except Exception:
+                        pass
+                    if check_consolidation_gates(_eng, _mem_cfg) is None:
+                        _aux = getattr(self, '_auxiliary_client', None)
+                        if _aux:
+                            consolidate_memories(_eng, auxiliary_client=_aux, config=_mem_cfg)
+                except Exception as _consol_err:
+                    logger.debug("Consolidation check failed: %s", _consol_err)
         except Exception:
             pass
 

@@ -121,9 +121,8 @@ class SessionMemory:
     Thread-safe. Uses auxiliary_client for cheap LLM-powered updates.
     """
 
-    def __init__(self, auxiliary_client=None, config: Optional[dict] = None):
+    def __init__(self, config: Optional[dict] = None):
         self._lock = threading.Lock()
-        self._auxiliary_client = auxiliary_client
         self._config = {**DEFAULT_CONFIG, **(config or {})}
 
         # Current notes content
@@ -153,9 +152,6 @@ class SessionMemory:
         Returns:
             True if notes were updated, False if thresholds not met or update skipped.
         """
-        if self._auxiliary_client is None:
-            return False
-
         if not self._should_update(token_count, tool_call_count):
             return False
 
@@ -241,16 +237,26 @@ class SessionMemory:
             conversation=conversation,
         )
 
-        response = self._auxiliary_client.call_llm(
-            prompt=prompt,
-            system_message=(
-                "You are a note-taking assistant. Update structured session notes "
-                "based on the conversation. Return ONLY the complete updated notes document."
-            ),
+        from agent.auxiliary_client import call_llm as _call_llm, extract_content_or_reasoning
+
+        _messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a note-taking assistant. Update structured session notes "
+                    "based on the conversation. Return ONLY the complete updated notes document."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+        _resp = _call_llm(
+            task="session_memory",
+            messages=_messages,
             model=model,
             max_tokens=2048,
             temperature=0.2,
         )
+        response = extract_content_or_reasoning(_resp) if _resp else None
 
         if not response or not response.strip():
             return None
