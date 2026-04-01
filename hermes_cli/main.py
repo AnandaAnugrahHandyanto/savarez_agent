@@ -936,7 +936,7 @@ def select_provider_and_model():
 
     # Step 1: Provider selection — put active provider first with marker
     providers = [
-        ("atomic-chat", "Atomic Chat (local LLMs)"),
+        ("atomic-chat", "Atomic Chat Local LLMs (for apple silicon only)"),
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
         ("nous", "Nous Portal (Nous Research subscription)"),
         ("openai-codex", "OpenAI Codex"),
@@ -1612,7 +1612,7 @@ ATOMIC_CHAT_BASE_URL = "http://127.0.0.1:1337/v1"
 
 
 def _model_flow_atomic_chat(config, current_model=""):
-    """Handle Atomic Chat — local LLMs provider at 127.0.0.1:1337.
+    """Handle Atomic Chat — local LLMs (for apple silicon only) provider at 127.0.0.1:1337.
 
     Three-branch detection:
     1. Not running → tell user to download / launch
