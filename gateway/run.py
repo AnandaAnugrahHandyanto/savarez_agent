@@ -1792,6 +1792,21 @@ class GatewayRunner:
                     del self._running_agents[_quick_key]
                 return await self._handle_reset_command(event)
 
+            # /model must bypass the running-agent guard so users can switch
+            # models from chat instead of feeding the slash command back into
+            # the active agent as normal text.
+            if _cmd_def_inner and _cmd_def_inner.name == "model":
+                running_agent = self._running_agents.get(_quick_key)
+                if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+                    running_agent.interrupt("Model switch requested")
+                adapter = self.adapters.get(source.platform)
+                if adapter and hasattr(adapter, 'get_pending_message'):
+                    adapter.get_pending_message(_quick_key)  # consume and discard
+                self._pending_messages.pop(_quick_key, None)
+                if _quick_key in self._running_agents:
+                    del self._running_agents[_quick_key]
+                return await self._handle_model_command(event)
+
             # /queue <prompt> — queue without interrupting
             if event.get_command() in ("queue", "q"):
                 queued_text = event.get_command_args().strip()
@@ -1901,6 +1916,9 @@ class GatewayRunner:
 
         if canonical == "provider":
             return await self._handle_provider_command(event)
+
+        if canonical == "model":
+            return await self._handle_model_command(event)
         
         if canonical == "personality":
             return await self._handle_personality_command(event)
@@ -3258,6 +3276,122 @@ class GatewayRunner:
         lines.append("")
         lines.append("Switch: `/model provider:model-name`")
         lines.append("Setup: `hermes setup`")
+        return "\n".join(lines)
+
+    async def _handle_model_command(self, event: MessageEvent) -> str:
+        """Handle /model [provider:]model command."""
+        from hermes_cli.auth import _save_model_choice, _update_config_for_provider
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.model_switch import switch_model, switch_to_custom_provider
+        from hermes_cli.models import _PROVIDER_LABELS, normalize_provider
+        from hermes_cli.runtime_provider import (
+            _detect_api_mode_for_url,
+            resolve_runtime_provider,
+        )
+
+        args = event.get_command_args().strip()
+        if not args:
+            return (
+                "🤖 **Current model**\n\n"
+                f"{self._format_session_info()}\n\n"
+                "Switch: `/model [provider:]model-name`"
+            )
+
+        cfg = load_config()
+        model_cfg = cfg.get("model", {})
+        current_provider = ""
+        current_base_url = ""
+        current_api_key = ""
+        if isinstance(model_cfg, dict):
+            current_provider = str(model_cfg.get("provider") or "").strip()
+            current_base_url = str(model_cfg.get("base_url") or "").strip()
+
+        try:
+            runtime = resolve_runtime_provider(requested=current_provider or None)
+            current_provider = current_provider or str(runtime.get("provider") or "")
+            current_base_url = current_base_url or str(runtime.get("base_url") or "")
+            current_api_key = str(runtime.get("api_key") or "")
+        except Exception:
+            pass
+
+        current_provider = normalize_provider(current_provider or "openrouter")
+
+        try:
+            if args.lower() == "custom":
+                custom_result = switch_to_custom_provider()
+                if not custom_result.success:
+                    return f"⚠️ {custom_result.error_message}"
+                new_model = custom_result.model
+                target_provider = "custom"
+                target_base_url = custom_result.base_url
+                warning_message = ""
+            else:
+                result = switch_model(
+                    args,
+                    current_provider,
+                    current_base_url=current_base_url,
+                    current_api_key=current_api_key,
+                )
+                if not result.success:
+                    return f"⚠️ {result.error_message}"
+                new_model = result.new_model
+                target_provider = result.target_provider
+                target_base_url = result.base_url
+                warning_message = result.warning_message
+        except Exception as e:
+            logger.exception("Gateway /model switch failed")
+            return f"⚠️ Failed to switch model: {e}"
+
+        try:
+            _update_config_for_provider(target_provider, target_base_url, default_model=new_model)
+            _save_model_choice(new_model)
+
+            cfg = load_config()
+            updated_model_cfg = cfg.get("model", {})
+            if not isinstance(updated_model_cfg, dict):
+                updated_model_cfg = {"default": str(updated_model_cfg or "").strip()}
+            updated_model_cfg["default"] = new_model
+            updated_model_cfg["provider"] = target_provider
+
+            if target_base_url and str(target_base_url).strip():
+                updated_model_cfg["base_url"] = str(target_base_url).rstrip("/")
+            else:
+                updated_model_cfg.pop("base_url", None)
+
+            if target_provider == "openai-codex":
+                updated_model_cfg["api_mode"] = "codex_responses"
+            elif target_provider == "anthropic":
+                updated_model_cfg["api_mode"] = "anthropic_messages"
+            else:
+                detected_api_mode = _detect_api_mode_for_url(str(target_base_url or ""))
+                if detected_api_mode:
+                    updated_model_cfg["api_mode"] = detected_api_mode
+                else:
+                    updated_model_cfg.pop("api_mode", None)
+
+            cfg["model"] = updated_model_cfg
+            save_config(cfg)
+        except Exception as e:
+            logger.exception("Failed to persist gateway /model switch")
+            return f"⚠️ Failed to save model change: {e}"
+
+        session_key = self._session_key_for_source(event.source)
+        self._effective_model = None
+        self._effective_provider = None
+        self._evict_cached_agent(session_key)
+
+        if target_provider.startswith("custom:"):
+            provider_label = f"Custom endpoint ({target_provider.split(':', 1)[1]})"
+        else:
+            provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
+
+        lines = [
+            f"🤖 ✓ Switched to `{new_model}` via {provider_label}",
+            "_(takes effect on the next message)_",
+        ]
+        if warning_message:
+            lines.extend(["", f"⚠️ {warning_message}"])
+        lines.extend(["", self._format_session_info()])
         return "\n".join(lines)
     
     async def _handle_personality_command(self, event: MessageEvent) -> str:
