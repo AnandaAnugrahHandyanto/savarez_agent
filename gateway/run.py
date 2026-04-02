@@ -1788,21 +1788,19 @@ class GatewayRunner:
         # let the adapter-level batching/queueing logic absorb them.
         _quick_key = self._session_key_for_source(source)
 
-        # Staleness eviction (v0.7.0): if an entry has been in
-        # _running_agents for longer than the agent timeout + grace,
-        # it's a leaked lock from a hung/crashed handler. (#2153)
-        _raw_stale_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", "600"))
-        _STALE_TTL = (_raw_stale_timeout + 60) if _raw_stale_timeout > 0 else float("inf")
-        _stale_ts = self._running_agents_ts.get(_quick_key, 0)
-        if (_quick_key in self._running_agents
-                and _stale_ts
-                and (time.time() - _stale_ts) > _STALE_TTL):
+        # Staleness eviction: if an entry has been in _running_agents for
+        # longer than the agent timeout, it's a leaked lock from a hung or
+        # crashed handler.  Evict it so the session isn't permanently stuck.
+        _STALE_TTL = float(os.getenv("HERMES_AGENT_TIMEOUT", 600)) + 60  # timeout + 1 min grace
+        _ts_dict = getattr(self, "_running_agents_ts", {})
+        _stale_ts = _ts_dict.get(_quick_key, 0)
+        if _quick_key in self._running_agents and _stale_ts and (time.time() - _stale_ts) > _STALE_TTL:
             logger.warning(
                 "Evicting stale _running_agents entry for %s (age: %.0fs)",
                 _quick_key[:30], time.time() - _stale_ts,
             )
             del self._running_agents[_quick_key]
-            self._running_agents_ts.pop(_quick_key, None)
+            _ts_dict.pop(_quick_key, None)
 
         if _quick_key in self._running_agents:
             if event.get_command() == "status":
@@ -2150,7 +2148,8 @@ class GatewayRunner:
         # "already running" guard and spin up a duplicate agent for the
         # same session — corrupting the transcript.
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
-        self._running_agents_ts[_quick_key] = time.time()
+        if hasattr(self, "_running_agents_ts"):
+            self._running_agents_ts[_quick_key] = time.time()
 
         try:
             return await self._handle_message_with_agent(event, source, _quick_key)
@@ -2161,7 +2160,8 @@ class GatewayRunner:
             # not linger or the session would be permanently locked out.
             if self._running_agents.get(_quick_key) is _AGENT_PENDING_SENTINEL:
                 del self._running_agents[_quick_key]
-            self._running_agents_ts.pop(_quick_key, None)
+            if hasattr(self, "_running_agents_ts"):
+                self._running_agents_ts.pop(_quick_key, None)
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str):
         """Inner handler that runs under the _running_agents sentinel guard."""
@@ -6189,28 +6189,33 @@ class GatewayRunner:
         register_gateway_notify(_approval_session, _approval_notify)
 
         try:
-            # Run in thread pool to not block, with timeout (v0.7.0)
-            _agent_timeout_raw = float(os.getenv("HERMES_AGENT_TIMEOUT", "600"))
-            _agent_timeout = _agent_timeout_raw if _agent_timeout_raw > 0 else None
+            # Run in thread pool to not block.  Cap total execution time
+            # so a hung API call or runaway tool doesn't permanently lock
+            # the session.  Default 10 minutes; override with env var.
+            _agent_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", 600))
+            loop = asyncio.get_event_loop()
             try:
                 response = await asyncio.wait_for(
                     loop.run_in_executor(None, run_sync),
                     timeout=_agent_timeout,
                 )
             except asyncio.TimeoutError:
-                logger.error("Agent timed out after %.0fs for session %s",
-                             _agent_timeout, session_key)
-                _timed_out = agent_holder[0]
-                if _timed_out and hasattr(_timed_out, "interrupt"):
-                    _timed_out.interrupt("Execution timed out")
-                _timeout_mins = int(_agent_timeout // 60)
+                logger.error(
+                    "Agent execution timed out after %.0fs for session %s",
+                    _agent_timeout, session_key,
+                )
+                # Interrupt the agent if it's still running so the thread
+                # pool worker is freed.
+                _timed_out_agent = agent_holder[0]
+                if _timed_out_agent and hasattr(_timed_out_agent, "interrupt"):
+                    _timed_out_agent.interrupt("Execution timed out")
                 response = {
                     "final_response": (
-                        f"⏱️ Request timed out after {_timeout_mins} minutes. "
-                        "Set HERMES_AGENT_TIMEOUT in .env (seconds, 0 = no limit) "
-                        "and restart the gateway.\nTry again, or use /reset."
+                        f"⏱️ Request timed out after {int(_agent_timeout // 60)} minutes. "
+                        "The agent may have been stuck on a tool or API call.\n"
+                        "Try again, or use /reset to start fresh."
                     ),
-                    "messages": [],
+                    "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                     "api_calls": 0,
                     "tools": tools_holder[0] or [],
                     "history_offset": 0,
@@ -6333,6 +6338,8 @@ class GatewayRunner:
             tracking_task.cancel()
             if session_key and session_key in self._running_agents:
                 del self._running_agents[session_key]
+            if session_key and hasattr(self, "_running_agents_ts"):
+                self._running_agents_ts.pop(session_key, None)
             
             # Wait for cancelled tasks
             for task in [progress_task, interrupt_monitor, tracking_task]:
