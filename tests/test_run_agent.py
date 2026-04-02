@@ -3007,6 +3007,99 @@ class TestStreamingApiCall:
         assert resp.model == "gpt-4"
 
 
+class TestCopilotAcpIntegration:
+    def _setup_agent(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+
+    def test_run_conversation_bypasses_streaming_for_copilot_acp_provider(self, agent):
+        self._setup_agent(agent)
+        agent.provider = "copilot-acp"
+        agent.base_url = "acp://copilot"
+        response = _mock_response(content="ACP answer", finish_reason="stop")
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_interruptible_streaming_api_call", side_effect=AssertionError("streaming should not be used")),
+            patch.object(agent, "_interruptible_api_call", return_value=response) as mock_nonstream,
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "ACP answer"
+        mock_nonstream.assert_called_once()
+
+    def test_run_conversation_bypasses_streaming_for_acp_base_url_marker(self, agent):
+        self._setup_agent(agent)
+        agent.provider = "custom"
+        agent.base_url = "acp://copilot"
+        response = _mock_response(content="ACP base marker", finish_reason="stop")
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_interruptible_streaming_api_call", side_effect=AssertionError("streaming should not be used")),
+            patch.object(agent, "_interruptible_api_call", return_value=response) as mock_nonstream,
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "ACP base marker"
+        mock_nonstream.assert_called_once()
+
+    def test_close_request_client_interrupt_closes_shared_acp_client(self, agent):
+        agent.provider = "copilot-acp"
+        agent.base_url = "acp://copilot"
+        shared = MagicMock()
+        agent.client = shared
+
+        with patch.object(agent, "_close_openai_client") as mock_close:
+            agent._close_request_openai_client(shared, reason="interrupt_abort")
+
+        mock_close.assert_called_once_with(shared, reason="interrupt_abort", shared=True)
+
+    def test_close_request_client_stream_interrupt_closes_shared_acp_client_by_base_url(self, agent):
+        agent.provider = "custom"
+        agent.base_url = "acp://copilot"
+        shared = MagicMock()
+        agent.client = shared
+
+        with patch.object(agent, "_close_openai_client") as mock_close:
+            agent._close_request_openai_client(shared, reason="stream_interrupt_abort")
+
+        mock_close.assert_called_once_with(shared, reason="stream_interrupt_abort", shared=True)
+
+
+class TestCopilotAcpNotice:
+    def test_run_conversation_emits_hint_only_notice_once(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.provider = "copilot-acp"
+        agent.base_url = "acp://copilot"
+        response = _mock_response(content="done", finish_reason="stop")
+        notices = []
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_emit_status", side_effect=lambda msg: notices.append(msg)),
+            patch.object(agent, "_interruptible_api_call", return_value=response),
+        ):
+            agent.run_conversation("hello")
+            agent.run_conversation("hello again")
+
+        assert len(notices) == 1
+        assert "hint-only" in notices[0]
+
+
 # ===================================================================
 # Interrupt _vprint force=True verification
 # ===================================================================

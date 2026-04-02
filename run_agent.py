@@ -694,6 +694,7 @@ class AIAgent:
         is_native_anthropic = self.api_mode == "anthropic_messages"
         self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
+        self._acp_hint_notice_emitted = False
         
         # Iteration budget pressure: warn the LLM as it approaches max_iterations.
         # Warnings are injected into the last tool result JSON (not as separate
@@ -3853,11 +3854,24 @@ class AIAgent:
         primary_client = self._ensure_primary_openai_client(reason=reason)
         if isinstance(primary_client, Mock):
             return primary_client
+        if self.provider == "copilot-acp" or str(getattr(self, "base_url", "") or "").startswith("acp://copilot"):
+            return primary_client
         with self._openai_client_lock():
             request_kwargs = dict(self._client_kwargs)
         return self._create_openai_client(request_kwargs, reason=reason, shared=False)
 
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
+        if client is getattr(self, "client", None):
+            is_copilot_acp = self.provider == "copilot-acp" or str(getattr(self, "base_url", "") or "").startswith("acp://copilot")
+            if is_copilot_acp and reason in {"interrupt_abort", "stream_interrupt_abort"}:
+                self._close_openai_client(client, reason=reason, shared=True)
+                return
+            logger.debug(
+                "Skipping request-level close for shared client (%s) %s",
+                reason,
+                self._client_log_context(),
+            )
+            return
         self._close_openai_client(client, reason=reason, shared=False)
 
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
@@ -6770,6 +6784,14 @@ class AIAgent:
         self._stream_callback = stream_callback
         self._persist_user_message_idx = None
         self._persist_user_message_override = persist_user_message
+        is_copilot_acp = self.provider == "copilot-acp" or str(getattr(self, "base_url", "") or "").startswith("acp://copilot")
+        if is_copilot_acp and not getattr(self, "_acp_hint_notice_emitted", False):
+            self._emit_status(
+                "ℹ️ Copilot ACP model selection is currently hint-only in this runtime. "
+                "Hermes preserves session/context and sends model/reasoning intent, but backend enforcement may differ."
+            )
+            self._acp_hint_notice_emitted = True
+
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
         
@@ -7231,7 +7253,9 @@ class AIAgent:
                             self.thinking_callback("")
 
                     _use_streaming = True
-                    if not self._has_stream_consumers():
+                    if self.provider == "copilot-acp" or str(getattr(self, "base_url", "") or "").startswith("acp://copilot"):
+                        _use_streaming = False
+                    elif not self._has_stream_consumers():
                         # No display/TTS consumer. Still prefer streaming for
                         # health checking, but skip for Mock clients in tests
                         # (mocks return SimpleNamespace, not stream iterators).
