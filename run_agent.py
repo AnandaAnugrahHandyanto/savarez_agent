@@ -78,7 +78,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 # Agent internals extracted to agent/ package for modularity
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
-    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
+    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE, CONTEXT_GRAPH_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -1139,6 +1139,21 @@ class AIAgent:
             if _user_mode == "honcho":
                 self._user_profile_enabled = False
                 logger.debug("peer %s memory_mode=honcho: local USER.md writes disabled", _hcfg.peer_name or "user")
+
+        # Context graph (Graphiti + Kuzu) — personal knowledge graph
+        self._graph_manager = None
+        if not skip_memory:
+            try:
+                graph_config = _loaded_config.get("context_graph", {})
+                if graph_config.get("enabled", False):
+                    from agent.graph_manager import GraphManager
+                    self._graph_manager = GraphManager(
+                        db_path=get_hermes_home() / "context-graph" / "kuzu_db",
+                        llm_config=_loaded_config,
+                    )
+                    logger.info("Context graph enabled (Graphiti + Kuzu)")
+            except Exception as e:
+                logger.warning("Context graph init failed: %s", e)
 
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10
@@ -2592,6 +2607,8 @@ class AIAgent:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
+        if "context_graph" in self.valid_tool_names:
+            tool_guidance.append(CONTEXT_GRAPH_GUIDANCE)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 
@@ -5635,6 +5652,21 @@ class AIAgent:
             if self._honcho and target == "user" and function_args.get("action") == "add":
                 self._honcho_save_user_observation(function_args.get("content", ""))
             return result
+        elif function_name == "context_graph":
+            if not self._graph_manager:
+                return json.dumps({"success": False, "error": "Context graph not enabled. Set context_graph.enabled: true in cli-config.yaml"})
+            from tools.context_graph_tool import context_graph_handler as _cg_handler
+            from model_tools import _run_async
+            return _run_async(_cg_handler(
+                action=function_args.get("action", ""),
+                query=function_args.get("query"),
+                content=function_args.get("content"),
+                source_type=function_args.get("source_type"),
+                name=function_args.get("name"),
+                episode_uuid=function_args.get("episode_uuid"),
+                limit=function_args.get("limit", 10),
+                manager=self._graph_manager,
+            ))
         elif function_name == "clarify":
             from tools.clarify_tool import clarify_tool as _clarify_tool
             return _clarify_tool(
@@ -5987,6 +6019,25 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
+            elif function_name == "context_graph":
+                if not self._graph_manager:
+                    function_result = json.dumps({"success": False, "error": "Context graph not enabled. Set context_graph.enabled: true in cli-config.yaml"})
+                else:
+                    from tools.context_graph_tool import context_graph_handler as _cg_handler
+                    from model_tools import _run_async
+                    function_result = _run_async(_cg_handler(
+                        action=function_args.get("action", ""),
+                        query=function_args.get("query"),
+                        content=function_args.get("content"),
+                        source_type=function_args.get("source_type"),
+                        name=function_args.get("name"),
+                        episode_uuid=function_args.get("episode_uuid"),
+                        limit=function_args.get("limit", 10),
+                        manager=self._graph_manager,
+                    ))
+                tool_duration = time.time() - tool_start_time
+                if self.quiet_mode:
+                    self._vprint(f"  {_get_cute_tool_message_impl('context_graph', function_args, tool_duration, result=function_result)}")
             elif function_name == "clarify":
                 from tools.clarify_tool import clarify_tool as _clarify_tool
                 function_result = _clarify_tool(

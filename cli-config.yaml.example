@@ -363,6 +363,52 @@ memory:
   flush_min_turns: 6        # Min user turns to trigger flush on exit/reset (0 = disabled)
 
 # =============================================================================
+# Context Graph — Personal Knowledge Graph (Graphiti + Kuzu)
+# =============================================================================
+# Temporal knowledge graph that captures decisions, entities, and reasoning
+# across sessions. Search is instant (~300ms, no LLM calls). Ingestion requires
+# LLM for entity extraction (~2-10s per episode, cheap model recommended).
+#
+# Install: pip install 'graphiti-core[kuzu]'
+# Storage: ~/.hermes/context-graph/kuzu_db/ (embedded, no Docker needed)
+
+context_graph:
+  enabled: false
+
+  # Graph backend: "kuzu" (embedded, zero-infra) or "falkordb" (Docker, web UI)
+  backend: "kuzu"
+
+  # Auto-ingestion mode:
+  # "manual" = only when agent explicitly calls add_episode (cheapest, default)
+  # "on_session_end" = extract decisions/learnings at session end (balanced)
+  auto_ingest: "manual"
+
+  # FalkorDB settings (only if backend: "falkordb")
+  # falkordb_url: "redis://localhost:6379"
+
+  # Obsidian vault sync (Phase 2 — not yet implemented)
+  # obsidian:
+  #   enabled: false
+  #   vault_path: "~/Documents/Obsidian Vault"
+  #   agent_prefix: "Hermes"
+  #   auto_sync: false
+
+# LLM for context graph ingestion. Uses the auxiliary client system.
+# Search does NOT use LLM — it's pure graph traversal.
+# Override with AUXILIARY_CONTEXT_GRAPH_PROVIDER / AUXILIARY_CONTEXT_GRAPH_MODEL env vars.
+#
+# auxiliary:
+#   context_graph:
+#     # Option 1: OpenRouter (cheapest cloud, ~$0.001/episode)
+#     provider: "openrouter"
+#     model: "google/gemini-2.5-flash"
+#
+#     # Option 2: Ollama (completely free, local, private)
+#     # provider: "ollama"
+#     # model: "llama3.2"
+#     # base_url: "http://localhost:11434/v1"
+
+# =============================================================================
 # Session Reset Policy (Messaging Platforms)
 # =============================================================================
 # Controls when messaging sessions (Telegram, Discord, WhatsApp, Slack) are

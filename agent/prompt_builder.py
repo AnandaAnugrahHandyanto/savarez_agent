@@ -170,6 +170,15 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+CONTEXT_GRAPH_GUIDANCE = (
+    "You have a personal context graph that captures decisions, entities, and reasoning "
+    "across sessions. Use context_graph search before starting complex work to check for "
+    "relevant past decisions and context. After making significant decisions or completing "
+    "complex tasks, use context_graph add_episode to record the decision trace (include: "
+    "goal, options considered, trade-offs, decision, reasoning, and expected outcome). "
+    "Do NOT ingest trivial interactions — only decisions, learnings, and project milestones."
+)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

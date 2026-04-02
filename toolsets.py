@@ -64,6 +64,8 @@ _HERMES_CORE_TOOLS = [
     "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # Context graph (gated on graphiti-core + config via check_fn)
+    "context_graph",
 ]
 
 
@@ -205,6 +207,12 @@ TOOLSETS = {
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
         "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
+        "includes": []
+    },
+
+    "context_graph": {
+        "description": "Personal knowledge graph with temporal reasoning (decisions, entities, relationships)",
+        "tools": ["context_graph"],
         "includes": []
     },
 
