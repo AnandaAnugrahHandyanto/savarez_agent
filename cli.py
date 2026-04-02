@@ -1103,6 +1103,7 @@ class HermesCLI:
         resume: str = None,
         checkpoints: bool = False,
         pass_session_id: bool = False,
+        no_context: bool = False,
     ):
         """
         Initialize the Hermes CLI.
@@ -1236,6 +1237,7 @@ class HermesCLI:
         self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
         self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 50)
         self.pass_session_id = pass_session_id
+        self.no_context = no_context
         
         # Ephemeral system prompt: env var takes precedence, then config
         self.system_prompt = (
@@ -2207,6 +2209,8 @@ class HermesCLI:
                 tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,
                 stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
+                skip_context_files=self.no_context,
+                skip_memory=self.no_context,
             )
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
@@ -7848,6 +7852,7 @@ def main(
     w: bool = False,
     checkpoints: bool = False,
     pass_session_id: bool = False,
+    no_context: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -7955,6 +7960,7 @@ def main(
         resume=resume,
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
+        no_context=no_context,
     )
 
     if parsed_skills:

@@ -644,6 +644,7 @@ def cmd_chat(args):
         "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
         "max_turns": getattr(args, "max_turns", None),
+        "no_context": getattr(args, "no_context", False),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -3933,6 +3934,12 @@ For more help on a command:
         action="store_true",
         default=False,
         help="Include the session ID in the agent's system prompt"
+    )
+    chat_parser.add_argument(
+        "--no-context",
+        action="store_true",
+        default=False,
+        help="Skip auto-injection of SOUL.md, AGENTS.md, .cursorrules, and memory into the session. Useful for headless/worker dispatch where the agent should only receive the prompt."
     )
     chat_parser.add_argument(
         "--source",
