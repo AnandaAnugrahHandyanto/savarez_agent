@@ -51,6 +51,34 @@ from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — r
 from hermes_constants import display_hermes_home
 
 
+def is_managed_tool_gateway_ready() -> bool:
+    """Backward-compatible helper for managed-mode tool gating.
+
+    Some tests/older code paths expect this symbol to exist.
+
+    By default, in managed (Nix) mode we *disable* tool/gateway operations
+    unless explicitly allowed via `HERMES_MANAGED_TOOL_GATEWAY_READY=true`.
+    Outside managed mode we allow tools.
+    """
+    try:
+        from hermes_cli.config import is_managed
+
+        if not is_managed():
+            return True
+
+        flag = os.getenv("HERMES_MANAGED_TOOL_GATEWAY_READY", "").strip().lower()
+        if flag in {"1", "true", "yes", "on"}:
+            return True
+        if flag in {"0", "false", "no", "off"}:
+            return False
+
+        # Default safe behavior in managed mode.
+        return False
+    except Exception:
+        # Fail open for compatibility if managed detection isn't available.
+        return True
+
+
 # =============================================================================
 # Custom Singularity Environment with more space
 # =============================================================================
