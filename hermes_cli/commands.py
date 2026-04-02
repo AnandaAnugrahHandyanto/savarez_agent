@@ -90,7 +90,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[name]"),
     CommandDef("statusbar", "Toggle the context/model status bar", "Configuration",
                cli_only=True, aliases=("sb",)),
-    CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose",
+    CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose -> log",
                "Configuration", cli_only=True,
                gateway_config_gate="display.tool_progress_command"),
     CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
