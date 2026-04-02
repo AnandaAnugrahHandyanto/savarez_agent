@@ -373,11 +373,12 @@ def _run_post_setup(post_setup_key: str):
     import shutil
     if post_setup_key == "browserbase":
         node_modules = PROJECT_ROOT / "node_modules" / "agent-browser"
-        if not node_modules.exists() and shutil.which("npm"):
+        npm_bin = shutil.which("npm")
+        if not node_modules.exists() and npm_bin:
             _print_info("    Installing Node.js dependencies for browser tools...")
             import subprocess
             result = subprocess.run(
-                ["npm", "install", "--silent"],
+                [npm_bin, "install", "--silent"],
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT)
             )
             if result.returncode == 0:
@@ -390,11 +391,12 @@ def _run_post_setup(post_setup_key: str):
 
     elif post_setup_key == "camofox":
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camoufox-browser"
-        if not camofox_dir.exists() and shutil.which("npm"):
+        npm_bin = shutil.which("npm")
+        if not camofox_dir.exists() and npm_bin:
             _print_info("    Installing Camofox browser server...")
             import subprocess
             result = subprocess.run(
-                ["npm", "install", "--silent"],
+                [npm_bin, "install", "--silent"],
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT)
             )
             if result.returncode == 0:
@@ -406,7 +408,7 @@ def _run_post_setup(post_setup_key: str):
             _print_info("      npx @askjo/camoufox-browser")
             _print_info("    First run downloads the Camoufox engine (~300MB)")
             _print_info("    Or use Docker: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
-        elif not shutil.which("npm"):
+        elif not npm_bin:
             _print_warning("    Node.js not found. Install Camofox via Docker:")
             _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
 
