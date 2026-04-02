@@ -100,8 +100,9 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
             resolved = resolve_channel_name(platform_name.lower(), target)
             if resolved:
                 chat_id = resolved
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Job '%s': failed to resolve delivery target '%s': %s",
+                          job.get("id", "?"), target, e)
 
         return {
             "platform": platform_name,
