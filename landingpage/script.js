@@ -12,9 +12,19 @@ const PLATFORMS = {
     stepNote:
       "Installs uv, Python 3.11, clones the repo, sets up everything. No sudo needed.",
   },
+  windows: {
+    command:
+      "irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex",
+    prompt: ">",
+    note: "Run in PowerShell (no admin required) · Installs uv, Python 3.11, and everything else automatically",
+    stepNote:
+      "Run in PowerShell as a normal user. Installs uv, Python 3.11, creates venv, and sets up PATH.",
+  },
 };
 
 function detectPlatform() {
+  if (navigator.platform && navigator.platform.indexOf("Win") !== -1) return "windows";
+  if (navigator.userAgent && navigator.userAgent.indexOf("Windows") !== -1) return "windows";
   return "linux";
 }
 

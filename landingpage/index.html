@@ -145,6 +145,13 @@
                 >
                   Linux / macOS / WSL
                 </button>
+                <button
+                  class="install-tab"
+                  data-platform="windows"
+                  onclick="switchPlatform('windows')"
+                >
+                  Windows
+                </button>
               </div>
             </div>
             <div class="install-widget-body">
@@ -231,6 +238,13 @@
                       onclick="switchStepPlatform('linux')"
                     >
                       Linux / macOS / WSL
+                    </button>
+                    <button
+                      class="code-tab"
+                      data-platform="windows"
+                      onclick="switchStepPlatform('windows')"
+                    >
+                      Windows
                     </button>
                   </div>
                   <button
@@ -362,15 +376,15 @@ hermes gateway install</code></pre>
 
         <div class="install-windows">
           <p>
-            Native Windows support is extremely experimental and unsupported.
-            Please install
+            Native Windows is supported via PowerShell. For the best experience,
+            you can also install
             <a
               href="https://learn.microsoft.com/en-us/windows/wsl/install"
               target="_blank"
               rel="noopener"
               >WSL2</a
             >
-            and run Hermes Agent from there.
+            and use the Linux installer.
           </p>
         </div>
       </div>
