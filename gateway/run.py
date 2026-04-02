@@ -3205,6 +3205,7 @@ class GatewayRunner:
     async def _handle_provider_command(self, event: MessageEvent) -> str:
         """Handle /provider command - show available providers."""
         import yaml
+        from hermes_constants import display_hermes_home
         from hermes_cli.models import (
             list_available_providers,
             normalize_provider,
@@ -3254,7 +3255,8 @@ class GatewayRunner:
             lines.append(f"{auth} `{p['id']}` — {p['label']}{aliases}{marker}")
 
         lines.append("")
-        lines.append("Switch: `/model provider:model-name`")
+        lines.append("Change model locally: `hermes model`")
+        lines.append(f"Or edit: `{display_hermes_home()}/config.yaml`")
         lines.append("Setup: `hermes setup`")
         return "\n".join(lines)
     
