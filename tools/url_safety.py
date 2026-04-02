@@ -75,8 +75,11 @@ def is_safe_url(url: str) -> bool:
 
         for family, _, _, _, sockaddr in addr_info:
             ip_str = sockaddr[0]
+            # getaddrinfo may return IPv6 literals with a scope zone id
+            # (e.g. "fe80::1%eth0"), which ipaddress cannot parse directly.
+            ip_literal = ip_str.split("%", 1)[0]
             try:
-                ip = ipaddress.ip_address(ip_str)
+                ip = ipaddress.ip_address(ip_literal)
             except ValueError:
                 continue
 

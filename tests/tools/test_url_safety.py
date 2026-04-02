@@ -144,6 +144,13 @@ class TestIsSafeUrl:
         ]):
             assert is_safe_url("http://[fd12::1]/internal") is False
 
+    def test_ipv6_link_local_zone_id_blocked(self):
+        """IPv6 scope zone ids from getaddrinfo should not bypass blocking."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("fe80::1%eth0", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://[fe80::1%25eth0]/") is False
+
     def test_non_cgnat_100_allowed(self):
         """100.0.0.1 is NOT in CGNAT range (100.64.0.0/10), should be allowed."""
         with patch("socket.getaddrinfo", return_value=[
