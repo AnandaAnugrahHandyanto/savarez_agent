@@ -29,20 +29,30 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 
 ## Quick Install
 
+**Linux / macOS / WSL2**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
-```
-
-Works on Linux, macOS, and WSL2. The installer handles everything — Python, Node.js, dependencies, and the `hermes` command. No prerequisites except git.
-
-> **Windows:** Native Windows is not supported. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run the command above.
-
-After installation:
-
-```bash
 source ~/.bashrc    # reload shell (or: source ~/.zshrc)
 hermes              # start chatting!
 ```
+
+**Windows (native PowerShell)**
+
+```powershell
+irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
+```
+
+> Run PowerShell as a normal user (no admin required). The script clones the repo, installs `uv`, provisions Python 3.11, creates a venv, installs all dependencies, adds `hermes` to your user PATH, and optionally launches the setup wizard.
+
+After the script finishes, **open a new terminal** so the PATH changes take effect, then:
+
+```powershell
+hermes setup   # configure API keys
+hermes         # start chatting!
+```
+
+> **WSL2 alternative:** If you prefer a Linux environment on Windows, install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and use the Linux/macOS command above instead.
 
 ---
 
@@ -141,12 +151,23 @@ We welcome contributions! See the [Contributing Guide](https://hermes-agent.nous
 
 Quick start for contributors:
 
+**Linux / macOS / WSL2**
 ```bash
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv venv --python 3.11
 source venv/bin/activate
+uv pip install -e ".[all,dev]"
+python -m pytest tests/ -q
+```
+
+**Windows (PowerShell)**
+```powershell
+git clone https://github.com/NousResearch/hermes-agent.git
+cd hermes-agent
+.\setup-hermes.ps1          # sets up venv and installs dependencies
+venv\Scripts\Activate.ps1   # activate for dev work
 uv pip install -e ".[all,dev]"
 python -m pytest tests/ -q
 ```
