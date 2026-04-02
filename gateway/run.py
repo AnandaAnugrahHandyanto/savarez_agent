@@ -1838,6 +1838,9 @@ class GatewayRunner:
 
         if canonical == "provider":
             return await self._handle_provider_command(event)
+
+        if canonical == "model":
+            return await self._handle_model_command(event)
         
         if canonical == "personality":
             return await self._handle_personality_command(event)
@@ -3132,6 +3135,114 @@ class GatewayRunner:
         lines.append("Setup: `hermes setup`")
         return "\n".join(lines)
     
+    async def _handle_model_command(self, event: MessageEvent) -> str:
+        """Handle /model command - show or change the current model/provider."""
+        import yaml
+        from hermes_cli.model_switch import switch_model, switch_to_custom_provider
+
+        args = event.get_command_args().strip()
+        config_path = _hermes_home / 'config.yaml'
+
+        def _save_model_config(model: str, provider: str, base_url: str = "", api_key: str = "") -> bool:
+            try:
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                if "model" not in user_config or not isinstance(user_config.get("model"), dict):
+                    user_config["model"] = {}
+                user_config["model"]["default"] = model
+                user_config["model"]["provider"] = provider
+                if base_url:
+                    user_config["model"]["base_url"] = base_url
+                if api_key:
+                    user_config["model"]["api_key"] = api_key
+                atomic_yaml_write(config_path, user_config)
+                return True
+            except Exception as e:
+                logger.error("Failed to save /model config: %s", e)
+                return False
+
+        if not args:
+            current_provider = "openrouter"
+            current_model = ""
+            config_path = _hermes_home / 'config.yaml'
+            try:
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        cfg = yaml.safe_load(f) or {}
+                    model_cfg = cfg.get("model", {})
+                    if isinstance(model_cfg, dict):
+                        current_provider = model_cfg.get("provider", current_provider)
+                        current_model = model_cfg.get("default") or model_cfg.get("model") or ""
+            except Exception:
+                pass
+
+            lines = [
+                "🤖 **Current model**",
+                f"**Model:** `{current_model or 'unknown'}`",
+                f"**Provider:** `{current_provider}`",
+                "",
+                "Usage:",
+                "- `/model provider:model-name` — switch provider + model",
+                "- `/model model-name` — switch model on current provider",
+                "- `/provider` — list available providers",
+            ]
+            return "\n".join(lines)
+
+        if args.lower() == "custom":
+            result = switch_to_custom_provider()
+            if not result.success:
+                return f"⚠️ {result.error_message}"
+            saved = _save_model_config(
+                model=result.model,
+                provider="custom",
+                base_url=result.base_url,
+                api_key=result.api_key,
+            )
+            suffix = " (saved to config)" if saved else " (session restart may be required)"
+            return f"✅ Model switched to `custom:{result.model}`{suffix}"
+
+        current_provider = "openrouter"
+        current_base_url = ""
+        current_api_key = ""
+        try:
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    current_provider = model_cfg.get("provider", current_provider)
+                    current_base_url = model_cfg.get("base_url", "")
+                    current_api_key = model_cfg.get("api_key", "")
+        except Exception:
+            pass
+
+        result = switch_model(
+            raw_input=args,
+            current_provider=current_provider,
+            current_base_url=current_base_url,
+            current_api_key=current_api_key,
+        )
+        if not result.success:
+            return f"⚠️ {result.error_message}"
+
+        saved = False
+        if result.persist:
+            saved = _save_model_config(
+                model=result.new_model,
+                provider=result.target_provider,
+                base_url=result.base_url,
+                api_key=result.api_key,
+            )
+
+        provider_part = f" via {result.provider_label}" if result.provider_label else ""
+        suffix = " (saved to config)" if saved else ""
+        message = f"✅ Model switched to `{result.new_model}`{provider_part}{suffix}"
+        if result.warning_message:
+            message += f"\n⚠️ {result.warning_message}"
+        return message
+
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
         import yaml
@@ -5240,15 +5351,25 @@ class GatewayRunner:
             except Exception as _e:
                 logger.debug("agent:step hook error: %s", _e)
 
-        # Bridge sync status_callback → async adapter.send for context pressure
+        # Bridge sync status_callback → async adapter.send for context pressure.
+        # Fallback lifecycle notices are buffered until the run completes so we only
+        # deliver them if the agent actually finished on the fallback model/provider.
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
         _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _pending_status_messages: list[tuple[str, str]] = []
+        _fallback_status_prefixes = (
+            "⚠️ Rate limited — switching to fallback provider",
+            "🔄 Primary model failed — switching to fallback:",
+        )
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter:
                 return
             try:
+                if event_type == "lifecycle" and any(message.startswith(prefix) for prefix in _fallback_status_prefixes):
+                    _pending_status_messages.append((event_type, message))
+                    return
                 asyncio.run_coroutine_threadsafe(
                     _status_adapter.send(
                         _status_chat_id,
@@ -5424,7 +5545,7 @@ class GatewayRunner:
             agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
-            agent.status_callback = _status_callback_sync
+            agent.status_callback = None
             agent.reasoning_config = reasoning_config
 
             # Background review delivery — send "💾 Memory updated" etc. to user
@@ -5699,6 +5820,16 @@ class GatewayRunner:
                 if _agent.model != _cfg_model:
                     self._effective_model = _agent.model
                     self._effective_provider = getattr(_agent, 'provider', None)
+                    for _event_type, _message in _pending_status_messages:
+                        if _status_adapter:
+                            asyncio.run_coroutine_threadsafe(
+                                _status_adapter.send(
+                                    _status_chat_id,
+                                    _message,
+                                    metadata=_status_thread_metadata,
+                                ),
+                                _loop_for_step,
+                            )
                     # Fallback activated — evict cached agent so the next
                     # message starts fresh and retries the primary model.
                     self._evict_cached_agent(session_key)
@@ -5706,6 +5837,7 @@ class GatewayRunner:
                     # Primary model worked — clear any stale fallback state
                     self._effective_model = None
                     self._effective_provider = None
+                    _pending_status_messages.clear()
 
             # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]
