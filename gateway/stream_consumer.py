@@ -99,6 +99,7 @@ class GatewayStreamConsumer:
         self._edit_supported = True  # Disabled on first edit failure (Signal/Email/HA)
         self._last_edit_time = 0.0
         self._last_sent_text = ""   # Track last-sent text to skip redundant edits
+        self._finalized_offset = 0  # Characters of clean text finalized in previous messages
 
     @property
     def already_sent(self) -> bool:
@@ -147,8 +148,8 @@ class GatewayStreamConsumer:
 
                 if should_edit and self._accumulated:
                     # Strip thinking/reasoning blocks before display
-                    display_text = _strip_think_blocks(self._accumulated)
-                    if not display_text:
+                    full_clean = _strip_think_blocks(self._accumulated)
+                    if not full_clean:
                         # All content so far is inside a thinking block —
                         # skip this edit cycle and wait for real content.
                         if got_done:
@@ -156,32 +157,39 @@ class GatewayStreamConsumer:
                         await asyncio.sleep(0.05)
                         continue
 
-                    # Split overflow: if clean text exceeds the platform
-                    # limit, finalize the current message and start a new one.
+                    # Only show text belonging to the current message
+                    # (prior messages were finalized during earlier splits).
+                    current_text = full_clean[self._finalized_offset:]
+
+                    # Split overflow: if current-message text exceeds the
+                    # platform limit, finalize this message and start a new one.
                     while (
-                        len(display_text) > _safe_limit
+                        len(current_text) > _safe_limit
                         and self._message_id is not None
                     ):
-                        split_at = display_text.rfind("\n", 0, _safe_limit)
+                        split_at = current_text.rfind("\n", 0, _safe_limit)
                         if split_at < _safe_limit // 2:
                             split_at = _safe_limit
-                        chunk = display_text[:split_at]
+                        chunk = current_text[:split_at]
                         await self._send_or_edit(chunk)
-                        display_text = display_text[split_at:].lstrip("\n")
+                        remaining = current_text[split_at:].lstrip("\n")
+                        self._finalized_offset += len(current_text) - len(remaining)
+                        current_text = remaining
                         self._message_id = None
                         self._last_sent_text = ""
 
                     if not got_done:
-                        display_text += self.cfg.cursor
+                        current_text += self.cfg.cursor
 
-                    await self._send_or_edit(display_text)
+                    await self._send_or_edit(current_text)
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
                     # Final edit without cursor — strip thinking blocks
                     final_text = _strip_think_blocks(self._accumulated)
-                    if final_text and self._message_id:
-                        await self._send_or_edit(final_text)
+                    final_current = final_text[self._finalized_offset:] if final_text else ""
+                    if final_current and self._message_id:
+                        await self._send_or_edit(final_current)
                     return
 
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
@@ -190,7 +198,9 @@ class GatewayStreamConsumer:
             # Best-effort final edit on cancellation
             if self._accumulated and self._message_id:
                 try:
-                    await self._send_or_edit(_strip_think_blocks(self._accumulated) or self._last_sent_text)
+                    final = _strip_think_blocks(self._accumulated)
+                    final_current = final[self._finalized_offset:] if final else ""
+                    await self._send_or_edit(final_current or self._last_sent_text)
                 except Exception:
                     pass
         except Exception as e:

@@ -224,7 +224,7 @@ from gateway.session import (
     build_session_key,
 )
 from gateway.delivery import DeliveryRouter
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, RESPONSE_ALREADY_STREAMED
 
 
 def _normalize_whatsapp_identifier(value: str) -> str:
@@ -2841,11 +2841,11 @@ class GatewayRunner:
                 await self._send_voice_reply(event, response)
 
             # If streaming already delivered the response, extract and
-            # deliver any MEDIA: files before returning None.  Streaming
-            # sends raw text chunks that include MEDIA: tags — the normal
-            # post-processing in _process_message_background is skipped
-            # when already_sent is True, so media files would never be
-            # delivered without this.
+            # deliver any MEDIA: files before returning the sentinel.
+            # Streaming sends raw text chunks that include MEDIA: tags —
+            # the normal post-processing in _process_message_background is
+            # skipped when already_sent is True, so media files would never
+            # be delivered without this.
             if agent_result.get("already_sent"):
                 if response:
                     _media_adapter = self.adapters.get(source.platform)
@@ -2853,7 +2853,7 @@ class GatewayRunner:
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
                         )
-                return None
+                return RESPONSE_ALREADY_STREAMED
 
             return response
             

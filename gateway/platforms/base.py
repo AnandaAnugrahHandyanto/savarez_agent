@@ -30,6 +30,11 @@ from hermes_cli.config import get_hermes_home
 from hermes_constants import get_hermes_dir
 
 
+# Sentinel returned by the message handler when streaming already delivered the
+# response.  Lets _process_message_background distinguish "nothing to send"
+# (legitimate) from "handler failed" so it can log at the appropriate level.
+RESPONSE_ALREADY_STREAMED = object()
+
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
     "Secure secret entry is not supported over messaging. "
     "Load this skill in the local CLI to be prompted, or add the key to ~/.hermes/.env manually."
@@ -1107,7 +1112,10 @@ class BasePlatformAdapter(ABC):
             response = await self._message_handler(event)
             
             # Send response if any
-            if not response:
+            if response is RESPONSE_ALREADY_STREAMED:
+                # Streaming consumer already delivered the response — nothing to send.
+                response = None
+            elif not response:
                 logger.warning("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
