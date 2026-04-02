@@ -830,6 +830,63 @@ def _cprint(text: str):
     _pt_print(_PT_ANSI(text))
 
 
+# ---------------------------------------------------------------------------
+# File-drop detection — extracted as a pure function for testability.
+# ---------------------------------------------------------------------------
+
+_IMAGE_EXTENSIONS = frozenset({
+    '.png', '.jpg', '.jpeg', '.gif', '.webp',
+    '.bmp', '.tiff', '.tif', '.svg', '.ico',
+})
+
+
+def _detect_file_drop(user_input: str) -> "dict | None":
+    """Detect if *user_input* is a dragged/pasted file path, not a slash command.
+
+    When a user drags a file into the terminal, macOS pastes the absolute path
+    (e.g. ``/Users/roland/Desktop/file.png``) which starts with ``/`` and would
+    otherwise be mistaken for a slash command.
+
+    Returns a dict on match::
+
+        {
+            "path": Path,          # resolved file path
+            "is_image": bool,      # True when suffix is a known image type
+            "remainder": str,      # any text after the path
+        }
+
+    Returns ``None`` when the input is not a real file path.
+    """
+    if not isinstance(user_input, str) or not user_input.startswith("/"):
+        return None
+
+    # Walk the string absorbing backslash-escaped spaces ("\ ").
+    raw = user_input
+    pos = 0
+    while pos < len(raw):
+        ch = raw[pos]
+        if ch == '\\' and pos + 1 < len(raw) and raw[pos + 1] == ' ':
+            pos += 2  # skip escaped space
+        elif ch == ' ':
+            break
+        else:
+            pos += 1
+
+    first_token_raw = raw[:pos]
+    first_token = first_token_raw.replace('\\ ', ' ')
+    drop_path = Path(first_token)
+
+    if not drop_path.exists() or not drop_path.is_file():
+        return None
+
+    remainder = raw[pos:].strip()
+    return {
+        "path": drop_path,
+        "is_image": drop_path.suffix.lower() in _IMAGE_EXTENSIONS,
+        "remainder": remainder,
+    }
+
+
 class ChatConsole:
     """Rich Console adapter for prompt_toolkit's patch_stdout context.
 
@@ -1538,6 +1595,28 @@ class HermesCLI:
                     changed = True
 
                 resolved_mode = copilot_model_api_mode(current_model, api_key=self.api_key)
+                if resolved_mode != self.api_mode:
+                    self.api_mode = resolved_mode
+                    changed = True
+            except Exception:
+                pass
+            return changed
+
+        if resolved_provider in {"opencode-zen", "opencode-go"}:
+            try:
+                from hermes_cli.models import normalize_opencode_model_id, opencode_model_api_mode
+
+                canonical = normalize_opencode_model_id(resolved_provider, current_model)
+                if canonical and canonical != current_model:
+                    if not self._model_is_default:
+                        self.console.print(
+                            f"[yellow]⚠️  Stripped provider prefix from '{current_model}'; using '{canonical}' for {resolved_provider}.[/]"
+                        )
+                    self.model = canonical
+                    current_model = canonical
+                    changed = True
+
+                resolved_mode = opencode_model_api_mode(resolved_provider, current_model)
                 if resolved_mode != self.api_mode:
                     self.api_mode = resolved_mode
                     changed = True
@@ -7555,8 +7634,24 @@ class HermesCLI:
                     if isinstance(user_input, tuple):
                         user_input, submit_images = user_input
                     
-                    # Check for commands
-                    if isinstance(user_input, str) and user_input.startswith("/"):
+                    # Check for commands — but detect dragged/pasted file paths first.
+                    # See _detect_file_drop() for details.
+                    _file_drop = _detect_file_drop(user_input) if isinstance(user_input, str) else None
+                    if _file_drop:
+                        _drop_path = _file_drop["path"]
+                        _remainder = _file_drop["remainder"]
+                        if _file_drop["is_image"]:
+                            submit_images.append(_drop_path)
+                            user_input = _remainder or f"[User attached image: {_drop_path.name}]"
+                            _cprint(f"  📎 Auto-attached image: {_drop_path.name}")
+                        else:
+                            _cprint(f"  📄 Detected file: {_drop_path.name}")
+                            user_input = (
+                                f"[User attached file: {_drop_path}]"
+                                + (f"\n{_remainder}" if _remainder else "")
+                            )
+
+                    if not _file_drop and isinstance(user_input, str) and user_input.startswith("/"):
                         _cprint(f"\n⚙️  {user_input}")
                         if not self.process_command(user_input):
                             self._should_exit = True
@@ -7947,6 +8042,12 @@ def main(
                     if response:
                         print(response)
                     print(f"\nsession_id: {cli.session_id}")
+                    
+                    # Ensure proper exit code for automation wrappers
+                    sys.exit(1 if isinstance(result, dict) and result.get("failed") else 0)
+            
+            # Exit with error code if credentials or agent init fails
+            sys.exit(1)
         else:
             cli.show_banner()
             cli.console.print(f"[bold blue]Query:[/] {query}")
