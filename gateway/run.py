@@ -1901,6 +1901,9 @@ class GatewayRunner:
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
 
+        if canonical == "model":
+            return await self._handle_model_command(event)
+
         if canonical == "verbose":
             return await self._handle_verbose_command(event)
 
@@ -2168,7 +2171,7 @@ class GatewayRunner:
                             f"Adjust reset timing in config.yaml under session_reset."
                         )
                         try:
-                            session_info = self._format_session_info()
+                            session_info = self._format_session_info(session_entry)
                             if session_info:
                                 notice = f"{notice}\n\n{session_info}"
                         except Exception:
@@ -2901,7 +2904,7 @@ class GatewayRunner:
             # Clear session env
             self._clear_session_env()
     
-    def _format_session_info(self) -> str:
+    def _format_session_info(self, session_entry: Optional[Any] = None) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
@@ -2910,10 +2913,14 @@ class GatewayRunner:
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
-        model = _resolve_gateway_model()
+        session_model = getattr(session_entry, "model", None) if session_entry else None
+        session_provider = getattr(session_entry, "provider", None) if session_entry else None
+        session_base_url = getattr(session_entry, "base_url", None) if session_entry else None
+
+        model = session_model or _resolve_gateway_model()
         config_context_length = None
-        provider = None
-        base_url = None
+        provider = session_provider
+        base_url = session_base_url
         api_key = None
 
         try:
@@ -2930,8 +2937,8 @@ class GatewayRunner:
                             config_context_length = int(raw_ctx)
                         except (TypeError, ValueError):
                             pass
-                    provider = model_cfg.get("provider") or None
-                    base_url = model_cfg.get("base_url") or None
+                    provider = provider or model_cfg.get("provider") or None
+                    base_url = base_url or model_cfg.get("base_url") or None
         except Exception:
             pass
 
@@ -3022,7 +3029,7 @@ class GatewayRunner:
         
         # Resolve session config info to surface to the user
         try:
-            session_info = self._format_session_info()
+            session_info = self._format_session_info(new_entry)
         except Exception:
             session_info = ""
 
@@ -3089,7 +3096,14 @@ class GatewayRunner:
             "",
             f"**Connected Platforms:** {', '.join(connected_platforms)}",
         ]
-        
+
+        try:
+            session_info = self._format_session_info(session_entry)
+        except Exception:
+            session_info = ""
+        if session_info:
+            lines.extend(["", session_info])
+
         return "\n".join(lines)
     
     async def _handle_stop_command(self, event: MessageEvent) -> str:
@@ -3253,6 +3267,127 @@ class GatewayRunner:
         lines.append("Setup: `hermes setup`")
         return "\n".join(lines)
     
+    async def _handle_model_command(self, event: MessageEvent) -> str:
+        """Handle /model command - switch model for this session."""
+        from hermes_cli.model_switch import switch_model
+        from hermes_cli.models import (
+            _PROVIDER_LABELS,
+            _PROVIDER_MODELS,
+            curated_models_for_provider,
+            list_available_providers,
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        source = event.source or self._get_event_source(event)
+        session_entry = self.session_store.get_or_create_session(source)
+        session_key = session_entry.session_key
+        args = event.get_command_args().strip()
+
+        current_model = session_entry.model or _resolve_gateway_model()
+        current_provider = session_entry.provider
+        current_base_url = session_entry.base_url or ""
+        current_api_key = ""
+
+        try:
+            runtime = resolve_runtime_provider(requested=current_provider or "auto")
+            if not current_base_url:
+                current_base_url = runtime.get("base_url", "")
+            current_api_key = runtime.get("api_key", "")
+            current_provider = current_provider or runtime.get("provider")
+        except Exception:
+            pass
+
+        # No args - show current model and configured provider/model choices
+        if not args:
+            provider_label = _PROVIDER_LABELS.get(current_provider, current_provider or "auto")
+            lines = [
+                f"**Current model:** `{current_model}`",
+                f"  Provider: {provider_label}",
+            ]
+            if current_base_url and "openrouter" not in current_base_url:
+                lines.append(f"  Base URL: {current_base_url}")
+            lines.append("")
+
+            providers = list_available_providers()
+            authed = [p for p in providers if p.get("authenticated")]
+            unauthed = [p for p in providers if not p.get("authenticated")]
+
+            if authed:
+                lines.append("**Configured providers & models:**")
+                for provider in authed:
+                    marker = " ← active" if provider["id"] == current_provider else ""
+                    lines.append(f"• `{provider['id']}` — {provider['label']}{marker}")
+                    curated = curated_models_for_provider(provider["id"])
+                    if curated:
+                        for model_id, _desc in curated:
+                            current_marker = " ← current" if provider["id"] == current_provider and model_id == current_model else ""
+                            lines.append(f"    - `{model_id}`{current_marker}")
+                    elif provider["id"] == "custom":
+                        endpoint = current_base_url or "configured endpoint"
+                        lines.append(f"    - endpoint: {endpoint}")
+                        if provider["id"] == current_provider:
+                            lines.append(f"    - model: `{current_model}` ← current")
+                    else:
+                        lines.append("    - use `hermes model` in CLI to browse/change globally")
+            if unauthed:
+                labels = ", ".join(p["label"] for p in unauthed)
+                lines.extend(["", f"**Not configured:** {labels}", "Run: `hermes setup`"])
+
+            lines.extend([
+                "",
+                "Switch: `/model provider:model-name` or `/model model-name`",
+                "Examples: `/model zai:glm-5.1`, `/model claude-sonnet-4`",
+                "This changes only this chat/topic session.",
+            ])
+            return "\n".join(lines)
+
+        # Check for z-ai/glm models special case
+        if args.lower().startswith("z-ai") or args.lower().startswith("zai:"):
+            if args.lower() in ("z-ai", "zai"):
+                glm_models = _PROVIDER_MODELS.get("zai", [])
+                lines = ["**GLM Models (Z.AI)**", ""]
+                for model_name in glm_models:
+                    if "glm" in model_name.lower():
+                        lines.append(f"  • {model_name}")
+                lines.append("")
+                lines.append("Usage: `/model zai:glm-5.1` or `/model z-ai/glm-5.1`")
+                return "\n".join(lines)
+
+        result = switch_model(
+            args,
+            current_provider=current_provider or "auto",
+            current_base_url=current_base_url,
+            current_api_key=current_api_key,
+        )
+
+        if not result.success:
+            return f"Failed: {result.error_message}"
+
+        self.session_store.update_session(
+            session_key,
+            input_tokens=session_entry.input_tokens,
+            output_tokens=session_entry.output_tokens,
+            cache_read_tokens=session_entry.cache_read_tokens,
+            cache_write_tokens=session_entry.cache_write_tokens,
+            estimated_cost_usd=session_entry.estimated_cost_usd,
+            cost_status=session_entry.cost_status,
+            model=result.new_model,
+            provider=result.target_provider,
+            base_url=result.base_url,
+        )
+        self._evict_cached_agent(session_key)
+
+        lines = [f"Switched to `{result.new_model}`"]
+        lines.append(f"  Provider: {result.provider_label}")
+        if result.base_url and "openrouter" not in result.base_url:
+            lines.append(f"  Base URL: {result.base_url}")
+        if result.warning_message:
+            lines.append(f"  Note: {result.warning_message}")
+        lines.append("")
+        lines.append("This change applies to this session only.")
+        lines.append("Use /status or /new to confirm the active model for this chat/topic.")
+        return "\n".join(lines)
+
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
         import yaml
