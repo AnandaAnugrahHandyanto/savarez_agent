@@ -1312,7 +1312,16 @@ class HermesCLI:
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
-        model_name = self.model or "unknown"
+        # Use the effective model from smart routing if it differs from the default.
+        # _active_agent_route_signature = (model, provider, base_url, api_mode, cmd, args)
+        route = getattr(self, "_active_agent_route_signature", None)
+        if route and route[0] and route[0] != self.model:
+            # Smart routing selected a different model — show it with a marker
+            model_name = f"{route[0]} ⚡"
+        elif route and route[0]:
+            model_name = route[0]
+        else:
+            model_name = self.model or "unknown"
         model_short = model_name.split("/")[-1] if "/" in model_name else model_name
         if model_short.endswith(".gguf"):
             model_short = model_short[:-5]
