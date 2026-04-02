@@ -39,6 +39,8 @@ Usage:
     hermes uninstall           Uninstall Hermes Agent
     hermes acp                 Run as an ACP server for editor integration
     hermes sessions browse     Interactive session picker with search
+    hermes policy-bias state list                 Inspect policy state dimensions
+    hermes policy-bias state updates              Show recent policy state updates
 
     hermes claw migrate --dry-run  # Preview migration without changes
 """
@@ -3438,7 +3440,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     _SUBCOMMANDS = {
         "chat", "model", "gateway", "setup", "whatsapp", "login", "logout", "auth",
         "status", "cron", "doctor", "config", "pairing", "skills", "tools",
-        "mcp", "sessions", "insights", "version", "update", "uninstall",
+        "mcp", "sessions", "policy-bias", "insights", "version", "update", "uninstall",
         "profile",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
@@ -4865,6 +4867,108 @@ For more help on a command:
         db.close()
 
     sessions_parser.set_defaults(func=cmd_sessions)
+
+    # =========================================================================
+    # policy-bias command
+    # =========================================================================
+    policy_bias_parser = subparsers.add_parser(
+        "policy-bias",
+        help="Inspect and govern Policy Bias Engine state",
+        description="List, inspect, rescore, rebuild, explain, enable, or disable policy biases",
+    )
+    policy_bias_sub = policy_bias_parser.add_subparsers(dest="policy_bias_action")
+
+    pb_list = policy_bias_sub.add_parser("list", help="List known biases")
+    pb_list.add_argument("--status", choices=["active", "shadow", "disabled", "archived"], help="Filter by status")
+    pb_list.add_argument("--limit", type=int, default=50, help="Max biases to show")
+    pb_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    pb_inspect = policy_bias_sub.add_parser("inspect", help="Inspect a single bias and its evidence moments")
+    pb_inspect.add_argument("bias_id", help="Bias ID to inspect")
+    pb_inspect.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    pb_enable = policy_bias_sub.add_parser("enable", help="Enable a disabled bias")
+    pb_enable.add_argument("bias_id", help="Bias ID to enable")
+
+    pb_disable = policy_bias_sub.add_parser("disable", help="Disable an active or shadow bias")
+    pb_disable.add_argument("bias_id", help="Bias ID to disable")
+
+    pb_archive = policy_bias_sub.add_parser("archive", help="Archive a bias without deleting its evidence")
+    pb_archive.add_argument("bias_id", help="Bias ID to archive")
+
+    pb_rescore = policy_bias_sub.add_parser("rescore", help="Re-score one bias or all known biases")
+    pb_rescore.add_argument("bias_id", nargs="?", help="Optional bias ID")
+
+    policy_bias_sub.add_parser("rebuild", help="Rebuild synthesized biases from stored moments")
+
+    pb_moments = policy_bias_sub.add_parser("moments", help="Show recent policy-bias moments")
+    pb_moments.add_argument("--limit", type=int, default=20, help="Max moments to show")
+
+    pb_explain = policy_bias_sub.add_parser("explain", help="Explain recent bias-triggered decisions")
+    pb_explain.add_argument("--session-id", help="Filter by session ID")
+    pb_explain.add_argument("--limit", type=int, default=5, help="Max traces to show")
+
+    pb_audit = policy_bias_sub.add_parser("audit", help="Audit whether stored biases belong in policy bias vs memory/skills")
+    pb_audit.add_argument("--status", choices=["active", "shadow", "disabled", "archived"], help="Filter by status")
+    pb_audit.add_argument("--limit", type=int, default=50, help="Max biases to audit")
+    pb_audit.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    pb_history = policy_bias_sub.add_parser("history", help="Show bias change history for audit/rollback")
+    pb_history.add_argument("bias_id", help="Bias ID to inspect history for")
+    pb_history.add_argument("--limit", type=int, default=20, help="Max history entries to show")
+
+    pb_rollback = policy_bias_sub.add_parser("rollback", help="Rollback a bias to a prior version")
+    pb_rollback.add_argument("bias_id", help="Bias ID to roll back")
+    pb_rollback.add_argument("version", type=int, help="Target historical version")
+
+    pb_export = policy_bias_sub.add_parser("export", help="Export stable active biases for offline training or audit")
+    pb_export.add_argument("--min-confidence", type=float, default=0.55, help="Minimum confidence threshold")
+
+    pb_state = policy_bias_sub.add_parser(
+        "state",
+        help="Inspect and govern V2 policy state",
+        description="List, inspect, review updates, rebuild, reset, or explain policy-state dimensions",
+    )
+    state_sub = pb_state.add_subparsers(dest="state_action")
+
+    state_list = state_sub.add_parser("list", help="List policy state dimensions")
+    state_list.add_argument("--status", choices=["active", "shadow", "disabled", "archived"], help="Filter by status")
+    state_list.add_argument("--limit", type=int, default=50, help="Max dimensions to show")
+    state_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    state_inspect = state_sub.add_parser("inspect", help="Inspect a single policy state dimension")
+    state_inspect.add_argument("dimension_key", help="Policy state dimension key to inspect")
+    state_inspect.add_argument("--limit", type=int, default=10, help="Max recent updates to show")
+    state_inspect.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    state_updates = state_sub.add_parser(
+        "updates",
+        aliases=["recent"],
+        help="Show recent policy state updates",
+    )
+    state_updates.add_argument("--dimension-key", help="Filter updates to a single dimension key")
+    state_updates.add_argument("--limit", type=int, default=20, help="Max updates to show")
+    state_updates.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    state_rebuild = state_sub.add_parser("rebuild", help="Rebuild policy state from stored moments")
+    state_rebuild.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    state_reset = state_sub.add_parser("reset", help="Reset policy state for one dimension or all dimensions")
+    state_reset.add_argument("dimension_key", nargs="?", help="Optional dimension key to reset")
+    state_reset.add_argument("--all", action="store_true", help="Reset all dimensions for the profile")
+    state_reset.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    state_explain = state_sub.add_parser("explain", help="Explain how policy state affected a decision")
+    state_explain.add_argument("trace_id", nargs="?", help="Decision trace ID to explain")
+    state_explain.add_argument("--limit", type=int, default=10, help="Max evidence rows to show")
+    state_explain.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    def cmd_policy_bias(args):
+        from hermes_cli.policy_bias_cmd import run_policy_bias_command
+
+        run_policy_bias_command(args)
+
+    policy_bias_parser.set_defaults(func=cmd_policy_bias)
 
     # =========================================================================
     # insights command

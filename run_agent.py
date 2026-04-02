@@ -101,6 +101,8 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
+from agent.policy_bias import PolicyBiasEngine, make_blocked_tool_result
+from agent.policy_bias.response_hooks import apply_response_controls
 from utils import atomic_json_write, env_var_enabled
 
 HONCHO_TOOL_NAMES = {
@@ -955,6 +957,9 @@ class AIAgent:
                     print(f"   ❌ Disabled toolsets: {', '.join(disabled_toolsets)}")
         elif not self.quiet_mode:
             print("🛠️  No tools loaded (all tools filtered out or unavailable)")
+        self._base_tools = copy.deepcopy(self.tools or [])
+        self._policy_bias_engine = None
+        self._policy_turn_context = None
         
         # Check tool requirements
         if self.tools and not self.quiet_mode:
@@ -1147,6 +1152,13 @@ class AIAgent:
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
         except Exception:
             pass
+
+        try:
+            self._policy_bias_engine = PolicyBiasEngine(_agent_cfg.get("policy_bias"))
+        except Exception as exc:
+            logger.warning("Policy bias engine init failed; feature disabled: %s", exc)
+            self._policy_bias_engine = None
+        self._refresh_policy_tool_baseline()
 
         # Tool-use enforcement config: "auto" (default — matches hardcoded
         # model list), true (always), false (never), or list of substrings.
@@ -2438,6 +2450,7 @@ class AIAgent:
         """Remove Honcho tools from the active tool surface."""
         if not self.tools:
             self.valid_tool_names = set()
+            self._refresh_policy_tool_baseline()
             return
 
         self.tools = [
@@ -2447,6 +2460,7 @@ class AIAgent:
         self.valid_tool_names = {
             tool["function"]["name"] for tool in self.tools
         } if self.tools else set()
+        self._refresh_policy_tool_baseline()
 
     def _activate_honcho(
         self,
@@ -2502,6 +2516,7 @@ class AIAgent:
         self.valid_tool_names = {
             tool["function"]["name"] for tool in self.tools
         } if self.tools else set()
+        self._refresh_policy_tool_baseline()
 
         if hcfg.recall_mode == "context":
             self._strip_honcho_tools_from_surface()
@@ -5172,8 +5187,9 @@ class AIAgent:
         base = (getattr(self, "base_url", "") or "").lower()
         return "dashscope" in base or "aliyuncs" in base
 
-    def _build_api_kwargs(self, api_messages: list) -> dict:
+    def _build_api_kwargs(self, api_messages: list, tools_override: Optional[list] = None) -> dict:
         """Build the keyword arguments dict for the active API mode."""
+        effective_tools = tools_override if tools_override is not None else self.tools
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_kwargs
             anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
@@ -5184,7 +5200,7 @@ class AIAgent:
             return build_anthropic_kwargs(
                 model=self.model,
                 messages=anthropic_messages,
-                tools=self.tools,
+                tools=effective_tools,
                 max_tokens=self.max_tokens,
                 reasoning_config=self.reasoning_config,
                 is_oauth=self._is_anthropic_oauth,
@@ -5219,7 +5235,7 @@ class AIAgent:
                 "model": self.model,
                 "instructions": instructions,
                 "input": self._chat_messages_to_responses_input(payload_messages),
-                "tools": self._responses_tools(),
+                "tools": self._responses_tools(effective_tools),
                 "tool_choice": "auto",
                 "parallel_tool_calls": True,
                 "store": False,
@@ -5315,8 +5331,8 @@ class AIAgent:
             "messages": sanitized_messages,
             "timeout": float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
         }
-        if self.tools:
-            api_kwargs["tools"] = self.tools
+        if effective_tools:
+            api_kwargs["tools"] = effective_tools
 
         if self.max_tokens is not None:
             api_kwargs.update(self._max_tokens_param(self.max_tokens))
@@ -5827,6 +5843,18 @@ class AIAgent:
         except Exception:
             pass
 
+        if self._policy_bias_engine and self._policy_bias_engine.is_enabled():
+            try:
+                self._policy_bias_engine.record_checkpoint(
+                    session_id=self.session_id,
+                    turn_index=self._user_turn_count,
+                    platform=self.platform or "cli",
+                    task_type="compression",
+                    label="context compression checkpoint",
+                )
+            except Exception as exc:
+                logger.debug("Policy bias checkpoint recording failed: %s", exc)
+
         return compressed, new_system_prompt
 
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -5841,6 +5869,11 @@ class AIAgent:
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
         try:
+            requires_seq_fn = getattr(type(self), "_policy_requires_sequential_tool_batch", None)
+            if callable(requires_seq_fn) and requires_seq_fn(self, tool_calls):
+                return self._execute_tool_calls_sequential(
+                    assistant_message, messages, effective_task_id, api_call_count
+                )
             if not _should_parallelize_tool_batch(tool_calls):
                 return self._execute_tool_calls_sequential(
                     assistant_message, messages, effective_task_id, api_call_count
@@ -5915,6 +5948,166 @@ class AIAgent:
                 honcho_manager=self._honcho,
                 honcho_session_key=self._honcho_session_key,
             )
+
+    def _refresh_policy_tool_baseline(self) -> None:
+        """Store the current tool surface as the baseline for per-turn weighting."""
+        self._base_tools = copy.deepcopy(self.tools or [])
+
+    def _policy_prepare_tool_calls(self, tool_calls) -> list:
+        """Apply policy-driven ordering and action-budget limits before persistence."""
+        prepared = self._policy_reorder_tool_calls(tool_calls)
+        return self._policy_limit_tool_batch(prepared)
+
+    def _policy_reorder_tool_calls(self, tool_calls) -> list:
+        """Reorder tool calls using policy-bias planner hooks when enabled."""
+        if not tool_calls or not getattr(self, "_policy_turn_context", None):
+            return list(tool_calls or [])
+        engine = getattr(self, "_policy_bias_engine", None)
+        if not engine or not engine.is_enabled():
+            return list(tool_calls or [])
+
+        parsed_calls = []
+        for tool_call in tool_calls:
+            try:
+                function_args = json.loads(tool_call.function.arguments)
+            except Exception:
+                function_args = {}
+            if not isinstance(function_args, dict):
+                function_args = {}
+            parsed_calls.append((tool_call, tool_call.function.name, function_args))
+
+        ordered, _planner_effects = engine.rerank_tool_calls(
+            self._policy_turn_context,
+            parsed_calls,
+        )
+        return [tool_call for tool_call, _name, _args in ordered]
+
+    def _policy_limit_tool_batch(self, tool_calls) -> list:
+        """Trim overly broad tool batches using policy-state execution budgets."""
+        calls = list(tool_calls or [])
+        if not calls:
+            return calls
+        ctx = getattr(self, "_policy_turn_context", None)
+        if not ctx:
+            return calls
+
+        state_plan = ctx.metadata.get("_policy_state_plan")
+        limit = int(getattr(state_plan, "max_tool_calls_per_turn", 0) or 0)
+        if limit <= 0 or len(calls) <= limit:
+            return calls
+
+        kept = calls[:limit]
+        omitted = calls[limit:]
+        effect = {
+            "kind": "tool_batch_limit",
+            "limit": limit,
+            "original_count": len(calls),
+            "kept_tool_names": [tc.function.name for tc in kept],
+            "omitted_tool_names": [tc.function.name for tc in omitted],
+        }
+        engine = getattr(self, "_policy_bias_engine", None)
+        if engine and engine.is_enabled():
+            try:
+                engine.record_planner_effects(ctx, [effect])
+            except Exception as exc:
+                logger.debug("Policy bias planner trace update failed: %s", exc)
+        else:
+            ctx.metadata.setdefault("planner_effects", []).append(effect)
+        return kept
+
+    def _policy_parallel_tool_worker_limit(self, tool_calls) -> int | None:
+        """Return the policy-driven parallel worker cap for this tool batch."""
+        calls = list(tool_calls or [])
+        if not calls:
+            return None
+        ctx = getattr(self, "_policy_turn_context", None)
+        if not ctx:
+            return None
+
+        state_plan = ctx.metadata.get("_policy_state_plan")
+        limit = int(getattr(state_plan, "max_parallel_tools", 0) or 0)
+        if limit <= 0:
+            return None
+        return max(1, min(limit, len(calls)))
+
+    def _policy_requires_sequential_tool_batch(self, tool_calls) -> bool:
+        """Force sequential execution when inspect-first biases conflict with parallelism."""
+        ctx = getattr(self, "_policy_turn_context", None)
+        if not ctx:
+            return False
+
+        state_plan = ctx.metadata.get("_policy_state_plan")
+        if getattr(state_plan, "require_sequential", False):
+            return True
+
+        keys = {
+            bias.bias_candidate_key or ""
+            for bias in ctx.active_biases
+        }
+        state_map = {
+            getattr(dimension, "dimension_key", ""): float(getattr(dimension, "value", 0.0) or 0.0)
+            for dimension in ctx.metadata.get("_policy_state_dimensions", [])
+        }
+        if not {
+            "planning.inspect_before_edit",
+            "risk.inspect_before_execute",
+            "workflow_specific.decompose_before_act",
+            "user_specific.one_step_at_a_time",
+        } & keys and not any(
+            state_map.get(key, 0.0) >= 0.35
+            for key in (
+                "inspect_tendency",
+                "risk_aversion",
+                "decomposition_tendency",
+                "single_step_tendency",
+            )
+        ):
+            return False
+
+        names = [tc.function.name for tc in tool_calls]
+        if (
+            "user_specific.one_step_at_a_time" in keys
+            or state_map.get("single_step_tendency", 0.0) >= 0.35
+        ) and len(names) > 1:
+            return True
+        if (
+            "workflow_specific.decompose_before_act" in keys
+            or state_map.get("decomposition_tendency", 0.0) >= 0.35
+        ):
+            has_planning = any(name in {"todo", "clarify"} for name in names)
+            has_execution = any(name in {"write_file", "patch", "terminal", "browser_click", "browser_type", "browser_press", "send_message", "cronjob", "ha_call_service"} for name in names)
+            if has_planning and has_execution:
+                return True
+        has_inspect = any(name in {"read_file", "search_files", "browser_snapshot", "web_search", "web_extract"} for name in names)
+        has_mutating = any(name in {"write_file", "patch", "terminal", "browser_click", "browser_type", "browser_press", "send_message", "cronjob", "ha_call_service"} for name in names)
+        if has_inspect and has_mutating:
+            return True
+        if state_map.get("inspect_tendency", 0.0) >= 0.45 and has_mutating and len(names) > 1:
+            return True
+        if state_map.get("risk_aversion", 0.0) >= 0.55 and has_mutating and len(names) > 1:
+            return True
+        return False
+
+    def _apply_policy_response_controls(self, final_response: str, messages: list[dict]) -> str:
+        """Apply deterministic response-policy hooks after generation."""
+        ctx = getattr(self, "_policy_turn_context", None)
+        engine = getattr(self, "_policy_bias_engine", None)
+        if not final_response or not ctx or not engine or not engine.is_enabled():
+            return final_response
+
+        controls = ctx.metadata.get("response_controls", {})
+        updated, effects = apply_response_controls(final_response, controls)
+        if effects:
+            try:
+                engine.record_response_effects(ctx, effects)
+            except Exception as exc:
+                logger.debug("Policy bias response effect trace failed: %s", exc)
+            for idx in range(len(messages) - 1, -1, -1):
+                msg = messages[idx]
+                if msg.get("role") == "assistant" and not msg.get("tool_calls"):
+                    msg["content"] = updated
+                    break
+        return updated
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute multiple tool calls concurrently using a thread pool.
@@ -6006,12 +6199,32 @@ class AIAgent:
                 except Exception as cb_err:
                     logging.debug(f"Tool start callback error: {cb_err}")
 
+        blocked_results: dict[int, tuple[str, dict, str, float, bool]] = {}
+        if self._policy_bias_engine and self._policy_bias_engine.is_enabled():
+            for idx, (_tc, name, args) in enumerate(parsed_calls):
+                risk_action = self._policy_bias_engine.evaluate_risk(
+                    self._policy_turn_context,
+                    tool_name=name,
+                    function_args=args,
+                )
+                if risk_action is not None:
+                    blocked_results[idx] = (
+                        name,
+                        args,
+                        make_blocked_tool_result(risk_action),
+                        0.0,
+                        True,
+                    )
+
         # ── Concurrent execution ─────────────────────────────────────────
         # Each slot holds (function_name, function_args, function_result, duration, error_flag)
         results = [None] * num_tools
 
         def _run_tool(index, tool_call, function_name, function_args):
             """Worker function executed in a thread."""
+            if index in blocked_results:
+                results[index] = blocked_results[index]
+                return
             start = time.time()
             try:
                 result = self._invoke_tool(function_name, function_args, effective_task_id)
@@ -6030,10 +6243,18 @@ class AIAgent:
             spinner.start()
 
         try:
-            max_workers = min(num_tools, _MAX_TOOL_WORKERS)
+            policy_worker_limit = self._policy_parallel_tool_worker_limit(tool_calls)
+            max_workers = min(
+                num_tools,
+                _MAX_TOOL_WORKERS,
+                policy_worker_limit or _MAX_TOOL_WORKERS,
+            )
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = []
                 for i, (tc, name, args) in enumerate(parsed_calls):
+                    if i in blocked_results:
+                        results[i] = blocked_results[i]
+                        continue
                     f = executor.submit(_run_tool, i, tc, name, args)
                     futures.append(f)
 
@@ -6099,6 +6320,18 @@ class AIAgent:
                 "tool_call_id": tc.id,
             }
             messages.append(tool_msg)
+
+            if self._policy_bias_engine and self._policy_bias_engine.is_enabled():
+                try:
+                    self._policy_bias_engine.record_tool_result(
+                        self._policy_turn_context,
+                        tool_name=name,
+                        function_args=args,
+                        result=function_result,
+                        duration_ms=int(tool_duration * 1000),
+                    )
+                except Exception as exc:
+                    logger.debug("Policy bias tool result capture failed: %s", exc)
 
         # ── Budget pressure injection ────────────────────────────────────
         budget_warning = self._get_budget_warning(api_call_count)
@@ -6201,8 +6434,23 @@ class AIAgent:
                     pass  # never block tool execution
 
             tool_start_time = time.time()
+            risk_action = None
+            if self._policy_bias_engine and self._policy_bias_engine.is_enabled():
+                try:
+                    risk_action = self._policy_bias_engine.evaluate_risk(
+                        self._policy_turn_context,
+                        tool_name=function_name,
+                        function_args=function_args,
+                    )
+                except Exception as exc:
+                    logger.debug("Policy bias risk evaluation failed: %s", exc)
 
-            if function_name == "todo":
+            if risk_action is not None:
+                function_result = make_blocked_tool_result(risk_action)
+                tool_duration = 0.0
+                if self.quiet_mode:
+                    self._vprint(f"  {_get_cute_tool_message_impl(function_name, function_args, tool_duration, result=function_result)}")
+            elif function_name == "todo":
                 from tools.todo_tool import todo_tool as _todo_tool
                 function_result = _todo_tool(
                     todos=function_args.get("todos"),
@@ -6365,6 +6613,18 @@ class AIAgent:
                 "tool_call_id": tool_call.id
             }
             messages.append(tool_msg)
+
+            if self._policy_bias_engine and self._policy_bias_engine.is_enabled():
+                try:
+                    self._policy_bias_engine.record_tool_result(
+                        self._policy_turn_context,
+                        tool_name=function_name,
+                        function_args=function_args,
+                        result=function_result,
+                        duration_ms=int(tool_duration * 1000),
+                    )
+                except Exception as exc:
+                    logger.debug("Policy bias tool result capture failed: %s", exc)
 
             if not self.quiet_mode:
                 if self.verbose_logging:
@@ -6676,6 +6936,7 @@ class AIAgent:
         self._stream_callback = stream_callback
         self._persist_user_message_idx = None
         self._persist_user_message_override = persist_user_message
+        self._policy_turn_context = None
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
         
@@ -6974,6 +7235,22 @@ class AIAgent:
             if (self._skill_nudge_interval > 0
                     and "skill_manage" in self.valid_tool_names):
                 self._iters_since_skill += 1
+
+            effective_tools = self._base_tools or self.tools or []
+            if self._policy_bias_engine and self._policy_bias_engine.is_enabled():
+                try:
+                    self._policy_turn_context = self._policy_bias_engine.begin_turn(
+                        session_id=self.session_id,
+                        turn_index=self._user_turn_count,
+                        user_message=original_user_message,
+                        platform=self.platform or "cli",
+                        available_tools=self.valid_tool_names,
+                        tool_defs=effective_tools,
+                    )
+                    effective_tools = self._policy_turn_context.ranked_tools or effective_tools
+                except Exception as exc:
+                    logger.debug("Policy bias begin_turn failed: %s", exc)
+                    self._policy_turn_context = None
             
             # Prepare messages for API call
             # If we have an ephemeral system prompt, prepend it to the messages
@@ -7021,6 +7298,10 @@ class AIAgent:
             effective_system = active_system_prompt or ""
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            if self._policy_turn_context and self._policy_turn_context.decision_priors:
+                effective_system = (
+                    effective_system + "\n\n" + self._policy_turn_context.decision_priors
+                ).strip()
             # Plugin context from pre_llm_call hooks — ephemeral, not cached.
             if _plugin_turn_context:
                 effective_system = (effective_system + "\n\n" + _plugin_turn_context).strip()
@@ -7057,7 +7338,7 @@ class AIAgent:
             if not self.quiet_mode:
                 self._vprint(f"\n{self.log_prefix}🔄 Making API call #{api_call_count}/{self.max_iterations}...")
                 self._vprint(f"{self.log_prefix}   📊 Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
-                self._vprint(f"{self.log_prefix}   🔧 Available tools: {len(self.tools) if self.tools else 0}")
+                self._vprint(f"{self.log_prefix}   🔧 Available tools: {len(effective_tools) if effective_tools else 0}")
             else:
                 # Animated thinking spinner in quiet mode
                 face = random.choice(KawaiiSpinner.KAWAII_THINKING)
@@ -7075,7 +7356,7 @@ class AIAgent:
             
             # Log request details if verbose
             if self.verbose_logging:
-                logging.debug(f"API Request - Model: {self.model}, Messages: {len(messages)}, Tools: {len(self.tools) if self.tools else 0}")
+                logging.debug(f"API Request - Model: {self.model}, Messages: {len(messages)}, Tools: {len(effective_tools) if effective_tools else 0}")
                 logging.debug(f"Last message role: {messages[-1]['role'] if messages else 'none'}")
                 logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
             
@@ -7096,7 +7377,7 @@ class AIAgent:
 
             while retry_count < max_retries:
                 try:
-                    api_kwargs = self._build_api_kwargs(api_messages)
+                    api_kwargs = self._build_api_kwargs(api_messages, tools_override=effective_tools)
                     if self.api_mode == "codex_responses":
                         api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
 
@@ -8207,7 +8488,66 @@ class AIAgent:
                     }
                 elif hasattr(self, "_codex_incomplete_retries"):
                     self._codex_incomplete_retries = 0
-                
+
+                # Fallback for local DeepSeek-style endpoints that emit tool calls
+                # as DSML markup inside assistant text instead of structured
+                # tool_calls objects.
+                if (
+                    not assistant_message.tool_calls
+                    and isinstance(getattr(assistant_message, "content", None), str)
+                    and "<｜DSML｜" in (assistant_message.content or "")
+                ):
+                    try:
+                        dsml_text = assistant_message.content or ""
+                        invoke_pattern = re.compile(
+                            r'<｜DSML｜invoke\s+name="([^"]+)"\s*>(.*?)</｜DSML｜invoke>',
+                            re.DOTALL,
+                        )
+                        param_pattern = re.compile(
+                            r'<｜DSML｜parameter\s+name="([^"]+)"(?:\s+string="true")?\s*>(.*?)</｜DSML｜parameter>',
+                            re.DOTALL,
+                        )
+
+                        parsed_calls = []
+                        for match in invoke_pattern.finditer(dsml_text):
+                            tool_name = (match.group(1) or "").strip()
+                            invoke_body = match.group(2) or ""
+                            args_dict = {}
+                            for param_match in param_pattern.finditer(invoke_body):
+                                key = (param_match.group(1) or "").strip()
+                                value = (param_match.group(2) or "").strip()
+                                if key:
+                                    args_dict[key] = value
+
+                            if tool_name:
+                                parsed_calls.append(
+                                    SimpleNamespace(
+                                        id=f"call_{uuid.uuid4().hex[:8]}",
+                                        type="function",
+                                        function=SimpleNamespace(
+                                            name=tool_name,
+                                            arguments=json.dumps(args_dict, ensure_ascii=False),
+                                        ),
+                                    )
+                                )
+
+                        if parsed_calls:
+                            cleaned = re.sub(
+                                r"<｜DSML｜function_calls>.*?</｜DSML｜function_calls>",
+                                "",
+                                dsml_text,
+                                flags=re.DOTALL,
+                            ).strip()
+                            assistant_message.content = cleaned or ""
+                            assistant_message.tool_calls = parsed_calls
+                            if self.verbose_logging:
+                                logger.info(
+                                    "Parsed %d DSML tool call(s) from assistant content",
+                                    len(parsed_calls),
+                                )
+                    except Exception as dsml_err:
+                        logger.debug("DSML fallback parse failed: %s", dsml_err)
+
                 # Check for tool calls
                 if assistant_message.tool_calls:
                     if not self.quiet_mode:
@@ -8341,6 +8681,12 @@ class AIAgent:
                     assistant_message.tool_calls = self._deduplicate_tool_calls(
                         assistant_message.tool_calls
                     )
+                    prepare_tool_calls_fn = getattr(type(self), "_policy_prepare_tool_calls", None)
+                    if callable(prepare_tool_calls_fn):
+                        assistant_message.tool_calls = prepare_tool_calls_fn(
+                            self,
+                            assistant_message.tool_calls,
+                        )
 
                     assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                     
@@ -8649,8 +8995,10 @@ class AIAgent:
                     
                     # Strip <think> blocks from user-facing response (keep raw in messages for trajectory)
                     final_response = self._strip_think_blocks(final_response).strip()
+                    final_response = self._apply_policy_response_controls(final_response, messages)
                     
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
+                    final_msg["content"] = final_response
                     
                     messages.append(final_msg)
                     
@@ -8717,6 +9065,8 @@ class AIAgent:
             if self.iteration_budget.remaining <= 0 and not self.quiet_mode:
                 print(f"\n⚠️  Iteration budget exhausted ({self.iteration_budget.used}/{self.iteration_budget.max_total} iterations used)")
             final_response = self._handle_max_iterations(messages, api_call_count)
+
+        final_response = self._apply_policy_response_controls(final_response, messages)
         
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < self.max_iterations
@@ -8734,6 +9084,17 @@ class AIAgent:
         if final_response and not interrupted and sync_honcho:
             self._honcho_sync(original_user_message, final_response)
             self._queue_honcho_prefetch(original_user_message)
+
+        if self._policy_bias_engine and self._policy_bias_engine.is_enabled():
+            try:
+                self._policy_bias_engine.record_turn_outcome(
+                    self._policy_turn_context,
+                    final_response=final_response or "",
+                    completed=completed,
+                    interrupted=interrupted,
+                )
+            except Exception as exc:
+                logger.debug("Policy bias turn outcome capture failed: %s", exc)
 
         # Plugin hook: post_llm_call
         # Fired once per turn after the tool-calling loop completes.
