@@ -59,11 +59,67 @@ def _jsonrpc_error(message_id: Any, code: int, message: str) -> dict[str, Any]:
     }
 
 
+def _canonicalize_for_signature(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _canonicalize_for_signature(v) for k, v in sorted(value.items(), key=lambda item: str(item[0]))}
+    if isinstance(value, list):
+        return [_canonicalize_for_signature(v) for v in value]
+    if isinstance(value, tuple):
+        return [_canonicalize_for_signature(v) for v in value]
+    if isinstance(value, SimpleNamespace):
+        return _canonicalize_for_signature(vars(value))
+    return value
+
+
+def _message_signature(message: dict[str, Any]) -> str:
+    return json.dumps(_canonicalize_for_signature(message), ensure_ascii=False, sort_keys=True)
+
+
+def _render_message_entry(message: dict[str, Any]) -> str:
+    role = str(message.get("role") or "unknown").strip().lower()
+    if role == "tool":
+        role = "tool"
+    elif role not in {"system", "user", "assistant"}:
+        role = "context"
+
+    parts: list[str] = [f'<message role="{role}">']
+
+    name = message.get("name")
+    if isinstance(name, str) and name.strip():
+        parts.append(f"name: {name.strip()}")
+
+    tool_call_id = message.get("tool_call_id")
+    if isinstance(tool_call_id, str) and tool_call_id.strip():
+        parts.append(f"tool_call_id: {tool_call_id.strip()}")
+
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list) and tool_calls:
+        rendered_tool_calls: list[dict[str, Any]] = []
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            rendered_tool_calls.append(_canonicalize_for_signature(tc))
+        if rendered_tool_calls:
+            parts.append("tool_calls:")
+            parts.append(json.dumps(rendered_tool_calls, ensure_ascii=False, indent=2))
+
+    content = _render_message_content(message.get("content"))
+    if content:
+        parts.append("content:")
+        parts.append(content)
+
+    parts.append("</message>")
+    return "\n".join(part for part in parts if part and str(part).strip())
+
+
 def _format_messages_as_prompt(
     messages: list[dict[str, Any]],
     model: str | None = None,
     tools: list[dict[str, Any]] | None = None,
     tool_choice: Any = None,
+    *,
+    reasoning_effort: str | None = None,
+    incremental: bool = False,
 ) -> str:
     sections: list[str] = [
         "You are being used as the active ACP agent backend for Hermes.",
@@ -73,6 +129,8 @@ def _format_messages_as_prompt(
     ]
     if model:
         sections.append(f"Hermes requested model hint: {model}")
+    if reasoning_effort:
+        sections.append(f"Hermes requested reasoning effort: {reasoning_effort}")
 
     if isinstance(tools, list) and tools:
         tool_specs: list[dict[str, Any]] = []
@@ -107,30 +165,18 @@ def _format_messages_as_prompt(
     for message in messages:
         if not isinstance(message, dict):
             continue
-        role = str(message.get("role") or "unknown").strip().lower()
-        if role == "tool":
-            role = "tool"
-        elif role not in {"system", "user", "assistant"}:
-            role = "context"
-
-        content = message.get("content")
-        rendered = _render_message_content(content)
-        if not rendered:
-            continue
-
-        label = {
-            "system": "System",
-            "user": "User",
-            "assistant": "Assistant",
-            "tool": "Tool",
-            "context": "Context",
-        }.get(role, role.title())
-        transcript.append(f"{label}:\n{rendered}")
+        rendered = _render_message_entry(message)
+        if rendered:
+            transcript.append(rendered)
 
     if transcript:
-        sections.append("Conversation transcript:\n\n" + "\n\n".join(transcript))
+        header = "New conversation items since your last turn:" if incremental else "Conversation transcript:"
+        sections.append(header + "\n\n" + "\n\n".join(transcript))
 
-    sections.append("Continue the conversation from the latest user request.")
+    if incremental:
+        sections.append("Continue the existing ACP session using only the new messages above.")
+    else:
+        sections.append("Continue the conversation from the latest user request.")
     return "\n\n".join(section.strip() for section in sections if section and section.strip())
 
 
@@ -144,16 +190,31 @@ def _render_message_content(content: Any) -> str:
             return str(content.get("text") or "").strip()
         if "content" in content and isinstance(content.get("content"), str):
             return str(content.get("content") or "").strip()
-        return json.dumps(content, ensure_ascii=True)
+        return json.dumps(_canonicalize_for_signature(content), ensure_ascii=False)
     if isinstance(content, list):
         parts: list[str] = []
         for item in content:
             if isinstance(item, str):
                 parts.append(item)
             elif isinstance(item, dict):
-                text = item.get("text")
-                if isinstance(text, str) and text.strip():
-                    parts.append(text.strip())
+                item_type = str(item.get("type") or "").strip().lower()
+                text_value = item.get("text")
+                if isinstance(text_value, str) and text_value.strip():
+                    parts.append(text_value.strip())
+                    continue
+                if item_type == "input_text":
+                    input_text = item.get("text")
+                    if isinstance(input_text, str) and input_text.strip():
+                        parts.append(input_text.strip())
+                        continue
+                if item_type in {"image_url", "input_image"}:
+                    image_url = item.get("image_url") or item.get("url")
+                    if isinstance(image_url, dict):
+                        image_url = image_url.get("url")
+                    if isinstance(image_url, str) and image_url.strip():
+                        parts.append(f"[image] {image_url.strip()}")
+                        continue
+                parts.append(json.dumps(_canonicalize_for_signature(item), ensure_ascii=False))
         return "\n".join(parts).strip()
     return str(content).strip()
 
@@ -376,15 +437,38 @@ class CopilotACPClient:
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self.chat = _ACPChatNamespace(self)
         self.is_closed = False
+
+        self._state_lock = threading.RLock()
         self._active_process: subprocess.Popen[str] | None = None
-        self._active_process_lock = threading.Lock()
+        self._inbox: queue.Queue[dict[str, Any]] | None = None
+        self._stderr_tail: deque[str] = deque(maxlen=40)
+        self._next_id = 0
+        self._initialized = False
+        self._session_id: str | None = None
+        self._session_model: str | None = None
+        self._requested_model: str | None = None
+        self._last_message_signatures: list[str] = []
+        self._last_tools_signature: str | None = None
+        self._last_tool_choice_signature: str | None = None
 
     def close(self) -> None:
-        proc: subprocess.Popen[str] | None
-        with self._active_process_lock:
-            proc = self._active_process
-            self._active_process = None
-        self.is_closed = True
+        with self._state_lock:
+            self._shutdown_process_locked()
+            self.is_closed = True
+
+    def _shutdown_process_locked(self) -> None:
+        proc = self._active_process
+        self._active_process = None
+        self._inbox = None
+        self._initialized = False
+        self._session_id = None
+        self._session_model = None
+        self._requested_model = None
+        self._next_id = 0
+        self._last_message_signatures = []
+        self._last_tools_signature = None
+        self._last_tool_choice_signature = None
+        self._stderr_tail.clear()
         if proc is None:
             return
         try:
@@ -404,18 +488,57 @@ class CopilotACPClient:
         timeout: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: Any = None,
+        reasoning: Any = None,
         **_: Any,
     ) -> Any:
-        prompt_text = _format_messages_as_prompt(
-            messages or [],
-            model=model,
-            tools=tools,
-            tool_choice=tool_choice,
-        )
-        response_text, reasoning_text = self._run_prompt(
-            prompt_text,
-            timeout_seconds=float(timeout or _DEFAULT_TIMEOUT_SECONDS),
-        )
+        timeout_seconds = float(timeout or _DEFAULT_TIMEOUT_SECONDS)
+        reasoning_effort = None
+        if isinstance(reasoning, dict):
+            effort = reasoning.get("effort")
+            if isinstance(effort, str) and effort.strip() and effort.strip().lower() != "none":
+                reasoning_effort = effort.strip().lower()
+
+        message_list = list(messages or [])
+        message_signatures = [_message_signature(m) for m in message_list if isinstance(m, dict)]
+        tools_signature = json.dumps(_canonicalize_for_signature(tools or []), ensure_ascii=False, sort_keys=True)
+        tool_choice_signature = json.dumps(_canonicalize_for_signature(tool_choice), ensure_ascii=False, sort_keys=True)
+
+        with self._state_lock:
+            requested_model_changed = bool(self._session_id) and bool(model) and self._requested_model not in (None, model)
+            incremental = (
+                bool(self._session_id)
+                and not requested_model_changed
+                and len(message_signatures) > len(self._last_message_signatures)
+                and message_signatures[: len(self._last_message_signatures)] == self._last_message_signatures
+                and tools_signature == self._last_tools_signature
+                and tool_choice_signature == self._last_tool_choice_signature
+            )
+
+            if incremental:
+                prompt_messages = message_list[len(self._last_message_signatures):]
+            else:
+                if self._session_id and (self._last_message_signatures or requested_model_changed):
+                    self._shutdown_process_locked()
+                prompt_messages = message_list
+
+            prompt_text = _format_messages_as_prompt(
+                prompt_messages,
+                model=model,
+                tools=tools,
+                tool_choice=tool_choice,
+                reasoning_effort=reasoning_effort,
+                incremental=incremental,
+            )
+            response_text, reasoning_text = self._run_prompt(
+                prompt_text,
+                timeout_seconds=timeout_seconds,
+                model=model,
+                reasoning_effort=reasoning_effort,
+            )
+            self._last_message_signatures = message_signatures
+            self._last_tools_signature = tools_signature
+            self._last_tool_choice_signature = tool_choice_signature
+            self._requested_model = model or self._requested_model
 
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
         if not tool_calls:
@@ -439,10 +562,12 @@ class CopilotACPClient:
         return SimpleNamespace(
             choices=[choice],
             usage=usage,
-            model=model or "copilot-acp",
+            model=model or self._session_model or "copilot-acp",
         )
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+    def _start_process_locked(self) -> None:
+        if self._active_process is not None and self._active_process.poll() is None:
+            return
         try:
             proc = subprocess.Popen(
                 [self._acp_command] + self._acp_args,
@@ -463,80 +588,87 @@ class CopilotACPClient:
             proc.kill()
             raise RuntimeError("Copilot ACP process did not expose stdin/stdout pipes.")
 
+        self._active_process = proc
+        self._inbox = queue.Queue()
         self.is_closed = False
-        with self._active_process_lock:
-            self._active_process = proc
-
-        inbox: queue.Queue[dict[str, Any]] = queue.Queue()
-        stderr_tail: deque[str] = deque(maxlen=40)
+        self._stderr_tail.clear()
 
         def _stdout_reader() -> None:
+            assert proc.stdout is not None
             for line in proc.stdout:
                 try:
-                    inbox.put(json.loads(line))
+                    self._inbox.put(json.loads(line))
                 except Exception:
-                    inbox.put({"raw": line.rstrip("\n")})
+                    self._inbox.put({"raw": line.rstrip("\n")})
 
         def _stderr_reader() -> None:
             if proc.stderr is None:
                 return
             for line in proc.stderr:
-                stderr_tail.append(line.rstrip("\n"))
+                self._stderr_tail.append(line.rstrip("\n"))
 
-        out_thread = threading.Thread(target=_stdout_reader, daemon=True)
-        err_thread = threading.Thread(target=_stderr_reader, daemon=True)
-        out_thread.start()
-        err_thread.start()
+        threading.Thread(target=_stdout_reader, daemon=True).start()
+        threading.Thread(target=_stderr_reader, daemon=True).start()
 
-        next_id = 0
+    def _request_locked(
+        self,
+        method: str,
+        params: dict[str, Any],
+        *,
+        timeout_seconds: float,
+        text_parts: list[str] | None = None,
+        reasoning_parts: list[str] | None = None,
+    ) -> Any:
+        proc = self._active_process
+        inbox = self._inbox
+        if proc is None or inbox is None or proc.stdin is None:
+            raise RuntimeError("Copilot ACP process is not ready.")
 
-        def _request(method: str, params: dict[str, Any], *, text_parts: list[str] | None = None, reasoning_parts: list[str] | None = None) -> Any:
-            nonlocal next_id
-            next_id += 1
-            request_id = next_id
-            payload = {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "method": method,
-                "params": params,
-            }
-            proc.stdin.write(json.dumps(payload) + "\n")
-            proc.stdin.flush()
+        self._next_id += 1
+        request_id = self._next_id
+        payload = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": params,
+        }
+        proc.stdin.write(json.dumps(payload) + "\n")
+        proc.stdin.flush()
 
-            deadline = time.time() + timeout_seconds
-            while time.time() < deadline:
-                if proc.poll() is not None:
-                    break
-                try:
-                    msg = inbox.get(timeout=0.1)
-                except queue.Empty:
-                    continue
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                break
+            try:
+                msg = inbox.get(timeout=0.1)
+            except queue.Empty:
+                continue
 
-                if self._handle_server_message(
-                    msg,
-                    process=proc,
-                    cwd=self._acp_cwd,
-                    text_parts=text_parts,
-                    reasoning_parts=reasoning_parts,
-                ):
-                    continue
+            if self._handle_server_message(
+                msg,
+                process=proc,
+                cwd=self._acp_cwd,
+                text_parts=text_parts,
+                reasoning_parts=reasoning_parts,
+            ):
+                continue
 
-                if msg.get("id") != request_id:
-                    continue
-                if "error" in msg:
-                    err = msg.get("error") or {}
-                    raise RuntimeError(
-                        f"Copilot ACP {method} failed: {err.get('message') or err}"
-                    )
-                return msg.get("result")
+            if msg.get("id") != request_id:
+                continue
+            if "error" in msg:
+                err = msg.get("error") or {}
+                raise RuntimeError(f"Copilot ACP {method} failed: {err.get('message') or err}")
+            return msg.get("result")
 
-            stderr_text = "\n".join(stderr_tail).strip()
-            if proc.poll() is not None and stderr_text:
-                raise RuntimeError(f"Copilot ACP process exited early: {stderr_text}")
-            raise TimeoutError(f"Timed out waiting for Copilot ACP response to {method}.")
+        stderr_text = "\n".join(self._stderr_tail).strip()
+        if proc.poll() is not None and stderr_text:
+            raise RuntimeError(f"Copilot ACP process exited early: {stderr_text}")
+        raise TimeoutError(f"Timed out waiting for Copilot ACP response to {method}.")
 
-        try:
-            _request(
+    def _ensure_session_locked(self, *, timeout_seconds: float) -> str:
+        self._start_process_locked()
+        if not self._initialized:
+            self._request_locked(
                 "initialize",
                 {
                     "protocolVersion": 1,
@@ -552,37 +684,76 @@ class CopilotACPClient:
                         "version": "0.0.0",
                     },
                 },
+                timeout_seconds=timeout_seconds,
             )
-            session = _request(
+            self._initialized = True
+        if not self._session_id:
+            session = self._request_locked(
                 "session/new",
                 {
                     "cwd": self._acp_cwd,
                     "mcpServers": [],
                 },
+                timeout_seconds=timeout_seconds,
             ) or {}
             session_id = str(session.get("sessionId") or "").strip()
             if not session_id:
                 raise RuntimeError("Copilot ACP did not return a sessionId.")
+            self._session_id = session_id
+        return self._session_id
 
-            text_parts: list[str] = []
-            reasoning_parts: list[str] = []
-            _request(
-                "session/prompt",
-                {
-                    "sessionId": session_id,
-                    "prompt": [
-                        {
-                            "type": "text",
-                            "text": prompt_text,
-                        }
-                    ],
-                },
-                text_parts=text_parts,
-                reasoning_parts=reasoning_parts,
-            )
-            return "".join(text_parts), "".join(reasoning_parts)
-        finally:
-            self.close()
+    def _switch_model_locked(self, *, model: str | None, reasoning_effort: str | None, timeout_seconds: float) -> None:
+        if not model:
+            return
+        session_id = self._ensure_session_locked(timeout_seconds=timeout_seconds)
+        if self._session_model == model:
+            return
+        params: dict[str, Any] = {
+            "sessionId": session_id,
+            "modelId": model,
+        }
+        if reasoning_effort:
+            params["reasoningEffort"] = reasoning_effort
+        try:
+            self._request_locked("session.model.switchTo", params, timeout_seconds=timeout_seconds)
+            self._session_model = model
+        except RuntimeError as exc:
+            if 'Method not found' not in str(exc):
+                raise
+            self._session_model = None
+
+    def _run_prompt(
+        self,
+        prompt_text: str,
+        *,
+        timeout_seconds: float,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> tuple[str, str]:
+        session_id = self._ensure_session_locked(timeout_seconds=timeout_seconds)
+        self._switch_model_locked(
+            model=model,
+            reasoning_effort=reasoning_effort,
+            timeout_seconds=timeout_seconds,
+        )
+        text_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        self._request_locked(
+            "session/prompt",
+            {
+                "sessionId": session_id,
+                "prompt": [
+                    {
+                        "type": "text",
+                        "text": prompt_text,
+                    }
+                ],
+            },
+            timeout_seconds=timeout_seconds,
+            text_parts=text_parts,
+            reasoning_parts=reasoning_parts,
+        )
+        return "".join(text_parts), "".join(reasoning_parts)
 
     def _handle_server_message(
         self,
