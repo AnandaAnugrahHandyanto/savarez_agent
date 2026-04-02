@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger(__name__)
 
 try:
-    from telegram import Update, Bot, Message
+    from telegram import Update, Bot, Message, ReactionTypeEmoji
     from telegram.ext import (
         Application,
         CommandHandler,
@@ -1402,6 +1402,48 @@ class TelegramAdapter(BasePlatformAdapter):
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _reactions_enabled(self) -> bool:
+        """Return whether message reactions are enabled (checked via TELEGRAM_REACTIONS env var)."""
+        configured = self.config.extra.get("reactions")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+        return os.getenv("TELEGRAM_REACTIONS", "true").lower() in ("true", "1", "yes", "on")
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add an 👀 reaction to indicate processing has started."""
+        if not self._reactions_enabled() or not self._bot:
+            return
+        message = event.raw_message
+        if not hasattr(message, "chat") or not hasattr(message, "message_id"):
+            return
+        try:
+            await self._bot.set_message_reaction(
+                chat_id=int(message.chat.id),
+                message_id=int(message.message_id),
+                reaction=[ReactionTypeEmoji(emoji="👀")],
+            )
+        except Exception as e:
+            logger.debug("[%s] Failed to set processing reaction: %s", self.name, e)
+
+    async def on_processing_complete(self, event: MessageEvent, success: bool) -> None:
+        """Replace 👀 reaction with ✅ (success) or ❌ (failure)."""
+        if not self._reactions_enabled() or not self._bot:
+            return
+        message = event.raw_message
+        if not hasattr(message, "chat") or not hasattr(message, "message_id"):
+            return
+        emoji = "✅" if success else "❌"
+        try:
+            await self._bot.set_message_reaction(
+                chat_id=int(message.chat.id),
+                message_id=int(message.message_id),
+                reaction=[ReactionTypeEmoji(emoji=emoji)],
+            )
+        except Exception as e:
+            logger.debug("[%s] Failed to set completion reaction: %s", self.name, e)
 
     def _compile_mention_patterns(self) -> List[re.Pattern]:
         """Compile optional regex wake-word patterns for group triggers."""
