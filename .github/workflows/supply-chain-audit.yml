@@ -183,7 +183,9 @@ jobs:
           ---
           *Automated scan triggered by [supply-chain-audit](/.github/workflows/supply-chain-audit.yml). If this is a false positive, a maintainer can approve after manual review.*"
 
-          gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY"
+          # Fork PRs or restricted tokens may not have permission to comment.
+          # Don't fail CI on missing permissions.
+          gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY" || true
 
       - name: Fail on critical findings
         if: steps.scan.outputs.critical == 'true'

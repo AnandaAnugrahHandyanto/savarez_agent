@@ -242,10 +242,27 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
     """Validate the audio file.  Returns an error dict or None if OK."""
     audio_path = Path(file_path)
 
-    if not audio_path.exists():
+    # Use Path.stat() for existence and file-type checks so tests can
+    # reliably monkeypatch `pathlib.Path.stat` and simulate disk errors.
+    #
+    # We intentionally perform multiple stat calls:
+    # - 1st: existence check
+    # - 2nd: file-type check
+    # - 3rd: file-size check
+    try:
+        audio_path.stat()
+    except FileNotFoundError:
         return {"success": False, "transcript": "", "error": f"Audio file not found: {file_path}"}
-    if not audio_path.is_file():
-        return {"success": False, "transcript": "", "error": f"Path is not a file: {file_path}"}
+    except OSError as e:
+        return {"success": False, "transcript": "", "error": f"Failed to access file: {e}"}
+
+    try:
+        st_mode = audio_path.stat().st_mode
+        import stat as _stat
+        if not _stat.S_ISREG(st_mode):
+            return {"success": False, "transcript": "", "error": f"Path is not a file: {file_path}"}
+    except OSError as e:
+        return {"success": False, "transcript": "", "error": f"Failed to access file: {e}"}
     if audio_path.suffix.lower() not in SUPPORTED_FORMATS:
         return {
             "success": False,

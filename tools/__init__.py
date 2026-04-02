@@ -23,6 +23,10 @@ from .web_tools import (
     check_firecrawl_api_key
 )
 
+# Backward-compat: some tests/consumers expect `import tools; tools.web_tools`
+# to exist as a module attribute (not just exported functions).
+from . import web_tools as web_tools  # noqa: F401
+
 # Primary terminal tool (local/docker/singularity/modal/daytona/ssh)
 from .terminal_tool import (
     terminal_tool,
@@ -39,6 +43,9 @@ from .vision_tools import (
     vision_analyze_tool,
     check_vision_requirements
 )
+
+# Backward-compat: expose the module as `tools.vision_tools`
+from . import vision_tools as vision_tools  # noqa: F401
 
 from .mixture_of_agents_tool import (
     mixture_of_agents_tool,
