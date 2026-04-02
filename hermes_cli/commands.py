@@ -67,6 +67,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True),
     CommandDef("background", "Run a prompt in the background", "Session",
                aliases=("bg",), args_hint="<prompt>"),
+    CommandDef("tasks", "List active async inter-profile tasks", "Session",
+               gateway_only=True, aliases=("bg-list",)),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
                aliases=("q",), args_hint="<prompt>"),
     CommandDef("status", "Show session info", "Session",
@@ -361,7 +363,7 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
-        tg_name = cmd.name.replace("-", "_")
+        tg_name = cmd.name.replace("-", "_")[:32]
         result.append((tg_name, cmd.description))
     return result
 
