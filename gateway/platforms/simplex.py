@@ -341,6 +341,22 @@ class SimplexAdapter(BasePlatformAdapter):
                 await self._send_command(f"/accept {contact_req_id}")
             return
 
+        # Early file-descriptor ready: simplex fires this before newChatItems for
+        # some file types (especially large files and voice messages transferred via
+        # XFTP).  We must send /freceive immediately so the download starts; the
+        # corresponding chat item will arrive in a subsequent newChatItems event and
+        # populate _pending_file_transfers as normal.
+        if resp_type == "rcvFileDescrReady":
+            rcv_file = resp.get("rcvFileTransfer", {})
+            file_id = rcv_file.get("fileId") if isinstance(rcv_file, dict) else None
+            if file_id is not None:
+                logger.debug(
+                    "SimpleX: rcvFileDescrReady for fileId=%s — sending /freceive",
+                    file_id,
+                )
+                await self._send_fire_and_forget(f"/freceive {file_id}")
+            return
+
         # Handle new messages (simplex-chat sends "newChatItems" with an array)
         if resp_type == "newChatItems":
             chat_items = resp.get("chatItems", [])
@@ -362,15 +378,23 @@ class SimplexAdapter(BasePlatformAdapter):
             if file_id is not None and file_id in self._pending_file_transfers:
                 pending = self._pending_file_transfers.pop(file_id)
                 file_source = file_info.get("fileSource", {})
-                file_path = file_source.get("filePath") if isinstance(file_source, dict) else None
+                file_path = (
+                    file_source.get("filePath")
+                    if isinstance(file_source, dict)
+                    else None
+                )
                 if file_path:
                     pending_item_data = pending.get("chatItem", {})
-                    pending_item_data.setdefault("file", {})["fileSource"] = {"filePath": file_path}
+                    pending_item_data.setdefault("file", {})["fileSource"] = {
+                        "filePath": file_path
+                    }
                     pending["chatItem"] = pending_item_data
                     try:
                         await self._handle_chat_item(pending)
                     except Exception:
-                        logger.exception("SimpleX: error processing deferred voice message")
+                        logger.exception(
+                            "SimpleX: error processing deferred voice message"
+                        )
             return
 
         # Log other events at debug level
@@ -487,13 +511,15 @@ class SimplexAdapter(BasePlatformAdapter):
                 ext = Path(file_name).suffix.lower()
 
             if not file_path and _is_audio_ext(ext) and file_id is not None:
-                # File transfer not yet complete — accept and wait for rcvFileComplete
+                # File transfer not yet complete — accept and wait for rcvFileComplete.
+                # Use fire-and-forget because simplex-chat never sends a corr-id reply
+                # for /freceive; waiting for one would block the event loop for 30 s.
                 logger.info(
                     "SimpleX: voice message file %d not yet received, accepting transfer",
                     file_id,
                 )
                 self._pending_file_transfers[file_id] = chat_item
-                await self._send_command(f"/fa {file_id}")
+                await self._send_fire_and_forget(f"/freceive {file_id}")
                 return
 
             if file_path:
@@ -600,6 +626,30 @@ class SimplexAdapter(BasePlatformAdapter):
             logger.warning("SimpleX: command failed: %s — %s", command[:50], e)
             self._pending_responses.pop(corr_id, None)
             return None
+
+    async def _send_fire_and_forget(self, command: str) -> None:
+        """Send a command to simplex-chat without waiting for a correlated response.
+
+        Use this for commands that simplex-chat never sends a corrId reply for,
+        such as /freceive.  Waiting for a corr-id response on these commands
+        would block the event loop for the full timeout period.
+        """
+        ws = self._ws
+        if not ws:
+            logger.warning(
+                "SimpleX: fire-and-forget command sent but WebSocket not connected"
+            )
+            return
+
+        self._corr_counter += 1
+        corr_id = f"hermes_{self._corr_counter}_{int(time.time() * 1000)}"
+        payload = json.dumps({"corrId": corr_id, "cmd": command})
+        try:
+            await ws.send(payload)
+        except Exception as e:
+            logger.warning(
+                "SimpleX: fire-and-forget send failed: %s — %s", command[:50], e
+            )
 
     # ------------------------------------------------------------------
     # Sending
@@ -719,6 +769,50 @@ class SimplexAdapter(BasePlatformAdapter):
         if result is not None:
             return SendResult(success=True)
         return SendResult(success=False, error="Failed to send document")
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        duration: int = 0,
+        **kwargs,
+    ) -> SendResult:
+        """Send an audio file as a SimpleX voice message (plays inline).
+
+        SimpleX differentiates between a generic file attachment (type:"file")
+        and an inline voice note (type:"voice").  Using the plain /f command
+        sends a downloadable file.  To get the voice-note player the client
+        must receive a /_send command whose msgContent.type is "voice".
+        """
+        if not Path(audio_path).exists():
+            return SendResult(success=False, error="Voice file not found")
+
+        caption_text = caption or ""
+        composed = json.dumps(
+            [
+                {
+                    "msgContent": {
+                        "type": "voice",
+                        "text": caption_text,
+                        "duration": duration,
+                    },
+                    "fileSource": {"filePath": audio_path},
+                }
+            ]
+        )
+
+        if chat_id.startswith("group:"):
+            group_id = chat_id[6:]
+            command = f"/_send #{group_id} json {composed}"
+        else:
+            command = f"/_send @{chat_id} json {composed}"
+
+        result = await self._send_command(command)
+        if result is not None:
+            return SendResult(success=True)
+        return SendResult(success=False, error="Failed to send voice message")
 
     # ------------------------------------------------------------------
     # Chat Info
