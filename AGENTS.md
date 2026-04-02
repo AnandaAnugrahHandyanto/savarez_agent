@@ -49,12 +49,14 @@ hermes-agent/
 │   ├── web_tools.py      # Web search/extract (Parallel + Firecrawl)
 │   ├── browser_tool.py   # Browserbase browser automation
 │   ├── code_execution_tool.py # execute_code sandbox
-│   ├── delegate_tool.py  # Subagent delegation
+│   ├── delegate_tool.py  # Subagent delegation (synchronous)
+│   ├── async_task_tool.py # Fire-and-forget async inter-profile delegation
 │   ├── mcp_tool.py       # MCP client (~1050 lines)
 │   └── environments/     # Terminal backends (local, docker, ssh, modal, daytona, singularity)
 ├── gateway/              # Messaging platform gateway
 │   ├── run.py            # Main loop, slash commands, message dispatch
 │   ├── session.py        # SessionStore — conversation persistence
+│   ├── async_task_registry.py # Registry + delivery for async inter-profile tasks
 │   └── platforms/        # Adapters: telegram, discord, slack, whatsapp, homeassistant, signal
 ├── acp_adapter/          # ACP server (VS Code / Zed / JetBrains integration)
 ├── cron/                 # Scheduler (jobs.py, scheduler.py)

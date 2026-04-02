@@ -30,6 +30,9 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
 
+# Async task registry for inter-profile fire-and-forget tasks
+from gateway.async_task_registry import async_task_registry as _async_task_registry
+
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
@@ -1240,6 +1243,11 @@ class GatewayRunner:
             )
         asyncio.create_task(self._platform_reconnect_watcher())
 
+        # Wire up async task registry and start watcher
+        _async_task_registry.set_gateway(self)
+        asyncio.create_task(self._watch_async_tasks())
+        logger.info("AsyncTaskRegistry watcher started")
+
         logger.info("Press Ctrl+C to stop")
         
         return True
@@ -1993,6 +2001,9 @@ class GatewayRunner:
 
         if canonical == "btw":
             return await self._handle_btw_command(event)
+
+        if canonical == "tasks":
+            return await self._handle_tasks_command(event)
 
         if canonical == "voice":
             return await self._handle_voice_command(event)
@@ -4233,6 +4244,103 @@ class GatewayRunner:
                 )
             except Exception:
                 pass
+
+    # ------------------------------------------------------------------
+    # Async inter-profile task watcher
+    # ------------------------------------------------------------------
+
+    async def _watch_async_tasks(self, interval: float = 2.0) -> None:
+        """Background watcher: polls subprocess-based async tasks every *interval* seconds.
+
+        When a subprocess finishes (or times out), reads its stdout and injects
+        the result into the originating chat via the AsyncTaskRegistry.
+        """
+        TIMEOUT_SECONDS = 600  # 10 minutes hard limit per task
+
+        while True:
+            try:
+                active = await _async_task_registry.list_active()
+                for entry in active:
+                    proc = entry.process
+                    if proc is None:
+                        continue
+
+                    # Check for timeout first
+                    if entry.is_timed_out:
+                        logger.warning(
+                            "AsyncTask %s timed out after %ds — killing", entry.task_id, TIMEOUT_SECONDS
+                        )
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                        entry.status = "timeout"
+                        await _async_task_registry.complete(
+                            entry.task_id,
+                            f"❌ Task killato per timeout (>{TIMEOUT_SECONDS//60} minuti).",
+                            error=True,
+                        )
+                        continue
+
+                    # Poll for completion (non-blocking)
+                    retcode = proc.poll()
+                    if retcode is None:
+                        # Still running
+                        continue
+
+                    # Process has finished — read output
+                    try:
+                        stdout, stderr = proc.communicate(timeout=5)
+                    except Exception:
+                        stdout, stderr = "", ""
+
+                    result = (stdout or "").strip()
+                    if not result:
+                        result = (stderr or "").strip()
+                    if not result:
+                        result = "(Nessun output prodotto dal profilo)"
+
+                    error = retcode != 0
+                    await _async_task_registry.complete(entry.task_id, result, error=error)
+
+                # Periodic cleanup of old completed tasks
+                await _async_task_registry.cleanup_old(max_age_hours=1)
+
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("_watch_async_tasks: unexpected error")
+
+            await asyncio.sleep(interval)
+
+    # ------------------------------------------------------------------
+    # /tasks command handler
+    # ------------------------------------------------------------------
+
+    async def _handle_tasks_command(self, event: "MessageEvent") -> str:
+        """Handle /tasks (alias /bg-list) — show active async inter-profile tasks."""
+        active = await _async_task_registry.list_active()
+        if not active:
+            all_tasks = await _async_task_registry.list_all()
+            if all_tasks:
+                lines = ["📋 Nessun task asincrono attivo al momento.", "", "Ultimi task:"]
+                for entry in sorted(all_tasks, key=lambda e: e.started_at, reverse=True)[:5]:
+                    icon = "✅" if entry.status == "done" else "❌" if entry.status in ("error", "timeout") else "🔄"
+                    preview = entry.prompt[:50] + ("..." if len(entry.prompt) > 50 else "")
+                    lines.append(f"{icon} [{entry.profile}] {entry.task_id} — {entry.duration_str} — \"{preview}\"")
+                return "\n".join(lines)
+            return "📋 Nessun task asincrono attivo o recente."
+
+        lines = [f"🔄 Task asincroni attivi: {len(active)}", ""]
+        for entry in sorted(active, key=lambda e: e.started_at):
+            preview = entry.prompt[:50] + ("..." if len(entry.prompt) > 50 else "")
+            lines.append(
+                f"• Task ID: {entry.task_id}\n"
+                f"  Profile: {entry.profile}\n"
+                f"  Durata: {entry.duration_str}\n"
+                f'  Prompt: "{preview}"'
+            )
+        return "\n".join(lines)
 
     async def _handle_reasoning_command(self, event: MessageEvent) -> str:
         """Handle /reasoning command — manage reasoning effort and display toggle.

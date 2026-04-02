@@ -56,6 +56,8 @@ _HERMES_CORE_TOOLS = [
     "clarify",
     # Code execution + delegation
     "execute_code", "delegate_task",
+    # Async inter-profile fire-and-forget tasks
+    "async_task",
     # Cronjob management
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
@@ -191,6 +193,12 @@ TOOLSETS = {
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],
+        "includes": []
+    },
+
+    "async": {
+        "description": "Fire-and-forget async inter-profile tasks (non-blocking delegation to other Hermes profiles)",
+        "tools": ["async_task"],
         "includes": []
     },
 
