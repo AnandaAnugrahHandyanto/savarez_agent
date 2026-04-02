@@ -32,7 +32,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -89,6 +89,18 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target TEXT NOT NULL,          -- 'memory' or 'user'
+    content TEXT NOT NULL,
+    level INTEGER NOT NULL DEFAULT 1,   -- 1=live, 2=compacted
+    created_at REAL NOT NULL,
+    compacted_at REAL,
+    source_count INTEGER DEFAULT 1      -- how many entries were merged into this (for compacted)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memories_target ON memories(target, level);
 """
 
 FTS_SQL = """
@@ -250,6 +262,13 @@ class SessionDB:
                 self._conn.close()
                 self._conn = None
 
+    def get_db_path(self) -> Path:
+        """Return the path to the SQLite database file.
+
+        Used by memory_tool to open its own connection with sqlite-vec loaded.
+        """
+        return self.db_path
+
     def _init_schema(self):
         """Create tables and FTS if they don't exist, run migrations."""
         cursor = self._conn.cursor()
@@ -330,6 +349,42 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
+            if current_version < 7:
+                # v7: add memories table for DB-backed persistent memory
+                # and optional vec0 virtual table for semantic search
+                try:
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS memories (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            target TEXT NOT NULL,
+                            content TEXT NOT NULL,
+                            level INTEGER NOT NULL DEFAULT 1,
+                            created_at REAL NOT NULL,
+                            compacted_at REAL,
+                            source_count INTEGER DEFAULT 1
+                        )
+                    """)
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_memories_target ON memories(target, level)"
+                    )
+                except sqlite3.OperationalError:
+                    pass  # Table already exists
+                # Try to create the vec0 virtual table (requires sqlite-vec extension)
+                try:
+                    self._conn.enable_load_extension(True)
+                    try:
+                        import sqlite_vec
+                        sqlite_vec.load(self._conn)
+                    finally:
+                        self._conn.enable_load_extension(False)
+                    cursor.execute("""
+                        CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(
+                            embedding float[1536]
+                        )
+                    """)
+                except Exception:
+                    pass  # sqlite-vec not available — vector search will use keyword fallback
+                cursor.execute("UPDATE schema_version SET version = 7")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
