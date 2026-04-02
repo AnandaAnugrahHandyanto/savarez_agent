@@ -5518,7 +5518,11 @@ class GatewayRunner:
                             break
                     # Final edit with all remaining tools (only if editing works)
                     if can_edit and progress_lines and progress_msg_id:
-                        full_text = "\n".join(progress_lines)
+                        if _latest_mode:
+                            latest_line = progress_lines[-1]
+                            full_text = f"[{len(progress_lines)}] {latest_line}" if len(progress_lines) > 1 else latest_line
+                        else:
+                            full_text = "\n".join(progress_lines)
                         try:
                             await adapter.edit_message(
                                 chat_id=source.chat_id,

@@ -217,3 +217,58 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
     assert adapter.sent
     assert adapter.sent[0]["metadata"] == {"thread_id": "1234567890.000001"}
     assert all(call["metadata"] == {"thread_id": "1234567890.000001"} for call in adapter.typing)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_latest_mode_shows_single_line(monkeypatch, tmp_path):
+    """'latest' mode should show only the most recent tool with a step counter."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "latest")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    # Write a config.yaml so _load_gateway_config picks up "latest" mode
+    import yaml
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({"display": {"tool_progress": "latest"}}), encoding="utf-8"
+    )
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="99999",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-latest",
+        session_key="agent:main:telegram:dm:99999",
+    )
+
+    assert result["final_response"] == "done"
+
+    # First tool: sent as a new message (no counter prefix for step 1)
+    assert len(adapter.sent) == 1
+    first_msg = adapter.sent[0]["content"]
+    assert "terminal" in first_msg
+    assert not first_msg.startswith("[")
+
+    # Second tool: edited in-place with step counter [2]
+    assert len(adapter.edits) >= 1
+    last_edit = adapter.edits[-1]["content"]
+    assert last_edit.startswith("[2]")
+    assert "browser_navigate" in last_edit
