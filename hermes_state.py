@@ -235,8 +235,8 @@ class SessionDB:
         except Exception:
             pass  # Best effort — never fatal.
 
-    def close(self):
-        """Close the database connection.
+    def _wal_checkpoint_and_close(self):
+        """Close the database connection after a PASSIVE WAL checkpoint.
 
         Attempts a PASSIVE WAL checkpoint first so that exiting processes
         help keep the WAL file from growing unbounded.
@@ -249,6 +249,10 @@ class SessionDB:
                     pass
                 self._conn.close()
                 self._conn = None
+
+    def close(self):
+        """Close the database connection."""
+        self._wal_checkpoint_and_close()
 
     def _init_schema(self):
         """Create tables and FTS if they don't exist, run migrations."""
@@ -348,13 +352,6 @@ class SessionDB:
             cursor.executescript(FTS_SQL)
 
         self._conn.commit()
-
-    def close(self):
-        """Close the database connection."""
-        with self._lock:
-            if self._conn:
-                self._conn.close()
-                self._conn = None
 
     # =========================================================================
     # Session lifecycle

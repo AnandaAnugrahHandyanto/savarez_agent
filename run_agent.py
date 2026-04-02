@@ -326,13 +326,12 @@ def _extract_parallel_scope_path(tool_name: str, function_args: dict) -> Path | 
 
 def _paths_overlap(left: Path, right: Path) -> bool:
     """Return True when two paths may refer to the same subtree."""
-    left_parts = left.parts
-    right_parts = right.parts
-    if not left_parts or not right_parts:
-        # Empty paths shouldn't reach here (guarded upstream), but be safe.
-        return bool(left_parts) == bool(right_parts) and bool(left_parts)
-    common_len = min(len(left_parts), len(right_parts))
-    return left_parts[:common_len] == right_parts[:common_len]
+    try:
+        common = os.path.commonpath([left, right])
+        return common == str(left) or common == str(right)
+    except ValueError:
+        # os.path.commonpath raises ValueError if paths are on different drives (Windows)
+        return False
 
 
 def _inject_honcho_turn_context(content, turn_context: str):
