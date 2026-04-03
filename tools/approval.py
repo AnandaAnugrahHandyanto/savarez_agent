@@ -762,6 +762,84 @@ def check_all_command_guards(command: str, env_type: str,
     # Gateway/async: single approval_required with combined description
     # Store all pattern keys so gateway replay approves all of them
     if is_gateway or is_ask:
+        notify_cb = None
+        with _lock:
+            notify_cb = _gateway_notify_cbs.get(session_key)
+
+        if notify_cb is not None:
+            # --- Blocking gateway approval (queue-based) ---
+            # Each call gets its own _ApprovalEntry so parallel subagents
+            # and execute_code threads can block concurrently.
+            approval_data = {
+                "command": command,
+                "pattern_key": primary_key,
+                "pattern_keys": all_keys,
+                "description": combined_desc,
+            }
+            entry = _ApprovalEntry(approval_data)
+            with _lock:
+                _gateway_queues.setdefault(session_key, []).append(entry)
+
+            # Notify the user (bridges sync agent thread → async gateway)
+            try:
+                notify_cb(approval_data)
+            except Exception as exc:
+                logger.warning("Gateway approval notify failed: %s", exc)
+                with _lock:
+                    queue = _gateway_queues.get(session_key, [])
+                    if entry in queue:
+                        queue.remove(entry)
+                    if not queue:
+                        _gateway_queues.pop(session_key, None)
+                return {
+                    "approved": False,
+                    "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
+                    "pattern_key": primary_key,
+                    "description": combined_desc,
+                }
+
+            # Block until the user responds or timeout (default 5 min)
+            timeout = _get_approval_config().get("gateway_timeout", 300)
+            try:
+                timeout = int(timeout)
+            except (ValueError, TypeError):
+                timeout = 300
+            resolved = entry.event.wait(timeout=timeout)
+
+            # Clean up this entry from the queue
+            with _lock:
+                queue = _gateway_queues.get(session_key, [])
+                if entry in queue:
+                    queue.remove(entry)
+                if not queue:
+                    _gateway_queues.pop(session_key, None)
+
+            choice = entry.result
+            if not resolved or choice is None or choice == "deny":
+                reason = "timed out" if not resolved else "denied by user"
+                return {
+                    "approved": False,
+                    "message": f"BLOCKED: Command {reason}. Do NOT retry this command.",
+                    "pattern_key": primary_key,
+                    "description": combined_desc,
+                }
+
+            # User approved — persist based on scope (same logic as CLI)
+            for key, _, is_tirith in warnings:
+                if choice == "session" or (choice == "always" and is_tirith):
+                    approve_session(session_key, key)
+                elif choice == "always":
+                    approve_session(session_key, key)
+                    approve_permanent(key)
+                    save_permanent_allowlist(_permanent_approved)
+                # choice == "once": no persistence — command allowed this
+                # single time only, matching the CLI's behavior.
+
+            return {"approved": True, "message": None,
+                    "user_approved": True, "description": combined_desc}
+
+        # Fallback: no gateway callback registered (e.g. cron, batch).
+        # Return approval_required for backward compat.
         submit_pending(session_key, {
             "command": command,
             "pattern_key": primary_key,        # backward compat
