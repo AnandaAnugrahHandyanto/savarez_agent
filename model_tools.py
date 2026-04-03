@@ -196,6 +196,13 @@ TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
 # Used by code_execution_tool to know which tools are available in this session.
 _last_resolved_tool_names: List[str] = []
 
+# Lazily initialized external memory provider manager for direct tool dispatch
+# paths that bypass AIAgent. This makes configured memory-provider tools like
+# fact_store available to the outer Hermes tool runtime, not just the agent loop.
+_external_memory_manager = None
+_external_memory_manager_failed = False
+_external_memory_manager_lock = threading.Lock()
+
 
 # =============================================================================
 # Legacy toolset name mapping  (old _tools-suffixed names -> tool name lists)
@@ -357,6 +364,74 @@ def get_tool_definitions(
 # handle_function_call  (the main dispatcher)
 # =============================================================================
 
+
+def _get_external_memory_manager(session_id: Optional[str] = None):
+    """Return the configured external memory manager for direct tool dispatch.
+
+    AIAgent builds its own MemoryManager instance inside run_agent.py. But some
+    Hermes execution paths call model_tools.handle_function_call() directly,
+    bypassing AIAgent entirely. Those paths still need configured memory-provider
+    tools like fact_store and fact_feedback to work.
+    """
+    global _external_memory_manager, _external_memory_manager_failed
+
+    if _external_memory_manager is not None:
+        return _external_memory_manager
+    if _external_memory_manager_failed:
+        return None
+
+    with _external_memory_manager_lock:
+        if _external_memory_manager is not None:
+            return _external_memory_manager
+        if _external_memory_manager_failed:
+            return None
+
+        try:
+            from hermes_cli.config import load_config
+            from agent.memory_manager import MemoryManager
+            from plugins.memory import load_memory_provider
+            from hermes_constants import get_hermes_home
+
+            config = load_config() or {}
+            mem_config = config.get("memory", {}) if isinstance(config, dict) else {}
+            provider_name = mem_config.get("provider", "") if isinstance(mem_config, dict) else ""
+            if not provider_name:
+                _external_memory_manager_failed = True
+                return None
+
+            provider = load_memory_provider(provider_name)
+            if not provider or not provider.is_available():
+                _external_memory_manager_failed = True
+                return None
+
+            manager = MemoryManager()
+            manager.add_provider(provider)
+            if not manager.providers:
+                _external_memory_manager_failed = True
+                return None
+
+            init_kwargs = {
+                "platform": "direct-tool-dispatch",
+                "hermes_home": str(get_hermes_home()),
+                "agent_context": "direct_tool_dispatch",
+            }
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                profile = get_active_profile_name()
+                init_kwargs["agent_identity"] = profile
+                init_kwargs["agent_workspace"] = "hermes"
+            except Exception:
+                pass
+
+            manager.initialize_all(session_id=session_id or "direct_tool_dispatch", **init_kwargs)
+            _external_memory_manager = manager
+            return manager
+        except Exception as e:
+            logger.debug("External memory manager init failed: %s", e)
+            _external_memory_manager_failed = True
+            return None
+
+
 # Tools whose execution is intercepted by the agent loop (run_agent.py)
 # because they need agent-level state (TodoStore, MemoryStore, etc.).
 # The registry still holds their schemas; dispatch just returns a stub error
@@ -407,7 +482,17 @@ def handle_function_call(
         except Exception:
             pass
 
-        if function_name == "execute_code":
+        _memory_manager = None
+        if function_name not in _AGENT_LOOP_TOOLS:
+            _memory_manager = _get_external_memory_manager(session_id=task_id)
+        if _memory_manager and _memory_manager.has_tool(function_name):
+            result = _memory_manager.handle_tool_call(
+                function_name,
+                function_args,
+                task_id=task_id,
+                user_task=user_task,
+            )
+        elif function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
             # the parent's tool set via the process-global.
             sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names

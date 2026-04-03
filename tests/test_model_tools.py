@@ -1,6 +1,8 @@
 """Tests for model_tools.py — function call dispatch, agent-loop interception, legacy toolsets."""
 
 import json
+from unittest.mock import MagicMock
+
 import pytest
 
 from model_tools import (
@@ -37,6 +39,19 @@ class TestHandleFunctionCall:
         assert "error" in parsed
         assert len(parsed["error"]) > 0
         assert "error" in parsed["error"].lower() or "failed" in parsed["error"].lower()
+
+    def test_external_memory_provider_tool_is_routed(self, monkeypatch):
+        import model_tools
+
+        fake_mgr = MagicMock()
+        fake_mgr.has_tool.return_value = True
+        fake_mgr.handle_tool_call.return_value = json.dumps({"fact_id": 7, "status": "added"})
+
+        monkeypatch.setattr(model_tools, "_get_external_memory_manager", lambda session_id=None: fake_mgr)
+
+        result = json.loads(handle_function_call("fact_store", {"action": "add", "content": "Nova likes vaults"}))
+        assert result == {"fact_id": 7, "status": "added"}
+        fake_mgr.handle_tool_call.assert_called_once()
 
 
 # =========================================================================
