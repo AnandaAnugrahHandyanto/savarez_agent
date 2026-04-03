@@ -37,11 +37,13 @@ _VALID_BUDGETS = {"low", "mid", "high"}
 # Thread helper (from original PR — avoids aiohttp event loop conflicts)
 # ---------------------------------------------------------------------------
 
+
 def _run_in_thread(fn, timeout: float = 30.0):
     result_q: queue.Queue = queue.Queue(maxsize=1)
 
     def _run():
         import asyncio
+
         asyncio.set_event_loop(None)
         try:
             result_q.put(("ok", fn()))
@@ -70,7 +72,10 @@ RETAIN_SCHEMA = {
         "type": "object",
         "properties": {
             "content": {"type": "string", "description": "The information to store."},
-            "context": {"type": "string", "description": "Short label (e.g. 'user preference', 'project decision')."},
+            "context": {
+                "type": "string",
+                "description": "Short label (e.g. 'user preference', 'project decision').",
+            },
         },
         "required": ["content"],
     },
@@ -111,6 +116,7 @@ REFLECT_SCHEMA = {
 # Config
 # ---------------------------------------------------------------------------
 
+
 def _load_config() -> dict:
     """Load config from profile-scoped path, legacy path, or env vars.
 
@@ -140,6 +146,7 @@ def _load_config() -> dict:
 
     return {
         "mode": os.environ.get("HINDSIGHT_MODE", "cloud"),
+        "api_url": os.environ.get("HINDSIGHT_API_URL", ""),
         "apiKey": os.environ.get("HINDSIGHT_API_KEY", ""),
         "banks": {
             "hermes": {
@@ -154,6 +161,7 @@ def _load_config() -> dict:
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
 # ---------------------------------------------------------------------------
+
 
 class HindsightMemoryProvider(MemoryProvider):
     """Hindsight long-term memory with knowledge graph and multi-strategy retrieval."""
@@ -179,7 +187,9 @@ class HindsightMemoryProvider(MemoryProvider):
             mode = cfg.get("mode", "cloud")
             if mode == "local":
                 embed = cfg.get("embed", {})
-                return bool(embed.get("llmApiKey") or os.environ.get("HINDSIGHT_LLM_API_KEY"))
+                return bool(
+                    embed.get("llmApiKey") or os.environ.get("HINDSIGHT_LLM_API_KEY")
+                )
             api_key = cfg.get("apiKey") or os.environ.get("HINDSIGHT_API_KEY", "")
             return bool(api_key)
         except Exception:
@@ -189,6 +199,7 @@ class HindsightMemoryProvider(MemoryProvider):
         """Write config to $HERMES_HOME/hindsight/config.json."""
         import json
         from pathlib import Path
+
         config_dir = Path(hermes_home) / "hindsight"
         config_dir.mkdir(parents=True, exist_ok=True)
         config_path = config_dir / "config.json"
@@ -203,19 +214,60 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def get_config_schema(self):
         return [
-            {"key": "mode", "description": "Cloud API or local embedded mode", "default": "cloud", "choices": ["cloud", "local"]},
-            {"key": "api_key", "description": "Hindsight Cloud API key", "secret": True, "env_var": "HINDSIGHT_API_KEY", "url": "https://app.hindsight.vectorize.io"},
-            {"key": "bank_id", "description": "Memory bank identifier", "default": "hermes"},
-            {"key": "budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
-            {"key": "llm_provider", "description": "LLM provider for local mode", "default": "anthropic", "choices": ["anthropic", "openai", "groq", "ollama"]},
-            {"key": "llm_api_key", "description": "LLM API key for local mode", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY"},
-            {"key": "llm_model", "description": "LLM model for local mode", "default": "claude-haiku-4-5-20251001"},
+            {
+                "key": "mode",
+                "description": "Cloud API or local embedded mode",
+                "default": "cloud",
+                "choices": ["cloud", "local"],
+            },
+            {
+                "key": "api_key",
+                "description": "Hindsight Cloud API key",
+                "secret": True,
+                "env_var": "HINDSIGHT_API_KEY",
+                "url": "https://app.hindsight.vectorize.io",
+            },
+            {
+                "key": "api_url",
+                "description": "Hindsight Cloud API base URL (for self-hosted instances)",
+                "env_var": "HINDSIGHT_API_URL",
+                "default": "https://api.hindsight.vectorize.io",
+            },
+            {
+                "key": "bank_id",
+                "description": "Memory bank identifier",
+                "default": "hermes",
+            },
+            {
+                "key": "budget",
+                "description": "Recall thoroughness",
+                "default": "mid",
+                "choices": ["low", "mid", "high"],
+            },
+            {
+                "key": "llm_provider",
+                "description": "LLM provider for local mode",
+                "default": "anthropic",
+                "choices": ["anthropic", "openai", "groq", "ollama"],
+            },
+            {
+                "key": "llm_api_key",
+                "description": "LLM API key for local mode",
+                "secret": True,
+                "env_var": "HINDSIGHT_LLM_API_KEY",
+            },
+            {
+                "key": "llm_model",
+                "description": "LLM model for local mode",
+                "default": "claude-haiku-4-5-20251001",
+            },
         ]
 
     def _make_client(self):
         """Create a fresh Hindsight client (thread-safe)."""
         if self._mode == "local":
             from hindsight import HindsightEmbedded
+
             embed = self._config.get("embed", {})
             return HindsightEmbedded(
                 profile=embed.get("profile", "hermes"),
@@ -224,12 +276,16 @@ class HindsightMemoryProvider(MemoryProvider):
                 llm_model=embed.get("llmModel", ""),
             )
         from hindsight_client import Hindsight
-        return Hindsight(api_key=self._api_key, timeout=30.0)
+
+        base_url = self._config.get("api_url", _DEFAULT_API_URL)
+        return Hindsight(base_url=base_url, api_key=self._api_key, timeout=120.0)
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = _load_config()
         self._mode = self._config.get("mode", "cloud")
-        self._api_key = self._config.get("apiKey") or os.environ.get("HINDSIGHT_API_KEY", "")
+        self._api_key = self._config.get("apiKey") or os.environ.get(
+            "HINDSIGHT_API_KEY", ""
+        )
 
         banks = self._config.get("banks", {}).get("hermes", {})
         self._bank_id = banks.get("bankId", "hermes")
@@ -239,7 +295,9 @@ class HindsightMemoryProvider(MemoryProvider):
         # Ensure bank exists
         try:
             client = _run_in_thread(self._make_client)
-            _run_in_thread(lambda: client.create_bank(bank_id=self._bank_id, name=self._bank_id))
+            _run_in_thread(
+                lambda: client.create_bank(bank_id=self._bank_id, name=self._bank_id)
+            )
         except Exception:
             pass  # Already exists
 
@@ -265,7 +323,9 @@ class HindsightMemoryProvider(MemoryProvider):
         def _run():
             try:
                 client = self._make_client()
-                resp = client.recall(bank_id=self._bank_id, query=query, budget=self._budget)
+                resp = client.recall(
+                    bank_id=self._bank_id, query=query, budget=self._budget
+                )
                 if resp.results:
                     text = "\n".join(r.text for r in resp.results if r.text)
                     with self._prefetch_lock:
@@ -273,10 +333,14 @@ class HindsightMemoryProvider(MemoryProvider):
             except Exception as e:
                 logger.debug("Hindsight prefetch failed: %s", e)
 
-        self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="hindsight-prefetch")
+        self._prefetch_thread = threading.Thread(
+            target=_run, daemon=True, name="hindsight-prefetch"
+        )
         self._prefetch_thread.start()
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(
+        self, user_content: str, assistant_content: str, *, session_id: str = ""
+    ) -> None:
         """Retain conversation turn in background (non-blocking)."""
         combined = f"User: {user_content}\nAssistant: {assistant_content}"
 
@@ -292,7 +356,9 @@ class HindsightMemoryProvider(MemoryProvider):
 
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=5.0)
-        self._sync_thread = threading.Thread(target=_sync, daemon=True, name="hindsight-sync")
+        self._sync_thread = threading.Thread(
+            target=_sync, daemon=True, name="hindsight-sync"
+        )
         self._sync_thread.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
@@ -341,7 +407,9 @@ class HindsightMemoryProvider(MemoryProvider):
                         bank_id=self._bank_id, query=query, budget=self._budget
                     )
                 )
-                return json.dumps({"result": resp.text or "No relevant memories found."})
+                return json.dumps(
+                    {"result": resp.text or "No relevant memories found."}
+                )
             except Exception as e:
                 return json.dumps({"error": f"Failed to reflect: {e}"})
 
