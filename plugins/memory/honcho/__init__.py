@@ -551,12 +551,14 @@ class HonchoMemoryProvider(MemoryProvider):
         """Record the conversation turn in Honcho (non-blocking)."""
         if self._cron_skipped:
             return
-        if not self._manager or not self._session_key:
+
+        session_key = session_id or self._session_key
+        if not self._manager or not session_key:
             return
 
         def _sync():
             try:
-                session = self._manager.get_or_create(self._session_key)
+                session = self._manager.get_or_create(session_key)
                 session.add_message("user", user_content[:4000])
                 session.add_message("assistant", assistant_content[:4000])
                 # Flush to Honcho API
