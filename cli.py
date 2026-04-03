@@ -206,7 +206,7 @@ def load_cli_config() -> Dict[str, Any]:
             "show_reasoning": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
-
+            "terminal_title": True,   # Set tab/window title via OSC sequences (disable for tmux/screen or if job name is appended by your terminal profile)
             "skin": "default",
         },
         "clarify": {
@@ -2915,6 +2915,12 @@ class HermesCLI:
         Skipped when stdout is not a TTY, TERM=dumb, or NO_COLOR is set.
         """
         import sys, os
+        # Respect display.terminal_title = false config opt-out
+        try:
+            if not CLI_CONFIG.get("display", {}).get("terminal_title", True):
+                return
+        except Exception:
+            pass
         # Use the real stdout (sys.__stdout__) to bypass prompt_toolkit's
         # patch_stdout StdoutProxy — OSC escape sequences sent through the
         # proxy are buffered / eaten and never reach the terminal emulator.
