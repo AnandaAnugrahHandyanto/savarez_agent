@@ -74,6 +74,7 @@ class RetainDBClientConfig:
     enabled: bool = True
     api_key: str | None = None
     base_url: str = DEFAULT_BASE_URL
+    org_id: str | None = None
     project: str | None = None
     memory_mode: str = "hybrid"
     recall_mode: str = "hybrid"
@@ -96,11 +97,13 @@ class RetainDBClientConfig:
             raw = cfg.get("retaindb", {}) if isinstance(cfg, dict) else {}
             env_api_key = get_env_value("RETAINDB_API_KEY")
             env_base_url = get_env_value("RETAINDB_BASE_URL")
+            env_org_id = get_env_value("RETAINDB_ORG_ID")
             env_project = get_env_value("RETAINDB_PROJECT")
         except Exception:
             raw = {}
             env_api_key = os.getenv("RETAINDB_API_KEY")
             env_base_url = os.getenv("RETAINDB_BASE_URL")
+            env_org_id = os.getenv("RETAINDB_ORG_ID")
             env_project = os.getenv("RETAINDB_PROJECT")
 
         write_frequency = raw.get("write_frequency", "async")
@@ -121,6 +124,7 @@ class RetainDBClientConfig:
             enabled=_coerce_bool(raw.get("enabled"), True),
             api_key=(env_api_key or "").strip() or None,
             base_url=normalize_base_url(env_base_url or raw.get("base_url") or DEFAULT_BASE_URL),
+            org_id=(str(env_org_id or raw.get("org_id") or "").strip() or None),
             project=(str(env_project or raw.get("project") or "").strip() or None),
             memory_mode=memory_mode,
             recall_mode=recall_mode,
@@ -168,6 +172,8 @@ class RetainDBClient:
             "x-sdk-runtime": "hermes-agent",
             "x-sdk-version": "native-retaindb-v1",
         }
+        if self.config.org_id:
+            headers["X-Organization-Id"] = self.config.org_id
         if attach_api_key_header and token:
             headers["X-API-Key"] = token
         return headers

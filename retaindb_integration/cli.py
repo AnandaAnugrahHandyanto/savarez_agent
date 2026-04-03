@@ -85,8 +85,13 @@ def _save_env(api_key: str, base_url: str) -> None:
     )
 
 
+def _should_hide_project_listing(config: RetainDBClientConfig) -> bool:
+    return not bool(config.org_id)
+
+
 def _select_or_create_project(
     client: RetainDBClient,
+    config: RetainDBClientConfig,
     args,
     *,
     interactive: bool,
@@ -116,6 +121,21 @@ def _select_or_create_project(
             project = projects[0]
             return str(project.get("slug") or project.get("name") or project.get("id"))
         raise RuntimeError("Multiple RetainDB projects found. Re-run with --project <slug>.")
+
+    if _should_hide_project_listing(config):
+        current_project = str(config.project or "").strip()
+        print("\n  RetainDB project listing is hidden because no org scope is configured.")
+        print("  Set `RETAINDB_ORG_ID` if you want Hermes setup to enumerate org-scoped projects safely.")
+        project_name = _prompt("Project name", default=current_project or "hermes-agent")
+        for project in projects:
+            if project_name in {
+                str(project.get("id") or ""),
+                str(project.get("slug") or ""),
+                str(project.get("name") or ""),
+            }:
+                return str(project.get("slug") or project.get("name") or project.get("id"))
+        created = client.create_project(project_name)
+        return str(created.get("slug") or created.get("name") or created.get("id"))
 
     print("\n  Available RetainDB projects:")
     for idx, project in enumerate(projects, start=1):
@@ -210,7 +230,7 @@ def cmd_setup(args) -> None:
     print("OK")
 
     try:
-        project = _select_or_create_project(client, args, interactive=interactive)
+        project = _select_or_create_project(client, test_config, args, interactive=interactive)
     except Exception as exc:
         print(f"  {exc}\n")
         return
@@ -240,6 +260,7 @@ def cmd_status(args) -> None:
     print(f"  Enabled:        {config.enabled}")
     print(f"  API key:        {masked}")
     print(f"  Base URL:       {config.base_url}")
+    print(f"  Org scope:      {config.org_id or 'not set'}")
     print(f"  Project:        {config.project or 'not set'}")
     print(f"  Memory mode:    {config.memory_mode}")
     print(f"  Recall mode:    {config.recall_mode}")
