@@ -161,11 +161,25 @@ KNOWLEDGE GAPS:
 {what couldn't be verified}
 ```
 
-### Phase 6: Delivery
-1. Send the full report to Telegram
-2. Store trace in Graphiti: `add_memory(group_id="oracle_research", name="Research: {topic}")`
-3. Record in ST decision journal
-4. Send: `Research complete — /follow {id} <question> for follow-up`
+### Phase 6: Delivery + Archival
+**Deliver:**
+1. Send condensed report to Telegram (executive summary + key findings + actions)
+2. Send: `Research complete — /follow {id} <question> for follow-up`
+
+**Archive to Vault (MANDATORY — every research run must persist its full trace):**
+3. Write full report to Vault: `vault_submit_knowledge` with content=full report markdown, tags=["oracle:research", "oracle:{template_type}"], title="ORACLE: {topic}"
+4. Write research metadata to Vault: `vault_record_decision` with decision=conclusion, rationale=executive summary, tags=["oracle:decision"]
+5. Record in ST decision journal: `record_decision(tag="oracle", decision=conclusion, expected_outcome=prediction)`
+
+**Archive to Graphiti (persistent knowledge graph):**
+6. Store full report as episode: `add_memory(group_id="oracle_research", name="Research: {topic}", episode_body=full_report)`
+7. Store each key finding as separate episode: `add_memory(group_id="oracle_findings", name="Finding: {finding_title}")` — this builds a searchable knowledge base across all research runs
+
+**Cleanup:**
+8. Remove temp files: `/tmp/oracle_dim_*.txt`, `/tmp/oracle-report-*.md`
+9. Log completion: research_id, duration, dimensions, findings count, confidence
+
+**Why this matters**: Every research run adds to ORACLE's collective intelligence. Future research on similar topics will find prior findings in Vault search (Phase 0) and Graphiti search, compounding intelligence over time. No data is ever lost.
 
 ## Depth Calibration
 
