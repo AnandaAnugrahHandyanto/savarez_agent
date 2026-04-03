@@ -452,12 +452,65 @@ def _run_single_child(
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 
+def _load_skill_for_subagent(skill_name: str) -> Dict[str, Any]:
+    """Load a skill by name and return its frontmatter + body content.
+
+    Searches the same skill directories as the skills_tool (bundled + user).
+    Returns dict with keys: name, model, provider, content (str).
+    Returns empty dict on failure (skill not found / parse error).
+    """
+    try:
+        from agent.skill_utils import get_all_skills_dirs, parse_frontmatter
+        from pathlib import Path as _Path
+
+        name = skill_name.strip()
+        skill_md: Optional[_Path] = None
+        all_dirs = get_all_skills_dirs()
+
+        # 1. Direct path e.g. "mlops/axolotl"
+        for search_dir in all_dirs:
+            direct = search_dir / name
+            if direct.is_dir() and (direct / "SKILL.md").exists():
+                skill_md = direct / "SKILL.md"
+                break
+            if direct.with_suffix(".md").exists():
+                skill_md = direct.with_suffix(".md")
+                break
+
+        # 2. Directory name match across all dirs
+        if not skill_md:
+            for search_dir in all_dirs:
+                for found in search_dir.rglob("SKILL.md"):
+                    if found.parent.name == name:
+                        skill_md = found
+                        break
+                if skill_md:
+                    break
+
+        if not skill_md or not skill_md.exists():
+            logger.debug("Skill not found for subagent: %s", skill_name)
+            return {}
+
+        raw = skill_md.read_text(encoding="utf-8")
+        frontmatter, body = parse_frontmatter(raw)
+        model = str(frontmatter.get("model") or "").strip() or None
+        provider = str(frontmatter.get("provider") or "").strip() or None
+        return {"name": skill_name, "model": model, "provider": provider, "content": body.strip()}
+    except Exception as e:
+        logger.debug("Failed to load skill '%s' for subagent: %s", skill_name, e)
+        return {}
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    skill: Optional[str] = None,
+    skills: Optional[List[str]] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -466,6 +519,18 @@ def delegate_task(
     Supports two modes:
       - Single: provide goal (+ optional context, toolsets)
       - Batch:  provide tasks array [{goal, context, toolsets}, ...]
+
+    Optional model routing:
+      - model:    Override model for this call (e.g. 'google/gemini-flash-1.5')
+      - provider: Override provider for this call (e.g. 'openrouter')
+      - skill:    Load a named skill into the subagent's context. If the skill's
+                  SKILL.md frontmatter contains a 'model:' field, that model is
+                  used unless overridden by the explicit 'model' param.
+      - skills:   Load multiple skills (list of names). First skill with a model
+                  field wins if no explicit model is given.
+
+    Priority (highest → lowest):
+      explicit model param > skill frontmatter model > delegation config > parent
 
     Returns JSON with results array, one entry per task.
     """
@@ -487,13 +552,38 @@ def delegate_task(
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
 
+    # Resolve skill frontmatter for model routing and system prompt injection.
+    # Merge skill + skills into a single list (skill is a convenience shorthand).
+    skill_names = list(skills or [])
+    if skill and skill not in skill_names:
+        skill_names.insert(0, skill)
+
+    loaded_skills = [_load_skill_for_subagent(s) for s in skill_names if s]
+    loaded_skills = [s for s in loaded_skills if s]  # drop failures
+
+    # Build extra system prompt from skill content
+    skill_prompt_parts = []
+    for s in loaded_skills:
+        if s.get("content"):
+            skill_prompt_parts.append(f"# Skill: {s['name']}\n\n{s['content']}")
+    skill_extra_prompt = "\n\n---\n\n".join(skill_prompt_parts) if skill_prompt_parts else None
+
+    # Determine effective model/provider for this call.
+    # Priority: explicit param > skill frontmatter > delegation config > parent inherit
+    skill_model = next((s["model"] for s in loaded_skills if s.get("model")), None)
+    skill_provider = next((s["provider"] for s in loaded_skills if s.get("provider")), None)
+    call_model = model or skill_model   # explicit wins over skill
+    call_provider = provider or skill_provider
+
     # Resolve delegation credentials (provider:model pair).
     # When delegation.provider is configured, this resolves the full credential
     # bundle (base_url, api_key, api_mode) via the same runtime provider system
     # used by CLI/gateway startup.  When unconfigured, returns None values so
     # children inherit from the parent.
     try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
+        creds = _resolve_delegation_credentials(cfg, parent_agent,
+                                                override_model=call_model,
+                                                override_provider=call_provider)
     except ValueError as exc:
         return json.dumps({"error": str(exc)})
 
@@ -538,13 +628,35 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            # Per-task model overrides (batch mode) take priority over call-level
+            task_model = t.get("model") or creds["model"]
+            task_provider = t.get("provider") or creds["provider"]
+            task_creds = creds
+            if t.get("model") or t.get("provider"):
+                try:
+                    task_creds = _resolve_delegation_credentials(
+                        cfg, parent_agent,
+                        override_model=t.get("model") or call_model,
+                        override_provider=t.get("provider") or call_provider,
+                    )
+                except ValueError:
+                    pass  # fall back to call-level creds
+
+            # Merge skill extra prompt with any task-level context
+            task_goal = t["goal"]
+            if skill_extra_prompt:
+                # Prepend skill content to the child system prompt via context
+                task_context = t.get("context") or ""
+                t = dict(t)  # don't mutate original
+                t["context"] = (skill_extra_prompt + ("\n\n" + task_context if task_context else ""))
+
             child = _build_child_agent(
-                task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
+                task_index=i, goal=task_goal, context=t.get("context"),
+                toolsets=t.get("toolsets") or toolsets, model=task_creds["model"],
                 max_iterations=effective_max_iter, parent_agent=parent_agent,
-                override_provider=creds["provider"], override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"], override_base_url=task_creds["base_url"],
+                override_api_key=task_creds.get("api_key"),
+                override_api_mode=task_creds["api_mode"],
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -673,23 +785,24 @@ def delegate_task(
     }, ensure_ascii=False)
 
 
-def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
+def _resolve_delegation_credentials(cfg: dict, parent_agent,
+                                    override_model: Optional[str] = None,
+                                    override_provider: Optional[str] = None) -> dict:
     """Resolve credentials for subagent delegation.
 
-    If ``delegation.base_url`` is configured, subagents use that direct
-    OpenAI-compatible endpoint. Otherwise, if ``delegation.provider`` is
-    configured, the full credential bundle (base_url, api_key, api_mode,
-    provider) is resolved via the runtime provider system — the same path used
-    by CLI/gateway startup. This lets subagents run on a completely different
-    provider:model pair.
+    Priority for model/provider:
+      override_model/override_provider (call-level or skill frontmatter)
+      > delegation.model/delegation.provider (config)
+      > parent inherit (None)
 
-    If neither base_url nor provider is configured, returns None values so the
-    child inherits everything from the parent agent.
+    If ``delegation.base_url`` is configured, subagents use that direct
+    OpenAI-compatible endpoint. Otherwise, if a provider is determined,
+    the full credential bundle is resolved via the runtime provider system.
 
     Raises ValueError with a user-friendly message on credential failure.
     """
-    configured_model = str(cfg.get("model") or "").strip() or None
-    configured_provider = str(cfg.get("provider") or "").strip() or None
+    configured_model = override_model or str(cfg.get("model") or "").strip() or None
+    configured_provider = override_provider or str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
 
@@ -858,6 +971,14 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": "Toolsets for this specific task",
                         },
+                        "model": {
+                            "type": "string",
+                            "description": "Model override for this specific task (overrides top-level model)",
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": "Provider override for this specific task",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -874,6 +995,41 @@ DELEGATE_TASK_SCHEMA = {
                 "description": (
                     "Max tool-calling turns per subagent (default: 50). "
                     "Only set lower for simple tasks."
+                ),
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Model to use for all subagents in this call "
+                    "(e.g. 'google/gemini-flash-1.5', 'anthropic/claude-opus-4-6'). "
+                    "Overrides delegation.model config and skill frontmatter. "
+                    "Use cheap/fast models for research or summarisation tasks; "
+                    "use capable models for complex reasoning or code generation."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Provider for this call (e.g. 'openrouter', 'anthropic'). "
+                    "Overrides delegation.provider config."
+                ),
+            },
+            "skill": {
+                "type": "string",
+                "description": (
+                    "Name of a skill to load into the subagent's context. "
+                    "The skill's SKILL.md content is prepended to the subagent's "
+                    "system prompt. If the skill's frontmatter contains a 'model:' "
+                    "field, that model is used (unless overridden by the 'model' param)."
+                ),
+            },
+            "skills": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "List of skill names to load into the subagent's context. "
+                    "First skill with a 'model:' field in its frontmatter sets "
+                    "the model (unless overridden by the explicit 'model' param)."
                 ),
             },
         },
@@ -895,6 +1051,10 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        model=args.get("model"),
+        provider=args.get("provider"),
+        skill=args.get("skill"),
+        skills=args.get("skills"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",
