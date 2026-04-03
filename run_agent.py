@@ -4520,8 +4520,20 @@ class AIAgent:
         # access for Codex providers.
         try:
             from agent.auxiliary_client import resolve_provider_client
+            fb_base_url_explicit = (fb.get("base_url") or "").strip() or None
+            fb_api_key_explicit = (fb.get("api_key") or "").strip()
+            if not fb_api_key_explicit:
+                fb_key_env = (fb.get("api_key_env") or "").strip()
+                if fb_key_env:
+                    fb_api_key_explicit = os.getenv(fb_key_env, "").strip()
+            fb_api_key_explicit = fb_api_key_explicit or None
             fb_client, _ = resolve_provider_client(
-                fb_provider, model=fb_model, raw_codex=True)
+                fb_provider,
+                model=fb_model,
+                raw_codex=True,
+                explicit_base_url=fb_base_url_explicit,
+                explicit_api_key=fb_api_key_explicit,
+            )
             if fb_client is None:
                 logging.warning(
                     "Fallback to %s failed: provider not configured",
