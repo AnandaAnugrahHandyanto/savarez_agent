@@ -19,6 +19,16 @@ DEFAULT_MEMORY_DIR = get_hermes_home() / "memories"
 DEFAULT_DB_PATH = get_hermes_home() / "memory.db"
 
 
+def get_default_memory_dir() -> Path:
+    """Return the live profile-scoped memories directory."""
+    return get_hermes_home() / "memories"
+
+
+def get_default_db_path() -> Path:
+    """Return the live profile-scoped SQLite memory database path."""
+    return get_hermes_home() / "memory.db"
+
+
 class PersistentMemoryStore:
     def __init__(
         self,
@@ -27,8 +37,18 @@ class PersistentMemoryStore:
         memory_char_limit: int = 2200,
         user_char_limit: int = 1375,
     ):
-        self.db_path = Path(db_path or DEFAULT_DB_PATH)
-        self.memory_dir = Path(memory_dir or DEFAULT_MEMORY_DIR)
+        resolved_db_path = db_path
+        if resolved_db_path is None:
+            dynamic_db_path = get_default_db_path()
+            resolved_db_path = DEFAULT_DB_PATH if Path(DEFAULT_DB_PATH) != Path(dynamic_db_path) else dynamic_db_path
+
+        resolved_memory_dir = memory_dir
+        if resolved_memory_dir is None:
+            dynamic_memory_dir = get_default_memory_dir()
+            resolved_memory_dir = DEFAULT_MEMORY_DIR if Path(DEFAULT_MEMORY_DIR) != Path(dynamic_memory_dir) else dynamic_memory_dir
+
+        self.db_path = Path(resolved_db_path)
+        self.memory_dir = Path(resolved_memory_dir)
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
         self.db_path.parent.mkdir(parents=True, exist_ok=True)

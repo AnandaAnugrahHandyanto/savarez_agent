@@ -3,6 +3,7 @@ from tools.memory_tool import MemoryStore
 
 def test_memory_store_creates_sqlite_db_alongside_markdown(tmp_path, monkeypatch):
     monkeypatch.setattr("tools.memory_tool.MEMORY_DIR", tmp_path / "memories")
+    monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path / "memories")
     monkeypatch.setattr("tools.persistent_memory_store.DEFAULT_DB_PATH", tmp_path / "memory.db")
 
     store = MemoryStore(memory_char_limit=500, user_char_limit=300)
@@ -20,6 +21,7 @@ def test_memory_store_bootstraps_existing_markdown_into_db(tmp_path, monkeypatch
     (memory_dir / "USER.md").write_text("Legacy user pref", encoding="utf-8")
 
     monkeypatch.setattr("tools.memory_tool.MEMORY_DIR", memory_dir)
+    monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: memory_dir)
     monkeypatch.setattr("tools.persistent_memory_store.DEFAULT_DB_PATH", tmp_path / "memory.db")
 
     store = MemoryStore(memory_char_limit=500, user_char_limit=300)

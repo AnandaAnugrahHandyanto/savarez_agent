@@ -18,7 +18,14 @@ import tools.persistent_memory_store as pm
 
 logger = logging.getLogger(__name__)
 
-MEMORY_DIR = get_hermes_home() / "memories"
+
+def get_memory_dir() -> Path:
+    """Return the profile-scoped memories directory."""
+    return get_hermes_home() / "memories"
+
+
+# Backward-compatible alias for callers/tests that still reference MEMORY_DIR.
+MEMORY_DIR = get_memory_dir()
 ENTRY_DELIMITER = "\n§\n"
 
 _MEMORY_THREAT_PATTERNS = [
@@ -63,16 +70,20 @@ class MemoryStore:
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
         self._backend = None
 
+    def _memory_dir(self) -> Path:
+        return get_memory_dir()
+
     def _db_path(self) -> Path:
-        if MEMORY_DIR.name == "memories":
-            return MEMORY_DIR.parent / "memory.db"
-        return MEMORY_DIR / "memory.db"
+        memory_dir = self._memory_dir()
+        if memory_dir.name == "memories":
+            return memory_dir.parent / "memory.db"
+        return memory_dir / "memory.db"
 
     def _backend_store(self) -> pm.PersistentMemoryStore:
         if self._backend is None:
             self._backend = pm.PersistentMemoryStore(
                 db_path=self._db_path(),
-                memory_dir=MEMORY_DIR,
+                memory_dir=self._memory_dir(),
                 memory_char_limit=self.memory_char_limit,
                 user_char_limit=self.user_char_limit,
             )
@@ -111,15 +122,17 @@ class MemoryStore:
         backend = self._backend_store()
         if backend.list_entries("memory", include_inactive=True) or backend.list_entries("user", include_inactive=True):
             return
+        memory_dir = self._memory_dir()
         for target, filename in (("memory", "MEMORY.md"), ("user", "USER.md")):
-            for entry in self._read_markdown_file(MEMORY_DIR / filename):
+            for entry in self._read_markdown_file(memory_dir / filename):
                 backend.add_entry(target, entry, kind=self._entry_kind(target, entry), source="migration")
 
     def load_from_disk(self):
-        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        memory_dir = self._memory_dir()
+        memory_dir.mkdir(parents=True, exist_ok=True)
         self._backend = pm.PersistentMemoryStore(
             db_path=self._db_path(),
-            memory_dir=MEMORY_DIR,
+            memory_dir=memory_dir,
             memory_char_limit=self.memory_char_limit,
             user_char_limit=self.user_char_limit,
         )

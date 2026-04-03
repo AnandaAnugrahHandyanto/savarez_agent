@@ -3,6 +3,7 @@ from tools.memory_tool import MemoryStore
 
 def test_snapshot_uses_compact_retrieved_memory_block(tmp_path, monkeypatch):
     monkeypatch.setattr("tools.memory_tool.MEMORY_DIR", tmp_path / "memories")
+    monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path / "memories")
     store = MemoryStore(memory_char_limit=220, user_char_limit=160)
     store.load_from_disk()
 
