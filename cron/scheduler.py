@@ -10,11 +10,14 @@ runs at a time if multiple processes overlap.
 
 import asyncio
 import concurrent.futures
+import contextlib
+import importlib
 import json
 import logging
 import os
 import sys
 import traceback
+from typing import Any, cast
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -26,10 +29,9 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from hermes_constants import get_hermes_home
-from hermes_cli.config import load_config
-from typing import Optional
 
+from hermes_cli.config import load_config
+from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
@@ -37,7 +39,7 @@ logger = logging.getLogger(__name__)
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import advance_next_run, get_due_jobs, mark_job_run, save_job_output  # noqa: E402
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -50,10 +52,27 @@ _hermes_home = get_hermes_home()
 # File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
 _LOCK_DIR = _hermes_home / "cron"
 _LOCK_FILE = _LOCK_DIR / ".tick.lock"
+_CRON_TIMEOUT_DEFAULT_SECONDS = "600"
+_INJECTED_ENV_KEYS = (
+    "HERMES_SESSION_PLATFORM",
+    "HERMES_SESSION_CHAT_ID",
+    "HERMES_SESSION_CHAT_NAME",
+    "HERMES_CRON_AUTO_DELIVER_PLATFORM",
+    "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
+    "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
+)
 
 
-def _resolve_origin(job: dict) -> Optional[dict]:
-    """Extract origin info from a job, preserving any extra routing metadata."""
+def _resolve_origin(job: dict) -> dict | None:
+    """Return validated origin metadata for a cron job.
+
+    Args:
+        job: Cron job definition that may include an ``origin`` mapping.
+
+    Returns:
+        A routing dictionary when both ``platform`` and ``chat_id`` are present.
+        Returns ``None`` when the job has no usable origin payload.
+    """
     origin = job.get("origin")
     if not origin:
         return None
@@ -64,8 +83,17 @@ def _resolve_origin(job: dict) -> Optional[dict]:
     return None
 
 
-def _resolve_delivery_target(job: dict) -> Optional[dict]:
-    """Resolve the concrete auto-delivery target for a cron job, if any."""
+def _resolve_delivery_target(job: dict) -> dict | None:
+    """Resolve the concrete auto-delivery destination for a cron run.
+
+    Args:
+        job: Cron job definition containing ``deliver`` and optional ``origin`` data.
+
+    Returns:
+        A normalized target mapping with ``platform``, ``chat_id``, and optional
+        ``thread_id`` when delivery is configured and resolvable. Returns ``None``
+        for local-only jobs or when no concrete destination can be derived.
+    """
     deliver = job.get("deliver", "local")
     origin = _resolve_origin(job)
 
@@ -76,9 +104,9 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
         if not origin:
             return None
         return {
-            "platform": origin["platform"],
-            "chat_id": str(origin["chat_id"]),
-            "thread_id": origin.get("thread_id"),
+            "platform"  : origin["platform"],
+            "chat_id"   : str(origin["chat_id"]),
+            "thread_id" : origin.get("thread_id"),
         }
 
     if ":" in deliver:
@@ -102,20 +130,23 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
             if resolved:
                 chat_id = resolved
         except Exception:
-            pass
+            logging.getLogger(__name__).debug(
+                "Failed to resolve channel name for %r on %r",
+                chat_id, platform_name, exc_info=True
+            )
 
         return {
-            "platform": platform_name,
-            "chat_id": chat_id,
-            "thread_id": thread_id,
+            "platform"  : platform_name,
+            "chat_id"   : chat_id,
+            "thread_id" : thread_id,
         }
 
     platform_name = deliver
     if origin and origin.get("platform") == platform_name:
         return {
-            "platform": platform_name,
-            "chat_id": str(origin["chat_id"]),
-            "thread_id": origin.get("thread_id"),
+            "platform"  : platform_name,
+            "chat_id"   : str(origin["chat_id"]),
+            "thread_id" : origin.get("thread_id"),
         }
 
     chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
@@ -123,18 +154,80 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
         return None
 
     return {
-        "platform": platform_name,
-        "chat_id": chat_id,
-        "thread_id": None,
+        "platform"  : platform_name,
+        "chat_id"   : chat_id,
+        "thread_id" : None,
     }
+
+
+def _set_origin_env(origin: dict | None) -> None:
+    """Expose origin chat metadata to tools invoked during a cron run.
+
+    Args:
+        origin: Normalized origin metadata from the scheduled job, if present.
+
+    Returns:
+        None. The function mutates process environment variables for the duration
+        of the current cron run.
+    """
+    if not origin:
+        return
+
+    os.environ["HERMES_SESSION_PLATFORM"] = origin["platform"]
+    os.environ["HERMES_SESSION_CHAT_ID"]  = str(origin["chat_id"])
+    if origin.get("chat_name"):
+        os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
+
+
+def _set_auto_delivery_env(delivery_target: dict | None) -> None:
+    """Expose resolved auto-delivery routing to the send_message tool.
+
+    Args:
+        delivery_target: Normalized delivery target returned by
+            :func:`_resolve_delivery_target`.
+
+    Returns:
+        None. The function mutates environment variables consumed later by the
+        messaging toolchain.
+    """
+    if not delivery_target:
+        return
+
+    os.environ["HERMES_CRON_AUTO_DELIVER_PLATFORM"] = delivery_target["platform"]
+    os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
+    if delivery_target.get("thread_id") is not None:
+        os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
+
+
+def _clear_injected_env() -> None:
+    """Clear environment variables injected for a single cron execution.
+
+    Returns:
+        None. Missing variables are ignored so cleanup can run safely in every
+        scheduler exit path.
+    """
+    for key in _INJECTED_ENV_KEYS:
+        os.environ.pop(key, None)
 
 
 def _deliver_result(job: dict, content: str) -> None:
     """
-    Deliver job output to the configured target (origin chat, specific platform, etc.).
+    Deliver cron output to the configured destination.
 
-    Uses the standalone platform send functions from send_message_tool so delivery
-    works whether or not the gateway is running.
+    Args:
+        job: Cron job definition containing delivery routing metadata.
+        content: Final rendered message body from the cron execution.
+
+    Returns:
+        None. Delivery failures are logged and swallowed so the scheduler can
+        continue processing other jobs.
+
+    Errors:
+        Platform lookup, gateway configuration, and send failures are logged and
+        converted into an early return.
+
+    Uses the standalone platform send functions from ``send_message_tool`` so
+    delivery works whether or not the gateway is running.
     """
     target = _resolve_delivery_target(job)
     if not target:
@@ -150,24 +243,26 @@ def _deliver_result(job: dict, content: str) -> None:
     chat_id = target["chat_id"]
     thread_id = target.get("thread_id")
 
+    from gateway.config import Platform, load_gateway_config
+    from gateway.platforms.base import BasePlatformAdapter
     from tools.send_message_tool import _send_to_platform
-    from gateway.config import load_gateway_config, Platform
 
     platform_map = {
-        "telegram": Platform.TELEGRAM,
-        "discord": Platform.DISCORD,
-        "slack": Platform.SLACK,
-        "whatsapp": Platform.WHATSAPP,
-        "signal": Platform.SIGNAL,
-        "matrix": Platform.MATRIX,
-        "mattermost": Platform.MATTERMOST,
-        "homeassistant": Platform.HOMEASSISTANT,
-        "dingtalk": Platform.DINGTALK,
-        "feishu": Platform.FEISHU,
-        "wecom": Platform.WECOM,
-        "email": Platform.EMAIL,
-        "sms": Platform.SMS,
+        "telegram"      : Platform.TELEGRAM,
+        "discord"       : Platform.DISCORD,
+        "slack"         : Platform.SLACK,
+        "whatsapp"      : Platform.WHATSAPP,
+        "signal"        : Platform.SIGNAL,
+        "matrix"        : Platform.MATRIX,
+        "mattermost"    : Platform.MATTERMOST,
+        "homeassistant" : Platform.HOMEASSISTANT,
+        "dingtalk"      : Platform.DINGTALK,
+        "feishu"        : Platform.FEISHU,
+        "wecom"         : Platform.WECOM,
+        "email"         : Platform.EMAIL,
+        "sms"           : Platform.SMS,
     }
+
     platform = platform_map.get(platform_name.lower())
     if not platform:
         logger.warning("Job '%s': unknown platform '%s' for delivery", job["id"], platform_name)
@@ -191,8 +286,8 @@ def _deliver_result(job: dict, content: str) -> None:
     try:
         user_cfg = load_config()
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.exception("Job '%s': failed to load cron.wrap_response config: %s", job["id"], e)
 
     if wrap_response:
         task_name = job.get("name", job["id"])
@@ -205,8 +300,17 @@ def _deliver_result(job: dict, content: str) -> None:
     else:
         delivery_content = content
 
+    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+
     # Run the async send in a fresh event loop (safe from any thread)
-    coro = _send_to_platform(platform, pconfig, chat_id, delivery_content, thread_id=thread_id)
+    coro = _send_to_platform(
+        platform,
+        pconfig,
+        chat_id,
+        cleaned_delivery_content,
+        thread_id.  = thread_id,
+        media_files = media_files,
+    )
     try:
         result = asyncio.run(coro)
     except RuntimeError:
@@ -215,9 +319,18 @@ def _deliver_result(job: dict, content: str) -> None:
         # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
         # fresh thread that has no running loop.
         coro.close()
-        import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, delivery_content, thread_id=thread_id))
+            future = pool.submit(
+                asyncio.run,
+                _send_to_platform(
+                    platform,
+                    pconfig,
+                    chat_id,
+                    cleaned_delivery_content,
+                    thread_id=thread_id,
+                    media_files=media_files,
+                ),
+            )
             result = future.result(timeout=30)
     except Exception as e:
         logger.error("Job '%s': delivery to %s:%s failed: %s", job["id"], platform_name, chat_id, e)
@@ -230,7 +343,16 @@ def _deliver_result(job: dict, content: str) -> None:
 
 
 def _build_job_prompt(job: dict) -> str:
-    """Build the effective prompt for a cron job, optionally loading one or more skills first."""
+    """Build the effective prompt payload for a cron job.
+
+    Args:
+        job: Cron job definition containing the base prompt and optional skill
+            references.
+
+    Returns:
+        The final prompt string sent to the agent, including the silent-delivery
+        contract and any successfully loaded skill content.
+    """
     prompt = job.get("prompt", "")
     skills = job.get("skills")
 
@@ -290,15 +412,28 @@ def _build_job_prompt(job: dict) -> str:
     return "\n".join(parts)
 
 
-def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+def run_job(job: dict) -> tuple[bool, str, str, str | None]:
     """
-    Execute a single cron job.
-    
+    Execute a single cron job and capture an auditable output document.
+
+    Args:
+        job: Cron job definition containing the prompt, delivery settings, model,
+            and schedule metadata.
+
     Returns:
-        Tuple of (success, full_output_doc, final_response, error_message)
+        Tuple of ``(success, full_output_doc, final_response, error_message)``.
+        ``final_response`` stays empty when the agent produced no final text so
+        delivery logic can distinguish silence from a placeholder log message.
+
+    Errors:
+        Runtime failures are captured in the returned tuple rather than raised so
+        the scheduler can continue processing remaining jobs.
+
+    Example:
+        ``success, output, final_response, error = run_job(job)``
     """
     from run_agent import AIAgent
-    
+
     # Initialize SQLite session store so cron job messages are persisted
     # and discoverable via session_search (same pattern as gateway/run.py).
     _session_db = None
@@ -307,7 +442,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         _session_db = SessionDB()
     except Exception as e:
         logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
-    
+
     job_id = job["id"]
     job_name = job["name"]
     prompt = _build_job_prompt(job)
@@ -318,27 +453,19 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     logger.info("Prompt: %s", prompt[:100])
 
     # Inject origin context so the agent's send_message tool knows the chat
-    if origin:
-        os.environ["HERMES_SESSION_PLATFORM"] = origin["platform"]
-        os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
-        if origin.get("chat_name"):
-            os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
+    _set_origin_env(origin)
 
     try:
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
-        from dotenv import load_dotenv
+        load_dotenv = importlib.import_module("dotenv").load_dotenv
         try:
             load_dotenv(str(_hermes_home / ".env"), override=True, encoding="utf-8")
         except UnicodeDecodeError:
             load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
 
         delivery_target = _resolve_delivery_target(job)
-        if delivery_target:
-            os.environ["HERMES_CRON_AUTO_DELIVER_PLATFORM"] = delivery_target["platform"]
-            os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
-            if delivery_target.get("thread_id") is not None:
-                os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
+        _set_auto_delivery_env(delivery_target)
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
@@ -346,9 +473,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         _cfg = {}
         try:
             import yaml
-            _cfg_path = str(_hermes_home / "config.yaml")
-            if os.path.exists(_cfg_path):
-                with open(_cfg_path) as _f:
+            _cfg_path = _hermes_home / "config.yaml"
+            if _cfg_path.exists():
+                with _cfg_path.open(encoding="utf-8") as _f:
                     _cfg = yaml.safe_load(_f) or {}
                 _model_cfg = _cfg.get("model", {})
                 if not job.get("model"):
@@ -364,25 +491,28 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         effort = os.getenv("HERMES_REASONING_EFFORT", "")
         if not effort:
             effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
-        reasoning_config = parse_reasoning_effort(effort)
+        reasoning_config: dict[str, Any] | None = parse_reasoning_effort(effort)
 
         # Prefill messages from env or config.yaml
-        prefill_messages = None
+        prefill_messages: list[dict[str, Any]] | None = None
         prefill_file = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "") or _cfg.get("prefill_messages_file", "")
         if prefill_file:
-            import json as _json
             pfpath = Path(prefill_file).expanduser()
             if not pfpath.is_absolute():
                 pfpath = _hermes_home / pfpath
             if pfpath.exists():
                 try:
-                    with open(pfpath, "r", encoding="utf-8") as _pf:
-                        prefill_messages = _json.load(_pf)
+                    with open(pfpath, encoding="utf-8") as _pf:
+                        prefill_messages = json.load(_pf)
                     if not isinstance(prefill_messages, list):
                         prefill_messages = None
                 except Exception as e:
                     logger.warning("Job '%s': failed to parse prefill messages file '%s': %s", job_id, pfpath, e)
                     prefill_messages = None
+
+        # AIAgent accepts None at runtime even though these annotations are narrower.
+        agent_reasoning_config = cast(dict[str, Any], reasoning_config)
+        agent_prefill_messages = cast(list[dict[str, Any]], prefill_messages)
 
         # Max iterations
         max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
@@ -392,8 +522,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         smart_routing = _cfg.get("smart_model_routing", {}) or {}
 
         from hermes_cli.runtime_provider import (
-            resolve_runtime_provider,
             format_runtime_provider_error,
+            resolve_runtime_provider,
         )
         try:
             runtime_kwargs = {
@@ -411,49 +541,49 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             prompt,
             smart_routing,
             {
-                "model": model,
-                "api_key": runtime.get("api_key"),
+                "model"   : model,
+                "api_key" : runtime.get("api_key"),
                 "base_url": runtime.get("base_url"),
                 "provider": runtime.get("provider"),
                 "api_mode": runtime.get("api_mode"),
-                "command": runtime.get("command"),
-                "args": list(runtime.get("args") or []),
+                "command" : runtime.get("command"),
+                "args"    : list(runtime.get("args") or []),
             },
         )
 
         agent = AIAgent(
-            model=turn_route["model"],
-            api_key=turn_route["runtime"].get("api_key"),
-            base_url=turn_route["runtime"].get("base_url"),
-            provider=turn_route["runtime"].get("provider"),
-            api_mode=turn_route["runtime"].get("api_mode"),
-            acp_command=turn_route["runtime"].get("command"),
-            acp_args=turn_route["runtime"].get("args"),
-            max_iterations=max_iterations,
-            reasoning_config=reasoning_config,
-            prefill_messages=prefill_messages,
-            providers_allowed=pr.get("only"),
-            providers_ignored=pr.get("ignore"),
-            providers_order=pr.get("order"),
-            provider_sort=pr.get("sort"),
-            disabled_toolsets=["cronjob", "messaging", "clarify"],
-            quiet_mode=True,
-            skip_memory=True,  # Cron system prompts would corrupt user representations
-            platform="cron",
-            session_id=_cron_session_id,
-            session_db=_session_db,
+            model             = turn_route["model"],
+            api_key           = turn_route["runtime"].get("api_key"),
+            base_url          = turn_route["runtime"].get("base_url"),
+            provider          = turn_route["runtime"].get("provider"),
+            api_mode          = turn_route["runtime"].get("api_mode"),
+            acp_command       = turn_route["runtime"].get("command"),
+            acp_args          = turn_route["runtime"].get("args"),
+            max_iterations    = max_iterations,
+            reasoning_config  = agent_reasoning_config,
+            prefill_messages  = agent_prefill_messages,
+            providers_allowed = pr.get("only"),
+            providers_ignored = pr.get("ignore"),
+            providers_order   = pr.get("order"),
+            provider_sort     = pr.get("sort"),
+            disabled_toolsets = ["cronjob", "messaging", "clarify"],
+            quiet_mode        = True,
+            skip_memory       = True,  # Cron system prompts would corrupt user representations
+            platform          = "cron",
+            session_id        = _cron_session_id,
+            session_db        = _session_db,
         )
-        
+
         # Run the agent with a timeout so a hung API call or tool doesn't
         # block the cron ticker thread indefinitely.  Default 10 minutes;
         # override via env var.  Uses a separate thread because
         # run_conversation is synchronous.
-        _cron_timeout = float(os.getenv("HERMES_CRON_TIMEOUT", 600))
+        _cron_timeout = float(os.getenv("HERMES_CRON_TIMEOUT", _CRON_TIMEOUT_DEFAULT_SECONDS))
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         _cron_future = _cron_pool.submit(agent.run_conversation, prompt)
         try:
             result = _cron_future.result(timeout=_cron_timeout)
-        except concurrent.futures.TimeoutError:
+        except concurrent.futures.TimeoutError as err:
             logger.error(
                 "Job '%s' timed out after %.0fs — interrupting agent",
                 job_name, _cron_timeout,
@@ -464,15 +594,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             raise TimeoutError(
                 f"Cron job '{job_name}' timed out after "
                 f"{int(_cron_timeout // 60)} minutes"
-            )
+            ) from err
         finally:
             _cron_pool.shutdown(wait=False)
 
         final_response = result.get("final_response", "") or ""
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).
-        logged_response = final_response if final_response else "(No response generated)"
-        
+        logged_response = final_response or "(No response generated)"
+
         output = f"""# Cron Job: {job_name}
 
 **Job ID:** {job_id}
@@ -487,14 +617,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
 {logged_response}
 """
-        
+
         logger.info("Job '%s' completed successfully", job_name)
         return True, output, final_response, None
-        
+
     except Exception as e:
-        error_msg = f"{type(e).__name__}: {str(e)}"
+        error_msg = f"{type(e).__name__}: {e!s}"
         logger.error("Job '%s' failed: %s", job_name, error_msg)
-        
+
         output = f"""# Cron Job: {job_name} (FAILED)
 
 **Job ID:** {job_id}
@@ -517,15 +647,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
     finally:
         # Clean up injected env vars so they don't leak to other jobs
-        for key in (
-            "HERMES_SESSION_PLATFORM",
-            "HERMES_SESSION_CHAT_ID",
-            "HERMES_SESSION_CHAT_NAME",
-            "HERMES_CRON_AUTO_DELIVER_PLATFORM",
-            "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
-            "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
-        ):
-            os.environ.pop(key, None)
+        _clear_injected_env()
         if _session_db:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")
@@ -539,90 +661,130 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
 def tick(verbose: bool = True) -> int:
     """
-    Check and run all due jobs.
-    
-    Uses a file lock so only one tick runs at a time, even if the gateway's
-    in-process ticker and a standalone daemon or manual tick overlap.
-    
+    Check for due jobs and execute them under a process-wide tick lock.
+
     Args:
-        verbose: Whether to print status messages
-    
+        verbose: When ``True``, emit informational log messages about due jobs
+            and saved output locations.
+
     Returns:
-        Number of jobs executed (0 if another tick is already running)
+        The number of jobs executed. Returns ``0`` when no jobs are due or when
+        another process already holds the scheduler lock.
+
+    Errors:
+        Lock acquisition failures are logged and converted into a ``0`` return
+        so overlapping schedulers do not crash each other.
     """
     _LOCK_DIR.mkdir(parents=True, exist_ok=True)
 
     # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
-    lock_fd = None
     try:
-        lock_fd = open(_LOCK_FILE, "w")
-        if fcntl:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        elif msvcrt:
-            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
-    except (OSError, IOError):
+        with open(_LOCK_FILE, "w") as lock_fd:
+            try:
+                if fcntl:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                elif msvcrt:
+                    msvcrt_locking = getattr(msvcrt, "locking", None)
+                    lk_nblck = getattr(msvcrt, "LK_NBLCK", None)
+                    if callable(msvcrt_locking) and lk_nblck is not None:
+                        msvcrt_locking(lock_fd.fileno(), lk_nblck, 1)
+            except OSError:
+                logger.debug("Tick skipped — another instance holds the lock")
+                return 0
+
+            try:
+                due_jobs = get_due_jobs()
+
+                if verbose and not due_jobs:
+                    logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
+                    return 0
+
+                if verbose:
+                    logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
+
+                executed = 0
+                for job in due_jobs:
+                    executed += _process_due_job(job, verbose)
+
+                return executed
+            finally:
+                if fcntl:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                elif msvcrt:
+                    msvcrt_locking = getattr(msvcrt, "locking", None)
+                    lk_unlck = getattr(msvcrt, "LK_UNLCK", None)
+                    if callable(msvcrt_locking) and lk_unlck is not None:
+                        with contextlib.suppress(OSError):
+                            msvcrt_locking(lock_fd.fileno(), lk_unlck, 1)
+    except OSError:
         logger.debug("Tick skipped — another instance holds the lock")
-        if lock_fd is not None:
-            lock_fd.close()
         return 0
 
+
+def _safe_deliver_result(job: dict[str, Any], deliver_content: str) -> None:
+    """Best-effort wrapper around result delivery.
+
+    Args:
+        job: Cron job definition used for logging context.
+        deliver_content: Final message body to send to the resolved delivery
+            target.
+
+    Returns:
+        None. Delivery exceptions are logged and swallowed.
+    """
     try:
-        due_jobs = get_due_jobs()
+        _deliver_result(job, deliver_content)
+    except Exception as de:
+        logger.error("Delivery failed for job %s: %s", job["id"], de)
 
-        if verbose and not due_jobs:
-            logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
-            return 0
 
+def _process_due_job(job: dict[str, Any], verbose: bool) -> int:
+    """Process one due job from scheduling through delivery bookkeeping.
+
+    Args:
+        job: Cron job definition returned by :func:`get_due_jobs`.
+        verbose: Whether to emit informational logging for output persistence.
+
+    Returns:
+        ``1`` when the job completed its processing path, even if the underlying
+        run failed and was recorded as such. Returns ``0`` when scheduler-level
+        processing itself raised an exception.
+    """
+    try:
+        # For recurring jobs (cron/interval), advance next_run_at to the
+        # next future occurrence BEFORE execution.  This way, if the
+        # process crashes mid-run, the job won't re-fire on restart.
+        # One-shot jobs are left alone so they can retry on restart.
+        advance_next_run(job["id"])
+
+        success, output, final_response, error = run_job(job)
+
+        output_file = save_job_output(job["id"], output)
         if verbose:
-            logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
+            logger.info("Output saved to: %s", output_file)
 
-        executed = 0
-        for job in due_jobs:
-            try:
-                # For recurring jobs (cron/interval), advance next_run_at to the
-                # next future occurrence BEFORE execution.  This way, if the
-                # process crashes mid-run, the job won't re-fire on restart.
-                # One-shot jobs are left alone so they can retry on restart.
-                advance_next_run(job["id"])
+        # Deliver the final response to the origin/target chat.
+        # If the agent responded with [SILENT], skip delivery (but
+        # output is already saved above).  Failed jobs always deliver.
+        deliver_content = (
+            final_response
+            if success
+            else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+        )
+        should_deliver = bool(deliver_content)
+        if should_deliver and success and deliver_content.strip().upper().startswith(SILENT_MARKER):
+            logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+            should_deliver = False
 
-                success, output, final_response, error = run_job(job)
+        if should_deliver:
+            _safe_deliver_result(job, deliver_content)
 
-                output_file = save_job_output(job["id"], output)
-                if verbose:
-                    logger.info("Output saved to: %s", output_file)
-
-                # Deliver the final response to the origin/target chat.
-                # If the agent responded with [SILENT], skip delivery (but
-                # output is already saved above).  Failed jobs always deliver.
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
-                should_deliver = bool(deliver_content)
-                if should_deliver and success and deliver_content.strip().upper().startswith(SILENT_MARKER):
-                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-                    should_deliver = False
-
-                if should_deliver:
-                    try:
-                        _deliver_result(job, deliver_content)
-                    except Exception as de:
-                        logger.error("Delivery failed for job %s: %s", job["id"], de)
-
-                mark_job_run(job["id"], success, error)
-                executed += 1
-
-            except Exception as e:
-                logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
-
-        return executed
-    finally:
-        if fcntl:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        elif msvcrt:
-            try:
-                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except (OSError, IOError):
-                pass
-        lock_fd.close()
+        mark_job_run(job["id"], success, error)
+        return 1
+    except Exception as e:
+        logger.error("Error processing job %s: %s", job["id"], e)
+        mark_job_run(job["id"], False, str(e))
+        return 0
 
 
 if __name__ == "__main__":
