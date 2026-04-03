@@ -8,7 +8,6 @@ Supports multiple concurrent approvals (parallel subagents, execute_code)
 via a per-session queue.
 """
 
-import asyncio
 import os
 import threading
 import time
@@ -19,7 +18,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from gateway.session import SessionSource
 
 
 def _make_source() -> SessionSource:
@@ -70,6 +69,7 @@ def _make_runner():
 def _clear_approval_state():
     """Reset all module-level approval state between tests."""
     from tools import approval as mod
+
     mod._gateway_queues.clear()
     mod._gateway_notify_cbs.clear()
     mod._session_approved.clear()
@@ -91,10 +91,14 @@ class TestBlockingGatewayApproval:
     def test_register_and_resolve_unblocks_entry(self):
         """resolve_gateway_approval signals the entry's event."""
         from tools.approval import (
-            register_gateway_notify, unregister_gateway_notify,
-            resolve_gateway_approval, has_blocking_approval,
-            _ApprovalEntry, _gateway_queues,
+            register_gateway_notify,
+            unregister_gateway_notify,
+            resolve_gateway_approval,
+            has_blocking_approval,
+            _ApprovalEntry,
+            _gateway_queues,
         )
+
         session_key = "test-session"
         register_gateway_notify(session_key, lambda d: None)
 
@@ -120,13 +124,17 @@ class TestBlockingGatewayApproval:
 
     def test_resolve_returns_zero_when_no_pending(self):
         from tools.approval import resolve_gateway_approval
+
         assert resolve_gateway_approval("nonexistent", "once") == 0
 
     def test_resolve_all_unblocks_multiple_entries(self):
         """resolve_gateway_approval with resolve_all=True signals all entries."""
         from tools.approval import (
-            resolve_gateway_approval, _ApprovalEntry, _gateway_queues,
+            resolve_gateway_approval,
+            _ApprovalEntry,
+            _gateway_queues,
         )
+
         session_key = "test-all"
         e1 = _ApprovalEntry({"command": "cmd1"})
         e2 = _ApprovalEntry({"command": "cmd2"})
@@ -141,9 +149,12 @@ class TestBlockingGatewayApproval:
     def test_resolve_single_pops_oldest_fifo(self):
         """resolve_gateway_approval without resolve_all resolves oldest first."""
         from tools.approval import (
-            resolve_gateway_approval, pending_approval_count,
-            _ApprovalEntry, _gateway_queues,
+            resolve_gateway_approval,
+            pending_approval_count,
+            _ApprovalEntry,
+            _gateway_queues,
         )
+
         session_key = "test-fifo"
         e1 = _ApprovalEntry({"command": "first"})
         e2 = _ApprovalEntry({"command": "second"})
@@ -159,9 +170,12 @@ class TestBlockingGatewayApproval:
     def test_unregister_signals_all_entries(self):
         """unregister_gateway_notify signals all waiting entries to prevent hangs."""
         from tools.approval import (
-            register_gateway_notify, unregister_gateway_notify,
-            _ApprovalEntry, _gateway_queues,
+            register_gateway_notify,
+            unregister_gateway_notify,
+            _ApprovalEntry,
+            _gateway_queues,
         )
+
         session_key = "test-cleanup"
         register_gateway_notify(session_key, lambda d: None)
 
@@ -176,9 +190,12 @@ class TestBlockingGatewayApproval:
     def test_clear_session_signals_all_entries(self):
         """clear_session should unblock all waiting approval threads."""
         from tools.approval import (
-            register_gateway_notify, clear_session,
-            _ApprovalEntry, _gateway_queues,
+            register_gateway_notify,
+            clear_session,
+            _ApprovalEntry,
+            _gateway_queues,
         )
+
         session_key = "test-clear"
         register_gateway_notify(session_key, lambda d: None)
 
@@ -192,8 +209,11 @@ class TestBlockingGatewayApproval:
 
     def test_pending_approval_count(self):
         from tools.approval import (
-            pending_approval_count, _ApprovalEntry, _gateway_queues,
+            pending_approval_count,
+            _ApprovalEntry,
+            _gateway_queues,
         )
+
         session_key = "test-count"
         assert pending_approval_count(session_key) == 0
         _gateway_queues[session_key] = [
@@ -209,7 +229,6 @@ class TestBlockingGatewayApproval:
 
 
 class TestApproveCommand:
-
     def setup_method(self):
         _clear_approval_state()
 
@@ -261,7 +280,9 @@ class TestApproveCommand:
         e2 = _ApprovalEntry({"command": "cmd2"})
         _gateway_queues[session_key] = [e1, e2]
 
-        result = await runner._handle_approve_command(_make_event("/approve all session"))
+        result = await runner._handle_approve_command(
+            _make_event("/approve all session")
+        )
         assert "session" in result.lower()
         assert e1.result == "session"
         assert e2.result == "session"
@@ -292,7 +313,6 @@ class TestApproveCommand:
 
 
 class TestDenyCommand:
-
     def setup_method(self):
         _clear_approval_state()
 
@@ -344,7 +364,6 @@ class TestDenyCommand:
 
 
 class TestBareTextNoLongerApproves:
-
     def setup_method(self):
         _clear_approval_state()
 
@@ -378,8 +397,10 @@ class TestBlockingApprovalE2E:
     def test_blocking_approval_approve_once(self):
         """check_all_command_guards blocks until resolve_gateway_approval is called."""
         from tools.approval import (
-            register_gateway_notify, unregister_gateway_notify,
-            resolve_gateway_approval, check_all_command_guards,
+            register_gateway_notify,
+            unregister_gateway_notify,
+            resolve_gateway_approval,
+            check_all_command_guards,
         )
 
         session_key = "e2e-test"
@@ -390,7 +411,10 @@ class TestBlockingApprovalE2E:
         result_holder = [None]
 
         def agent_thread():
-            from tools.approval import reset_current_session_key, set_current_session_key
+            from tools.approval import (
+                reset_current_session_key,
+                set_current_session_key,
+            )
 
             token = set_current_session_key(session_key)
             os.environ["HERMES_EXEC_ASK"] = "1"
@@ -425,8 +449,10 @@ class TestBlockingApprovalE2E:
     def test_blocking_approval_deny(self):
         """check_all_command_guards returns BLOCKED when denied."""
         from tools.approval import (
-            register_gateway_notify, unregister_gateway_notify,
-            resolve_gateway_approval, check_all_command_guards,
+            register_gateway_notify,
+            unregister_gateway_notify,
+            resolve_gateway_approval,
+            check_all_command_guards,
         )
 
         session_key = "e2e-deny"
@@ -436,7 +462,10 @@ class TestBlockingApprovalE2E:
         result_holder = [None]
 
         def agent_thread():
-            from tools.approval import reset_current_session_key, set_current_session_key
+            from tools.approval import (
+                reset_current_session_key,
+                set_current_session_key,
+            )
 
             token = set_current_session_key(session_key)
             os.environ["HERMES_EXEC_ASK"] = "1"
@@ -467,7 +496,8 @@ class TestBlockingApprovalE2E:
     def test_blocking_approval_timeout(self):
         """check_all_command_guards returns BLOCKED on timeout."""
         from tools.approval import (
-            register_gateway_notify, unregister_gateway_notify,
+            register_gateway_notify,
+            unregister_gateway_notify,
             check_all_command_guards,
         )
 
@@ -477,14 +507,19 @@ class TestBlockingApprovalE2E:
         result_holder = [None]
 
         def agent_thread():
-            from tools.approval import reset_current_session_key, set_current_session_key
+            from tools.approval import (
+                reset_current_session_key,
+                set_current_session_key,
+            )
 
             token = set_current_session_key(session_key)
             os.environ["HERMES_EXEC_ASK"] = "1"
             os.environ["HERMES_SESSION_KEY"] = session_key
             try:
-                with patch("tools.approval._get_approval_config",
-                           return_value={"gateway_timeout": 1}):
+                with patch(
+                    "tools.approval._get_approval_config",
+                    return_value={"gateway_timeout": 1},
+                ):
                     result_holder[0] = check_all_command_guards(
                         "rm -rf /important", "local"
                     )
@@ -504,8 +539,10 @@ class TestBlockingApprovalE2E:
     def test_parallel_subagent_approvals(self):
         """Multiple threads can block concurrently and be resolved independently."""
         from tools.approval import (
-            register_gateway_notify, unregister_gateway_notify,
-            resolve_gateway_approval, check_all_command_guards,
+            register_gateway_notify,
+            unregister_gateway_notify,
+            resolve_gateway_approval,
+            check_all_command_guards,
             pending_approval_count,
         )
 
@@ -517,7 +554,10 @@ class TestBlockingApprovalE2E:
 
         def make_agent(idx, cmd):
             def run():
-                from tools.approval import reset_current_session_key, set_current_session_key
+                from tools.approval import (
+                    reset_current_session_key,
+                    set_current_session_key,
+                )
 
                 token = set_current_session_key(session_key)
                 os.environ["HERMES_EXEC_ASK"] = "1"
@@ -528,6 +568,7 @@ class TestBlockingApprovalE2E:
                     os.environ.pop("HERMES_EXEC_ASK", None)
                     os.environ.pop("HERMES_SESSION_KEY", None)
                     reset_current_session_key(token)
+
             return run
 
         threads = [
@@ -561,8 +602,10 @@ class TestBlockingApprovalE2E:
     def test_parallel_mixed_approve_deny(self):
         """Approve some, deny others in a parallel batch."""
         from tools.approval import (
-            register_gateway_notify, unregister_gateway_notify,
-            resolve_gateway_approval, check_all_command_guards,
+            register_gateway_notify,
+            unregister_gateway_notify,
+            resolve_gateway_approval,
+            check_all_command_guards,
         )
 
         session_key = "e2e-mixed"
@@ -572,7 +615,10 @@ class TestBlockingApprovalE2E:
 
         def make_agent(idx, cmd):
             def run():
-                from tools.approval import reset_current_session_key, set_current_session_key
+                from tools.approval import (
+                    reset_current_session_key,
+                    set_current_session_key,
+                )
 
                 token = set_current_session_key(session_key)
                 os.environ["HERMES_EXEC_ASK"] = "1"
@@ -583,6 +629,7 @@ class TestBlockingApprovalE2E:
                     os.environ.pop("HERMES_EXEC_ASK", None)
                     os.environ.pop("HERMES_SESSION_KEY", None)
                     reset_current_session_key(token)
+
             return run
 
         threads = [
@@ -603,8 +650,8 @@ class TestBlockingApprovalE2E:
             time.sleep(0.05)
 
         # Approve first, deny second
-        resolve_gateway_approval(session_key, "once")   # oldest
-        resolve_gateway_approval(session_key, "deny")   # next
+        resolve_gateway_approval(session_key, "once")  # oldest
+        resolve_gateway_approval(session_key, "deny")  # next
 
         for t in threads:
             t.join(timeout=5)
@@ -621,13 +668,12 @@ class TestBlockingApprovalE2E:
 
 
 class TestFallbackNoCallback:
-
     def setup_method(self):
         _clear_approval_state()
 
     def test_no_callback_returns_approval_required(self):
         """Without a registered callback, the old approval_required path is used."""
-        from tools.approval import check_all_command_guards, _pending
+        from tools.approval import check_all_command_guards
 
         os.environ["HERMES_EXEC_ASK"] = "1"
         os.environ["HERMES_SESSION_KEY"] = "no-callback-test"
