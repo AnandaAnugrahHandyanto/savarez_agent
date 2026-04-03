@@ -28,8 +28,8 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MEMORY_DIR = str(Path.home() / ".local" / "share" / "observational-memory")
 _DEFAULT_ENV_FILE = str(Path.home() / ".config" / "observational-memory" / "env")
-_DEFAULT_SEARCH_QUERY = "current context active projects preferences recent decisions"
 _MAX_NOTE_LEN = 600
+_MAX_STARTUP_SECTION_CHARS = 4000
 
 _PRIORITY_MAP = {
     "high": "🔴",
@@ -245,8 +245,14 @@ class ObservationalMemoryProvider(MemoryProvider):
         else:
             parts.append("Hermes session writeback is inactive; om_remember still stores explicit notes locally.")
 
-        profile = self._read_text(self._config.profile_path)
-        active = self._read_text(self._config.active_path)
+        profile = self._truncate_prompt_section(
+            self._read_text(self._config.profile_path),
+            label="Startup Profile",
+        )
+        active = self._truncate_prompt_section(
+            self._read_text(self._config.active_path),
+            label="Active Context",
+        )
         if profile:
             parts.append(profile)
         if active:
@@ -307,8 +313,16 @@ class ObservationalMemoryProvider(MemoryProvider):
             self._flush_pending(force=False)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=10.0)
+        active_thread = self._sync_thread
+        if active_thread and active_thread.is_alive():
+            active_thread.join(timeout=10.0)
+            if active_thread.is_alive():
+                logger.warning(
+                    "Observational Memory sync is still running after 10s; "
+                    "deferring final session flush until the current sync finishes."
+                )
+                self._defer_final_flush(active_thread)
+                return
         self._flush_pending(force=True)
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
@@ -327,7 +341,7 @@ class ObservationalMemoryProvider(MemoryProvider):
         if tool_name == "om_context":
             query = str(args.get("query", "") or "").strip()
             limit = self._coerce_limit(args.get("limit"), default=4)
-            text = self._build_context(query=query or _DEFAULT_SEARCH_QUERY, limit=limit, include_search=bool(query))
+            text = self._build_context(query=query, limit=limit, include_search=bool(query))
             return json.dumps({"provider": self.name, "text": text})
 
         if tool_name == "om_search":
@@ -390,8 +404,11 @@ class ObservationalMemoryProvider(MemoryProvider):
         memory_dir = Path(str(self._settings.get("memory_dir") or _DEFAULT_MEMORY_DIR)).expanduser()
         env_file = Path(str(self._settings.get("env_file") or _DEFAULT_ENV_FILE)).expanduser()
 
-        preload = OMConfig(memory_dir=memory_dir, env_file=env_file)
-        preload.load_env_file()
+        # OM loads provider/env settings from the env file into process state,
+        # so bootstrap a minimal config for that side effect before creating
+        # the final config with Hermes-specific overrides.
+        bootstrap_cfg = OMConfig(memory_dir=memory_dir, env_file=env_file)
+        bootstrap_cfg.load_env_file()
 
         kwargs: Dict[str, Any] = {
             "memory_dir": memory_dir,
@@ -560,31 +577,66 @@ class ObservationalMemoryProvider(MemoryProvider):
     def _flush_pending(self, *, force: bool) -> None:
         if not self._writer_enabled or not self._config:
             return
-        if self._sync_thread and self._sync_thread.is_alive():
+        active_thread = self._sync_thread
+        if (
+            active_thread
+            and active_thread.is_alive()
+            and active_thread is not threading.current_thread()
+        ):
             return
 
+        pending = self._take_pending_messages(force=force)
+        if not pending:
+            return
+
+        if force:
+            self._run_observer_batch(pending, force=True)
+            return
+
+        def _run():
+            try:
+                self._run_observer_batch(pending, force=False)
+            finally:
+                if self._sync_thread is threading.current_thread():
+                    self._sync_thread = None
+
+        self._sync_thread = threading.Thread(target=_run, daemon=True, name="om-observe")
+        self._sync_thread.start()
+
+    def _defer_final_flush(self, active_thread: threading.Thread) -> None:
+        def _run():
+            try:
+                active_thread.join()
+                self._flush_pending(force=True)
+            finally:
+                if self._sync_thread is threading.current_thread():
+                    self._sync_thread = None
+
+        self._sync_thread = threading.Thread(target=_run, daemon=True, name="om-observe-finalize")
+        self._sync_thread.start()
+
+    def _take_pending_messages(self, *, force: bool) -> list:
         with self._pending_lock:
             pending = list(self._pending_messages)
             threshold = 1 if force else getattr(self._config, "min_messages", 5)
             if len(pending) < threshold:
-                return
+                return []
             self._pending_messages.clear()
+            return pending
 
-        def _run():
-            try:
-                from observational_memory.observe import run_observer
+    def _restore_pending_messages(self, pending: list) -> None:
+        with self._pending_lock:
+            self._pending_messages[:0] = pending
 
-                cfg = replace(self._config, min_messages=1) if force else self._config
-                run_observer(pending, cfg, dry_run=False)
-            except Exception as e:
-                logger.warning("Observational Memory writeback failed: %s", e)
-                with self._pending_lock:
-                    self._pending_messages = pending + self._pending_messages
+    def _run_observer_batch(self, pending: list, *, force: bool) -> None:
+        try:
+            from observational_memory.observe import run_observer
 
-        self._sync_thread = threading.Thread(target=_run, daemon=True, name="om-observe")
-        self._sync_thread.start()
-        if force:
-            self._sync_thread.join(timeout=15.0)
+            cfg = replace(self._config, min_messages=1) if force else self._config
+            run_observer(pending, cfg, dry_run=False)
+        except Exception as e:
+            logger.warning("Observational Memory writeback failed: %s", e)
+            self._restore_pending_messages(pending)
 
     def _make_message(self, role: str, content: str):
         from observational_memory.transcripts import Message
@@ -604,6 +656,22 @@ class ObservationalMemoryProvider(MemoryProvider):
         except Exception:
             return ""
         return ""
+
+    @staticmethod
+    def _truncate_prompt_section(text: str, *, label: str) -> str:
+        text = (text or "").strip()
+        if len(text) <= _MAX_STARTUP_SECTION_CHARS:
+            return text
+
+        notice = (
+            f"\n\n[{label} truncated to {_MAX_STARTUP_SECTION_CHARS} chars for prompt safety. "
+            "Use om_context for the full text.]"
+        )
+        max_body = max(_MAX_STARTUP_SECTION_CHARS - len(notice) - 3, 0)
+        trimmed = text[:max_body].rstrip()
+        if not trimmed:
+            return notice.strip()
+        return trimmed + "..." + notice
 
     @staticmethod
     def _excerpt(content: str) -> str:

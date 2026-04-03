@@ -157,6 +157,18 @@ class TestTelegramTokens:
         result = redact_sensitive_text(text)
         assert "ABCDEfghij" not in result
 
+    def test_large_payload_with_telegram_token_still_redacts(self):
+        text = ("x" * 5000) + "\nbot123456789:ABCDEfghij-KLMNopqrst_UVWXyz12345\n" + ("y" * 5000)
+        result = redact_sensitive_text(text)
+        assert "ABCDEfghij" not in result
+
+
+class TestSendGridTokens:
+    def test_large_payload_with_sendgrid_token_still_redacts(self):
+        text = ("x" * 5000) + "\nSG.ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890\n" + ("y" * 5000)
+        result = redact_sensitive_text(text)
+        assert "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890" not in result
+
 
 class TestPassthrough:
     def test_empty_string(self):

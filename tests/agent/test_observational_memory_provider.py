@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import sys
+import threading
 import types
 from dataclasses import dataclass
 from pathlib import Path
@@ -166,6 +167,21 @@ def test_system_prompt_includes_startup_memory(monkeypatch, tmp_path):
     assert "Active Context" in prompt
 
 
+def test_system_prompt_truncates_large_startup_sections(monkeypatch, tmp_path):
+    _install_fake_om(monkeypatch, tmp_path)
+    provider = ObservationalMemoryProvider()
+    provider.initialize("session-1b", hermes_home=str(tmp_path))
+
+    provider._config.profile_path.write_text("# Startup Profile\n\n" + ("p" * 5000))
+    provider._config.active_path.write_text("# Active Context\n\n" + ("a" * 5000))
+
+    prompt = provider.system_prompt_block()
+
+    assert "Use om_context for the full text." in prompt
+    assert prompt.count("truncated to 4000 chars for prompt safety") == 2
+    assert len(prompt) < 9000
+
+
 def test_om_remember_appends_local_observation(monkeypatch, tmp_path):
     reindex_calls, _ = _install_fake_om(monkeypatch, tmp_path)
     provider = ObservationalMemoryProvider()
@@ -189,6 +205,7 @@ def test_incremental_sync_flushes_to_observer(monkeypatch, tmp_path):
     _, observer_calls = _install_fake_om(monkeypatch, tmp_path)
     provider = ObservationalMemoryProvider()
     provider.initialize("session-3", hermes_home=str(tmp_path))
+    provider._config.min_messages = 5
 
     provider.sync_turn("first user", "first assistant")
     provider.sync_turn("second user", "second assistant")
@@ -198,3 +215,50 @@ def test_incremental_sync_flushes_to_observer(monkeypatch, tmp_path):
     assert observer_calls
     assert len(observer_calls[0]) == 6
     assert {msg.source for msg in observer_calls[0]} == {"hermes"}
+
+
+def test_session_end_defers_final_flush_until_active_sync_finishes(monkeypatch, tmp_path, caplog):
+    _install_fake_om(monkeypatch, tmp_path)
+    provider = ObservationalMemoryProvider()
+    provider.initialize("session-4", hermes_home=str(tmp_path))
+
+    flush_calls = []
+    released = threading.Event()
+    flushed = threading.Event()
+
+    class FakeThread:
+        def __init__(self):
+            self._alive = True
+            self.join_calls = []
+
+        def is_alive(self):
+            return self._alive
+
+        def join(self, timeout=None):
+            self.join_calls.append(timeout)
+            if timeout is None:
+                released.wait(timeout=1.0)
+                self._alive = False
+
+    def _flush_pending(*, force: bool):
+        flush_calls.append(force)
+        flushed.set()
+
+    active_thread = FakeThread()
+    provider._sync_thread = active_thread
+    monkeypatch.setattr(provider, "_flush_pending", _flush_pending)
+
+    with caplog.at_level("WARNING"):
+        provider.on_session_end([])
+
+    followup = provider._sync_thread
+    assert followup is not active_thread
+    assert followup is not None
+    assert "deferring final session flush" in caplog.text
+
+    released.set()
+    followup.join(timeout=1.0)
+
+    assert flushed.wait(timeout=1.0)
+    assert flush_calls == [True]
+    assert active_thread.join_calls == [10.0, None]

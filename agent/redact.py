@@ -153,7 +153,11 @@ _FAST_HINT_MARKERS = (
     "mongodb+srv://",
     "redis://",
     "amqp://",
-    "bot",
+)
+
+_FAST_HINT_PATTERNS = (
+    re.compile(r"(?:^|[^A-Za-z0-9_])bot\d{8,}:", re.IGNORECASE),
+    re.compile(r"(?:^|[^A-Za-z0-9_])sg\.[A-Za-z0-9_-]{10,}", re.IGNORECASE),
 )
 
 
@@ -164,6 +168,8 @@ def _may_contain_sensitive_markers(text: str) -> bool:
 
     lowered = text.lower()
     if any(marker in lowered for marker in _FAST_HINT_MARKERS):
+        return True
+    if any(pattern.search(text) for pattern in _FAST_HINT_PATTERNS):
         return True
 
     # E.164 phone numbers are handled separately and don't carry a textual
