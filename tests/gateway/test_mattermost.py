@@ -246,6 +246,55 @@ class TestMattermostSend:
         assert "root_id" not in payload
 
     @pytest.mark.asyncio
+    async def test_send_uses_thread_metadata_for_root_id(self):
+        """Thread metadata should keep non-reply sends inside the existing thread."""
+        self.adapter._reply_mode = "thread"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post999"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send(
+            "channel_1",
+            "Tool progress",
+            metadata={"thread_id": "root_post"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "root_post"
+
+    @pytest.mark.asyncio
+    async def test_send_prefers_thread_metadata_over_reply_to(self):
+        """Follow-up replies inside a thread should target the thread root, not the leaf post."""
+        self.adapter._reply_mode = "thread"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post1000"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send(
+            "channel_1",
+            "Threaded follow-up",
+            reply_to="leaf_post",
+            metadata={"thread_id": "root_post"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "root_post"
+
+    @pytest.mark.asyncio
     async def test_send_api_failure(self):
         """When API returns error, send should return failure."""
         mock_resp = AsyncMock()
@@ -396,6 +445,33 @@ class TestMattermostWebSocketParsing:
         await self.adapter._handle_ws_event(event)
         assert self.adapter.handle_message.called
         msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.source.thread_id == "root_post_123"
+
+    @pytest.mark.asyncio
+    async def test_thread_followup_without_mention_is_allowed(self):
+        """Once a thread exists, follow-up posts in that thread should not require a fresh @mention."""
+        post_data = {
+            "id": "post_followup",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "Can you keep going?",
+            "root_id": "root_post_123",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+        with patch.dict(os.environ, {"MATTERMOST_REQUIRE_MENTION": "true"}, clear=False):
+            await self.adapter._handle_ws_event(event)
+
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "Can you keep going?"
         assert msg_event.source.thread_id == "root_post_123"
 
     @pytest.mark.asyncio

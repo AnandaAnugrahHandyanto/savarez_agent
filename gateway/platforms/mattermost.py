@@ -251,6 +251,24 @@ class MattermostAdapter(BasePlatformAdapter):
 
         logger.info("Mattermost: disconnected")
 
+    def _resolve_root_post_id(
+        self,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Return the Mattermost root post ID for threaded replies.
+
+        Gateway code passes `metadata.thread_id` for existing thread context and may
+        also pass `reply_to` for the concrete message being answered. Mattermost
+        wants the thread root, not the leaf post ID, so prefer explicit thread
+        metadata when available.
+        """
+        if self._reply_mode != "thread":
+            return None
+        metadata = metadata or {}
+        thread_id = metadata.get("thread_id") if isinstance(metadata, dict) else None
+        return thread_id or reply_to
+
     async def send(
         self,
         chat_id: str,
@@ -264,6 +282,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, MAX_POST_LENGTH)
+        root_id = self._resolve_root_post_id(reply_to=reply_to, metadata=metadata)
 
         last_id = None
         for chunk in chunks:
@@ -271,9 +290,8 @@ class MattermostAdapter(BasePlatformAdapter):
                 "channel_id": chat_id,
                 "message": chunk,
             }
-            # Thread support: reply_to is the root post ID.
-            if reply_to and self._reply_mode == "thread":
-                payload["root_id"] = reply_to
+            if root_id:
+                payload["root_id"] = root_id
 
             data = await self._api_post("posts", payload)
             if not data or "id" not in data:
@@ -328,7 +346,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Download an image and upload it as a file attachment."""
         return await self._send_url_as_file(
-            chat_id, image_url, caption, reply_to, "image"
+            chat_id, image_url, caption, reply_to, metadata=metadata, kind="image"
         )
 
     async def send_image_file(
@@ -341,7 +359,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Upload a local image file."""
         return await self._send_local_file(
-            chat_id, image_path, caption, reply_to
+            chat_id, image_path, caption, reply_to, metadata=metadata
         )
 
     async def send_document(
@@ -355,7 +373,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Upload a local file as a document."""
         return await self._send_local_file(
-            chat_id, file_path, caption, reply_to, file_name
+            chat_id, file_path, caption, reply_to, file_name, metadata=metadata
         )
 
     async def send_voice(
@@ -368,7 +386,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Upload an audio file."""
         return await self._send_local_file(
-            chat_id, audio_path, caption, reply_to
+            chat_id, audio_path, caption, reply_to, metadata=metadata
         )
 
     async def send_video(
@@ -381,7 +399,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Upload a video file."""
         return await self._send_local_file(
-            chat_id, video_path, caption, reply_to
+            chat_id, video_path, caption, reply_to, metadata=metadata
         )
 
     def format_message(self, content: str) -> str:
@@ -404,6 +422,7 @@ class MattermostAdapter(BasePlatformAdapter):
         url: str,
         caption: Optional[str],
         reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]] = None,
         kind: str = "file",
     ) -> SendResult:
         """Download a URL and upload it as a file attachment."""
@@ -425,7 +444,7 @@ class MattermostAdapter(BasePlatformAdapter):
                             await asyncio.sleep(1.5 * (attempt + 1))
                             continue
                     if resp.status >= 400:
-                        return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+                        return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to, metadata=metadata)
                     file_data = await resp.read()
                     ct = resp.content_type or "application/octet-stream"
                     break
@@ -435,23 +454,24 @@ class MattermostAdapter(BasePlatformAdapter):
                     await asyncio.sleep(1.5 * (attempt + 1))
                     continue
                 logger.warning("Mattermost: failed to download %s after %d attempts: %s", url, attempt + 1, exc)
-                return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+                return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to, metadata=metadata)
 
         if file_data is None:
             logger.warning("Mattermost: download returned no data for %s", url)
-            return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+            return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to, metadata=metadata)
 
         file_id = await self._upload_file(chat_id, file_data, fname, ct)
         if not file_id:
-            return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+            return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to, metadata=metadata)
 
+        root_id = self._resolve_root_post_id(reply_to=reply_to, metadata=metadata)
         payload: Dict[str, Any] = {
             "channel_id": chat_id,
             "message": caption or "",
             "file_ids": [file_id],
         }
-        if reply_to and self._reply_mode == "thread":
-            payload["root_id"] = reply_to
+        if root_id:
+            payload["root_id"] = root_id
 
         data = await self._api_post("posts", payload)
         if not data or "id" not in data:
@@ -465,6 +485,7 @@ class MattermostAdapter(BasePlatformAdapter):
         caption: Optional[str],
         reply_to: Optional[str],
         file_name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Upload a local file and attach it to a post."""
         import mimetypes
@@ -472,7 +493,7 @@ class MattermostAdapter(BasePlatformAdapter):
         p = Path(file_path)
         if not p.exists():
             return await self.send(
-                chat_id, f"{caption or ''}\n(file not found: {file_path})", reply_to
+                chat_id, f"{caption or ''}\n(file not found: {file_path})", reply_to, metadata=metadata
             )
 
         fname = file_name or p.name
@@ -483,13 +504,14 @@ class MattermostAdapter(BasePlatformAdapter):
         if not file_id:
             return SendResult(success=False, error="File upload failed")
 
+        root_id = self._resolve_root_post_id(reply_to=reply_to, metadata=metadata)
         payload: Dict[str, Any] = {
             "channel_id": chat_id,
             "message": caption or "",
             "file_ids": [file_id],
         }
-        if reply_to and self._reply_mode == "thread":
-            payload["root_id"] = reply_to
+        if root_id:
+            payload["root_id"] = root_id
 
         data = await self._api_post("posts", payload)
         if not data or "id" not in data:
@@ -599,6 +621,7 @@ class MattermostAdapter(BasePlatformAdapter):
         channel_id = post.get("channel_id", "")
         channel_type_raw = data.get("channel_type", "O")
         chat_type = _CHANNEL_TYPE_MAP.get(channel_type_raw, "channel")
+        thread_id = post.get("root_id") or None
 
         # For DMs, user_id is sufficient.  For channels, check for @mention.
         message_text = post.get("message", "")
@@ -625,7 +648,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 for pattern in mention_patterns
             )
 
-            if require_mention and not is_free_channel and not has_mention:
+            if require_mention and not is_free_channel and not has_mention and not thread_id:
                 logger.debug(
                     "Mattermost: skipping non-DM message without @mention (channel=%s)",
                     channel_id,
@@ -642,9 +665,6 @@ class MattermostAdapter(BasePlatformAdapter):
         # Resolve sender info.
         sender_id = post.get("user_id", "")
         sender_name = data.get("sender_name", "").lstrip("@") or sender_id
-
-        # Thread support: if the post is in a thread, use root_id.
-        thread_id = post.get("root_id") or None
 
         # Determine message type.
         file_ids = post.get("file_ids") or []
