@@ -52,7 +52,7 @@ def _get_max_read_chars() -> int:
 
 # If the total file size exceeds this AND the caller didn't specify a narrow
 # range (limit <= 200), we include a hint encouraging targeted reads.
-_LARGE_FILE_HINT_BYTES = 512_000  # 512 KB
+_LARGE_FILE_HINT_BYTES = 50_000  # 50 KB
 
 # ---------------------------------------------------------------------------
 # Device path blocklist — reading these hangs the process (infinite output
@@ -276,7 +276,7 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = 500, force: bool = False, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
         # ── Device path guard ─────────────────────────────────────────
@@ -358,6 +358,21 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         content_len = len(result.content or "")
         file_size = result_dict.get("file_size", 0)
         max_chars = _get_max_read_chars()
+
+        # Strict 50KB limit block
+        if not force and file_size > _LARGE_FILE_HINT_BYTES and limit > 200:
+            total_lines = result_dict.get("total_lines", "unknown")
+            return json.dumps({
+                "error": (
+                    f"File ({file_size:,} bytes) exceeds the strict 50KB limit for full reads. "
+                    "Use the 'read_file_range' tool to read a specific section, or 'search_file_regex' to find patterns without context explosion. "
+                    "If you still must read this file via read_file without narrow limits, use force=true."
+                ),
+                "path": path,
+                "total_lines": total_lines,
+                "file_size": file_size,
+            }, ensure_ascii=False)
+
         if content_len > max_chars:
             total_lines = result_dict.get("total_lines", "unknown")
             return json.dumps({
@@ -379,7 +394,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 and result_dict.get("truncated")):
             result_dict.setdefault("_hint", (
                 f"This file is large ({file_size:,} bytes). "
-                "Consider reading only the section you need with offset and limit "
+                "Consider using 'read_file_range' or 'search_file_regex' "
                 "to keep context usage efficient."
             ))
 
@@ -701,11 +716,29 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
+def read_file_range_tool(path: str, start_line: int, end_line: int, task_id: str = "default") -> str:
+    """Read a file between specific start_line and end_line."""
+    limit = end_line - start_line + 1
+    if limit <= 0:
+        return json.dumps({"error": "end_line must be greater than or equal to start_line"}, ensure_ascii=False)
+    # We bypass the strict 50KB limit by enforcing start/end ranges effectively (it becomes a narrowed read,
+    # or if range > 200 it might hit the warning, so we pass force=True to bypass the size error specifically 
+    # since the user explicitly asked for this range).
+    return read_file_tool(path=path, offset=start_line, limit=limit, force=True, task_id=task_id)
+
+
+def search_file_regex_tool(path: str, pattern: str, context: int = 0, limit: int = 50, task_id: str = "default") -> str:
+    """Stream-based pattern matching returning line numbers and small snippets."""
+    return search_tool(pattern=pattern, target="content", path=path, file_glob=None, limit=limit, offset=0, output_mode="content", context=context, task_id=task_id)
+
+
 FILE_TOOLS = [
     {"name": "read_file", "function": read_file_tool},
+    {"name": "read_file_range", "function": read_file_range_tool},
     {"name": "write_file", "function": write_file_tool},
     {"name": "patch", "function": patch_tool},
-    {"name": "search_files", "function": search_tool}
+    {"name": "search_files", "function": search_tool},
+    {"name": "search_file_regex", "function": search_file_regex_tool}
 ]
 
 
@@ -733,9 +766,39 @@ READ_FILE_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000},
+            "force": {"type": "boolean", "description": "Set to true to bypass the strict 50KB large file read limit if absolutely necessary.", "default": False}
         },
         "required": ["path"]
+    }
+}
+
+READ_FILE_RANGE_SCHEMA = {
+    "name": "read_file_range",
+    "description": "Read a file between specific start_line and end_line. Uses memory-efficient streaming to avoid loading thousands of lines into the context at once.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Path to the file to read"},
+            "start_line": {"type": "integer", "description": "The starting line number (1-indexed)"},
+            "end_line": {"type": "integer", "description": "The ending line number (inclusive)"}
+        },
+        "required": ["path", "start_line", "end_line"]
+    }
+}
+
+SEARCH_FILE_REGEX_SCHEMA = {
+    "name": "search_file_regex",
+    "description": "Uses a streaming approach (like Python's re.finditer or ripgrep) to find regex patterns in files on disk efficiently without loading the whole file into memory. Returns line numbers and small snippets.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "File or directory to search in"},
+            "pattern": {"type": "string", "description": "Regex pattern to search for"},
+            "context": {"type": "integer", "description": "Number of context lines before and after each match", "default": 0},
+            "limit": {"type": "integer", "description": "Maximum number of matches to return", "default": 50}
+        },
+        "required": ["path", "pattern"]
     }
 }
 
@@ -791,7 +854,15 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), force=args.get("force", False), task_id=tid)
+
+def _handle_read_file_range(args, **kw):
+    tid = kw.get("task_id") or "default"
+    return read_file_range_tool(path=args.get("path", ""), start_line=args.get("start_line", 1), end_line=args.get("end_line", 100), task_id=tid)
+
+def _handle_search_file_regex(args, **kw):
+    tid = kw.get("task_id") or "default"
+    return search_file_regex_tool(path=args.get("path", "."), pattern=args.get("pattern", ""), context=args.get("context", 0), limit=args.get("limit", 50), task_id=tid)
 
 
 def _handle_write_file(args, **kw):
@@ -819,6 +890,8 @@ def _handle_search_files(args, **kw):
 
 
 registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖")
+registry.register(name="read_file_range", toolset="file", schema=READ_FILE_RANGE_SCHEMA, handler=_handle_read_file_range, check_fn=_check_file_reqs, emoji="📜")
 registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️")
 registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧")
 registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎")
+registry.register(name="search_file_regex", toolset="file", schema=SEARCH_FILE_REGEX_SCHEMA, handler=_handle_search_file_regex, check_fn=_check_file_reqs, emoji="🎯")
