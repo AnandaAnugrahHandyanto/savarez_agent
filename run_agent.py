@@ -4505,8 +4505,25 @@ class AIAgent:
         # access for Codex providers.
         try:
             from agent.auxiliary_client import resolve_provider_client
+
+            # Optional per-fallback endpoint overrides (config-driven), used
+            # primarily for local OpenAI-compatible failover targets.
+            fb_base_url = (fb.get("base_url") or "").strip() if isinstance(fb, dict) else ""
+            fb_api_key = ""
+            if isinstance(fb, dict):
+                fb_api_key = (fb.get("api_key") or "").strip()
+                if not fb_api_key:
+                    fb_api_key_env = (fb.get("api_key_env") or "").strip()
+                    if fb_api_key_env:
+                        fb_api_key = os.getenv(fb_api_key_env, "").strip()
+
             fb_client, _ = resolve_provider_client(
-                fb_provider, model=fb_model, raw_codex=True)
+                fb_provider,
+                model=fb_model,
+                raw_codex=True,
+                explicit_base_url=fb_base_url or None,
+                explicit_api_key=fb_api_key or None,
+            )
             if fb_client is None:
                 logging.warning(
                     "Fallback to %s failed: provider not configured",
