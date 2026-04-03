@@ -1795,6 +1795,7 @@ class HermesCLI:
         self._interrupt_queue = queue.Queue()
         self._followup_queue: list = []  # mirror of _pending_input for display (Alt+Enter queued messages)
         self._cancelled_followups: set = set()  # texts recalled via Alt+Up, skipped in process_loop
+        self._followup_recall_count: int = 0   # how many recalls done in this recall session
         self._should_exit = False
         self._last_ctrl_c_time = 0
         self._clarify_state = None
@@ -7985,18 +7986,20 @@ class HermesCLI:
             # Mark as cancelled so process_loop skips it when dequeued
             cli_ref._cancelled_followups.add(recalled_text)
 
-            # Append to current buffer with separator
+            # Append to current buffer — separator only from the second recall onwards
             current = buf.text
-            if current.strip():
+            if cli_ref._followup_recall_count > 0 and current.strip():
                 buf.text = current.rstrip() + '\n---\n' + recalled_text
             else:
-                buf.text = recalled_text
+                buf.text = (current + recalled_text) if current else recalled_text
             buf.cursor_position = len(buf.text)
+            cli_ref._followup_recall_count += 1
 
             remaining = len(cli_ref._followup_queue)
             if remaining:
                 _cprint(f"  {_DIM}📬 Recalled follow-up ({remaining} still queued){_RST}")
             else:
+                cli_ref._followup_recall_count = 0
                 _cprint(f"  {_DIM}📬 Follow-up recalled — queue empty{_RST}")
             event.app.invalidate()
 
