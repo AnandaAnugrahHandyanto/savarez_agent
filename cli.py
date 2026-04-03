@@ -1193,6 +1193,8 @@ class HermesCLI:
 
         # Read model.max_tokens from config (output token limit for the LLM).
         self.max_tokens = (_model_config.get("max_tokens") if isinstance(_model_config, dict) else None)
+        # Read model.frequency_penalty from config (anti-repetition).
+        self.frequency_penalty = (_model_config.get("frequency_penalty") if isinstance(_model_config, dict) else None)
 
         self._explicit_api_key = api_key
         self._explicit_base_url = base_url
@@ -2244,6 +2246,7 @@ class HermesCLI:
                 stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
                 max_tokens=self.max_tokens,
+                frequency_penalty=self.frequency_penalty,
             )
             # Store reference for atexit memory provider shutdown
             global _active_agent_ref
@@ -4283,6 +4286,7 @@ class HermesCLI:
                     provider_data_collection=self._provider_data_collection,
                     fallback_model=self._fallback_model,
                     max_tokens=self.max_tokens,
+                    frequency_penalty=self.frequency_penalty,
                 )
                 # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
                 bg_agent._print_fn = lambda *_a, **_kw: None
@@ -4423,6 +4427,7 @@ class HermesCLI:
                     skip_context_files=True,
                     persist_session=False,
                     max_tokens=self.max_tokens,
+                    frequency_penalty=self.frequency_penalty,
                 )
 
                 btw_prompt = (
