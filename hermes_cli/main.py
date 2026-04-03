@@ -970,10 +970,12 @@ def select_provider_and_model(args=None):
             saved_model = entry.get("model", "")
             model_hint = f" — {saved_model}" if saved_model else ""
             providers.append((key, f"{name} ({short_url}){model_hint}"))
+            from hermes_cli.runtime_provider import resolve_custom_api_key
             _custom_provider_map[key] = {
                 "name": name,
                 "base_url": base_url,
-                "api_key": entry.get("api_key", ""),
+                "api_key": resolve_custom_api_key(entry),
+                "api_key_env": entry.get("api_key_env", ""),  # preserve source flag
                 "model": saved_model,
             }
 
@@ -1547,6 +1549,7 @@ def _model_flow_named_custom(config, provider_info):
     name = provider_info["name"]
     base_url = provider_info["base_url"]
     api_key = provider_info.get("api_key", "")
+    _from_env = bool(provider_info.get("api_key_env"))  # don't leak env-resolved keys to config
     saved_model = provider_info.get("model", "")
 
     # If a model is saved, just activate immediately — no probing needed
@@ -1560,7 +1563,7 @@ def _model_flow_named_custom(config, provider_info):
             cfg["model"] = model
         model["provider"] = "custom"
         model["base_url"] = base_url
-        if api_key:
+        if api_key and not _from_env:
             model["api_key"] = api_key
         save_config(cfg)
         deactivate_provider()
@@ -1633,13 +1636,14 @@ def _model_flow_named_custom(config, provider_info):
         cfg["model"] = model
     model["provider"] = "custom"
     model["base_url"] = base_url
-    if api_key:
+    if api_key and not _from_env:
         model["api_key"] = api_key
     save_config(cfg)
     deactivate_provider()
 
     # Save model name to the custom_providers entry for next time
-    _save_custom_provider(base_url, api_key, model_name)
+    # Don't pass the resolved secret when it came from an env var
+    _save_custom_provider(base_url, "" if _from_env else api_key, model_name)
 
     print(f"\n✅ Model set to: {model_name}")
     print(f"   Provider: {name} ({base_url})")

@@ -764,10 +764,11 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
     changed = False
     active_sources: Set[str] = set()
 
-    # Seed from the custom_providers config entry's api_key field
+    # Seed from the custom_providers config entry's api_key / api_key_env field
     cp_config = _get_custom_provider_config(pool_key)
     if cp_config:
-        api_key = str(cp_config.get("api_key") or "").strip()
+        from hermes_cli.runtime_provider import resolve_custom_api_key
+        api_key = resolve_custom_api_key(cp_config)
         base_url = str(cp_config.get("base_url") or "").strip().rstrip("/")
         name = str(cp_config.get("name") or "").strip()
         if api_key:
