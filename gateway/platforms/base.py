@@ -73,6 +73,46 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     return str(filepath)
 
 
+def _is_private_ip(addr: str) -> bool:
+    """Return True if *addr* belongs to a private, loopback, or reserved range."""
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return True  # treat unparseable addresses as private (fail-closed)
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+    )
+
+
+async def _validate_image_url(url: str) -> None:
+    """Reject URLs that target private/internal networks (SSRF protection)."""
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Unsupported URL scheme: {parsed.scheme}")
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError(f"No hostname in URL: {url}")
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as exc:
+        raise ValueError(f"Cannot resolve hostname '{hostname}': {exc}") from exc
+    for info in infos:
+        addr = info[4][0]
+        if _is_private_ip(addr):
+            raise ValueError(
+                f"URL resolves to private/internal address {addr}. "
+                "Connections to internal networks are not allowed."
+            )
+
+
 async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
     """
     Download an image from a URL and save it to the local cache.
@@ -87,14 +127,19 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
 
     Returns:
         Absolute path to the cached image file as a string.
+
+    Raises:
+        ValueError: If the URL targets a private/internal address.
     """
     import asyncio
     import httpx
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
+    await _validate_image_url(url)
+
     last_exc = None
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
         for attempt in range(retries + 1):
             try:
                 response = await client.get(
