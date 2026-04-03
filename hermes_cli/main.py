@@ -1548,8 +1548,14 @@ def _model_flow_named_custom(config, provider_info):
 
     name = provider_info["name"]
     base_url = provider_info["base_url"]
-    api_key = provider_info.get("api_key", "")
-    _from_env = bool(provider_info.get("api_key_env"))  # don't leak env-resolved keys to config
+    api_key_env = provider_info.get("api_key_env", "")
+    env_api_key = os.getenv(api_key_env, "") if api_key_env else ""
+    if env_api_key:
+        api_key = env_api_key
+        _from_env = True
+    else:
+        api_key = provider_info.get("api_key", "")
+        _from_env = False
     saved_model = provider_info.get("model", "")
 
     # If a model is saved, just activate immediately — no probing needed
