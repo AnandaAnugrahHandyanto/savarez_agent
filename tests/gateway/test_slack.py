@@ -408,6 +408,98 @@ class TestIncomingDocumentHandling:
         assert "[Content of" not in (msg_event.text or "")
 
     @pytest.mark.asyncio
+    async def test_csv_document_cached_and_injected(self, adapter):
+        """A .csv file should be cached as DOCUMENT and its content injected."""
+        csv_bytes = b"name,age\nAlice,30\nBob,25"
+
+        with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock) as dl:
+            dl.return_value = csv_bytes
+            event = self._make_event(
+                text="analyze this",
+                files=[{
+                    "mimetype": "text/csv",
+                    "name": "users.csv",
+                    "url_private_download": "https://files.slack.com/users.csv",
+                    "size": len(csv_bytes),
+                }],
+            )
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.DOCUMENT
+        assert len(msg_event.media_urls) == 1
+        assert os.path.exists(msg_event.media_urls[0])
+        assert msg_event.media_types == ["text/csv"]
+        assert "[Content of users.csv]" in msg_event.text
+        assert "Alice,30" in msg_event.text
+        assert "analyze this" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_json_document_cached_and_injected(self, adapter):
+        """A .json file should be cached as DOCUMENT and its content injected."""
+        json_bytes = b'{"users": [{"name": "Alice"}, {"name": "Bob"}]}'
+
+        with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock) as dl:
+            dl.return_value = json_bytes
+            event = self._make_event(
+                text="summarize",
+                files=[{
+                    "mimetype": "application/json",
+                    "name": "data.json",
+                    "url_private_download": "https://files.slack.com/data.json",
+                    "size": len(json_bytes),
+                }],
+            )
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.DOCUMENT
+        assert len(msg_event.media_urls) == 1
+        assert msg_event.media_types == ["application/json"]
+        assert "[Content of data.json]" in msg_event.text
+        assert '"Alice"' in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_large_csv_cached_not_injected(self, adapter):
+        """A .csv file over 100KB should be cached but NOT injected."""
+        large_csv = b"col1,col2\n" + b"x,y\n" * 60000
+
+        with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock) as dl:
+            dl.return_value = large_csv
+            event = self._make_event(files=[{
+                "mimetype": "text/csv",
+                "name": "big.csv",
+                "url_private_download": "https://files.slack.com/big.csv",
+                "size": len(large_csv),
+            }], text="")
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.DOCUMENT
+        assert len(msg_event.media_urls) == 1
+        assert "[Content of" not in (msg_event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_binary_json_extension_not_injected(self, adapter):
+        """A file named .json with binary content should be cached but not injected."""
+        binary_data = bytes(range(128, 256)) * 10
+
+        with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock) as dl:
+            dl.return_value = binary_data
+            event = self._make_event(files=[{
+                "mimetype": "application/json",
+                "name": "corrupt.json",
+                "url_private_download": "https://files.slack.com/corrupt.json",
+                "size": len(binary_data),
+            }], text="")
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.DOCUMENT
+        assert len(msg_event.media_urls) == 1
+        assert "[Content of" not in (msg_event.text or "")
+
+    @pytest.mark.asyncio
     async def test_unsupported_file_type_skipped(self, adapter):
         """A .zip file should be silently skipped."""
         event = self._make_event(files=[{

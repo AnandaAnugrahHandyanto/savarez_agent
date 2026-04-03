@@ -13,6 +13,7 @@ import pytest
 
 from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
+    TEXT_INJECTABLE_EXTENSIONS,
     cache_document_from_bytes,
     cleanup_document_cache,
     get_document_cache_dir,
@@ -151,7 +152,18 @@ class TestSupportedDocumentTypes:
 
     @pytest.mark.parametrize(
         "ext",
-        [".pdf", ".md", ".txt", ".docx", ".xlsx", ".pptx"],
+        [".pdf", ".md", ".txt", ".csv", ".json", ".docx", ".xlsx", ".pptx"],
     )
     def test_expected_extensions_present(self, ext):
         assert ext in SUPPORTED_DOCUMENT_TYPES
+
+    def test_text_injectable_is_subset_of_supported(self):
+        """Every text-injectable extension must also be in SUPPORTED_DOCUMENT_TYPES."""
+        for ext in TEXT_INJECTABLE_EXTENSIONS:
+            assert ext in SUPPORTED_DOCUMENT_TYPES, (
+                f"{ext} is in TEXT_INJECTABLE_EXTENSIONS but missing from SUPPORTED_DOCUMENT_TYPES"
+            )
+
+    @pytest.mark.parametrize("ext", [".md", ".txt", ".csv", ".json"])
+    def test_expected_text_injectable_extensions(self, ext):
+        assert ext in TEXT_INJECTABLE_EXTENSIONS

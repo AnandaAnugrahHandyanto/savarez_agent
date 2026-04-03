@@ -236,6 +236,97 @@ class TestDocumentDownloadBlock:
         assert "Please summarize" in event.text
 
     @pytest.mark.asyncio
+    async def test_csv_cached_and_injected(self, adapter):
+        """A .csv file should be cached as DOCUMENT and its content injected."""
+        csv_bytes = b"name,age\nAlice,30\nBob,25"
+        file_obj = _make_file_obj(csv_bytes)
+        doc = _make_document(
+            file_name="users.csv", mime_type="text/csv",
+            file_size=len(csv_bytes), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc, caption="analyze this")
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == ["text/csv"]
+        assert "[Content of users.csv]" in event.text
+        assert "Alice,30" in event.text
+        assert "analyze this" in event.text
+
+    @pytest.mark.asyncio
+    async def test_json_cached_and_injected(self, adapter):
+        """A .json file should be cached as DOCUMENT and its content injected."""
+        json_bytes = b'{"users": [{"name": "Alice"}]}'
+        file_obj = _make_file_obj(json_bytes)
+        doc = _make_document(
+            file_name="data.json", mime_type="application/json",
+            file_size=len(json_bytes), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+        assert event.media_types == ["application/json"]
+        assert "[Content of data.json]" in event.text
+        assert '"Alice"' in event.text
+
+    @pytest.mark.asyncio
+    async def test_large_csv_cached_not_injected(self, adapter):
+        """A .csv over 100KB should be cached but NOT injected."""
+        large_csv = b"col1,col2\n" + b"x,y\n" * 60000
+        file_obj = _make_file_obj(large_csv)
+        doc = _make_document(
+            file_name="big.csv", mime_type="text/csv",
+            file_size=len(large_csv), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+        assert "[Content of" not in (event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_binary_json_not_injected(self, adapter):
+        """A .json with binary content should be cached but not injected."""
+        binary = bytes(range(128, 256)) * 10
+        file_obj = _make_file_obj(binary)
+        doc = _make_document(
+            file_name="corrupt.json", mime_type="application/json",
+            file_size=len(binary), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+        assert "[Content of" not in (event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_json_no_filename_resolved_via_mime(self, adapter):
+        """A JSON file with no filename should resolve ext from MIME type."""
+        json_bytes = b'{"key": "value"}'
+        file_obj = _make_file_obj(json_bytes)
+        doc = _make_document(
+            file_name=None, mime_type="application/json",
+            file_size=len(json_bytes), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+        assert event.media_types == ["application/json"]
+
+    @pytest.mark.asyncio
     async def test_unsupported_type_rejected(self, adapter):
         doc = _make_document(file_name="archive.zip", mime_type="application/zip", file_size=100)
         msg = _make_message(document=doc)
