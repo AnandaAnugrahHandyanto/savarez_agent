@@ -1347,9 +1347,8 @@ class HermesCLI:
         self._agent_running = False
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
-        self._followup_queue: list = []  # mirror of _pending_input for display; entries are {"id": str, "payload": ...}
-        self._cancelled_followups: set = set()  # UUIDs recalled via Alt+Up, skipped in process_loop
-        self._followup_recall_count: int = 0   # how many recalls done in this recall session
+        self._followup_queue: list = []  # mirror of _pending_input for display (Alt+Enter queued messages)
+        self._cancelled_followups: set = set()  # texts recalled via Alt+Up, skipped in process_loop
         self._should_exit = False
         self._last_ctrl_c_time = 0
         self._stashed_input = None  # Ctrl+S stash: (text, [images]) or None
@@ -6949,11 +6948,8 @@ class HermesCLI:
             cli_ref._attached_images.clear()
             payload = (text, images) if images else text
 
-            import uuid as _uuid_mod
-            tag = _uuid_mod.uuid4().hex
-            # Wrap with tag so process_loop can identify and cancel by ID, not text
-            cli_ref._pending_input.put({"_followup_tag": tag, "payload": payload})
-            cli_ref._followup_queue.append({"id": tag, "payload": payload, "text": text})
+            cli_ref._pending_input.put(payload)
+            cli_ref._followup_queue.append(payload)
             event.app.current_buffer.reset(append_to_history=True)
 
             queue_depth = len(cli_ref._followup_queue)
@@ -6984,26 +6980,24 @@ class HermesCLI:
             buf = event.app.current_buffer
 
             # Pop the most recently queued item (last = most recent)
-            item = cli_ref._followup_queue.pop()
-            recalled_text = item["text"]
+            payload = cli_ref._followup_queue.pop()
+            recalled_text = payload[0] if isinstance(payload, tuple) else payload
 
-            # Cancel by UUID — immune to duplicate-text false positives
-            cli_ref._cancelled_followups.add(item["id"])
+            # Mark as cancelled so process_loop skips it when dequeued
+            cli_ref._cancelled_followups.add(recalled_text)
 
-            # Append to current buffer — separator only from the second recall onwards
+            # Append to current buffer with separator
             current = buf.text
-            if cli_ref._followup_recall_count > 0 and current.strip():
+            if current.strip():
                 buf.text = current.rstrip() + '\n---\n' + recalled_text
             else:
-                buf.text = (current + recalled_text) if current else recalled_text
+                buf.text = recalled_text
             buf.cursor_position = len(buf.text)
-            cli_ref._followup_recall_count += 1
 
             remaining = len(cli_ref._followup_queue)
             if remaining:
                 _cprint(f"  {_DIM}📬 Recalled follow-up ({remaining} still queued){_RST}")
             else:
-                cli_ref._followup_recall_count = 0
                 _cprint(f"  {_DIM}📬 Follow-up recalled — queue empty{_RST}")
             event.app.invalidate()
 
@@ -8110,18 +8104,15 @@ class HermesCLI:
                     # Check for pending input with timeout
                     try:
                         user_input = self._pending_input.get(timeout=0.1)
-                        # Unwrap tagged followup items (queued via Alt+Enter)
-                        if isinstance(user_input, dict) and "_followup_tag" in user_input:
-                            tag = user_input["_followup_tag"]
-                            user_input = user_input["payload"]
-                            # Sync display mirror — only pop for tagged items, not regular Enter
-                            if self._followup_queue:
-                                self._followup_queue.pop(0)
-                                app.invalidate()
-                            # Skip items recalled via Alt+Up (cancelled by UUID, not text)
-                            if tag in self._cancelled_followups:
-                                self._cancelled_followups.discard(tag)
-                                continue
+                        # Keep _followup_queue in sync — pop the oldest entry if present
+                        if self._followup_queue:
+                            self._followup_queue.pop(0)
+                            app.invalidate()
+                        # Skip items recalled via Alt+Up
+                        _input_text = user_input[0] if isinstance(user_input, tuple) else user_input
+                        if _input_text in self._cancelled_followups:
+                            self._cancelled_followups.discard(_input_text)
+                            continue
                     except queue.Empty:
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:
