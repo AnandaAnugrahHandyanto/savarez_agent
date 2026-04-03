@@ -1,55 +1,106 @@
 # honcho-integration-spec
 
-Comparison of Hermes Agent vs. openclaw-honcho — and a porting spec for bringing Hermes patterns into other Honcho integrations.
+Practical comparison of Hermes Agent vs. openclaw-honcho, plus a porting spec for the Hermes patterns worth stealing.
 
 ---
 
-## Overview
+## TL;DR
 
-Two independent Honcho integrations have been built for two different agent runtimes: **Hermes Agent** (Python, baked into the runner) and **openclaw-honcho** (TypeScript plugin via hook/tool API). Both use the same Honcho peer paradigm — dual peer model, `session.context()`, `peer.chat()` — but they made different tradeoffs at every layer.
+The main difference is not "Hermes uses Honcho too". The main difference is **where the retrieved knowledge lands**.
 
-This document maps those tradeoffs and defines a porting spec: a set of Hermes-originated patterns, each stated as an integration-agnostic interface, that any Honcho integration can adopt regardless of runtime or language.
+- **Hermes** fetches Honcho knowledge, formats it into a `# Honcho Memory` block, and **bakes that block into the system prompt once per session**.
+- **openclaw-honcho** fetches Honcho knowledge inside a hook **before prompt build on every turn**.
+- Result:
+  - Hermes gets **stable prompt prefix + better cache hits + lower steady-state latency**.
+  - openclaw-honcho gets **fresher per-turn recall**, but pays a blocking fetch cost every turn.
 
-> **Scope** Both integrations work correctly today. This spec is about the delta — patterns in Hermes that are worth propagating and patterns in openclaw-honcho that Hermes should eventually adopt. The spec is additive, not prescriptive.
+If you only remember one thing from this doc, remember that.
+
+---
+
+## What the model actually sees
+
+Hermes does not keep Honcho knowledge as some side channel. It turns it into plain prompt text.
+
+Flow:
+
+```text
+turn N ends
+  → prefetch_context(session_key, user_message)
+  → prefetch_dialectic(session_key, user_message)
+  → cache results in _context_cache / _dialectic_cache
+
+turn N+1 starts
+  → _honcho_prefetch()
+      → pop_context_result(session_key)
+      → pop_dialectic_result(session_key)
+      → render:
+         # Honcho Memory (persistent cross-session context)
+         ## User representation
+         ...
+         ## AI peer representation
+         ...
+         ## Continuity synthesis
+         ...
+  → _build_system_prompt()
+  → append rendered Honcho block to _cached_system_prompt
+  → send as the system message in the LLM API call
+```
+
+Relevant code:
+
+- `run_agent.py:_queue_honcho_prefetch()` — starts async context + dialectic fetches
+- `run_agent.py:_honcho_prefetch()` — converts cached Honcho results into markdown text
+- `run_agent.py:6171-6176` — appends that text to `_cached_system_prompt`
+- `run_agent.py:5882-5886` — sends the final system prompt in the API request
+
+So yes: **knowledge is injected into the prompt itself**, not attached as hidden metadata and not fetched tool-by-tool unless recall mode allows extra Honcho tools.
 
 ---
 
 ## Architecture comparison
 
-### Hermes: baked-in runner
+### Hermes: baked into the runner
 
-Honcho is initialised directly inside `AIAgent.__init__`. There is no plugin boundary. Session management, context injection, async prefetch, and CLI surface are all first-class concerns of the runner. Context is injected once per session (baked into `_cached_system_prompt`) and never re-fetched mid-session — this maximises prefix cache hits at the LLM provider.
+Honcho lives inside `AIAgent`. No plugin boundary. The important bit: retrieved knowledge is rendered once, appended to the system prompt once, then reused for the whole session.
 
-Turn flow:
-
-```
+```text
 user message
-  → _honcho_prefetch()       (reads cache — no HTTP)
-  → _build_system_prompt()   (first turn only, cached)
+  → _honcho_prefetch()      (reads local cache, no HTTP)
+  → _build_system_prompt()  (first turn only)
+  → append Honcho block to _cached_system_prompt
   → LLM call
   → response
-  → _honcho_fire_prefetch()  (daemon threads, turn end)
-       → prefetch_context() thread  ──┐
-       → prefetch_dialectic() thread ─┴→ _context_cache / _dialectic_cache
+  → _queue_honcho_prefetch()  (background threads for next turn)
 ```
 
-### openclaw-honcho: hook-based plugin
+Practical consequence:
 
-The plugin registers hooks against OpenClaw's event bus. Context is fetched synchronously inside `before_prompt_build` on every turn. Message capture happens in `agent_end`. The multi-agent hierarchy is tracked via `subagent_spawned`. This model is correct but every turn pays a blocking Honcho round-trip before the LLM call can begin.
+- first turn can be cold
+- later turns avoid blocking Honcho fetches on the response path
+- prompt stays stable, which helps provider prefix caching
 
-Turn flow:
+### openclaw-honcho: hook plugin
 
-```
+The plugin fetches Honcho context inside `before_prompt_build` on every turn.
+
+```text
 user message
-  → before_prompt_build (BLOCKING HTTP — every turn)
-       → session.context()
+  → before_prompt_build
+      → session.context()   (blocking HTTP every turn)
   → system prompt assembled
   → LLM call
   → response
-  → agent_end hook
-       → session.addMessages()
-       → session.setMetadata()
+  → agent_end
+      → session.addMessages()
+      → session.setMetadata()
 ```
+
+Practical consequence:
+
+- context is fresher every turn
+- every turn pays the network + Honcho latency bill
+- prompt prefix changes more often, so cache behavior is worse
 
 ---
 
@@ -57,21 +108,22 @@ user message
 
 | Dimension | Hermes Agent | openclaw-honcho |
 |---|---|---|
+| **Where knowledge goes** | Rendered into a `# Honcho Memory` block and appended to the cached system prompt. | Injected during prompt-build hook on each turn. |
 | **Context injection timing** | Once per session (cached). Zero HTTP on response path after turn 1. | Every turn, blocking. Fresh context per turn but adds latency. |
 | **Prefetch strategy** | Daemon threads fire at turn end; consumed next turn from cache. | None. Blocking call at prompt-build time. |
-| **Dialectic (peer.chat)** | Prefetched async; result injected into system prompt next turn. | On-demand via `honcho_recall` / `honcho_analyze` tools. |
-| **Reasoning level** | Dynamic: scales with message length. Floor = config default. Cap = "high". | Fixed per tool: recall=minimal, analyze=medium. |
+| **Dialectic (`peer.chat`)** | Prefetched async; rendered into `## Continuity synthesis` in the next prompt. | On-demand via `honcho_recall` / `honcho_analyze` tools. |
+| **Reasoning level** | Dynamic: scales with message length. Floor = config default. Cap = `high`. | Fixed per tool: recall=`minimal`, analyze=`medium`. |
 | **Memory modes** | `user_memory_mode` / `agent_memory_mode`: hybrid / honcho / local. | None. Always writes to Honcho. |
-| **Write frequency** | async (background queue), turn, session, N turns. | After every agent_end (no control). |
-| **AI peer identity** | `observe_me=True`, `seed_ai_identity()`, `get_ai_representation()`, SOUL.md → AI peer. | Agent files uploaded to agent peer at setup. No ongoing self-observation. |
-| **Context scope** | User peer + AI peer representation, both injected. | User peer (owner) representation + conversation summary. `peerPerspective` on context call. |
+| **Write frequency** | async (background queue), turn, session, N turns. | After every `agent_end` (no control). |
+| **AI peer identity** | `observe_me=True`, `seed_ai_identity()`, `get_ai_representation()`, `SOUL.md` seeds the AI peer. | Agent files uploaded to agent peer at setup. No ongoing self-observation. |
+| **Context scope** | User peer + AI peer representation + continuity synthesis can all land in prompt. | User peer representation + conversation summary. `peerPerspective` on context call. |
 | **Session naming** | per-directory / global / manual map / title-based. | Derived from platform session key. |
 | **Multi-agent** | Single-agent only. | Parent observer hierarchy via `subagent_spawned`. |
-| **Tool surface** | Single `query_user_context` tool (on-demand dialectic). | 6 tools: session, profile, search, context (fast) + recall, analyze (LLM). |
+| **Tool surface** | Can answer from injected memory first; extra Honcho tools depend on recall mode. | 6 tools: session, profile, search, context (fast) + recall, analyze (LLM). |
 | **Platform metadata** | Not stripped. | Explicitly stripped before Honcho storage. |
 | **Message dedup** | None. | `lastSavedIndex` in session metadata prevents re-sending. |
 | **CLI surface in prompt** | Management commands injected into system prompt. Agent knows its own CLI. | Not injected. |
-| **AI peer name in identity** | Replaces "Hermes Agent" in DEFAULT_AGENT_IDENTITY when configured. | Not implemented. |
+| **AI peer name in identity** | Replaces `Hermes Agent` in `DEFAULT_AGENT_IDENTITY` when configured. | Not implemented. |
 | **QMD / local file search** | Not implemented. | Passthrough tools when QMD backend configured. |
 | **Workspace metadata** | Not implemented. | `agentPeerMap` in workspace metadata tracks agent→peer ID. |
 
@@ -79,17 +131,18 @@ user message
 
 ## Patterns
 
-Six patterns from Hermes are worth adopting in any Honcho integration. Each is described as an integration-agnostic interface.
+The Hermes patterns worth porting are:
 
-**Hermes contributes:**
-- Async prefetch (zero-latency)
+- Async prefetch
+- Prompt-level Honcho injection
 - Dynamic reasoning level
 - Per-peer memory modes
 - AI peer identity formation
 - Session naming strategies
 - CLI surface injection
 
-**openclaw-honcho contributes back (Hermes should adopt):**
+The openclaw-honcho patterns worth porting back are:
+
 - `lastSavedIndex` dedup
 - Platform metadata stripping
 - Multi-agent observer hierarchy
