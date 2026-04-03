@@ -79,6 +79,9 @@ class SmsAdapter(BasePlatformAdapter):
         )
         self._runner = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
+        self._validate_signatures: bool = os.getenv(
+            "TWILIO_VALIDATE_SIGNATURES", "true"
+        ).lower() not in ("0", "false", "no")
 
     def _basic_auth_header(self) -> str:
         """Build HTTP Basic auth header value for Twilio."""
@@ -207,6 +210,24 @@ class SmsAdapter(BasePlatformAdapter):
     # Twilio webhook handler
     # ------------------------------------------------------------------
 
+    def _verify_twilio_signature(self, request, raw_body: bytes) -> bool:
+        """Validate inbound webhook using Twilio request signature."""
+        if not self._validate_signatures:
+            return True
+        try:
+            from twilio.request_validator import RequestValidator
+        except ImportError:
+            logger.warning(
+                "[sms] twilio package not installed — skipping signature "
+                "validation. Install with: pip install twilio"
+            )
+            return True
+        validator = RequestValidator(self._auth_token)
+        url = str(request.url)
+        signature = request.headers.get("X-Twilio-Signature", "")
+        params = dict(urllib.parse.parse_qsl(raw_body.decode("utf-8")))
+        return validator.validate(url, params, signature)
+
     async def _handle_webhook(self, request) -> "aiohttp.web.Response":
         from aiohttp import web
 
@@ -220,6 +241,14 @@ class SmsAdapter(BasePlatformAdapter):
                 text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
                 content_type="application/xml",
                 status=400,
+            )
+
+        if not self._verify_twilio_signature(request, raw):
+            logger.warning("[sms] invalid Twilio signature — rejecting request")
+            return web.Response(
+                text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                content_type="application/xml",
+                status=403,
             )
 
         # Extract fields (parse_qs returns lists)
