@@ -28,11 +28,14 @@ def resolve_custom_api_key(entry: dict) -> str:
 
     Supports ``api_key_env`` (environment variable name) as an alternative to
     the literal ``api_key`` field.  When both are present, ``api_key_env`` wins
-    so that operators can migrate to env-based secrets incrementally.
+    if it resolves to a usable secret, otherwise the literal ``api_key`` is
+    used as a fallback to support incremental migration.
     """
     env_var = (entry.get("api_key_env") or "").strip()
     if env_var:
-        return os.environ.get(env_var, "").strip()
+        env_value = os.environ.get(env_var, "").strip()
+        if has_usable_secret(env_value):
+            return env_value
     return str(entry.get("api_key", "") or "").strip()
 
 
