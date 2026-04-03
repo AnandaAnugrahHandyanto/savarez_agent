@@ -159,6 +159,8 @@ def _discover_tools():
         "tools.honcho_tools",
         "tools.homeassistant_tool",
         "tools.context_graph_tool",
+        "tools.mac_help_tool",
+        "tools.mac_workflow_tool",
     ]
     import importlib
     for mod_name in _modules:

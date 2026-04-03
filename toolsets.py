@@ -66,6 +66,8 @@ _HERMES_CORE_TOOLS = [
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Context graph (gated on graphiti-core + config via check_fn)
     "context_graph",
+    # macOS help & workflows (gated on macOS + ~/.hermes/macos-kb/ via check_fn)
+    "mac_help", "mac_workflow",
 ]
 
 
@@ -94,6 +96,12 @@ TOOLSETS = {
     "image_gen": {
         "description": "Creative generation tools (images)",
         "tools": ["image_generate"],
+        "includes": []
+    },
+
+    "macos": {
+        "description": "macOS help, feature discovery, and workflow automation (macOS only)",
+        "tools": ["mac_help", "mac_workflow"],
         "includes": []
     },
     
