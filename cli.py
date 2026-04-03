@@ -7953,6 +7953,59 @@ class HermesCLI:
             _cprint(f"  {_DIM}↕ Full user message display: {state}{_RST}")
             event.app.invalidate()
 
+        @kb.add('c-p')
+        def handle_peek(event):
+            """Ctrl+P: peek at collapsed paste content or current input inline.
+
+            If the input contains a [Pasted text #N ... → path] reference,
+            prints the first 20 lines of that file right in the terminal so
+            the user can verify the content without opening an editor (Ctrl+G).
+            If multiple paste references exist, peeks at the first one.
+            If there is no paste reference, prints the first 20 lines of the
+            current buffer text as a preview.
+            """
+            import re as _re
+            from prompt_toolkit.application import run_in_terminal
+
+            buf = event.app.current_buffer
+            text = buf.text
+
+            _paste_re = _re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
+            match = _paste_re.search(text)
+
+            def _peek():
+                _PEEK_LINES = 20
+                if match:
+                    p = Path(match.group(1))
+                    if not p.exists():
+                        _cprint(f"  {_DIM}Paste file not found: {p}{_RST}")
+                        return
+                    lines = p.read_text(encoding="utf-8").splitlines()
+                    total = len(lines)
+                    shown = lines[:_PEEK_LINES]
+                    _cprint(f"\n  {_DIM}📄 {p.name} — {total} lines{_RST}")
+                    _cprint(f"  {_DIM}{'─' * 60}{_RST}")
+                    for line in shown:
+                        _cprint(f"  {line}")
+                    if total > _PEEK_LINES:
+                        _cprint(f"  {_DIM}  ... ({total - _PEEK_LINES} more lines) — Ctrl+G to edit{_RST}")
+                    else:
+                        _cprint(f"  {_DIM}{'─' * 60} Ctrl+G to edit{_RST}")
+                elif text.strip():
+                    lines = text.splitlines()
+                    total = len(lines)
+                    shown = lines[:_PEEK_LINES]
+                    _cprint(f"\n  {_DIM}📝 Current input — {total} line{'s' if total != 1 else ''}{_RST}")
+                    _cprint(f"  {_DIM}{'─' * 60}{_RST}")
+                    for line in shown:
+                        _cprint(f"  {line}")
+                    if total > _PEEK_LINES:
+                        _cprint(f"  {_DIM}  ... ({total - _PEEK_LINES} more lines){_RST}")
+                else:
+                    _cprint(f"  {_DIM}(input is empty){_RST}")
+
+            run_in_terminal(_peek)
+
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
         # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)
         # Config uses "ctrl+b" format; prompt_toolkit expects "c-b" format.
