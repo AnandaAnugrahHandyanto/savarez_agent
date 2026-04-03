@@ -193,6 +193,9 @@ if _config_path.exists():
             _redact = _security_cfg.get("redact_secrets")
             if _redact is not None:
                 os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
+        # Apply gateway-level terminal backend override
+        from gateway.sandbox_config import apply_gateway_backend_to_env
+        apply_gateway_backend_to_env(_cfg)
     except Exception:
         pass  # Non-fatal; gateway can still run with .env values
 
@@ -1031,6 +1034,26 @@ class GatewayRunner:
         """
         logger.info("Starting Hermes Gateway...")
         logger.info("Session storage: %s", self.config.sessions_dir)
+
+        # Warn if running with local backend (no sandbox isolation)
+        try:
+            from gateway.sandbox_config import should_warn_insecure_gateway
+            import yaml as _yaml
+            from hermes_cli.config import get_hermes_home
+            _cfg_path = get_hermes_home() / "config.yaml"
+            _raw_cfg = {}
+            if _cfg_path.exists():
+                with open(_cfg_path, encoding="utf-8") as _f:
+                    _raw_cfg = _yaml.safe_load(_f) or {}
+            if should_warn_insecure_gateway(_raw_cfg):
+                logger.warning(
+                    "Gateway is running with local terminal backend. "
+                    "Commands from messaging platforms will execute on this machine. "
+                    "Consider setting gateway.terminal_backend: docker in config.yaml "
+                    "for production deployments. See: https://github.com/NousResearch/hermes-agent/issues/4281"
+                )
+        except Exception:
+            pass
         try:
             from hermes_cli.profiles import get_active_profile_name
             _profile = get_active_profile_name()
