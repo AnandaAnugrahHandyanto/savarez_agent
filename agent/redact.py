@@ -102,6 +102,74 @@ _PREFIX_RE = re.compile(
     r"(?<![A-Za-z0-9_-])(" + "|".join(_PREFIX_PATTERNS) + r")(?![A-Za-z0-9_-])"
 )
 
+# Fast-path markers for obviously benign large text blocks. The full regex
+# suite is fairly expensive on long inputs, so skip it when the content lacks
+# any secret-like markers or auth/credential vocabulary.
+_FAST_SCAN_MIN_LEN = 4096
+_FAST_HINT_MARKERS = (
+    "sk-",
+    "sk_",
+    "ghp_",
+    "github_pat_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "xox",
+    "aiza",
+    "pplx-",
+    "fal_",
+    "fc-",
+    "bb_live_",
+    "gaaaa",
+    "akia",
+    "sk_live_",
+    "sk_test_",
+    "rk_live_",
+    "sg.",
+    "hf_",
+    "r8_",
+    "npm_",
+    "pypi-",
+    "dop_v1_",
+    "doo_v1_",
+    "am_",
+    "tvly-",
+    "exa_",
+    "api_key",
+    "apikey",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "credential",
+    "authorization",
+    "bearer",
+    "private key",
+    "postgres://",
+    "postgresql://",
+    "mysql://",
+    "mongodb://",
+    "mongodb+srv://",
+    "redis://",
+    "amqp://",
+    "bot",
+)
+
+
+def _may_contain_sensitive_markers(text: str) -> bool:
+    """Cheap pre-filter before applying the full redaction regex suite."""
+    if len(text) < _FAST_SCAN_MIN_LEN:
+        return True
+
+    lowered = text.lower()
+    if any(marker in lowered for marker in _FAST_HINT_MARKERS):
+        return True
+
+    # E.164 phone numbers are handled separately and don't carry a textual
+    # secret marker, so keep scanning when the content contains a likely phone.
+    return "+" in text and any(ch.isdigit() for ch in text)
+
 
 def _mask_token(token: str) -> str:
     """Mask a token, preserving prefix for long tokens."""
@@ -123,6 +191,8 @@ def redact_sensitive_text(text: str) -> str:
     if not text:
         return text
     if not _REDACT_ENABLED:
+        return text
+    if not _may_contain_sensitive_markers(text):
         return text
 
     # Known prefixes (sk-, ghp_, etc.)

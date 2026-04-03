@@ -417,19 +417,30 @@ def _load_gateway_config() -> dict:
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
-    """Read model from config.yaml — single source of truth.
+    """Resolve the active gateway model.
 
-    Without this, temporary AIAgent instances (memory flush, /compress) fall
-    back to the hardcoded default which fails when the active provider is
-    openai-codex.
+    Precedence matches the documented gateway behavior:
+    1. ``HERMES_MODEL`` explicit override
+    2. ``model`` in config.yaml
+    3. ``LLM_MODEL`` fallback when config has no model
+
+    This keeps long-lived gateway helpers (memory flush, /compress, internal
+    retries) aligned with the active runtime provider, including Codex flows.
     """
+    env_model = os.getenv("HERMES_MODEL", "").strip()
+    if env_model:
+        return env_model
+
     cfg = config if config is not None else _load_gateway_config()
     model_cfg = cfg.get("model", {})
-    if isinstance(model_cfg, str):
-        return model_cfg
-    elif isinstance(model_cfg, dict):
-        return model_cfg.get("default") or model_cfg.get("model") or ""
-    return ""
+    if isinstance(model_cfg, str) and model_cfg.strip():
+        return model_cfg.strip()
+    if isinstance(model_cfg, dict):
+        configured = model_cfg.get("default") or model_cfg.get("model") or ""
+        if isinstance(configured, str) and configured.strip():
+            return configured.strip()
+
+    return os.getenv("LLM_MODEL", "").strip()
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
