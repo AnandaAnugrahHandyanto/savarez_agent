@@ -502,6 +502,36 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 [#F29C38]⠀⠀⠀⠀⠀⠀⠀⣼⡟⠀⠀⢻⣧⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [dim #7A3511]⠀⠀⠀⠀⠀⠀⠀tail flame lit⠀⠀⠀⠀⠀⠀⠀⠀[/]""",
     },
+    "light": {
+        "name": "light",
+        "description": "Light mode — dark text for light/cream terminal backgrounds",
+        "colors": {
+            "banner_border": "#8B6914",
+            "banner_title": "#5C3D11",
+            "banner_accent": "#8B4513",
+            "banner_dim": "#8B7355",
+            "banner_text": "#2C1810",
+            "ui_accent": "#8B4513",
+            "ui_label": "#5C3D11",
+            "ui_ok": "#2E7D32",
+            "ui_error": "#C62828",
+            "ui_warn": "#E65100",
+            "prompt": "#2C1810",
+            "input_rule": "#8B6914",
+            "response_border": "#8B6914",
+            "session_label": "#5C3D11",
+            "session_border": "#A0845C",
+        },
+        "branding": {
+            "agent_name": "Hermes",
+            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
+            "goodbye": "Goodbye! ✦",
+            "response_label": " ✦ Hermes ",
+            "prompt_symbol": "❯ ",
+            "help_header": "✦ Available Commands",
+        },
+        "tool_prefix": "╎",
+    },
 }
 
 
