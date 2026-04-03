@@ -308,7 +308,7 @@ def _deliver_result(job: dict, content: str) -> None:
         pconfig,
         chat_id,
         cleaned_delivery_content,
-        thread_id.  = thread_id,
+        thread_id   = thread_id,
         media_files = media_files,
     )
     try:
