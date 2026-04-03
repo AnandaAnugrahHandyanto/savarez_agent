@@ -42,6 +42,10 @@ _PROFILE_DIRS = [
     "plans",
     "workspace",
     "cron",
+    # Per-profile HOME directory: isolates system tool configs (git, ssh, gh,
+    # npm, etc.) so credentials and settings don't bleed between profiles or
+    # leak outside the persistent volume in Docker. See issue #4426.
+    "home",
 ]
 
 # Files copied during --clone (if they exist in the source)
@@ -1052,3 +1056,56 @@ def resolve_profile_env(profile_name: str) -> str:
         )
 
     return str(profile_dir)
+
+
+def get_profile_home_dir(profile_dir: Path) -> Path:
+    """Return the per-profile HOME directory path.
+
+    Each profile gets its own ``home/`` subdirectory so system tools
+    (git, ssh, gh, npm, etc.) write their configs there instead of to
+    the OS-level ``/root`` or ``~``.  In Docker this directory lands inside
+    the persistent volume, so tool configuration survives container restarts.
+
+    Args:
+        profile_dir: The resolved HERMES_HOME for the profile.
+
+    Returns:
+        ``profile_dir / "home"`` — created on demand if it doesn't exist.
+    """
+    home_dir = profile_dir / "home"
+    home_dir.mkdir(parents=True, exist_ok=True)
+    return home_dir
+
+
+def apply_profile_home_isolation(profile_dir: Path) -> Optional[Path]:
+    """Set ``HOME`` in the current process environment to the per-profile dir.
+
+    This isolates system-level tool configuration (git, ssh, gh, npm, etc.)
+    so credentials and settings don't bleed between profiles or leak outside
+    the persistent volume in Docker.  See issue #4426.
+
+    The override is intentionally skipped when ``HOME`` is already set in the
+    profile's ``.env`` file — explicit user config takes precedence.
+
+    Args:
+        profile_dir: The resolved HERMES_HOME for the profile.
+
+    Returns:
+        The path that HOME was set to, or None if skipped.
+    """
+    # Respect an explicit HOME= in the profile's .env file.
+    # We peek at the file directly (dotenv not yet loaded at call time).
+    env_file = profile_dir / ".env"
+    if env_file.exists():
+        try:
+            for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("HOME=") and not stripped.startswith("#"):
+                    # User explicitly configured HOME — don't override.
+                    return None
+        except OSError:
+            pass
+
+    home_dir = get_profile_home_dir(profile_dir)
+    os.environ["HOME"] = str(home_dir)
+    return home_dir

@@ -109,10 +109,24 @@ def _apply_profile_override() -> None:
         except (UnicodeDecodeError, OSError):
             pass  # corrupted file, skip
 
-    # 3. If we found a profile, resolve and set HERMES_HOME
+    # 3a. Apply HOME isolation for the default profile (no named profile active).
+    #     Isolate HOME to {HERMES_HOME}/home/ so system tools (git, ssh, gh,
+    #     npm) write configs inside the Hermes data directory instead of /root
+    #     or the OS home dir.  This keeps the default profile's tool configs
+    #     inside the Docker persistent volume.  (#4426)
+    if profile_name is None:
+        try:
+            from hermes_cli.profiles import apply_profile_home_isolation as _isolate_home
+            import os as _os
+            _default_home = Path.home() / ".hermes"
+            _isolate_home(_default_home)
+        except Exception:
+            pass  # HOME isolation must never block startup
+
+    # 3b. If we found a named profile, resolve and set HERMES_HOME
     if profile_name is not None:
         try:
-            from hermes_cli.profiles import resolve_profile_env
+            from hermes_cli.profiles import resolve_profile_env, apply_profile_home_isolation
             hermes_home = resolve_profile_env(profile_name)
         except (ValueError, FileNotFoundError) as exc:
             print(f"Error: {exc}", file=sys.stderr)
@@ -122,6 +136,15 @@ def _apply_profile_override() -> None:
             print(f"Warning: profile override failed ({exc}), using default", file=sys.stderr)
             return
         os.environ["HERMES_HOME"] = hermes_home
+        # Isolate HOME to the profile directory so system tools (git, ssh,
+        # gh, npm) write configs there instead of /root or ~/.  This keeps
+        # credentials separate between profiles and ensures Docker volumes
+        # persist tool configuration across container restarts. (#4426)
+        try:
+            from pathlib import Path as _Path
+            apply_profile_home_isolation(_Path(hermes_home))
+        except Exception as exc:
+            print(f"Warning: HOME isolation failed ({exc}), using system HOME", file=sys.stderr)
         # Strip the flag from argv so argparse doesn't choke
         if consume > 0:
             for i, arg in enumerate(argv):

@@ -9,7 +9,13 @@ INSTALL_DIR="/opt/hermes"
 # (cache/images, cache/audio, platforms/whatsapp, etc.) are created on
 # demand by the application — don't pre-create them here so new installs
 # get the consolidated layout from get_hermes_dir().
-mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills}
+#
+# The "home/" subdirectory is the per-profile HOME for system tools (git,
+# ssh, gh, npm etc.).  Without it those tools would write to /root which is
+# ephemeral in Docker and shared across profiles.  Bootstrapping it here
+# ensures the directory exists inside the persistent volume before Hermes
+# sets HOME=$HERMES_HOME/home on startup.  See issue #4426.
+mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,home}
 
 # .env
 if [ ! -f "$HERMES_HOME/.env" ]; then

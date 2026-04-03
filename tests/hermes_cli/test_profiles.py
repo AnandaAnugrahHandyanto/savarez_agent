@@ -30,8 +30,11 @@ from hermes_cli.profiles import (
     import_profile,
     generate_bash_completion,
     generate_zsh_completion,
+    get_profile_home_dir,
+    apply_profile_home_isolation,
     _get_profiles_root,
     _get_default_hermes_home,
+    _PROFILE_DIRS,
 )
 
 
@@ -798,3 +801,108 @@ class TestEdgeCases:
             delete_profile("coder", yes=True)
 
         assert get_active_profile() == "default"
+
+
+# ===================================================================
+# TestPerProfileHomeIsolation — issue #4426
+# ===================================================================
+
+class TestPerProfileHomeIsolation:
+    """Tests for per-profile HOME isolation (#4426).
+
+    Profiles must isolate system tool configs (git, ssh, gh, npm …) so
+    credentials don't bleed between profiles or leak outside the Docker
+    persistent volume.
+    """
+
+    # ------------------------------------------------------------------
+    # get_profile_home_dir
+    # ------------------------------------------------------------------
+
+    def test_home_dir_created_inside_profile(self, profile_env, tmp_path):
+        """get_profile_home_dir() creates {profile_dir}/home/ on demand."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
+        home_dir = get_profile_home_dir(profile_dir)
+        assert home_dir == profile_dir / "home"
+        assert home_dir.is_dir()
+
+    def test_home_dir_idempotent(self, profile_env, tmp_path):
+        """Calling get_profile_home_dir() twice doesn't raise."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
+        first = get_profile_home_dir(profile_dir)
+        second = get_profile_home_dir(profile_dir)
+        assert first == second
+
+    # ------------------------------------------------------------------
+    # _PROFILE_DIRS includes "home"
+    # ------------------------------------------------------------------
+
+    def test_profile_dirs_includes_home(self):
+        """home/ must be bootstrapped with every new profile."""
+        assert "home" in _PROFILE_DIRS
+
+    def test_create_profile_bootstraps_home_dir(self, profile_env):
+        """create_profile() must create a home/ subdirectory."""
+        profile_dir = create_profile("newbot", no_alias=True)
+        assert (profile_dir / "home").is_dir()
+
+    # ------------------------------------------------------------------
+    # apply_profile_home_isolation
+    # ------------------------------------------------------------------
+
+    def test_apply_sets_home_env_var(self, profile_env, tmp_path, monkeypatch):
+        """apply_profile_home_isolation() sets os.environ['HOME']."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
+        result = apply_profile_home_isolation(profile_dir)
+        assert result == profile_dir / "home"
+        assert os.environ["HOME"] == str(profile_dir / "home")
+
+    def test_apply_creates_home_dir_if_missing(self, profile_env, tmp_path, monkeypatch):
+        """apply_profile_home_isolation() creates home/ for existing profiles without it."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "legacy"
+        profile_dir.mkdir(parents=True)
+        # No home/ yet — simulates a profile created before the fix
+        assert not (profile_dir / "home").exists()
+        apply_profile_home_isolation(profile_dir)
+        assert (profile_dir / "home").is_dir()
+
+    def test_apply_skips_when_env_sets_home(self, profile_env, tmp_path, monkeypatch):
+        """apply_profile_home_isolation() must not override HOME from .env file."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
+        # Write a .env that explicitly sets HOME
+        (profile_dir / ".env").write_text("HOME=/custom/home\n")
+        original_home = os.environ.get("HOME", "")
+        result = apply_profile_home_isolation(profile_dir)
+        assert result is None
+        # HOME must NOT have been changed by our code
+        assert os.environ.get("HOME", "") == original_home
+
+    def test_apply_skips_commented_home_in_env(self, profile_env, tmp_path, monkeypatch):
+        """Commented HOME= lines in .env must not suppress isolation."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / ".env").write_text("# HOME=/custom/home\n")
+        result = apply_profile_home_isolation(profile_dir)
+        assert result == profile_dir / "home"
+
+    def test_apply_no_env_file_still_isolates(self, profile_env, tmp_path, monkeypatch):
+        """apply_profile_home_isolation() works with no .env file present."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "bare"
+        profile_dir.mkdir(parents=True)
+        result = apply_profile_home_isolation(profile_dir)
+        assert result == profile_dir / "home"
+        assert os.environ["HOME"] == str(profile_dir / "home")
+
+    def test_different_profiles_get_different_homes(self, profile_env, tmp_path, monkeypatch):
+        """Two profiles must have different HOME paths."""
+        dir_a = tmp_path / ".hermes" / "profiles" / "alpha"
+        dir_b = tmp_path / ".hermes" / "profiles" / "beta"
+        dir_a.mkdir(parents=True)
+        dir_b.mkdir(parents=True)
+        home_a = get_profile_home_dir(dir_a)
+        home_b = get_profile_home_dir(dir_b)
+        assert home_a != home_b
