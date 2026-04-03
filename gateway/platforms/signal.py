@@ -118,6 +118,23 @@ def _ext_to_mime(ext: str) -> str:
     return _EXT_TO_MIME.get(ext.lower(), "application/octet-stream")
 
 
+def _file_to_data_uri(file_path: str, mime_type: str) -> str:
+    """Encode a local file as a filename-less data URI for Signal attachments."""
+    raw = Path(file_path).read_bytes()
+    encoded = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def _coerce_timestamp(value: Any) -> Optional[int]:
+    """Normalize timestamp-like values to Signal millisecond integers."""
+    if value in (None, ""):
+        return None
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _render_mentions(text: str, mentions: list) -> str:
     """Replace Signal mention placeholders (\\uFFFC) with readable @identifiers.
 
@@ -189,6 +206,14 @@ class SignalAdapter(BasePlatformAdapter):
         logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
                      self.http_url, _redact_phone(self.account),
                      "enabled" if self.group_allow_from else "disabled")
+
+    def get_default_reply_target(self, event: MessageEvent) -> Optional[str]:
+        """Signal should only use native quote replies when the agent opts in."""
+        return None
+
+    def requires_reply_context_metadata(self) -> bool:
+        """Signal quote replies need author/text metadata in the send payload."""
+        return True
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -450,6 +475,10 @@ class SignalAdapter(BasePlatformAdapter):
         if not data_message:
             return
 
+        # Reaction events are transport state, not chat prompts for Hermes.
+        if data_message.get("reaction") and not data_message.get("message") and not data_message.get("attachments"):
+            return
+
         # Check for group message
         group_info = data_message.get("groupInfo")
         group_id = group_info.get("groupId") if group_info else None
@@ -477,6 +506,10 @@ class SignalAdapter(BasePlatformAdapter):
         mentions = data_message.get("mentions", [])
         if text and mentions:
             text = _render_mentions(text, mentions)
+
+        quote_data = data_message.get("quote") if isinstance(data_message.get("quote"), dict) else {}
+        reply_to_id = str(quote_data.get("id")) if quote_data.get("id") is not None else None
+        reply_to_text = str(quote_data.get("text") or "").strip() or None
 
         # Process attachments
         attachments_data = data_message.get("attachments", [])
@@ -536,8 +569,12 @@ class SignalAdapter(BasePlatformAdapter):
             source=source,
             text=text or "",
             message_type=msg_type,
+            raw_message=envelope_data,
+            message_id=str(ts_ms) if ts_ms else None,
             media_urls=media_urls,
             media_types=media_types,
+            reply_to_message_id=reply_to_id,
+            reply_to_text=reply_to_text,
             timestamp=timestamp,
         )
 
@@ -633,21 +670,19 @@ class SignalAdapter(BasePlatformAdapter):
         """Send a text message."""
         await self._stop_typing_indicator(chat_id)
 
-        params: Dict[str, Any] = {
-            "account": self.account,
-            "message": content,
-        }
-
-        if chat_id.startswith("group:"):
-            params["groupId"] = chat_id[6:]
-        else:
-            params["recipient"] = [chat_id]
+        params = self._build_send_params(
+            chat_id=chat_id,
+            message=content,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
         result = await self._rpc("send", params)
 
         if result is not None:
             self._track_sent_timestamp(result)
-            return SendResult(success=True)
+            message_id = str(result.get("timestamp")) if isinstance(result, dict) and result.get("timestamp") else None
+            return SendResult(success=True, message_id=message_id, raw_response=result)
         return SendResult(success=False, error="RPC send failed")
 
     def _track_sent_timestamp(self, rpc_result) -> None:
@@ -658,16 +693,54 @@ class SignalAdapter(BasePlatformAdapter):
             if len(self._recent_sent_timestamps) > self._max_recent_timestamps:
                 self._recent_sent_timestamps.pop()
 
-    async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Send a typing indicator."""
+    @staticmethod
+    def _reply_author_from_metadata(metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+        """Resolve the best Signal author identifier for quote/reaction targeting."""
+        if not metadata:
+            return None
+        return metadata.get("reply_to_author") or metadata.get("reply_to_author_alt")
+
+    def _build_recipient_params(self, chat_id: str) -> Dict[str, Any]:
+        """Build destination parameters for a DM or Signal group."""
+        if chat_id.startswith("group:"):
+            return {"groupId": chat_id[6:]}
+        return {"recipient": [chat_id]}
+
+    def _build_send_params(
+        self,
+        chat_id: str,
+        *,
+        message: str = "",
+        attachments: Optional[List[str]] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Build a Signal send payload, including quote metadata when available."""
         params: Dict[str, Any] = {
             "account": self.account,
+            "message": message,
+            **self._build_recipient_params(chat_id),
         }
+        if attachments:
+            params["attachments"] = attachments
 
-        if chat_id.startswith("group:"):
-            params["groupId"] = chat_id[6:]
-        else:
-            params["recipient"] = [chat_id]
+        quote_timestamp = _coerce_timestamp(reply_to)
+        if not quote_timestamp and metadata:
+            quote_timestamp = _coerce_timestamp(metadata.get("reply_to_message_id"))
+        quote_author = self._reply_author_from_metadata(metadata)
+        quote_text = metadata.get("reply_to_text") if metadata else None
+
+        if quote_timestamp and quote_author:
+            params["quoteTimestamp"] = quote_timestamp
+            params["quoteAuthor"] = quote_author
+            if quote_text:
+                params["quoteMessage"] = str(quote_text)[:MAX_MESSAGE_LENGTH]
+
+        return params
+
+    async def send_typing(self, chat_id: str, metadata=None) -> None:
+        """Send a typing indicator."""
+        params: Dict[str, Any] = {"account": self.account, **self._build_recipient_params(chat_id)}
 
         await self._rpc("sendTyping", params, rpc_id="typing")
 
@@ -676,6 +749,8 @@ class SignalAdapter(BasePlatformAdapter):
         chat_id: str,
         image_url: str,
         caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send an image. Supports http(s):// and file:// URLs."""
@@ -700,21 +775,19 @@ class SignalAdapter(BasePlatformAdapter):
         if file_size > SIGNAL_MAX_ATTACHMENT_SIZE:
             return SendResult(success=False, error=f"Image too large ({file_size} bytes)")
 
-        params: Dict[str, Any] = {
-            "account": self.account,
-            "message": caption or "",
-            "attachments": [file_path],
-        }
-
-        if chat_id.startswith("group:"):
-            params["groupId"] = chat_id[6:]
-        else:
-            params["recipient"] = [chat_id]
+        params = self._build_send_params(
+            chat_id=chat_id,
+            message=caption or "",
+            attachments=[file_path],
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
         result = await self._rpc("send", params)
         if result is not None:
             self._track_sent_timestamp(result)
-            return SendResult(success=True)
+            message_id = str(result.get("timestamp")) if isinstance(result, dict) and result.get("timestamp") else None
+            return SendResult(success=True, message_id=message_id, raw_response=result)
         return SendResult(success=False, error="RPC send with attachment failed")
 
     async def send_document(
@@ -723,6 +796,8 @@ class SignalAdapter(BasePlatformAdapter):
         file_path: str,
         caption: Optional[str] = None,
         filename: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send a document/file attachment."""
@@ -731,22 +806,62 @@ class SignalAdapter(BasePlatformAdapter):
         if not Path(file_path).exists():
             return SendResult(success=False, error="File not found")
 
-        params: Dict[str, Any] = {
-            "account": self.account,
-            "message": caption or "",
-            "attachments": [file_path],
-        }
-
-        if chat_id.startswith("group:"):
-            params["groupId"] = chat_id[6:]
-        else:
-            params["recipient"] = [chat_id]
+        params = self._build_send_params(
+            chat_id=chat_id,
+            message=caption or "",
+            attachments=[file_path],
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
         result = await self._rpc("send", params)
         if result is not None:
             self._track_sent_timestamp(result)
-            return SendResult(success=True)
+            message_id = str(result.get("timestamp")) if isinstance(result, dict) and result.get("timestamp") else None
+            return SendResult(success=True, message_id=message_id, raw_response=result)
         return SendResult(success=False, error="RPC send document failed")
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send voice/audio via stock signal-cli without a filename title."""
+        await self._stop_typing_indicator(chat_id)
+
+        audio_file = Path(audio_path)
+        if not audio_file.exists():
+            return SendResult(success=False, error="Audio file not found")
+
+        file_size = audio_file.stat().st_size
+        if file_size > SIGNAL_MAX_ATTACHMENT_SIZE:
+            return SendResult(success=False, error=f"Audio too large ({file_size} bytes)")
+
+        mime_type = _ext_to_mime(audio_file.suffix or "")
+        try:
+            attachment = _file_to_data_uri(str(audio_file), mime_type)
+        except Exception as e:
+            logger.warning("Signal: failed to encode voice attachment as data URI: %s", e)
+            return SendResult(success=False, error=str(e))
+
+        params = self._build_send_params(
+            chat_id=chat_id,
+            message=caption or "",
+            attachments=[attachment],
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+        result = await self._rpc("send", params)
+        if result is not None:
+            self._track_sent_timestamp(result)
+            message_id = str(result.get("timestamp")) if isinstance(result, dict) and result.get("timestamp") else None
+            return SendResult(success=True, message_id=message_id, raw_response=result)
+        return SendResult(success=False, error="RPC send voice failed")
 
     # ------------------------------------------------------------------
     # Typing Indicators

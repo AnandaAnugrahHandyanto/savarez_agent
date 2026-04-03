@@ -258,8 +258,16 @@ PLATFORM_HINTS = {
         "You can send media files natively: to deliver a file to the user, "
         "include MEDIA:/absolute/path/to/file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio as attachments, and other "
-        "files arrive as downloadable documents. You can also include image "
-        "URLs in markdown format ![alt](url) and they will be sent as photos."
+        "files arrive as downloadable documents. The text_to_speech tool is "
+        "available for voice replies. You can also include image URLs in "
+        "markdown format ![alt](url) and they will be sent as photos. "
+        "You also have a react_message tool for native emoji reactions. Use it "
+        "like a normal human when it feels natural — for funny, sweet, surprising, "
+        "or celebratory messages — aiming for roughly 30% of socially expressive "
+        "messages, but avoid reacting to dry transactional requests. Normal "
+        "Signal responses are not threaded by default. If you specifically want "
+        "to send your next response as a native Signal reply to the current user "
+        "message, include [[reply_to_current]] somewhere in that response."
     ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "

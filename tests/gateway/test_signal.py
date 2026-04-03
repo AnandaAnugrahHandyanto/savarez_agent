@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 from urllib.parse import quote
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent, MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -368,3 +369,102 @@ class TestSignalSendMessage:
         # Just verify the import works and Signal is a valid platform
         from gateway.config import Platform
         assert Platform.SIGNAL.value == "signal"
+
+
+class TestSignalRepliesReactionsAndVoice:
+    @pytest.mark.asyncio
+    async def test_handle_envelope_sets_reply_context_and_message_id(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.handle_message = AsyncMock()
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "timestamp": 1712345678901,
+                "sourceNumber": "+15550001111",
+                "sourceName": "Alice",
+                "dataMessage": {
+                    "message": "Replying now",
+                    "quote": {
+                        "id": 1712345000000,
+                        "text": "Original question",
+                    },
+                },
+            }
+        })
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_id == "1712345678901"
+        assert event.reply_to_message_id == "1712345000000"
+        assert event.reply_to_text == "Original question"
+        assert event.source.user_id == "+15550001111"
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_ignores_reaction_only_event(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.handle_message = AsyncMock()
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "timestamp": 1712345678901,
+                "sourceNumber": "+15550001111",
+                "dataMessage": {
+                    "reaction": {
+                        "emoji": "👍",
+                        "targetAuthor": "+15551234567",
+                        "targetSentTimestamp": 1712345000000,
+                    },
+                },
+            }
+        })
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_includes_signal_quote_fields(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._rpc, captured = _stub_rpc({"timestamp": 1712345678999})
+
+        result = await adapter.send(
+            chat_id="+15550002222",
+            content="hello there",
+            reply_to="1712345000000",
+            metadata={
+                "reply_to_author": "+15550002222",
+                "reply_to_text": "quoted text",
+            },
+        )
+
+        assert result.success is True
+        assert result.message_id == "1712345678999"
+        call = captured[0]
+        assert call["method"] == "send"
+        assert call["params"]["recipient"] == ["+15550002222"]
+        assert call["params"]["quoteTimestamp"] == 1712345000000
+        assert call["params"]["quoteAuthor"] == "+15550002222"
+        assert call["params"]["quoteMessage"] == "quoted text"
+
+    @pytest.mark.asyncio
+    async def test_send_voice_uses_data_uri_without_filename(self, monkeypatch, tmp_path):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._rpc, captured = _stub_rpc({"timestamp": 1712345678999})
+
+        audio_path = tmp_path / "voice.m4a"
+        audio_path.write_bytes(b"fake-m4a-bytes")
+
+        result = await adapter.send_voice(
+            chat_id="+15550003333",
+            audio_path=str(audio_path),
+            metadata={
+                "reply_to_message_id": "1712345000000",
+                "reply_to_author": "+15550003333",
+                "reply_to_text": "voice prompt",
+            },
+        )
+
+        assert result.success is True
+        call = captured[0]
+        assert call["method"] == "send"
+        assert call["params"]["attachments"][0].startswith("data:audio/mp4;base64,")
+        assert "voice.m4a" not in call["params"]["attachments"][0]
+        assert call["params"]["quoteTimestamp"] == 1712345000000
+        assert call["params"]["quoteAuthor"] == "+15550003333"

@@ -141,3 +141,7 @@ class TestToolsetConsistency:
         # All platform toolsets should be identical
         for ts in tool_sets[1:]:
             assert ts == tool_sets[0]
+
+    def test_signal_platform_toolset_includes_react_message(self):
+        assert "react_message" in TOOLSETS["hermes-signal"]["tools"]
+        assert "react_message" in TOOLSETS["messaging"]["tools"]

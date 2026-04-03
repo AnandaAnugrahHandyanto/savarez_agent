@@ -555,6 +555,19 @@ class BasePlatformAdapter(ABC):
         """
         pass
 
+    def get_default_reply_target(self, event: MessageEvent) -> Optional[str]:
+        """Return the platform's default reply target for normal assistant responses.
+
+        Most messaging adapters keep the existing Hermes behavior of replying to
+        the inbound message by default. Platforms can override this to opt out
+        and rely on explicit agent directives instead.
+        """
+        return event.message_id
+
+    def requires_reply_context_metadata(self) -> bool:
+        """Whether reply delivery needs author/text metadata in addition to reply_to."""
+        return False
+
     async def edit_message(
         self,
         chat_id: str,
@@ -1146,6 +1159,19 @@ class BasePlatformAdapter(ABC):
             if getattr(result, "success", False):
                 delivery_succeeded = True
 
+        def _build_response_metadata(include_reply_context: bool = False) -> Optional[Dict[str, Any]]:
+            metadata: Dict[str, Any] = {}
+            if event.source.thread_id:
+                metadata["thread_id"] = event.source.thread_id
+            if include_reply_context and event.message_id:
+                metadata["reply_to_message_id"] = event.message_id
+                metadata["reply_to_author"] = event.source.user_id
+                if event.source.user_id_alt:
+                    metadata["reply_to_author_alt"] = event.source.user_id_alt
+            if include_reply_context and event.text:
+                metadata["reply_to_text"] = event.text[:1000]
+            return metadata or None
+
         # Reuse the interrupt event set by handle_message() (which marks
         # the session active before spawning this task to prevent races).
         # Fall back to a new Event only if the entry was removed externally.
@@ -1153,7 +1179,7 @@ class BasePlatformAdapter(ABC):
         self._active_sessions[session_key] = interrupt_event
         
         # Start continuous typing indicator (refreshes every 2 seconds)
-        _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        _thread_metadata = _build_response_metadata()
         typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id, metadata=_thread_metadata))
         
         try:
@@ -1171,11 +1197,20 @@ class BasePlatformAdapter(ABC):
             if response:
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
+                force_reply_to_current = "[[reply_to_current]]" in response
+                default_reply_to = self.get_default_reply_target(event)
+                reply_target = event.message_id if force_reply_to_current else default_reply_to
+                delivery_metadata = _build_response_metadata(
+                    include_reply_context=bool(
+                        reply_target and self.requires_reply_context_metadata()
+                    )
+                )
                 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
                 # Strip any remaining internal directives from message body (fixes #1561)
                 text_content = text_content.replace("[[audio_as_voice]]", "").strip()
+                text_content = text_content.replace("[[reply_to_current]]", "").strip()
                 text_content = re.sub(r"MEDIA:\s*\S+", "", text_content).strip()
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
@@ -1211,11 +1246,13 @@ class BasePlatformAdapter(ABC):
                 # Play TTS audio before text (voice-first experience)
                 if _tts_path and Path(_tts_path).exists():
                     try:
-                        await self.play_tts(
+                        tts_result = await self.play_tts(
                             chat_id=event.source.chat_id,
                             audio_path=_tts_path,
-                            metadata=_thread_metadata,
+                            reply_to=reply_target,
+                            metadata=delivery_metadata,
                         )
+                        _record_delivery(tts_result)
                     finally:
                         try:
                             os.remove(_tts_path)
@@ -1228,8 +1265,8 @@ class BasePlatformAdapter(ABC):
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
-                        reply_to=event.message_id,
-                        metadata=_thread_metadata,
+                        reply_to=reply_target,
+                        metadata=delivery_metadata,
                     )
                     _record_delivery(result)
 
@@ -1250,15 +1287,18 @@ class BasePlatformAdapter(ABC):
                                 chat_id=event.source.chat_id,
                                 animation_url=image_url,
                                 caption=alt_text if alt_text else None,
-                                metadata=_thread_metadata,
+                                reply_to=reply_target,
+                                metadata=delivery_metadata,
                             )
                         else:
                             img_result = await self.send_image(
                                 chat_id=event.source.chat_id,
                                 image_url=image_url,
                                 caption=alt_text if alt_text else None,
-                                metadata=_thread_metadata,
+                                reply_to=reply_target,
+                                metadata=delivery_metadata,
                             )
+                        _record_delivery(img_result)
                         if not img_result.success:
                             logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
                     except Exception as img_err:
@@ -1278,27 +1318,32 @@ class BasePlatformAdapter(ABC):
                             media_result = await self.send_voice(
                                 chat_id=event.source.chat_id,
                                 audio_path=media_path,
-                                metadata=_thread_metadata,
+                                reply_to=reply_target,
+                                metadata=delivery_metadata,
                             )
                         elif ext in _VIDEO_EXTS:
                             media_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=media_path,
-                                metadata=_thread_metadata,
+                                reply_to=reply_target,
+                                metadata=delivery_metadata,
                             )
                         elif ext in _IMAGE_EXTS:
                             media_result = await self.send_image_file(
                                 chat_id=event.source.chat_id,
                                 image_path=media_path,
-                                metadata=_thread_metadata,
+                                reply_to=reply_target,
+                                metadata=delivery_metadata,
                             )
                         else:
                             media_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=media_path,
-                                metadata=_thread_metadata,
+                                reply_to=reply_target,
+                                metadata=delivery_metadata,
                             )
 
+                        _record_delivery(media_result)
                         if not media_result.success:
                             logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
                     except Exception as media_err:
@@ -1311,23 +1356,27 @@ class BasePlatformAdapter(ABC):
                     try:
                         ext = Path(file_path).suffix.lower()
                         if ext in _IMAGE_EXTS:
-                            await self.send_image_file(
+                            file_result = await self.send_image_file(
                                 chat_id=event.source.chat_id,
                                 image_path=file_path,
-                                metadata=_thread_metadata,
+                                reply_to=reply_target,
+                                metadata=delivery_metadata,
                             )
                         elif ext in _VIDEO_EXTS:
-                            await self.send_video(
+                            file_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,
-                                metadata=_thread_metadata,
+                                reply_to=reply_target,
+                                metadata=delivery_metadata,
                             )
                         else:
-                            await self.send_document(
+                            file_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=file_path,
-                                metadata=_thread_metadata,
+                                reply_to=reply_target,
+                                metadata=delivery_metadata,
                             )
+                        _record_delivery(file_result)
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
 
@@ -1361,7 +1410,7 @@ class BasePlatformAdapter(ABC):
             try:
                 error_type = type(e).__name__
                 error_detail = str(e)[:300] if str(e) else "no details available"
-                _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                _thread_metadata = _build_response_metadata()
                 await self.send(
                     chat_id=event.source.chat_id,
                     content=(

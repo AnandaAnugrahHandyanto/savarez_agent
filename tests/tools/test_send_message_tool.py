@@ -8,8 +8,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from gateway.config import Platform
-from tools.send_message_tool import _send_telegram, _send_to_platform, send_message_tool
+from tools.send_message_tool import _react_on_platform, _react_signal, _send_telegram, _send_to_platform, react_message_tool, send_message_tool
 
 
 def _run_async_immediately(coro):
@@ -238,6 +240,53 @@ class TestSendMessageTool:
             thread_id=None,
         )
 
+    def test_react_message_defaults_to_current_signal_session(self):
+        signal_cfg = SimpleNamespace(enabled=True, token=None, extra={"http_url": "http://localhost:8080", "account": "+14322517430"})
+        config = SimpleNamespace(
+            platforms={Platform.SIGNAL: signal_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_SESSION_PLATFORM": "signal",
+                "HERMES_SESSION_CHAT_ID": "+15551230000",
+                "HERMES_SESSION_MESSAGE_ID": "1712345000000",
+                "HERMES_SESSION_USER_ID": "+15551230000",
+            },
+            clear=False,
+        ), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._react_on_platform", new=AsyncMock(return_value={"success": True, "emoji": "😂"})) as react_mock:
+            result = json.loads(
+                react_message_tool(
+                    {
+                        "emoji": "😂",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        react_mock.assert_awaited_once_with(
+            Platform.SIGNAL,
+            signal_cfg,
+            "+15551230000",
+            message_id="1712345000000",
+            emoji="😂",
+            author_id="+15551230000",
+            thread_id=None,
+            remove=False,
+        )
+
+    def test_react_message_requires_current_message_context(self):
+        with patch.dict(os.environ, {}, clear=True):
+            result = json.loads(react_message_tool({"emoji": "😂"}))
+
+        assert "error" in result
+        assert "No active session target" in result["error"] or "No target message_id" in result["error"]
+
 
 class TestSendTelegramMediaDelivery:
     def test_sends_text_then_photo_for_media_tag(self, tmp_path, monkeypatch):
@@ -345,6 +394,77 @@ class TestSendTelegramMediaDelivery:
         assert "error" in result
         assert "No deliverable text or media remained" in result["error"]
         bot.send_message.assert_not_awaited()
+
+
+class TestSignalReactHelper:
+    def test_react_on_platform_routes_signal(self):
+        signal_cfg = SimpleNamespace(enabled=True, token=None, extra={"http_url": "http://localhost:8080", "account": "+14322517430"})
+
+        with patch("tools.send_message_tool._react_signal", new=AsyncMock(return_value={"success": True, "emoji": "😂"})) as react_mock:
+            result = asyncio.run(
+                _react_on_platform(
+                    Platform.SIGNAL,
+                    signal_cfg,
+                    "+15551230000",
+                    message_id="1712345000000",
+                    emoji="😂",
+                    author_id="+15551230000",
+                    remove=False,
+                )
+            )
+
+        assert result["success"] is True
+        react_mock.assert_awaited_once_with(
+            signal_cfg.extra,
+            "+15551230000",
+            "1712345000000",
+            "😂",
+            "+15551230000",
+            remove=False,
+        )
+
+    def test_send_signal_reaction_rpc_payload(self):
+        httpx = pytest.importorskip("httpx")
+        captured = {}
+
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"result": {"ok": True}}
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def post(self, url, json):
+                captured["url"] = url
+                captured["json"] = json
+                return _Response()
+
+        with patch.object(httpx, "AsyncClient", _Client):
+            result = asyncio.run(
+                _react_signal(
+                    {"http_url": "http://localhost:8080", "account": "+14322517430"},
+                    "+15551230000",
+                    "1712345000000",
+                    "😂",
+                    "+15551230000",
+                )
+            )
+
+        assert result["success"] is True
+        assert captured["json"]["method"] == "sendReaction"
+        assert captured["json"]["params"]["emoji"] == "😂"
+        assert captured["json"]["params"]["targetAuthor"] == "+15551230000"
+        assert captured["json"]["params"]["targetTimestamp"] == 1712345000000
 
 
 # ---------------------------------------------------------------------------

@@ -769,6 +769,13 @@ class TestPromptBuilderConstants:
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
 
+    def test_signal_platform_hint_mentions_reactions(self):
+        hint = PLATFORM_HINTS["signal"].lower()
+        assert "react_message" in hint
+        assert "30%" in hint
+        assert "text_to_speech" in hint
+        assert "[[reply_to_current]]" in hint
+
 
 # =========================================================================
 # Conditional skill activation

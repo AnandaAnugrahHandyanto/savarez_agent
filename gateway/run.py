@@ -2189,7 +2189,7 @@ class GatewayRunner:
         context = build_session_context(source, self.config, session_entry)
         
         # Set environment variables for tools
-        self._set_session_env(context)
+        self._set_session_env(context, event=event)
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
@@ -5555,7 +5555,7 @@ class GatewayRunner:
 
         return True
 
-    def _set_session_env(self, context: SessionContext) -> None:
+    def _set_session_env(self, context: SessionContext, event=None) -> None:
         """Set environment variables for the current session."""
         os.environ["HERMES_SESSION_PLATFORM"] = context.source.platform.value
         os.environ["HERMES_SESSION_CHAT_ID"] = context.source.chat_id
@@ -5563,10 +5563,25 @@ class GatewayRunner:
             os.environ["HERMES_SESSION_CHAT_NAME"] = context.source.chat_name
         if context.source.thread_id:
             os.environ["HERMES_SESSION_THREAD_ID"] = str(context.source.thread_id)
+        if event is not None:
+            if getattr(event, "message_id", None):
+                os.environ["HERMES_SESSION_MESSAGE_ID"] = str(event.message_id)
+            if getattr(context.source, "user_id", None):
+                os.environ["HERMES_SESSION_USER_ID"] = str(context.source.user_id)
+            if getattr(context.source, "user_id_alt", None):
+                os.environ["HERMES_SESSION_USER_ID_ALT"] = str(context.source.user_id_alt)
     
     def _clear_session_env(self) -> None:
         """Clear session environment variables."""
-        for var in ["HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID"]:
+        for var in [
+            "HERMES_SESSION_PLATFORM",
+            "HERMES_SESSION_CHAT_ID",
+            "HERMES_SESSION_CHAT_NAME",
+            "HERMES_SESSION_THREAD_ID",
+            "HERMES_SESSION_MESSAGE_ID",
+            "HERMES_SESSION_USER_ID",
+            "HERMES_SESSION_USER_ID_ALT",
+        ]:
             if var in os.environ:
                 del os.environ[var]
     

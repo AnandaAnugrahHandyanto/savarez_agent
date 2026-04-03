@@ -48,6 +48,18 @@ class DummyTelegramAdapter(BasePlatformAdapter):
         self.processing_hooks.append(("complete", event.message_id, success))
 
 
+class DummySignalAdapter(DummyTelegramAdapter):
+    def __init__(self):
+        super().__init__()
+        self.platform = Platform.SIGNAL
+
+    def get_default_reply_target(self, event: MessageEvent):
+        return None
+
+    def requires_reply_context_metadata(self) -> bool:
+        return True
+
+
 def _make_event(chat_id: str, thread_id: str, message_id: str = "1") -> MessageEvent:
     return MessageEvent(
         text="hello",
@@ -56,6 +68,7 @@ def _make_event(chat_id: str, thread_id: str, message_id: str = "1") -> MessageE
             chat_id=chat_id,
             chat_type="group",
             thread_id=thread_id,
+            user_id="+15550001111",
         ),
         message_id=message_id,
     )
@@ -143,6 +156,63 @@ class TestBasePlatformTopicSessions:
         assert adapter.processing_hooks == [
             ("start", "1"),
             ("complete", "1", True),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_process_message_background_signal_does_not_auto_reply(self):
+        adapter = DummySignalAdapter()
+
+        async def handler(_event):
+            await asyncio.sleep(0)
+            return "ack"
+
+        async def hold_typing(_chat_id, interval=2.0, metadata=None):
+            await asyncio.Event().wait()
+
+        adapter.set_message_handler(handler)
+        adapter._keep_typing = hold_typing
+
+        event = _make_event("-1001", "17585")
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert adapter.sent == [
+            {
+                "chat_id": "-1001",
+                "content": "ack",
+                "reply_to": None,
+                "metadata": {"thread_id": "17585"},
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_process_message_background_signal_reply_directive_forces_reply(self):
+        adapter = DummySignalAdapter()
+
+        async def handler(_event):
+            await asyncio.sleep(0)
+            return "[[reply_to_current]]\n\nack"
+
+        async def hold_typing(_chat_id, interval=2.0, metadata=None):
+            await asyncio.Event().wait()
+
+        adapter.set_message_handler(handler)
+        adapter._keep_typing = hold_typing
+
+        event = _make_event("-1001", "17585")
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert adapter.sent == [
+            {
+                "chat_id": "-1001",
+                "content": "ack",
+                "reply_to": "1",
+                "metadata": {
+                    "thread_id": "17585",
+                    "reply_to_message_id": "1",
+                    "reply_to_author": "+15550001111",
+                    "reply_to_text": "hello",
+                },
+            }
         ]
 
     @pytest.mark.asyncio

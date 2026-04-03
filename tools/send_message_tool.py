@@ -53,6 +53,42 @@ SEND_MESSAGE_SCHEMA = {
     }
 }
 
+REACT_MESSAGE_SCHEMA = {
+    "name": "react_message",
+    "description": (
+        "React to a message on a messaging platform with an emoji.\n\n"
+        "Use this for human-like reactions when it feels natural: funny messages, appreciation, surprise, agreement, etc.\n"
+        "Be sparing and socially normal. By default, this reacts to the current inbound message in the active session.\n"
+        "You may optionally override the target platform/chat/message details when needed."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "emoji": {
+                "type": "string",
+                "description": "Emoji to use for the reaction, for example '😂', '❤️', '🔥', '👍'."
+            },
+            "target": {
+                "type": "string",
+                "description": "Optional explicit delivery target, like 'signal:+15551234567'. If omitted, uses the current session chat."
+            },
+            "message_id": {
+                "type": "string",
+                "description": "Optional explicit target message id. If omitted, reacts to the current inbound message."
+            },
+            "author_id": {
+                "type": "string",
+                "description": "Optional explicit author identifier for the target message. If omitted, uses the current inbound sender."
+            },
+            "remove": {
+                "type": "boolean",
+                "description": "Set true to remove an existing reaction instead of adding one."
+            }
+        },
+        "required": ["emoji"]
+    }
+}
+
 
 def send_message_tool(args, **kw):
     """Handle cross-channel send_message tool calls."""
@@ -62,6 +98,11 @@ def send_message_tool(args, **kw):
         return _handle_list()
 
     return _handle_send(args)
+
+
+def react_message_tool(args, **kw):
+    """Handle cross-channel message reactions."""
+    return _handle_react(args)
 
 
 def _handle_list():
@@ -193,6 +234,93 @@ def _handle_send(args):
         return json.dumps(result)
     except Exception as e:
         return json.dumps({"error": f"Send failed: {e}"})
+
+
+def _handle_react(args):
+    """React to a platform message, defaulting to the current session context."""
+    emoji = (args.get("emoji") or "").strip()
+    if not emoji:
+        return json.dumps({"error": "'emoji' is required"})
+
+    target = args.get("target", "").strip()
+    message_id = str(args.get("message_id") or os.getenv("HERMES_SESSION_MESSAGE_ID", "")).strip()
+    author_id = str(args.get("author_id") or os.getenv("HERMES_SESSION_USER_ID", "") or os.getenv("HERMES_SESSION_USER_ID_ALT", "")).strip()
+    remove = bool(args.get("remove", False))
+
+    if target:
+        parts = target.split(":", 1)
+        platform_name = parts[0].strip().lower()
+        target_ref = parts[1].strip() if len(parts) > 1 else None
+        chat_id = None
+        thread_id = None
+        if target_ref:
+            chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+            if not is_explicit:
+                chat_id = target_ref
+        else:
+            chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "").strip()
+            thread_id = os.getenv("HERMES_SESSION_THREAD_ID", "").strip() or None
+    else:
+        platform_name = os.getenv("HERMES_SESSION_PLATFORM", "").strip().lower()
+        chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "").strip()
+        thread_id = os.getenv("HERMES_SESSION_THREAD_ID", "").strip() or None
+
+    if not platform_name:
+        return json.dumps({"error": "No active session target found for react_message"})
+    if not chat_id:
+        return json.dumps({"error": "No chat target found for react_message"})
+    if not message_id:
+        return json.dumps({"error": "No target message_id found for react_message"})
+    if not author_id and platform_name == "signal":
+        return json.dumps({"error": "Signal reactions require the target message author_id"})
+
+    try:
+        from gateway.config import load_gateway_config, Platform
+        config = load_gateway_config()
+    except Exception as e:
+        return json.dumps({"error": f"Failed to load gateway config: {e}"})
+
+    platform_map = {
+        "telegram": Platform.TELEGRAM,
+        "discord": Platform.DISCORD,
+        "slack": Platform.SLACK,
+        "whatsapp": Platform.WHATSAPP,
+        "signal": Platform.SIGNAL,
+        "matrix": Platform.MATRIX,
+        "mattermost": Platform.MATTERMOST,
+        "homeassistant": Platform.HOMEASSISTANT,
+        "dingtalk": Platform.DINGTALK,
+        "feishu": Platform.FEISHU,
+        "wecom": Platform.WECOM,
+        "email": Platform.EMAIL,
+        "sms": Platform.SMS,
+    }
+    platform = platform_map.get(platform_name)
+    if not platform:
+        avail = ", ".join(platform_map.keys())
+        return json.dumps({"error": f"Unknown platform: {platform_name}. Available: {avail}"})
+
+    pconfig = config.platforms.get(platform)
+    if not pconfig or not pconfig.enabled:
+        return json.dumps({"error": f"Platform '{platform_name}' is not configured."})
+
+    try:
+        from model_tools import _run_async
+        result = _run_async(
+            _react_on_platform(
+                platform,
+                pconfig,
+                chat_id,
+                message_id=message_id,
+                emoji=emoji,
+                author_id=author_id or None,
+                thread_id=thread_id,
+                remove=remove,
+            )
+        )
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps({"error": f"Reaction failed: {e}"})
 
 
 def _parse_target_ref(platform_name: str, target_ref: str):
@@ -383,6 +511,15 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         warnings.append(warning)
         last_result["warnings"] = warnings
     return last_result
+
+
+async def _react_on_platform(platform, pconfig, chat_id, message_id, emoji, author_id=None, thread_id=None, remove=False):
+    """React to an existing message on a supported platform."""
+    from gateway.config import Platform
+
+    if platform == Platform.SIGNAL:
+        return await _react_signal(pconfig.extra, chat_id, message_id, emoji, author_id, remove=remove)
+    return {"error": f"react_message is not yet implemented for {platform.value}"}
 
 
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None):
@@ -610,6 +747,55 @@ async def _send_signal(extra, chat_id, message):
             return {"success": True, "platform": "signal", "chat_id": chat_id}
     except Exception as e:
         return {"error": f"Signal send failed: {e}"}
+
+
+async def _react_signal(extra, chat_id, message_id, emoji, author_id, remove=False):
+    """React to a Signal message via signal-cli JSON-RPC."""
+    try:
+        import httpx
+    except ImportError:
+        return {"error": "httpx not installed"}
+    try:
+        http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
+        account = extra.get("account", "")
+        if not account:
+            return {"error": "Signal account not configured"}
+
+        params = {
+            "account": account,
+            "emoji": emoji,
+            "targetAuthor": author_id,
+            "targetTimestamp": int(str(message_id)),
+            "remove": bool(remove),
+        }
+        if chat_id.startswith("group:"):
+            params["groupId"] = chat_id[6:]
+        else:
+            params["recipient"] = [chat_id]
+
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "sendReaction",
+            "params": params,
+            "id": f"react_{int(time.time() * 1000)}",
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(f"{http_url}/api/v1/rpc", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            if "error" in data:
+                return {"error": f"Signal RPC error: {data['error']}"}
+            return {
+                "success": True,
+                "platform": "signal",
+                "chat_id": chat_id,
+                "message_id": str(message_id),
+                "emoji": emoji,
+                "removed": bool(remove),
+            }
+    except Exception as e:
+        return {"error": f"Signal reaction failed: {e}"}
 
 
 async def _send_email(extra, chat_id, message):
@@ -893,6 +1079,11 @@ def _check_send_message():
         return False
 
 
+def _check_react_message():
+    """Gate react_message on a live messaging session or running gateway."""
+    return _check_send_message()
+
+
 # --- Registry ---
 from tools.registry import registry
 
@@ -903,4 +1094,13 @@ registry.register(
     handler=send_message_tool,
     check_fn=_check_send_message,
     emoji="📨",
+)
+
+registry.register(
+    name="react_message",
+    toolset="messaging",
+    schema=REACT_MESSAGE_SCHEMA,
+    handler=react_message_tool,
+    check_fn=_check_react_message,
+    emoji="😀",
 )
