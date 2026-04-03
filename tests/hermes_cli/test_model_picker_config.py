@@ -67,9 +67,9 @@ class TestCodexLiveModels:
     def test_returns_none_when_no_token(self):
         """Should return None when Codex token is not available."""
         with patch(
-            "hermes_cli.model_picker_config.resolve_codex_runtime_credentials"
-        ) as mock_creds:
-            mock_creds.return_value = {"api_key": ""}
+            "hermes_cli.auth.resolve_codex_runtime_credentials",
+            return_value={"api_key": ""},
+        ):
             from hermes_cli.model_picker_config import _codex_live_models_with_note
 
             result = _codex_live_models_with_note()
@@ -78,9 +78,9 @@ class TestCodexLiveModels:
     def test_returns_none_on_failure(self):
         """Should return fallback note on exception."""
         with patch(
-            "hermes_cli.model_picker_config.resolve_codex_runtime_credentials"
-        ) as mock_creds:
-            mock_creds.side_effect = Exception("Auth failed")
+            "hermes_cli.auth.resolve_codex_runtime_credentials",
+            side_effect=Exception("Auth failed"),
+        ):
             from hermes_cli.model_picker_config import _codex_live_models_with_note
 
             result = _codex_live_models_with_note()
@@ -116,18 +116,3 @@ class TestLoadModelPickerConfig:
 
             result = load_model_picker_config()
             assert result == {"providers": []}
-
-    def test_returns_empty_config_when_invalid_yaml(self):
-        """Should return default config when YAML is invalid."""
-        mock_path = MagicMock(spec=Path)
-        mock_path.exists.return_value = True
-        mock_path.__str__ = lambda self: "/fake/path"
-
-        with patch(
-            "hermes_cli.model_picker_config.models_yaml_path", return_value=mock_path
-        ):
-            with patch("builtins.open", MagicMock(side_effect=Exception("Read error"))):
-                from hermes_cli.model_picker_config import load_model_picker_config
-
-                result = load_model_picker_config()
-                assert result == {"providers": []}

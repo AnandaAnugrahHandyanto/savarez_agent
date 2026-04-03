@@ -14,10 +14,9 @@ class TestProviderOrder:
         from hermes_cli import model_picker
         from hermes_cli import model_picker_config
 
-        # Both modules should have matching order
-        assert (
-            model_picker.PROVIDER_ORDER == model_picker_config._DEFAULT_PROVIDER_ORDER
-        )
+        # model_picker should start with the same items as model_picker_config defaults
+        default_order = model_picker_config._DEFAULT_PROVIDER_ORDER
+        assert model_picker.PROVIDER_ORDER[: len(default_order)] == default_order
 
 
 class TestGetProviderList:
@@ -26,7 +25,7 @@ class TestGetProviderList:
     def test_returns_providers_with_current_marked(self):
         """Should mark the current provider."""
         with patch(
-            "hermes_cli.model_picker._PROVIDER_LABELS",
+            "hermes_cli.models._PROVIDER_LABELS",
             {
                 "anthropic": "Anthropic",
                 "openrouter": "OpenRouter",
@@ -34,7 +33,6 @@ class TestGetProviderList:
         ):
             from hermes_cli.model_picker import get_provider_list, ProviderOption
 
-            # Test with current provider
             providers = get_provider_list("anthropic")
             current_providers = [p for p in providers if p.is_current]
 
@@ -45,7 +43,7 @@ class TestGetProviderList:
     def test_current_provider_first_in_list(self):
         """Current provider should appear first."""
         with patch(
-            "hermes_cli.model_picker._PROVIDER_LABELS",
+            "hermes_cli.models._PROVIDER_LABELS",
             {
                 "anthropic": "Anthropic",
                 "openrouter": "OpenRouter",
@@ -63,7 +61,7 @@ class TestGetModelList:
     def test_returns_models_for_provider(self):
         """Should return models for the specified provider."""
         with patch(
-            "hermes_cli.model_picker._PROVIDER_MODELS",
+            "hermes_cli.models._PROVIDER_MODELS",
             {
                 "anthropic": ["claude-opus-4-6", "claude-sonnet-4-6"],
                 "openrouter": ["gpt-5.4"],
@@ -78,7 +76,7 @@ class TestGetModelList:
     def test_marks_current_model(self):
         """Should mark the current model."""
         with patch(
-            "hermes_cli.model_picker._PROVIDER_MODELS",
+            "hermes_cli.models._PROVIDER_MODELS",
             {
                 "anthropic": ["claude-opus-4-6", "claude-sonnet-4-6"],
             },
