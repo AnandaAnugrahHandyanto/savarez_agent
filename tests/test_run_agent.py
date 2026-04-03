@@ -926,6 +926,93 @@ class TestBuildAssistantMessage:
         assert "extra_content" not in result["tool_calls"][0]
 
 
+class TestSanitizeToolCalls:
+    """Tests for _sanitize_tool_calls() — session poisoning prevention (#4662)."""
+
+    def test_valid_tool_call_passes_through(self):
+        tc = [{"id": "c1", "type": "function", "function": {"name": "terminal", "arguments": '{"command": "ls"}'}}]
+        result = AIAgent._sanitize_tool_calls(tc)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "terminal"
+
+    def test_empty_function_name_dropped(self):
+        tc = [{"id": "c1", "type": "function", "function": {"name": "", "arguments": "{}"}}]
+        result = AIAgent._sanitize_tool_calls(tc)
+        assert len(result) == 0
+
+    def test_missing_function_name_dropped(self):
+        tc = [{"id": "c1", "type": "function", "function": {"arguments": "{}"}}]
+        result = AIAgent._sanitize_tool_calls(tc)
+        assert len(result) == 0
+
+    def test_invalid_json_arguments_dropped(self):
+        tc = [{"id": "c1", "type": "function", "function": {"name": "terminal", "arguments": "{command: 'ls'}"}}]
+        result = AIAgent._sanitize_tool_calls(tc)
+        assert len(result) == 0
+
+    def test_non_dict_json_arguments_dropped(self):
+        """Arguments that parse to a list or string instead of dict are rejected."""
+        tc = [{"id": "c1", "type": "function", "function": {"name": "terminal", "arguments": '["ls"]'}}]
+        result = AIAgent._sanitize_tool_calls(tc)
+        assert len(result) == 0
+
+    def test_empty_arguments_coerced_to_empty_object(self):
+        tc = [{"id": "c1", "type": "function", "function": {"name": "terminal", "arguments": ""}}]
+        result = AIAgent._sanitize_tool_calls(tc)
+        assert len(result) == 1
+        assert result[0]["function"]["arguments"] == "{}"
+
+    def test_none_arguments_coerced_to_empty_object(self):
+        tc = [{"id": "c1", "type": "function", "function": {"name": "terminal", "arguments": None}}]
+        result = AIAgent._sanitize_tool_calls(tc)
+        assert len(result) == 1
+        assert result[0]["function"]["arguments"] == "{}"
+
+    def test_dict_arguments_serialized_to_json_string(self):
+        """Non-string arguments (dict) should be coerced to JSON string."""
+        tc = [{"id": "c1", "type": "function", "function": {"name": "terminal", "arguments": {"command": "ls"}}}]
+        result = AIAgent._sanitize_tool_calls(tc)
+        assert len(result) == 1
+        assert result[0]["function"]["arguments"] == '{"command": "ls"}'
+
+    def test_flat_sqlite_format_validated(self):
+        """Tool calls from SQLite use flat format: {"name": ..., "arguments": ...}."""
+        tc = [{"name": "terminal", "arguments": '{"command": "ls"}'}]
+        result = AIAgent._sanitize_tool_calls(tc)
+        assert len(result) == 1
+
+    def test_flat_format_empty_name_dropped(self):
+        tc = [{"name": "", "arguments": "{}"}]
+        result = AIAgent._sanitize_tool_calls(tc)
+        assert len(result) == 0
+
+    def test_non_dict_input_returns_empty(self):
+        assert AIAgent._sanitize_tool_calls("not a list") == []
+        assert AIAgent._sanitize_tool_calls(None) == []
+
+    def test_mixed_valid_and_invalid(self):
+        """Only valid tool calls survive."""
+        tc = [
+            {"id": "c1", "type": "function", "function": {"name": "terminal", "arguments": '{"command": "ls"}'}},
+            {"id": "c2", "type": "function", "function": {"name": "", "arguments": "{}"}},
+            {"id": "c3", "type": "function", "function": {"name": "web_search", "arguments": "not json"}},
+            {"id": "c4", "type": "function", "function": {"name": "memory", "arguments": '{"action": "add"}'}},
+        ]
+        result = AIAgent._sanitize_tool_calls(tc)
+        assert len(result) == 2
+        assert result[0]["function"]["name"] == "terminal"
+        assert result[1]["function"]["name"] == "memory"
+
+    def test_build_assistant_message_sanitizes(self, agent):
+        """Malformed tool calls are stripped before persistence."""
+        good_tc = _mock_tool_call(name="terminal", arguments='{"command": "ls"}', call_id="c1")
+        bad_tc = _mock_tool_call(name="", arguments="", call_id="c2")
+        msg = _mock_assistant_msg(content="", tool_calls=[good_tc, bad_tc])
+        result = agent._build_assistant_message(msg, "tool_calls")
+        assert len(result["tool_calls"]) == 1
+        assert result["tool_calls"][0]["function"]["name"] == "terminal"
+
+
 class TestFormatToolsForSystemMessage:
     def test_no_tools_returns_empty_array(self, agent):
         agent.tools = []

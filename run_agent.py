@@ -5028,6 +5028,29 @@ class AIAgent:
         if self.provider_data_collection:
             provider_preferences["data_collection"] = self.provider_data_collection
 
+        # Strip malformed tool calls from replayed history to prevent
+        # session poisoning (see #4662).  Always deep-copy before mutating
+        # to avoid corrupting canonical in-memory history (prompt caching).
+        _needs_tool_sanitize = any(
+            isinstance(m, dict) and isinstance(m.get("tool_calls"), list)
+            for m in sanitized_messages
+        )
+        if _needs_tool_sanitize:
+            if not needs_sanitization:
+                # No deep copy was made yet — make one now
+                sanitized_messages = copy.deepcopy(sanitized_messages)
+            for msg in sanitized_messages:
+                if isinstance(msg, dict) and isinstance(msg.get("tool_calls"), list):
+                    cleaned = self._sanitize_tool_calls(msg["tool_calls"])
+                    if len(cleaned) != len(msg["tool_calls"]):
+                        logger.warning(
+                            "Dropped %d malformed tool call(s) from session history",
+                            len(msg["tool_calls"]) - len(cleaned),
+                        )
+                    msg["tool_calls"] = cleaned or None
+                    if msg["tool_calls"] is None:
+                        del msg["tool_calls"]
+
         api_kwargs = {
             "model": self.model,
             "messages": sanitized_messages,
@@ -5278,7 +5301,7 @@ class AIAgent:
                         extra = extra.model_dump()
                     tc_dict["extra_content"] = extra
                 tool_calls.append(tc_dict)
-            msg["tool_calls"] = tool_calls
+            msg["tool_calls"] = self._sanitize_tool_calls(tool_calls)
 
         return msg
 
@@ -5306,6 +5329,67 @@ class AIAgent:
             for tc in tool_calls
         ]
         return api_msg
+
+    @staticmethod
+    def _sanitize_tool_calls(tool_calls: list) -> list:
+        """Remove malformed tool calls that would poison session replay.
+
+        Strict OpenAI-compatible providers reject requests containing tool
+        calls with empty function names or non-JSON arguments.  If such
+        entries are persisted into session history, every subsequent request
+        in the same session fails with HTTP 400.
+
+        Returns a new list with only well-formed tool call dicts.
+        """
+        if not isinstance(tool_calls, list):
+            return []
+        sanitized = []
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            func = tc.get("function")
+            if isinstance(func, dict):
+                name = func.get("name")
+                args = func.get("arguments")
+            else:
+                # Flat format from SQLite: {"name": ..., "arguments": ...}
+                name = tc.get("name")
+                args = tc.get("arguments")
+            # Reject empty or missing function name
+            if not name or not isinstance(name, str) or not name.strip():
+                logger.debug("Dropping malformed tool call: empty function name")
+                continue
+            # Coerce non-string arguments to JSON string
+            if args is not None and not isinstance(args, str):
+                try:
+                    args = json.dumps(args)
+                    # Write back the serialized string
+                    if isinstance(tc.get("function"), dict):
+                        tc["function"]["arguments"] = args
+                    else:
+                        tc["arguments"] = args
+                except (TypeError, ValueError):
+                    logger.debug("Dropping malformed tool call %s: non-serializable arguments", name)
+                    continue
+            # Validate arguments: must be a valid JSON object string, or
+            # empty/None (coerced to "{}").
+            if not args or not isinstance(args, str) or not args.strip():
+                # Coerce missing/empty args to valid empty object
+                if isinstance(tc.get("function"), dict):
+                    tc["function"]["arguments"] = "{}"
+                else:
+                    tc["arguments"] = "{}"
+            elif isinstance(args, str):
+                try:
+                    parsed = json.loads(args)
+                    if not isinstance(parsed, dict):
+                        logger.debug("Dropping malformed tool call %s: arguments is not a JSON object", name)
+                        continue
+                except json.JSONDecodeError:
+                    logger.debug("Dropping malformed tool call %s: invalid JSON arguments", name)
+                    continue
+            sanitized.append(tc)
+        return sanitized
 
     def flush_memories(self, messages: list = None, min_turns: int = None):
         """Give the model one turn to persist memories before context is lost.
@@ -5359,6 +5443,13 @@ class AIAgent:
                 if _is_strict_api:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
+
+            # Sanitize replayed tool calls to prevent session poisoning (#4662)
+            for api_msg in api_messages:
+                if isinstance(api_msg, dict) and isinstance(api_msg.get("tool_calls"), list):
+                    api_msg["tool_calls"] = self._sanitize_tool_calls(api_msg["tool_calls"]) or None
+                    if api_msg["tool_calls"] is None:
+                        del api_msg["tool_calls"]
 
             if self._cached_system_prompt:
                 api_messages = [{"role": "system", "content": self._cached_system_prompt}] + api_messages
@@ -6240,6 +6331,13 @@ class AIAgent:
                 if _is_strict_api:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
+
+            # Sanitize replayed tool calls to prevent session poisoning (#4662)
+            for api_msg in api_messages:
+                if isinstance(api_msg, dict) and isinstance(api_msg.get("tool_calls"), list):
+                    api_msg["tool_calls"] = self._sanitize_tool_calls(api_msg["tool_calls"]) or None
+                    if api_msg["tool_calls"] is None:
+                        del api_msg["tool_calls"]
 
             effective_system = self._cached_system_prompt or ""
             if self.ephemeral_system_prompt:
@@ -8072,14 +8170,18 @@ class AIAgent:
 
                         assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                         messages.append(assistant_msg)
-                        for tc in assistant_message.tool_calls:
-                            if tc.function.name not in self.valid_tool_names:
-                                content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}"
+                        # Use the sanitized tool_calls from the built message
+                        # so tool results match persisted IDs (#4662)
+                        for tc_dict in (assistant_msg.get("tool_calls") or []):
+                            tc_name = tc_dict.get("function", {}).get("name", "")
+                            tc_id = tc_dict.get("id", tc_dict.get("call_id", ""))
+                            if tc_name not in self.valid_tool_names:
+                                content = f"Tool '{tc_name}' does not exist. Available tools: {available}"
                             else:
                                 content = "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
                             messages.append({
                                 "role": "tool",
-                                "tool_call_id": tc.id,
+                                "tool_call_id": tc_id,
                                 "content": content,
                             })
                         continue
@@ -8130,9 +8232,13 @@ class AIAgent:
                             
                             # Respond with tool error results for each tool call
                             invalid_names = {name for name, _ in invalid_json_args}
-                            for tc in assistant_message.tool_calls:
-                                if tc.function.name in invalid_names:
-                                    err = next(e for n, e in invalid_json_args if n == tc.function.name)
+                            # Use sanitized tool_calls from built message so
+                            # tool results match persisted IDs (#4662)
+                            for tc_dict in (recovery_assistant.get("tool_calls") or []):
+                                tc_name = tc_dict.get("function", {}).get("name", "")
+                                tc_id = tc_dict.get("id", tc_dict.get("call_id", ""))
+                                if tc_name in invalid_names:
+                                    err = next(e for n, e in invalid_json_args if n == tc_name)
                                     tool_result = (
                                         f"Error: Invalid JSON arguments. {err}. "
                                         f"For tools with no required parameters, use an empty object: {{}}. "
@@ -8142,7 +8248,7 @@ class AIAgent:
                                     tool_result = "Skipped: other tool call in this response had invalid JSON."
                                 messages.append({
                                     "role": "tool",
-                                    "tool_call_id": tc.id,
+                                    "tool_call_id": tc_id,
                                     "content": tool_result,
                                 })
                             continue
