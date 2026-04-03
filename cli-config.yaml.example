@@ -41,6 +41,17 @@ model:
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
   base_url: "https://openrouter.ai/api/v1"
 
+  # Output token limit for LLM responses.  When omitted the server picks
+  # its own default, which may be too low for thinking models that spend
+  # tokens on internal reasoning before the visible reply.
+  # Recommended for local models (vLLM, Atlas Spark, llama.cpp).
+  # max_tokens: 65536
+
+  # Frequency penalty (0.0–2.0).  Penalises tokens proportionally to how
+  # often they already appeared, discouraging repetitive output.  Useful
+  # for local models that can degenerate into loops.  0.0 = disabled.
+  # frequency_penalty: 0.1
+
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
 # =============================================================================
