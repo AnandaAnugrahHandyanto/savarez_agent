@@ -112,3 +112,9 @@ class TestApplyGatewayBackendToEnv:
             apply_gateway_backend_to_env(config)
             # setdefault should preserve existing value
             assert os.environ["TERMINAL_DOCKER_IMAGE"] == "existing:img"
+
+    def test_apply_rejects_invalid_backend(self):
+        config = {"gateway": {"terminal_backend": "invalid"}}
+        with mock.patch.dict(os.environ, {}, clear=True):
+            apply_gateway_backend_to_env(config)
+            assert "TERMINAL_ENV" not in os.environ

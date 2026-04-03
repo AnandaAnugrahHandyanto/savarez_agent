@@ -2,6 +2,7 @@
 
 import logging
 import subprocess
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -10,9 +11,16 @@ def run_script_in_docker(script_path, tmpdir, sock_path, image, child_env, timeo
     """Run a Python script inside a Docker container.
 
     Returns (stdout_bytes, stderr_bytes, returncode).
+
+    Known limitation: this function uses blocking communicate() and cannot be
+    interrupted by the _interrupt_event used by the local subprocess path.
+    If the user sends a cancellation message mid-run, the Docker container will
+    run to completion (or timeout). Tracked in: gh issue (follow-up).
     """
+    container_name = f"hermes-sandbox-{uuid.uuid4().hex[:8]}"
     cmd = [
         "docker", "run", "--rm",
+        "--name", container_name,
         "-v", f"{tmpdir}:{tmpdir}",
         "-v", "/tmp:/tmp",
         "-e", f"HERMES_RPC_SOCKET={sock_path}",
@@ -27,7 +35,6 @@ def run_script_in_docker(script_path, tmpdir, sock_path, image, child_env, timeo
 
     cmd.extend([image, "python3", script_path])
 
-    container_id = None
     try:
         proc = subprocess.Popen(
             cmd,
@@ -35,15 +42,23 @@ def run_script_in_docker(script_path, tmpdir, sock_path, image, child_env, timeo
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
         )
-        # Extract container ID for potential kill on timeout
         try:
             stdout_bytes, stderr_bytes = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            logger.warning("Docker sandbox timed out after %s seconds, killing container", timeout)
-            # Try to kill via docker kill using the process
+            logger.warning(
+                "Docker sandbox timed out after %s seconds, killing container %s",
+                timeout,
+                container_name,
+            )
+            # Kill the container by name first (removes the process inside Docker),
+            # then kill the Docker CLI client process.
+            subprocess.run(
+                ["docker", "kill", container_name],
+                timeout=5,
+                capture_output=True,
+            )
             proc.kill()
             stdout_bytes, stderr_bytes = proc.communicate(timeout=5)
-            # Also attempt to find and kill any running container from our command
             return (stdout_bytes or b"", stderr_bytes or b"", -1)
 
         return (stdout_bytes, stderr_bytes, proc.returncode)

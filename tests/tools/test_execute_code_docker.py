@@ -36,6 +36,12 @@ class TestRunScriptInDocker:
         assert call_args[0] == "docker"
         assert call_args[1] == "run"
         assert "--rm" in call_args
+        assert "--name" in call_args
+        # Container name follows --name flag and matches hermes-sandbox-<hex8>
+        name_idx = call_args.index("--name")
+        container_name = call_args[name_idx + 1]
+        assert container_name.startswith("hermes-sandbox-")
+        assert len(container_name) == len("hermes-sandbox-") + 8
         assert "--network=host" in call_args
         assert "-v" in call_args
         assert "python:3.11" in call_args
@@ -106,7 +112,8 @@ class TestRunScriptInDocker:
         mock_proc.kill.return_value = None
         mock_proc.returncode = -1
 
-        with mock.patch("tools.execute_code_docker.subprocess.Popen", return_value=mock_proc):
+        with mock.patch("tools.execute_code_docker.subprocess.Popen", return_value=mock_proc), \
+             mock.patch("tools.execute_code_docker.subprocess.run") as mock_run:
             stdout, stderr, rc = run_script_in_docker(
                 script_path="/tmp/work/script.py",
                 tmpdir="/tmp/work",
@@ -117,6 +124,11 @@ class TestRunScriptInDocker:
             )
 
         assert rc == -1
+        # docker kill must be called before proc.kill()
+        mock_run.assert_called_once()
+        docker_kill_args = mock_run.call_args[0][0]
+        assert docker_kill_args[0] == "docker"
+        assert docker_kill_args[1] == "kill"
         mock_proc.kill.assert_called_once()
 
     def test_docker_not_found(self):
