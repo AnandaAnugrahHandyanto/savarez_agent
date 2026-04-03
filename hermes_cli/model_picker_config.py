@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,8 @@ from dotenv import load_dotenv
 from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_cli.config import load_config, save_config
 from hermes_cli.runtime_provider import resolve_runtime_provider
+
+logger = logging.getLogger(__name__)
 
 # Ensure .env is loaded so custom provider API keys are visible
 load_dotenv(Path.home() / ".hermes" / ".env", override=False)
@@ -39,8 +42,8 @@ def _ollama_cloud_live_models_with_note() -> tuple[list[str] | None, str | None]
         model_ids = [m["name"] for m in models if "name" in m]
         if model_ids:
             return sorted(model_ids), "Live cloud models"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to fetch Ollama Cloud models: %s", e)
     return None, "Fallback local models"
 
 
@@ -61,8 +64,8 @@ def _codex_live_models_with_note() -> tuple[list[str] | None, str | None]:
         models = get_codex_model_ids(access_token=token)
         if models:
             return models, "Live OAuth models"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to fetch Codex models: %s", e)
     return None, "Fallback local models"
 
 
@@ -120,11 +123,14 @@ def is_provider_configured(provider_id: str) -> bool:
     try:
         runtime = resolve_runtime_provider(requested=provider_id)
         return bool(runtime.get("api_key"))
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to check provider config for %s: %s", provider_id, e)
         return False
 
 
-def _normalize_model_entry(provider_id: str, raw: Any, provider_note: str | None = None) -> dict[str, str] | None:
+def _normalize_model_entry(
+    provider_id: str, raw: Any, provider_note: str | None = None
+) -> dict[str, str] | None:
     if isinstance(raw, str):
         model_id = raw.strip()
         if not model_id:
@@ -148,7 +154,9 @@ def _normalize_model_entry(provider_id: str, raw: Any, provider_note: str | None
     return None
 
 
-def get_curated_model_catalog(*, include_unconfigured: bool = False) -> list[dict[str, Any]]:
+def get_curated_model_catalog(
+    *, include_unconfigured: bool = False
+) -> list[dict[str, Any]]:
     data = load_model_picker_config()
     providers = []
     for entry in data.get("providers", []):
@@ -163,7 +171,9 @@ def get_curated_model_catalog(*, include_unconfigured: bool = False) -> list[dic
         configured = is_provider_configured(provider_id)
         if not include_unconfigured and not configured:
             continue
-        label = _provider_label(provider_id, str(entry.get("label", "")).strip() or None)
+        label = _provider_label(
+            provider_id, str(entry.get("label", "")).strip() or None
+        )
         note = str(entry.get("note", "")).strip()
 
         yaml_models = []
@@ -184,11 +194,13 @@ def get_curated_model_catalog(*, include_unconfigured: bool = False) -> list[dic
                     if existing:
                         models.append(dict(existing))
                     else:
-                        models.append({
-                            "id": model_id,
-                            "label": model_id,
-                            "description": live_note or "",
-                        })
+                        models.append(
+                            {
+                                "id": model_id,
+                                "label": model_id,
+                                "description": live_note or "",
+                            }
+                        )
                 note = live_note or note
             elif live_note:
                 note = live_note
@@ -200,7 +212,8 @@ def get_curated_model_catalog(*, include_unconfigured: bool = False) -> list[dic
                 # Show only favourited models from yaml
                 fav_set = set(favourites)
                 models = [
-                    m for m in yaml_models
+                    m
+                    for m in yaml_models
                     if m["id"] in fav_set
                     or m["id"].replace("ollama-cloud/", "") in fav_set
                 ]
@@ -220,7 +233,9 @@ def get_curated_model_catalog(*, include_unconfigured: bool = False) -> list[dic
         )
 
     order_index = {pid: idx for idx, pid in enumerate(_DEFAULT_PROVIDER_ORDER)}
-    providers.sort(key=lambda item: (order_index.get(item["id"], 999), item["label"].lower()))
+    providers.sort(
+        key=lambda item: (order_index.get(item["id"], 999), item["label"].lower())
+    )
     return providers
 
 
@@ -228,7 +243,9 @@ def get_default_model_selection() -> tuple[str, str]:
     cfg = load_config()
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, dict):
-        provider = str(model_cfg.get("provider", "openrouter") or "openrouter").strip().lower()
+        provider = (
+            str(model_cfg.get("provider", "openrouter") or "openrouter").strip().lower()
+        )
         model = str(model_cfg.get("default", "") or "").strip()
         return provider, model
     if isinstance(model_cfg, str):
@@ -238,7 +255,9 @@ def get_default_model_selection() -> tuple[str, str]:
 
 def get_current_model_selection() -> tuple[str, str]:
     default_provider, default_model = get_default_model_selection()
-    provider = os.getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower() or default_provider
+    provider = (
+        os.getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower() or default_provider
+    )
     model = os.getenv("HERMES_MODEL", "").strip() or default_model
     return provider, model
 
@@ -248,7 +267,7 @@ def format_model_selection(provider: str | None, model: str | None) -> str:
     model = (model or "").strip()
     # Strip provider prefix if already in model ID (e.g. "ollama-cloud/glm-5" → "glm-5")
     if provider and model and model.startswith(f"{provider}/"):
-        model = model[len(provider) + 1:]
+        model = model[len(provider) + 1 :]
     if provider and model:
         return f"{provider}/{model}"
     return model or "(not set)"
@@ -257,13 +276,15 @@ def format_model_selection(provider: str | None, model: str | None) -> str:
 def command_model_name(provider: str, model_id: str) -> str:
     prefix = f"{provider}/"
     if model_id.startswith(prefix):
-        return model_id[len(prefix):]
+        return model_id[len(prefix) :]
     if provider == "openrouter" and model_id.startswith("openrouter/"):
-        return model_id[len("openrouter/"):]
+        return model_id[len("openrouter/") :]
     return model_id
 
 
-def apply_model_selection(provider: str, model_id: str) -> tuple[bool, str, dict[str, str]]:
+def apply_model_selection(
+    provider: str, model_id: str
+) -> tuple[bool, str, dict[str, str]]:
     """Apply a picker selection directly, without relying on the removed /model command."""
     from hermes_cli.model_switch import switch_model
 
@@ -277,7 +298,11 @@ def apply_model_selection(provider: str, model_id: str) -> tuple[bool, str, dict
     current_provider = "openrouter"
     current_base_url = ""
     if isinstance(model_cfg, dict):
-        current_provider = str(model_cfg.get("provider", current_provider) or current_provider).strip().lower()
+        current_provider = (
+            str(model_cfg.get("provider", current_provider) or current_provider)
+            .strip()
+            .lower()
+        )
         current_base_url = str(model_cfg.get("base_url", "") or "").strip()
     elif isinstance(model_cfg, str) and model_cfg.strip():
         current_provider = "openrouter"
@@ -288,8 +313,8 @@ def apply_model_selection(provider: str, model_id: str) -> tuple[bool, str, dict
         current_api_key = str(runtime.get("api_key", "") or "")
         if not current_base_url:
             current_base_url = str(runtime.get("base_url", "") or "")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to resolve runtime provider: %s", e)
 
     command_model = command_model_name(provider, model_id)
     raw_input = f"{provider}:{command_model}"
