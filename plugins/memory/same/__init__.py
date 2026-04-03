@@ -44,7 +44,7 @@ class MCPStdioClient:
     def __init__(self, command: str, args: list[str], env: dict[str, str] | None = None):
         self._command = command
         self._args = args
-        # B-06: Minimal env — don't leak API keys/tokens to subprocess
+        # Minimal env — don't leak API keys/tokens to subprocess
         minimal_env = {
             "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
             "HOME": os.environ.get("HOME", ""),
@@ -246,11 +246,10 @@ SEARCH_SCHEMA = {
             },
             "top_k": {
                 "type": "integer",
-                "description": "Number of results to return.",
-                "default": 10,
+                "description": "Number of results to return (default 10).",
             },
         },
-        "required": ["query", "top_k"],
+        "required": ["query"],
     },
 }
 
@@ -273,11 +272,10 @@ SAVE_NOTE_SCHEMA = {
             },
             "append": {
                 "type": "boolean",
-                "description": "Append to existing file instead of overwriting.",
-                "default": False,
+                "description": "Append to existing file instead of overwriting (default false).",
             },
         },
-        "required": ["path", "content", "append"],
+        "required": ["path", "content"],
     },
 }
 
@@ -572,6 +570,8 @@ class SAMEMemoryProvider(MemoryProvider):
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         if not self._mcp or not self._mcp.is_alive():
             return
+        if not query or len(query) > 10_000:
+            return
 
         def _run():
             try:
@@ -586,7 +586,7 @@ class SAMEMemoryProvider(MemoryProvider):
                         lines = []
                         for r in results[:5]:
                             snippet = r.get("snippet", "")[:200]
-                            # B-03/B-04: Skip notes that look like injection
+                            # Skip notes that look like prompt injection
                             if _looks_like_injection(snippet):
                                 logger.warning("SAME prefetch: skipped injection-like note: %s",
                                                r.get("path", "unknown"))
@@ -594,7 +594,7 @@ class SAMEMemoryProvider(MemoryProvider):
                             title = r.get("title", r.get("path", "untitled"))
                             trust = r.get("trust_state", "unknown")
                             trust_tag = " ⚠" if trust in ("stale", "contradicted") else ""
-                            # B-05: Redact secrets before injecting into context
+                            # Redact secrets before injecting into context
                             snippet = _redact_secrets(snippet)
                             lines.append(f"- **{title}**{trust_tag}: {snippet}")
                         text = "\n".join(lines)
