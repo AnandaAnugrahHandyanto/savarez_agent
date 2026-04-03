@@ -2,11 +2,13 @@
 
 import asyncio
 import os
+from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 
 import acp
+from acp.agent.router import build_agent_router
 from acp.schema import (
     AgentCapabilities,
     AuthenticateResponse,
@@ -17,12 +19,15 @@ from acp.schema import (
     NewSessionResponse,
     PromptResponse,
     ResumeSessionResponse,
+    SetSessionConfigOptionResponse,
+    SetSessionModeResponse,
     SessionInfo,
     TextContentBlock,
     Usage,
 )
 from acp_adapter.server import HermesACPAgent, HERMES_VERSION
 from acp_adapter.session import SessionManager
+from hermes_state import SessionDB
 
 
 @pytest.fixture()
@@ -167,6 +172,74 @@ class TestListAndFork:
 
 
 # ---------------------------------------------------------------------------
+# session configuration / model routing
+# ---------------------------------------------------------------------------
+
+
+class TestSessionConfiguration:
+    @pytest.mark.asyncio
+    async def test_set_session_mode_returns_response(self, agent):
+        new_resp = await agent.new_session(cwd="/tmp")
+        resp = await agent.set_session_mode(mode_id="chat", session_id=new_resp.session_id)
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        assert isinstance(resp, SetSessionModeResponse)
+        assert getattr(state, "mode", None) == "chat"
+
+    @pytest.mark.asyncio
+    async def test_set_config_option_returns_response(self, agent):
+        new_resp = await agent.new_session(cwd="/tmp")
+        resp = await agent.set_config_option(
+            config_id="approval_mode",
+            session_id=new_resp.session_id,
+            value="auto",
+        )
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        assert isinstance(resp, SetSessionConfigOptionResponse)
+        assert getattr(state, "config_options", {}) == {"approval_mode": "auto"}
+        assert resp.config_options == []
+
+    @pytest.mark.asyncio
+    async def test_router_accepts_stable_session_config_methods(self, agent):
+        new_resp = await agent.new_session(cwd="/tmp")
+        router = build_agent_router(agent)
+
+        mode_result = await router(
+            "session/set_mode",
+            {"modeId": "chat", "sessionId": new_resp.session_id},
+            False,
+        )
+        config_result = await router(
+            "session/set_config_option",
+            {
+                "configId": "approval_mode",
+                "sessionId": new_resp.session_id,
+                "value": "auto",
+            },
+            False,
+        )
+
+        assert mode_result == {}
+        assert config_result == {"configOptions": []}
+
+    @pytest.mark.asyncio
+    async def test_router_accepts_unstable_model_switch_when_enabled(self, agent):
+        new_resp = await agent.new_session(cwd="/tmp")
+        router = build_agent_router(agent, use_unstable_protocol=True)
+
+        result = await router(
+            "session/set_model",
+            {"modelId": "gpt-5.4", "sessionId": new_resp.session_id},
+            False,
+        )
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        assert result == {}
+        assert state.model == "gpt-5.4"
+
+
+# ---------------------------------------------------------------------------
 # prompt
 # ---------------------------------------------------------------------------
 
@@ -295,3 +368,140 @@ class TestOnConnect:
         mock_conn = MagicMock(spec=acp.Client)
         agent.on_connect(mock_conn)
         assert agent._conn is mock_conn
+
+
+# ---------------------------------------------------------------------------
+# Slash commands
+# ---------------------------------------------------------------------------
+
+
+class TestSlashCommands:
+    """Test slash command dispatch in the ACP adapter."""
+
+    def _make_state(self, mock_manager):
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+        state.model = "test-model"
+        return state
+
+    def test_help_lists_commands(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        result = agent._handle_slash_command("/help", state)
+        assert result is not None
+        assert "/help" in result
+        assert "/model" in result
+        assert "/tools" in result
+        assert "/reset" in result
+
+    def test_model_shows_current(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        result = agent._handle_slash_command("/model", state)
+        assert "test-model" in result
+
+    def test_context_empty(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        state.history = []
+        result = agent._handle_slash_command("/context", state)
+        assert "empty" in result.lower()
+
+    def test_context_with_messages(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        state.history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        result = agent._handle_slash_command("/context", state)
+        assert "2 messages" in result
+        assert "user: 1" in result
+
+    def test_reset_clears_history(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        state.history = [{"role": "user", "content": "hello"}]
+        result = agent._handle_slash_command("/reset", state)
+        assert "cleared" in result.lower()
+        assert len(state.history) == 0
+
+    def test_version(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        result = agent._handle_slash_command("/version", state)
+        assert HERMES_VERSION in result
+
+    def test_unknown_command_returns_none(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        result = agent._handle_slash_command("/nonexistent", state)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_slash_command_intercepted_in_prompt(self, agent, mock_manager):
+        """Slash commands should be handled without calling the LLM."""
+        new_resp = await agent.new_session(cwd="/tmp")
+        mock_conn = AsyncMock(spec=acp.Client)
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="/help")]
+        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert resp.stop_reason == "end_turn"
+        mock_conn.session_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_unknown_slash_falls_through_to_llm(self, agent, mock_manager):
+        """Unknown /commands should be sent to the LLM, not intercepted."""
+        new_resp = await agent.new_session(cwd="/tmp")
+        mock_conn = AsyncMock(spec=acp.Client)
+        agent._conn = mock_conn
+
+        # Mock run_in_executor to avoid actually running the agent
+        with patch("asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = AsyncMock(return_value={
+                "final_response": "I processed /foo",
+                "messages": [],
+            })
+            prompt = [TextContentBlock(type="text", text="/foo bar")]
+            resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert resp.stop_reason == "end_turn"
+
+    def test_model_switch_uses_requested_provider(self, tmp_path, monkeypatch):
+        """`/model provider:model` should rebuild the ACP agent on that provider."""
+        runtime_calls = []
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            runtime_calls.append(requested)
+            provider = requested or "openrouter"
+            return {
+                "provider": provider,
+                "api_mode": "anthropic_messages" if provider == "anthropic" else "chat_completions",
+                "base_url": f"https://{provider}.example/v1",
+                "api_key": f"{provider}-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+            )
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "openrouter/gpt-5"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            acp_agent = HermesACPAgent(session_manager=manager)
+            state = manager.create_session(cwd="/tmp")
+            result = acp_agent._cmd_model("anthropic:claude-sonnet-4-6", state)
+
+        assert "Provider: anthropic" in result
+        assert state.agent.provider == "anthropic"
+        assert state.agent.base_url == "https://anthropic.example/v1"
+        assert runtime_calls[-1] == "anthropic"

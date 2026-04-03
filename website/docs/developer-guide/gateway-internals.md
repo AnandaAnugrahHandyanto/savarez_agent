@@ -86,7 +86,23 @@ The gateway also runs maintenance tasks such as:
 
 ## Honcho interaction
 
-When Honcho is enabled, the gateway can keep persistent Honcho managers aligned with session lifetimes and platform-specific session keys.
+When a memory provider plugin (e.g. Honcho) is enabled, the gateway creates an AIAgent per incoming message with the same session ID. The memory provider's `initialize()` receives the session ID and creates the appropriate backend session. Tools are routed through the `MemoryManager`, which handles all provider lifecycle hooks (prefetch, sync, session end).
+
+### Memory provider session routing
+
+Memory provider tools (e.g. `honcho_profile`, `viking_search`) are routed through the MemoryManager in `_invoke_tool()`:
+
+```
+AIAgent._invoke_tool()
+  → self._memory_manager.handle_tool_call(name, args)
+    → provider.handle_tool_call(name, args)
+```
+
+Each memory provider manages its own session lifecycle internally. The `initialize()` method receives the session ID, and `on_session_end()` handles cleanup and final flush.
+
+### Memory flush lifecycle
+
+When a session is reset, resumed, or expires, the gateway flushes built-in memories before discarding context. The flush creates a temporary `AIAgent` that runs a memory-only conversation turn. The memory provider's `on_session_end()` hook fires during this process, giving external providers a chance to persist any buffered data.
 
 ## Related docs
 

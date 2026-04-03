@@ -18,6 +18,11 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _clear_openai_env(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+
 class TestGetProvider:
     """_get_provider() picks the right backend based on config + availability."""
 
@@ -26,13 +31,14 @@ class TestGetProvider:
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "local"}) == "local"
 
-    def test_local_fallback_to_openai(self, monkeypatch):
+    def test_explicit_local_no_cloud_fallback(self, monkeypatch):
+        """Explicit local provider must not silently fall back to cloud."""
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
              patch("tools.transcription_tools._HAS_OPENAI", True):
             from tools.transcription_tools import _get_provider
-            assert _get_provider({"provider": "local"}) == "openai"
+            assert _get_provider({"provider": "local"}) == "none"
 
     def test_local_nothing_available(self, monkeypatch):
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
@@ -47,12 +53,13 @@ class TestGetProvider:
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "openai"}) == "openai"
 
-    def test_openai_fallback_to_local(self, monkeypatch):
+    def test_explicit_openai_no_key_returns_none(self, monkeypatch):
+        """Explicit openai without key returns none — no cross-provider fallback."""
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
              patch("tools.transcription_tools._HAS_OPENAI", True):
             from tools.transcription_tools import _get_provider
-            assert _get_provider({"provider": "openai"}) == "local"
+            assert _get_provider({"provider": "openai"}) == "none"
 
     def test_default_provider_is_local(self):
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True):

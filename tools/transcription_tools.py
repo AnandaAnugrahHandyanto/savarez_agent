@@ -12,7 +12,7 @@ Provides speech-to-text transcription with three providers:
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
 
-Supported input formats: mp3, mp4, mpeg, mpga, m4a, wav, webm, ogg
+Supported input formats: mp3, mp4, mpeg, mpga, m4a, wav, webm, ogg, aac
 
 Usage::
 
@@ -25,8 +25,19 @@ Usage::
 
 import logging
 import os
+import shlex
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional, Dict, Any
+from urllib.parse import urljoin
+
+from utils import is_truthy_value
+from tools.managed_tool_gateway import resolve_managed_tool_gateway
+from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_openai_audio_api_key
+
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +46,17 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 import importlib.util as _ilu
-_HAS_FASTER_WHISPER = _ilu.find_spec("faster_whisper") is not None
-_HAS_OPENAI = _ilu.find_spec("openai") is not None
+
+
+def _safe_find_spec(module_name: str) -> bool:
+    try:
+        return _ilu.find_spec(module_name) is not None
+    except (ImportError, ValueError):
+        return module_name in globals() or module_name in os.sys.modules
+
+
+_HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
+_HAS_OPENAI = _safe_find_spec("openai")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -44,13 +64,18 @@ _HAS_OPENAI = _ilu.find_spec("openai") is not None
 
 DEFAULT_PROVIDER = "local"
 DEFAULT_LOCAL_MODEL = "base"
+DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
+LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
+LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
+COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 
-SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg"}
+SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac"}
+LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
 # Known model sets for auto-correction
@@ -74,7 +99,7 @@ def get_stt_model_from_config() -> Optional[str]:
     """
     try:
         import yaml
-        cfg_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "config.yaml"
+        cfg_path = get_hermes_home() / "config.yaml"
         if cfg_path.exists():
             with open(cfg_path) as f:
                 data = yaml.safe_load(f) or {}
@@ -98,63 +123,125 @@ def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
     if stt_config is None:
         stt_config = _load_stt_config()
     enabled = stt_config.get("enabled", True)
-    if isinstance(enabled, str):
-        return enabled.strip().lower() in ("true", "1", "yes", "on")
-    if enabled is None:
-        return True
-    return bool(enabled)
+    return is_truthy_value(enabled, default=True)
+
+
+def _has_openai_audio_backend() -> bool:
+    """Return True when OpenAI audio can use direct credentials or the managed gateway."""
+    return bool(resolve_openai_audio_api_key() or resolve_managed_tool_gateway("openai-audio"))
+
+
+def _find_binary(binary_name: str) -> Optional[str]:
+    """Find a local binary, checking common Homebrew/local prefixes as well as PATH."""
+    for directory in COMMON_LOCAL_BIN_DIRS:
+        candidate = Path(directory) / binary_name
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return shutil.which(binary_name)
+
+
+def _find_ffmpeg_binary() -> Optional[str]:
+    return _find_binary("ffmpeg")
+
+
+def _find_whisper_binary() -> Optional[str]:
+    return _find_binary("whisper")
+
+
+def _get_local_command_template() -> Optional[str]:
+    configured = os.getenv(LOCAL_STT_COMMAND_ENV, "").strip()
+    if configured:
+        return configured
+
+    whisper_binary = _find_whisper_binary()
+    if whisper_binary:
+        quoted_binary = shlex.quote(whisper_binary)
+        return (
+            f"{quoted_binary} {{input_path}} --model {{model}} --output_format txt "
+            "--output_dir {output_dir} --language {language}"
+        )
+    return None
+
+
+def _has_local_command() -> bool:
+    return _get_local_command_template() is not None
+
+
+def _normalize_local_command_model(model_name: Optional[str]) -> str:
+    if not model_name or model_name in OPENAI_MODELS or model_name in GROQ_MODELS:
+        return DEFAULT_LOCAL_MODEL
+    return model_name
 
 
 def _get_provider(stt_config: dict) -> str:
     """Determine which STT provider to use.
 
-    Priority:
-      1. Explicit config value  (``stt.provider``)
-      2. Auto-detect: local > groq (free) > openai (paid)
-      3. Disabled (returns "none")
+    When ``stt.provider`` is explicitly set in config, that choice is
+    honoured — no silent cloud fallback.  When no provider is configured,
+    auto-detect tries: local > groq (free) > openai (paid).
     """
     if not is_stt_enabled(stt_config):
         return "none"
 
+    explicit = "provider" in stt_config
     provider = stt_config.get("provider", DEFAULT_PROVIDER)
 
-    if provider == "local":
-        if _HAS_FASTER_WHISPER:
-            return "local"
-        # Local requested but not available — fall back to groq, then openai
-        if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
-            logger.info("faster-whisper not installed, falling back to Groq Whisper API")
-            return "groq"
-        if _HAS_OPENAI and os.getenv("VOICE_TOOLS_OPENAI_KEY"):
-            logger.info("faster-whisper not installed, falling back to OpenAI Whisper API")
-            return "openai"
-        return "none"
+    # --- Explicit provider: respect the user's choice ----------------------
 
-    if provider == "groq":
-        if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
-            return "groq"
-        # Groq requested but no key — fall back
-        if _HAS_FASTER_WHISPER:
-            logger.info("GROQ_API_KEY not set, falling back to local faster-whisper")
-            return "local"
-        if _HAS_OPENAI and os.getenv("VOICE_TOOLS_OPENAI_KEY"):
-            logger.info("GROQ_API_KEY not set, falling back to OpenAI Whisper API")
-            return "openai"
-        return "none"
+    if explicit:
+        if provider == "local":
+            if _HAS_FASTER_WHISPER:
+                return "local"
+            if _has_local_command():
+                return "local_command"
+            logger.warning(
+                "STT provider 'local' configured but unavailable "
+                "(install faster-whisper or set HERMES_LOCAL_STT_COMMAND)"
+            )
+            return "none"
 
-    if provider == "openai":
-        if _HAS_OPENAI and os.getenv("VOICE_TOOLS_OPENAI_KEY"):
-            return "openai"
-        # OpenAI requested but no key — fall back
-        if _HAS_FASTER_WHISPER:
-            logger.info("VOICE_TOOLS_OPENAI_KEY not set, falling back to local faster-whisper")
-            return "local"
-        if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
-            logger.info("VOICE_TOOLS_OPENAI_KEY not set, falling back to Groq Whisper API")
-            return "groq"
-        return "none"
+        if provider == "local_command":
+            if _has_local_command():
+                return "local_command"
+            if _HAS_FASTER_WHISPER:
+                logger.info("Local STT command unavailable, using local faster-whisper")
+                return "local"
+            logger.warning(
+                "STT provider 'local_command' configured but unavailable"
+            )
+            return "none"
 
-    return provider  # Unknown — let it fail downstream
+        if provider == "groq":
+            if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
+                return "groq"
+            logger.warning(
+                "STT provider 'groq' configured but GROQ_API_KEY not set"
+            )
+            return "none"
+
+        if provider == "openai":
+            if _HAS_OPENAI and _has_openai_audio_backend():
+                return "openai"
+            logger.warning(
+                "STT provider 'openai' configured but no API key available"
+            )
+            return "none"
+
+        return provider  # Unknown — let it fail downstream
+
+    # --- Auto-detect (no explicit provider): local > groq > openai ---------
+
+    if _HAS_FASTER_WHISPER:
+        return "local"
+    if _has_local_command():
+        return "local_command"
+    if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
+        logger.info("No local STT available, using Groq Whisper API")
+        return "groq"
+    if _HAS_OPENAI and _has_openai_audio_backend():
+        logger.info("No local STT available, using OpenAI Whisper API")
+        return "openai"
+    return "none"
 
 # ---------------------------------------------------------------------------
 # Shared validation
@@ -222,6 +309,89 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
         logger.error("Local transcription failed: %s", e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
 
+
+def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], Optional[str]]:
+    """Normalize audio for local CLI STT when needed."""
+    audio_path = Path(file_path)
+    if audio_path.suffix.lower() in LOCAL_NATIVE_AUDIO_FORMATS:
+        return file_path, None
+
+    ffmpeg = _find_ffmpeg_binary()
+    if not ffmpeg:
+        return None, "Local STT fallback requires ffmpeg for non-WAV inputs, but ffmpeg was not found"
+
+    converted_path = os.path.join(work_dir, f"{audio_path.stem}.wav")
+    command = [ffmpeg, "-y", "-i", file_path, converted_path]
+
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+        return converted_path, None
+    except subprocess.CalledProcessError as e:
+        details = e.stderr.strip() or e.stdout.strip() or str(e)
+        logger.error("ffmpeg conversion failed for %s: %s", file_path, details)
+        return None, f"Failed to convert audio for local STT: {details}"
+
+
+def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Run the configured local STT command template and read back a .txt transcript."""
+    command_template = _get_local_command_template()
+    if not command_template:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": (
+                f"{LOCAL_STT_COMMAND_ENV} not configured and no local whisper binary was found"
+            ),
+        }
+
+    language = os.getenv(LOCAL_STT_LANGUAGE_ENV, DEFAULT_LOCAL_STT_LANGUAGE)
+    normalized_model = _normalize_local_command_model(model_name)
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes-local-stt-") as output_dir:
+            prepared_input, prep_error = _prepare_local_audio(file_path, output_dir)
+            if prep_error:
+                return {"success": False, "transcript": "", "error": prep_error}
+
+            command = command_template.format(
+                input_path=shlex.quote(prepared_input),
+                output_dir=shlex.quote(output_dir),
+                language=shlex.quote(language),
+                model=shlex.quote(normalized_model),
+            )
+            subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+
+            txt_files = sorted(Path(output_dir).glob("*.txt"))
+            if not txt_files:
+                return {
+                    "success": False,
+                    "transcript": "",
+                    "error": "Local STT command completed but did not produce a .txt transcript",
+                }
+
+            transcript_text = txt_files[0].read_text(encoding="utf-8").strip()
+            logger.info(
+                "Transcribed %s via local STT command (%s, %d chars)",
+                Path(file_path).name,
+                normalized_model,
+                len(transcript_text),
+            )
+            return {"success": True, "transcript": transcript_text, "provider": "local_command"}
+
+    except KeyError as e:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Invalid {LOCAL_STT_COMMAND_ENV} template, missing placeholder: {e}",
+        }
+    except subprocess.CalledProcessError as e:
+        details = e.stderr.strip() or e.stdout.strip() or str(e)
+        logger.error("Local STT command failed for %s: %s", file_path, details)
+        return {"success": False, "transcript": "", "error": f"Local STT failed: {details}"}
+    except Exception as e:
+        logger.error("Unexpected error during local command transcription: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
+
 # ---------------------------------------------------------------------------
 # Provider: groq (Whisper API — free tier)
 # ---------------------------------------------------------------------------
@@ -244,19 +414,23 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
     try:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
         client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL, timeout=30, max_retries=0)
+        try:
+            with open(file_path, "rb") as audio_file:
+                transcription = client.audio.transcriptions.create(
+                    model=model_name,
+                    file=audio_file,
+                    response_format="text",
+                )
 
-        with open(file_path, "rb") as audio_file:
-            transcription = client.audio.transcriptions.create(
-                model=model_name,
-                file=audio_file,
-                response_format="text",
-            )
+            transcript_text = str(transcription).strip()
+            logger.info("Transcribed %s via Groq API (%s, %d chars)",
+                         Path(file_path).name, model_name, len(transcript_text))
 
-        transcript_text = str(transcription).strip()
-        logger.info("Transcribed %s via Groq API (%s, %d chars)",
-                     Path(file_path).name, model_name, len(transcript_text))
-
-        return {"success": True, "transcript": transcript_text, "provider": "groq"}
+            return {"success": True, "transcript": transcript_text, "provider": "groq"}
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
 
     except PermissionError:
         return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
@@ -277,9 +451,14 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
 
 def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
     """Transcribe using OpenAI Whisper API (paid)."""
-    api_key = os.getenv("VOICE_TOOLS_OPENAI_KEY")
-    if not api_key:
-        return {"success": False, "transcript": "", "error": "VOICE_TOOLS_OPENAI_KEY not set"}
+    try:
+        api_key, base_url = _resolve_openai_audio_client_config()
+    except ValueError as exc:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": str(exc),
+        }
 
     if not _HAS_OPENAI:
         return {"success": False, "transcript": "", "error": "openai package not installed"}
@@ -291,20 +470,24 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
 
     try:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
-        client = OpenAI(api_key=api_key, base_url=OPENAI_BASE_URL, timeout=30, max_retries=0)
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
+        try:
+            with open(file_path, "rb") as audio_file:
+                transcription = client.audio.transcriptions.create(
+                    model=model_name,
+                    file=audio_file,
+                    response_format="text" if model_name == "whisper-1" else "json",
+                )
 
-        with open(file_path, "rb") as audio_file:
-            transcription = client.audio.transcriptions.create(
-                model=model_name,
-                file=audio_file,
-                response_format="text",
-            )
+            transcript_text = _extract_transcript_text(transcription)
+            logger.info("Transcribed %s via OpenAI API (%s, %d chars)",
+                         Path(file_path).name, model_name, len(transcript_text))
 
-        transcript_text = str(transcription).strip()
-        logger.info("Transcribed %s via OpenAI API (%s, %d chars)",
-                     Path(file_path).name, model_name, len(transcript_text))
-
-        return {"success": True, "transcript": transcript_text, "provider": "openai"}
+            return {"success": True, "transcript": transcript_text, "provider": "openai"}
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
 
     except PermissionError:
         return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
@@ -363,6 +546,13 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         return _transcribe_local(file_path, model_name)
 
+    if provider == "local_command":
+        local_cfg = stt_config.get("local", {})
+        model_name = _normalize_local_command_model(
+            model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
+        )
+        return _transcribe_local_command(file_path, model_name)
+
     if provider == "groq":
         model_name = model or DEFAULT_GROQ_STT_MODEL
         return _transcribe_groq(file_path, model_name)
@@ -378,7 +568,44 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         "transcript": "",
         "error": (
             "No STT provider available. Install faster-whisper for free local "
-            "transcription, set GROQ_API_KEY for free Groq Whisper, "
-            "or set VOICE_TOOLS_OPENAI_KEY for the OpenAI Whisper API."
+            f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
+            "set GROQ_API_KEY for free Groq Whisper, or set VOICE_TOOLS_OPENAI_KEY "
+            "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }
+
+
+def _resolve_openai_audio_client_config() -> tuple[str, str]:
+    """Return direct OpenAI audio config or a managed gateway fallback."""
+    direct_api_key = resolve_openai_audio_api_key()
+    if direct_api_key:
+        return direct_api_key, OPENAI_BASE_URL
+
+    managed_gateway = resolve_managed_tool_gateway("openai-audio")
+    if managed_gateway is None:
+        message = "Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set"
+        if managed_nous_tools_enabled():
+            message += ", and the managed OpenAI audio gateway is unavailable"
+        raise ValueError(message)
+
+    return managed_gateway.nous_user_token, urljoin(
+        f"{managed_gateway.gateway_origin.rstrip('/')}/", "v1"
+    )
+
+
+def _extract_transcript_text(transcription: Any) -> str:
+    """Normalize text and JSON transcription responses to a plain string."""
+    if isinstance(transcription, str):
+        return transcription.strip()
+
+    if hasattr(transcription, "text"):
+        value = getattr(transcription, "text")
+        if isinstance(value, str):
+            return value.strip()
+
+    if isinstance(transcription, dict):
+        value = transcription.get("text")
+        if isinstance(value, str):
+            return value.strip()
+
+    return str(transcription).strip()

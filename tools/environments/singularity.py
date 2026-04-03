@@ -16,13 +16,64 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from hermes_cli.config import get_hermes_home
+from hermes_constants import get_hermes_home
 from tools.environments.base import BaseEnvironment
 from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 
 _SNAPSHOT_STORE = get_hermes_home() / "singularity_snapshots.json"
+
+
+def _find_singularity_executable() -> str:
+    """Locate the apptainer or singularity CLI binary.
+
+    Returns the executable name (``"apptainer"`` or ``"singularity"``).
+    Raises ``RuntimeError`` with install instructions if neither is found.
+    """
+    if shutil.which("apptainer"):
+        return "apptainer"
+    if shutil.which("singularity"):
+        return "singularity"
+    raise RuntimeError(
+        "Neither 'apptainer' nor 'singularity' was found in PATH. "
+        "Install Apptainer (https://apptainer.org/docs/admin/main/installation.html) "
+        "or Singularity and ensure the CLI is available."
+    )
+
+
+def _ensure_singularity_available() -> str:
+    """Preflight check: resolve the executable and verify it responds.
+
+    Returns the executable name on success.
+    Raises ``RuntimeError`` with an actionable message on failure.
+    """
+    exe = _find_singularity_executable()
+
+    try:
+        result = subprocess.run(
+            [exe, "version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except FileNotFoundError:
+        raise RuntimeError(
+            f"Singularity backend selected but the resolved executable '{exe}' "
+            "could not be executed. Check your installation."
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"'{exe} version' timed out. The runtime may be misconfigured."
+        )
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()[:200]
+        raise RuntimeError(
+            f"'{exe} version' failed (exit code {result.returncode}): {stderr}"
+        )
+
+    return exe
 
 
 def _load_snapshots() -> Dict[str, str]:
@@ -169,7 +220,7 @@ class SingularityEnvironment(BaseEnvironment):
         task_id: str = "default",
     ):
         super().__init__(cwd=cwd, timeout=timeout)
-        self.executable = "apptainer" if shutil.which("apptainer") else "singularity"
+        self.executable = _ensure_singularity_available()
         self.image = _get_or_build_sif(image, self.executable)
         self.instance_id = f"hermes_{uuid.uuid4().hex[:12]}"
         self._instance_started = False
@@ -202,6 +253,28 @@ class SingularityEnvironment(BaseEnvironment):
             cmd.extend(["--overlay", str(self._overlay_dir)])
         else:
             cmd.append("--writable-tmpfs")
+
+        # Mount credential files and skills directory (read-only).
+        try:
+            from tools.credential_files import get_credential_file_mounts, get_skills_directory_mount
+
+            for mount_entry in get_credential_file_mounts():
+                cmd.extend(["--bind", f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro"])
+                logger.info(
+                    "Singularity: binding credential %s -> %s",
+                    mount_entry["host_path"],
+                    mount_entry["container_path"],
+                )
+            skills_mount = get_skills_directory_mount()
+            if skills_mount:
+                cmd.extend(["--bind", f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro"])
+                logger.info(
+                    "Singularity: binding skills dir %s -> %s",
+                    skills_mount["host_path"],
+                    skills_mount["container_path"],
+                )
+        except Exception as e:
+            logger.debug("Singularity: could not load credential/skills mounts: %s", e)
 
         # Resource limits (cgroup-based, may require root or appropriate config)
         if self._memory > 0:

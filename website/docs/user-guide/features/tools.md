@@ -104,7 +104,7 @@ hermes config set terminal.singularity_image ~/python.sif
 ### Modal (Serverless Cloud)
 
 ```bash
-uv pip install "swe-rex[modal]"
+uv pip install modal
 modal setup
 hermes config set terminal.backend modal
 ```
@@ -134,6 +134,8 @@ All container backends run with security hardening:
 - PID limits (256 processes)
 - Full namespace isolation
 - Persistent workspace via volumes, not writable root layer
+
+Docker can optionally receive an explicit env allowlist via `terminal.docker_forward_env`, but forwarded variables are visible to commands inside the container and should be treated as exposed to that session.
 
 ## Background Process Management
 

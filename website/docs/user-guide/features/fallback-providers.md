@@ -7,12 +7,13 @@ sidebar_position: 8
 
 # Fallback Providers
 
-Hermes Agent has two separate fallback systems that keep your sessions running when providers hit issues:
+Hermes Agent has three layers of resilience that keep your sessions running when providers hit issues:
 
-1. **Primary model fallback** — automatically switches to a backup provider:model when your main model fails
-2. **Auxiliary task fallback** — independent provider resolution for side tasks like vision, compression, and web extraction
+1. **[Credential pools](./credential-pools.md)** — rotate across multiple API keys for the *same* provider (tried first)
+2. **Primary model fallback** — automatically switches to a *different* provider:model when your main model fails
+3. **Auxiliary task fallback** — independent provider resolution for side tasks like vision, compression, and web extraction
 
-Both are optional and work independently.
+Credential pools handle same-provider rotation (e.g., multiple OpenRouter keys). This page covers cross-provider fallback. Both are optional and work independently.
 
 ## Primary Model Fallback
 
@@ -34,6 +35,7 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 
 | Provider | Value | Requirements |
 |----------|-------|-------------|
+| AI Gateway | `ai-gateway` | `AI_GATEWAY_API_KEY` |
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
 | Nous Portal | `nous` | `hermes login` (OAuth) |
 | OpenAI Codex | `openai-codex` | `hermes model` (ChatGPT OAuth) |
@@ -42,6 +44,9 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 | Kimi / Moonshot | `kimi-coding` | `KIMI_API_KEY` |
 | MiniMax | `minimax` | `MINIMAX_API_KEY` |
 | MiniMax (China) | `minimax-cn` | `MINIMAX_CN_API_KEY` |
+| Kilo Code | `kilocode` | `KILOCODE_API_KEY` |
+| Alibaba / DashScope | `alibaba` | `DASHSCOPE_API_KEY` |
+| Hugging Face | `huggingface` | `HF_TOKEN` |
 | Custom endpoint | `custom` | `base_url` + `api_key_env` (see below) |
 
 ### Custom Endpoint Fallback
@@ -159,7 +164,7 @@ When a task's provider is set to `"auto"` (the default), Hermes tries providers 
 
 ```text
 OpenRouter → Nous Portal → Custom endpoint → Codex OAuth →
-API-key providers (z.ai, Kimi, MiniMax, Anthropic) → give up
+API-key providers (z.ai, Kimi, MiniMax, Hugging Face, Anthropic) → give up
 ```
 
 **For vision tasks:**
@@ -208,15 +213,25 @@ auxiliary:
     model: ""
 ```
 
-Or via environment variables:
+Every task above follows the same **provider / model / base_url** pattern. Context compression uses its own top-level block:
 
-```bash
-AUXILIARY_VISION_PROVIDER=openrouter
-AUXILIARY_VISION_MODEL=openai/gpt-4o
-AUXILIARY_WEB_EXTRACT_PROVIDER=nous
-CONTEXT_COMPRESSION_PROVIDER=main
-CONTEXT_COMPRESSION_MODEL=google/gemini-3-flash-preview
+```yaml
+compression:
+  summary_provider: main                             # Same provider options as auxiliary tasks
+  summary_model: google/gemini-3-flash-preview
+  summary_base_url: null                             # Custom OpenAI-compatible endpoint
 ```
+
+And the fallback model uses:
+
+```yaml
+fallback_model:
+  provider: openrouter
+  model: anthropic/claude-sonnet-4
+  # base_url: http://localhost:8000/v1               # Optional custom endpoint
+```
+
+All three — auxiliary, compression, fallback — work the same way: set `provider` to pick who handles the request, `model` to pick which model, and `base_url` to point at a custom endpoint (overrides provider).
 
 ### Provider Options for Auxiliary Tasks
 

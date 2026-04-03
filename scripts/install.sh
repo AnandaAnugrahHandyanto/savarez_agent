@@ -94,7 +94,7 @@ print_banner() {
     echo ""
     echo -e "${MAGENTA}${BOLD}"
     echo "┌─────────────────────────────────────────────────────────┐"
-    echo "│             ⚕ Hermes Agent Installer                   │"
+    echo "│             ⚕ Hermes Agent Installer                    │"
     echo "├─────────────────────────────────────────────────────────┤"
     echo "│  An open source AI agent by Nous Research.              │"
     echo "└─────────────────────────────────────────────────────────┘"
@@ -483,6 +483,8 @@ install_system_packages() {
         elif command -v sudo &> /dev/null; then
             if [ "$IS_INTERACTIVE" = true ]; then
                 echo ""
+                log_info "sudo is needed ONLY to install optional system packages (${pkgs[*]}) via your package manager."
+                log_info "Hermes Agent itself does not require or retain root access."
                 read -p "Install ${description}? (requires sudo) [y/N] " -n 1 -r
                 echo
                 if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -496,8 +498,9 @@ install_system_packages() {
                 # Non-interactive (e.g. curl | bash) but a terminal is available.
                 # Read the prompt from /dev/tty (same approach the setup wizard uses).
                 echo ""
-                log_info "Installing ${description} requires sudo."
-                read -p "Install? [Y/n] " -n 1 -r < /dev/tty
+                log_info "sudo is needed ONLY to install optional system packages (${pkgs[*]}) via your package manager."
+                log_info "Hermes Agent itself does not require or retain root access."
+                read -p "Install ${description}? [Y/n] " -n 1 -r < /dev/tty
                 echo
                 if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
                     if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a $install_cmd < /dev/tty; then
@@ -574,7 +577,7 @@ clone_repo() {
 
             git fetch origin
             git checkout "$BRANCH"
-            git pull origin "$BRANCH"
+            git pull --ff-only origin "$BRANCH"
 
             if [ -n "$autostash_ref" ]; then
                 local restore_now="yes"
@@ -634,13 +637,6 @@ clone_repo() {
 
     cd "$INSTALL_DIR"
 
-    # Only init mini-swe-agent (terminal tool backend — required).
-    # tinker-atropos (RL training) is optional and heavy — users can opt in later
-    # with: git submodule update --init tinker-atropos && uv pip install -e ./tinker-atropos
-    log_info "Initializing mini-swe-agent submodule (terminal backend)..."
-    git submodule update --init mini-swe-agent
-    log_success "Submodule ready"
-
     log_success "Repository ready"
 }
 
@@ -688,7 +684,9 @@ install_deps() {
                     sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y -qq build-essential python3-dev libffi-dev >/dev/null 2>&1 || true
                     log_success "Build tools installed"
                 else
-                    read -p "Install build tools (build-essential, python3-dev)? (requires sudo) [Y/n] " -n 1 -r < /dev/tty
+                    log_info "sudo is needed ONLY to install build tools (build-essential, python3-dev, libffi-dev) via apt."
+                    log_info "Hermes Agent itself does not require or retain root access."
+                    read -p "Install build tools? [Y/n] " -n 1 -r < /dev/tty
                     echo
                     if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
                         sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y -qq build-essential python3-dev libffi-dev >/dev/null 2>&1 || true
@@ -701,26 +699,22 @@ install_deps() {
 
     # Install the main package in editable mode with all extras.
     # Try [all] first, fall back to base install if extras have issues.
-    if ! $UV_CMD pip install -e ".[all]" 2>/dev/null; then
+    ALL_INSTALL_LOG=$(mktemp)
+    if ! $UV_CMD pip install -e ".[all]" 2>"$ALL_INSTALL_LOG"; then
         log_warn "Full install (.[all]) failed, trying base install..."
+        log_info "Reason: $(tail -5 "$ALL_INSTALL_LOG" | head -3)"
+        rm -f "$ALL_INSTALL_LOG"
         if ! $UV_CMD pip install -e "."; then
             log_error "Package installation failed."
             log_info "Check that build tools are installed: sudo apt install build-essential python3-dev"
             log_info "Then re-run: cd $INSTALL_DIR && uv pip install -e '.[all]'"
             exit 1
         fi
+    else
+        rm -f "$ALL_INSTALL_LOG"
     fi
 
     log_success "Main package installed"
-
-    # Install submodules
-    log_info "Installing mini-swe-agent (terminal tool backend)..."
-    if [ -d "mini-swe-agent" ] && [ -f "mini-swe-agent/pyproject.toml" ]; then
-        $UV_CMD pip install -e "./mini-swe-agent" || log_warn "mini-swe-agent install failed (terminal tools may not work)"
-        log_success "mini-swe-agent installed"
-    else
-        log_warn "mini-swe-agent not found (run: git submodule update --init)"
-    fi
 
     # tinker-atropos (RL training) is optional — skip by default.
     # To enable RL tools: git submodule update --init tinker-atropos && uv pip install -e "./tinker-atropos"
@@ -767,6 +761,12 @@ setup_path() {
         case "$LOGIN_SHELL" in
             zsh)
                 [ -f "$HOME/.zshrc" ] && SHELL_CONFIGS+=("$HOME/.zshrc")
+                [ -f "$HOME/.zprofile" ] && SHELL_CONFIGS+=("$HOME/.zprofile")
+                # If neither exists, create ~/.zshrc (common on fresh macOS installs)
+                if [ ${#SHELL_CONFIGS[@]} -eq 0 ]; then
+                    touch "$HOME/.zshrc"
+                    SHELL_CONFIGS+=("$HOME/.zshrc")
+                fi
                 ;;
             bash)
                 [ -f "$HOME/.bashrc" ] && SHELL_CONFIGS+=("$HOME/.bashrc")
@@ -908,6 +908,8 @@ install_node_deps() {
                 cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || true
                 ;;
             *)
+                log_info "Playwright may request sudo to install browser system dependencies (shared libraries)."
+                log_info "This is standard Playwright setup — Hermes itself does not require root access."
                 cd "$INSTALL_DIR" && npx playwright install --with-deps chromium 2>/dev/null || true
                 ;;
         esac
@@ -1073,7 +1075,14 @@ print_success() {
     echo ""
     echo -e "${YELLOW}⚡ Reload your shell to use 'hermes' command:${NC}"
     echo ""
-    echo "   source ~/.bashrc   # or ~/.zshrc"
+    LOGIN_SHELL="$(basename "${SHELL:-/bin/bash}")"
+    if [ "$LOGIN_SHELL" = "zsh" ]; then
+        echo "   source ~/.zshrc"
+    elif [ "$LOGIN_SHELL" = "bash" ]; then
+        echo "   source ~/.bashrc"
+    else
+        echo "   source ~/.bashrc   # or ~/.zshrc"
+    fi
     echo ""
 
     # Show Node.js warning if auto-install failed

