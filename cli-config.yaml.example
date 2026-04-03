@@ -722,6 +722,13 @@ display:
   # Ctrl+C always interrupts regardless of this setting.
   busy_input_mode: interrupt
 
+  # Keybinding to toggle between interrupt and queue mode at runtime (CLI only).
+  # When pressed while Hermes is running, flips busy_input_mode between
+  # "interrupt" and "queue" without restarting the session.
+  # Accepts prompt_toolkit key names: "c-t" (Ctrl+T), "f2", "c-q", etc.
+  # Leave unset (or null) to disable the toggle hotkey entirely.
+  # busy_input_toggle_key: c-t
+
   # Background process notifications (gateway/messaging only).
   # Controls how chatty the process watcher is when you use
   # terminal(background=true, check_interval=...) from Telegram/Discord/etc.

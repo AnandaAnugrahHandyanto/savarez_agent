@@ -1147,6 +1147,9 @@ class HermesCLI:
         # busy_input_mode: "interrupt" (Enter interrupts current run) or "queue" (Enter queues for next turn)
         _bim = CLI_CONFIG["display"].get("busy_input_mode", "interrupt")
         self.busy_input_mode = "queue" if str(_bim).strip().lower() == "queue" else "interrupt"
+        # busy_input_toggle_key: optional keybinding (e.g. "c-t") to flip busy_input_mode at runtime
+        _toggle_key = CLI_CONFIG["display"].get("busy_input_toggle_key", None)
+        self.busy_input_toggle_key: Optional[str] = str(_toggle_key).strip() if _toggle_key else None
 
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
@@ -1533,10 +1536,14 @@ class HermesCLI:
                 width = shutil.get_terminal_size((80, 24)).columns
             duration_label = snapshot["duration"]
 
+            queue_mode = getattr(self, "busy_input_mode", "interrupt") == "queue"
+            queue_frags = [("class:status-bar-dim", " [Q]")] if queue_mode else []
+
             if width < 52:
                 frags = [
                     ("class:status-bar", " ⚕ "),
                     ("class:status-bar-strong", snapshot["model_short"]),
+                    *queue_frags,
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
                     ("class:status-bar", " "),
@@ -1548,6 +1555,7 @@ class HermesCLI:
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
+                        *queue_frags,
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                         ("class:status-bar-dim", " · "),
@@ -1566,6 +1574,7 @@ class HermesCLI:
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
+                        *queue_frags,
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
                         ("class:status-bar-dim", " │ "),
@@ -7545,6 +7554,19 @@ class HermesCLI:
             ),
             filter=Condition(lambda: cli_ref._status_bar_visible),
         )
+
+        # --- busy_input_toggle_key: flip interrupt/queue mode at runtime ---
+        if cli_ref.busy_input_toggle_key:
+            @kb.add(cli_ref.busy_input_toggle_key)
+            def handle_busy_input_toggle(event):
+                """Toggle busy_input_mode between 'interrupt' and 'queue'."""
+                if cli_ref.busy_input_mode == "interrupt":
+                    cli_ref.busy_input_mode = "queue"
+                    _cprint(f"  {_DIM}Input mode: queue — Enter will queue messages for the next turn{_RST}")
+                else:
+                    cli_ref.busy_input_mode = "interrupt"
+                    _cprint(f"  {_DIM}Input mode: interrupt — Enter will interrupt the running agent{_RST}")
+                event.app.invalidate()
 
         # Allow wrapper CLIs to register extra keybindings.
         self._register_extra_tui_keybindings(kb, input_area=input_area)
