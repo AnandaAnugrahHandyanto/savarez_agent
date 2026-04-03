@@ -1612,16 +1612,6 @@ class HermesCLI:
         # busy_input_mode: "interrupt" (Enter interrupts current run) or "queue" (Enter queues for next turn)
         _bim = CLI_CONFIG["display"].get("busy_input_mode", "interrupt")
         self.busy_input_mode = "queue" if str(_bim).strip().lower() == "queue" else "interrupt"
-        # Dispatch mode for each queue:
-        #   "one_by_one"  — each queued message triggers its own agent turn (default)
-        #   "all_at_once" — after a turn, all queued messages are joined and sent as one turn
-        _sdm = CLI_CONFIG["display"].get("steering_dispatch", "one_by_one")
-        self.steering_dispatch = "all_at_once" if str(_sdm).strip().lower() == "all_at_once" else "one_by_one"
-        _fdm = CLI_CONFIG["display"].get("followup_dispatch", "one_by_one")
-        self.followup_dispatch = "all_at_once" if str(_fdm).strip().lower() == "all_at_once" else "one_by_one"
-        self._show_full_user_message: bool = bool(
-            CLI_CONFIG["display"].get("show_full_user_message", False)
-        )
 
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
@@ -2553,9 +2543,6 @@ class HermesCLI:
             except Exception:
                 label = "⚕ Hermes"
                 _text_hex = "#FFF8DC"
-            _stitle = getattr(self, "_terminal_title_session", "")
-            if _stitle:
-                label = f"{label} — {_stitle}"
             # Build a true-color ANSI escape for the response text color
             # so streamed content matches the Rich Panel appearance.
             try:
@@ -4017,7 +4004,10 @@ class HermesCLI:
         target = parts[1].strip() if len(parts) > 1 else ""
 
         if not target:
-            self.show_sessions_full()
+            _cprint("  Usage: /resume <session_id_or_title>")
+            if self._show_recent_sessions(reason="resume"):
+                return
+            _cprint("  Tip:   Use /history or `hermes sessions list` to find sessions.")
             return
 
         if not self._session_db:
@@ -5362,9 +5352,6 @@ class HermesCLI:
                         label = "⚕ Hermes"
                         _resp_color = "#CD7F32"
                         _resp_text = "#FFF8DC"
-                    _stitle = getattr(self, "_terminal_title_session", "")
-                    if _stitle:
-                        label = f"{label} — {_stitle}"
 
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
@@ -7201,14 +7188,7 @@ class HermesCLI:
                     if not _streaming_box_opened:
                         _streaming_box_opened = True
                         w = self.console.width
-                        try:
-                            from hermes_cli.skin_engine import get_active_skin
-                            label = get_active_skin().get_branding("response_label", " ⚕ Hermes ")
-                        except Exception:
-                            label = " ⚕ Hermes "
-                        _stitle = getattr(self, "_terminal_title_session", "")
-                        if _stitle:
-                            label = f"{label.rstrip()} — {_stitle} "
+                        label = " ⚕ Hermes "
                         fill = w - 2 - len(label)
                         _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
                     _cprint(sentence.rstrip())
@@ -7420,9 +7400,6 @@ class HermesCLI:
                     label = "⚕ Hermes"
                     _resp_color = "#CD7F32"
                     _resp_text = "#FFF8DC"
-                _stitle = getattr(self, "_terminal_title_session", "")
-                if _stitle:
-                    label = f"{label} — {_stitle}"
 
                 is_error_response = result and (result.get("failed") or result.get("partial"))
                 already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
@@ -8923,14 +8900,6 @@ class HermesCLI:
         
         # Background thread to process inputs and run agent
         def process_loop():
-            # Set terminal title on first iteration — runs inside the live app so
-            # get_app() works and write_raw() reaches the terminal after prompt_toolkit
-            # has taken over (iTerm2 resets the title when the TUI starts otherwise).
-            try:
-                app.call_from_executor(self._update_terminal_title)
-            except Exception:
-                pass
-
             while not self._should_exit:
                 try:
                     # Check for pending input with timeout
@@ -9019,18 +8988,14 @@ class HermesCLI:
                     else:
                         _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
                         if '\n' in user_input:
+                            first_line = user_input.split('\n')[0]
+                            line_count = user_input.count('\n') + 1
                             print()
                             ChatConsole().print(_user_bar)
-                            if self._show_full_user_message:
-                                for _line in user_input.splitlines():
-                                    ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(_line)}[/]")
-                            else:
-                                first_line = user_input.split('\n')[0]
-                                line_count = user_input.count('\n') + 1
-                                ChatConsole().print(
-                                    f"[bold {_accent_hex()}]●[/] [bold]{_escape(first_line)}[/] "
-                                    f"[dim](+{line_count - 1} lines)[/]"
-                                )
+                            ChatConsole().print(
+                                f"[bold {_accent_hex()}]●[/] [bold]{_escape(first_line)}[/] "
+                                f"[dim](+{line_count - 1} lines)[/]"
+                            )
                         else:
                             print()
                             ChatConsole().print(_user_bar)
@@ -9051,42 +9016,6 @@ class HermesCLI:
                         self._agent_running = False
                         self._spinner_text = ""
                         self._tool_start_time = 0.0
-
-                        # all_at_once dispatch: drain queues and combine into one message
-                        for _qname, _queue, _tag_key, _mode, _icon in [
-                            ("steering",  self._steering_queue,  "_steering_tag",  self.steering_dispatch,  "🎯"),
-                            ("followup",  self._followup_queue,  "_followup_tag",  self.followup_dispatch,  "📬"),
-                        ]:
-                            if _mode == "all_at_once" and _queue:
-                                # Filter out cancelled items, then drain the whole queue
-                                _items = [
-                                    it for it in _queue
-                                    if it["id"] not in (
-                                        self._cancelled_steerings if _qname == "steering"
-                                        else self._cancelled_followups
-                                    )
-                                ]
-                                _queue.clear()
-                                if _qname == "steering":
-                                    self._cancelled_steerings.clear()
-                                else:
-                                    self._cancelled_followups.clear()
-                                if _items:
-                                    # Join text with separator; images from last item only
-                                    _texts = [it["text"] for it in _items]
-                                    _combined_text = "\n---\n".join(_texts)
-                                    # Carry images from all items
-                                    _all_images = []
-                                    for it in _items:
-                                        p = it["payload"]
-                                        if isinstance(p, tuple):
-                                            _all_images.extend(p[1])
-                                    _combined = (_combined_text, _all_images) if _all_images else _combined_text
-                                    _cprint(
-                                        f"  {_DIM}{_icon} Dispatching {len(_items)} queued message"
-                                        f"{'s' if len(_items) != 1 else ''} as one turn{_RST}"
-                                    )
-                                    self._pending_input.put(_combined)
 
                         app.invalidate()  # Refresh status line
 
