@@ -1464,6 +1464,10 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
     if not schema:
         return {"type": "object", "properties": {}}
 
+    # Fix missing or invalid type (e.g. type: None from some MCP servers)
+    if not schema.get("type"):
+        schema = {**schema, "type": "object"}
+
     if schema.get("type") == "object" and "properties" not in schema:
         return {**schema, "properties": {}}
 
