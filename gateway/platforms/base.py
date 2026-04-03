@@ -1022,6 +1022,29 @@ class BasePlatformAdapter(ABC):
         
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
+            # Gateway-level commands (/approve, /deny) must ALWAYS reach the
+            # gateway runner so they can resolve synchronous approval blockages.
+            # The agent thread is blocked on a threading.Event inside
+            # tools/approval.py — a soft interrupt won't unblock it. These
+            # commands bypass the active-session guard and are dispatched
+            # immediately. Without this, /approve gets queued silently and
+            # the agent times out waiting for user input that never arrives.
+            cmd = event.get_command()
+            if cmd in ("approve", "deny"):
+                logger.debug(
+                    "[%s] Gateway command '%s' bypassing active-session guard for %s",
+                    self.name, cmd, session_key,
+                )
+                task = asyncio.create_task(
+                    self._process_message_background(event, session_key)
+                )
+                try:
+                    self._background_tasks.add(task)
+                except TypeError:
+                    return
+                if hasattr(task, "add_done_callback"):
+                    task.add_done_callback(self._background_tasks.discard)
+                return
             # Special case: photo bursts/albums frequently arrive as multiple near-
             # simultaneous messages. Queue them without interrupting the active run,
             # then process them immediately after the current task finishes.
