@@ -344,6 +344,9 @@ class MessageEvent:
     # Auto-loaded skill for topic/channel bindings (e.g., Telegram DM Topics)
     auto_skill: Optional[str] = None
     
+    # Topic role description — injected into session context for strong role adherence
+    topic_role: Optional[str] = None
+    
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
