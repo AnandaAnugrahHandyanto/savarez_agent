@@ -29,7 +29,7 @@ ASYNC_TASK_TOOL_SCHEMA: Dict[str, Any] = {
         "Ritorna immediatamente con un task_id. Il risultato viene recapitato automaticamente "
         "nella chat quando il task termina. NON blocca la sessione corrente."
     ),
-    "input_schema": {
+    "parameters": {
         "type": "object",
         "properties": {
             "profile": {
@@ -118,9 +118,17 @@ async def async_task(
         )
 
     # Build the full prompt (with optional context)
-    full_prompt = prompt
+    # Add MEDIA delivery instructions so file outputs are delivered correctly
+    media_instructions = (
+        "\n\n[ISTRUZIONI DELIVERY]: Se produci file (HTML, PDF, markdown, ecc.), "
+        "includi nella tua risposta finale la riga `MEDIA:/path/assoluto/del/file` "
+        "per ogni file da consegnare. Esempio: se salvi in /tmp/report.html, "
+        "scrivi `MEDIA:/tmp/report.html` nella risposta. "
+        "Il file verrà allegato automaticamente alla chat."
+    )
+    full_prompt = prompt + media_instructions
     if context and context.strip():
-        full_prompt = f"{prompt}\n\nCONTEXT:\n{context}"
+        full_prompt = f"{prompt}\n\nCONTEXT:\n{context}{media_instructions}"
 
     # Generate task ID
     task_id = f"async_{profile}_{uuid.uuid4().hex[:8]}"
@@ -134,6 +142,8 @@ async def async_task(
         )
 
     # Launch subprocess non-blocking with Popen
+    # --output-format json makes hermes emit a JSON object with final_response
+    # so the watcher can extract only the clean answer, not the tool call log
     cmd = [hermes_bin, "-p", profile, "chat", "-Q", "-q", full_prompt]
     env = os.environ.copy()
 

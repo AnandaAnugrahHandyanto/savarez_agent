@@ -8,9 +8,12 @@ _run_background_task does for /background commands.
 """
 
 import asyncio
+import json
 import logging
 import os
+import subprocess
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -29,7 +32,6 @@ class AsyncTaskEntry:
         prompt: str,
         source: Any,  # SessionSource
         process: Any,  # subprocess.Popen
-        timeout_seconds: int = 600,
     ):
         self.task_id = task_id
         self.profile = profile
@@ -39,7 +41,6 @@ class AsyncTaskEntry:
         self.status = "running"
         self.started_at = datetime.now()
         self.completed_at: Optional[datetime] = None
-        self.timeout_seconds = timeout_seconds
 
     @property
     def duration_str(self) -> str:
@@ -51,10 +52,6 @@ class AsyncTaskEntry:
             return f"{m}m {s}s"
         return f"{s}s"
 
-    @property
-    def is_timed_out(self) -> bool:
-        elapsed = (datetime.now() - self.started_at).total_seconds()
-        return elapsed > self.timeout_seconds
 
 
 class AsyncTaskRegistry:
@@ -97,6 +94,8 @@ class AsyncTaskRegistry:
                 "AsyncTask registered: %s [profile=%s] for chat=%s",
                 task_id, profile, getattr(source, "chat_id", "?"),
             )
+        # Persist immediately so restart can resume context
+        await self.persist()
         return task_id
 
     async def list_active(self) -> list:
@@ -126,6 +125,8 @@ class AsyncTaskRegistry:
             entry.status = "error" if error else "done"
             entry.completed_at = datetime.now()
 
+        # Update persisted state — remove completed task
+        await self.persist()
         await self._deliver_result(entry, result, error=error)
 
     async def _deliver_result(
@@ -153,25 +154,52 @@ class AsyncTaskRegistry:
         preview = entry.prompt[:60] + ("..." if len(entry.prompt) > 60 else "")
 
         if error:
-            header = (
-                f"❌ Async task fallito [profile: {entry.profile}]\n"
-                f'Task ID: {entry.task_id}\n'
-                f'Durata: {entry.duration_str}\n'
-                f'Prompt: "{preview}"\n\n'
-            )
+            content = f"❌ {result}"
         else:
-            header = (
-                f"✅ Async task completato [profile: {entry.profile}]\n"
-                f"Task ID: {entry.task_id}\n"
-                f"Durata: {entry.duration_str}\n\n"
-            )
+            content = result
 
         try:
-            await adapter.send(
-                chat_id=entry.source.chat_id,
-                content=header + result,
-                metadata=_thread_metadata,
-            )
+            from gateway.platforms.base import BasePlatformAdapter
+
+            # Extract MEDIA: tags and images from result before sending
+            media_files, content = BasePlatformAdapter.extract_media(content)
+            images, text_content = BasePlatformAdapter.extract_images(content)
+
+            # Send text if any
+            if text_content.strip():
+                await adapter.send(
+                    chat_id=entry.source.chat_id,
+                    content=text_content,
+                    metadata=_thread_metadata,
+                )
+            elif not images and not media_files:
+                # No text, no images, no media — send placeholder
+                await adapter.send(
+                    chat_id=entry.source.chat_id,
+                    content="(task completato senza output testuale)",
+                    metadata=_thread_metadata,
+                )
+
+            # Send images
+            for image_url, alt_text in (images or []):
+                try:
+                    await adapter.send_image(
+                        chat_id=entry.source.chat_id,
+                        image_url=image_url,
+                        caption=alt_text,
+                    )
+                except Exception:
+                    pass
+
+            # Send media files (HTML, PDF, etc.)
+            for media_path, _is_voice in (media_files or []):
+                try:
+                    await adapter.send_document(
+                        chat_id=entry.source.chat_id,
+                        file_path=media_path,
+                    )
+                except Exception:
+                    pass
         except Exception as exc:
             logger.exception(
                 "Failed to deliver async task result %s: %s", entry.task_id, exc
@@ -194,6 +222,55 @@ class AsyncTaskRegistry:
         if removed:
             logger.debug("AsyncTaskRegistry cleanup: removed %d old tasks", removed)
         return removed
+
+
+    def _state_path(self) -> Path:
+        """Path to the JSON file that persists active tasks across restarts."""
+        from hermes_constants import get_hermes_home
+        return Path(get_hermes_home()) / "async_tasks_state.json"
+
+    async def persist(self) -> None:
+        """Save active tasks to disk so they survive a gateway restart."""
+        async with self._lock:
+            data = []
+            for entry in self._tasks.values():
+                if entry.status != "running":
+                    continue
+                # We can't persist the process object itself — save enough
+                # info to reconstruct the task description on resume.
+                src = entry.source
+                data.append({
+                    "task_id": entry.task_id,
+                    "profile": entry.profile,
+                    "prompt": entry.prompt,
+                    "started_at": entry.started_at.isoformat(),
+                    "source_platform": src.platform.value if src else None,
+                    "source_chat_id": src.chat_id if src else None,
+                    "source_thread_id": getattr(src, "thread_id", None),
+                })
+        try:
+            self._state_path().write_text(json.dumps(data, indent=2))
+        except Exception as exc:
+            logger.warning("AsyncTaskRegistry: failed to persist state: %s", exc)
+
+    async def load_persisted(self) -> list:
+        """Load tasks persisted from a previous gateway run.
+
+        Returns list of dicts with task info — the processes are gone,
+        but the metadata is enough for the boot wakeup message.
+        """
+        path = self._state_path()
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text())
+            # Clear persisted file immediately — tasks won't be restarted automatically,
+            # just reported to the user so they can decide what to do.
+            path.unlink(missing_ok=True)
+            return data
+        except Exception as exc:
+            logger.warning("AsyncTaskRegistry: failed to load persisted state: %s", exc)
+            return []
 
 
 # Module-level singleton — populated by HermesGateway.start()

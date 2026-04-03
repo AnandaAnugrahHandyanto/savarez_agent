@@ -1248,6 +1248,10 @@ class GatewayRunner:
         asyncio.create_task(self._watch_async_tasks())
         logger.info("AsyncTaskRegistry watcher started")
 
+        # On boot: always send a notification to Luca AND wake myself up
+        # so I can resume context automatically — regardless of async tasks.
+        asyncio.create_task(self._boot_notify_and_resume())
+
         logger.info("Press Ctrl+C to stop")
         
         return True
@@ -4252,11 +4256,10 @@ class GatewayRunner:
     async def _watch_async_tasks(self, interval: float = 2.0) -> None:
         """Background watcher: polls subprocess-based async tasks every *interval* seconds.
 
-        When a subprocess finishes (or times out), reads its stdout and injects
-        the result into the originating chat via the AsyncTaskRegistry.
+        When a subprocess finishes, reads its stdout and injects the result into
+        the originating chat via the AsyncTaskRegistry. No timeout — tasks run
+        until completion.
         """
-        TIMEOUT_SECONDS = 600  # 10 minutes hard limit per task
-
         while True:
             try:
                 active = await _async_task_registry.list_active()
@@ -4265,27 +4268,10 @@ class GatewayRunner:
                     if proc is None:
                         continue
 
-                    # Check for timeout first
-                    if entry.is_timed_out:
-                        logger.warning(
-                            "AsyncTask %s timed out after %ds — killing", entry.task_id, TIMEOUT_SECONDS
-                        )
-                        try:
-                            proc.kill()
-                        except Exception:
-                            pass
-                        entry.status = "timeout"
-                        await _async_task_registry.complete(
-                            entry.task_id,
-                            f"❌ Task killato per timeout (>{TIMEOUT_SECONDS//60} minuti).",
-                            error=True,
-                        )
-                        continue
-
                     # Poll for completion (non-blocking)
                     retcode = proc.poll()
                     if retcode is None:
-                        # Still running
+                        # Still running — no timeout, wait indefinitely
                         continue
 
                     # Process has finished — read output
@@ -4294,13 +4280,67 @@ class GatewayRunner:
                     except Exception:
                         stdout, stderr = "", ""
 
-                    result = (stdout or "").strip()
+                    # Extract clean response from hermes -Q -q output.
+                    # Output format:
+                    #   ╭─ ⚕ Hermes ─...╮
+                    #   <actual response lines>
+                    #
+                    #   session_id: ...
+                    raw = (stdout or "").strip()
+                    result = None
+                    if raw:
+                        # Extract only the LAST ╭─...╮ block — that's the final response.
+                        # Intermediate turns also produce full boxes, so we must ignore them.
+                        blocks = raw.split("╭")
+                        if len(blocks) > 1:
+                            # Take the last block, which starts after the last ╭
+                            last_block = blocks[-1]
+                            # Strip the closing box line ╰─...╯ and everything after it
+                            # (which includes ┊ tool logs and session_id)
+                            lines = last_block.splitlines()
+                            # Remove first line (it's the ─ ⚕ Hermes ─...╮ header)
+                            if lines and "╮" in lines[0]:
+                                lines = lines[1:]
+                            # Remove box-drawing footer and everything after
+                            clean = []
+                            for line in lines:
+                                if line.startswith("╰"):
+                                    break
+                                clean.append(line)
+                            # Strip trailing session_id and blanks
+                            while clean and (clean[-1].strip().startswith("session_id:") or clean[-1].strip() == ""):
+                                clean.pop()
+                            result = "\n".join(clean).strip()
+                        else:
+                            # No box found — use raw output stripped of known prefixes
+                            lines = raw.splitlines()
+                            _STRIP_PREFIXES = ("╭", "│", "╰", "  ┊", " ┊", "┊")
+                            lines = [l for l in lines if not any(l.startswith(p) for p in _STRIP_PREFIXES)]
+                            while lines and (lines[-1].strip().startswith("session_id:") or lines[-1].strip() == ""):
+                                lines.pop()
+                            result = "\n".join(lines).strip()
+                    if not result:
+                        result = raw
                     if not result:
                         result = (stderr or "").strip()
                     if not result:
                         result = "(Nessun output prodotto dal profilo)"
 
                     error = retcode != 0
+
+                    # Inject result into main gateway session so the main agent sees it too
+                    session_key = getattr(entry.source, "_session_key", None)
+                    if session_key and session_key in self._sessions:
+                        try:
+                            session = self._sessions[session_key]
+                            inject_msg = (
+                                f"[ASYNC TASK COMPLETATO — profile: {entry.profile}, "
+                                f"task_id: {entry.task_id}]\n\n{result}"
+                            )
+                            session.add_message("user", inject_msg)
+                        except Exception:
+                            pass
+
                     await _async_task_registry.complete(entry.task_id, result, error=error)
 
                 # Periodic cleanup of old completed tasks
@@ -4312,6 +4352,97 @@ class GatewayRunner:
                 logger.exception("_watch_async_tasks: unexpected error")
 
             await asyncio.sleep(interval)
+
+    # ------------------------------------------------------------------
+    # Boot resume wakeup
+    # ------------------------------------------------------------------
+
+    async def _boot_notify_and_resume(self) -> None:
+        """On every gateway boot:
+        1. Send a deterministic notification to Luca: 'Gateway riavviato'
+        2. Inject a synthetic wakeup message to myself so I resume context
+
+        Both happen unconditionally — not just when there are async tasks.
+        """
+        await asyncio.sleep(5)
+
+        try:
+            from gateway.config import Platform
+            from gateway.session import SessionSource
+            from gateway.platforms.base import MessageEvent
+
+            # Read home channel directly from env — more reliable at boot time
+            telegram_chat_id = os.environ.get("TELEGRAM_HOME_CHANNEL", "").strip()
+            if not telegram_chat_id:
+                logger.warning("_boot_notify_and_resume: TELEGRAM_HOME_CHANNEL not set")
+                return
+
+            adapter = self.adapters.get(Platform.TELEGRAM)
+            if not adapter:
+                logger.warning("_boot_notify_and_resume: Telegram adapter not available")
+                return
+
+            # Load any persisted async tasks
+            persisted = await _async_task_registry.load_persisted()
+            thread_meta = None
+
+            # --- 1. Deterministic notification to Luca ---
+            if persisted:
+                task_lines = []
+                for t in persisted:
+                    task_lines.append(
+                        f"• {t['task_id']} [profile: {t['profile']}] — \"{t['prompt'][:60]}...\""
+                    )
+                tasks_info = "\n".join(task_lines)
+                notify_text = (
+                    f"⚡ Gateway riavviato.\n\n"
+                    f"Task async interrotti dal restart:\n{tasks_info}\n\n"
+                    f"Sto riprendendo il contesto."
+                )
+            else:
+                notify_text = "⚡ Gateway riavviato."
+
+            await adapter.send(
+                chat_id=telegram_chat_id,
+                content=notify_text,
+                metadata=thread_meta,
+            )
+
+            # --- 2. Synthetic wakeup to myself ---
+            source = SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id=telegram_chat_id,
+                user_id=telegram_chat_id,
+                chat_name="Home",
+            )
+
+            if persisted:
+                task_lines = [
+                    f"- {t['task_id']} [profile: {t['profile']}]: \"{t['prompt'][:80]}\""
+                    for t in persisted
+                ]
+                wakeup_text = (
+                    f"[SISTEMA — GATEWAY RIAVVIATO]\n\n"
+                    f"Il gateway si è riavviato. Prima del restart erano attivi questi task async:\n"
+                    f"{chr(10).join(task_lines)}\n\n"
+                    f"I processi sono stati interrotti. Riprendi il contesto della sessione "
+                    f"e proponi a Luca se vuole rilanciarli."
+                )
+            else:
+                wakeup_text = (
+                    f"[SISTEMA — GATEWAY RIAVVIATO]\n\n"
+                    f"Il gateway si è appena riavviato. Riprendi il contesto "
+                    f"dell'ultima sessione con Luca e segnalagli che sei di nuovo operativo."
+                )
+
+            # Use _run_background_task() instead of _handle_message() —
+            # background tasks bypass streaming and deliver via adapter.send()
+            # which works correctly with synthetic (non-Telegram) events.
+            logger.info("_boot_notify_and_resume: launching background wakeup task")
+            await self._run_background_task(wakeup_text, source, "boot_wakeup")
+
+        except Exception:
+            logger.exception("_boot_notify_and_resume: unexpected error")
 
     # ------------------------------------------------------------------
     # /tasks command handler
