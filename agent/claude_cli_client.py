@@ -147,6 +147,27 @@ class ClaudeCLIClient:
         self._hermes_session_uuid = _coerce_session_uuid(session_id)
         self._claude_session_id: str | None = None
 
+    def _build_command(self, *, model: str, prompt_text: str, resume_session_id: str | None = None) -> list[str]:
+        cmd = [self._command, "-p", "--output-format", "json", "--model", model]
+        if resume_session_id:
+            cmd.extend(["--resume", resume_session_id])
+        elif self._claude_session_id:
+            cmd.extend(["--resume", self._claude_session_id])
+        else:
+            cmd.extend(["--session-id", self._hermes_session_uuid])
+        cmd.extend(self._args)
+        cmd.append(prompt_text)
+        return cmd
+
+    def _invoke(self, cmd: list[str], *, timeout_seconds: float) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=self._cwd,
+            timeout=timeout_seconds,
+        )
+
     def close(self) -> None:
         self.is_closed = True
 
@@ -204,21 +225,9 @@ class ClaudeCLIClient:
         )
 
     def _run_prompt(self, prompt_text: str, *, model: str, timeout_seconds: float) -> dict[str, Any]:
-        cmd = [self._command, "-p", "--output-format", "json", "--model", model]
-        if self._claude_session_id:
-            cmd.extend(["--resume", self._claude_session_id])
-        else:
-            cmd.extend(["--session-id", self._hermes_session_uuid])
-        cmd.extend(self._args)
-        cmd.append(prompt_text)
+        cmd = self._build_command(model=model, prompt_text=prompt_text)
         try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                cwd=self._cwd,
-                timeout=timeout_seconds,
-            )
+            proc = self._invoke(cmd, timeout_seconds=timeout_seconds)
         except FileNotFoundError as exc:
             raise RuntimeError(
                 f"Could not start Claude CLI command '{self._command}'. "
@@ -227,6 +236,21 @@ class ClaudeCLIClient:
 
         stdout = (proc.stdout or "").strip()
         stderr = (proc.stderr or "").strip()
+        combined = f"{stdout}\n{stderr}".strip()
+        if (
+            proc.returncode != 0
+            and not self._claude_session_id
+            and self._hermes_session_uuid in combined
+            and "already in use" in combined.lower()
+        ):
+            retry_cmd = self._build_command(
+                model=model,
+                prompt_text=prompt_text,
+                resume_session_id=self._hermes_session_uuid,
+            )
+            proc = self._invoke(retry_cmd, timeout_seconds=timeout_seconds)
+            stdout = (proc.stdout or "").strip()
+            stderr = (proc.stderr or "").strip()
         if not stdout:
             raise RuntimeError(stderr or "Claude CLI returned no output.")
 
