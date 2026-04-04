@@ -32,6 +32,15 @@ logger = logging.getLogger(__name__)
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
 _VALID_BUDGETS = {"low", "mid", "high"}
+_PROVIDER_DEFAULT_MODELS = {
+    "openai": "gpt-4o-mini",
+    "anthropic": "claude-haiku-4-5",
+    "gemini": "gemini-2.5-flash",
+    "groq": "openai/gpt-oss-120b",
+    "minimax": "MiniMax-M2.7",
+    "ollama": "gemma3:12b",
+    "lmstudio": "local-model",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +186,8 @@ class HindsightMemoryProvider(MemoryProvider):
         self._bank_id = "hermes"
         self._budget = "mid"
         self._mode = "cloud"
-        self._recall_mode = "hybrid"  # "context", "tools", or "hybrid"
+        self._memory_mode = "hybrid"  # "context", "tools", or "hybrid"
+        self._prefetch_method = "recall"  # "recall" or "reflect"
         self._client = None
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
@@ -223,8 +233,11 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "api_key", "description": "Hindsight Cloud API key", "secret": True, "env_var": "HINDSIGHT_API_KEY", "url": "https://ui.hindsight.vectorize.io", "when": {"mode": "cloud"}},
             {"key": "llm_provider", "description": "LLM provider for local mode", "default": "openai", "choices": ["openai", "anthropic", "gemini", "groq", "minimax", "ollama"], "when": {"mode": "local"}},
             {"key": "llm_api_key", "description": "LLM API key for local Hindsight", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local"}},
-            {"key": "llm_model", "description": "LLM model for local mode", "default": "gpt-4o-mini", "when": {"mode": "local"}},
-            {"key": "recall_mode", "description": "Recall mode", "default": "hybrid", "choices": ["context", "tools", "hybrid"]},
+            {"key": "llm_model", "description": "LLM model for local mode", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "when": {"mode": "local"}},
+            {"key": "bank_id", "description": "Memory bank name", "default": "hermes"},
+            {"key": "budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
+            {"key": "memory_mode", "description": "Memory integration mode", "default": "hybrid", "choices": ["hybrid", "context", "tools"]},
+            {"key": "prefetch_method", "description": "Auto-recall method", "default": "recall", "choices": ["recall", "reflect"]},
         ]
 
     def _get_client(self):
@@ -232,18 +245,16 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._client is None:
             if self._mode == "local":
                 from hindsight import HindsightEmbedded
-                client = HindsightEmbedded(
+                # Disable __del__ on the class to prevent "attached to a
+                # different loop" errors during GC — we handle cleanup in
+                # shutdown() instead.
+                HindsightEmbedded.__del__ = lambda self: None
+                self._client = HindsightEmbedded(
                     profile=self._config.get("profile", "hermes"),
                     llm_provider=self._config.get("llm_provider", ""),
                     llm_api_key=self._config.get("llmApiKey") or os.environ.get("HINDSIGHT_LLM_API_KEY", ""),
                     llm_model=self._config.get("llm_model", ""),
                 )
-                # Disable __del__ to prevent "attached to a different loop"
-                # errors during GC — we handle cleanup in shutdown() instead.
-                client.__class__ = type(
-                    "HindsightEmbedded", (HindsightEmbedded,), {"__del__": lambda self: None}
-                )
-                self._client = client
             else:
                 from hindsight_client import Hindsight
                 kwargs = {"base_url": self._api_url, "timeout": 30.0}
@@ -260,61 +271,96 @@ class HindsightMemoryProvider(MemoryProvider):
         self._api_url = self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)
 
         banks = self._config.get("banks", {}).get("hermes", {})
-        self._bank_id = banks.get("bankId", "hermes")
-        budget = banks.get("budget", "mid")
+        self._bank_id = self._config.get("bank_id") or banks.get("bankId", "hermes")
+        budget = self._config.get("budget") or banks.get("budget", "mid")
         self._budget = budget if budget in _VALID_BUDGETS else "mid"
 
-        recall_mode = self._config.get("recall_mode", "hybrid")
-        self._recall_mode = recall_mode if recall_mode in ("context", "tools", "hybrid") else "hybrid"
+        memory_mode = self._config.get("memory_mode", "hybrid")
+        self._memory_mode = memory_mode if memory_mode in ("context", "tools", "hybrid") else "hybrid"
 
-        logger.info("Hindsight initialized: mode=%s, api_url=%s, bank=%s, budget=%s, recall_mode=%s",
-                     self._mode, self._api_url, self._bank_id, self._budget, self._recall_mode)
+        prefetch_method = self._config.get("prefetch_method", "recall")
+        self._prefetch_method = prefetch_method if prefetch_method in ("recall", "reflect") else "recall"
+
+        logger.info("Hindsight initialized: mode=%s, api_url=%s, bank=%s, budget=%s, memory_mode=%s, prefetch_method=%s",
+                     self._mode, self._api_url, self._bank_id, self._budget, self._memory_mode, self._prefetch_method)
 
         # For local mode, start the embedded daemon in the background so it
         # doesn't block the chat. Redirect stdout/stderr to a log file to
         # prevent rich startup output from spamming the terminal.
         if self._mode == "local":
             def _start_daemon():
-                import sys, traceback
+                import traceback
                 from pathlib import Path
                 log_dir = Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))) / "logs"
                 log_dir.mkdir(parents=True, exist_ok=True)
-                log_file = open(log_dir / "hindsight-embed.log", "a")
-                log_fd = log_file.fileno()
-                # Redirect at both Python and OS level so subprocess output
-                # (rich UI, uv, etc.) also goes to the log file.
-                old_stdout_fd = os.dup(1)
-                old_stderr_fd = os.dup(2)
-                os.dup2(log_fd, 1)
-                os.dup2(log_fd, 2)
-                old_stdout, old_stderr = sys.stdout, sys.stderr
-                sys.stdout, sys.stderr = log_file, log_file
+                log_path = log_dir / "hindsight-embed.log"
                 try:
-                    self._get_client()._ensure_started()
-                    log_file.write("\n=== Daemon started successfully ===\n")
+                    # Redirect the daemon manager's Rich console to our log file
+                    # instead of stderr. This avoids global fd redirects that
+                    # would capture output from other threads.
+                    import hindsight_embed.daemon_embed_manager as dem
+                    from rich.console import Console
+                    dem.console = Console(file=open(log_path, "a"), force_terminal=False)
+
+                    client = self._get_client()
+                    profile = self._config.get("profile", "hermes")
+
+                    # Update the profile .env to match our current config so
+                    # the daemon always starts with the right settings.
+                    # If the config changed and the daemon is running, stop it.
+                    from pathlib import Path as _Path
+                    profile_env = _Path.home() / ".hindsight" / "profiles" / f"{profile}.env"
+                    current_key = self._config.get("llmApiKey") or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
+                    current_provider = self._config.get("llm_provider", "")
+                    current_model = self._config.get("llm_model", "")
+
+                    # Read saved profile config
+                    saved = {}
+                    if profile_env.exists():
+                        for line in profile_env.read_text().splitlines():
+                            if "=" in line and not line.startswith("#"):
+                                k, v = line.split("=", 1)
+                                saved[k.strip()] = v.strip()
+
+                    config_changed = (
+                        saved.get("HINDSIGHT_API_LLM_PROVIDER") != current_provider or
+                        saved.get("HINDSIGHT_API_LLM_MODEL") != current_model or
+                        saved.get("HINDSIGHT_API_LLM_API_KEY") != current_key
+                    )
+
+                    if config_changed:
+                        # Write updated profile .env
+                        profile_env.parent.mkdir(parents=True, exist_ok=True)
+                        profile_env.write_text(
+                            f"HINDSIGHT_API_LLM_PROVIDER={current_provider}\n"
+                            f"HINDSIGHT_API_LLM_API_KEY={current_key}\n"
+                            f"HINDSIGHT_API_LLM_MODEL={current_model}\n"
+                            f"HINDSIGHT_API_LOG_LEVEL=info\n"
+                        )
+                        if client._manager.is_running(profile):
+                            with open(log_path, "a") as f:
+                                f.write("\n=== Config changed, restarting daemon ===\n")
+                            client._manager.stop(profile)
+
+                    client._ensure_started()
+                    with open(log_path, "a") as f:
+                        f.write("\n=== Daemon started successfully ===\n")
                 except Exception as e:
-                    log_file.write(f"\n=== Daemon startup failed: {e} ===\n")
-                    traceback.print_exc(file=log_file)
-                finally:
-                    log_file.flush()
-                    sys.stdout, sys.stderr = old_stdout, old_stderr
-                    os.dup2(old_stdout_fd, 1)
-                    os.dup2(old_stderr_fd, 2)
-                    os.close(old_stdout_fd)
-                    os.close(old_stderr_fd)
-                    log_file.close()
+                    with open(log_path, "a") as f:
+                        f.write(f"\n=== Daemon startup failed: {e} ===\n")
+                        traceback.print_exc(file=f)
 
             t = threading.Thread(target=_start_daemon, daemon=True, name="hindsight-daemon-start")
             t.start()
 
     def system_prompt_block(self) -> str:
-        if self._recall_mode == "context":
+        if self._memory_mode == "context":
             return (
                 f"# Hindsight Memory\n"
                 f"Active (context mode). Bank: {self._bank_id}, budget: {self._budget}.\n"
                 f"Relevant memories are automatically injected into context."
             )
-        if self._recall_mode == "tools":
+        if self._memory_mode == "tools":
             return (
                 f"# Hindsight Memory\n"
                 f"Active (tools mode). Bank: {self._bank_id}, budget: {self._budget}.\n"
@@ -340,14 +386,18 @@ class HindsightMemoryProvider(MemoryProvider):
         return f"## Hindsight Memory\n{result}"
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        if self._recall_mode == "tools":
+        if self._memory_mode == "tools":
             return
         def _run():
             try:
                 client = self._get_client()
-                resp = _run_sync(client.arecall(bank_id=self._bank_id, query=query, budget=self._budget))
-                if resp.results:
-                    text = "\n".join(r.text for r in resp.results if r.text)
+                if self._prefetch_method == "reflect":
+                    resp = _run_sync(client.areflect(bank_id=self._bank_id, query=query, budget=self._budget))
+                    text = resp.text or ""
+                else:
+                    resp = _run_sync(client.arecall(bank_id=self._bank_id, query=query, budget=self._budget))
+                    text = "\n".join(r.text for r in resp.results if r.text) if resp.results else ""
+                if text:
                     with self._prefetch_lock:
                         self._prefetch_result = text
             except Exception as e:
@@ -375,7 +425,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._sync_thread.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        if self._recall_mode == "context":
+        if self._memory_mode == "context":
             return []
         return [RETAIN_SCHEMA, RECALL_SCHEMA, REFLECT_SCHEMA]
 
@@ -439,17 +489,15 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._client is not None:
             try:
                 if self._mode == "local":
-                    # Mark as closed so __del__ becomes a no-op, then close
-                    # the inner HTTP client on our event loop to avoid
-                    # the "attached to a different loop" error.
-                    self._client._closed = True
-                    inner = getattr(self._client, "_client", None)
-                    if inner is not None:
-                        _run_sync(inner.aclose())
-                        _run_sync(asyncio.sleep(0.25))
+                    # Use the public close() API. The RuntimeError from
+                    # aiohttp's "attached to a different loop" is expected
+                    # and harmless — the daemon keeps running independently.
+                    try:
+                        self._client.close()
+                    except RuntimeError:
+                        pass
                 else:
                     _run_sync(self._client.aclose())
-                    _run_sync(asyncio.sleep(0.25))
             except Exception:
                 pass
             self._client = None

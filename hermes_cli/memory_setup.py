@@ -167,42 +167,30 @@ def _install_dependencies(provider_name: str) -> None:
         return
 
     print(f"\n  Installing dependencies: {', '.join(missing)}")
-    installed = False
 
-    # Try uv first (fast, doesn't require pip in the venv)
     import shutil
     uv_path = shutil.which("uv")
-    if uv_path:
-        try:
-            subprocess.run(
-                [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + missing,
-                check=True, timeout=120,
-                capture_output=True,
-            )
-            print(f"  ✓ Installed {', '.join(missing)}")
-            installed = True
-        except (subprocess.CalledProcessError, Exception):
-            pass  # fall through to pip
+    if not uv_path:
+        print(f"  ⚠ uv not found — cannot install dependencies")
+        print(f"  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh")
+        print(f"  Then re-run: hermes memory setup")
+        return
 
-    # Fall back to pip
-    if not installed:
-        try:
-            subprocess.run(
-                [sys.executable, "-m", "pip", "install", "--quiet"] + missing,
-                check=True, timeout=120,
-                capture_output=True,
-            )
-            print(f"  ✓ Installed {', '.join(missing)}")
-            installed = True
-        except subprocess.CalledProcessError as e:
-            print(f"  ⚠ Failed to install {', '.join(missing)}")
-            stderr = (e.stderr or b"").decode()[:200]
-            if stderr:
-                print(f"    {stderr}")
-        except Exception as e:
-            print(f"  ⚠ Install failed: {e}")
-
-    if not installed:
+    try:
+        subprocess.run(
+            [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + missing,
+            check=True, timeout=120,
+            capture_output=True,
+        )
+        print(f"  ✓ Installed {', '.join(missing)}")
+    except subprocess.CalledProcessError as e:
+        print(f"  ⚠ Failed to install {', '.join(missing)}")
+        stderr = (e.stderr or b"").decode()[:200]
+        if stderr:
+            print(f"    {stderr}")
+        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
+    except Exception as e:
+        print(f"  ⚠ Install failed: {e}")
         print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
 
     # Also show external dependencies (non-pip) if any
@@ -297,7 +285,6 @@ def cmd_setup(args) -> None:
 
     schema = provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
 
-    # Provider config section
     provider_config = config["memory"].get(name, {})
     if not isinstance(provider_config, dict):
         provider_config = {}
@@ -312,6 +299,14 @@ def cmd_setup(args) -> None:
             key = field["key"]
             desc = field.get("description", key)
             default = field.get("default")
+            # Dynamic default: look up default from another field's value
+            default_from = field.get("default_from")
+            if default_from and isinstance(default_from, dict):
+                ref_field = default_from.get("field", "")
+                ref_map = default_from.get("map", {})
+                ref_value = provider_config.get(ref_field, "")
+                if ref_value and ref_value in ref_map:
+                    default = ref_map[ref_value]
             is_secret = field.get("secret", False)
             choices = field.get("choices")
             env_var = field.get("env_var")
