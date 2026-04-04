@@ -108,6 +108,16 @@ class ResponseStore:
         self._conn.commit()
         return json.loads(row[0])
 
+    def _delete_conversation_refs(self, response_ids: List[str]) -> None:
+        """Remove conversation mappings that point at deleted response IDs."""
+        if not response_ids:
+            return
+        placeholders = ",".join("?" for _ in response_ids)
+        self._conn.execute(
+            f"DELETE FROM conversations WHERE response_id IN ({placeholders})",
+            tuple(response_ids),
+        )
+
     def put(self, response_id: str, data: Dict[str, Any]) -> None:
         """Store a response, evicting the oldest if at capacity."""
         import time
@@ -118,11 +128,18 @@ class ResponseStore:
         # Evict oldest entries beyond max_size
         count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
         if count > self._max_size:
-            self._conn.execute(
-                "DELETE FROM responses WHERE response_id IN "
-                "(SELECT response_id FROM responses ORDER BY accessed_at ASC LIMIT ?)",
+            rows = self._conn.execute(
+                "SELECT response_id FROM responses ORDER BY accessed_at ASC LIMIT ?",
                 (count - self._max_size,),
-            )
+            ).fetchall()
+            evicted_ids = [row[0] for row in rows]
+            if evicted_ids:
+                placeholders = ",".join("?" for _ in evicted_ids)
+                self._conn.execute(
+                    f"DELETE FROM responses WHERE response_id IN ({placeholders})",
+                    tuple(evicted_ids),
+                )
+                self._delete_conversation_refs(evicted_ids)
         self._conn.commit()
 
     def delete(self, response_id: str) -> bool:
@@ -130,6 +147,8 @@ class ResponseStore:
         cursor = self._conn.execute(
             "DELETE FROM responses WHERE response_id = ?", (response_id,)
         )
+        if cursor.rowcount > 0:
+            self._delete_conversation_refs([response_id])
         self._conn.commit()
         return cursor.rowcount > 0
 
@@ -138,7 +157,23 @@ class ResponseStore:
         row = self._conn.execute(
             "SELECT response_id FROM conversations WHERE name = ?", (name,)
         ).fetchone()
-        return row[0] if row else None
+        if row is None:
+            return None
+
+        response_id = row[0]
+        target = self._conn.execute(
+            "SELECT 1 FROM responses WHERE response_id = ?",
+            (response_id,),
+        ).fetchone()
+        if target is not None:
+            return response_id
+
+        self._conn.execute(
+            "DELETE FROM conversations WHERE name = ? AND response_id = ?",
+            (name, response_id),
+        )
+        self._conn.commit()
+        return None
 
     def set_conversation(self, name: str, response_id: str) -> None:
         """Map a conversation name to its latest response_id."""
