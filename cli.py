@@ -199,6 +199,39 @@ def load_cli_config() -> Dict[str, Any]:
                 "hype": "YOOO LET'S GOOOO!!! I am SO PUMPED to help you today! Every question is AMAZING and we're gonna CRUSH IT together! This is gonna be LEGENDARY! ARE YOU READY?! LET'S DO THIS!",
             },
         },
+        "delegation": {
+            "max_iterations": 45,  # Max tool-calling turns per child agent
+            "default_toolsets": ["terminal", "file", "web"],  # Default toolsets for subagents
+            "model": "",       # Subagent model override (empty = inherit parent model)
+            "provider": "",    # Subagent provider override (empty = inherit parent provider)
+            "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
+            "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
+            "default_profile": "",  # Named child capability profile (empty = legacy/default toolsets)
+            "profiles": {},    # Optional custom delegation profiles
+            "async_subagents": {
+                "enabled": True,
+                "max_per_session": 2,
+                "max_global": 4,
+                "idle_timeout_seconds": 900,
+                "max_duration_seconds": 1800,
+                "output_dir": ".hermes-async-delegates",
+            },
+            "background_subagents": {
+                "enabled": True,
+                "max_per_session": 3,
+                "max_global": 8,
+                "idle_timeout_seconds": 900,
+                "max_lifetime_seconds": 7200,
+                "default_agent_kind": "opencode",
+                "agents": {
+                    "opencode": {
+                        "command": "opencode",
+                        "args": ["acp"],
+                        "cwd_mode": "session",
+                    },
+                },
+            },
+        },
 
         "display": {
             "compact": False,
@@ -229,14 +262,6 @@ def load_cli_config() -> Dict[str, Any]:
                 "base_url": "",
                 "api_key": "",
             },
-        },
-        "delegation": {
-            "max_iterations": 45,  # Max tool-calling turns per child agent
-            "default_toolsets": ["terminal", "file", "web"],  # Default toolsets for subagents
-            "model": "",       # Subagent model override (empty = inherit parent model)
-            "provider": "",    # Subagent provider override (empty = inherit parent provider)
-            "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
-            "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
         },
     }
     

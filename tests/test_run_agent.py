@@ -1300,6 +1300,50 @@ class TestConcurrentToolExecution:
             mock_todo.assert_called_once()
         assert "ok" in result
 
+    def test_invoke_tool_blocks_memory_writes_when_disabled(self, agent_with_memory_tool):
+        agent = agent_with_memory_tool
+        agent._memory_write_enabled = False
+        agent._memory_store = MagicMock()
+
+        result = json.loads(
+            agent._invoke_tool(
+                "memory",
+                {"action": "add", "target": "memory", "content": "blocked"},
+                "task-1",
+            )
+        )
+
+        assert result["success"] is False
+        assert "disabled" in result["error"].lower()
+
+    def test_invoke_tool_blocks_provider_memory_tools_when_disabled(self, agent):
+        manager = MagicMock()
+        manager.has_tool.return_value = True
+        agent._memory_manager = manager
+        agent._provider_tool_access = False
+
+        result = json.loads(
+            agent._invoke_tool("honcho_search", {"query": "test"}, "task-1")
+        )
+
+        assert result["success"] is False
+        assert "disabled" in result["error"].lower()
+        manager.handle_tool_call.assert_not_called()
+
+    def test_invoke_tool_routes_provider_memory_tools_when_enabled(self, agent):
+        manager = MagicMock()
+        manager.has_tool.return_value = True
+        manager.handle_tool_call.return_value = '{"ok": true}'
+        agent._memory_manager = manager
+        agent._provider_tool_access = True
+
+        result = agent._invoke_tool("honcho_search", {"query": "test"}, "task-1")
+
+        assert json.loads(result)["ok"] is True
+        manager.handle_tool_call.assert_called_once_with(
+            "honcho_search", {"query": "test"}
+        )
+
 
 class TestPathsOverlap:
     """Unit tests for the _paths_overlap helper."""
@@ -1427,6 +1471,41 @@ class TestRunConversation:
             result = agent.run_conversation("hello")
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
+
+    def test_background_subagent_context_is_injected_ephemerally(self, agent):
+        self._setup_agent(agent)
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+        with (
+            patch.object(agent, "_build_background_subagent_context", return_value="BG roster"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("hello")
+
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        messages = kwargs["messages"]
+        assert messages[0]["role"] == "system"
+        assert "BG roster" in messages[0]["content"]
+
+    def test_background_context_combines_acp_and_async_delegate_sections(self, agent):
+        class _Mgr:
+            def __init__(self, text):
+                self.text = text
+
+            def render_turn_context(self, session_id):
+                return self.text
+
+        agent.session_id = "session-123"
+        with (
+            patch("agent.background_subagents.get_background_subagent_manager", return_value=_Mgr("ACP roster")),
+            patch("agent.async_delegate_tasks.get_async_delegate_manager", return_value=_Mgr("Async delegate roster")),
+        ):
+            text = agent._build_background_subagent_context()
+
+        assert "ACP roster" in text
+        assert "Async delegate roster" in text
 
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)

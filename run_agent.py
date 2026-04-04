@@ -466,6 +466,9 @@ class AIAgent:
         platform: str = None,
         skip_context_files: bool = False,
         skip_memory: bool = False,
+        memory_write_enabled: bool = True,
+        provider_tool_access: bool = True,
+        agent_context: str = "primary",
         session_db=None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
@@ -534,6 +537,9 @@ class AIAgent:
         self._print_fn = None
         self.background_review_callback = None  # Optional sync callback for gateway delivery
         self.skip_context_files = skip_context_files
+        self._memory_write_enabled = bool(memory_write_enabled)
+        self._provider_tool_access = bool(provider_tool_access)
+        self._agent_context = str(agent_context or "primary")
         self.pass_session_id = pass_session_id
         self.persist_session = persist_session
         self._credential_pool = credential_pool
@@ -1070,7 +1076,7 @@ class AIAgent:
                             "session_id": self.session_id,
                             "platform": platform or "cli",
                             "hermes_home": str(_ghh()),
-                            "agent_context": "primary",
+                            "agent_context": self._agent_context,
                         }
                         # Profile identity for per-profile provider scoping
                         try:
@@ -1090,7 +1096,7 @@ class AIAgent:
                 self._memory_manager = None
 
         # Inject memory provider tool schemas into the tool surface
-        if self._memory_manager and self.tools is not None:
+        if self._memory_manager and self._provider_tool_access and self.tools is not None:
             for _schema in self._memory_manager.get_all_tool_schemas():
                 _wrapped = {"type": "function", "function": _schema}
                 self.tools.append(_wrapped)
@@ -5609,6 +5615,116 @@ class AIAgent:
         finally:
             self._executing_tools = False
 
+    def _handle_builtin_memory_tool(self, function_args: dict) -> str:
+        """Handle the built-in memory tool with optional write protection."""
+        if not self._memory_write_enabled:
+            return json.dumps({
+                "success": False,
+                "error": "Memory writes are disabled for this agent.",
+            })
+
+        target = function_args.get("target", "memory")
+        from tools.memory_tool import memory_tool as _memory_tool
+        result = _memory_tool(
+            action=function_args.get("action"),
+            target=target,
+            content=function_args.get("content"),
+            old_text=function_args.get("old_text"),
+            store=self._memory_store,
+        )
+
+        if self._memory_manager and function_args.get("action") in ("add", "replace"):
+            try:
+                self._memory_manager.on_memory_write(
+                    function_args.get("action", ""),
+                    target,
+                    function_args.get("content", ""),
+                )
+            except Exception:
+                pass
+
+        return result
+
+    def _handle_provider_memory_tool(self, function_name: str, function_args: dict) -> str:
+        """Handle external memory-provider tools with optional access control."""
+        if not self._provider_tool_access:
+            return json.dumps({
+                "success": False,
+                "error": "Memory provider tools are disabled for this agent.",
+            })
+        return self._memory_manager.handle_tool_call(function_name, function_args)
+
+    def _handle_background_subagent_tool(self, function_name: str, function_args: dict) -> str:
+        from agent.background_subagents import get_background_subagent_manager
+
+        manager = get_background_subagent_manager()
+        owner_session_id = str(self.session_id or "").strip()
+        if not owner_session_id:
+            return json.dumps({
+                "success": False,
+                "error": "Background subagents require a parent session_id.",
+            })
+
+        if function_name == "spawn_background_subagent":
+            result = manager.spawn_subagent(
+                owner_session_id=owner_session_id,
+                purpose=function_args.get("purpose", ""),
+                initial_task=function_args.get("initial_task", ""),
+                cwd=function_args.get("cwd", ""),
+                agent_kind=function_args.get("agent_kind"),
+            )
+        elif function_name == "list_background_subagents":
+            result = manager.list_subagents(owner_session_id=owner_session_id)
+        elif function_name == "send_background_subagent":
+            result = manager.send_message(
+                owner_session_id=owner_session_id,
+                subagent_id=function_args.get("id", ""),
+                message=function_args.get("message", ""),
+            )
+        elif function_name == "poll_background_subagent":
+            result = manager.poll_subagent(
+                owner_session_id=owner_session_id,
+                subagent_id=function_args.get("id", ""),
+                since_seq=function_args.get("since_seq"),
+            )
+        elif function_name == "get_background_subagent_status":
+            result = manager.get_status(
+                owner_session_id=owner_session_id,
+                subagent_id=function_args.get("id", ""),
+            )
+        elif function_name == "stop_background_subagent":
+            result = manager.stop_subagent(
+                owner_session_id=owner_session_id,
+                subagent_id=function_args.get("id", ""),
+                reason=function_args.get("reason", ""),
+            )
+        else:
+            result = {
+                "success": False,
+                "error": f"Unknown background subagent tool: {function_name}",
+            }
+        return json.dumps(result)
+
+    def _build_background_subagent_context(self) -> str:
+        owner_session_id = str(self.session_id or "").strip()
+        if not owner_session_id:
+            return ""
+        try:
+            from agent.background_subagents import get_background_subagent_manager
+            from agent.async_delegate_tasks import get_async_delegate_manager
+
+            parts = []
+            subagent_context = get_background_subagent_manager().render_turn_context(owner_session_id)
+            if subagent_context:
+                parts.append(subagent_context)
+            async_delegate_context = get_async_delegate_manager().render_turn_context(owner_session_id)
+            if async_delegate_context:
+                parts.append(async_delegate_context)
+            return "\n\n".join(parts)
+        except Exception:
+            logger.debug("Failed to render background subagent context", exc_info=True)
+            return ""
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str) -> str:
         """Invoke a single tool and return the result string. No display logic.
 
@@ -5635,28 +5751,9 @@ class AIAgent:
                 current_session_id=self.session_id,
             )
         elif function_name == "memory":
-            target = function_args.get("target", "memory")
-            from tools.memory_tool import memory_tool as _memory_tool
-            result = _memory_tool(
-                action=function_args.get("action"),
-                target=target,
-                content=function_args.get("content"),
-                old_text=function_args.get("old_text"),
-                store=self._memory_store,
-            )
-            # Bridge: notify external memory provider of built-in memory writes
-            if self._memory_manager and function_args.get("action") in ("add", "replace"):
-                try:
-                    self._memory_manager.on_memory_write(
-                        function_args.get("action", ""),
-                        target,
-                        function_args.get("content", ""),
-                    )
-                except Exception:
-                    pass
-            return result
+            return self._handle_builtin_memory_tool(function_args)
         elif self._memory_manager and self._memory_manager.has_tool(function_name):
-            return self._memory_manager.handle_tool_call(function_name, function_args)
+            return self._handle_provider_memory_tool(function_name, function_args)
         elif function_name == "clarify":
             from tools.clarify_tool import clarify_tool as _clarify_tool
             return _clarify_tool(
@@ -5670,10 +5767,21 @@ class AIAgent:
                 goal=function_args.get("goal"),
                 context=function_args.get("context"),
                 toolsets=function_args.get("toolsets"),
+                profile=function_args.get("profile"),
+                async_mode=bool(function_args.get("async", False)),
                 tasks=function_args.get("tasks"),
                 max_iterations=function_args.get("max_iterations"),
                 parent_agent=self,
             )
+        elif function_name in {
+            "spawn_background_subagent",
+            "list_background_subagents",
+            "send_background_subagent",
+            "poll_background_subagent",
+            "get_background_subagent_status",
+            "stop_background_subagent",
+        }:
+            return self._handle_background_subagent_tool(function_name, function_args)
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
@@ -5992,15 +6100,7 @@ class AIAgent:
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
             elif function_name == "memory":
-                target = function_args.get("target", "memory")
-                from tools.memory_tool import memory_tool as _memory_tool
-                function_result = _memory_tool(
-                    action=function_args.get("action"),
-                    target=target,
-                    content=function_args.get("content"),
-                    old_text=function_args.get("old_text"),
-                    store=self._memory_store,
-                )
+                function_result = self._handle_builtin_memory_tool(function_args)
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
@@ -6034,6 +6134,8 @@ class AIAgent:
                         goal=function_args.get("goal"),
                         context=function_args.get("context"),
                         toolsets=function_args.get("toolsets"),
+                        profile=function_args.get("profile"),
+                        async_mode=bool(function_args.get("async", False)),
                         tasks=tasks_arg,
                         max_iterations=function_args.get("max_iterations"),
                         parent_agent=self,
@@ -6047,6 +6149,18 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self.quiet_mode:
                         self._vprint(f"  {cute_msg}")
+            elif function_name in {
+                "spawn_background_subagent",
+                "list_background_subagents",
+                "send_background_subagent",
+                "poll_background_subagent",
+                "get_background_subagent_status",
+                "stop_background_subagent",
+            }:
+                function_result = self._handle_background_subagent_tool(function_name, function_args)
+                tool_duration = time.time() - tool_start_time
+                if self.quiet_mode:
+                    self._vprint(f"  {_get_cute_tool_message_impl(function_name, function_args, tool_duration, result=function_result)}")
             elif self._memory_manager and self._memory_manager.has_tool(function_name):
                 # Memory provider tools (hindsight_retain, honcho_search, etc.)
                 # These are not in the tool registry — route through MemoryManager.
@@ -6059,7 +6173,7 @@ class AIAgent:
                     spinner.start()
                 _mem_result = None
                 try:
-                    function_result = self._memory_manager.handle_tool_call(function_name, function_args)
+                    function_result = self._handle_provider_memory_tool(function_name, function_args)
                     _mem_result = function_result
                 except Exception as tool_error:
                     function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
@@ -6282,6 +6396,9 @@ class AIAgent:
             effective_system = self._cached_system_prompt or ""
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            background_context = self._build_background_subagent_context()
+            if background_context:
+                effective_system = (effective_system + "\n\n" + background_context).strip()
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
             if self.prefill_messages:
@@ -6796,6 +6913,9 @@ class AIAgent:
             effective_system = active_system_prompt or ""
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            background_context = self._build_background_subagent_context()
+            if background_context:
+                effective_system = (effective_system + "\n\n" + background_context).strip()
             # Plugin context from pre_llm_call hooks — ephemeral, not cached.
             if _plugin_turn_context:
                 effective_system = (effective_system + "\n\n" + _plugin_turn_context).strip()

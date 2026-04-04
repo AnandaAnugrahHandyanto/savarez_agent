@@ -1,4 +1,5 @@
 import logging
+import threading
 from io import StringIO
 import subprocess
 import sys
@@ -220,7 +221,9 @@ def test_non_persistent_cleanup_removes_container(monkeypatch):
 
     # Should have stop and rm calls via Popen
     stop_cmds = [c for c in popen_cmds if container_id in str(c) and "stop" in str(c)]
+    rm_cmds = [c for c in popen_cmds if container_id in str(c) and "rm -f" in str(c)]
     assert len(stop_cmds) >= 1, f"cleanup() should schedule docker stop for {container_id}"
+    assert len(rm_cmds) >= 1, f"cleanup() should schedule docker rm -f for {container_id}"
 
 
 class _FakePopen:
@@ -265,6 +268,100 @@ def test_execute_uses_hermes_dotenv_for_allowlisted_env(monkeypatch):
     assert result["returncode"] == 0
     assert "GITHUB_TOKEN=value_from_dotenv" in popen_calls[0]
 
+
+def test_start_persistent_exec_builds_interactive_docker_exec(monkeypatch):
+    env = _make_execute_only_env(["OPENAI_API_KEY"])
+    popen_calls = []
+
+    class _FakePersistentPopen(_FakePopen):
+        def __init__(self, cmd, **kwargs):
+            super().__init__(cmd, **kwargs)
+            self.stdin = StringIO()
+            self.stdout = StringIO("")
+            self.stderr = StringIO("")
+            self.pid = 1234
+            self.returncode = None
+
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return 0
+
+        def terminate(self):
+            self.returncode = 0
+
+        def kill(self):
+            self.returncode = -9
+
+    def _fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return _FakePersistentPopen(cmd, **kwargs)
+
+    monkeypatch.setenv("OPENAI_API_KEY", "env-value")
+    monkeypatch.setattr(docker_env.subprocess, "Popen", _fake_popen)
+
+    session = env.start_persistent_exec(
+        cwd="/workspace",
+        command=["opencode", "acp"],
+        env={"HERMES_FOO": "bar"},
+    )
+
+    assert session.pid == 1234
+    cmd, kwargs = popen_calls[0]
+    assert cmd[:5] == ["/usr/bin/docker", "exec", "-i", "-w", "/workspace"]
+    assert "-e" in cmd
+    assert "OPENAI_API_KEY=env-value" in cmd
+    assert "HERMES_FOO=bar" in cmd
+    assert cmd[-3:] == ["test-container", "opencode", "acp"]
+    assert kwargs["stdin"] == subprocess.PIPE
+    assert kwargs["stdout"] == subprocess.PIPE
+    assert kwargs["stderr"] == subprocess.PIPE
+
+
+def test_persistent_exec_session_streams_callbacks_and_exit():
+    stdout_lines = []
+    stderr_lines = []
+    exit_codes = []
+
+    class _FakeProcess:
+        def __init__(self):
+            self.stdin = StringIO()
+            self.stdout = StringIO("hello\nworld\n")
+            self.stderr = StringIO("warn\n")
+            self.pid = 4321
+            self.returncode = None
+            self.terminated = False
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return 0
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = 0
+
+        def kill(self):
+            self.returncode = -9
+
+    process = _FakeProcess()
+    session = docker_env.PersistentDockerExecSession(process)
+    done = threading.Event()
+
+    session.read_loop(
+        stdout_handler=stdout_lines.append,
+        stderr_handler=stderr_lines.append,
+        exit_handler=lambda code: (exit_codes.append(code), done.set()),
+    )
+    assert done.wait(timeout=1.0)
+
+    session.write_line("{\"jsonrpc\":\"2.0\"}")
+    assert process.stdin.getvalue().endswith("\n")
+    assert stdout_lines == ["hello", "world"]
+    assert stderr_lines == ["warn"]
+    assert exit_codes == [0]
+    assert session.is_session_alive() is False
 
 def test_execute_prefers_shell_env_over_hermes_dotenv(monkeypatch):
     env = _make_execute_only_env(["GITHUB_TOKEN"])

@@ -450,8 +450,33 @@ DEFAULT_CONFIG = {
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
         "base_url": "",    # direct OpenAI-compatible endpoint for subagents
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
+        "default_profile": "",  # e.g. "friendly" for built-in or custom delegation profiles
+        "profiles": {},    # optional named child capability profiles (toolsets, memory, terminal)
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
+        "async_subagents": {
+            "enabled": True,
+            "max_per_session": 2,
+            "max_global": 4,
+            "idle_timeout_seconds": 900,
+            "max_duration_seconds": 1800,
+            "output_dir": ".hermes-async-delegates",
+        },
+        "background_subagents": {
+            "enabled": True,
+            "max_per_session": 3,
+            "max_global": 8,
+            "idle_timeout_seconds": 900,
+            "max_lifetime_seconds": 7200,
+            "default_agent_kind": "opencode",
+            "agents": {
+                "opencode": {
+                    "command": "opencode",
+                    "args": ["acp"],
+                    "cwd_mode": "session",
+                },
+            },
+        },
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
