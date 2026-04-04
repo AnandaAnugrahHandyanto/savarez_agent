@@ -30,6 +30,35 @@ def get_default_db_path() -> Path:
 
 
 class PersistentMemoryStore:
+    _ENTRY_TYPE_BONUS = {
+        "prohibition": 0.45,
+        "user_preference": 0.28,
+        "workflow_rule": 0.24,
+        "project_convention": 0.22,
+        "constraint": 0.22,
+        "instruction": 0.20,
+        "user_identity": 0.12,
+        "identity": 0.12,
+        "environment_fact": 0.08,
+        "project": 0.08,
+    }
+
+    _STRENGTH_BONUS = {
+        "hard_rule": 0.65,
+        "strong_pref": 0.24,
+        "soft_pref": 0.10,
+        "contextual": 0.0,
+    }
+
+    _SOURCE_BONUS = {
+        "user_explicit": 0.12,
+        "user_implicit": 0.05,
+        "manual": 0.0,
+        "migration": -0.02,
+        "imported": -0.02,
+        "agent_learned": -0.03,
+    }
+
     def __init__(
         self,
         db_path: Path | None = None,
@@ -73,6 +102,7 @@ class PersistentMemoryStore:
                     scope TEXT NOT NULL DEFAULT 'global',
                     scope_value TEXT,
                     source TEXT NOT NULL DEFAULT 'manual',
+                    strength TEXT NOT NULL DEFAULT 'contextual',
                     confidence REAL NOT NULL DEFAULT 1.0,
                     importance REAL NOT NULL DEFAULT 0.5,
                     created_at REAL NOT NULL,
@@ -80,10 +110,14 @@ class PersistentMemoryStore:
                     last_used_at REAL,
                     use_count INTEGER NOT NULL DEFAULT 0,
                     supersedes_id TEXT,
+                    created_in_session_id TEXT,
+                    replaced_by TEXT,
+                    forgotten_by TEXT,
                     fingerprint TEXT NOT NULL
                 )
                 """
             )
+            self._ensure_memory_entry_columns(conn)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memory_target_status ON memory_entries(target, status)"
             )
@@ -113,6 +147,18 @@ class PersistentMemoryStore:
             )
             conn.commit()
 
+    def _ensure_memory_entry_columns(self, conn: sqlite3.Connection):
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(memory_entries)").fetchall()}
+        required_columns = {
+            "strength": "TEXT NOT NULL DEFAULT 'contextual'",
+            "created_in_session_id": "TEXT",
+            "replaced_by": "TEXT",
+            "forgotten_by": "TEXT",
+        }
+        for name, ddl in required_columns.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE memory_entries ADD COLUMN {name} {ddl}")
+
     def _normalize_content(self, content: str) -> str:
         return " ".join(content.strip().split())
 
@@ -130,7 +176,13 @@ class PersistentMemoryStore:
         )
 
     def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
-        return dict(row)
+        data = dict(row)
+        data.setdefault("strength", "contextual")
+        data.setdefault("created_in_session_id", None)
+        data.setdefault("replaced_by", None)
+        data.setdefault("forgotten_by", None)
+        data.setdefault("entry_type", data.get("kind", "lesson"))
+        return data
 
     def list_entries(self, target: str, include_inactive: bool = False) -> List[Dict[str, Any]]:
         query = "SELECT * FROM memory_entries WHERE target = ?"
@@ -173,12 +225,16 @@ class PersistentMemoryStore:
         content: str,
         *,
         kind: str = "lesson",
+        entry_type: str | None = None,
         scope: str = "global",
         scope_value: str | None = None,
         source: str = "manual",
+        strength: str = "contextual",
         confidence: float = 1.0,
         importance: float = 0.5,
+        created_in_session_id: str | None = None,
     ) -> Dict[str, Any]:
+        kind = entry_type or kind
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
@@ -208,13 +264,13 @@ class PersistentMemoryStore:
                 """
                 INSERT INTO memory_entries(
                     id, target, kind, content, status, scope, scope_value, source,
-                    confidence, importance, created_at, updated_at, last_used_at,
-                    use_count, supersedes_id, fingerprint
-                ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, NULL, 0, NULL, ?)
+                    strength, confidence, importance, created_at, updated_at, last_used_at,
+                    use_count, supersedes_id, created_in_session_id, replaced_by, forgotten_by, fingerprint
+                ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, NULL, ?, NULL, NULL, ?)
                 """,
                 (
                     entry_id, target, kind, content, scope, scope_value, source,
-                    confidence, importance, now, now, fingerprint,
+                    strength, confidence, importance, now, now, created_in_session_id, fingerprint,
                 ),
             )
             self._write_event(conn, entry_id, "add", target, content)
@@ -241,12 +297,16 @@ class PersistentMemoryStore:
         new_content: str,
         *,
         kind: str = "lesson",
+        entry_type: str | None = None,
         scope: str = "global",
         scope_value: str | None = None,
         source: str = "manual",
+        strength: str = "contextual",
         confidence: float = 1.0,
         importance: float = 0.5,
+        created_in_session_id: str | None = None,
     ) -> Dict[str, Any]:
+        kind = entry_type or kind
         old_text = old_text.strip()
         new_content = new_content.strip()
         if not old_text:
@@ -267,19 +327,22 @@ class PersistentMemoryStore:
             if total > limit:
                 return {"success": False, "error": f"Replacement would put memory at {total:,}/{limit:,} chars. Shorten the new content or remove other entries first."}
             now = time.time()
-            conn.execute("UPDATE memory_entries SET status = 'superseded', updated_at = ? WHERE id = ?", (now, old_row["id"]))
-            new_id = str(uuid.uuid4())
+            conn.execute(
+                "UPDATE memory_entries SET status = 'superseded', updated_at = ?, replaced_by = ? WHERE id = ?",
+                (now, new_id := str(uuid.uuid4()), old_row["id"]),
+            )
             conn.execute(
                 """
                 INSERT INTO memory_entries(
                     id, target, kind, content, status, scope, scope_value, source,
-                    confidence, importance, created_at, updated_at, last_used_at,
-                    use_count, supersedes_id, fingerprint
-                ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)
+                    strength, confidence, importance, created_at, updated_at, last_used_at,
+                    use_count, supersedes_id, created_in_session_id, replaced_by, forgotten_by, fingerprint
+                ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, NULL, NULL, ?)
                 """,
                 (
                     new_id, target, kind, new_content, scope, scope_value, source,
-                    confidence, importance, now, now, old_row["id"], self._fingerprint(target, new_content),
+                    strength, confidence, importance, now, now, old_row["id"], created_in_session_id,
+                    self._fingerprint(target, new_content),
                 ),
             )
             self._write_event(conn, old_row["id"], "supersede", target, new_content)
@@ -288,7 +351,7 @@ class PersistentMemoryStore:
             conn.commit()
         return {"success": True, "message": "Entry replaced.", "entry": self._row_to_dict(row), "entries": self.list_entries(target)}
 
-    def forget_entry(self, target: str, old_text: str) -> Dict[str, Any]:
+    def forget_entry(self, target: str, old_text: str, *, forgotten_by: str | None = None) -> Dict[str, Any]:
         old_text = old_text.strip()
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
@@ -302,14 +365,42 @@ class PersistentMemoryStore:
                 return {"success": False, "error": f"Multiple entries matched '{old_text}'. Be more specific.", "matches": previews}
             row = matches[0]
             now = time.time()
-            conn.execute("UPDATE memory_entries SET status = 'forgotten', updated_at = ? WHERE id = ?", (now, row["id"]))
+            conn.execute(
+                "UPDATE memory_entries SET status = 'forgotten', updated_at = ?, forgotten_by = ? WHERE id = ?",
+                (now, forgotten_by, row["id"]),
+            )
             self._write_event(conn, row["id"], "forget", target, row["content"])
             self._export_markdown_locked(conn, target)
             conn.commit()
         return {"success": True, "message": "Entry removed.", "entries": self.list_entries(target)}
 
-    def retrieve_for_prompt(self, target: str) -> List[Dict[str, Any]]:
+    def _score_prompt_entry(self, row: sqlite3.Row | Dict[str, Any], target: str, now: float | None = None) -> tuple[float, str]:
+        data = self._row_to_dict(row) if isinstance(row, sqlite3.Row) else dict(row)
+        now = now or time.time()
+        age_days = max(0.0, (now - float(data.get("updated_at") or now)) / 86400.0)
+        recency = max(0.0, 0.3 - min(age_days / 365.0, 0.3))
+        entry_type = data.get("entry_type") or data.get("kind") or "lesson"
+        strength = data.get("strength") or "contextual"
+        source = data.get("source") or "manual"
+
         target_bias = 0.2 if target == "user" else 0.0
+        kind_bonus = 0.0
+        if data.get("kind") in {"preference", "instruction", "constraint", "identity"}:
+            kind_bonus = 0.25
+        entry_type_bonus = self._ENTRY_TYPE_BONUS.get(entry_type, 0.0)
+        strength_bonus = self._STRENGTH_BONUS.get(strength, 0.0)
+        source_bonus = self._SOURCE_BONUS.get(source, 0.0)
+        use_bonus = 0.05 * int(data.get("use_count") or 0)
+        importance = float(data.get("importance") or 0)
+
+        score = importance + target_bias + kind_bonus + entry_type_bonus + strength_bonus + source_bonus + recency + use_bonus
+        reason = (
+            f"importance={importance:.2f}; entry_type={entry_type}; strength={strength}; "
+            f"source={source}; recency={recency:.2f}"
+        )
+        return score, reason
+
+    def retrieve_for_prompt(self, target: str) -> List[Dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM memory_entries WHERE target = ? AND status = 'active'",
@@ -318,17 +409,51 @@ class PersistentMemoryStore:
         items = []
         now = time.time()
         for row in rows:
-            age_days = max(0.0, (now - row["updated_at"]) / 86400.0)
-            recency = max(0.0, 0.3 - min(age_days / 365.0, 0.3))
-            kind_bonus = 0.0
-            if row["kind"] in {"preference", "instruction", "constraint", "identity"}:
-                kind_bonus = 0.25
-            score = float(row["importance"] or 0) + target_bias + kind_bonus + recency + 0.05 * int(row["use_count"] or 0)
             item = self._row_to_dict(row)
+            score, reason = self._score_prompt_entry(item, target, now=now)
             item["_score"] = score
+            item["_selection_reason"] = reason
             items.append(item)
         items.sort(key=lambda x: (x["_score"], x["updated_at"]), reverse=True)
         return items
+
+    def explain_prompt_selection(self, target: str, char_limit: Optional[int] = None) -> Dict[str, Any]:
+        limit = char_limit or self._char_limit(target)
+        entries = self.retrieve_for_prompt(target)
+        selected: List[Dict[str, Any]] = []
+        selected_contents: List[str] = []
+        separator = "═" * 46
+        header_name = "USER PROFILE (who the user is)" if target == "user" else "MEMORY (your personal notes)"
+        header = f"{separator}\n{header_name}\n{separator}\n"
+
+        for entry in entries:
+            candidate_contents = selected_contents + [entry["content"]]
+            candidate = header + ENTRY_DELIMITER.join(candidate_contents)
+            if len(candidate) <= limit:
+                selected_contents.append(entry["content"])
+                selected.append(
+                    {
+                        "id": entry["id"],
+                        "content": entry["content"],
+                        "score": entry["_score"],
+                        "reason": entry.get("_selection_reason", ""),
+                        "path": "hot_memory",
+                    }
+                )
+
+        if not selected and entries:
+            top = entries[0]
+            selected.append(
+                {
+                    "id": top["id"],
+                    "content": top["content"],
+                    "score": top["_score"],
+                    "reason": top.get("_selection_reason", ""),
+                    "path": "hot_memory",
+                }
+            )
+
+        return {"target": target, "char_limit": limit, "selected": selected}
 
     def render_prompt_block(self, target: str, char_limit: Optional[int] = None) -> Optional[str]:
         limit = char_limit or self._char_limit(target)
@@ -383,11 +508,12 @@ class PersistentMemoryStore:
             for entry in snapshot.get("entries", []):
                 existing = conn.execute("SELECT updated_at FROM memory_entries WHERE id = ?", (entry["id"],)).fetchone()
                 payload = (
-                    entry["id"], entry["target"], entry["kind"], entry["content"], entry["status"],
+                    entry["id"], entry["target"], entry.get("kind") or entry.get("entry_type", "lesson"), entry["content"], entry["status"],
                     entry.get("scope", "global"), entry.get("scope_value"), entry.get("source", "manual"),
-                    float(entry.get("confidence", 1.0)), float(entry.get("importance", 0.5)),
+                    entry.get("strength", "contextual"), float(entry.get("confidence", 1.0)), float(entry.get("importance", 0.5)),
                     float(entry.get("created_at", time.time())), float(entry.get("updated_at", time.time())),
                     entry.get("last_used_at"), int(entry.get("use_count", 0)), entry.get("supersedes_id"),
+                    entry.get("created_in_session_id"), entry.get("replaced_by"), entry.get("forgotten_by"),
                     entry.get("fingerprint") or self._fingerprint(entry["target"], entry["content"]),
                 )
                 if existing is None:
@@ -395,9 +521,9 @@ class PersistentMemoryStore:
                         """
                         INSERT INTO memory_entries(
                             id, target, kind, content, status, scope, scope_value, source,
-                            confidence, importance, created_at, updated_at, last_used_at,
-                            use_count, supersedes_id, fingerprint
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            strength, confidence, importance, created_at, updated_at, last_used_at,
+                            use_count, supersedes_id, created_in_session_id, replaced_by, forgotten_by, fingerprint
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         payload,
                     )
@@ -407,16 +533,18 @@ class PersistentMemoryStore:
                         """
                         UPDATE memory_entries
                         SET target = ?, kind = ?, content = ?, status = ?, scope = ?, scope_value = ?,
-                            source = ?, confidence = ?, importance = ?, created_at = ?, updated_at = ?,
-                            last_used_at = ?, use_count = ?, supersedes_id = ?, fingerprint = ?
+                            source = ?, strength = ?, confidence = ?, importance = ?, created_at = ?, updated_at = ?,
+                            last_used_at = ?, use_count = ?, supersedes_id = ?, created_in_session_id = ?,
+                            replaced_by = ?, forgotten_by = ?, fingerprint = ?
                         WHERE id = ?
                         """,
                         (
-                            entry["target"], entry["kind"], entry["content"], entry["status"],
+                            entry["target"], entry.get("kind") or entry.get("entry_type", "lesson"), entry["content"], entry["status"],
                             entry.get("scope", "global"), entry.get("scope_value"), entry.get("source", "manual"),
-                            float(entry.get("confidence", 1.0)), float(entry.get("importance", 0.5)),
+                            entry.get("strength", "contextual"), float(entry.get("confidence", 1.0)), float(entry.get("importance", 0.5)),
                             float(entry.get("created_at", time.time())), float(entry.get("updated_at", time.time())),
                             entry.get("last_used_at"), int(entry.get("use_count", 0)), entry.get("supersedes_id"),
+                            entry.get("created_in_session_id"), entry.get("replaced_by"), entry.get("forgotten_by"),
                             entry.get("fingerprint") or self._fingerprint(entry["target"], entry["content"]), entry["id"],
                         ),
                     )

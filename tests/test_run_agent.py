@@ -136,6 +136,111 @@ def test_aiagent_reuses_existing_errors_log_handler():
             root_logger.addHandler(handler)
 
 
+def test_fresh_agent_system_prompt_uses_persisted_hard_rule_memory(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from tools.memory_tool import MemoryStore
+
+    store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+    store.load_from_disk()
+    store._backend_store().add_entry(
+        "user",
+        "User likes emoji sometimes",
+        entry_type="user_preference",
+        strength="soft_pref",
+        source="user_explicit",
+        importance=0.95,
+    )
+    store._backend_store().add_entry(
+        "user",
+        "Never use flattery or padding",
+        entry_type="prohibition",
+        strength="hard_rule",
+        source="user_explicit",
+        importance=0.60,
+    )
+
+    cfg = {
+        "memory": {"memory_enabled": False, "user_profile_enabled": True, "user_char_limit": 300},
+        "agent": {},
+        "skills": {},
+        "model": {},
+        "display": {},
+    }
+
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search", "memory")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("hermes_cli.config.load_config", return_value=cfg),
+    ):
+        agent = AIAgent(api_key="***", quiet_mode=True, skip_context_files=True, skip_memory=False)
+        prompt = agent._build_system_prompt()
+
+    assert "Never use flattery or padding" in prompt
+    assert "User likes emoji sometimes" in prompt
+    assert prompt.index("Never use flattery or padding") < prompt.index("User likes emoji sometimes")
+
+
+def test_fresh_agent_system_prompt_honors_correction_and_forgetting_after_restart(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from tools.memory_tool import MemoryStore
+
+    store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+    store.load_from_disk()
+    backend = store._backend_store()
+    backend.add_entry(
+        "user",
+        "User prefers long replies",
+        entry_type="user_preference",
+        strength="strong_pref",
+        source="user_explicit",
+        importance=0.9,
+    )
+    backend.replace_entry(
+        "user",
+        "long replies",
+        "User prefers short replies",
+        entry_type="user_preference",
+        strength="strong_pref",
+        source="user_explicit",
+        importance=0.9,
+    )
+    backend.add_entry(
+        "user",
+        "User timezone is America/Los_Angeles",
+        entry_type="user_identity",
+        strength="contextual",
+        source="user_explicit",
+        importance=0.4,
+    )
+    backend.forget_entry("user", "America/Los_Angeles", forgotten_by="session-z")
+
+    cfg = {
+        "memory": {"memory_enabled": False, "user_profile_enabled": True, "user_char_limit": 300},
+        "agent": {},
+        "skills": {},
+        "model": {},
+        "display": {},
+    }
+
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search", "memory")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("hermes_cli.config.load_config", return_value=cfg),
+    ):
+        fresh_agent = AIAgent(api_key="***", quiet_mode=True, skip_context_files=True, skip_memory=False)
+        prompt = fresh_agent._build_system_prompt()
+
+    assert "User prefers short replies" in prompt
+    assert "User prefers long replies" not in prompt
+    assert "America/Los_Angeles" not in prompt
+
+
 # ---------------------------------------------------------------------------
 # Helper to build mock assistant messages (API response objects)
 # ---------------------------------------------------------------------------

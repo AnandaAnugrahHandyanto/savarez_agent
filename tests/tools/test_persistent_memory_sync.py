@@ -73,3 +73,42 @@ def test_snapshot_file_is_json(tmp_path):
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert payload["format"] == "hermes-memory-snapshot-v1"
     assert payload["entry_count"] == 1
+
+
+def test_snapshot_roundtrip_preserves_phase1_metadata(tmp_path):
+    source = PersistentMemoryStore(
+        db_path=tmp_path / "source.db",
+        memory_dir=tmp_path / "source_memories",
+        memory_char_limit=500,
+        user_char_limit=300,
+    )
+    added = source.add_entry(
+        "user",
+        "User prefers short replies",
+        entry_type="user_preference",
+        strength="hard_rule",
+        source="user_explicit",
+        created_in_session_id="session-42",
+    )
+    source.forget_entry("user", "short replies", forgotten_by="session-43")
+
+    snapshot_path = tmp_path / "phase1-snapshot.json"
+    source.export_snapshot_to_file(snapshot_path)
+
+    dest = PersistentMemoryStore(
+        db_path=tmp_path / "dest.db",
+        memory_dir=tmp_path / "dest_memories",
+        memory_char_limit=500,
+        user_char_limit=300,
+    )
+    result = dest.import_snapshot_from_file(snapshot_path)
+
+    assert result["success"] is True
+    all_user = {e["content"]: e for e in dest.list_entries("user", include_inactive=True)}
+    imported = all_user["User prefers short replies"]
+    assert imported["entry_type"] == "user_preference"
+    assert imported["strength"] == "hard_rule"
+    assert imported["source"] == "user_explicit"
+    assert imported["created_in_session_id"] == "session-42"
+    assert imported["forgotten_by"] == "session-43"
+    assert imported["id"] == added["entry"]["id"]
