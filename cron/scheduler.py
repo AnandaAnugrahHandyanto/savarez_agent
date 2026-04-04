@@ -297,7 +297,7 @@ def _build_job_prompt(job: dict) -> str:
                     "## Script Output\n"
                     "The following data was collected by a pre-run script. "
                     "Use it as context for your analysis.\n\n"
-                    f"```\n{script_output}\n```\n\n"
+                    f"<data>\n{script_output}\n</data>\n\n"
                     f"{prompt}"
                 )
             else:
@@ -309,7 +309,7 @@ def _build_job_prompt(job: dict) -> str:
             prompt = (
                 "## Script Error\n"
                 "The data-collection script failed. Report this to the user.\n\n"
-                f"```\n{script_output}\n```\n\n"
+                f"<data>\n{script_output}\n</data>\n\n"
                 f"{prompt}"
             )
 
