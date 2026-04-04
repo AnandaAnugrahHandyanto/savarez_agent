@@ -301,6 +301,9 @@ class APIServerAdapter(BasePlatformAdapter):
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        # Approval gate: pending requests keyed by request_id
+        self._pending_approvals: Dict[str, Dict[str, Any]] = {}
+        self._approval_timeout: int = int(extra.get("approval_timeout", 30))
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -691,7 +694,111 @@ class APIServerAdapter(BasePlatformAdapter):
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
             except Exception:
-                pass
+                result = {}
+
+            # --- Approval gate: check if agent hit approval_required ---
+            approval_handled = False
+            try:
+                from tools.approval import pop_pending
+                # Use session_id as the session_key for API server sessions
+                pending = pop_pending(session_id)
+                if pending:
+                    import threading as _threading
+                    request_id = f"apr-{uuid.uuid4().hex[:12]}"
+                    approval_event = _threading.Event()
+                    self._pending_approvals[request_id] = {
+                        "event": approval_event,
+                        "decision": None,
+                        "tool_name": "terminal",
+                        "summary": (pending.get("command", ""))[:200],
+                        "detail": pending.get("description", ""),
+                        "session_id": session_id,
+                        "command": pending.get("command", ""),
+                        "pattern_keys": pending.get("pattern_keys", []),
+                        "timestamp": time.time(),
+                    }
+
+                    # Emit approval request as a structured SSE event
+                    approval_sse = {
+                        "id": completion_id, "object": "chat.completion.chunk",
+                        "created": created, "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"content": ""},
+                            "finish_reason": None,
+                        }],
+                        "approval_request": {
+                            "request_id": request_id,
+                            "tool_name": "terminal",
+                            "summary": (pending.get("command", ""))[:200],
+                            "detail": pending.get("description", ""),
+                            "timeout_seconds": self._approval_timeout,
+                            "session_id": session_id or "",
+                        },
+                    }
+                    await response.write(f"event: approval_request\ndata: {json.dumps(approval_sse)}\n\n".encode())
+
+                    # Wait for companion response (blocking with timeout)
+                    approved = await loop.run_in_executor(
+                        None, lambda: approval_event.wait(timeout=self._approval_timeout)
+                    )
+
+                    approval_info = self._pending_approvals.pop(request_id, {})
+                    decision = approval_info.get("decision", "timeout")
+
+                    if decision == "approved":
+                        # Execute the command with force=True and continue agent
+                        from tools.terminal_tool import terminal_tool as _terminal_tool
+                        cmd = pending.get("command", "")
+                        cmd_result = await loop.run_in_executor(
+                            None, lambda: _terminal_tool(command=cmd, force=True)
+                        )
+
+                        # Approve for session so future uses don't re-prompt
+                        from tools.approval import approve_session
+                        for pk in pending.get("pattern_keys", []):
+                            approve_session(session_id, pk)
+
+                        # Stream the result
+                        result_preview = (cmd_result or "")[:3500]
+                        approved_msg = f"\n\n✅ Command approved and executed.\n```\n{result_preview}\n```\n"
+                        approved_chunk = {
+                            "id": completion_id, "object": "chat.completion.chunk",
+                            "created": created, "model": model,
+                            "choices": [{"index": 0, "delta": {"content": approved_msg}, "finish_reason": None}],
+                        }
+                        await response.write(f"data: {json.dumps(approved_chunk)}\n\n".encode())
+
+                        # Update action log
+                        try:
+                            from model_tools import _ensure_action_log_thread, _action_log_queue, _detect_platform
+                            import queue as _alq
+                            _ensure_action_log_thread()
+                            _action_log_queue.put_nowait({
+                                "session_id": session_id,
+                                "tool_name": "terminal",
+                                "tool_args": json.dumps({"command": cmd}),
+                                "result_summary": result_preview[:512],
+                                "mutates": True,
+                                "platform": "gateway",
+                                "approved_by": "user",
+                                "timestamp": time.time(),
+                                "duration_ms": 0,
+                            })
+                        except Exception:
+                            pass
+
+                        approval_handled = True
+                    else:
+                        denied_msg = f"\n\n❌ Command {'timed out' if decision == 'timeout' else 'denied'}.\n"
+                        denied_chunk = {
+                            "id": completion_id, "object": "chat.completion.chunk",
+                            "created": created, "model": model,
+                            "choices": [{"index": 0, "delta": {"content": denied_msg}, "finish_reason": None}],
+                        }
+                        await response.write(f"data: {json.dumps(denied_chunk)}\n\n".encode())
+            except Exception as e:
+                logger.debug("Approval gate check: %s", e)
 
             # Finish chunk
             finish_chunk = {
@@ -1171,6 +1278,86 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"error": str(e)}, status=500)
 
     # ------------------------------------------------------------------
+    # Approval gate handlers
+    # ------------------------------------------------------------------
+
+    async def _handle_approval_response(self, request: "web.Request") -> "web.Response":
+        """POST /v1/approvals/{request_id} — companion sends approval decision."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        request_id = request.match_info.get("request_id", "")
+        pending = self._pending_approvals.get(request_id)
+        if not pending:
+            return web.json_response({"error": "No pending approval with this ID"}, status=404)
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        decision = body.get("decision", "denied")
+        event = pending.get("event")
+        pending["decision"] = decision
+        if event is not None:
+            event.set()
+
+        return web.json_response({"status": "ok", "decision": decision})
+
+    async def _handle_list_approvals(self, request: "web.Request") -> "web.Response":
+        """GET /v1/approvals — list pending approval requests (for polling clients)."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        import time as _t
+        now = _t.time()
+        pending_list = []
+        expired_ids = []
+        for req_id, info in self._pending_approvals.items():
+            age = now - info.get("timestamp", now)
+            if age > self._approval_timeout:
+                expired_ids.append(req_id)
+                continue
+            pending_list.append({
+                "request_id": req_id,
+                "tool_name": info.get("tool_name", ""),
+                "summary": info.get("summary", ""),
+                "detail": info.get("detail", ""),
+                "session_id": info.get("session_id", ""),
+                "timeout_seconds": max(0, self._approval_timeout - int(age)),
+            })
+        for eid in expired_ids:
+            exp = self._pending_approvals.pop(eid, None)
+            if exp and exp.get("event"):
+                exp["decision"] = "timeout"
+                exp["event"].set()
+
+        return web.json_response({"approvals": pending_list})
+
+    def _emit_approval_sse(
+        self,
+        stream_q,
+        request_id: str,
+        tool_name: str,
+        summary: str,
+        detail: str,
+        session_id: str,
+    ) -> None:
+        """Inject an approval_request event into the SSE stream queue."""
+        event_data = json.dumps({
+            "event": "approval_request",
+            "request_id": request_id,
+            "tool_name": tool_name,
+            "summary": summary,
+            "detail": detail,
+            "session_id": session_id or "",
+            "timeout_seconds": self._approval_timeout,
+        })
+        stream_q.put(f"\n\n[APPROVAL_REQUEST]{event_data}[/APPROVAL_REQUEST]\n\n")
+
+    # ------------------------------------------------------------------
     # Output extraction helper
     # ------------------------------------------------------------------
 
@@ -1250,6 +1437,12 @@ class APIServerAdapter(BasePlatformAdapter):
         loop = asyncio.get_event_loop()
 
         def _run():
+            # Set env vars so approval.py knows this is a gateway session
+            if session_id:
+                os.environ["HERMES_SESSION_KEY"] = session_id
+                os.environ["HERMES_SESSION_ID"] = session_id
+            os.environ["HERMES_GATEWAY_SESSION"] = "1"
+
             agent = self._create_agent(
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
@@ -1301,6 +1494,9 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+            # Approval gate
+            self._app.router.add_post("/v1/approvals/{request_id}", self._handle_approval_response)
+            self._app.router.add_get("/v1/approvals", self._handle_list_approvals)
 
             # Port conflict detection — fail fast if port is already in use
             import socket as _socket
