@@ -271,6 +271,55 @@ def _expand_whatsapp_auth_aliases(identifier: str) -> set:
 
 logger = logging.getLogger(__name__)
 
+
+def _build_gateway_disposition_context(
+    disposition: str,
+    *,
+    source: Optional[SessionSource] = None,
+    session_key: Optional[str] = None,
+    event: Optional[MessageEvent] = None,
+    reason: Optional[str] = None,
+) -> dict[str, Any]:
+    context: dict[str, Any] = {"disposition": disposition}
+    if source is not None:
+        if getattr(source, "platform", None):
+            context["platform"] = source.platform.value
+        if getattr(source, "chat_id", None):
+            context["chat_id"] = source.chat_id
+        if getattr(source, "user_id", None):
+            context["user_id"] = source.user_id
+    if session_key:
+        context["session_key"] = session_key
+    if event is not None and getattr(event, "message_id", None):
+        context["message_id"] = event.message_id
+    if event is not None:
+        cmd = event.get_command() if hasattr(event, "get_command") else None
+        if cmd:
+            context["command"] = cmd
+    if reason:
+        context["reason"] = reason
+    return context
+
+
+def _log_gateway_disposition(
+    disposition: str,
+    *,
+    source: Optional[SessionSource] = None,
+    session_key: Optional[str] = None,
+    event: Optional[MessageEvent] = None,
+    reason: Optional[str] = None,
+) -> dict[str, Any]:
+    context = _build_gateway_disposition_context(
+        disposition,
+        source=source,
+        session_key=session_key,
+        event=event,
+        reason=reason,
+    )
+    parts = ["gateway_disposition"] + [f"{k}={v}" for k, v in context.items()]
+    logger.info(" ".join(parts))
+    return context
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -1711,6 +1760,13 @@ class GatewayRunner:
                 # prevent spamming the user with repeated messages when
                 # multiple DMs arrive in quick succession.
                 if self.pairing_store._is_rate_limited(platform_name, source.user_id):
+                    ctx = _log_gateway_disposition(
+                        "unauthorized_rate_limited",
+                        source=source,
+                        event=event,
+                        reason="pairing_rate_limited",
+                    )
+                    await self.hooks.emit("gateway:state", ctx)
                     return None
                 code = self.pairing_store.generate_code(
                     platform_name, source.user_id, source.user_name or ""
@@ -1855,6 +1911,14 @@ class GatewayRunner:
                             adapter._pending_messages[_quick_key] = event
                     else:
                         adapter._pending_messages[_quick_key] = event
+                ctx = _log_gateway_disposition(
+                    "queued_without_interrupt",
+                    source=source,
+                    session_key=_quick_key,
+                    event=event,
+                    reason="photo_follow_up_active_run",
+                )
+                await self.hooks.emit("gateway:state", ctx)
                 return None
 
             running_agent = self._running_agents.get(_quick_key)
@@ -1878,6 +1942,14 @@ class GatewayRunner:
                 self._pending_messages[_quick_key] += "\n" + event.text
             else:
                 self._pending_messages[_quick_key] = event.text
+            ctx = _log_gateway_disposition(
+                "interrupt_requested",
+                source=source,
+                session_key=_quick_key,
+                event=event,
+                reason="active_run_interrupted_by_new_input",
+            )
+            await self.hooks.emit("gateway:state", ctx)
             return None
 
         # Check for commands
