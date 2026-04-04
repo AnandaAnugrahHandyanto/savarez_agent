@@ -153,13 +153,11 @@ class ClaudeCLIClient:
     ):
         self.api_key = api_key or "claude-cli"
         self.base_url = base_url or CLAUDE_CLI_MARKER_BASE_URL
-        self._default_headers = dict(default_headers or {})
         self._command = command or acp_command or _resolve_command()
         self._args = list(args or acp_args or _resolve_args())
         self._cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self.chat = _ClaudeCLIChatNamespace(self)
         self.is_closed = False
-        self._last_result: dict[str, Any] | None = None
         self._hermes_session_uuid = _coerce_session_uuid(session_id)
         self._claude_session_id: str | None = None
 
@@ -203,7 +201,6 @@ class ClaudeCLIClient:
             model=(model or "").split("/", 1)[-1],
             timeout_seconds=float(timeout or _DEFAULT_TIMEOUT_SECONDS),
         )
-        self._last_result = payload
         cli_session_id = str(payload.get("session_id") or "").strip()
         if cli_session_id:
             self._claude_session_id = cli_session_id

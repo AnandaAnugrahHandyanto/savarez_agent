@@ -772,7 +772,7 @@ class AIAgent:
                 # Explicit credentials from CLI/gateway — construct directly.
                 # The runtime provider resolver already handled auth for us.
                 client_kwargs = {"api_key": api_key, "base_url": base_url}
-                if self.provider in {"copilot-acp", "claude-cli"}:
+                if self.provider in {"copilot-acp", "claude-cli"} or str(base_url).startswith("claude-cli://"):
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
                     client_kwargs["session_id"] = session_id

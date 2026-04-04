@@ -2609,6 +2609,7 @@ def test_aiagent_infers_claude_cli_client_from_base_url_and_disables_tools():
             base_url="claude-cli://local",
             acp_command="/usr/local/bin/claude",
             acp_args=["--debug"],
+            session_id="cli-session-123",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -2620,6 +2621,9 @@ def test_aiagent_infers_claude_cli_client_from_base_url_and_disables_tools():
     mock_claude_client.assert_called_once()
     assert mock_claude_client.call_args.kwargs["base_url"] == "claude-cli://local"
     assert mock_claude_client.call_args.kwargs["api_key"] == "dummy-key"
+    assert mock_claude_client.call_args.kwargs["command"] == "/usr/local/bin/claude"
+    assert mock_claude_client.call_args.kwargs["args"] == ["--debug"]
+    assert mock_claude_client.call_args.kwargs["session_id"] == "cli-session-123"
 
 
 def test_aiagent_passes_session_id_to_claude_cli_client():
