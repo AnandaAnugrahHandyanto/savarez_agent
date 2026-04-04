@@ -6935,7 +6935,8 @@ class HermesCLI:
             pass
 
         self.show_banner()
-        self._update_terminal_title()  # Set initial terminal title on startup
+        # Terminal title is set from inside process_loop (via call_from_executor)
+        # so it fires after prompt_toolkit takes over the terminal, not before.
 
         # One-line Honcho session indicator (TTY-only, not captured by agent).
         # Only show when the user explicitly configured Honcho for Hermes
@@ -8452,6 +8453,14 @@ class HermesCLI:
         
         # Background thread to process inputs and run agent
         def process_loop():
+            # Set terminal title on first iteration — runs inside the live app so
+            # get_app() works and write_raw() reaches the terminal after prompt_toolkit
+            # has taken over (iTerm2 resets the title when the TUI starts otherwise).
+            try:
+                app.call_from_executor(self._update_terminal_title)
+            except Exception:
+                pass
+
             while not self._should_exit:
                 try:
                     # Check for pending input with timeout
