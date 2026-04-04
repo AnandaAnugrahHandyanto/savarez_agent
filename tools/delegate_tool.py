@@ -784,7 +784,7 @@ DELEGATE_TASK_SCHEMA = {
                     },
                     "required": ["goal"],
                 },
-                "maxItems": 6,
+                "maxItems": 3,
                 "description": (
                     "Batch mode: up to 3 tasks to run in parallel by default (configurable via "
                     "delegation.max_concurrent_children in config.yaml). Each gets "
