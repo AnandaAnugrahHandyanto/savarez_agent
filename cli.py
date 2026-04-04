@@ -2893,7 +2893,15 @@ class HermesCLI:
             ("Drafting", [
                 ("Ctrl+G",          "Open input in external editor ($VISUAL / VS Code)"),
                 ("Ctrl+S",          "Stash input (pop with Ctrl+S, auto-restores after response)"),
+                ("Ctrl+P",          "Peek paste / preview input / full history pager (empty input)"),
                 ("Ctrl+V",          "Paste from clipboard (image-aware)"),
+                ("ESC ESC",         "Clear input buffer and attached images"),
+            ]),
+            ("Queues", [
+                ("Alt+Enter",       "📬 Queue follow-up (sent after current response)"),
+                ("Enter (queue mode)", "🎯 Queue steering (busy_input_mode: queue in config)"),
+                ("Alt+↑",          "Recall most recent 📬 follow-up into input"),
+                ("Alt+↓",          "Recall most recent 🎯 steering into input"),
             ]),
             ("Voice", [
                 (_voice_key_display, "Toggle voice recording (when voice mode is on)"),
