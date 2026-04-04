@@ -16,6 +16,10 @@ from tools.browser_tool import (
 )
 
 
+def _norm_path_str(path) -> str:
+    return os.fspath(path).replace("\\", "/")
+
+
 class TestSanePath:
     """Verify _SANE_PATH includes Homebrew directories."""
 
@@ -44,10 +48,11 @@ class TestDiscoverHomebrewNodeDirs:
         entries = ["node@20", "node@24", "openssl", "node", "python@3.12"]
 
         def mock_isdir(p):
-            if p == "/opt/homebrew/opt":
+            normalized = _norm_path_str(p)
+            if normalized == "/opt/homebrew/opt":
                 return True
             # node@20/bin and node@24/bin exist
-            if p in (
+            if normalized in (
                 "/opt/homebrew/opt/node@20/bin",
                 "/opt/homebrew/opt/node@24/bin",
             ):
@@ -59,8 +64,9 @@ class TestDiscoverHomebrewNodeDirs:
             result = _discover_homebrew_node_dirs()
 
         assert len(result) == 2
-        assert "/opt/homebrew/opt/node@20/bin" in result
-        assert "/opt/homebrew/opt/node@24/bin" in result
+        normalized_result = [_norm_path_str(p) for p in result]
+        assert "/opt/homebrew/opt/node@20/bin" in normalized_result
+        assert "/opt/homebrew/opt/node@24/bin" in normalized_result
 
     def test_excludes_plain_node(self):
         """'node' (unversioned) should be excluded — covered by /opt/homebrew/bin."""
@@ -82,7 +88,7 @@ class TestFindAgentBrowser:
     def test_finds_in_current_path(self):
         """Should return result from shutil.which if available on current PATH."""
         with patch("shutil.which", return_value="/usr/local/bin/agent-browser"):
-            assert _find_agent_browser() == "/usr/local/bin/agent-browser"
+            assert _find_agent_browser() == ["/usr/local/bin/agent-browser"]
 
     def test_finds_in_homebrew_bin(self):
         """Should search Homebrew dirs when not found on current PATH."""
@@ -98,7 +104,7 @@ class TestFindAgentBrowser:
                  return_value=[],
              ):
             result = _find_agent_browser()
-            assert result == "/opt/homebrew/bin/agent-browser"
+            assert result == ["/opt/homebrew/bin/agent-browser"]
 
     def test_finds_npx_in_homebrew(self):
         """Should find npx in Homebrew paths as a fallback."""
@@ -127,7 +133,14 @@ class TestFindAgentBrowser:
                  return_value=[],
              ):
             result = _find_agent_browser()
-            assert result == "npx agent-browser"
+            assert result == ["/opt/homebrew/bin/npx", "agent-browser"]
+
+    def test_preserves_spaced_windows_executable_path(self):
+        """Executable paths with spaces must stay a single argv element."""
+        spaced_path = r"C:\Program Files\nodejs\agent-browser.cmd"
+
+        with patch("shutil.which", return_value=spaced_path):
+            assert _find_agent_browser() == [spaced_path]
 
     def test_raises_when_not_found(self):
         """Should raise FileNotFoundError when nothing works."""
@@ -162,7 +175,10 @@ class TestRunBrowserCommandPathConstruction:
         mock_proc.returncode = 0
         mock_proc.wait.return_value = 0
 
+        captured_cmd = []
+
         def capture_popen(cmd, **kwargs):
+            captured_cmd[:] = cmd
             captured_env.update(kwargs.get("env", {}))
             return mock_proc
 
@@ -187,31 +203,39 @@ class TestRunBrowserCommandPathConstruction:
         real_isdir = os.path.isdir
 
         def selective_isdir(p):
-            if p in fake_homebrew_dirs or p.startswith(str(tmp_path)):
+            normalized = _norm_path_str(p)
+            if normalized in fake_homebrew_dirs or normalized.startswith(_norm_path_str(tmp_path)):
                 return True
-            if "/opt/homebrew/" in p:
+            if "/opt/homebrew/" in normalized:
                 return True  # _SANE_PATH dirs
             return real_isdir(p)
 
-        with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
+        with patch("tools.browser_tool._find_agent_browser", return_value=["/usr/local/bin/agent-browser"]), \
              patch("tools.browser_tool._get_session_info", return_value=fake_session), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=fake_homebrew_dirs), \
+             patch("pathlib.Path.home", return_value=Path("/home/test")), \
              patch("os.path.isdir", side_effect=selective_isdir), \
              patch("subprocess.Popen", side_effect=capture_popen), \
              patch("os.open", return_value=99), \
              patch("os.close"), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
+             patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test", "HERMES_HOME": "/home/test/.hermes"}, clear=True):
             # The function reads from temp files for stdout/stderr
             with patch("builtins.open", mock_open(read_data=fake_json)):
                 _run_browser_command("test-task", "navigate", ["https://example.com"])
 
         # Verify Homebrew node dirs made it into the subprocess PATH
-        result_path = captured_env.get("PATH", "")
+        result_path = _norm_path_str(captured_env.get("PATH", ""))
         assert "/opt/homebrew/opt/node@24/bin" in result_path
         assert "/opt/homebrew/opt/node@20/bin" in result_path
         assert "/opt/homebrew/bin" in result_path  # from _SANE_PATH
+        assert captured_cmd[:4] == [
+            "/usr/local/bin/agent-browser",
+            "--session",
+            "test-session",
+            "--json",
+        ]
 
     def test_subprocess_path_includes_sane_path_homebrew(self, tmp_path):
         """_SANE_PATH Homebrew entries should appear even without versioned node dirs."""
@@ -221,7 +245,10 @@ class TestRunBrowserCommandPathConstruction:
         mock_proc.returncode = 0
         mock_proc.wait.return_value = 0
 
+        captured_cmd = []
+
         def capture_popen(cmd, **kwargs):
+            captured_cmd[:] = cmd
             captured_env.update(kwargs.get("env", {}))
             return mock_proc
 
@@ -235,25 +262,84 @@ class TestRunBrowserCommandPathConstruction:
         real_isdir = os.path.isdir
 
         def selective_isdir(p):
-            if "/opt/homebrew/" in p:
+            normalized = _norm_path_str(p)
+            if "/opt/homebrew/" in normalized:
                 return True
-            if p.startswith(str(tmp_path)):
+            if normalized.startswith(_norm_path_str(tmp_path)):
                 return True
             return real_isdir(p)
 
-        with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
+        with patch("tools.browser_tool._find_agent_browser", return_value=["/usr/local/bin/agent-browser"]), \
              patch("tools.browser_tool._get_session_info", return_value=fake_session), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+             patch("pathlib.Path.home", return_value=Path("/home/test")), \
              patch("os.path.isdir", side_effect=selective_isdir), \
              patch("subprocess.Popen", side_effect=capture_popen), \
              patch("os.open", return_value=99), \
              patch("os.close"), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
+             patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test", "HERMES_HOME": "/home/test/.hermes"}, clear=True):
             with patch("builtins.open", mock_open(read_data=fake_json)):
                 _run_browser_command("test-task", "navigate", ["https://example.com"])
 
-        result_path = captured_env.get("PATH", "")
+        result_path = _norm_path_str(captured_env.get("PATH", ""))
         assert "/opt/homebrew/bin" in result_path
         assert "/opt/homebrew/sbin" in result_path
+        assert captured_cmd[:4] == [
+            "/usr/local/bin/agent-browser",
+            "--session",
+            "test-session",
+            "--json",
+        ]
+
+    def test_run_browser_command_preserves_spaced_windows_executable_path(self, tmp_path):
+        """_run_browser_command must not split executable paths that contain spaces."""
+        captured_cmd = []
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+
+        def capture_popen(cmd, **kwargs):
+            captured_cmd[:] = cmd
+            return mock_proc
+
+        fake_session = {
+            "session_name": "test-session",
+            "session_id": "test-id",
+            "cdp_url": None,
+        }
+
+        fake_json = json.dumps({"success": True})
+        spaced_path = r"C:\Program Files\nodejs\agent-browser.cmd"
+
+        real_isdir = os.path.isdir
+
+        def selective_isdir(p):
+            if _norm_path_str(p).startswith(_norm_path_str(tmp_path)):
+                return True
+            return real_isdir(p)
+
+        with patch("tools.browser_tool._find_agent_browser", return_value=[spaced_path]), \
+             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
+             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+             patch("pathlib.Path.home", return_value=Path("/home/test")), \
+             patch("os.path.isdir", side_effect=selective_isdir), \
+             patch("subprocess.Popen", side_effect=capture_popen), \
+             patch("os.open", return_value=99), \
+             patch("os.close"), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.dict(os.environ, {"PATH": r"C:\Program Files\nodejs", "HOME": "/home/test", "HERMES_HOME": "/home/test/.hermes"}, clear=True):
+            with patch("builtins.open", mock_open(read_data=fake_json)):
+                _run_browser_command("test-task", "navigate", ["https://example.com"])
+
+        assert captured_cmd[0] == spaced_path
+        assert captured_cmd[1:] == [
+            "--session",
+            "test-session",
+            "--json",
+            "navigate",
+            "https://example.com",
+        ]

@@ -750,7 +750,7 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
 
 
 
-def _find_agent_browser() -> str:
+def _find_agent_browser() -> list[str]:
     """
     Find the agent-browser CLI executable.
     
@@ -758,7 +758,7 @@ def _find_agent_browser() -> str:
     node, local node_modules/.bin/, npx fallback.
     
     Returns:
-        Path to agent-browser executable
+        Argv-safe command components for launching agent-browser
         
     Raises:
         FileNotFoundError: If agent-browser is not installed
@@ -767,7 +767,7 @@ def _find_agent_browser() -> str:
     # Check if it's in PATH (global install)
     which_result = shutil.which("agent-browser")
     if which_result:
-        return which_result
+        return [which_result]
 
     # Build an extended search PATH including Homebrew and Hermes-managed dirs.
     # This covers macOS where the process PATH may not include Homebrew paths.
@@ -786,20 +786,20 @@ def _find_agent_browser() -> str:
         extended_path = os.pathsep.join(extra_dirs)
         which_result = shutil.which("agent-browser", path=extended_path)
         if which_result:
-            return which_result
+            return [which_result]
 
     # Check local node_modules/.bin/ (npm install in repo root)
     repo_root = Path(__file__).parent.parent
     local_bin = repo_root / "node_modules" / ".bin" / "agent-browser"
     if local_bin.exists():
-        return str(local_bin)
+        return [str(local_bin)]
     
     # Check common npx locations (also search extended dirs)
     npx_path = shutil.which("npx")
     if not npx_path and extra_dirs:
         npx_path = shutil.which("npx", path=os.pathsep.join(extra_dirs))
     if npx_path:
-        return "npx agent-browser"
+        return [npx_path, "agent-browser"]
     
     raise FileNotFoundError(
         "agent-browser CLI not found. Install it with: npm install -g agent-browser\n"
@@ -883,7 +883,7 @@ def _run_browser_command(
         # Local mode — launch a headless Chromium instance
         backend_args = ["--session", session_info["session_name"]]
 
-    cmd_parts = browser_cmd.split() + backend_args + [
+    cmd_parts = browser_cmd + backend_args + [
         "--json",
         command
     ] + args
