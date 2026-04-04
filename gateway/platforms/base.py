@@ -1022,6 +1022,27 @@ class BasePlatformAdapter(ABC):
         
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
+            # Gateway slash commands like /approve, /deny, /stop, /new, /status,
+            # etc. are control-plane messages. They must bypass adapter-level
+            # session serialization so the gateway can resolve them immediately
+            # even while an agent turn is active or blocked on approval.
+            if event.is_command():
+                try:
+                    from hermes_cli.commands import resolve_command as _resolve_gateway_command
+                    _cmd = event.get_command()
+                    if _cmd and _resolve_gateway_command(_cmd):
+                        logger.debug("[%s] Dispatching gateway command %s immediately while session %s is active", self.name, _cmd, session_key)
+                        task = asyncio.create_task(self._process_priority_command(event))
+                        try:
+                            self._background_tasks.add(task)
+                        except TypeError:
+                            return
+                        if hasattr(task, "add_done_callback"):
+                            task.add_done_callback(self._background_tasks.discard)
+                        return
+                except Exception:
+                    pass
+
             # Special case: photo bursts/albums frequently arrive as multiple near-
             # simultaneous messages. Queue them without interrupting the active run,
             # then process them immediately after the current task finishes.
@@ -1085,6 +1106,20 @@ class BasePlatformAdapter(ABC):
         if mode == "natural":
             min_ms, max_ms = 800, 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
+
+    async def _process_priority_command(self, event: MessageEvent) -> None:
+        """Process a gateway slash command immediately while another turn is active.
+
+        This bypasses adapter-level session serialization for control-plane
+        commands like /approve, /deny, /stop, /new, and /status so they can
+        resolve blocked or running turns instead of being queued behind them.
+        """
+        if not self._message_handler:
+            return
+        response = await self._message_handler(event)
+        if response:
+            _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            await self.send(event.source.chat_id, response, metadata=_thread_metadata)
 
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""

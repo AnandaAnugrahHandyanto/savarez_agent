@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.platforms.base import SendResult
+from gateway.session import build_session_key
 from tests.e2e.conftest import (
     make_adapter,
     make_event,
@@ -85,6 +86,23 @@ class TestTelegramSlashCommands:
         response_text = send.call_args[1].get("content") or send.call_args[0][1]
         response_lower = response_text.lower()
         assert "no" in response_lower or "stop" in response_lower or "not running" in response_lower
+
+    @pytest.mark.asyncio
+    async def test_approve_bypasses_active_session_serialization(self, adapter):
+        session_key = build_session_key(make_source())
+        adapter._active_sessions[session_key] = asyncio.Event()
+        adapter._message_handler = AsyncMock(return_value="✅ Command approved. The agent is resuming...")
+        adapter.set_message_handler(adapter._message_handler)
+
+        event = make_event("/approve always")
+        adapter.send.reset_mock()
+        await adapter.handle_message(event)
+        await asyncio.sleep(0.3)
+
+        adapter._message_handler.assert_awaited()
+        adapter.send.assert_called_once()
+        response_text = adapter.send.call_args[1].get("content") or adapter.send.call_args[0][1]
+        assert "approved" in response_text.lower()
 
     @pytest.mark.asyncio
     async def test_commands_shows_listing(self, adapter):
