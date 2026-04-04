@@ -450,7 +450,17 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # run_conversation is synchronous.
         _cron_timeout = float(os.getenv("HERMES_CRON_TIMEOUT", 600))
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        _cron_future = _cron_pool.submit(agent.run_conversation, prompt)
+
+        def _run_cron_turn():
+            from tools.approval import set_current_session_key, reset_current_session_key
+
+            token = set_current_session_key(_cron_session_id)
+            try:
+                return agent.run_conversation(prompt)
+            finally:
+                reset_current_session_key(token)
+
+        _cron_future = _cron_pool.submit(_run_cron_turn)
         try:
             result = _cron_future.result(timeout=_cron_timeout)
         except concurrent.futures.TimeoutError:
@@ -460,6 +470,19 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             )
             if hasattr(agent, "interrupt"):
                 agent.interrupt("Cron job timed out")
+            try:
+                from tools.process_registry import process_registry
+
+                killed = process_registry.kill_all_for_session(_cron_session_id)
+                if killed:
+                    logger.warning(
+                        "Job '%s' timeout cleanup killed %d background process(es) for session %s",
+                        job_name,
+                        killed,
+                        _cron_session_id,
+                    )
+            except Exception:
+                logger.exception("Job '%s': failed background-process cleanup after timeout", job_name)
             _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise TimeoutError(
                 f"Cron job '{job_name}' timed out after "

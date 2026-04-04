@@ -523,11 +523,14 @@ class ProcessRegistry:
                 return result
 
             if _interrupt_event.is_set():
+                kill_result = self.kill_process(session_id)
                 result = {
                     "status": "interrupted",
                     "output": strip_ansi(session.output_buffer[-1000:]),
-                    "note": "User sent a new message -- wait interrupted",
+                    "note": "Interrupt received — background process was terminated",
                 }
+                if kill_result.get("status") not in ("killed", "already_exited"):
+                    result["kill_status"] = kill_result
                 if timeout_note:
                     result["timeout_note"] = timeout_note
                 return result
@@ -660,6 +663,21 @@ class ProcessRegistry:
                 s.session_key == session_key and not s.exited
                 for s in self._running.values()
             )
+
+    def kill_all_for_session(self, session_key: str) -> int:
+        """Kill all running processes associated with a session key."""
+        with self._lock:
+            targets = [
+                s for s in self._running.values()
+                if s.session_key == session_key and not s.exited
+            ]
+
+        killed = 0
+        for session in targets:
+            result = self.kill_process(session.id)
+            if result.get("status") in ("killed", "already_exited"):
+                killed += 1
+        return killed
 
     def kill_all(self, task_id: str = None) -> int:
         """Kill all running processes, optionally filtered by task_id. Returns count killed."""

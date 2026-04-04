@@ -1,5 +1,6 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -8,6 +9,16 @@ from unittest.mock import AsyncMock, patch, MagicMock
 import pytest
 
 from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, run_job, SILENT_MARKER, _build_job_prompt
+
+
+@pytest.fixture(autouse=True)
+def isolate_tick_lock(tmp_path, monkeypatch):
+    """Give each test its own tick lock so xdist workers don't fight over one global file."""
+    import cron.scheduler as scheduler
+
+    lock_dir = tmp_path / "cron-lock"
+    monkeypatch.setattr(scheduler, "_LOCK_DIR", lock_dir)
+    monkeypatch.setattr(scheduler, "_LOCK_FILE", lock_dir / ".tick.lock")
 
 
 class TestResolveOrigin:
@@ -368,6 +379,45 @@ class TestRunJobSessionPersistence:
         assert final_response == ""
         # But the output log should show the placeholder
         assert "(No response generated)" in output
+
+    def test_run_job_timeout_interrupts_agent_and_cleans_session_processes(self, tmp_path):
+        job = {
+            "id": "slow-job",
+            "name": "slow test",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+        pool = MagicMock()
+        future = MagicMock()
+        future.result.side_effect = concurrent.futures.TimeoutError()
+        pool.submit.return_value = future
+        mock_agent = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent", return_value=mock_agent), \
+             patch("cron.scheduler.concurrent.futures.ThreadPoolExecutor", return_value=pool), \
+             patch("tools.process_registry.process_registry.kill_all_for_session", return_value=2) as kill_mock:
+            success, output, final_response, error = run_job(job)
+
+        assert success is False
+        assert final_response == ""
+        assert "timed out after 10 minutes" in error
+        mock_agent.interrupt.assert_called_once_with("Cron job timed out")
+        kill_mock.assert_called_once()
+        assert kill_mock.call_args.args[0].startswith("cron_slow-job_")
+        fake_db.close.assert_called_once()
 
     def test_run_job_sets_auto_delivery_env_from_dotenv_home_channel(self, tmp_path, monkeypatch):
         job = {

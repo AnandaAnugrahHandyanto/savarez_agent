@@ -7,6 +7,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from tools.interrupt import set_interrupt
 from tools.environments.local import _HERMES_PROVIDER_ENV_FORCE_PREFIX
 from tools.process_registry import (
     ProcessRegistry,
@@ -173,6 +174,42 @@ class TestActiveQueries:
         s = _make_session(task_id="t1", exited=True, exit_code=0)
         registry._finished[s.id] = s
         assert registry.has_active_processes("t1") is False
+
+    def test_kill_all_for_session(self, registry):
+        s1 = _make_session(sid="proc_1")
+        s1.session_key = "cron_1"
+        s2 = _make_session(sid="proc_2")
+        s2.session_key = "cron_1"
+        s3 = _make_session(sid="proc_3")
+        s3.session_key = "other"
+        registry._running[s1.id] = s1
+        registry._running[s2.id] = s2
+        registry._running[s3.id] = s3
+
+        with patch.object(registry, "kill_process", return_value={"status": "killed"}) as kill_mock:
+            killed = registry.kill_all_for_session("cron_1")
+
+        assert killed == 2
+        assert kill_mock.call_count == 2
+        kill_mock.assert_any_call("proc_1")
+        kill_mock.assert_any_call("proc_2")
+
+
+class TestWait:
+    def test_wait_interrupt_kills_process(self, registry):
+        s = _make_session(output="still running")
+        registry._running[s.id] = s
+
+        try:
+            set_interrupt(True)
+            with patch.object(registry, "kill_process", return_value={"status": "killed"}) as kill_mock:
+                result = registry.wait(s.id, timeout=1)
+        finally:
+            set_interrupt(False)
+
+        assert result["status"] == "interrupted"
+        assert "terminated" in result["note"]
+        kill_mock.assert_called_once_with(s.id)
 
 
 # =========================================================================

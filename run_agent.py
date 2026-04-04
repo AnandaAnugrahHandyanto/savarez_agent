@@ -1593,7 +1593,7 @@ class AIAgent:
         }
     
     def _cleanup_task_resources(self, task_id: str) -> None:
-        """Clean up VM and browser resources for a given task."""
+        """Clean up VM, browser, and background-process resources for a given task."""
         try:
             cleanup_vm(task_id)
         except Exception as e:
@@ -1604,6 +1604,12 @@ class AIAgent:
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup browser for task {task_id}: {e}")
+        try:
+            from tools.process_registry import process_registry
+            process_registry.kill_all(task_id)
+        except Exception as e:
+            if self.verbose_logging:
+                logging.warning(f"Failed to cleanup background processes for task {task_id}: {e}")
 
     # ------------------------------------------------------------------
     # Background memory/skill review
