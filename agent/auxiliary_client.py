@@ -669,14 +669,45 @@ def _try_nous() -> Tuple[Optional[OpenAI], Optional[str]]:
     model = "gemini-3-flash" if nous.get("source") == "pool" else _NOUS_MODEL
     return (
         OpenAI(
-            api_key=_nous_api_key(nous),
+            api_key=_nous_...us),
             base_url=str(nous.get("inference_base_url") or _nous_base_url()).rstrip("/"),
         ),
         model,
     )
 
 
-def _read_main_model() -> str:
+def _try_minimax() -> Tuple[Optional[OpenAI], Optional[str]]:
+    """Try to create a MiniMax vision client from credential pool.
+
+    Checks minimax-cn first (China region), then minimax (international),
+    using the same OpenAI-compatible ChatCompletions endpoint.
+    """
+    # Try minimax-cn first (most common for China users), then minimax
+    for provider_id in ("minimax-cn", "minimax"):
+        pool_present, entry = _select_pool_entry(provider_id)
+        if not pool_present:
+            continue
+
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        pconfig = PROVIDER_REGISTRY.get(provider_id)
+        if not pconfig:
+            continue
+
+        api_key = _pool_...try)
+        if not api_key:
+            continue
+
+        base_url = _pool_runtime_base_url(entry, pconfig.inference_base_url) or pconfig.inference_base_url
+        # MiniMax-M2.7 is natively multimodal and handles vision tasks
+        model = "MiniMax-M2.7"
+        logger.debug("Auxiliary vision client: MiniMax (%s) via pool at %s", model, base_url)
+        return OpenAI(api_key=*** base_url=base_url), model
+
+    return None, None
+
+
+def _read_main_model()
     """Read the user's configured main model from config.yaml.
 
     config.yaml model.default is the single source of truth for the active
@@ -1162,6 +1193,7 @@ _VISION_AUTO_PROVIDER_ORDER = (
     "nous",
     "openai-codex",
     "anthropic",
+    "minimax",
     "custom",
 )
 
@@ -1172,6 +1204,8 @@ def _normalize_vision_provider(provider: Optional[str]) -> str:
         return "openai-codex"
     if provider == "main":
         return "custom"
+    if provider in ("minimax-cn", "minimax"):
+        return "minimax"
     return provider
 
 
@@ -1185,6 +1219,8 @@ def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Option
         return _try_codex()
     if provider == "anthropic":
         return _try_anthropic()
+    if provider == "minimax":
+        return _try_minimax()
     if provider == "custom":
         return _try_custom_endpoint()
     return None, None
