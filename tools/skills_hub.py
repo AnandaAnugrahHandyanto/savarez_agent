@@ -1800,12 +1800,28 @@ class ClawHubSource(SkillSource):
                     logger.debug("ClawHub ZIP download for %s v%s returned %s", slug, version, resp.status_code)
                     return files
 
+                target_dir = (SKILLS_DIR / slug).resolve()
+
                 with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
                     for info in zf.infolist():
                         if info.is_dir():
                             continue
+                            
+                        # Zip Slip prevention: Validate that extracted path remains strictly within target_dir
                         try:
+                            # 1. Prevent direct absolute paths
+                            member_path = Path(info.filename)
+                            if member_path.is_absolute():
+                                logger.debug("Zip Slip detected (absolute path): %s", info.filename)
+                                continue
+
+                            # 2. Prevent relative traversal (e.g. ../../../etc/shadow)
+                            extracted_path = (target_dir / member_path).resolve()
+                            extracted_path.relative_to(target_dir)
+
+                            # 3. Apply standard bundle validations
                             name = _validate_bundle_rel_path(info.filename)
+                            
                         except ValueError:
                             logger.debug("Skipping unsafe ZIP member path: %s", info.filename)
                             continue
