@@ -661,8 +661,8 @@ stt:
 # =============================================================================
 # Session Logging
 # =============================================================================
-# Session trajectories are automatically saved to logs/ directory.
-# Each session creates: logs/session_YYYYMMDD_HHMMSS_UUID.json
+# Session trajectories are automatically saved to sessions/ directory.
+# Each session creates: sessions/YYYYMMDD_HHMMSS_UUID.jsonl
 #
 # The session ID is displayed in the welcome banner for easy reference.
 # Logs contain full conversation history in trajectory format:
