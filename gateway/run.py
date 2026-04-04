@@ -272,6 +272,17 @@ def _expand_whatsapp_auth_aliases(identifier: str) -> set:
 logger = logging.getLogger(__name__)
 
 
+def _ensure_gateway_run_id(event: Optional[MessageEvent]) -> Optional[str]:
+    if event is None:
+        return None
+    existing = getattr(event, "run_id", None)
+    if existing:
+        return existing
+    run_id = f"gw_{uuid.uuid4().hex[:12]}"
+    setattr(event, "run_id", run_id)
+    return run_id
+
+
 def _build_gateway_disposition_context(
     disposition: str,
     *,
@@ -292,6 +303,9 @@ def _build_gateway_disposition_context(
         context["session_key"] = session_key
     if event is not None and getattr(event, "message_id", None):
         context["message_id"] = event.message_id
+    run_id = _ensure_gateway_run_id(event)
+    if run_id:
+        context["run_id"] = run_id
     if event is not None:
         cmd = event.get_command() if hasattr(event, "get_command") else None
         if cmd:
@@ -1749,6 +1763,7 @@ class GatewayRunner:
         7. Return response
         """
         source = event.source
+        run_id = _ensure_gateway_run_id(event)
 
         # Check if user is authorized
         if not self._is_user_authorized(source):
@@ -2198,6 +2213,8 @@ class GatewayRunner:
     async def _handle_message_with_agent(self, event, source, _quick_key: str):
         """Inner handler that runs under the _running_agents sentinel guard."""
 
+        run_id = _ensure_gateway_run_id(event)
+
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
@@ -2213,8 +2230,9 @@ class GatewayRunner:
                 "user_id": source.user_id,
                 "session_id": session_entry.session_id,
                 "session_key": session_key,
+                "run_id": run_id,
             })
-        
+
         # Build session context
         context = build_session_context(source, self.config, session_entry)
         
@@ -2731,6 +2749,7 @@ class GatewayRunner:
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
                 "session_id": session_entry.session_id,
+                "run_id": run_id,
                 "message": message_text[:500],
             }
             await self.hooks.emit("agent:start", hook_ctx)
