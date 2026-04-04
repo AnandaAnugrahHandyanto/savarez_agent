@@ -12,11 +12,13 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from agent.claude_cli_agent_bridge import AgentLoopBridgeServer
 from agent.model_metadata import estimate_tokens_rough
 
 CLAUDE_CLI_MARKER_BASE_URL = "claude-cli://local"
@@ -75,6 +77,7 @@ def _format_messages_as_prompt(messages: list[dict[str, Any]], model: str | None
     sections: list[str] = [
         "You are being used as the active Claude CLI backend for Hermes Agent.",
         "Respond directly in natural language.",
+        "If Hermes MCP tools are available, use them instead of merely describing hypothetical tool use.",
         "Do not emit tool-call JSON.",
     ]
     if model:
@@ -133,6 +136,10 @@ class ClaudeCLIClient:
         acp_args: list[str] | None = None,
         acp_cwd: str | None = None,
         session_id: str | None = None,
+        enabled_toolsets: list[str] | None = None,
+        disabled_toolsets: list[str] | None = None,
+        allow_hermes_tool_bridge: bool | None = None,
+        agent_tool_call_callback: Any = None,
         **_: Any,
     ):
         self.api_key = api_key or "claude-cli"
@@ -144,9 +151,46 @@ class ClaudeCLIClient:
         self.is_closed = False
         self._hermes_session_uuid = _coerce_session_uuid(session_id)
         self._claude_session_id: str | None = None
+        self._enabled_toolsets = list(enabled_toolsets) if enabled_toolsets is not None else None
+        self._disabled_toolsets = list(disabled_toolsets) if disabled_toolsets is not None else None
+        if allow_hermes_tool_bridge is None:
+            env_value = os.getenv("HERMES_CLAUDE_CLI_TOOL_BRIDGE", "1").strip().lower()
+            allow_hermes_tool_bridge = env_value not in {"0", "false", "no", "off"}
+        self._allow_hermes_tool_bridge = bool(allow_hermes_tool_bridge)
+        self._agent_tool_bridge = None
+        if agent_tool_call_callback is not None:
+            self._agent_tool_bridge = AgentLoopBridgeServer(agent_tool_call_callback)
+            self._agent_tool_bridge.start()
+
+    def _build_mcp_config(self) -> dict[str, Any] | None:
+        if not self._allow_hermes_tool_bridge:
+            return None
+        env = {
+            "HERMES_CLAUDE_BRIDGE_TASK_ID": self._hermes_session_uuid,
+            "HERMES_CLAUDE_BRIDGE_ENABLED_TOOLSETS": json.dumps(self._enabled_toolsets),
+            "HERMES_CLAUDE_BRIDGE_DISABLED_TOOLSETS": json.dumps(self._disabled_toolsets),
+            "PYTHONPATH": os.pathsep.join(filter(None, [os.getcwd(), os.getenv("PYTHONPATH", "")])),
+        }
+        if self._agent_tool_bridge is not None:
+            env.update(self._agent_tool_bridge.connection_env())
+        return {
+            "mcpServers": {
+                "hermes-tools": {
+                    "command": sys.executable,
+                    "args": ["-m", "agent.claude_cli_tool_bridge"],
+                    "env": env,
+                }
+            }
+        }
 
     def _build_command(self, *, model: str, prompt_text: str, resume_session_id: str | None = None) -> list[str]:
-        cmd = [self._command, "-p", "--output-format", "json", "--model", model, "--tools", ""]
+        cmd = [self._command, "-p", "--output-format", "json", "--model", model]
+        mcp_config = self._build_mcp_config()
+        if mcp_config:
+            cmd.extend(["--mcp-config", json.dumps(mcp_config), "--strict-mcp-config"])
+        else:
+            cmd.extend(["--tools", ""])
+
         if resume_session_id:
             cmd.extend(["--resume", resume_session_id])
         elif self._claude_session_id:
@@ -168,6 +212,9 @@ class ClaudeCLIClient:
 
     def close(self) -> None:
         self.is_closed = True
+        if self._agent_tool_bridge is not None:
+            self._agent_tool_bridge.close()
+            self._agent_tool_bridge = None
 
     def _create_chat_completion(
         self,

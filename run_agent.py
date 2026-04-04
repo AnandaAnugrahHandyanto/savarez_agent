@@ -776,6 +776,10 @@ class AIAgent:
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
                     client_kwargs["session_id"] = session_id
+                    if self.provider == "claude-cli" or str(base_url).startswith("claude-cli://"):
+                        client_kwargs["enabled_toolsets"] = self.enabled_toolsets
+                        client_kwargs["disabled_toolsets"] = self.disabled_toolsets
+                        client_kwargs["agent_tool_call_callback"] = lambda name, args: self._execute_single_tool_call(name, args, session_id or self.session_id)
                 effective_base = base_url
                 if "openrouter" in effective_base.lower():
                     client_kwargs["default_headers"] = {
@@ -801,6 +805,13 @@ class AIAgent:
                         "api_key": _routed_client.api_key,
                         "base_url": str(_routed_client.base_url),
                     }
+                    if self.provider == "claude-cli" or str(client_kwargs["base_url"]).startswith("claude-cli://"):
+                        client_kwargs["command"] = self.acp_command
+                        client_kwargs["args"] = self.acp_args
+                        client_kwargs["session_id"] = session_id
+                        client_kwargs["enabled_toolsets"] = self.enabled_toolsets
+                        client_kwargs["disabled_toolsets"] = self.disabled_toolsets
+                        client_kwargs["agent_tool_call_callback"] = lambda name, args: self._execute_single_tool_call(name, args, session_id or self.session_id)
                     # Preserve any default_headers the router set
                     if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
                         client_kwargs["default_headers"] = dict(_routed_client._default_headers)
@@ -889,21 +900,14 @@ class AIAgent:
 
         # Get available tools with filtering.
         #
-        # Claude CLI backend currently wraps `claude -p --output-format json`
-        # as a text-in/text-out provider. Hermes is only borrowing Claude Code's
-        # model runtime here — not its native tool protocol. Because this backend
-        # does not yet translate Claude Code tool use into Hermes tool calls,
-        # advertising Hermes tools in the prompt would be dishonest and would
-        # produce non-executable natural-language/tool-ish output instead of real
-        # structured tool calls. Keep Hermes-side tools disabled for `claude-cli`
-        # until a future implementation adds an actual tool-call bridge.
+        # Claude CLI now receives Hermes tools through a per-session MCP bridge.
+        # Keep the normal Hermes tool filtering here so the bridge sees the same
+        # toolset selection the rest of the agent would have exposed.
         self.tools = get_tool_definitions(
             enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets,
             quiet_mode=self.quiet_mode,
         )
-        if self.provider == "claude-cli" or str(self.base_url or "").startswith("claude-cli://"):
-            self.tools = []
         
         # Show tool configuration and store valid tool names for validation
         self.valid_tool_names = set()
