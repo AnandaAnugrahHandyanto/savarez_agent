@@ -159,8 +159,10 @@ def _discover_tools():
         "tools.honcho_tools",
         "tools.homeassistant_tool",
         "tools.context_graph_tool",
+        "tools.knowledge_tool",
         "tools.mac_help_tool",
         "tools.mac_workflow_tool",
+        "tools.browser_autonomous_tool",
     ]
     import importlib
     for mod_name in _modules:
@@ -215,7 +217,8 @@ _LEGACY_TOOLSET_MAP = {
         "browser_navigate", "browser_snapshot", "browser_click",
         "browser_type", "browser_scroll", "browser_back",
         "browser_press", "browser_close", "browser_get_images",
-        "browser_vision", "browser_console"
+        "browser_vision", "browser_console",
+        "browser_use_agent"
     ],
     "cronjob_tools": ["cronjob"],
     "rl_tools": [

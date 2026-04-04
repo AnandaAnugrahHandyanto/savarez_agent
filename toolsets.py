@@ -45,7 +45,7 @@ _HERMES_CORE_TOOLS = [
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_close", "browser_get_images",
-    "browser_vision", "browser_console",
+    "browser_vision", "browser_console", "browser_use_agent",
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
@@ -66,6 +66,8 @@ _HERMES_CORE_TOOLS = [
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Context graph (gated on graphiti-core + config via check_fn)
     "context_graph",
+    # Structured knowledge store (notes, people, projects, decisions)
+    "knowledge",
     # macOS help & workflows (gated on macOS + ~/.hermes/macos-kb/ via check_fn)
     "mac_help", "mac_workflow",
 ]
@@ -124,12 +126,13 @@ TOOLSETS = {
     },
     
     "browser": {
-        "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
+        "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs and autonomous browsing agent",
         "tools": [
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_close", "browser_get_images",
-            "browser_vision", "browser_console", "web_search"
+            "browser_vision", "browser_console", "browser_use_agent",
+            "web_search"
         ],
         "includes": []
     },
@@ -224,6 +227,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "knowledge": {
+        "description": "Structured personal knowledge store (notes, people, projects, decisions with tag cross-linking)",
+        "tools": ["knowledge"],
+        "includes": []
+    },
+
 
     # Scenario-specific toolsets
     
@@ -257,7 +266,7 @@ TOOLSETS = {
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_close", "browser_get_images",
-            "browser_vision", "browser_console",
+            "browser_vision", "browser_console", "browser_use_agent",
             "todo", "memory",
             "session_search",
             "execute_code", "delegate_task",
@@ -284,7 +293,7 @@ TOOLSETS = {
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_close", "browser_get_images",
-            "browser_vision", "browser_console",
+            "browser_vision", "browser_console", "browser_use_agent",
             # Planning & memory
             "todo", "memory",
             # Session history search

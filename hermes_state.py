@@ -32,7 +32,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -147,6 +147,58 @@ CREATE TABLE IF NOT EXISTS predictions (
 CREATE INDEX IF NOT EXISTS idx_predictions_job ON predictions(job_id);
 CREATE INDEX IF NOT EXISTS idx_predictions_unresolved ON predictions(resolved_at) WHERE resolved_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_predictions_type ON predictions(prediction_type, subject);
+
+CREATE TABLE IF NOT EXISTS knowledge_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    content TEXT NOT NULL,
+    source TEXT,
+    session_id TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_people (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    role TEXT,
+    organization TEXT,
+    details TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    status TEXT DEFAULT 'active',
+    description TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    rationale TEXT,
+    status TEXT DEFAULT 'active',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL,
+    entity_id INTEGER NOT NULL,
+    tag TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_tags_tag ON knowledge_tags(tag);
+CREATE INDEX IF NOT EXISTS idx_knowledge_tags_entity ON knowledge_tags(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_people_name ON knowledge_people(name);
+CREATE INDEX IF NOT EXISTS idx_knowledge_projects_status ON knowledge_projects(name, status);
+CREATE INDEX IF NOT EXISTS idx_knowledge_notes_created ON knowledge_notes(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_knowledge_decisions_status ON knowledge_decisions(status);
 """
 
 FTS_SQL = """
@@ -167,6 +219,25 @@ END;
 CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
     INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
     INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_notes_fts USING fts5(
+    content,
+    content=knowledge_notes,
+    content_rowid=id
+);
+
+CREATE TRIGGER IF NOT EXISTS knowledge_notes_fts_insert AFTER INSERT ON knowledge_notes BEGIN
+    INSERT INTO knowledge_notes_fts(rowid, content) VALUES (new.id, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS knowledge_notes_fts_delete AFTER DELETE ON knowledge_notes BEGIN
+    INSERT INTO knowledge_notes_fts(knowledge_notes_fts, rowid, content) VALUES('delete', old.id, old.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS knowledge_notes_fts_update AFTER UPDATE ON knowledge_notes BEGIN
+    INSERT INTO knowledge_notes_fts(knowledge_notes_fts, rowid, content) VALUES('delete', old.id, old.content);
+    INSERT INTO knowledge_notes_fts(rowid, content) VALUES (new.id, new.content);
 END;
 """
 
@@ -451,6 +522,87 @@ class SessionDB:
                     CREATE INDEX IF NOT EXISTS idx_predictions_type ON predictions(prediction_type, subject);
                 """)
                 cursor.execute("UPDATE schema_version SET version = 8")
+            if current_version < 9:
+                # v9: add knowledge tables for structured personal knowledge
+                # (notes, people, projects, decisions) with tag-based cross-linking
+                cursor.executescript("""
+                    CREATE TABLE IF NOT EXISTS knowledge_notes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        content TEXT NOT NULL,
+                        source TEXT,
+                        session_id TEXT,
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS knowledge_people (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        role TEXT,
+                        organization TEXT,
+                        details TEXT,
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS knowledge_projects (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        status TEXT DEFAULT 'active',
+                        description TEXT,
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS knowledge_decisions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        title TEXT NOT NULL,
+                        rationale TEXT,
+                        status TEXT DEFAULT 'active',
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS knowledge_tags (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        entity_type TEXT NOT NULL,
+                        entity_id INTEGER NOT NULL,
+                        tag TEXT NOT NULL,
+                        created_at REAL NOT NULL
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_knowledge_tags_tag ON knowledge_tags(tag);
+                    CREATE INDEX IF NOT EXISTS idx_knowledge_tags_entity ON knowledge_tags(entity_type, entity_id);
+                    CREATE INDEX IF NOT EXISTS idx_knowledge_people_name ON knowledge_people(name);
+                    CREATE INDEX IF NOT EXISTS idx_knowledge_projects_status ON knowledge_projects(name, status);
+                    CREATE INDEX IF NOT EXISTS idx_knowledge_notes_created ON knowledge_notes(created_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_knowledge_decisions_status ON knowledge_decisions(status);
+                """)
+                # FTS5 for knowledge notes full-text search
+                try:
+                    cursor.executescript("""
+                        CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_notes_fts USING fts5(
+                            content,
+                            content=knowledge_notes,
+                            content_rowid=id
+                        );
+
+                        CREATE TRIGGER IF NOT EXISTS knowledge_notes_fts_insert AFTER INSERT ON knowledge_notes BEGIN
+                            INSERT INTO knowledge_notes_fts(rowid, content) VALUES (new.id, new.content);
+                        END;
+
+                        CREATE TRIGGER IF NOT EXISTS knowledge_notes_fts_delete AFTER DELETE ON knowledge_notes BEGIN
+                            INSERT INTO knowledge_notes_fts(knowledge_notes_fts, rowid, content) VALUES('delete', old.id, old.content);
+                        END;
+
+                        CREATE TRIGGER IF NOT EXISTS knowledge_notes_fts_update AFTER UPDATE ON knowledge_notes BEGIN
+                            INSERT INTO knowledge_notes_fts(knowledge_notes_fts, rowid, content) VALUES('delete', old.id, old.content);
+                            INSERT INTO knowledge_notes_fts(rowid, content) VALUES (new.id, new.content);
+                        END;
+                    """)
+                except Exception:
+                    pass  # FTS5 may not be available on all builds
+                cursor.execute("UPDATE schema_version SET version = 9")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -1665,3 +1817,451 @@ class SessionDB:
             return len(session_ids)
 
         return self._execute_write(_do)
+
+    # =========================================================================
+    # Knowledge Store — structured notes, people, projects, decisions with tags
+    # =========================================================================
+
+    def save_knowledge_note(
+        self, content: str, tags: List[str] = None,
+        source: str = "conversation", session_id: str = None,
+    ) -> int:
+        """Save a knowledge note and attach tags. Returns the note ID."""
+        now = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                "INSERT INTO knowledge_notes (content, source, session_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (content, source, session_id, now, now),
+            )
+            note_id = cursor.lastrowid
+            if tags:
+                for tag in tags:
+                    normalized = tag.strip().lower()
+                    if normalized:
+                        conn.execute(
+                            "INSERT INTO knowledge_tags (entity_type, entity_id, tag, created_at) "
+                            "VALUES ('note', ?, ?, ?)",
+                            (note_id, normalized, now),
+                        )
+            return note_id
+
+        return self._execute_write(_do)
+
+    def save_knowledge_person(
+        self, name: str, role: str = None, organization: str = None,
+        details: str = None, tags: List[str] = None,
+    ) -> int:
+        """Save or update a person entry. Returns the person ID."""
+        now = time.time()
+
+        def _do(conn):
+            # Check if person already exists (case-insensitive name match)
+            cursor = conn.execute(
+                "SELECT id FROM knowledge_people WHERE LOWER(name) = LOWER(?)", (name,)
+            )
+            row = cursor.fetchone()
+            if row:
+                person_id = row[0]
+                # Update existing — only overwrite non-None fields
+                updates = []
+                params = []
+                if role is not None:
+                    updates.append("role = ?")
+                    params.append(role)
+                if organization is not None:
+                    updates.append("organization = ?")
+                    params.append(organization)
+                if details is not None:
+                    updates.append("details = ?")
+                    params.append(details)
+                updates.append("updated_at = ?")
+                params.append(now)
+                params.append(person_id)
+                conn.execute(
+                    f"UPDATE knowledge_people SET {', '.join(updates)} WHERE id = ?",
+                    params,
+                )
+            else:
+                cursor = conn.execute(
+                    "INSERT INTO knowledge_people (name, role, organization, details, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (name, role, organization, details, now, now),
+                )
+                person_id = cursor.lastrowid
+            # Add any new tags (skip duplicates)
+            if tags:
+                for tag in tags:
+                    normalized = tag.strip().lower()
+                    if not normalized:
+                        continue
+                    existing = conn.execute(
+                        "SELECT 1 FROM knowledge_tags WHERE entity_type = 'person' "
+                        "AND entity_id = ? AND tag = ?",
+                        (person_id, normalized),
+                    ).fetchone()
+                    if not existing:
+                        conn.execute(
+                            "INSERT INTO knowledge_tags (entity_type, entity_id, tag, created_at) "
+                            "VALUES ('person', ?, ?, ?)",
+                            (person_id, normalized, now),
+                        )
+            return person_id
+
+        return self._execute_write(_do)
+
+    def save_knowledge_project(
+        self, name: str, description: str = None,
+        status: str = "active", tags: List[str] = None,
+    ) -> int:
+        """Save or update a project entry. Returns the project ID."""
+        now = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                "SELECT id FROM knowledge_projects WHERE LOWER(name) = LOWER(?)", (name,)
+            )
+            row = cursor.fetchone()
+            if row:
+                project_id = row[0]
+                updates = []
+                params = []
+                if description is not None:
+                    updates.append("description = ?")
+                    params.append(description)
+                if status is not None:
+                    updates.append("status = ?")
+                    params.append(status)
+                updates.append("updated_at = ?")
+                params.append(now)
+                params.append(project_id)
+                conn.execute(
+                    f"UPDATE knowledge_projects SET {', '.join(updates)} WHERE id = ?",
+                    params,
+                )
+            else:
+                cursor = conn.execute(
+                    "INSERT INTO knowledge_projects (name, status, description, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (name, status, description, now, now),
+                )
+                project_id = cursor.lastrowid
+            if tags:
+                for tag in tags:
+                    normalized = tag.strip().lower()
+                    if not normalized:
+                        continue
+                    existing = conn.execute(
+                        "SELECT 1 FROM knowledge_tags WHERE entity_type = 'project' "
+                        "AND entity_id = ? AND tag = ?",
+                        (project_id, normalized),
+                    ).fetchone()
+                    if not existing:
+                        conn.execute(
+                            "INSERT INTO knowledge_tags (entity_type, entity_id, tag, created_at) "
+                            "VALUES ('project', ?, ?, ?)",
+                            (project_id, normalized, now),
+                        )
+            return project_id
+
+        return self._execute_write(_do)
+
+    def save_knowledge_decision(
+        self, title: str, rationale: str = None,
+        status: str = "active", tags: List[str] = None,
+    ) -> int:
+        """Save a decision. Returns the decision ID."""
+        now = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                "INSERT INTO knowledge_decisions (title, rationale, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (title, rationale, status, now, now),
+            )
+            decision_id = cursor.lastrowid
+            if tags:
+                for tag in tags:
+                    normalized = tag.strip().lower()
+                    if normalized:
+                        conn.execute(
+                            "INSERT INTO knowledge_tags (entity_type, entity_id, tag, created_at) "
+                            "VALUES ('decision', ?, ?, ?)",
+                            (decision_id, normalized, now),
+                        )
+            return decision_id
+
+        return self._execute_write(_do)
+
+    _KNOWLEDGE_ENTITY_TYPES = {"note", "person", "project", "decision"}
+
+    def search_knowledge(
+        self, query: str = None, entity_type: str = None,
+        tag: str = None, limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Search across all knowledge tables by tag and/or text query.
+
+        Both query and tag can be combined — results must match both filters.
+        Returns a list of dicts with 'type', 'id', 'summary', 'tags', 'created_at'.
+        """
+        limit = min(int(limit), 100)  # Cap to prevent unbounded result sets
+        results = []
+        with self._lock:
+            conn = self._conn
+            tag_lower = tag.strip().lower() if tag else None
+
+            # Helper: get tags for an entity
+            def _get_tags(etype, eid):
+                rows = conn.execute(
+                    "SELECT tag FROM knowledge_tags WHERE entity_type = ? AND entity_id = ?",
+                    (etype, eid),
+                ).fetchall()
+                return [r[0] for r in rows]
+
+            # If tag is given, find matching entity IDs first
+            tag_entity_ids = {}
+            if tag_lower:
+                tag_rows = conn.execute(
+                    "SELECT entity_type, entity_id FROM knowledge_tags WHERE tag = ?",
+                    (tag_lower,),
+                ).fetchall()
+                for r in tag_rows:
+                    tag_entity_ids.setdefault(r[0], set()).add(r[1])
+
+            types_to_search = [entity_type] if entity_type else ["note", "person", "project", "decision"]
+            like_query = f"%{query}%" if query else None
+
+            for etype in types_to_search:
+                if etype == "note":
+                    if tag_lower and query:
+                        # Combined: filter by tag IDs AND text match
+                        ids = tag_entity_ids.get("note", set())
+                        if not ids:
+                            continue
+                        placeholders = ",".join("?" for _ in ids)
+                        rows = conn.execute(
+                            f"SELECT id, content, source, created_at FROM knowledge_notes "
+                            f"WHERE id IN ({placeholders}) AND content LIKE ? "
+                            f"ORDER BY created_at DESC LIMIT ?",
+                            (*ids, like_query, limit),
+                        ).fetchall()
+                    elif query:
+                        # Text search only — try FTS5, fall back to LIKE
+                        try:
+                            rows = conn.execute(
+                                "SELECT n.id, n.content, n.source, n.created_at "
+                                "FROM knowledge_notes n "
+                                "JOIN knowledge_notes_fts f ON n.id = f.rowid "
+                                "WHERE knowledge_notes_fts MATCH ? "
+                                "ORDER BY rank LIMIT ?",
+                                (query, limit),
+                            ).fetchall()
+                        except sqlite3.OperationalError as e:
+                            logger.debug("FTS5 query failed, falling back to LIKE: %s", e)
+                            rows = conn.execute(
+                                "SELECT id, content, source, created_at FROM knowledge_notes "
+                                "WHERE content LIKE ? ORDER BY created_at DESC LIMIT ?",
+                                (like_query, limit),
+                            ).fetchall()
+                    elif tag_lower:
+                        ids = tag_entity_ids.get("note", set())
+                        if not ids:
+                            continue
+                        placeholders = ",".join("?" for _ in ids)
+                        rows = conn.execute(
+                            f"SELECT id, content, source, created_at FROM knowledge_notes "
+                            f"WHERE id IN ({placeholders}) ORDER BY created_at DESC LIMIT ?",
+                            (*ids, limit),
+                        ).fetchall()
+                    else:
+                        rows = conn.execute(
+                            "SELECT id, content, source, created_at FROM knowledge_notes "
+                            "ORDER BY created_at DESC LIMIT ?",
+                            (limit,),
+                        ).fetchall()
+                    for r in rows:
+                        content_preview = r[1][:200] if r[1] else ""
+                        results.append({
+                            "type": "note", "id": r[0],
+                            "summary": content_preview,
+                            "source": r[2],
+                            "tags": _get_tags("note", r[0]),
+                            "created_at": r[3],
+                        })
+
+                elif etype == "person":
+                    if tag_lower and query:
+                        ids = tag_entity_ids.get("person", set())
+                        if not ids:
+                            continue
+                        placeholders = ",".join("?" for _ in ids)
+                        rows = conn.execute(
+                            f"SELECT id, name, role, organization, details, created_at "
+                            f"FROM knowledge_people WHERE id IN ({placeholders}) "
+                            f"AND (name LIKE ? OR organization LIKE ?) LIMIT ?",
+                            (*ids, like_query, like_query, limit),
+                        ).fetchall()
+                    elif tag_lower:
+                        ids = tag_entity_ids.get("person", set())
+                        if not ids:
+                            continue
+                        placeholders = ",".join("?" for _ in ids)
+                        rows = conn.execute(
+                            f"SELECT id, name, role, organization, details, created_at "
+                            f"FROM knowledge_people WHERE id IN ({placeholders}) LIMIT ?",
+                            (*ids, limit),
+                        ).fetchall()
+                    elif query:
+                        rows = conn.execute(
+                            "SELECT id, name, role, organization, details, created_at "
+                            "FROM knowledge_people WHERE name LIKE ? OR organization LIKE ? "
+                            "ORDER BY updated_at DESC LIMIT ?",
+                            (like_query, like_query, limit),
+                        ).fetchall()
+                    else:
+                        rows = conn.execute(
+                            "SELECT id, name, role, organization, details, created_at "
+                            "FROM knowledge_people ORDER BY updated_at DESC LIMIT ?",
+                            (limit,),
+                        ).fetchall()
+                    for r in rows:
+                        summary_parts = [r[1]]
+                        if r[2]:
+                            summary_parts.append(r[2])
+                        if r[3]:
+                            summary_parts.append(f"@ {r[3]}")
+                        results.append({
+                            "type": "person", "id": r[0],
+                            "summary": " — ".join(summary_parts),
+                            "name": r[1], "role": r[2],
+                            "organization": r[3], "details": r[4],
+                            "tags": _get_tags("person", r[0]),
+                            "created_at": r[5],
+                        })
+
+                elif etype == "project":
+                    if tag_lower and query:
+                        ids = tag_entity_ids.get("project", set())
+                        if not ids:
+                            continue
+                        placeholders = ",".join("?" for _ in ids)
+                        rows = conn.execute(
+                            f"SELECT id, name, status, description, created_at "
+                            f"FROM knowledge_projects WHERE id IN ({placeholders}) "
+                            f"AND (name LIKE ? OR description LIKE ?) LIMIT ?",
+                            (*ids, like_query, like_query, limit),
+                        ).fetchall()
+                    elif tag_lower:
+                        ids = tag_entity_ids.get("project", set())
+                        if not ids:
+                            continue
+                        placeholders = ",".join("?" for _ in ids)
+                        rows = conn.execute(
+                            f"SELECT id, name, status, description, created_at "
+                            f"FROM knowledge_projects WHERE id IN ({placeholders}) LIMIT ?",
+                            (*ids, limit),
+                        ).fetchall()
+                    elif query:
+                        rows = conn.execute(
+                            "SELECT id, name, status, description, created_at "
+                            "FROM knowledge_projects WHERE name LIKE ? OR description LIKE ? "
+                            "ORDER BY updated_at DESC LIMIT ?",
+                            (like_query, like_query, limit),
+                        ).fetchall()
+                    else:
+                        rows = conn.execute(
+                            "SELECT id, name, status, description, created_at "
+                            "FROM knowledge_projects ORDER BY updated_at DESC LIMIT ?",
+                            (limit,),
+                        ).fetchall()
+                    for r in rows:
+                        results.append({
+                            "type": "project", "id": r[0],
+                            "summary": f"{r[1]} [{r[2]}]",
+                            "name": r[1], "status": r[2],
+                            "description": r[3],
+                            "tags": _get_tags("project", r[0]),
+                            "created_at": r[4],
+                        })
+
+                elif etype == "decision":
+                    if tag_lower and query:
+                        ids = tag_entity_ids.get("decision", set())
+                        if not ids:
+                            continue
+                        placeholders = ",".join("?" for _ in ids)
+                        rows = conn.execute(
+                            f"SELECT id, title, rationale, status, created_at "
+                            f"FROM knowledge_decisions WHERE id IN ({placeholders}) "
+                            f"AND (title LIKE ? OR rationale LIKE ?) LIMIT ?",
+                            (*ids, like_query, like_query, limit),
+                        ).fetchall()
+                    elif tag_lower:
+                        ids = tag_entity_ids.get("decision", set())
+                        if not ids:
+                            continue
+                        placeholders = ",".join("?" for _ in ids)
+                        rows = conn.execute(
+                            f"SELECT id, title, rationale, status, created_at "
+                            f"FROM knowledge_decisions WHERE id IN ({placeholders}) LIMIT ?",
+                            (*ids, limit),
+                        ).fetchall()
+                    elif query:
+                        rows = conn.execute(
+                            "SELECT id, title, rationale, status, created_at "
+                            "FROM knowledge_decisions WHERE title LIKE ? OR rationale LIKE ? "
+                            "ORDER BY created_at DESC LIMIT ?",
+                            (like_query, like_query, limit),
+                        ).fetchall()
+                    else:
+                        rows = conn.execute(
+                            "SELECT id, title, rationale, status, created_at "
+                            "FROM knowledge_decisions ORDER BY created_at DESC LIMIT ?",
+                            (limit,),
+                        ).fetchall()
+                    for r in rows:
+                        results.append({
+                            "type": "decision", "id": r[0],
+                            "summary": f"{r[1]} [{r[3]}]",
+                            "title": r[1], "rationale": r[2],
+                            "status": r[3],
+                            "tags": _get_tags("decision", r[0]),
+                            "created_at": r[4],
+                        })
+
+        return results[:limit]
+
+    def list_knowledge(
+        self, entity_type: str, tag: str = None,
+        status: str = None, limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """List knowledge entries of a specific type."""
+        return self.search_knowledge(
+            entity_type=entity_type, tag=tag, limit=limit,
+        )
+
+    def tag_entity(self, entity_type: str, entity_id: int, tags: List[str]) -> None:
+        """Add tags to an existing entity (skips duplicates)."""
+        if entity_type not in self._KNOWLEDGE_ENTITY_TYPES:
+            raise ValueError(f"Invalid entity_type: {entity_type}")
+        now = time.time()
+
+        def _do(conn):
+            for tag in tags:
+                normalized = tag.strip().lower()
+                if not normalized:
+                    continue
+                existing = conn.execute(
+                    "SELECT 1 FROM knowledge_tags WHERE entity_type = ? "
+                    "AND entity_id = ? AND tag = ?",
+                    (entity_type, entity_id, normalized),
+                ).fetchone()
+                if not existing:
+                    conn.execute(
+                        "INSERT INTO knowledge_tags (entity_type, entity_id, tag, created_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (entity_type, entity_id, normalized, now),
+                    )
+
+        self._execute_write(_do)

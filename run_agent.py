@@ -5677,6 +5677,27 @@ class AIAgent:
                 limit=function_args.get("limit", 10),
                 manager=self._graph_manager,
             ))
+        elif function_name == "knowledge":
+            from tools.knowledge_tool import knowledge_tool as _knowledge_tool
+            return _knowledge_tool(
+                action=function_args.get("action", ""),
+                content=function_args.get("content"),
+                name=function_args.get("name"),
+                title=function_args.get("title"),
+                role=function_args.get("role"),
+                organization=function_args.get("organization"),
+                details=function_args.get("details"),
+                description=function_args.get("description"),
+                rationale=function_args.get("rationale"),
+                status=function_args.get("status"),
+                tags=function_args.get("tags"),
+                query=function_args.get("query"),
+                entity_type=function_args.get("entity_type"),
+                tag=function_args.get("tag"),
+                limit=function_args.get("limit", 20),
+                session_db=self._session_db,
+                session_id=getattr(self, 'session_id', None),
+            )
         elif function_name == "clarify":
             from tools.clarify_tool import clarify_tool as _clarify_tool
             return _clarify_tool(
@@ -6048,6 +6069,30 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('context_graph', function_args, tool_duration, result=function_result)}")
+            elif function_name == "knowledge":
+                from tools.knowledge_tool import knowledge_tool as _knowledge_tool
+                function_result = _knowledge_tool(
+                    action=function_args.get("action", ""),
+                    content=function_args.get("content"),
+                    name=function_args.get("name"),
+                    title=function_args.get("title"),
+                    role=function_args.get("role"),
+                    organization=function_args.get("organization"),
+                    details=function_args.get("details"),
+                    description=function_args.get("description"),
+                    rationale=function_args.get("rationale"),
+                    status=function_args.get("status"),
+                    tags=function_args.get("tags"),
+                    query=function_args.get("query"),
+                    entity_type=function_args.get("entity_type"),
+                    tag=function_args.get("tag"),
+                    limit=function_args.get("limit", 20),
+                    session_db=self._session_db,
+                    session_id=getattr(self, 'session_id', None),
+                )
+                tool_duration = time.time() - tool_start_time
+                if self.quiet_mode:
+                    self._vprint(f"  {_get_cute_tool_message_impl('knowledge', function_args, tool_duration, result=function_result)}")
             elif function_name == "clarify":
                 from tools.clarify_tool import clarify_tool as _clarify_tool
                 function_result = _clarify_tool(
