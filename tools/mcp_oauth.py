@@ -114,7 +114,9 @@ class HermesTokenStorage:
 
     @staticmethod
     def _write_json(path: Path, data: dict) -> None:
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        _tmp = path.with_suffix(".tmp")
+        _tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        _tmp.replace(path)
         try:
             path.chmod(0o600)
         except OSError:
