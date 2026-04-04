@@ -506,6 +506,35 @@ class BasePlatformAdapter(ABC):
     def is_connected(self) -> bool:
         """Check if adapter is currently connected."""
         return self._running
+
+    def _log_disposition(
+        self,
+        disposition: str,
+        *,
+        event: Optional[MessageEvent] = None,
+        session_key: Optional[str] = None,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Emit a structured gateway disposition log for non-happy-path outcomes."""
+        parts = [
+            "gateway_disposition",
+            f"platform={self.platform.value}",
+            f"adapter={self.name}",
+            f"disposition={disposition}",
+        ]
+        if session_key:
+            parts.append(f"session_key={session_key}")
+        if event is not None:
+            if getattr(event, "message_id", None):
+                parts.append(f"message_id={event.message_id}")
+            if getattr(event.source, "chat_id", None):
+                parts.append(f"chat_id={event.source.chat_id}")
+            cmd = event.get_command() if hasattr(event, "get_command") else None
+            if cmd:
+                parts.append(f"command={cmd}")
+        if reason:
+            parts.append(f"reason={reason}")
+        logger.info(" ".join(parts))
     
     def set_message_handler(self, handler: MessageHandler) -> None:
         """
@@ -982,6 +1011,11 @@ class BasePlatformAdapter(ABC):
             else:
                 # All retries exhausted (loop completed without break) — notify user
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
+                self._log_disposition(
+                    "delivery_failed_retries_exhausted",
+                    session_key=chat_id,
+                    reason=error_str[:160] if error_str else "retry_exhausted",
+                )
                 notice = (
                     "\u26a0\ufe0f Message delivery failed after multiple attempts. "
                     "Please try again \u2014 your request was processed but the response could not be sent."
@@ -1064,6 +1098,12 @@ class BasePlatformAdapter(ABC):
                             existing.text = f"{existing.text}\n\n{event.text}".strip()
                 else:
                     self._pending_messages[session_key] = event
+                self._log_disposition(
+                    "queued_without_interrupt",
+                    event=event,
+                    session_key=session_key,
+                    reason="photo_follow_up",
+                )
                 return  # Don't interrupt now - will run after current task completes
 
             # Default behavior for non-photo follow-ups: interrupt the running agent
@@ -1148,6 +1188,12 @@ class BasePlatformAdapter(ABC):
             # DEBUG to avoid noisy warnings for expected behavior.
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
+                self._log_disposition(
+                    "handler_empty_response",
+                    event=event,
+                    session_key=session_key,
+                    reason="empty_or_already_streamed",
+                )
             if response:
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
