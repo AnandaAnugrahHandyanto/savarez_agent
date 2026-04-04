@@ -2948,11 +2948,25 @@ class HermesCLI:
         # OSC 1: tab/icon name (iTerm2 uses this as the tab label, no process name appended)
         # OSC 2: window title (title bar)
         seq = f"\x1b]1;{tab_title}\x07\x1b]2;{tab_title}\x07"
+
+        # When inside the prompt_toolkit TUI, write through the app's Output
+        # object so the sequence is synchronised with the render loop and
+        # doesn't interleave with prompt_toolkit's own writes to fd 1
+        # (which would cause the raw bytes to appear as literal text).
+        # Outside the TUI (startup, non-interactive mode) fall back to a
+        # direct write on the real stdout fd.
         try:
-            os.write(real_out.fileno(), seq.encode())
+            from prompt_toolkit.application import get_app as _get_app
+            _app = _get_app()
+            _app.output.write_raw(seq)
+            _app.output.flush()
         except Exception:
-            real_out.write(seq)
-            real_out.flush()
+            # Not in app context — write directly to the real fd
+            try:
+                os.write(real_out.fileno(), seq.encode())
+            except Exception:
+                real_out.write(seq)
+                real_out.flush()
         self._terminal_title_session = session_title
 
     def _update_terminal_title(self, thinking: bool = False) -> None:
