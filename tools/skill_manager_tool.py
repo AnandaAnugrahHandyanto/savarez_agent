@@ -649,8 +649,9 @@ SKILL_MANAGE_SCHEMA = {
         "If you used a skill and hit issues not covered by it, patch it immediately.\n\n"
         "After difficult/iterative tasks, offer to save as a skill. "
         "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
-        "Good skills: trigger conditions, numbered steps with exact commands, "
-        "pitfalls section, verification steps. Use skill_view() to see format examples."
+        "Good skills: '## Gotchas' section FIRST (production failure lessons before workflow), "
+        "trigger conditions, numbered steps with exact commands, "
+        "verification steps. Use skill_view() to see format examples."
     ),
     "parameters": {
         "type": "object",

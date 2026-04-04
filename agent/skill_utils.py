@@ -86,6 +86,56 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     return frontmatter, body
 
 
+# ── Skill personalization ({{TOKEN}} replacement) ────────────────────────
+
+# Cache the personalization dict so we only read config.yaml once per process.
+_personalization_cache: Optional[Dict[str, str]] = None
+
+
+def _load_personalization() -> Dict[str, str]:
+    """Load skill_personalization map from ~/.hermes/config.yaml (cached)."""
+    global _personalization_cache
+    if _personalization_cache is not None:
+        return _personalization_cache
+
+    _personalization_cache = {}
+    config_path = get_hermes_home() / "config.yaml"
+    if not config_path.exists():
+        return _personalization_cache
+    try:
+        raw = config_path.read_text(encoding="utf-8")
+        parsed = yaml_load(raw)
+        if isinstance(parsed, dict):
+            section = parsed.get("skill_personalization") or {}
+            if isinstance(section, dict):
+                _personalization_cache = {
+                    k.upper(): str(v) for k, v in section.items() if v is not None
+                }
+    except Exception:
+        logger.debug("Could not load skill_personalization from config.yaml", exc_info=True)
+    return _personalization_cache
+
+
+_PLACEHOLDER_RE = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")
+
+
+def apply_skill_personalization(content: str) -> str:
+    """Replace {{TOKEN}} placeholders in skill content with config values.
+
+    Tokens not found in the personalization config are left as-is so skills
+    remain functional even with partial configuration.
+    """
+    tokens = _load_personalization()
+    if not tokens:
+        return content
+
+    def _replace(match: re.Match) -> str:
+        key = match.group(1)
+        return tokens.get(key, match.group(0))
+
+    return _PLACEHOLDER_RE.sub(_replace, content)
+
+
 # ── Platform matching ─────────────────────────────────────────────────────
 
 

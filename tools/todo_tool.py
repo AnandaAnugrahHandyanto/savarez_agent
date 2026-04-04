@@ -15,7 +15,13 @@ Design:
 """
 
 import json
+import logging
+import os
+from datetime import datetime
+from pathlib import Path
 from typing import Dict, Any, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # Valid status values for todo items
@@ -24,16 +30,79 @@ VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
 
 class TodoStore:
     """
-    In-memory todo list. One instance per AIAgent (one per session).
+    In-memory todo list with optional file-backed cross-session persistence.
 
-    Items are ordered -- list position is priority. Each item has:
+    One instance per AIAgent (one per session). Items are ordered -- list
+    position is priority. Each item has:
       - id: unique string identifier (agent-chosen)
       - content: task description
       - status: pending | in_progress | completed | cancelled
+
+    When persist=True (default), writes are dual-written to
+    ``~/.hermes/tasks/current.md`` so tasks survive across sessions.
     """
 
-    def __init__(self):
+    def __init__(self, persist: bool = True):
         self._items: List[Dict[str, str]] = []
+        self._persist = persist
+        self._tasks_path = self._resolve_tasks_path()
+
+    @staticmethod
+    def _resolve_tasks_path() -> Path:
+        """Resolve ~/.hermes/tasks/current.md path."""
+        hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+        return hermes_home / "tasks" / "current.md"
+
+    def _sync_to_file(self) -> None:
+        """Dual-write current items to ~/.hermes/tasks/current.md."""
+        if not self._persist:
+            return
+        try:
+            self._tasks_path.parent.mkdir(parents=True, exist_ok=True)
+
+            today = datetime.now().strftime("%Y-%m-%d")
+            lines = [f"# Tasks — {today}", ""]
+
+            # Group by status
+            active = [i for i in self._items if i["status"] in ("pending", "in_progress")]
+            completed = [i for i in self._items if i["status"] == "completed"]
+            cancelled = [i for i in self._items if i["status"] == "cancelled"]
+
+            markers = {
+                "completed": "- [x]",
+                "in_progress": "- [>]",
+                "pending": "- [ ]",
+                "cancelled": "- [~]",
+            }
+
+            if active:
+                lines.append("## Today")
+                lines.append("")
+                for item in active:
+                    marker = markers[item["status"]]
+                    lines.append(f"{marker} {item['content']}")
+                lines.append("")
+
+            if completed:
+                lines.append("## Done")
+                lines.append("")
+                for item in completed:
+                    lines.append(f"- [x] {item['content']}")
+                lines.append("")
+
+            if cancelled:
+                lines.append("## Cancelled")
+                lines.append("")
+                for item in cancelled:
+                    lines.append(f"- [~] {item['content']}")
+                lines.append("")
+
+            content = "\n".join(lines)
+            tmp = self._tasks_path.with_suffix(".tmp")
+            tmp.write_text(content, encoding="utf-8")
+            os.replace(tmp, self._tasks_path)
+        except Exception as e:
+            logger.debug("Could not sync tasks to %s: %s", self._tasks_path, e)
 
     def write(self, todos: List[Dict[str, Any]], merge: bool = False) -> List[Dict[str, str]]:
         """
@@ -77,6 +146,7 @@ class TodoStore:
                     rebuilt.append(current)
                     seen.add(current["id"])
             self._items = rebuilt
+        self._sync_to_file()
         return self.read()
 
     def read(self) -> List[Dict[str, str]]:

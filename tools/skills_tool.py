@@ -1270,6 +1270,10 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                     exc_info=True,
                 )
 
+        # Replace {{TOKEN}} placeholders with user-configured values
+        from agent.skill_utils import apply_skill_personalization
+        content = apply_skill_personalization(content)
+
         result = {
             "success": True,
             "name": skill_name,

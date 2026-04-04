@@ -857,6 +857,23 @@ def _load_cursorrules(cwd_path: Path) -> str:
     return _truncate_content(cursorrules_content, ".cursorrules")
 
 
+def _load_tasks_current() -> str:
+    """Load ~/.hermes/tasks/current.md for cross-session task awareness."""
+    tasks_path = get_hermes_home() / "tasks" / "current.md"
+    if not tasks_path.exists():
+        return ""
+    try:
+        content = tasks_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return ""
+        content = _scan_context_content(content, "tasks/current.md")
+        result = f"## Cross-Session Tasks\n\n{content}"
+        return _truncate_content(result, "tasks/current.md")
+    except Exception as e:
+        logger.debug("Could not read tasks/current.md: %s", e)
+        return ""
+
+
 def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
     """Discover and load context files for the system prompt.
 
@@ -893,6 +910,11 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
         soul_content = load_soul_md()
         if soul_content:
             sections.append(soul_content)
+
+    # Cross-session tasks from ~/.hermes/tasks/current.md
+    tasks_content = _load_tasks_current()
+    if tasks_content:
+        sections.append(tasks_content)
 
     if not sections:
         return ""
