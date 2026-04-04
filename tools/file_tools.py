@@ -97,17 +97,27 @@ _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
 def _check_sensitive_path(filepath: str) -> str | None:
     """Return an error message if the path targets a sensitive system location."""
+    import posixpath
+
+    # Cross-platform posix-safe check for container environments
+    # This prevents bypasses where Windows paths (C:\etc) mask target Unix paths (/etc)
+    try:
+        posix_resolved = posixpath.normpath(filepath)
+    except Exception:
+        posix_resolved = filepath
+
     try:
         resolved = os.path.realpath(os.path.expanduser(filepath))
     except (OSError, ValueError):
         resolved = filepath
+
     for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix):
+        if resolved.startswith(prefix) or posix_resolved.startswith(prefix):
             return (
                 f"Refusing to write to sensitive system path: {filepath}\n"
                 "Use the terminal tool with sudo if you need to modify system files."
             )
-    if resolved in _SENSITIVE_EXACT_PATHS:
+    if resolved in _SENSITIVE_EXACT_PATHS or posix_resolved in _SENSITIVE_EXACT_PATHS:
         return (
             f"Refusing to write to sensitive system path: {filepath}\n"
             "Use the terminal tool with sudo if you need to modify system files."
