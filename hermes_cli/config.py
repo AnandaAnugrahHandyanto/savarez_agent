@@ -259,6 +259,12 @@ DEFAULT_CONFIG = {
         "env_passthrough": [],
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "docker_forward_env": [],
+        # Explicit environment variables to set inside Docker containers.
+        # Unlike docker_forward_env (which reads values from the host process),
+        # docker_env lets you specify exact key-value pairs — useful when Hermes
+        # runs as a systemd service without access to the user's shell environment.
+        # Example: {"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock"}
+        "docker_env": {},
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
@@ -2192,6 +2198,7 @@ def set_config_value(key: str, value: str):
         "terminal.persistent_shell": "TERMINAL_PERSISTENT_SHELL",
     }
     if key in _config_to_env_sync:
+logout
         save_env_value(_config_to_env_sync[key], str(value))
 
     print(f"✓ Set {key} = {value} in {config_path}")
