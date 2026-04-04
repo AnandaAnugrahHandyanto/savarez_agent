@@ -5,6 +5,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
+from httpx import URL
 import pytest
 
 from agent.prompt_caching import apply_anthropic_cache_control
@@ -94,6 +95,17 @@ class TestBuildAnthropicClient:
             assert kwargs["default_headers"] == {
                 "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
             }
+
+    def test_httpx_url_base_url_is_normalized_before_auth_detection(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "minimax-secret-123",
+                base_url=URL("https://api.minimax.io/anthropic"),
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["base_url"] == "https://api.minimax.io/anthropic"
+            assert kwargs["auth_token"] == "minimax-secret-123"
+            assert "api_key" not in kwargs
 
 
 class TestReadClaudeCodeCredentials:

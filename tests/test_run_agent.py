@@ -12,7 +12,9 @@ import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch, mock_open
+
+from httpx import URL
 
 import pytest
 
@@ -2513,6 +2515,29 @@ class TestFallbackAnthropicProvider:
             agent._try_activate_fallback()
 
         assert agent._use_prompt_caching is True
+
+    def test_fallback_to_minimax_anthropic_accepts_httpx_url_base_url(self, agent):
+        agent._fallback_activated = False
+        agent._fallback_model = {"provider": "minimax", "model": "MiniMax-M2.7"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
+
+        mock_client = MagicMock()
+        mock_client.base_url = URL("https://api.minimax.io/anthropic")
+        mock_client.api_key = "minimax-secret-123"
+
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()) as mock_build,
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value=None),
+        ):
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent.api_mode == "anthropic_messages"
+        assert agent.base_url == "https://api.minimax.io/anthropic"
+        assert agent._anthropic_base_url == "https://api.minimax.io/anthropic"
+        assert mock_build.call_args[0][1] == "https://api.minimax.io/anthropic"
 
     def test_fallback_to_openrouter_uses_openai_client(self, agent):
         agent._fallback_activated = False

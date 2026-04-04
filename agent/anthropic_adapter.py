@@ -163,6 +163,17 @@ def _is_oauth_token(key: str) -> bool:
     return True
 
 
+def _normalize_base_url_text(base_url: Any) -> str:
+    """Normalize SDK/base transport URL values to a plain string for inspection.
+
+    Some client objects expose ``base_url`` as an ``httpx.URL`` instead of a raw
+    string. Provider/auth detection should accept either shape.
+    """
+    if not base_url:
+        return ""
+    return str(base_url).strip()
+
+
 def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     """Return True for non-Anthropic endpoints using the Anthropic Messages API.
 
@@ -170,9 +181,10 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     with their own API keys via x-api-key, not Anthropic OAuth tokens. OAuth
     detection should be skipped for these endpoints.
     """
-    if not base_url:
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
         return False  # No base_url = direct Anthropic API
-    normalized = base_url.rstrip("/").lower()
+    normalized = normalized.rstrip("/").lower()
     if "anthropic.com" in normalized:
         return False  # Direct Anthropic API — OAuth applies
     return True  # Any other endpoint is a third-party proxy
@@ -182,12 +194,13 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     """Return True for Anthropic-compatible providers that require Bearer auth.
 
     Some third-party /anthropic endpoints implement Anthropic's Messages API but
-    require Authorization: Bearer instead of Anthropic's native x-api-key header.
+    require Authorization: Bearer *** of Anthropic's native x-api-key header.
     MiniMax's global and China Anthropic-compatible endpoints follow this pattern.
     """
-    if not base_url:
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
         return False
-    normalized = base_url.rstrip("/").lower()
+    normalized = normalized.rstrip("/").lower()
     return normalized.startswith("https://api.minimax.io/anthropic") or normalized.startswith(
         "https://api.minimaxi.com/anthropic"
     )
@@ -205,13 +218,14 @@ def build_anthropic_client(api_key: str, base_url: str = None):
         )
     from httpx import Timeout
 
+    normalized_base_url = _normalize_base_url_text(base_url)
     kwargs = {
         "timeout": Timeout(timeout=900.0, connect=10.0),
     }
-    if base_url:
-        kwargs["base_url"] = base_url
+    if normalized_base_url:
+        kwargs["base_url"] = normalized_base_url
 
-    if _requires_bearer_auth(base_url):
+    if _requires_bearer_auth(normalized_base_url):
         # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
         # Authorization: Bearer even for regular API keys. Route those endpoints
         # through auth_token so the SDK sends Bearer auth instead of x-api-key.
