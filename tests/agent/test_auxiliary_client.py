@@ -1088,6 +1088,146 @@ class TestTaskSpecificOverrides:
         assert mock_openai.call_args.kwargs["base_url"] == "https://api.z.ai/api/coding/paas/v4"
 
 
+class TestTryMinimax:
+    """Tests for _try_minimax() vision provider."""
+
+    def test_try_minimax_returns_client_via_minimax_cn_pool(self):
+        """When minimax-cn credentials exist in pool, should return client with MiniMax-M2.7."""
+        class _Entry:
+            access_token = "mm-cn-pool-key"
+            base_url = "https://api.minimaxi.com/anthropic"
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            from agent.auxiliary_client import _try_minimax
+
+            client, model = _try_minimax()
+
+        assert client is not None
+        assert model == "MiniMax-M2.7"
+        call_kwargs = mock_openai.call_args.kwargs
+        assert call_kwargs["api_key"] == "mm-cn-pool-key"
+        assert call_kwargs["base_url"] == "https://api.minimaxi.com/anthropic"
+
+    def test_try_minimax_falls_back_to_international_pool(self):
+        """When minimax-cn pool unavailable, should try minimax (international)."""
+        class _PoolCn:
+            def has_credentials(self):
+                return False
+
+        class _EntryIntl:
+            access_token = "mm-intl-pool-key"
+            base_url = "https://api.minimax.io/anthropic"
+
+        class _PoolIntl:
+            def has_credentials(self):
+                return True
+
+            def select(self):
+                return _EntryIntl()
+
+        def pool_selector(provider):
+            if provider == "minimax-cn":
+                return _PoolCn()
+            return _PoolIntl()
+
+        with (
+            patch("agent.auxiliary_client.load_pool", side_effect=pool_selector),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            from agent.auxiliary_client import _try_minimax
+
+            client, model = _try_minimax()
+
+        assert client is not None
+        assert model == "MiniMax-M2.7"
+        call_kwargs = mock_openai.call_args.kwargs
+        assert call_kwargs["api_key"] == "mm-intl-pool-key"
+        assert call_kwargs["base_url"] == "https://api.minimax.io/anthropic"
+
+    def test_try_minimax_returns_none_when_no_credentials(self):
+        """When neither minimax-cn nor minimax credentials exist, returns (None, None)."""
+        class _Pool:
+            def has_credentials(self):
+                return False
+
+        with patch("agent.auxiliary_client.load_pool", return_value=_Pool()):
+            from agent.auxiliary_client import _try_minimax
+
+            client, model = _try_minimax()
+
+        assert client is None
+        assert model is None
+
+    def test_resolve_strict_vision_backend_minimax(self):
+        """_resolve_strict_vision_backend('minimax') should call _try_minimax."""
+        class _Entry:
+            access_token = "mm-pool-key"
+            base_url = "https://api.minimaxi.com/anthropic"
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            from agent.auxiliary_client import _resolve_strict_vision_backend
+
+            client, model = _resolve_strict_vision_backend("minimax")
+
+        assert client is not None
+        assert model == "MiniMax-M2.7"
+
+    def test_normalize_minimax_cn_to_minimax(self):
+        """_normalize_vision_provider('minimax-cn') should return 'minimax'."""
+        from agent.auxiliary_client import _normalize_vision_provider
+
+        assert _normalize_vision_provider("minimax-cn") == "minimax"
+        assert _normalize_vision_provider("minimax") == "minimax"
+
+    def test_vision_auto_prefers_minimax_when_main_provider(self, monkeypatch):
+        """When minimax-cn is the main provider, vision auto should prefer it."""
+        def fake_load_config():
+            return {"model": {"provider": "minimax-cn", "default": "MiniMax-M2.7"}}
+
+        class _Entry:
+            access_token = "mm-pool-key"
+            base_url = "https://api.minimaxi.com/anthropic"
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            patch("hermes_cli.config.load_config", fake_load_config),
+        ):
+            from agent.auxiliary_client import get_vision_auxiliary_client
+
+            client, model = get_vision_auxiliary_client()
+
+        assert client is not None
+        assert model == "MiniMax-M2.7"
+
+
 class TestAuxiliaryMaxTokensParam:
     def test_codex_fallback_uses_max_tokens(self, monkeypatch):
         """Codex adapter translates max_tokens internally, so we return max_tokens."""

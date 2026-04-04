@@ -669,7 +669,7 @@ def _try_nous() -> Tuple[Optional[OpenAI], Optional[str]]:
     model = "gemini-3-flash" if nous.get("source") == "pool" else _NOUS_MODEL
     return (
         OpenAI(
-            api_key=_nous_...us),
+            api_key= nous.get("agent_key", ""),
             base_url=str(nous.get("inference_base_url") or _nous_base_url()).rstrip("/"),
         ),
         model,
@@ -694,7 +694,7 @@ def _try_minimax() -> Tuple[Optional[OpenAI], Optional[str]]:
         if not pconfig:
             continue
 
-        api_key = _pool_...try)
+        api_key = _pool_runtime_api_key(entry)
         if not api_key:
             continue
 
@@ -702,12 +702,12 @@ def _try_minimax() -> Tuple[Optional[OpenAI], Optional[str]]:
         # MiniMax-M2.7 is natively multimodal and handles vision tasks
         model = "MiniMax-M2.7"
         logger.debug("Auxiliary vision client: MiniMax (%s) via pool at %s", model, base_url)
-        return OpenAI(api_key=*** base_url=base_url), model
+        return OpenAI(api_key=api_key, base_url=base_url), model
 
     return None, None
 
 
-def _read_main_model()
+def _read_main_model() -> str:
     """Read the user's configured main model from config.yaml.
 
     config.yaml model.default is the single source of truth for the active
