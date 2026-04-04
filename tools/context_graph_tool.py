@@ -23,35 +23,10 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Content scanning — reuse patterns from memory_tool for consistency
+# Content scanning — delegates to consolidated guardrails module
 # ---------------------------------------------------------------------------
 
-_THREAT_PATTERNS = [
-    (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
-    (r'you\s+are\s+now\s+', "role_hijack"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
-    (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget"),
-]
-
-_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
-}
-
-
-def _scan_content(content: str) -> Optional[str]:
-    """Scan episode content for injection/exfiltration patterns."""
-    if not content:
-        return None
-    for char in _INVISIBLE_CHARS:
-        if char in content:
-            return f"Blocked: invisible unicode U+{ord(char):04X}"
-    for pattern, pid in _THREAT_PATTERNS:
-        if re.search(pattern, content, re.IGNORECASE):
-            return f"Blocked: threat pattern '{pid}'"
-    return None
+from agent.guardrails import scan_content as _scan_content
 
 
 # ---------------------------------------------------------------------------

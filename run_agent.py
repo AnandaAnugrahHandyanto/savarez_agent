@@ -642,6 +642,15 @@ class AIAgent:
         from agent.events import EventBus
         self.event_bus = EventBus()
 
+        # HITL approval manager (agno-inspired)
+        from agent.approval import ApprovalManager
+        self._approval_manager = ApprovalManager(
+            clarify_callback=clarify_callback,
+            event_bus=self.event_bus,
+            session_db=session_db,
+            session_id=self.session_id if hasattr(self, 'session_id') else None,
+        )
+
         # Tool execution state — allows _vprint during tool execution
         # even when stream consumers are registered (no tokens streaming then)
         self._executing_tools = False
@@ -5679,6 +5688,21 @@ class AIAgent:
         tools. Used by the concurrent execution path; the sequential path retains
         its own inline invocation for backward-compatible display handling.
         """
+        # HITL approval check
+        from tools.registry import registry as _reg
+        if _reg.tool_requires_confirmation(function_name):
+            action = self._approval_manager.check_approval(
+                tool_name=function_name,
+                tool_call_id=effective_task_id,
+                args=function_args,
+                requires_confirmation=True,
+            )
+            if action and not self._approval_manager.resolve_action(action):
+                return json.dumps({
+                    "error": f"Tool '{function_name}' execution denied by user.",
+                    "approval_denied": True,
+                })
+
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
             return _todo_tool(
