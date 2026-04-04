@@ -82,7 +82,8 @@ def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
     """
     provider_dir = _MEMORY_PLUGINS_DIR / name
     if not provider_dir.is_dir():
-        logger.debug("Memory provider '%s' not found in %s", name, _MEMORY_PLUGINS_DIR)
+        available = [d.name for d in _MEMORY_PLUGINS_DIR.iterdir() if d.is_dir() and not d.name.startswith(("_", "."))] if _MEMORY_PLUGINS_DIR.is_dir() else []
+        logger.warning("Memory provider '%s' not found. Available: %s", name, ", ".join(available) or "none")
         return None
 
     try:
