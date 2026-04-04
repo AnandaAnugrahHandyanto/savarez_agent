@@ -227,6 +227,7 @@ def _build_child_agent(
         skip_memory=True,
         clarify_callback=None,
         session_db=getattr(parent_agent, '_session_db', None),
+        parent_session_id=getattr(parent_agent, 'session_id', None),
         providers_allowed=parent_agent.providers_allowed,
         providers_ignored=parent_agent.providers_ignored,
         providers_order=parent_agent.providers_order,
