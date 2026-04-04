@@ -4981,6 +4981,13 @@ class AIAgent:
                 "store": False,
             }
 
+            model_cfg = getattr(self, "config", {}) or {}
+            model_section = model_cfg.get("model", {}) if isinstance(model_cfg, dict) else {}
+            fast_mode_enabled = bool(model_section.get("fast_mode"))
+            if self.provider == "openai-codex" and fast_mode_enabled:
+                kwargs["service_tier"] = "fast"
+                kwargs["features"] = {"fast_mode": True}
+
             if not is_github_responses:
                 kwargs["prompt_cache_key"] = self.session_id
 

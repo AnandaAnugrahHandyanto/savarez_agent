@@ -218,6 +218,28 @@ def test_api_mode_normalizes_provider_case(monkeypatch):
         skip_memory=True,
     )
     assert agent.provider == "openai-codex"
+
+
+def test_codex_build_api_kwargs_adds_fast_mode_fields(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.config = {"model": {"fast_mode": True}}
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": "Ping"},
+    ])
+    assert kwargs["service_tier"] == "fast"
+    assert kwargs["features"] == {"fast_mode": True}
+
+
+def test_codex_build_api_kwargs_omits_fast_mode_fields_by_default(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.config = {"model": {}}
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": "Ping"},
+    ])
+    assert "service_tier" not in kwargs
+    assert "features" not in kwargs
     assert agent.api_mode == "codex_responses"
 
 

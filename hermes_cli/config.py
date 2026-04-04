@@ -198,6 +198,7 @@ def ensure_hermes_home():
 
 DEFAULT_CONFIG = {
     "model": "",
+    "fast_mode": False,
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],

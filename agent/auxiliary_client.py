@@ -226,6 +226,12 @@ class _CodexCompletionsAdapter:
             "store": False,
         }
 
+        if kwargs.get("service_tier") == "fast":
+            resp_kwargs["service_tier"] = "fast"
+        features = kwargs.get("features")
+        if isinstance(features, dict) and features.get("fast_mode") is True:
+            resp_kwargs["features"] = {"fast_mode": True}
+
         # Note: the Codex endpoint (chatgpt.com/backend-api/codex) does NOT
         # support max_output_tokens or temperature — omit to avoid 400 errors.
 
