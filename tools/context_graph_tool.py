@@ -278,4 +278,5 @@ registry.register(
     check_fn=check_context_graph_requirements,
     is_async=True,
     emoji="🕸️",
+    mutates=True,
 )

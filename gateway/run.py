@@ -3033,9 +3033,27 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Gateway memory flush on reset failed: %s", e)
 
+        # Run adaptive memory curation before evicting the agent
+        try:
+            _lock = getattr(self, "_agent_cache_lock", None)
+            _cache = getattr(self, "_agent_cache", {})
+            cached_agent = None
+            if _lock:
+                with _lock:
+                    cached_agent = _cache.get(session_key)
+            if cached_agent and getattr(cached_agent, '_memory_store', None):
+                from agent.memory_curator import run_post_session_curation
+                run_post_session_curation(
+                    memory_store=cached_agent._memory_store,
+                    session_db=getattr(self, 'session_db', None),
+                    session_id=getattr(cached_agent, 'session_id', None),
+                )
+        except Exception:
+            pass  # Curation is best-effort
+
         self._shutdown_gateway_honcho(session_key)
         self._evict_cached_agent(session_key)
-        
+
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
 

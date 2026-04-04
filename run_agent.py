@@ -1037,6 +1037,14 @@ class AIAgent:
         # In-memory todo list for task planning (one per agent/session)
         from tools.todo_tool import TodoStore
         self._todo_store = TodoStore()
+
+        # Session state — persistent key-value dict surviving compression
+        self._session_state: dict = {}
+        if self._session_db:
+            try:
+                self._session_state = self._session_db.get_session_state(self.session_id)
+            except Exception:
+                pass  # Fresh session or missing column — start empty
         
         # Load config once for memory, skills, and compression sections
         try:
@@ -2708,6 +2716,13 @@ class AIAgent:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
                     prompt_parts.append(user_block)
+
+        # Session state (persistent k/v surviving compression)
+        if self._session_state:
+            from tools.session_state_tool import format_state_for_system_prompt
+            state_block = format_state_for_system_prompt(self._session_state)
+            if state_block:
+                prompt_parts.append(state_block)
 
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         if has_skills_tools:
@@ -5565,6 +5580,9 @@ class AIAgent:
                     except (ValueError, Exception) as e:
                         logger.debug("Could not propagate title on compression: %s", e)
                 self._session_db.update_system_prompt(self.session_id, new_system_prompt)
+                # Carry session state forward to the new session
+                if self._session_state:
+                    self._session_db.set_session_state(self.session_id, self._session_state)
                 # Reset flush cursor — new session starts with no messages written
                 self._last_flushed_db_idx = 0
             except Exception as e:
@@ -5661,6 +5679,22 @@ class AIAgent:
             # Also send user observations to Honcho when active
             if self._honcho and target == "user" and function_args.get("action") == "add":
                 self._honcho_save_user_observation(function_args.get("content", ""))
+            return result
+        elif function_name == "session_state":
+            from tools.session_state_tool import session_state_tool as _state_tool
+            result = _state_tool(
+                action=function_args.get("action", ""),
+                key=function_args.get("key"),
+                value=function_args.get("value"),
+                db=self._session_db,
+                session_id=self.session_id,
+            )
+            # Keep in-memory cache in sync
+            if self._session_db:
+                try:
+                    self._session_state = self._session_db.get_session_state(self.session_id)
+                except Exception:
+                    pass
             return result
         elif function_name == "context_graph":
             if not self._graph_manager:
@@ -6050,6 +6084,24 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
+            elif function_name == "session_state":
+                from tools.session_state_tool import session_state_tool as _state_tool
+                function_result = _state_tool(
+                    action=function_args.get("action", ""),
+                    key=function_args.get("key"),
+                    value=function_args.get("value"),
+                    db=self._session_db,
+                    session_id=self.session_id,
+                )
+                # Keep in-memory cache in sync
+                if self._session_db:
+                    try:
+                        self._session_state = self._session_db.get_session_state(self.session_id)
+                    except Exception:
+                        pass
+                tool_duration = time.time() - tool_start_time
+                if self.quiet_mode:
+                    self._vprint(f"  {_get_cute_tool_message_impl('session_state', function_args, tool_duration, result=function_result)}")
             elif function_name == "context_graph":
                 if not self._graph_manager:
                     function_result = json.dumps({"success": False, "error": "Context graph not enabled. Set context_graph.enabled: true in cli-config.yaml"})

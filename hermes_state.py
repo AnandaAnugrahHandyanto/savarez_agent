@@ -32,7 +32,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_source TEXT,
     pricing_version TEXT,
     title TEXT,
+    session_state TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -603,6 +604,39 @@ class SessionDB:
                 except Exception:
                     pass  # FTS5 may not be available on all builds
                 cursor.execute("UPDATE schema_version SET version = 9")
+            if current_version < 10:
+                # v10: add session_state column for persistent key-value state
+                # that survives context compression (inspired by agno session_state)
+                try:
+                    cursor.execute("ALTER TABLE sessions ADD COLUMN session_state TEXT")
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                cursor.execute("UPDATE schema_version SET version = 10")
+
+            if current_version < 11:
+                # v11: action_log — append-only accountability log for
+                # side-effecting tool invocations (separate from session traces)
+                cursor.executescript("""
+                    CREATE TABLE IF NOT EXISTS action_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id TEXT,
+                        tool_name TEXT NOT NULL,
+                        tool_args TEXT,
+                        result_summary TEXT,
+                        mutates INTEGER NOT NULL DEFAULT 1,
+                        platform TEXT,
+                        approved_by TEXT,
+                        timestamp REAL NOT NULL,
+                        duration_ms INTEGER
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_action_log_session
+                        ON action_log(session_id, timestamp);
+                    CREATE INDEX IF NOT EXISTS idx_action_log_tool
+                        ON action_log(tool_name, timestamp DESC);
+                    CREATE INDEX IF NOT EXISTS idx_action_log_timestamp
+                        ON action_log(timestamp DESC);
+                """)
+                cursor.execute("UPDATE schema_version SET version = 11")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -689,6 +723,51 @@ class SessionDB:
                 (system_prompt, session_id),
             )
         self._execute_write(_do)
+
+    # -----------------------------------------------------------------
+    # Session state (persistent key-value dict surviving compression)
+    # -----------------------------------------------------------------
+
+    def get_session_state(self, session_id: str) -> Dict[str, Any]:
+        """Load the session_state JSON dict for a session. Returns {} if unset."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT session_state FROM sessions WHERE id = ?", (session_id,)
+            )
+            row = cursor.fetchone()
+        if not row:
+            return {}
+        raw = row["session_state"] if isinstance(row, sqlite3.Row) else row[0]
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    def set_session_state(self, session_id: str, state: Dict[str, Any]) -> None:
+        """Persist the full session_state dict (overwrites previous value)."""
+        serialized = json.dumps(state, ensure_ascii=False)
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET session_state = ? WHERE id = ?",
+                (serialized, session_id),
+            )
+        self._execute_write(_do)
+
+    def update_session_state(self, session_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge *updates* into the existing session_state and persist.
+
+        Keys set to None are deleted. Returns the merged state.
+        """
+        current = self.get_session_state(session_id)
+        for key, value in updates.items():
+            if value is None:
+                current.pop(key, None)
+            else:
+                current[key] = value
+        self.set_session_state(session_id, current)
+        return current
 
     def update_token_counts(
         self,
@@ -1414,6 +1493,88 @@ class SessionDB:
             params.extend([limit, offset])
             rows = self._conn.execute(
                 f"SELECT * FROM routing_decisions {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    # =========================================================================
+    # Action log (accountability log for side-effecting tool invocations)
+    # =========================================================================
+
+    def log_action(
+        self,
+        session_id: str = None,
+        tool_name: str = "",
+        tool_args: str = None,
+        result_summary: str = None,
+        mutates: bool = True,
+        platform: str = None,
+        approved_by: str = None,
+        timestamp: float = None,
+        duration_ms: int = None,
+    ) -> None:
+        """Append to the action_log table.  Fire-and-forget: errors are logged, not raised."""
+        ts = timestamp or time.time()
+        truncated_args = (tool_args or "")[:4096] or None
+        truncated_result = (result_summary or "")[:512] or None
+        try:
+            def _do(conn):
+                conn.execute(
+                    """INSERT INTO action_log
+                       (session_id, tool_name, tool_args, result_summary,
+                        mutates, platform, approved_by, timestamp, duration_ms)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        session_id,
+                        tool_name,
+                        truncated_args,
+                        truncated_result,
+                        1 if mutates else 0,
+                        platform,
+                        approved_by,
+                        ts,
+                        duration_ms,
+                    ),
+                )
+            self._execute_write(_do)
+        except Exception as e:
+            logger.debug("action_log insert failed: %s", e)
+
+    def get_action_log(
+        self,
+        session_id: str = None,
+        tool_name: str = None,
+        mutates_only: bool = True,
+        limit: int = 100,
+        since: float = None,
+    ) -> List[Dict[str, Any]]:
+        """Query action_log for self-evolution dataset building.
+
+        Args:
+            session_id: Filter by session.
+            tool_name: Filter by tool.
+            mutates_only: If True, only return side-effecting actions.
+            limit: Max rows.
+            since: Only actions after this unix timestamp.
+        """
+        with self._lock:
+            clauses = []
+            params = []
+            if session_id:
+                clauses.append("session_id = ?")
+                params.append(session_id)
+            if tool_name:
+                clauses.append("tool_name = ?")
+                params.append(tool_name)
+            if mutates_only:
+                clauses.append("mutates = 1")
+            if since:
+                clauses.append("timestamp > ?")
+                params.append(since)
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            params.append(limit)
+            rows = self._conn.execute(
+                f"SELECT * FROM action_log {where} ORDER BY timestamp DESC LIMIT ?",
                 params,
             ).fetchall()
             return [dict(r) for r in rows]

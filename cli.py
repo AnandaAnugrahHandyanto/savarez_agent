@@ -7759,6 +7759,17 @@ class HermesCLI:
                     self._session_db.end_session(self.agent.session_id, "cli_close")
                 except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not close session in DB: %s", e)
+            # Run adaptive memory curation (non-blocking, best-effort)
+            if self.agent and getattr(self.agent, '_memory_store', None):
+                try:
+                    from agent.memory_curator import run_post_session_curation
+                    run_post_session_curation(
+                        memory_store=self.agent._memory_store,
+                        session_db=getattr(self, '_session_db', None),
+                        session_id=getattr(self.agent, 'session_id', None),
+                    )
+                except Exception:
+                    pass  # Curation is best-effort
             # Plugin hook: on_session_end — safety net for interrupted exits.
             # run_conversation() already fires this per-turn on normal completion,
             # so only fire here if the agent was mid-turn (_agent_running) when

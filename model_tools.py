@@ -21,9 +21,12 @@ Public API (signatures preserved from the original 2,400-line version):
 """
 
 import json
+import os
 import asyncio
 import logging
 import threading
+import time as _time
+import queue as _queue
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import registry
@@ -150,6 +153,7 @@ def _discover_tools():
         "tools.tts_tool",
         "tools.todo_tool",
         "tools.memory_tool",
+        "tools.session_state_tool",
         "tools.session_search_tool",
         "tools.clarify_tool",
         "tools.code_execution_tool",
@@ -367,8 +371,54 @@ def get_tool_definitions(
 # because they need agent-level state (TodoStore, MemoryStore, etc.).
 # The registry still holds their schemas; dispatch just returns a stub error
 # so if something slips through, the LLM sees a sensible message.
-_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
+_AGENT_LOOP_TOOLS = {"todo", "memory", "session_state", "session_search", "delegate_task"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
+
+
+# ---------------------------------------------------------------------------
+# Action log — async background writer for side-effecting tool invocations
+# ---------------------------------------------------------------------------
+
+_action_log_queue: _queue.Queue = _queue.Queue(maxsize=1000)
+_action_log_thread: Optional[threading.Thread] = None
+
+
+def _action_log_worker():
+    """Background daemon thread that drains the action_log queue into SQLite."""
+    db = None
+    while True:
+        try:
+            item = _action_log_queue.get(timeout=5.0)
+            if item is None:  # shutdown sentinel
+                break
+            if db is None:
+                from hermes_state import SessionDB
+                db = SessionDB()
+            db.log_action(**item)
+        except _queue.Empty:
+            continue
+        except Exception:
+            pass  # never crash the worker
+
+
+def _ensure_action_log_thread():
+    global _action_log_thread
+    if _action_log_thread is None or not _action_log_thread.is_alive():
+        _action_log_thread = threading.Thread(
+            target=_action_log_worker, daemon=True, name="action-log-writer"
+        )
+        _action_log_thread.start()
+
+
+def _detect_platform() -> str:
+    """Detect the current execution platform from environment variables."""
+    if os.environ.get("HERMES_CRON_JOB"):
+        return "cron"
+    if os.environ.get("HERMES_GATEWAY_SESSION"):
+        return "gateway"
+    if os.environ.get("API_SERVER_ENABLED"):
+        return "api"
+    return "cli"
 
 
 def handle_function_call(
@@ -415,6 +465,8 @@ def handle_function_call(
         except Exception:
             pass
 
+        _t0 = _time.time()
+
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
             # the parent's tool set via the process-global.
@@ -434,6 +486,26 @@ def handle_function_call(
                 honcho_manager=honcho_manager,
                 honcho_session_key=honcho_session_key,
             )
+
+        _elapsed_ms = int((_time.time() - _t0) * 1000)
+
+        # --- Action log: record side-effecting tool invocations ---
+        if registry.is_mutating(function_name):
+            _ensure_action_log_thread()
+            try:
+                _action_log_queue.put_nowait({
+                    "session_id": os.environ.get("HERMES_SESSION_ID") or task_id,
+                    "tool_name": function_name,
+                    "tool_args": json.dumps(function_args, default=str),
+                    "result_summary": result,
+                    "mutates": True,
+                    "platform": _detect_platform(),
+                    "approved_by": None,
+                    "timestamp": _t0,
+                    "duration_ms": _elapsed_ms,
+                })
+            except _queue.Full:
+                pass  # drop rather than block tool dispatch
 
         try:
             from hermes_cli.plugins import invoke_hook

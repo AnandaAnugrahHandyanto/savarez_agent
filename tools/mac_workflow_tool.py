@@ -164,4 +164,5 @@ registry.register(
     ),
     check_fn=check_mac_workflow_requirements,
     emoji="⚡",
+    mutates=True,
 )

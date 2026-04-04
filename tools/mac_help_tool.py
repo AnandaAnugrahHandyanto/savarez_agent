@@ -345,4 +345,5 @@ registry.register(
     ),
     check_fn=check_mac_help_requirements,
     emoji="🖥️",
+    mutates=False,
 )

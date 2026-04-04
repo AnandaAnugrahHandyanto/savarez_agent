@@ -455,4 +455,5 @@ registry.register(
     ),
     check_fn=check_cronjob_requirements,
     emoji="⏰",
+    mutates=True,
 )

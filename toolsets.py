@@ -50,6 +50,8 @@ _HERMES_CORE_TOOLS = [
     "text_to_speech",
     # Planning & memory
     "todo", "memory",
+    # Session state (persistent k/v surviving compression)
+    "session_state",
     # Session history search
     "session_search",
     # Clarifying questions
@@ -184,7 +186,13 @@ TOOLSETS = {
         "tools": ["memory"],
         "includes": []
     },
-    
+
+    "session_state": {
+        "description": "Persistent key-value state surviving context compression",
+        "tools": ["session_state"],
+        "includes": []
+    },
+
     "session_search": {
         "description": "Search and recall past conversations with summarization",
         "tools": ["session_search"],
@@ -268,6 +276,7 @@ TOOLSETS = {
             "browser_press", "browser_close", "browser_get_images",
             "browser_vision", "browser_console", "browser_use_agent",
             "todo", "memory",
+            "session_state",
             "session_search",
             "execute_code", "delegate_task",
         ],
@@ -296,6 +305,8 @@ TOOLSETS = {
             "browser_vision", "browser_console", "browser_use_agent",
             # Planning & memory
             "todo", "memory",
+            # Session state
+            "session_state",
             # Session history search
             "session_search",
             # Code execution + delegation

@@ -700,4 +700,5 @@ registry.register(
     requires_env=[],
     is_async=False,  # Switched to sync fal_client API to fix "Event loop is closed" in gateway
     emoji="🎨",
+    mutates=True,
 )

@@ -333,4 +333,5 @@ registry.register(
     ),
     check_fn=check_knowledge_requirements,
     emoji="📚",
+    mutates=True,
 )

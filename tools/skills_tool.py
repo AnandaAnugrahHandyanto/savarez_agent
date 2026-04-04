@@ -1438,6 +1438,7 @@ registry.register(
     ),
     check_fn=check_skills_requirements,
     emoji="📚",
+    mutates=False,
 )
 registry.register(
     name="skill_view",
@@ -1448,6 +1449,7 @@ registry.register(
     ),
     check_fn=check_skills_requirements,
     emoji="📚",
+    mutates=False,
 )
 
 SKILL_SEARCH_SCHEMA = {
@@ -1477,4 +1479,5 @@ registry.register(
     ),
     check_fn=check_skills_requirements,
     emoji="🔍",
+    mutates=False,
 )

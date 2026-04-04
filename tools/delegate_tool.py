@@ -791,4 +791,5 @@ registry.register(
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",
+    mutates=True,
 )

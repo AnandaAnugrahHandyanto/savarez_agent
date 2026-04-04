@@ -740,4 +740,5 @@ registry.register(
         new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False)),
     emoji="📝",
+    mutates=True,
 )

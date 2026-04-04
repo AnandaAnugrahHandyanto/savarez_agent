@@ -16,9 +16,55 @@ Import chain (circular-import safe):
 
 import json
 import logging
-from typing import Callable, Dict, List, Optional, Set
+import time
+from typing import Any, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# TTL Cache for tool results (used by cache_config)
+# ---------------------------------------------------------------------------
+
+class _TTLCache:
+    """Simple TTL cache with max-size eviction. Thread-safe enough for tool dispatch."""
+
+    def __init__(self, max_size: int = 256):
+        self._store: Dict[str, tuple] = {}  # key -> (value, expires_at)
+        self._max_size = max_size
+
+    def get(self, key: str) -> Optional[str]:
+        entry = self._store.get(key)
+        if entry is None:
+            return None
+        value, expires_at = entry
+        if time.time() > expires_at:
+            del self._store[key]
+            return None
+        return value
+
+    def put(self, key: str, value: str, ttl: float) -> None:
+        # Evict expired entries if at capacity
+        if len(self._store) >= self._max_size:
+            now = time.time()
+            expired = [k for k, (_, exp) in self._store.items() if now > exp]
+            for k in expired:
+                del self._store[k]
+        # If still at capacity, drop oldest
+        if len(self._store) >= self._max_size:
+            oldest_key = next(iter(self._store))
+            del self._store[oldest_key]
+        self._store[key] = (value, time.time() + ttl)
+
+    def invalidate(self, key: str) -> None:
+        self._store.pop(key, None)
+
+    def clear(self) -> None:
+        self._store.clear()
+
+
+# Module-level cache shared across all tools
+_tool_cache = _TTLCache()
 
 
 class ToolEntry:
@@ -27,10 +73,16 @@ class ToolEntry:
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
+        # Enhancement layer (agno-inspired)
+        "cache_config", "pre_hook", "post_hook", "requires_confirmation",
+        # Action classification
+        "mutates",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
-                 requires_env, is_async, description, emoji):
+                 requires_env, is_async, description, emoji,
+                 cache_config=None, pre_hook=None, post_hook=None,
+                 requires_confirmation=False, mutates=True):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -40,6 +92,16 @@ class ToolEntry:
         self.is_async = is_async
         self.description = description
         self.emoji = emoji
+        # cache_config: {"ttl": seconds} or None
+        self.cache_config = cache_config
+        # pre_hook(name, args) -> args or None (None = abort)
+        self.pre_hook = pre_hook
+        # post_hook(name, args, result) -> result (transformed)
+        self.post_hook = post_hook
+        # requires_confirmation: if True, agent loop should confirm before executing
+        self.requires_confirmation = requires_confirmation
+        # mutates: True if tool has side effects (writes, sends, modifies state)
+        self.mutates = mutates
 
 
 class ToolRegistry:
@@ -64,8 +126,27 @@ class ToolRegistry:
         is_async: bool = False,
         description: str = "",
         emoji: str = "",
+        cache_config: Optional[dict] = None,
+        pre_hook: Optional[Callable] = None,
+        post_hook: Optional[Callable] = None,
+        requires_confirmation: bool = False,
+        mutates: bool = True,
     ):
-        """Register a tool.  Called at module-import time by each tool file."""
+        """Register a tool.  Called at module-import time by each tool file.
+
+        Enhancement params (all optional, backward-compatible defaults):
+            cache_config: ``{"ttl": seconds}`` — cache results by (name, args) key.
+            pre_hook: ``fn(name, args) -> args`` — called before handler. Return
+                modified args, or None to abort execution.
+            post_hook: ``fn(name, args, result) -> result`` — called after handler.
+                Return transformed result string.
+            requires_confirmation: if True, the agent loop should ask the user
+                before executing (via clarify_callback / approval flow).
+            mutates: if True (default), the tool has side effects (writes files,
+                sends messages, modifies state). Used for action logging and
+                approval gating.  Default True is fail-safe: unknown tools are
+                assumed to have side effects.
+        """
         existing = self._tools.get(name)
         if existing and existing.toolset != toolset:
             logger.warning(
@@ -83,6 +164,11 @@ class ToolRegistry:
             is_async=is_async,
             description=description or schema.get("description", ""),
             emoji=emoji,
+            cache_config=cache_config,
+            pre_hook=pre_hook,
+            post_hook=post_hook,
+            requires_confirmation=requires_confirmation,
+            mutates=mutates,
         )
         if check_fn and toolset not in self._toolset_checks:
             self._toolset_checks[toolset] = check_fn
@@ -144,6 +230,9 @@ class ToolRegistry:
     def dispatch(self, name: str, args: dict, **kwargs) -> str:
         """Execute a tool handler by name.
 
+        * Pre-hooks run before the handler; returning None aborts execution.
+        * Results are cached when cache_config is set (TTL-based).
+        * Post-hooks transform the result string after execution.
         * Async handlers are bridged automatically via ``_run_async()``.
         * All exceptions are caught and returned as ``{"error": "..."}``
           for consistent error format.
@@ -152,10 +241,50 @@ class ToolRegistry:
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})
         try:
+            effective_args = args
+
+            # --- Cache lookup (before hooks — zero-cost on hit) ---
+            cache_key = None
+            if entry.cache_config:
+                ttl = entry.cache_config.get("ttl", 0)
+                if ttl > 0:
+                    cache_key = f"{name}:{json.dumps(effective_args, sort_keys=True)}"
+                    cached = _tool_cache.get(cache_key)
+                    if cached is not None:
+                        logger.debug("Cache hit for %s", name)
+                        return cached
+
+            # --- Pre-hook ---
+            if entry.pre_hook:
+                try:
+                    hook_result = entry.pre_hook(name, effective_args)
+                    if hook_result is None:
+                        return json.dumps({"error": f"Tool {name} aborted by pre-hook"})
+                    effective_args = hook_result
+                except Exception as hook_err:
+                    logger.warning("Pre-hook for %s failed: %s", name, hook_err)
+
+            # --- Execute handler ---
             if entry.is_async:
                 from model_tools import _run_async
-                return _run_async(entry.handler(args, **kwargs))
-            return entry.handler(args, **kwargs)
+                result = _run_async(entry.handler(effective_args, **kwargs))
+            else:
+                result = entry.handler(effective_args, **kwargs)
+
+            # --- Post-hook ---
+            if entry.post_hook:
+                try:
+                    result = entry.post_hook(name, effective_args, result)
+                except Exception as hook_err:
+                    logger.warning("Post-hook for %s failed: %s", name, hook_err)
+
+            # --- Cache store ---
+            if cache_key and entry.cache_config:
+                ttl = entry.cache_config.get("ttl", 0)
+                if ttl > 0:
+                    _tool_cache.put(cache_key, result, ttl)
+
+            return result
         except Exception as e:
             logger.exception("Tool %s dispatch error: %s", name, e)
             return json.dumps({"error": f"Tool execution failed: {type(e).__name__}: {e}"})
@@ -190,6 +319,26 @@ class ToolRegistry:
     def get_tool_to_toolset_map(self) -> Dict[str, str]:
         """Return ``{tool_name: toolset_name}`` for every registered tool."""
         return {name: e.toolset for name, e in self._tools.items()}
+
+    def tool_requires_confirmation(self, name: str) -> bool:
+        """Check if a tool requires user confirmation before execution."""
+        entry = self._tools.get(name)
+        return bool(entry and entry.requires_confirmation)
+
+    def is_mutating(self, name: str) -> bool:
+        """Return True if the tool has side effects (or is unknown)."""
+        entry = self._tools.get(name)
+        return entry.mutates if entry else True
+
+    def clear_tool_cache(self, name: str = None) -> None:
+        """Clear cached results for a specific tool or all tools."""
+        if name:
+            # Clear entries matching this tool prefix
+            keys_to_remove = [k for k in _tool_cache._store if k.startswith(f"{name}:")]
+            for k in keys_to_remove:
+                _tool_cache.invalidate(k)
+        else:
+            _tool_cache.clear()
 
     def is_toolset_available(self, toolset: str) -> bool:
         """Check if a toolset's requirements are met.
