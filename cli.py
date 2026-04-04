@@ -3234,12 +3234,18 @@ class HermesCLI:
         print()
     
     def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Return recent CLI sessions for in-chat browsing/resume affordances."""
+        """Return recent sessions for in-chat browsing/resume affordances.
+
+        With display.resume_include_gateway: true, gateway sessions
+        (Telegram, Discord, etc.) are included alongside CLI sessions.
+        Tool-spawned sessions are always excluded.
+        """
         if not self._session_db:
             return []
+        include_gateway = CLI_CONFIG.get("display", {}).get("resume_include_gateway", False)
         try:
             sessions = self._session_db.list_sessions_rich(
-                source="cli",
+                source=None if include_gateway else "cli",
                 exclude_sources=["tool"],
                 limit=limit,
             )
