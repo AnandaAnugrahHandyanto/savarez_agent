@@ -183,6 +183,42 @@ Subsequent operations are fast (PowerShell stays cached).
 Install espeak-ng for TTS: `choco install espeak-ng` (requires Chocolatey).
 For STT, set `VOICE_TOOLS_OPENAI_KEY` or install faster-whisper locally.
 
+## WSL2 Command Routing
+
+If you use both Windows-native Hermes and a WSL2 Linux venv, you can set up
+two commands so `hermes` always launches the Windows-native build (recommended
+for daily use — faster startup, native clipboard, no path translation) and
+`hermes-wsl` launches the Linux venv when you need it.
+
+```bash
+# From the repo checkout (inside WSL):
+bash scripts/setup-wsl-routing.sh
+```
+
+This auto-detects your Windows `hermes.exe` and WSL venv, then creates:
+
+| Command       | Target                                |
+|---------------|---------------------------------------|
+| `hermes`      | Windows-native install (`hermes.exe`) |
+| `hermes-wsl`  | Linux/WSL2 venv hermes                |
+
+Options:
+```bash
+# Custom paths
+bash scripts/setup-wsl-routing.sh \
+    --win-hermes /mnt/c/Users/You/.../hermes.exe \
+    --wsl-hermes ~/my-venv/bin/hermes
+
+# Different install dir
+bash scripts/setup-wsl-routing.sh --bin-dir ~/bin
+
+# Undo and restore original
+bash scripts/setup-wsl-routing.sh --undo
+```
+
+Make sure `~/.local/bin` (or your chosen `--bin-dir`) is in your `PATH` and
+comes before any other hermes locations.
+
 ## Architecture Notes
 
 - File locking: `msvcrt.locking()` (Windows) / `fcntl.flock()` (Unix)
