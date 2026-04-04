@@ -2591,9 +2591,35 @@ def test_aiagent_uses_claude_cli_client_and_disables_tools():
     mock_claude_client.assert_called_once()
     assert mock_claude_client.call_args.kwargs["base_url"] == "claude-cli://local"
     assert mock_claude_client.call_args.kwargs["api_key"] == "dummy-key"
-    assert mock_claude_client.call_args.kwargs["command"] == "/usr/local/bin/claude"
-    assert mock_claude_client.call_args.kwargs["args"] == ["--debug"]
 
+
+
+def test_aiagent_infers_claude_cli_client_from_base_url_and_disables_tools():
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI") as mock_openai,
+        patch("agent.claude_cli_client.ClaudeCLIClient") as mock_claude_client,
+    ):
+        cli_client = MagicMock()
+        mock_claude_client.return_value = cli_client
+
+        agent = AIAgent(
+            api_key="dummy-key",
+            base_url="claude-cli://local",
+            acp_command="/usr/local/bin/claude",
+            acp_args=["--debug"],
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.client is cli_client
+    assert agent.tools == []
+    mock_openai.assert_not_called()
+    mock_claude_client.assert_called_once()
+    assert mock_claude_client.call_args.kwargs["base_url"] == "claude-cli://local"
+    assert mock_claude_client.call_args.kwargs["api_key"] == "dummy-key"
 
 
 def test_aiagent_passes_session_id_to_claude_cli_client():

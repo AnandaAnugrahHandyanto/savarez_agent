@@ -895,7 +895,11 @@ class AIAgent:
             disabled_toolsets=disabled_toolsets,
             quiet_mode=self.quiet_mode,
         )
-        if self.provider == "claude-cli":
+        is_claude_cli_transport = (
+            self.provider == "claude-cli"
+            or str(self.base_url or "").startswith("claude-cli://")
+        )
+        if is_claude_cli_transport:
             self.tools = []
         
         # Show tool configuration and store valid tool names for validation
