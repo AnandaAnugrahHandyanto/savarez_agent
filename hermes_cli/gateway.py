@@ -1088,7 +1088,6 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
 
 def launchd_restart():
     label = get_launchd_label()
-    plist_path = get_launchd_plist_path()
 
     # Refresh plist if code changed (e.g. after hermes update)
     refresh_launchd_plist_if_needed()
