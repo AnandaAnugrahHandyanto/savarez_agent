@@ -1960,6 +1960,7 @@ def setup_gateway(config: dict):
             except ImportError:
                 print_info(f"Installing {matrix_pkg}...")
                 import subprocess
+                import shutil
 
                 uv_bin = shutil.which("uv")
                 if uv_bin:
