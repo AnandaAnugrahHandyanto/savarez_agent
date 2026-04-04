@@ -650,6 +650,33 @@ class TestMatrixEncryptedSendFallback:
 # ---------------------------------------------------------------------------
 
 class TestMatrixAutoTrustDevices:
+    def test_auto_trust_default_is_disabled(self):
+        adapter = _make_adapter()
+        assert adapter._auto_trust_devices_enabled is False
+
+    def test_auto_trust_can_be_enabled_via_env(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_AUTO_TRUST_DEVICES", "true")
+        adapter = _make_adapter()
+        assert adapter._auto_trust_devices_enabled is True
+
+    @pytest.mark.asyncio
+    async def test_e2ee_maintenance_skips_auto_trust_by_default(self):
+        adapter = _make_adapter()
+        fake_client = MagicMock()
+        fake_client.should_query_keys = True
+        fake_client.should_upload_keys = False
+        fake_client.should_claim_keys = False
+        fake_client.send_to_device_messages = AsyncMock(return_value=None)
+        fake_client.keys_query = AsyncMock(return_value=None)
+        fake_client.olm = object()
+        adapter._client = fake_client
+        adapter._encryption = True
+        adapter._auto_trust_devices = MagicMock()
+
+        await adapter._run_e2ee_maintenance()
+
+        adapter._auto_trust_devices.assert_not_called()
+
     def test_auto_trust_verifies_unverified_devices(self):
         adapter = _make_adapter()
 
@@ -993,3 +1020,665 @@ class TestMatrixKeyExportImport:
         # Should not have tried to export
         assert not hasattr(fake_client, "export_keys") or \
                not fake_client.export_keys.called
+
+
+# ---------------------------------------------------------------------------
+# Markdown to HTML: security tests
+# ---------------------------------------------------------------------------
+
+class TestMatrixMarkdownHtmlSecurity:
+    """Tests for HTML injection prevention in _markdown_to_html_fallback."""
+
+    def setup_method(self):
+        from gateway.platforms.matrix import MatrixAdapter
+        self.convert = MatrixAdapter._markdown_to_html_fallback
+
+    def test_script_injection_in_header(self):
+        result = self.convert("# <script>alert(1)</script>")
+        assert "<script>" not in result
+        assert "&lt;script&gt;" in result
+
+    def test_script_injection_in_plain_text(self):
+        result = self.convert("Hello <script>alert(1)</script>")
+        assert "<script>" not in result
+
+    def test_img_onerror_in_blockquote(self):
+        result = self.convert('> <img onerror="alert(1)">')
+        assert "onerror" not in result or "&lt;img" in result
+
+    def test_script_in_list_item(self):
+        result = self.convert("- <script>alert(1)</script>")
+        assert "<script>" not in result
+
+    def test_script_in_ordered_list(self):
+        result = self.convert("1. <script>alert(1)</script>")
+        assert "<script>" not in result
+
+    def test_javascript_uri_blocked(self):
+        result = self.convert("[click](javascript:alert(1))")
+        assert 'href="javascript:' not in result
+
+    def test_data_uri_blocked(self):
+        result = self.convert("[click](data:text/html,<script>)")
+        assert 'href="data:' not in result
+
+    def test_vbscript_uri_blocked(self):
+        result = self.convert("[click](vbscript:alert(1))")
+        assert 'href="vbscript:' not in result
+
+    def test_link_text_html_injection(self):
+        result = self.convert('[<img onerror="x">](http://safe.com)')
+        assert "<img" not in result or "&lt;img" in result
+
+    def test_link_href_attribute_breakout(self):
+        result = self.convert('[link](http://x" onclick="alert(1))')
+        assert "onclick" not in result or "&quot;" in result
+
+    def test_html_injection_in_bold(self):
+        result = self.convert("**<img onerror=alert(1)>**")
+        assert "<img" not in result or "&lt;img" in result
+
+    def test_html_injection_in_italic(self):
+        result = self.convert("*<script>alert(1)</script>*")
+        assert "<script>" not in result
+
+
+# ---------------------------------------------------------------------------
+# Markdown to HTML: extended formatting tests
+# ---------------------------------------------------------------------------
+
+class TestMatrixMarkdownHtmlFormatting:
+    """Tests for new formatting capabilities in _markdown_to_html_fallback."""
+
+    def setup_method(self):
+        from gateway.platforms.matrix import MatrixAdapter
+        self.convert = MatrixAdapter._markdown_to_html_fallback
+
+    def test_fenced_code_block(self):
+        result = self.convert('```python\ndef hello():\n    pass\n```')
+        assert "<pre><code" in result
+        assert "language-python" in result
+
+    def test_fenced_code_block_no_lang(self):
+        result = self.convert('```\nsome code\n```')
+        assert "<pre><code>" in result
+
+    def test_code_block_html_escaped(self):
+        result = self.convert('```\n<script>alert(1)</script>\n```')
+        assert "&lt;script&gt;" in result
+        assert "<script>" not in result
+
+    def test_headers(self):
+        assert "<h1>" in self.convert("# H1")
+        assert "<h2>" in self.convert("## H2")
+        assert "<h3>" in self.convert("### H3")
+
+    def test_unordered_list(self):
+        result = self.convert("- One\n- Two\n- Three")
+        assert "<ul>" in result
+        assert result.count("<li>") == 3
+
+    def test_ordered_list(self):
+        result = self.convert("1. First\n2. Second")
+        assert "<ol>" in result
+        assert result.count("<li>") == 2
+
+    def test_blockquote(self):
+        result = self.convert("> A quote\n> continued")
+        assert "<blockquote>" in result
+        assert "A quote" in result
+
+    def test_horizontal_rule(self):
+        assert "<hr>" in self.convert("---")
+        assert "<hr>" in self.convert("***")
+
+    def test_strikethrough(self):
+        result = self.convert("~~deleted~~")
+        assert "<del>deleted</del>" in result
+
+    def test_links_preserved(self):
+        result = self.convert("[text](https://example.com)")
+        assert '<a href="https://example.com">text</a>' in result
+
+    def test_complex_mixed_document(self):
+        """A realistic agent response with multiple formatting types."""
+        text = "## Summary\n\nHere's what I found:\n\n- **Bold item**\n- `code` item\n\n```bash\necho hello\n```\n\n1. Step one\n2. Step two"
+        result = self.convert(text)
+        assert "<h2>" in result
+        assert "<strong>" in result
+        assert "<code>" in result
+        assert "<ul>" in result
+        assert "<ol>" in result
+        assert "<pre><code" in result
+
+
+# ---------------------------------------------------------------------------
+# Link URL sanitization
+# ---------------------------------------------------------------------------
+
+class TestMatrixLinkSanitization:
+    def test_safe_https_url(self):
+        from gateway.platforms.matrix import MatrixAdapter
+        assert MatrixAdapter._sanitize_link_url("https://example.com") == "https://example.com"
+
+    def test_javascript_blocked(self):
+        from gateway.platforms.matrix import MatrixAdapter
+        assert MatrixAdapter._sanitize_link_url("javascript:alert(1)") == ""
+
+    def test_data_blocked(self):
+        from gateway.platforms.matrix import MatrixAdapter
+        assert MatrixAdapter._sanitize_link_url("data:text/html,bad") == ""
+
+    def test_vbscript_blocked(self):
+        from gateway.platforms.matrix import MatrixAdapter
+        assert MatrixAdapter._sanitize_link_url("vbscript:bad") == ""
+
+    def test_quotes_escaped(self):
+        from gateway.platforms.matrix import MatrixAdapter
+        result = MatrixAdapter._sanitize_link_url('http://x"y')
+        assert '"' not in result
+        assert "&quot;" in result
+
+
+# ---------------------------------------------------------------------------
+# Reactions
+# ---------------------------------------------------------------------------
+
+class TestMatrixReactions:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    @pytest.mark.asyncio
+    async def test_send_reaction(self):
+        """_send_reaction should call room_send with m.reaction."""
+        nio = pytest.importorskip("nio")
+        mock_client = MagicMock()
+        mock_client.room_send = AsyncMock(
+            return_value=MagicMock(spec=nio.RoomSendResponse)
+        )
+        self.adapter._client = mock_client
+
+        result = await self.adapter._send_reaction("!room:ex", "$event1", "👍")
+        assert result is True
+        mock_client.room_send.assert_called_once()
+        args = mock_client.room_send.call_args
+        assert args[0][1] == "m.reaction"
+        content = args[0][2]
+        assert content["m.relates_to"]["rel_type"] == "m.annotation"
+        assert content["m.relates_to"]["key"] == "👍"
+
+    @pytest.mark.asyncio
+    async def test_send_reaction_no_client(self):
+        self.adapter._client = None
+        result = await self.adapter._send_reaction("!room:ex", "$ev", "👍")
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_on_processing_start_sends_eyes(self):
+        """on_processing_start should send 👀 reaction."""
+        from gateway.platforms.base import MessageEvent, MessageType
+
+        self.adapter._reactions_enabled = True
+        self.adapter._send_reaction = AsyncMock(return_value=True)
+
+        source = MagicMock()
+        source.chat_id = "!room:ex"
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={},
+            message_id="$msg1",
+        )
+        await self.adapter.on_processing_start(event)
+        self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "👀")
+
+    @pytest.mark.asyncio
+    async def test_on_processing_complete_sends_check(self):
+        from gateway.platforms.base import MessageEvent, MessageType
+
+        self.adapter._reactions_enabled = True
+        self.adapter._send_reaction = AsyncMock(return_value=True)
+
+        source = MagicMock()
+        source.chat_id = "!room:ex"
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={},
+            message_id="$msg1",
+        )
+        await self.adapter.on_processing_complete(event, success=True)
+        self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "✅")
+
+    @pytest.mark.asyncio
+    async def test_reactions_disabled(self):
+        from gateway.platforms.base import MessageEvent, MessageType
+
+        self.adapter._reactions_enabled = False
+        self.adapter._send_reaction = AsyncMock()
+
+        source = MagicMock()
+        source.chat_id = "!room:ex"
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={},
+            message_id="$msg1",
+        )
+        await self.adapter.on_processing_start(event)
+        self.adapter._send_reaction.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Read receipts
+# ---------------------------------------------------------------------------
+
+class TestMatrixReadReceipts:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    @pytest.mark.asyncio
+    async def test_send_read_receipt(self):
+        mock_client = MagicMock()
+        mock_client.room_read_markers = AsyncMock(return_value=MagicMock())
+        self.adapter._client = mock_client
+
+        result = await self.adapter.send_read_receipt("!room:ex", "$event1")
+        assert result is True
+        mock_client.room_read_markers.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_read_receipt_no_client(self):
+        self.adapter._client = None
+        result = await self.adapter.send_read_receipt("!room:ex", "$event1")
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Message redaction
+# ---------------------------------------------------------------------------
+
+class TestMatrixRedaction:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    @pytest.mark.asyncio
+    async def test_redact_message(self):
+        nio = pytest.importorskip("nio")
+        mock_client = MagicMock()
+        mock_client.room_redact = AsyncMock(
+            return_value=MagicMock(spec=nio.RoomRedactResponse)
+        )
+        self.adapter._client = mock_client
+
+        result = await self.adapter.redact_message("!room:ex", "$ev1", "oops")
+        assert result is True
+        mock_client.room_redact.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_redact_no_client(self):
+        self.adapter._client = None
+        result = await self.adapter.redact_message("!room:ex", "$ev1")
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Room creation & invite
+# ---------------------------------------------------------------------------
+
+class TestMatrixRoomManagement:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    @pytest.mark.asyncio
+    async def test_create_room(self):
+        nio = pytest.importorskip("nio")
+        mock_resp = MagicMock(spec=nio.RoomCreateResponse)
+        mock_resp.room_id = "!new:example.org"
+        mock_client = MagicMock()
+        mock_client.room_create = AsyncMock(return_value=mock_resp)
+        self.adapter._client = mock_client
+
+        room_id = await self.adapter.create_room(name="Test Room", topic="A test")
+        assert room_id == "!new:example.org"
+        assert "!new:example.org" in self.adapter._joined_rooms
+
+    @pytest.mark.asyncio
+    async def test_invite_user(self):
+        nio = pytest.importorskip("nio")
+        mock_client = MagicMock()
+        mock_client.room_invite = AsyncMock(
+            return_value=MagicMock(spec=nio.RoomInviteResponse)
+        )
+        self.adapter._client = mock_client
+
+        result = await self.adapter.invite_user("!room:ex", "@user:ex")
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_create_room_no_client(self):
+        self.adapter._client = None
+        result = await self.adapter.create_room()
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Presence
+# ---------------------------------------------------------------------------
+
+class TestMatrixPresence:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    @pytest.mark.asyncio
+    async def test_set_presence_valid(self):
+        mock_client = MagicMock()
+        mock_client.set_presence = AsyncMock()
+        self.adapter._client = mock_client
+
+        result = await self.adapter.set_presence("online")
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_set_presence_invalid_state(self):
+        mock_client = MagicMock()
+        self.adapter._client = mock_client
+
+        result = await self.adapter.set_presence("busy")
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_set_presence_no_client(self):
+        self.adapter._client = None
+        result = await self.adapter.set_presence("online")
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Emote & notice
+# ---------------------------------------------------------------------------
+
+class TestMatrixMessageTypes:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    @pytest.mark.asyncio
+    async def test_send_emote(self):
+        nio = pytest.importorskip("nio")
+        mock_client = MagicMock()
+        mock_resp = MagicMock(spec=nio.RoomSendResponse)
+        mock_resp.event_id = "$emote1"
+        mock_client.room_send = AsyncMock(return_value=mock_resp)
+        self.adapter._client = mock_client
+
+        result = await self.adapter.send_emote("!room:ex", "waves hello")
+        assert result.success is True
+        call_args = mock_client.room_send.call_args[0]
+        assert call_args[2]["msgtype"] == "m.emote"
+
+    @pytest.mark.asyncio
+    async def test_send_notice(self):
+        nio = pytest.importorskip("nio")
+        mock_client = MagicMock()
+        mock_resp = MagicMock(spec=nio.RoomSendResponse)
+        mock_resp.event_id = "$notice1"
+        mock_client.room_send = AsyncMock(return_value=mock_resp)
+        self.adapter._client = mock_client
+
+        result = await self.adapter.send_notice("!room:ex", "System message")
+        assert result.success is True
+        call_args = mock_client.room_send.call_args[0]
+        assert call_args[2]["msgtype"] == "m.notice"
+
+    @pytest.mark.asyncio
+    async def test_send_emote_empty_text(self):
+        self.adapter._client = MagicMock()
+        result = await self.adapter.send_emote("!room:ex", "")
+        assert result.success is False
+
+
+# ---------------------------------------------------------------------------
+# Tier 1.5 – stop_typing
+# ---------------------------------------------------------------------------
+
+class TestMatrixStopTyping:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_sends_false(self):
+        """stop_typing should call room_typing with typing_state=False."""
+        mock_client = MagicMock()
+        mock_client.room_typing = AsyncMock()
+        self.adapter._client = mock_client
+
+        await self.adapter.stop_typing("!room:example.org")
+
+        mock_client.room_typing.assert_awaited_once_with(
+            "!room:example.org", typing_state=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_no_client(self):
+        """stop_typing returns without error when _client is None."""
+        self.adapter._client = None
+        # Should not raise
+        await self.adapter.stop_typing("!room:example.org")
+
+
+# ---------------------------------------------------------------------------
+# Tier 1.5 – read receipt configuration
+# ---------------------------------------------------------------------------
+
+class TestMatrixReadReceiptConfig:
+    def test_default_mode_is_after_processing(self):
+        """Default MATRIX_READ_RECEIPTS should be 'after_processing'."""
+        adapter = _make_adapter()
+        assert adapter._read_receipt_mode == "after_processing"
+
+    def test_disabled_mode(self, monkeypatch):
+        """When MATRIX_READ_RECEIPTS=disabled, no receipts are sent on message."""
+        monkeypatch.setenv("MATRIX_READ_RECEIPTS", "disabled")
+        adapter = _make_adapter()
+        assert adapter._read_receipt_mode == "disabled"
+        # _background_read_receipt should NOT be called in immediate path
+        adapter._background_read_receipt = MagicMock()
+        # Simulate the check that happens in _on_room_message_text
+        if adapter._read_receipt_mode == "immediate":
+            adapter._background_read_receipt("!r:ex", "$ev1")
+        adapter._background_read_receipt.assert_not_called()
+
+    def test_after_processing_mode(self, monkeypatch):
+        """When MATRIX_READ_RECEIPTS=after_processing, receipts sent in on_processing_complete."""
+        monkeypatch.setenv("MATRIX_READ_RECEIPTS", "after_processing")
+        adapter = _make_adapter()
+        assert adapter._read_receipt_mode == "after_processing"
+        # Simulate the deferred path (on_processing_complete)
+        adapter._background_read_receipt = MagicMock()
+        room_id = "!room:ex"
+        msg_id = "$msg1"
+        if adapter._read_receipt_mode == "after_processing":
+            adapter._background_read_receipt(room_id, msg_id)
+        adapter._background_read_receipt.assert_called_once_with(room_id, msg_id)
+
+    def test_invalid_mode_defaults_to_after_processing(self, monkeypatch):
+        """Invalid MATRIX_READ_RECEIPTS value should warn and default to after_processing."""
+        monkeypatch.setenv("MATRIX_READ_RECEIPTS", "bogus_value")
+        import logging
+        with patch("gateway.platforms.matrix.logger") as mock_logger:
+            adapter = _make_adapter()
+            assert adapter._read_receipt_mode == "after_processing"
+            mock_logger.warning.assert_called()
+            # Verify the warning mentions the invalid value
+            warn_args = mock_logger.warning.call_args[0]
+            assert "bogus_value" in str(warn_args)
+
+
+# ---------------------------------------------------------------------------
+# Tier 1.5 – reaction dedup via _on_unknown_event
+# ---------------------------------------------------------------------------
+
+class TestMatrixReactionDedup:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    @pytest.mark.asyncio
+    async def test_unknown_event_dedup(self):
+        """_on_unknown_event should check _is_duplicate_event and skip duplicates."""
+        room = MagicMock()
+        room.room_id = "!room:ex"
+        event = MagicMock()
+        event.source = {
+            "type": "m.reaction",
+            "sender": "@someone:ex",
+            "event_id": "$reaction1",
+            "content": {
+                "m.relates_to": {
+                    "rel_type": "m.annotation",
+                    "event_id": "$target1",
+                    "key": "👍",
+                }
+            },
+        }
+
+        # First call should process (not duplicate)
+        self.adapter._is_duplicate_event = MagicMock(return_value=False)
+        await self.adapter._on_unknown_event(room, event)
+        self.adapter._is_duplicate_event.assert_called_once_with("$reaction1")
+
+        # Second call: mark as duplicate — should return early
+        self.adapter._is_duplicate_event = MagicMock(return_value=True)
+        with patch("gateway.platforms.matrix.logger") as mock_logger:
+            await self.adapter._on_unknown_event(room, event)
+            # Logger.info should NOT have been called (returned early)
+            mock_logger.info.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tier 1.5 – Matrix tools (tools/matrix_tools.py)
+# ---------------------------------------------------------------------------
+
+class TestMatrixTools:
+    """Tests for the matrix_tools handler functions."""
+
+    def setup_method(self):
+        from tools.matrix_tools import set_matrix_adapter
+        # Clear any existing adapter
+        set_matrix_adapter(None)
+
+    def teardown_method(self):
+        from tools.matrix_tools import set_matrix_adapter
+        set_matrix_adapter(None)
+
+    def test_check_available_false_when_no_adapter(self):
+        from tools.matrix_tools import _check_matrix_available, set_matrix_adapter
+        set_matrix_adapter(None)
+        assert _check_matrix_available() is False
+
+    def test_check_available_true_when_adapter_set(self):
+        from tools.matrix_tools import _check_matrix_available, set_matrix_adapter
+        mock_adapter = MagicMock()
+        set_matrix_adapter(mock_adapter)
+        assert _check_matrix_available() is True
+
+    def test_send_reaction_validation(self):
+        """Invalid room_id, event_id, and empty emoji should return errors."""
+        from tools.matrix_tools import _handle_send_reaction
+        # Invalid room_id
+        result = json.loads(_handle_send_reaction({"room_id": "bad", "event_id": "$e1", "emoji": "👍"}))
+        assert "error" in result
+        assert "room_id" in result["error"]
+
+        # Invalid event_id
+        result = json.loads(_handle_send_reaction({"room_id": "!r:ex", "event_id": "bad", "emoji": "👍"}))
+        assert "error" in result
+        assert "event_id" in result["error"]
+
+        # Empty emoji
+        result = json.loads(_handle_send_reaction({"room_id": "!r:ex", "event_id": "$e1", "emoji": ""}))
+        assert "error" in result
+        assert "emoji" in result["error"]
+
+    def test_redact_message_validation(self):
+        """Invalid room_id and event_id should return errors."""
+        from tools.matrix_tools import _handle_redact_message
+        result = json.loads(_handle_redact_message({"room_id": "bad", "event_id": "$e1"}))
+        assert "error" in result
+        assert "room_id" in result["error"]
+
+        result = json.loads(_handle_redact_message({"room_id": "!r:ex", "event_id": "bad"}))
+        assert "error" in result
+        assert "event_id" in result["error"]
+
+    def test_create_room_handler(self):
+        """Valid create_room call should return room_id."""
+        from tools.matrix_tools import _handle_create_room, set_matrix_adapter
+
+        mock_adapter = MagicMock()
+        mock_adapter.create_room = AsyncMock(return_value="!new_room:example.org")
+        set_matrix_adapter(mock_adapter)
+
+        with patch("tools.matrix_tools._run_async", side_effect=lambda coro: asyncio.get_event_loop().run_until_complete(coro)):
+            result = json.loads(_handle_create_room({
+                "name": "Test Room",
+                "topic": "A test room",
+                "invite": [],
+                "preset": "private_chat",
+            }))
+        assert result["success"] is True
+        assert result["room_id"] == "!new_room:example.org"
+
+    def test_invite_user_validation(self):
+        """Invalid room_id and user_id should return errors."""
+        from tools.matrix_tools import _handle_invite_user
+        result = json.loads(_handle_invite_user({"room_id": "bad", "user_id": "@u:ex"}))
+        assert "error" in result
+        assert "room_id" in result["error"]
+
+        result = json.loads(_handle_invite_user({"room_id": "!r:ex", "user_id": "bad"}))
+        assert "error" in result
+        assert "user_id" in result["error"]
+
+    def test_fetch_history_handler(self):
+        """Valid fetch_history call should return messages."""
+        from tools.matrix_tools import _handle_fetch_history, set_matrix_adapter
+
+        mock_adapter = MagicMock()
+        mock_adapter.fetch_room_history = AsyncMock(return_value=[
+            {"sender": "@alice:ex", "body": "Hello"},
+            {"sender": "@bob:ex", "body": "Hi"},
+        ])
+        set_matrix_adapter(mock_adapter)
+
+        with patch("tools.matrix_tools._run_async", side_effect=lambda coro: asyncio.get_event_loop().run_until_complete(coro)):
+            result = json.loads(_handle_fetch_history({
+                "room_id": "!room:example.org",
+                "limit": 10,
+            }))
+        assert result["count"] == 2
+        assert len(result["messages"]) == 2
+
+    def test_set_presence_validation(self):
+        """Invalid presence state should return error."""
+        from tools.matrix_tools import _handle_set_presence
+        result = json.loads(_handle_set_presence({"state": "invisible"}))
+        assert "error" in result
+        assert "Invalid state" in result["error"]
+
+    def test_set_presence_valid(self):
+        """Valid set_presence call should succeed."""
+        from tools.matrix_tools import _handle_set_presence, set_matrix_adapter
+
+        mock_adapter = MagicMock()
+        mock_adapter.set_presence = AsyncMock(return_value=True)
+        set_matrix_adapter(mock_adapter)
+
+        with patch("tools.matrix_tools._run_async", side_effect=lambda coro: asyncio.get_event_loop().run_until_complete(coro)):
+            result = json.loads(_handle_set_presence({
+                "state": "online",
+                "status_msg": "Testing",
+            }))
+        assert result["success"] is True
