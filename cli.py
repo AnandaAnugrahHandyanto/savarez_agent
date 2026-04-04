@@ -2945,13 +2945,16 @@ class HermesCLI:
         except Exception:
             symbol = "⚕"
 
-        tab_title = f"{symbol} ⏳" if thinking else symbol
+        if thinking:
+            tab_title = f"{symbol} ⏳"
+        elif session_title:
+            tab_title = f"{symbol} {session_title}"
+        else:
+            tab_title = symbol
+
         # OSC 0 + ST terminator — confirmed working in iTerm2 debug test
         seq_b = f"\x1b]0;{tab_title}\x1b\\".encode("utf-8")
 
-        _cprint(f"  {_DIM}[title dbg] writing: {seq_b!r}{_RST}")
-
-        # Try every available path — no isatty guard, catch exceptions silently
         for _attempt in ("ctermid", "__stdout__", "stdout_fd", "stdout_write"):
             try:
                 if _attempt == "ctermid":
@@ -2967,10 +2970,9 @@ class HermesCLI:
                 elif _attempt == "stdout_write":
                     sys.stdout.write(seq_b.decode("utf-8"))
                     sys.stdout.flush()
-                _cprint(f"  {_DIM}[title dbg] {_attempt}: OK{_RST}")
                 break
-            except Exception as _e:
-                _cprint(f"  {_DIM}[title dbg] {_attempt}: {_e}{_RST}")
+            except Exception:
+                pass
 
         self._terminal_title_session = session_title
 
