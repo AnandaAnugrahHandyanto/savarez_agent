@@ -403,7 +403,7 @@ def _load_gateway_config() -> dict:
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
-    """Read model from config.yaml — single source of truth.
+    """Read model from config.yaml, falling back to HERMES_MODEL env var.
 
     Without this, temporary AIAgent instances (memory flush, /compress) fall
     back to the hardcoded default which fails when the active provider is
@@ -414,8 +414,10 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     if isinstance(model_cfg, str):
         return model_cfg
     elif isinstance(model_cfg, dict):
-        return model_cfg.get("default") or model_cfg.get("model") or ""
-    return ""
+        result = model_cfg.get("default") or model_cfg.get("model") or ""
+        if result:
+            return result
+    return os.getenv("HERMES_MODEL", "")
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
