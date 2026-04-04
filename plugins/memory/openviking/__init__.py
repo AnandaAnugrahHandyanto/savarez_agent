@@ -18,8 +18,8 @@ Endpoint mapping:
 Config via environment variables (profile-scoped via each profile's .env):
   OPENVIKING_ENDPOINT  — Server URL (default: http://127.0.0.1:1933)
   OPENVIKING_API_KEY   — API key (required for authenticated servers)
-  OPENVIKING_ACCOUNT   — Account ID for trusted auth mode (default: "default")
-  OPENVIKING_USER      — User ID for trusted auth mode (default: "default")
+  OPENVIKING_ACCOUNT   — Tenant account (default: default)
+  OPENVIKING_USER      — Tenant user (default: default)
 
 Capabilities:
   - Automatic memory extraction on session commit (6 categories)
@@ -62,22 +62,23 @@ class _VikingClient:
     """Thin HTTP client for the OpenViking REST API."""
 
     def __init__(self, endpoint: str, api_key: str = "",
-                 account: str = "default", user: str = "default"):
+                 account: str = "", user: str = ""):
         self._endpoint = endpoint.rstrip("/")
         self._api_key = api_key
-        self._account = account or "default"
-        self._user = user or "default"
+        self._account = account or os.environ.get("OPENVIKING_ACCOUNT", "default")
+        self._user = user or os.environ.get("OPENVIKING_USER", "default")
         self._httpx = _get_httpx()
         if self._httpx is None:
             raise ImportError("httpx is required for OpenViking: pip install httpx")
 
     def _headers(self) -> dict:
-        h = {"Content-Type": "application/json"}
+        h = {
+            "Content-Type": "application/json",
+            "X-OpenViking-Account": self._account,
+            "X-OpenViking-User": self._user,
+        }
         if self._api_key:
             h["X-API-Key"] = self._api_key
-        # Trusted-mode auth: always send account + user headers
-        h["X-OpenViking-Account"] = self._account
-        h["X-OpenViking-User"] = self._user
         return h
 
     def _url(self, path: str) -> str:
