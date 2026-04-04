@@ -97,7 +97,13 @@ def _apply_profile_override() -> None:
             consume = 1
             break
 
-    # 2. If no flag, check ~/.hermes/active_profile
+    # 2. If no flag AND HERMES_HOME is already set, respect the environment.
+    #    Systemd services and scripts set HERMES_HOME explicitly; the sticky
+    #    active_profile must not override that.
+    if profile_name is None and os.environ.get("HERMES_HOME", "").strip():
+        return
+
+    # 3. If no flag, check ~/.hermes/active_profile
     if profile_name is None:
         try:
             active_path = Path.home() / ".hermes" / "active_profile"
