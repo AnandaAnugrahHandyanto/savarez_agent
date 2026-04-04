@@ -1577,6 +1577,57 @@ class TestConversationParameter:
                 # Conversation mapping should NOT be set since store=false
                 assert adapter._response_store.get_conversation("ephemeral-chat") is None
 
+    @pytest.mark.asyncio
+    async def test_delete_latest_response_resets_named_conversation(self, adapter):
+        """Deleting the latest response should not permanently brick the conversation name."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "First response", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                resp1 = await cli.post("/v1/responses", json={
+                    "input": "hello",
+                    "conversation": "resettable-conv",
+                })
+                assert resp1.status == 200
+                response_id = (await resp1.json())["id"]
+
+                delete_resp = await cli.delete(f"/v1/responses/{response_id}")
+                assert delete_resp.status == 200
+                assert adapter._response_store.get_conversation("resettable-conv") is None
+
+                mock_run.return_value = (
+                    {"final_response": "Fresh response", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                resp2 = await cli.post("/v1/responses", json={
+                    "input": "start over",
+                    "conversation": "resettable-conv",
+                })
+                assert resp2.status == 200
+
+                second_call_kwargs = mock_run.call_args_list[1]
+                history = second_call_kwargs.kwargs.get(
+                    "conversation_history",
+                    second_call_kwargs[1].get("conversation_history", []) if len(second_call_kwargs) > 1 else [],
+                )
+                assert history == []
+
+
+class TestResponseStoreCleanup:
+    def test_eviction_prunes_stale_conversation_mapping(self, tmp_path):
+        """LRU eviction should clear conversation pointers to evicted responses."""
+        store = ResponseStore(max_size=1, db_path=str(tmp_path / "responses.db"))
+        store.put("resp_old", {"response": {"id": "resp_old"}, "conversation_history": []})
+        store.set_conversation("evicted-conv", "resp_old")
+
+        store.put("resp_new", {"response": {"id": "resp_new"}, "conversation_history": []})
+
+        assert store.get("resp_old") is None
+        assert store.get_conversation("evicted-conv") is None
+
 
 # ---------------------------------------------------------------------------
 # X-Hermes-Session-Id header (session continuity)
