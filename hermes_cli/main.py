@@ -4778,7 +4778,66 @@ For more help on a command:
     memory_sub.add_parser("status", help="Show current memory provider config")
     memory_off_p = memory_sub.add_parser("off", help="Disable external provider (built-in only)")
 
+    # hermes memory layers — memory-layer repo stack management
+    layers_parser = memory_sub.add_parser(
+        "layers",
+        help="Manage the memory-layer repo stack (honcho, ori-mnemos, overlays)",
+        description=(
+            "Manage the stack of memory-layer repos that live alongside hermes-agent.\n\n"
+            "Init:   write ~/.hermes/memory-layers.json with auto-detected layers\n"
+            "Apply:  run unified-memory migration from hermes-agent\n"
+            "Update: git-pull all layers then apply unified-memory\n\n"
+            "Config: ~/.hermes/memory-layers.json"
+        ),
+    )
+    layers_sub = layers_parser.add_subparsers(dest="layers_command")
+
+    layers_init_p = layers_sub.add_parser(
+        "init",
+        help="Write a starter memory-layers config (auto-detects honcho + ori-mnemos-ref repos)",
+    )
+    layers_init_p.add_argument(
+        "--config", dest="config_path",
+        default="~/.hermes/memory-layers.json",
+        help="Where to write the config (default: ~/.hermes/memory-layers.json)",
+    )
+    layers_init_p.add_argument(
+        "--force", action="store_true",
+        help="Overwrite existing config",
+    )
+
+    layers_apply_p = layers_sub.add_parser(
+        "apply",
+        help="Run the unified-memory migration from hermes-agent",
+    )
+    layers_apply_p.add_argument(
+        "--unified-db", dest="unified_db",
+        default="~/.hermes/unified_memory.db",
+        help="Target unified-memory SQLite path (default: ~/.hermes/unified_memory.db)",
+    )
+
+    layers_update_p = layers_sub.add_parser(
+        "update",
+        help="git-pull all memory layers then apply unified-memory migration",
+    )
+    layers_update_p.add_argument(
+        "--config", dest="config_path",
+        default="~/.hermes/memory-layers.json",
+        help="Memory-layers config path (default: ~/.hermes/memory-layers.json)",
+    )
+    layers_update_p.add_argument(
+        "--unified-db", dest="unified_db",
+        default="~/.hermes/unified_memory.db",
+        help="Target unified-memory SQLite path (default: ~/.hermes/unified_memory.db)",
+    )
+    layers_update_p.add_argument(
+        "--skip-apply", dest="skip_apply", action="store_true",
+        help="Skip the unified-memory migration step",
+    )
+
     def cmd_memory(args):
+        from pathlib import Path
+
         sub = getattr(args, "memory_command", None)
         if sub == "off":
             from hermes_cli.config import load_config, save_config
@@ -4789,6 +4848,28 @@ For more help on a command:
             save_config(config)
             print("\n  ✓ Memory provider: built-in only")
             print("  Saved to config.yaml\n")
+        elif sub == "layers":
+            from hermes_cli.memory_layers import (
+                cmd_layers_init,
+                cmd_layers_apply,
+                cmd_layers_update,
+                DEFAULT_CONFIG_PATH,
+                DEFAULT_UNIFIED_DB,
+            )
+            layers_sub = getattr(args, "layers_command", None)
+            if layers_sub == "init":
+                config_path = Path(args.config_path).expanduser()
+                sys.exit(cmd_layers_init(config_path, bool(args.force)))
+            elif layers_sub == "apply":
+                unified_db = Path(args.unified_db).expanduser()
+                sys.exit(cmd_layers_apply(unified_db))
+            elif layers_sub == "update":
+                config_path = Path(args.config_path).expanduser()
+                unified_db = Path(args.unified_db).expanduser()
+                sys.exit(cmd_layers_update(config_path, unified_db, bool(args.skip_apply)))
+            else:
+                # No sub-subcommand — print layers help
+                layers_parser.print_help()
         else:
             from hermes_cli.memory_setup import memory_command
             memory_command(args)
