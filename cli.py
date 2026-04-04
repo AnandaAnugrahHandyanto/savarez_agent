@@ -2959,34 +2959,24 @@ class HermesCLI:
 
         tab_title = f"{symbol} ⏳" if thinking else symbol
 
-        # OSC 1: tab/icon name (iTerm2 uses this as the explicit tab label)
-        # OSC 2: window title (title bar)
-        seq = f"\x1b]1;{tab_title}\x07\x1b]2;{tab_title}\x07"
-        seq_b = seq.encode("utf-8")
+        # OSC 0 sets both icon (tab) and window title.
+        # Use ST terminator (\x1b\\) rather than BEL (\x07) — ST is more
+        # reliably processed by iTerm2 for tab title updates mid-session.
+        seq_b = f"\x1b]0;{tab_title}\x1b\\".encode("utf-8")
 
-        # Write directly to the controlling terminal device via os.ctermid().
-        # This bypasses ALL Python I/O layers, prompt_toolkit's output buffers,
-        # patch_stdout's StdoutProxy, and any stdout redirections — the bytes
-        # go straight to the TTY the user is looking at.
-        written = False
+        # Write via sys.__stdout__ (pre-patch real stdout) then fall back to
+        # ctermid. Both reach the PTY; __stdout__ is simpler and avoids
+        # prompt_toolkit's internal buffers entirely.
         try:
-            _tty_fd = os.open(os.ctermid(), os.O_WRONLY | os.O_NOCTTY)
-            os.write(_tty_fd, seq_b)
-            os.close(_tty_fd)
-            written = True
+            real_out.write(seq_b.decode("utf-8"))
+            real_out.flush()
         except Exception:
-            pass
-
-        if not written:
-            # Fallback: try real stdout fd directly
             try:
-                os.write(real_out.fileno(), seq_b)
+                _tty_fd = os.open(os.ctermid(), os.O_WRONLY | os.O_NOCTTY)
+                os.write(_tty_fd, seq_b)
+                os.close(_tty_fd)
             except Exception:
-                try:
-                    real_out.write(seq)
-                    real_out.flush()
-                except Exception:
-                    pass
+                pass
 
         self._terminal_title_session = session_title
 
@@ -4363,15 +4353,6 @@ class HermesCLI:
                             try:
                                 if self._session_db.set_session_title(self.session_id, new_title):
                                     _cprint(f"  Session title set: {new_title}")
-                                    try:
-                                        import os as _os
-                                        _seq = f"\x1b]0;⚕\x07".encode("utf-8")
-                                        _fd = _os.open(_os.ctermid(), _os.O_WRONLY | _os.O_NOCTTY)
-                                        _os.write(_fd, _seq)
-                                        _os.close(_fd)
-                                        _cprint(f"  {_DIM}Tab title updated via ctermid{_RST}")
-                                    except Exception as _te:
-                                        _cprint(f"  {_DIM}Tab title error: {_te}{_RST}")
                                     self._set_terminal_title(session_title=new_title)
                                 else:
                                     _cprint("  Session not found in database.")
