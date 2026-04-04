@@ -366,12 +366,17 @@ def _load_gateway_config() -> dict:
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
-    """Read model from config.yaml — single source of truth.
+    """Read model from config.yaml or HERMES_MODEL env var.
 
     Without this, temporary AIAgent instances (memory flush, /compress) fall
     back to the hardcoded default which fails when the active provider is
     openai-codex.
     """
+    # First check environment variable (used in tests and CLI overrides)
+    env_model = os.getenv("HERMES_MODEL", "").strip()
+    if env_model:
+        return env_model
+
     cfg = config if config is not None else _load_gateway_config()
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, str):
