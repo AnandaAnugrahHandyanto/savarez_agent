@@ -207,6 +207,7 @@ def load_cli_config() -> Dict[str, Any]:
             "streaming": True,
             "busy_input_mode": "interrupt",
             "terminal_title": True,   # Set tab/window title via OSC sequences (disable for tmux/screen or if job name is appended by your terminal profile)
+            "show_full_user_message": False,  # When true, show all lines instead of first + (+N lines)
             "skin": "default",
         },
         "clarify": {
@@ -1169,6 +1170,9 @@ class HermesCLI:
         # busy_input_mode: "interrupt" (Enter interrupts current run) or "queue" (Enter queues for next turn)
         _bim = CLI_CONFIG["display"].get("busy_input_mode", "interrupt")
         self.busy_input_mode = "queue" if str(_bim).strip().lower() == "queue" else "interrupt"
+        self._show_full_user_message: bool = bool(
+            CLI_CONFIG["display"].get("show_full_user_message", False)
+        )
 
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
@@ -1618,6 +1622,9 @@ class HermesCLI:
             if self._steering_queue:
                 frags.append(("class:status-bar-dim", " │ "))
                 frags.append(("class:status-bar-warn", f"🎯 {len(self._steering_queue)}"))
+            if self._show_full_user_message:
+                frags.append(("class:status-bar-dim", " │ "))
+                frags.append(("class:status-bar-warn", "↕ full msg"))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
@@ -7666,6 +7673,19 @@ class HermesCLI:
                     _cprint(f"  {_DIM}(no history yet){_RST}")
                 run_in_terminal(_empty)
 
+        @kb.add('c-o')
+        def handle_ctrl_o(event):
+            """Ctrl+O: toggle full user message display.
+
+            When on, multiline messages are printed in full instead of
+            showing only the first line + (+N lines).
+            Indicated by '↕ full msg' in the status bar.
+            """
+            cli_ref._show_full_user_message = not cli_ref._show_full_user_message
+            state = "ON" if cli_ref._show_full_user_message else "OFF"
+            _cprint(f"  {_DIM}↕ Full user message display: {state}{_RST}")
+            event.app.invalidate()
+
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
         # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)
         # Config uses "ctrl+b" format; prompt_toolkit expects "c-b" format.
@@ -8566,14 +8586,18 @@ class HermesCLI:
                     else:
                         _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
                         if '\n' in user_input:
-                            first_line = user_input.split('\n')[0]
-                            line_count = user_input.count('\n') + 1
                             print()
                             ChatConsole().print(_user_bar)
-                            ChatConsole().print(
-                                f"[bold {_accent_hex()}]●[/] [bold]{_escape(first_line)}[/] "
-                                f"[dim](+{line_count - 1} lines)[/]"
-                            )
+                            if self._show_full_user_message:
+                                for _line in user_input.splitlines():
+                                    ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(_line)}[/]")
+                            else:
+                                first_line = user_input.split('\n')[0]
+                                line_count = user_input.count('\n') + 1
+                                ChatConsole().print(
+                                    f"[bold {_accent_hex()}]●[/] [bold]{_escape(first_line)}[/] "
+                                    f"[dim](+{line_count - 1} lines)[/]"
+                                )
                         else:
                             print()
                             ChatConsole().print(_user_bar)
