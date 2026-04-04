@@ -1812,15 +1812,29 @@ def call_llm(
         base_url=resolved_base_url)
 
     # Handle max_tokens vs max_completion_tokens retry
-    try:
-        return client.chat.completions.create(**kwargs)
-    except Exception as first_err:
-        err_str = str(first_err)
-        if "max_tokens" in err_str or "unsupported_parameter" in err_str:
-            kwargs.pop("max_tokens", None)
-            kwargs["max_completion_tokens"] = max_tokens
-            return client.chat.completions.create(**kwargs)
-        raise
+    for attempt in range(2):
+        try:
+            return await client.chat.completions.create(**kwargs)
+        except Exception as first_err:
+            err_str = str(first_err)
+            if "max_tokens" in err_str or "unsupported_parameter" in err_str:
+                kwargs.pop("max_tokens", None)
+                kwargs["max_completion_tokens"] = max_tokens
+                try:
+                    return await client.chat.completions.create(**kwargs)
+                except Exception as inner_err:
+                    first_err = inner_err
+                    err_str = str(inner_err)
+            
+            if attempt == 0:
+                status = getattr(first_err, "status_code", getattr(getattr(first_err, "response", None), "status_code", None))
+                err_type = type(first_err).__name__
+                if status in (429, 500, 502, 503, 504) or "Timeout" in err_type or "Connect" in err_type:
+                    logger.warning("Auxiliary client transient error: %s. Retrying in 2s...", err_type)
+                    import asyncio
+                    await asyncio.sleep(2.0)
+                    continue
+            raise
 
 
 def extract_content_or_reasoning(response) -> str:
