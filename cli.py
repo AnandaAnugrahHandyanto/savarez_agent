@@ -3176,25 +3176,35 @@ class HermesCLI:
         # OSC 1: tab/icon name (iTerm2 uses this as the explicit tab label)
         # OSC 2: window title (title bar)
         seq = f"\x1b]1;{tab_title}\x07\x1b]2;{tab_title}\x07"
-        seq_b = seq.encode("utf-8")
-
-        # Write directly to the controlling terminal device via os.ctermid().
-        # This bypasses ALL Python I/O layers, prompt_toolkit's output buffers,
-        # patch_stdout's StdoutProxy, and any stdout redirections — the bytes
-        # go straight to the TTY the user is looking at.
+        # When inside the prompt_toolkit TUI, write through the app's Output
+        # object so the sequence is synchronised with the render loop and
+        # doesn't interleave with prompt_toolkit's own writes to fd 1
+        # (which would cause the raw bytes to appear as literal text).
+        # If that fails, write directly to the controlling terminal via
+        # os.ctermid() to bypass all Python I/O layers.
+        # As a last resort, fall back to writing to the real stdout fd.
         written = False
         try:
-            _tty_fd = os.open(os.ctermid(), os.O_WRONLY | os.O_NOCTTY)
-            os.write(_tty_fd, seq_b)
-            os.close(_tty_fd)
+            from prompt_toolkit.application import get_app as _get_app
+            _app = _get_app()
+            _app.output.write_raw(seq)
+            _app.output.flush()
             written = True
         except Exception:
             pass
 
         if not written:
-            # Fallback: try real stdout fd directly
             try:
-                os.write(real_out.fileno(), seq_b)
+                _tty_fd = os.open(os.ctermid(), os.O_WRONLY | os.O_NOCTTY)
+                os.write(_tty_fd, seq.encode("utf-8"))
+                os.close(_tty_fd)
+                written = True
+            except Exception:
+                pass
+
+        if not written:
+            try:
+                os.write(real_out.fileno(), seq.encode("utf-8"))
             except Exception:
                 try:
                     real_out.write(seq)
