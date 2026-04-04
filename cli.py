@@ -15,6 +15,7 @@ Usage:
 
 import logging
 import os
+import re
 import shutil
 import sys
 import json
@@ -343,6 +344,7 @@ def load_cli_config() -> Dict[str, Any]:
             "busy_input_mode": "interrupt",
 
             "skin": "default",
+            "markdown": True,
         },
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
@@ -646,6 +648,7 @@ from rich import box as rich_box
 from rich.console import Console
 from rich.markup import escape as _escape
 from rich.panel import Panel
+from rich.markdown import Markdown as _RichMarkdown
 from rich.text import Text as _RichText
 
 import fire
@@ -1139,6 +1142,24 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     ``[not markup]`` while still interpreting real ANSI color codes.
     """
     return _RichText.from_ansi(text or "")
+
+
+_MD_SYNTAX_RE = re.compile(r'[#*`|>\[~]|\n\n|^\d+\.\s|\n\d+\.\s', re.MULTILINE)
+
+
+def _has_markdown_syntax(text: str) -> bool:
+    """Fast check for markdown syntax in first 500 chars (avoids parser overhead)."""
+    return bool(_MD_SYNTAX_RE.search(text[:500] if len(text) > 500 else text))
+
+
+def _render_response(text: str, as_markdown: bool = True):
+    """Render assistant response as Rich Markdown or plain ANSI text."""
+    if not as_markdown or not text or not _has_markdown_syntax(text):
+        return _rich_text_from_ansi(text)
+    try:
+        return _RichMarkdown(text, code_theme="monokai")
+    except Exception:
+        return _rich_text_from_ansi(text)
 
 
 def _cprint(text: str):
@@ -1718,6 +1739,9 @@ class HermesCLI:
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
+
+        # Markdown rendering for assistant responses (display.markdown in config.yaml)
+        self.markdown_enabled = CLI_CONFIG["display"].get("markdown", True)
 
         # Inline diff previews for write actions (display.inline_diffs in config.yaml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
@@ -2560,37 +2584,28 @@ class HermesCLI:
                     idx = self._stream_prefilt.find(tag, search_start)
                     if idx == -1:
                         break
-                    # Check if this is a block boundary position
                     preceding = self._stream_prefilt[:idx]
                     if idx == 0:
-                        # At buffer start — only a boundary if we're at
-                        # a line start (stream start or last emit ended
-                        # with newline)
                         is_block_boundary = getattr(self, "_stream_last_was_newline", True)
                     else:
-                        # Find last newline in the buffer before the tag
                         last_nl = preceding.rfind("\n")
                         if last_nl == -1:
-                            # No newline in buffer — boundary only if
-                            # last emit was a newline AND only whitespace
-                            # has accumulated before the tag
                             is_block_boundary = (
                                 getattr(self, "_stream_last_was_newline", True)
                                 and preceding.strip() == ""
                             )
                         else:
-                            # Text between last newline and tag must be
-                            # whitespace-only
                             is_block_boundary = preceding[last_nl + 1:].strip() == ""
                     if is_block_boundary:
-                        # Emit everything before the tag
                         if preceding:
-                            self._emit_stream_text(preceding)
+                            if self.markdown_enabled:
+                                self._emit_stream_markdown(preceding)
+                            else:
+                                self._emit_stream_text(preceding)
                             self._stream_last_was_newline = preceding.endswith("\n")
                         self._in_reasoning_block = True
                         self._stream_prefilt = self._stream_prefilt[idx + len(tag):]
                         break
-                    # Not a block boundary — keep searching after this occurrence
                     search_start = idx + 1
                 if getattr(self, "_in_reasoning_block", False):
                     break
@@ -2605,7 +2620,10 @@ class HermesCLI:
                             safe = self._stream_prefilt[:-i]
                             break
                 if safe:
-                    self._emit_stream_text(safe)
+                    if self.markdown_enabled:
+                        self._emit_stream_markdown(safe)
+                    else:
+                        self._emit_stream_text(safe)
                     self._stream_last_was_newline = safe.endswith("\n")
                     self._stream_prefilt = self._stream_prefilt[len(safe):]
                 return
@@ -2707,7 +2725,13 @@ class HermesCLI:
         # Close reasoning box if still open (in case no content tokens arrived)
         self._close_reasoning_box()
 
-        if self._stream_buf:
+        if self.markdown_enabled and self._stream_md_buf:
+            remaining = self._stream_md_buf[self._stream_md_rendered:]
+            if remaining.strip():
+                self._render_markdown_chunk(remaining)
+            self._stream_md_buf = ""
+            self._stream_md_rendered = 0
+        elif self._stream_buf:
             _tc = getattr(self, "_stream_text_ansi", "")
             _cprint(f"{_STREAM_PAD}{_tc}{self._stream_buf}{_RST}" if _tc else f"{_STREAM_PAD}{self._stream_buf}")
             self._stream_buf = ""
@@ -2716,6 +2740,90 @@ class HermesCLI:
         if self._stream_box_opened:
             w = shutil.get_terminal_size().columns
             _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
+
+    # -- Streaming markdown helpers ------------------------------------------
+
+    def _find_block_boundary(self, buf: str, start: int) -> int:
+        """Find the last safe markdown block split point.
+
+        Tracks code fence state (``` open/close) and only splits at
+        double-newline boundaries outside fences.
+        """
+        in_fence = self._stream_md_fence_open
+        last_boundary = start
+        i = start
+        while i < len(buf):
+            if buf[i:i + 3] in ('```', '~~~'):
+                in_fence = not in_fence
+                eol = buf.find('\n', i)
+                i = (eol + 1) if eol != -1 else len(buf)
+                continue
+            if not in_fence and buf[i:i + 2] == '\n\n':
+                last_boundary = i + 2
+                i += 2
+                continue
+            i += 1
+        self._stream_md_fence_open = in_fence
+        return last_boundary
+
+    def _render_markdown_chunk(self, chunk: str) -> None:
+        """Render a markdown fragment to terminal via _cprint."""
+        if not chunk.strip():
+            return
+        if self._stream_md_console is None:
+            from io import StringIO
+            self._stream_md_iobuf = StringIO()
+            self._stream_md_console = Console(
+                file=self._stream_md_iobuf,
+                force_terminal=True,
+                color_system="truecolor",
+                highlight=False,
+                width=shutil.get_terminal_size((80, 24)).columns,
+            )
+        buf = self._stream_md_iobuf
+        buf.seek(0)
+        buf.truncate()
+        self._stream_md_console.width = shutil.get_terminal_size((80, 24)).columns
+        try:
+            self._stream_md_console.print(_RichMarkdown(chunk, code_theme="monokai"))
+        except Exception:
+            self._stream_md_console.print(chunk)
+        for line in buf.getvalue().rstrip("\n").split("\n"):
+            _cprint(line)
+
+    def _emit_stream_markdown(self, text: str) -> None:
+        """Accumulate streamed tokens and render complete markdown blocks."""
+        if not text:
+            return
+
+        self._close_reasoning_box()
+        self._stream_md_buf += text
+
+        # Open box header on first visible text
+        if not self._stream_box_opened:
+            stripped = self._stream_md_buf.lstrip("\n")
+            if not stripped:
+                return
+            self._stream_md_buf = stripped
+            self._stream_box_opened = True
+            try:
+                from hermes_cli.skin_engine import get_active_skin
+                _skin = get_active_skin()
+                label = _skin.get_branding("response_label", "⚕ Hermes")
+            except Exception:
+                label = "⚕ Hermes"
+            w = shutil.get_terminal_size().columns
+            fill = w - 2 - len(label)
+            _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+
+        # Find the safe render boundary
+        boundary = self._find_block_boundary(self._stream_md_buf, self._stream_md_rendered)
+
+        if boundary > self._stream_md_rendered:
+            self._render_markdown_chunk(self._stream_md_buf[self._stream_md_rendered:boundary])
+            # Trim rendered prefix to avoid unbounded buffer growth
+            self._stream_md_buf = self._stream_md_buf[boundary:]
+            self._stream_md_rendered = 0
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
@@ -2729,7 +2837,12 @@ class HermesCLI:
         self._reasoning_box_opened = False
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""
-        self._deferred_content = ""
+        # Markdown streaming state
+        self._stream_md_buf = ""
+        self._stream_md_rendered = 0
+        self._stream_md_fence_open = False
+        self._stream_md_console = None
+        self._stream_md_iobuf = None
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
@@ -5809,6 +5922,8 @@ class HermesCLI:
                 _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
+        elif canonical == "markdown":
+            self._handle_markdown_command(cmd_original)
         elif canonical == "voice":
             self._handle_voice_command(cmd_original)
         else:
@@ -6046,15 +6161,17 @@ class HermesCLI:
                         _resp_text = "#FFF8DC"
 
                     _chat_console = ChatConsole()
-                    _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                    _renderable = _render_response(response, self.markdown_enabled)
+                    _panel_kw = dict(
                         title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
                         title_align="left",
                         border_style=_resp_color,
-                        style=_resp_text,
                         box=rich_box.HORIZONTALS,
-                        padding=(1, 4),
-                    ))
+                        padding=(1, 2),
+                    )
+                    if not self.markdown_enabled:
+                        _panel_kw["style"] = _resp_text
+                    _chat_console.print(Panel(_renderable, **_panel_kw))
                 else:
                     _cprint("  (No response generated)")
 
@@ -6172,7 +6289,7 @@ class HermesCLI:
                         _resp_color = "#4F6D4A"
 
                     ChatConsole().print(Panel(
-                        _rich_text_from_ansi(response),
+                        _render_response(response, self.markdown_enabled),
                         title=f"[{_resp_color} bold]⚕ /btw[/]",
                         title_align="left",
                         border_style=_resp_color,
@@ -6418,6 +6535,28 @@ class HermesCLI:
             print("   disconnect   Revert to default browser backend")
             print("   status       Show current browser mode")
             print()
+
+    def _handle_markdown_command(self, cmd: str):
+        """Handle /markdown [on|off] — toggle markdown rendering."""
+        parts = cmd.strip().split(maxsplit=1)
+
+        if len(parts) < 2 or not parts[1].strip():
+            state = "on" if self.markdown_enabled else "off"
+            _cprint(f"  {_GOLD}Markdown rendering: {state}{_RST}")
+            _cprint(f"  {_DIM}Usage: /markdown on|off{_RST}")
+            return
+
+        arg = parts[1].strip().lower()
+        if arg in ("on", "true", "1"):
+            self.markdown_enabled = True
+            save_config_value("display.markdown", True)
+            _cprint(f"  {_GOLD}Markdown rendering: ON (saved){_RST}")
+        elif arg in ("off", "false", "0"):
+            self.markdown_enabled = False
+            save_config_value("display.markdown", False)
+            _cprint(f"  {_GOLD}Markdown rendering: OFF (saved){_RST}")
+        else:
+            _cprint(f"  {_DIM}Unknown argument: {arg}. Use on or off.{_RST}")
 
     def _handle_skin_command(self, cmd: str):
         """Handle /skin [name] — show or change the display skin."""
@@ -8270,15 +8409,17 @@ class HermesCLI:
                     pass
                 else:
                     _chat_console = ChatConsole()
-                    _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                    _renderable = _render_response(response, self.markdown_enabled)
+                    _panel_kw = dict(
                         title=f"[{_resp_color} bold]{label}[/]",
                         title_align="left",
                         border_style=_resp_color,
-                        style=_resp_text,
                         box=rich_box.HORIZONTALS,
-                        padding=(1, 4),
-                    ))
+                        padding=(1, 2),
+                    )
+                    if not self.markdown_enabled:
+                        _panel_kw["style"] = _resp_text
+                    _chat_console.print(Panel(_renderable, **_panel_kw))
 
 
             # Play terminal bell when agent finishes (if enabled).
