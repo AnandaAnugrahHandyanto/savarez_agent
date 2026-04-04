@@ -1030,7 +1030,14 @@ def launchd_start():
         print("✓ Service started")
         return
 
-    refresh_launchd_plist_if_needed()
+    refreshed = refresh_launchd_plist_if_needed()
+    if refreshed:
+        # refresh_launchd_plist_if_needed() unloads + loads the plist, and the
+        # service is configured with RunAtLoad. Issuing an immediate explicit
+        # `launchctl start` after that can race a second gateway instance into
+        # existence before the first one finishes booting.
+        print("✓ Service started")
+        return
     try:
         subprocess.run(["launchctl", "start", label], check=True)
     except subprocess.CalledProcessError as e:
