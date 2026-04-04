@@ -1,9 +1,9 @@
 """OpenAI-compatible facade that routes Hermes inference through local Claude CLI.
 
 This backend is intentionally text-in/text-out only for now. It shells out to
-`claude -p --output-format json`, passes Claude Code's documented
-`--disallowedTools` flags for the built-in tool set, and returns a minimal
-response object that matches the parts of the OpenAI SDK shape Hermes expects.
+`claude -p --output-format json`, disables Claude Code's built-in tools with
+`--tools ""`, and returns a minimal response object that matches the parts of
+the OpenAI SDK shape Hermes expects.
 """
 
 from __future__ import annotations
@@ -21,22 +21,6 @@ from agent.model_metadata import estimate_tokens_rough
 
 CLAUDE_CLI_MARKER_BASE_URL = "claude-cli://local"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
-_CLAUDE_CLI_DISABLED_TOOLS = (
-    "Bash",
-    "Edit",
-    "Glob",
-    "Grep",
-    "LS",
-    "MultiEdit",
-    "NotebookEdit",
-    "NotebookRead",
-    "Read",
-    "Task",
-    "TodoWrite",
-    "WebFetch",
-    "WebSearch",
-    "Write",
-)
 
 
 def _resolve_command() -> str:
@@ -162,9 +146,7 @@ class ClaudeCLIClient:
         self._claude_session_id: str | None = None
 
     def _build_command(self, *, model: str, prompt_text: str, resume_session_id: str | None = None) -> list[str]:
-        cmd = [self._command, "-p", "--output-format", "json", "--model", model]
-        for tool_name in _CLAUDE_CLI_DISABLED_TOOLS:
-            cmd.extend(["--disallowedTools", tool_name])
+        cmd = [self._command, "-p", "--output-format", "json", "--model", model, "--tools", ""]
         if resume_session_id:
             cmd.extend(["--resume", resume_session_id])
         elif self._claude_session_id:

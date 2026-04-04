@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.claude_cli_client import ClaudeCLIClient, _CLAUDE_CLI_DISABLED_TOOLS
+from agent.claude_cli_client import ClaudeCLIClient
 
 
 def _completed(stdout: str):
@@ -29,14 +29,12 @@ def test_first_call_uses_session_id_then_resume_on_followup():
     assert "claude-session-abc" in calls[1]
 
 
-
 def test_existing_seeded_session_id_retries_with_resume_when_cli_reports_in_use():
     client = ClaudeCLIClient(command="claude", session_id="hermes-session-1")
 
     calls = []
     seeded_id = client._hermes_session_uuid
 
-    from types import SimpleNamespace
     def fake_invoke(cmd, *, timeout_seconds):
         calls.append(cmd)
         if len(calls) == 1:
@@ -54,14 +52,15 @@ def test_existing_seeded_session_id_retries_with_resume_when_cli_reports_in_use(
 
 def test_build_command_disables_claude_builtin_tools():
     client = ClaudeCLIClient(command="claude", session_id="hermes-session-1")
+    cmd = client._build_command(model="claude-sonnet-4-6", prompt_text="hello")
 
-    cmd = client._build_command(
-        model="claude-sonnet-4-6",
-        prompt_text="hi",
-    )
-
-    pairs = list(zip(cmd, cmd[1:]))
-    disabled_tools = [value for flag, value in pairs if flag == "--disallowedTools"]
-
-    assert disabled_tools == list(_CLAUDE_CLI_DISABLED_TOOLS)
-    assert cmd[:5] == ["claude", "-p", "--output-format", "json", "--model"]
+    assert cmd[:7] == [
+        "claude",
+        "-p",
+        "--output-format",
+        "json",
+        "--model",
+        "claude-sonnet-4-6",
+        "--tools",
+    ]
+    assert cmd[7] == ""

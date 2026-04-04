@@ -887,19 +887,22 @@ class AIAgent:
                 print(f"🔄 Fallback chain ({len(self._fallback_chain)} providers): " +
                       " → ".join(f"{f['model']} ({f['provider']})" for f in self._fallback_chain))
 
-        # Get available tools with filtering. Claude CLI backend currently runs
-        # in text-in/text-out mode, so keep Hermes-side tools disabled to avoid
-        # misleading prompts and unsupported tool-call expectations.
+        # Get available tools with filtering.
+        #
+        # Claude CLI backend currently wraps `claude -p --output-format json`
+        # as a text-in/text-out provider. Hermes is only borrowing Claude Code's
+        # model runtime here — not its native tool protocol. Because this backend
+        # does not yet translate Claude Code tool use into Hermes tool calls,
+        # advertising Hermes tools in the prompt would be dishonest and would
+        # produce non-executable natural-language/tool-ish output instead of real
+        # structured tool calls. Keep Hermes-side tools disabled for `claude-cli`
+        # until a future implementation adds an actual tool-call bridge.
         self.tools = get_tool_definitions(
             enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets,
             quiet_mode=self.quiet_mode,
         )
-        is_claude_cli_transport = (
-            self.provider == "claude-cli"
-            or str(self.base_url or "").startswith("claude-cli://")
-        )
-        if is_claude_cli_transport:
+        if self.provider == "claude-cli" or str(self.base_url or "").startswith("claude-cli://"):
             self.tools = []
         
         # Show tool configuration and store valid tool names for validation
