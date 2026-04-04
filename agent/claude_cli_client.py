@@ -17,7 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from agent.model_metadata import estimate_messages_tokens_rough, estimate_tokens_rough
+from agent.model_metadata import estimate_tokens_rough
 
 CLAUDE_CLI_MARKER_BASE_URL = "claude-cli://local"
 _DEFAULT_TIMEOUT_SECONDS = 900.0

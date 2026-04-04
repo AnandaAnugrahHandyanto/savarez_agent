@@ -1932,13 +1932,10 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     }
 
 
-def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
-    """Status snapshot for providers that run a local subprocess."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
-    if not pconfig or pconfig.auth_type != "external_process":
-        return {"configured": False}
-
+def _external_process_provider_runtime(pconfig: ProviderConfig) -> Dict[str, Any]:
+    """Resolve shared command/base-url details for external-process providers."""
     extra = pconfig.extra if isinstance(pconfig.extra, dict) else {}
+
     command = ""
     for env_name in list(extra.get("command_env_vars") or []):
         command = os.getenv(str(env_name), "").strip()
@@ -1957,14 +1954,33 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     remote_prefixes = tuple(str(prefix) for prefix in (extra.get("remote_base_url_prefixes") or []))
     is_remote = bool(base_url and any(base_url.startswith(prefix) for prefix in remote_prefixes))
     return {
-        "configured": bool(resolved_command or is_remote),
-        "provider": provider_id,
-        "name": pconfig.name,
         "command": command,
         "args": args,
         "resolved_command": resolved_command,
         "base_url": base_url,
-        "logged_in": bool(resolved_command or is_remote),
+        "is_remote": is_remote,
+        "extra": extra,
+    }
+
+
+
+def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
+    """Status snapshot for providers that run a local subprocess."""
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    if not pconfig or pconfig.auth_type != "external_process":
+        return {"configured": False}
+
+    runtime = _external_process_provider_runtime(pconfig)
+    configured = bool(runtime["resolved_command"] or runtime["is_remote"])
+    return {
+        "configured": configured,
+        "provider": provider_id,
+        "name": pconfig.name,
+        "command": runtime["command"],
+        "args": runtime["args"],
+        "resolved_command": runtime["resolved_command"],
+        "base_url": runtime["base_url"],
+        "logged_in": configured,
     }
 
 
@@ -2029,38 +2045,21 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
             code="invalid_provider",
         )
 
-    base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
-    if not base_url:
-        base_url = pconfig.inference_base_url
-
-    extra = pconfig.extra if isinstance(pconfig.extra, dict) else {}
-    command = ""
-    for env_name in list(extra.get("command_env_vars") or []):
-        command = os.getenv(str(env_name), "").strip()
-        if command:
-            break
-    if not command:
-        command = str(extra.get("default_command") or "").strip()
-
-    raw_args = os.getenv(str(extra.get("args_env_var") or ""), "").strip() if extra.get("args_env_var") else ""
-    args = shlex.split(raw_args) if raw_args else list(extra.get("default_args") or [])
-    resolved_command = shutil.which(command) if command else None
-    remote_prefixes = tuple(str(prefix) for prefix in (extra.get("remote_base_url_prefixes") or []))
-    is_remote = bool(base_url and any(base_url.startswith(prefix) for prefix in remote_prefixes))
-    if not resolved_command and not is_remote:
+    runtime = _external_process_provider_runtime(pconfig)
+    if not runtime["resolved_command"] and not runtime["is_remote"]:
         raise AuthError(
-            f"Could not find the {pconfig.name} command '{command}'. "
-            f"{extra.get('missing_command_message') or 'Install the provider CLI or configure its command path.'}",
+            f"Could not find the {pconfig.name} command '{runtime['command']}'. "
+            f"{runtime['extra'].get('missing_command_message') or 'Install the provider CLI or configure its command path.'}",
             provider=provider_id,
-            code=str(extra.get("missing_command_code") or "missing_external_process_command"),
+            code=str(runtime["extra"].get("missing_command_code") or "missing_external_process_command"),
         )
 
     return {
         "provider": provider_id,
         "api_key": provider_id,
-        "base_url": base_url.rstrip("/"),
-        "command": resolved_command or command,
-        "args": args,
+        "base_url": runtime["base_url"].rstrip("/"),
+        "command": runtime["resolved_command"] or runtime["command"],
+        "args": runtime["args"],
         "source": "process",
     }
 
