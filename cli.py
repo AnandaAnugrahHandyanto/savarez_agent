@@ -2952,10 +2952,10 @@ class HermesCLI:
         except Exception:
             symbol = "⚕"
 
-        if thinking:
+        if session_title:
+            tab_title = f"{symbol} {session_title} ⏳" if thinking else f"{symbol} {session_title}"
+        elif thinking:
             tab_title = f"{symbol} ⏳"
-        elif session_title:
-            tab_title = f"{symbol} {session_title}"
         else:
             tab_title = symbol
 
