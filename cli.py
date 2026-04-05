@@ -7347,7 +7347,10 @@ class HermesCLI:
             # Normalise line endings — Windows \r\n and old Mac \r both become \n
             # so the 5-line collapse threshold and display are consistent.
             pasted_text = pasted_text.replace('\r\n', '\n').replace('\r', '\n')
-            if self._try_attach_clipboard_image():
+            # Only check clipboard for image when paste carries no text.
+            # If text is present the clipboard holds text not an image, and
+            # running osascript/xclip here blocks the TUI event loop.
+            if not pasted_text and self._try_attach_clipboard_image():
                 event.app.invalidate()
             if pasted_text:
                 line_count = pasted_text.count('\n')
