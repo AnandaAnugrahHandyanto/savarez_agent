@@ -1,0 +1,52 @@
+name: mnemoria
+version: 0.3.3
+description: |
+  Mnemoria — local-first, markdown-native memory layer for AI agents.
+  Ships as an npm package that speaks MCP.  Stores notes on disk as plain
+  markdown files (git-friendly, human-readable, portable) and retrieves
+  them with a three-signal engine: semantic embeddings (all-MiniLM-L6-v2),
+  BM25 keyword search, and Personalised PageRank graph traversal.
+  Vitality scores (ACT-R model) decay over time and are boosted by access,
+  keeping the most relevant memories prominent without manual curation.
+provider: mnemoria
+memory_provider: true
+
+install:
+  npm: mnemoria        # npm install -g mnemoria
+  verify: mnemoria health
+
+hooks: []              # Mnemoria manages its own session state via the vault
+
+config:
+  MNEMORIA_VAULT:
+    type: path
+    default: ~/.hermes/mnemoria-vault
+    description: |
+      Path to the Mnemoria vault directory.  The vault is a folder of
+      plain markdown files that Mnemoria creates and manages.
+      Set to a git-tracked directory to get automatic version history.
+  MNEMORIA_BIN:
+    type: string
+    default: ""
+    description: |
+      Absolute path to the mnemoria binary.  Leave blank to auto-detect
+      via PATH and common npm install locations.
+  MNEMORIA_LLM_PROVIDER:
+    type: string
+    default: ""
+    description: |
+      LLM provider for auto-promotion and enrichment (anthropic, openai,
+      or any OpenAI-compatible endpoint).  Leave blank to run without LLM
+      assistance (pure retrieval only).
+  MNEMORIA_LLM_MODEL:
+    type: string
+    default: ""
+    description: |
+      Model name passed to the LLM provider (e.g. claude-haiku-4-5, gpt-4o).
+      Only used when MNEMORIA_LLM_PROVIDER is set.
+  MNEMORIA_LLM_API_KEY_ENV:
+    type: string
+    default: ""
+    description: |
+      Name of the environment variable that holds the LLM API key (e.g.
+      ANTHROPIC_API_KEY, OPENAI_API_KEY).
