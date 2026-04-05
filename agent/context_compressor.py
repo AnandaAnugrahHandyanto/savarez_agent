@@ -563,7 +563,8 @@ Write only the summary body. Do not include any preamble or prefix."""
     # Main compression entry point
     # ------------------------------------------------------------------
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None) -> List[Dict[str, Any]]:
+    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None,
+                 force_truncation: bool = False) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
 
         Algorithm:
@@ -572,6 +573,11 @@ Write only the summary body. Do not include any preamble or prefix."""
           3. Find tail boundary by token budget (~20K tokens of recent context)
           4. Summarize middle turns with structured LLM prompt
           5. On re-compression, iteratively update the previous summary
+
+        Args:
+            force_truncation: When True, drop middle turns even if summary
+                generation fails (last-resort fallback for API context overflow).
+                When False (default), abort compaction to prevent data loss.
 
         After compression, orphaned tool_call / tool_result pairs are cleaned
         up so the API never receives mismatched IDs.
@@ -684,28 +690,32 @@ Write only the summary body. Do not include any preamble or prefix."""
                 compressed.append({"role": summary_role, "content": summary})
         else:
             # Summary generation failed (provider down, timeout, rate limit, etc.).
-            # Abort compaction entirely and return the original messages unchanged.
             #
-            # WHY NOT just drop the middle turns?  With protect_first_n=1 (system
-            # prompt only), the initial user/assistant exchange lives in the middle
-            # region.  Dropping it without a summary silently loses the session's
-            # opening context — the model would have no idea what was discussed.
+            # TWO MODES depending on force_truncation:
             #
-            # WHY NOT change protect_first_n back to 2 or 3?  That reintroduces
-            # the original bug: after compaction, the model sees the verbatim first
-            # user message in the context head, treats it as a new/pending request,
-            # and deviates from the current task.  Keeping protect_first_n=1 and
-            # aborting on summary failure is the safer trade-off.
+            # force_truncation=False (default, normal compaction at ~50% threshold):
+            #   Abort compaction entirely and return the original messages unchanged.
+            #   The 50% threshold provides a large buffer before the API hard-rejects,
+            #   so aborting once is safe.  The next turn will retry compaction.
             #
-            # The 85% compaction threshold provides a ~15% buffer before the API
-            # hard-rejects for context overflow, so aborting once is safe.  The
-            # next turn will retry compaction (transient failures usually resolve).
-            if not self.quiet_mode:
-                logger.warning(
-                    "Summary generation failed — aborting compaction to prevent "
-                    "data loss.  Will retry on next turn."
-                )
-            return messages
+            # force_truncation=True (hard fallback, API already rejected for overflow):
+            #   Drop the middle turns WITHOUT a summary.  Losing context is bad, but
+            #   crashing the conversation entirely is worse.  The model keeps the
+            #   system prompt + recent messages and can at least continue functioning.
+            if not force_truncation:
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Summary generation failed — aborting compaction to prevent "
+                        "data loss.  Will retry on next turn."
+                    )
+                return messages
+            else:
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Summary generation failed and force_truncation=True — "
+                        "dropping %d middle turns without summary (last resort).",
+                        len(turns_to_summarize),
+                    )
 
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()

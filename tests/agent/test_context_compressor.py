@@ -851,3 +851,38 @@ class TestHistoricalPrefix:
         assert result[1]["content"] == "Build me a website"  # not dropped
         # compression_count should NOT have incremented
         assert c.compression_count == 0
+
+    def test_force_truncation_drops_middle_on_summary_failure(self):
+        """With force_truncation=True, failing summary should still compress (drop middle turns)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=1,
+                protect_last_n=2,
+            )
+
+        msgs = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "Build me a website"},
+            {"role": "assistant", "content": "Sure thing"},
+            {"role": "user", "content": "middle 1"},
+            {"role": "assistant", "content": "middle 2"},
+            {"role": "user", "content": "middle 3"},
+            {"role": "assistant", "content": "middle 4"},
+            {"role": "user", "content": "recent msg"},
+            {"role": "assistant", "content": "recent reply"},
+        ]
+
+        # Simulate summary failure with force_truncation=True
+        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
+            result = c.compress(msgs, force_truncation=True)
+
+        # Should have FEWER messages — middle turns dropped without summary
+        assert len(result) < len(msgs)
+        # System prompt preserved
+        assert result[0]["role"] == "system"
+        # Recent messages preserved
+        assert result[-1]["content"] == "recent reply"
+        # compression_count SHOULD have incremented
+        assert c.compression_count == 1
