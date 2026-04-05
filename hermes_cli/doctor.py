@@ -4,6 +4,7 @@ Doctor command for hermes CLI.
 Diagnoses issues with Hermes Agent setup.
 """
 
+import logging
 import os
 import sys
 import subprocess
@@ -29,6 +30,8 @@ load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
 
 from hermes_cli.colors import Colors, color
 from hermes_constants import OPENROUTER_MODELS_URL
+
+logger = logging.getLogger(__name__)
 
 
 _PROVIDER_ENV_HINTS = (
@@ -130,6 +133,22 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
         issues.append("Enable linger for the gateway user service: sudo loginctl enable-linger $USER")
     else:
         check_warn("Could not verify systemd linger", f"({linger_detail})")
+
+
+def _resolve_anthropic_key_for_doctor():
+    """Resolve Anthropic credentials for doctor, warning on resolver failures."""
+    try:
+        from agent.anthropic_adapter import resolve_anthropic_token
+
+        return resolve_anthropic_token()
+    except Exception as exc:
+        logger.warning(
+            "Failed to resolve Anthropic credentials in doctor; "
+            "falling back to environment variables: %s",
+            exc,
+            exc_info=True,
+        )
+        return os.getenv("ANTHROPIC_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
 
 
 def run_doctor(args):
@@ -623,12 +642,7 @@ def run_doctor(args):
     else:
         check_warn("OpenRouter API", "(not configured)")
     
-    anthropic_key = None
-    try:
-        from agent.anthropic_adapter import resolve_anthropic_token
-        anthropic_key = resolve_anthropic_token()
-    except Exception:
-        anthropic_key = os.getenv("ANTHROPIC_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
+    anthropic_key = _resolve_anthropic_key_for_doctor()
     if anthropic_key:
         print("  Checking Anthropic API...", end="", flush=True)
         try:

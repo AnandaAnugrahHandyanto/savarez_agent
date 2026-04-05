@@ -5,6 +5,7 @@ import sys
 import types
 from argparse import Namespace
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -136,3 +137,21 @@ def test_check_gateway_service_linger_skips_when_service_not_installed(monkeypat
     out = capsys.readouterr().out
     assert out == ""
     assert issues == []
+
+
+def test_resolve_anthropic_key_for_doctor_logs_warning_and_falls_back(monkeypatch):
+    warning = MagicMock()
+    monkeypatch.setattr(doctor_mod.logger, "warning", warning)
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.resolve_anthropic_token",
+        lambda: (_ for _ in ()).throw(RuntimeError("bad creds")),
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-fallback")
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+
+    resolved = doctor_mod._resolve_anthropic_key_for_doctor()
+
+    assert resolved == "sk-ant-api03-fallback"
+    warning.assert_called_once()
+    assert "Failed to resolve Anthropic credentials in doctor" in warning.call_args.args[0]
+    assert warning.call_args.kwargs["exc_info"] is True

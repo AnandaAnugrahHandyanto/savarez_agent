@@ -4,6 +4,7 @@ Status command for hermes CLI.
 Shows the status of all Hermes Agent components.
 """
 
+import logging
 import os
 import sys
 import subprocess
@@ -19,6 +20,9 @@ from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_constants import OPENROUTER_MODELS_URL
 from tools.tool_backend_helpers import managed_nous_tools_enabled
+
+logger = logging.getLogger(__name__)
+
 
 def check_mark(ok: bool) -> str:
     if ok:
@@ -79,6 +83,26 @@ def _effective_provider_label() -> str:
     return provider_label(effective)
 
 
+def _resolve_anthropic_key_for_status() -> str:
+    """Resolve Anthropic credentials for status, warning on resolver failures."""
+    try:
+        from agent.anthropic_adapter import resolve_anthropic_token
+
+        return resolve_anthropic_token() or ""
+    except Exception as exc:
+        logger.warning(
+            "Failed to resolve Anthropic credentials in status; "
+            "falling back to environment variables: %s",
+            exc,
+            exc_info=True,
+        )
+        return (
+            get_env_value("ANTHROPIC_TOKEN")
+            or get_env_value("ANTHROPIC_API_KEY")
+            or ""
+        )
+
+
 def show_status(args):
     """Show status of all Hermes Agent components."""
     show_all = getattr(args, 'all', False)
@@ -137,16 +161,7 @@ def show_status(args):
         display = redact_key(value) if not show_all else value
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
 
-    anthropic_value = ""
-    try:
-        from agent.anthropic_adapter import resolve_anthropic_token
-        anthropic_value = resolve_anthropic_token() or ""
-    except Exception:
-        anthropic_value = (
-            get_env_value("ANTHROPIC_TOKEN")
-            or get_env_value("ANTHROPIC_API_KEY")
-            or ""
-        )
+    anthropic_value = _resolve_anthropic_key_for_status()
     anthropic_display = redact_key(anthropic_value) if not show_all else anthropic_value
     print(f"  {'Anthropic':<12}  {check_mark(bool(anthropic_value))} {anthropic_display}")
 
