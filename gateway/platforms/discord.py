@@ -454,6 +454,11 @@ class DiscordAdapter(BasePlatformAdapter):
         self._seen_messages: Dict[str, float] = {}
         self._SEEN_TTL = 300   # 5 minutes
         self._SEEN_MAX = 2000  # prune threshold
+        # Reply message cache: message_id → (author_name, text, timestamp).
+        # Avoids redundant fetch_message API calls for the same referenced message.
+        self._reply_cache: Dict[str, tuple] = {}
+        self._REPLY_CACHE_TTL = 300   # 5 minutes
+        self._REPLY_CACHE_MAX = 500  # prune threshold
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -2068,6 +2073,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
+        _now = time.time()
         # In server channels (not DMs), require the bot to be @mentioned
         # UNLESS the channel is in the free-response list or the message is
         # in a thread where the bot has already participated.
@@ -2278,19 +2284,42 @@ class DiscordAdapter(BasePlatformAdapter):
 
         # Extract reply context — Discord provides message.reference with a
         # message_id but not the content.  Try the cached resolved_reference
-        # first (free, no API call); fall back to fetch_message if missing.
+        # first (free, no API call), then the in-memory reply cache, then
+        # fall back to fetch_message and cache the result.
         reply_to_msg_id = None
         reply_to_text = None
-        if message.reference:
+        if message.reference and message.reference.message_id:
             reply_to_msg_id = str(message.reference.message_id)
+
+            # 1) discord.py cached reference (messages the bot has seen)
             ref_msg = message.reference.resolved
-            if ref_msg is None and message.reference.message_id:
-                try:
-                    ref_msg = await message.channel.fetch_message(message.reference.message_id)
-                except Exception as e:
-                    logger.debug("Could not fetch reply-to message %s: %s", message.reference.message_id, e)
+            if ref_msg is None:
+                # 2) In-memory reply cache (avoids API calls)
+                cached = self._reply_cache.get(reply_to_msg_id)
+                if cached and (_now - cached[2]) < self._REPLY_CACHE_TTL:
+                    author, text = cached[0], cached[1]
+                    reply_to_text = f"{author}: {text}" if text else None
+                else:
+                    # 3) Fetch from Discord API
+                    try:
+                        ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                    except Exception as e:
+                        logger.debug("Could not fetch reply-to message %s: %s", message.reference.message_id, e)
+
             if ref_msg:
-                reply_to_text = ref_msg.content or None
+                author = getattr(ref_msg.author, 'display_name', 'Unknown')
+                # Prefer content, fall back to caption for media messages
+                text = ref_msg.content or getattr(ref_msg, 'caption', None) or None
+                if text:
+                    reply_to_text = f"{author}: {text}"
+                # Store in cache
+                self._reply_cache[reply_to_msg_id] = (author, text or '', _now)
+                if len(self._reply_cache) > self._REPLY_CACHE_MAX:
+                    cutoff = _now - self._REPLY_CACHE_TTL
+                    self._reply_cache = {
+                        k: v for k, v in self._reply_cache.items()
+                        if v[2] > cutoff
+                    }
 
         event = MessageEvent(
             text=event_text,
