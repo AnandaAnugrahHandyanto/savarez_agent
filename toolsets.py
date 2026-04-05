@@ -546,7 +546,19 @@ def validate_toolset(name: str) -> bool:
     if name in TOOLSETS:
         return True
     # Check tool registry for plugin-provided toolsets
-    return name in _get_plugin_toolset_names()
+    if name in _get_plugin_toolset_names():
+        return True
+    # Accept MCP server names from config — _get_platform_tools() adds bare MCP
+    # server names to enabled_toolsets, but they are not real toolsets in TOOLSETS.
+    # The MCP system registers them dynamically as "mcp-{name}" at startup.
+    try:
+        from hermes_cli.config import load_config
+        mcp_servers = load_config().get("mcp_servers") or {}
+        if name in mcp_servers:
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def create_custom_toolset(
