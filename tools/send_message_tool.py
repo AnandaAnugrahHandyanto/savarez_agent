@@ -732,8 +732,22 @@ async def _send_matrix(token, extra, chat_id, message):
         txn_id = f"hermes_{int(time.time() * 1000)}"
         url = f"{homeserver}/_matrix/client/v3/rooms/{chat_id}/send/m.room.message/{txn_id}"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        # Convert markdown to HTML for Matrix formatted_body
+        msg_content: dict = {"msgtype": "m.text", "body": message}
+        try:
+            import markdown as _md
+            import re as _re
+            html = _md.markdown(message, extensions=["nl2br", "fenced_code", "tables"])
+            # Element X doesn't render h1-h6 — convert headers to bold for broader compatibility
+            html = _re.sub(r'<h[1-6]>(.*?)</h[1-6]>', r'<p><strong>\1</strong></p>', html)
+            if html != message:
+                msg_content["format"] = "org.matrix.custom.html"
+                msg_content["formatted_body"] = html
+        except ImportError:
+            pass  # graceful fallback to plain text
+
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            async with session.put(url, headers=headers, json={"msgtype": "m.text", "body": message}) as resp:
+            async with session.put(url, headers=headers, json=msg_content) as resp:
                 if resp.status not in (200, 201):
                     body = await resp.text()
                     return {"error": f"Matrix API error ({resp.status}): {body}"}
