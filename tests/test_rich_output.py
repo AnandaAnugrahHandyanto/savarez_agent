@@ -180,6 +180,12 @@ class TestSyntaxHighlighter:
         result = self.hl.to_markup('x = "[bold]text[/bold]"', language="python")
         assert "[bold]" not in result or r"\[bold" in result
 
+    def test_to_ansi_brackets_and_backslashes_render_literally(self):
+        import re
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", self.hl.to_ansi(r'x = r"\[abc]"', language="python"))
+        assert r'x = r"\[abc]"' in plain
+        assert r"\]" not in plain
+
 
 # ---------------------------------------------------------------------------
 # DiffRenderer
@@ -418,6 +424,13 @@ class TestFormatResponse:
         plain = _re.sub(r"\x1b\[[0-9;]*m", "", result)
         for line in plain.splitlines():
             assert not line.strip().startswith("````"), f"4-backtick fence leaked: {line!r}"
+
+    @pytest.mark.parametrize("lang", ["c++", "objective-c", "shell-session", "f#"])
+    def test_fence_info_strings_accept_common_punctuation(self, lang):
+        import re
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", format_response(f"```{lang}\nint x;\n```\n"))
+        assert "```" not in plain
+        assert "int x;" in plain
 
     def test_inline_code_in_prose_styled(self):
         """Inline code spans in prose get ANSI styling."""
