@@ -56,6 +56,7 @@ Official optional skills live in the repository under `optional-skills/`. Instal
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| `pikastream-video-meeting` | Join a Google Meet or Zoom call as a real-time AI avatar using the open-source Pika Skills workflow and the Pika Developer API. | `productivity/pikastream-video-meeting` |
 | `telephony` | Give Hermes phone capabilities — provision a Twilio number, send/receive SMS/MMS, make direct calls, and place AI-driven outbound calls through Bland.ai or Vapi. | `productivity/telephony` |
 
 ## research
