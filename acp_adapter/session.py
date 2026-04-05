@@ -422,7 +422,10 @@ class SessionManager:
 
         from run_agent import AIAgent
         from hermes_cli.config import load_config
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_cli.runtime_provider import (
+            build_runtime_bundle,
+            resolve_runtime_provider,
+        )
 
         config = load_config()
         model_cfg = config.get("model")
@@ -444,14 +447,19 @@ class SessionManager:
 
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
+            effective_runtime = {
+                "provider": runtime.get("provider"),
+                "api_mode": api_mode or runtime.get("api_mode"),
+                "base_url": base_url or runtime.get("base_url"),
+                "api_key": runtime.get("api_key"),
+                "command": runtime.get("command"),
+                "args": list(runtime.get("args") or []),
+            }
+            runtime_bundle = build_runtime_bundle(effective_runtime)
             kwargs.update(
                 {
-                    "provider": runtime.get("provider"),
-                    "api_mode": api_mode or runtime.get("api_mode"),
-                    "base_url": base_url or runtime.get("base_url"),
-                    "api_key": runtime.get("api_key"),
-                    "command": runtime.get("command"),
-                    "args": list(runtime.get("args") or []),
+                    **runtime_bundle["runtime"],
+                    "request_options": runtime_bundle["request_options"],
                 }
             )
         except Exception:

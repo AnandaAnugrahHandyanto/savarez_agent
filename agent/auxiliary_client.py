@@ -97,6 +97,57 @@ _CODEX_AUX_MODEL = "gpt-5.2-codex"
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
 
+def is_direct_openai_api_base_url(base_url: Optional[str]) -> bool:
+    """True when a base URL targets OpenAI's native API, not a proxy."""
+    normalized = str(base_url or "").strip().lower()
+    return "api.openai.com" in normalized and "openrouter" not in normalized
+
+
+def uses_openai_max_completion_tokens(base_url: Optional[str]) -> bool:
+    """Direct OpenAI routes use ``max_completion_tokens`` instead of ``max_tokens``."""
+    return is_direct_openai_api_base_url(base_url)
+
+
+def apply_openai_service_tier(
+    request_kwargs: Dict[str, Any],
+    *,
+    request_options: Optional[Dict[str, Any]] = None,
+    base_url: Optional[str] = None,
+    provider: Optional[str] = None,
+    api_key: Optional[str] = None,
+    api_mode: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Inject OpenAI ``service_tier`` only for canonical supported routes."""
+    if not isinstance(request_options, dict):
+        return request_kwargs
+    from hermes_cli.runtime_provider import (
+        normalize_openai_service_tier,
+        supports_openai_service_tier_runtime,
+    )
+
+    if not supports_openai_service_tier_runtime(
+        {
+            "provider": provider,
+            "base_url": base_url,
+            "api_key": api_key,
+            "api_mode": api_mode,
+        }
+    ):
+        return request_kwargs
+
+    service_tier = normalize_openai_service_tier(
+        request_options.get("service_tier"),
+        field_name="request_options.service_tier",
+        allow_blank=True,
+    )
+    if not service_tier:
+        return request_kwargs
+
+    merged = dict(request_kwargs)
+    merged["service_tier"] = service_tier
+    return merged
+
+
 def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
     """Return (pool_exists_for_provider, selected_entry)."""
     try:
@@ -202,6 +253,12 @@ class _CodexCompletionsAdapter:
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", self._model)
         temperature = kwargs.get("temperature")
+        service_tier = kwargs.get("service_tier")
+        if service_tier is not None:
+            if isinstance(service_tier, str) and service_tier.strip():
+                kwargs["service_tier"] = service_tier.strip().lower()
+            else:
+                kwargs.pop("service_tier", None)
 
         # Separate system/instructions from conversation messages.
         # Convert chat.completions multimodal content blocks to Responses
@@ -225,6 +282,8 @@ class _CodexCompletionsAdapter:
             "input": input_msgs or [{"role": "user", "content": ""}],
             "store": False,
         }
+        if "service_tier" in kwargs:
+            resp_kwargs["service_tier"] = kwargs["service_tier"]
 
         # Note: the Codex endpoint (chatgpt.com/backend-api/codex) does NOT
         # support max_output_tokens or temperature — omit to avoid 400 errors.
@@ -1369,7 +1428,7 @@ def auxiliary_max_tokens_param(value: int) -> dict:
     # Only use max_completion_tokens for direct OpenAI custom endpoints
     if (not or_key
             and _read_nous_auth() is None
-            and "api.openai.com" in custom_base.lower()):
+            and uses_openai_max_completion_tokens(custom_base)):
         return {"max_completion_tokens": value}
     return {"max_tokens": value}
 
@@ -1666,6 +1725,8 @@ def _build_call_kwargs(
     timeout: float = 30.0,
     extra_body: Optional[dict] = None,
     base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    request_options: Optional[Dict[str, Any]] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
     kwargs: Dict[str, Any] = {
@@ -1682,7 +1743,7 @@ def _build_call_kwargs(
         # Direct OpenAI api.openai.com with newer models needs max_completion_tokens.
         if provider == "custom":
             custom_base = base_url or _current_custom_base_url()
-            if "api.openai.com" in custom_base.lower():
+            if uses_openai_max_completion_tokens(custom_base):
                 kwargs["max_completion_tokens"] = max_tokens
             else:
                 kwargs["max_tokens"] = max_tokens
@@ -1699,7 +1760,28 @@ def _build_call_kwargs(
     if merged_extra:
         kwargs["extra_body"] = merged_extra
 
-    return kwargs
+    # Only pure OpenAI request-shape logic belongs here; config/runtime
+    # normalization and Codex support classification stay upstream in
+    # hermes_cli.runtime_provider.
+    return apply_openai_service_tier(
+        kwargs,
+        request_options=request_options,
+        base_url=base_url,
+        provider=provider,
+        api_key=api_key,
+        api_mode="codex_responses" if provider == "openai-codex" else "chat_completions",
+    )
+
+
+def _effective_auxiliary_api_mode(provider: str, base_url: Optional[str]) -> str:
+    """Derive the effective API mode for auxiliary request-option normalization."""
+    normalized_provider = str(provider or "").strip().lower()
+    normalized_base = str(base_url or "").strip().lower().rstrip("/")
+    if normalized_provider == "openai-codex":
+        return "codex_responses"
+    if normalized_provider == "anthropic" or normalized_base.endswith("/anthropic"):
+        return "anthropic_messages"
+    return "chat_completions"
 
 
 def call_llm(
@@ -1791,15 +1873,29 @@ def call_llm(
                             task or "call", resolved_provider)
                 client, final_model = _get_cached_client(
                     "openrouter", resolved_model or _OPENROUTER_MODEL)
+                if client is not None:
+                    resolved_provider = "openrouter"
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
     effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
+    from hermes_cli.runtime_provider import build_runtime_bundle
+
+    effective_base_url = getattr(client, "base_url", resolved_base_url)
+    effective_api_key = getattr(client, "api_key", resolved_api_key)
+    request_options = build_runtime_bundle(
+        {
+            "provider": resolved_provider,
+            "base_url": effective_base_url,
+            "api_key": effective_api_key,
+            "api_mode": _effective_auxiliary_api_mode(resolved_provider, effective_base_url),
+        }
+    )["request_options"]
 
     # Log what we're about to do — makes auxiliary operations visible
-    _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
+    _base_info = str(effective_base_url or "")
     if task:
         logger.info("Auxiliary %s: using %s (%s)%s",
                      task, resolved_provider or "auto", final_model or "default",
@@ -1809,7 +1905,9 @@ def call_llm(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
-        base_url=resolved_base_url)
+        base_url=effective_base_url,
+        api_key=effective_api_key,
+        request_options=request_options)
 
     # Handle max_tokens vs max_completion_tokens retry
     try:
@@ -1946,18 +2044,34 @@ async def async_call_llm(
                 client, final_model = _get_cached_client(
                     "openrouter", resolved_model or _OPENROUTER_MODEL,
                     async_mode=True)
+                if client is not None:
+                    resolved_provider = "openrouter"
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
     effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
+    from hermes_cli.runtime_provider import build_runtime_bundle
+
+    effective_base_url = getattr(client, "base_url", resolved_base_url)
+    effective_api_key = getattr(client, "api_key", resolved_api_key)
+    request_options = build_runtime_bundle(
+        {
+            "provider": resolved_provider,
+            "base_url": effective_base_url,
+            "api_key": effective_api_key,
+            "api_mode": _effective_auxiliary_api_mode(resolved_provider, effective_base_url),
+        }
+    )["request_options"]
 
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
-        base_url=resolved_base_url)
+        base_url=effective_base_url,
+        api_key=effective_api_key,
+        request_options=request_options)
 
     try:
         return await client.chat.completions.create(**kwargs)

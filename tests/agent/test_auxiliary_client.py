@@ -3,17 +3,22 @@
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
 
 from agent.auxiliary_client import (
+    async_call_llm,
+    call_llm,
     get_text_auxiliary_client,
     get_vision_auxiliary_client,
     get_available_vision_backends,
     resolve_vision_provider_client,
     resolve_provider_client,
     auxiliary_max_tokens_param,
+    _build_call_kwargs,
+    _CodexCompletionsAdapter,
     _read_codex_access_token,
     _get_auxiliary_provider,
     _resolve_forced_provider,
@@ -1106,3 +1111,153 @@ class TestAuxiliaryMaxTokensParam:
              patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
             result = auxiliary_max_tokens_param(1024)
         assert result == {"max_tokens": 1024}
+
+
+class TestBuildCallKwargsServiceTier:
+    def test_direct_openai_custom_includes_service_tier(self):
+        kwargs = _build_call_kwargs(
+            "custom",
+            "gpt-5.4",
+            [{"role": "user", "content": "hi"}],
+            max_tokens=512,
+            base_url="https://api.openai.com/v1",
+            api_key="sk-openai-direct",
+            request_options={"service_tier": "priority"},
+        )
+
+        assert kwargs["max_completion_tokens"] == 512
+        assert "max_tokens" not in kwargs
+        assert kwargs["service_tier"] == "priority"
+
+    def test_codex_route_includes_service_tier(self):
+        kwargs = _build_call_kwargs(
+            "openai-codex",
+            "gpt-5.2-codex",
+            [{"role": "user", "content": "hi"}],
+            max_tokens=512,
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="oauth-token",
+            request_options={"service_tier": "priority"},
+        )
+
+        assert kwargs["max_tokens"] == 512
+        assert kwargs["service_tier"] == "priority"
+
+    def test_non_direct_route_omits_service_tier(self):
+        kwargs = _build_call_kwargs(
+            "custom",
+            "gpt-5.4",
+            [{"role": "user", "content": "hi"}],
+            max_tokens=512,
+            base_url="http://localhost:11434/v1",
+            api_key="local-key",
+            request_options={"service_tier": "priority"},
+        )
+
+        assert kwargs["max_tokens"] == 512
+        assert "service_tier" not in kwargs
+
+
+class TestCodexCompletionsAdapterServiceTier:
+    def test_codex_adapter_includes_service_tier(self):
+        captured = {}
+
+        class _FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter(())
+
+            def get_final_response(self):
+                return SimpleNamespace(
+                    output=[
+                        SimpleNamespace(
+                            type="message",
+                            content=[SimpleNamespace(type="output_text", text="ok")],
+                        )
+                    ],
+                    usage=None,
+                )
+
+        def _fake_stream(**kwargs):
+            captured["kwargs"] = kwargs
+            return _FakeStream()
+
+        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_fake_stream))
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.2-codex")
+
+        response = adapter.create(
+            model="gpt-5.2-codex",
+            messages=[{"role": "user", "content": "hi"}],
+            service_tier="priority",
+        )
+
+        assert response.choices[0].message.content == "ok"
+        assert captured["kwargs"]["service_tier"] == "priority"
+
+
+class TestAuxiliaryCallLlmServiceTier:
+    def test_call_llm_codex_route_includes_service_tier(self, monkeypatch):
+        captured = {}
+
+        def _fake_create(**kwargs):
+            captured["kwargs"] = kwargs
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+
+        fake_client = SimpleNamespace(
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="oauth-token",
+            chat=SimpleNamespace(completions=SimpleNamespace(create=_fake_create)),
+        )
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda *args, **kwargs: ("openai-codex", "gpt-5.2-codex", None, None),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client",
+            lambda *args, **kwargs: (fake_client, "gpt-5.2-codex"),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {"request_options": {"service_tier": "priority"}},
+        )
+
+        call_llm(messages=[{"role": "user", "content": "hi"}])
+
+        assert captured["kwargs"]["service_tier"] == "priority"
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_codex_route_includes_service_tier(self, monkeypatch):
+        captured = {}
+
+        async def _fake_create(**kwargs):
+            captured["kwargs"] = kwargs
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+
+        fake_client = SimpleNamespace(
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="oauth-token",
+            chat=SimpleNamespace(completions=SimpleNamespace(create=_fake_create)),
+        )
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda *args, **kwargs: ("openai-codex", "gpt-5.2-codex", None, None),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client",
+            lambda *args, **kwargs: (fake_client, "gpt-5.2-codex"),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {"request_options": {"service_tier": "priority"}},
+        )
+
+        await async_call_llm(messages=[{"role": "user", "content": "hi"}])
+
+        assert captured["kwargs"]["service_tier"] == "priority"

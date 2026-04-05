@@ -2137,24 +2137,36 @@ class HermesCLI:
 
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Resolve model/runtime overrides for a single user turn."""
+        from hermes_cli.runtime_provider import build_runtime_bundle
         from agent.smart_model_routing import resolve_turn_route
+
+        primary = {
+            "model": self.model,
+            "api_key": self.api_key,
+            "base_url": self.base_url,
+            "provider": self.provider,
+            "api_mode": self.api_mode,
+            "command": self.acp_command,
+            "args": list(self.acp_args or []),
+            "credential_pool": getattr(self, "_credential_pool", None),
+        }
+        primary_request_options = build_runtime_bundle(primary)["request_options"]
 
         return resolve_turn_route(
             user_message,
             self._smart_model_routing,
-            {
-                "model": self.model,
-                "api_key": self.api_key,
-                "base_url": self.base_url,
-                "provider": self.provider,
-                "api_mode": self.api_mode,
-                "command": self.acp_command,
-                "args": list(self.acp_args or []),
-                "credential_pool": getattr(self, "_credential_pool", None),
-            },
+            primary,
+            primary_request_options=primary_request_options,
         )
 
-    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, route_label: str = None) -> bool:
+    def _init_agent(
+        self,
+        *,
+        model_override: str = None,
+        runtime_override: dict = None,
+        request_options_override: dict = None,
+        route_label: str = None,
+    ) -> bool:
         """
         Initialize the agent on first use.
         When resuming a session, restores conversation history from SQLite.
@@ -2215,6 +2227,8 @@ class HermesCLI:
                 pass
         
         try:
+            from hermes_cli.runtime_provider import build_runtime_bundle
+
             runtime = runtime_override or {
                 "api_key": self.api_key,
                 "base_url": self.base_url,
@@ -2224,6 +2238,8 @@ class HermesCLI:
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
+            if request_options_override is None:
+                request_options_override = build_runtime_bundle(runtime)["request_options"]
             effective_model = model_override or self.model
             self.agent = AIAgent(
                 model=effective_model,
@@ -2241,6 +2257,7 @@ class HermesCLI:
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
+                request_options=request_options_override,
                 providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore,
                 providers_order=self._providers_order,
@@ -4578,6 +4595,7 @@ class HermesCLI:
                     api_mode=turn_route["runtime"].get("api_mode"),
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
+                    request_options=turn_route.get("request_options"),
                     max_iterations=self.max_turns,
                     enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True,
@@ -4714,6 +4732,7 @@ class HermesCLI:
                     api_mode=turn_route["runtime"].get("api_mode"),
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
+                    request_options=turn_route.get("request_options"),
                     max_iterations=8,
                     enabled_toolsets=[],
                     quiet_mode=True,
@@ -6232,9 +6251,14 @@ class HermesCLI:
         if not self._init_agent(
             model_override=turn_route["model"],
             runtime_override=turn_route["runtime"],
+            request_options_override=turn_route.get("request_options"),
             route_label=turn_route["label"],
         ):
             return None
+
+        # Request options are mutable per-turn state and intentionally stay
+        # out of the cached agent signature so prompt caching still works.
+        self.agent.request_options = dict(turn_route.get("request_options") or {})
         
         # Pre-process images through the vision tool (Gemini Flash) so the
         # main model receives text descriptions instead of raw base64 image
@@ -8430,8 +8454,10 @@ def main(
                 if cli._init_agent(
                     model_override=turn_route["model"],
                     runtime_override=turn_route["runtime"],
+                    request_options_override=turn_route.get("request_options"),
                     route_label=turn_route["label"],
                 ):
+                    cli.agent.request_options = dict(turn_route.get("request_options") or {})
                     cli.agent.quiet_mode = True
                     result = cli.agent.run_conversation(
                         user_message=query,
