@@ -6,7 +6,14 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
-from utils import env_var_enabled
+try:
+    from utils import env_var_enabled
+except ImportError:
+    # Fallback for long-lived gateway processes where the in-memory utils module
+    # may predate the addition of env_var_enabled (e.g. after hermes update).
+    def env_var_enabled(name: str, default: str = "") -> bool:  # type: ignore[misc]
+        val = os.environ.get(name, default).strip().lower()
+        return val in ("1", "true", "yes", "on")
 
 _DEFAULT_BROWSER_PROVIDER = "local"
 _DEFAULT_MODAL_MODE = "auto"
