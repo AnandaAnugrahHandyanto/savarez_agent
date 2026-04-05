@@ -25,6 +25,7 @@ from tools.delegate_tool import (
     delegate_task,
     _build_child_agent,
     _build_child_system_prompt,
+    _resolve_delegation_profile,
     _strip_blocked_tools,
     _resolve_delegation_credentials,
 )
@@ -64,6 +65,7 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("profile", props)
         self.assertIn("max_iterations", props)
         self.assertEqual(props["tasks"]["maxItems"], 3)
 
@@ -121,6 +123,13 @@ class TestDelegateTask(unittest.TestCase):
         parent = _make_mock_parent()
         result = json.loads(delegate_task(goal="  ", parent_agent=parent))
         self.assertIn("error", result)
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_iterations": 45, "default_profile": "missing"})
+    def test_unknown_profile_returns_json_error(self, _mock_cfg):
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(goal="test", parent_agent=parent))
+        self.assertIn("error", result)
+        self.assertIn("Unknown delegation profile", result["error"])
 
     def test_task_missing_goal(self):
         parent = _make_mock_parent()
@@ -187,6 +196,60 @@ class TestDelegateTask(unittest.TestCase):
         # The mock was called with the tasks array item, not the top-level goal
         call_args = mock_run.call_args
         self.assertEqual(call_args.kwargs.get("goal") or call_args[1].get("goal", call_args[0][1] if len(call_args[0]) > 1 else None), "Actual task")
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_iterations": 45})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_top_level_profile_reaches_child_builder(self, mock_run, mock_build, mock_creds, _mock_cfg):
+        mock_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        mock_build.return_value = MagicMock()
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+        }
+        parent = _make_mock_parent()
+
+        delegate_task(goal="Profile test", profile="friendly", parent_agent=parent)
+
+        profile_arg = mock_build.call_args.kwargs["profile"]
+        self.assertEqual(profile_arg["name"], "friendly")
+        self.assertEqual(profile_arg["memory"], "read")
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_iterations": 45, "default_profile": "restricted"})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_task_profile_overrides_top_level_or_default_profile(self, mock_run, mock_build, mock_creds, _mock_cfg):
+        mock_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        mock_build.return_value = MagicMock()
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+        }
+        parent = _make_mock_parent()
+
+        delegate_task(
+            profile="friendly",
+            tasks=[{"goal": "Use privileged child", "profile": "privileged"}],
+            parent_agent=parent,
+        )
+
+        profile_arg = mock_build.call_args.kwargs["profile"]
+        self.assertEqual(profile_arg["name"], "privileged")
+        self.assertEqual(profile_arg["memory"], "write")
 
     @patch("tools.delegate_tool._run_single_child")
     def test_failed_child_included_in_results(self, mock_run):
@@ -355,6 +418,7 @@ class TestToolNamePreservation(unittest.TestCase):
                     goal="regression check",
                     context=None,
                     toolsets=None,
+                    profile=_resolve_delegation_profile({}, None),
                     model=None,
                     max_iterations=10,
                     parent_agent=parent,
@@ -379,8 +443,9 @@ class TestToolNamePreservation(unittest.TestCase):
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
 
-            def capture_and_return(user_message):
+            def capture_and_return(user_message, task_id=None):
                 captured["saved"] = list(mock_child._delegate_saved_tool_names)
+                captured["task_id"] = task_id
                 return {"final_response": "ok", "completed": True, "api_calls": 1}
 
             mock_child.run_conversation.side_effect = capture_and_return
@@ -389,6 +454,57 @@ class TestToolNamePreservation(unittest.TestCase):
             delegate_task(goal="capture test", parent_agent=parent)
 
         self.assertEqual(captured["saved"], expected_tools)
+        self.assertTrue(captured["task_id"].startswith("delegate-"))
+
+    def test_friendly_profile_configures_read_only_memory(self):
+        parent = _make_mock_parent(depth=0)
+        profile = _resolve_delegation_profile({}, "friendly")
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="friendly child",
+                context=None,
+                toolsets=None,
+                profile=profile,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertFalse(kwargs["skip_memory"])
+            self.assertFalse(kwargs["memory_write_enabled"])
+            self.assertFalse(kwargs["provider_tool_access"])
+            self.assertEqual(kwargs["agent_context"], "subagent")
+
+    def test_privileged_profile_configures_writable_memory(self):
+        parent = _make_mock_parent(depth=0)
+        profile = _resolve_delegation_profile({}, "privileged")
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="privileged child",
+                context=None,
+                toolsets=None,
+                profile=profile,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertFalse(kwargs["skip_memory"])
+            self.assertTrue(kwargs["memory_write_enabled"])
+            self.assertTrue(kwargs["provider_tool_access"])
+            self.assertEqual(kwargs["agent_context"], "subagent")
 
 
 class TestDelegateObservability(unittest.TestCase):
