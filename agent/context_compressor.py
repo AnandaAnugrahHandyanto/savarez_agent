@@ -55,10 +55,12 @@ class ContextCompressor:
 
     Algorithm:
       1. Prune old tool results (cheap, no LLM call)
-      2. Protect head messages (system prompt + first exchange)
+      2. Protect head messages (system prompt only by default; configurable
+         via protect_first_n)
       3. Protect tail messages by token budget (most recent ~20K tokens)
       4. Summarize middle turns with structured LLM prompt
       5. On subsequent compactions, iteratively update the previous summary
+      6. If summary generation fails, abort compaction to prevent data loss
     """
 
     def __init__(
@@ -257,9 +259,8 @@ class ContextCompressor:
         inspired by Pi-mono and OpenCode. When a previous summary exists,
         generates an iterative update instead of summarizing from scratch.
 
-        Returns None if all attempts fail — the caller should drop
-        the middle turns without a summary rather than inject a useless
-        placeholder.
+        Returns None if all attempts fail — the caller should abort compaction
+        and return the original messages unchanged to prevent data loss.
         """
         now = time.monotonic()
         if now < self._summary_failure_cooldown_until:
@@ -643,8 +644,14 @@ Write only the summary body. Do not include any preamble or prefix."""
             elif msg.get("role") in ("user", "assistant") and not msg.get("tool_calls"):
                 # Mark preserved head messages as historical so the model
                 # doesn't re-address old user requests after compaction.
-                content = msg.get("content") or ""
-                if content and not content.startswith("[HISTORICAL"):
+                # Guard with isinstance() because some providers (e.g. OpenAI
+                # vision) send content as a list of dicts, not a plain string.
+                content = msg.get("content")
+                if (
+                    isinstance(content, str)
+                    and content
+                    and not content.startswith("[HISTORICAL")
+                ):
                     msg["content"] = (
                         "[HISTORICAL — from the start of this session, already addressed]\n"
                         + content
@@ -676,8 +683,29 @@ Write only the summary body. Do not include any preamble or prefix."""
             if not _merge_summary_into_tail:
                 compressed.append({"role": summary_role, "content": summary})
         else:
+            # Summary generation failed (provider down, timeout, rate limit, etc.).
+            # Abort compaction entirely and return the original messages unchanged.
+            #
+            # WHY NOT just drop the middle turns?  With protect_first_n=1 (system
+            # prompt only), the initial user/assistant exchange lives in the middle
+            # region.  Dropping it without a summary silently loses the session's
+            # opening context — the model would have no idea what was discussed.
+            #
+            # WHY NOT change protect_first_n back to 2 or 3?  That reintroduces
+            # the original bug: after compaction, the model sees the verbatim first
+            # user message in the context head, treats it as a new/pending request,
+            # and deviates from the current task.  Keeping protect_first_n=1 and
+            # aborting on summary failure is the safer trade-off.
+            #
+            # The 85% compaction threshold provides a ~15% buffer before the API
+            # hard-rejects for context overflow, so aborting once is safe.  The
+            # next turn will retry compaction (transient failures usually resolve).
             if not self.quiet_mode:
-                logger.debug("No summary model available — middle turns dropped without summary")
+                logger.warning(
+                    "Summary generation failed — aborting compaction to prevent "
+                    "data loss.  Will retry on next turn."
+                )
+            return messages
 
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()
