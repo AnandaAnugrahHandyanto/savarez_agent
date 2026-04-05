@@ -851,9 +851,13 @@ class AIAgent:
 
                     client_kwargs["default_headers"] = copilot_default_headers()
                 elif "api.kimi.com" in effective_base.lower():
-                    client_kwargs["default_headers"] = {
-                        "User-Agent": "KimiCLI/1.3",
-                    }
+                    # Use Kimi CLI OAuth headers if available
+                    from hermes_cli.auth import _get_kimi_cli_headers, _read_kimi_cli_oauth_credentials
+                    kimi_oauth = _read_kimi_cli_oauth_credentials()
+                    if kimi_oauth and api_key.startswith("eyJ"):
+                        client_kwargs["default_headers"] = _get_kimi_cli_headers()
+                    else:
+                        client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.3"}
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -8288,6 +8292,15 @@ class AIAgent:
                         assistant_message.content = "\n".join(parts)
                     else:
                         assistant_message.content = str(raw)
+
+                # Parse <tool_call> JSON format embedded in content (Kimi K2, etc.)
+                if assistant_message.content and "<tool_call>" in assistant_message.content:
+                    from agent.response_adapters import adapt_hermes_tool_call_response
+                    parsed = adapt_hermes_tool_call_response(assistant_message.content)
+                    if parsed["tool_calls"]:
+                        assistant_message.content = parsed["content"] or ""
+                        existing = list(assistant_message.tool_calls) if assistant_message.tool_calls else []
+                        assistant_message.tool_calls = existing + list(parsed["tool_calls"])
 
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:
