@@ -158,7 +158,7 @@ def curate_memory(
         target_result["actually_removed"] = removed_count
         results["total_removed"] += removed_count
 
-        # Promote high-value entries to knowledge DB
+        # Promote high-value entries to knowledge DB + wiki
         if session_db and promotions:
             for promo in promotions:
                 try:
@@ -172,6 +172,15 @@ def curate_memory(
                     results["total_promoted"] += 1
                 except Exception as e:
                     logger.debug("Failed to promote entry to knowledge: %s", e)
+                # Also file into wiki KB (best-effort)
+                try:
+                    _promote_to_wiki(
+                        title=promo.get("title", "Curated insight"),
+                        content=promo.get("entry", ""),
+                        reason=promo.get("reason", ""),
+                    )
+                except Exception as e:
+                    logger.debug("Failed to promote entry to wiki: %s", e)
 
         target_result["entries_after"] = len(memory_store._entries_for(target))
         results["targets_curated"].append(target_result)
@@ -197,6 +206,42 @@ def _promote_to_knowledge(
             (full_content, "memory_curator", session_id, now, now),
         )
     session_db._execute_write(_do)
+
+
+def _promote_to_wiki(title: str, content: str, reason: str) -> None:
+    """File a curated memory entry into the wiki KB as a concept note.
+
+    Best-effort: silently skips if the wiki directory doesn't exist or
+    the kb_tool isn't importable (e.g. wiki not initialized yet).
+    Checks for existing related pages to avoid wiki sprawl.
+    """
+    try:
+        from tools.kb_tool import kb_tool, check_kb_requirements
+    except ImportError:
+        return
+    if not check_kb_requirements():
+        return
+
+    # Dedup check: skip if a related page already exists
+    import json as _json
+    search_result = kb_tool(action="search", query=title, max_results=3)
+    try:
+        parsed = _json.loads(search_result)
+        if parsed.get("matches", 0) > 0:
+            logger.debug("Wiki already has related pages for '%s', skipping promotion", title)
+            return
+    except (ValueError, TypeError):
+        pass
+
+    full_content = f"{content}\n\n*Promoted from memory curator: {reason}*"
+    kb_tool(
+        action="file",
+        title=title,
+        content=full_content,
+        page_type="concept",
+        tags="curated, memory-promotion",
+    )
+    logger.debug("Promoted to wiki: %s", title)
 
 
 def run_post_session_curation(

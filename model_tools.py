@@ -165,6 +165,7 @@ def _discover_tools():
         "tools.homeassistant_tool",
         "tools.context_graph_tool",
         "tools.knowledge_tool",
+        "tools.kb_tool",
         "tools.mac_help_tool",
         "tools.mac_workflow_tool",
         "tools.browser_autonomous_tool",

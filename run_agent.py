@@ -78,7 +78,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 # Agent internals extracted to agent/ package for modularity
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
-    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE, CONTEXT_GRAPH_GUIDANCE,
+    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE, CONTEXT_GRAPH_GUIDANCE, KB_WIKI_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -2644,6 +2644,8 @@ class AIAgent:
             tool_guidance.append(SKILLS_GUIDANCE)
         if "context_graph" in self.valid_tool_names:
             tool_guidance.append(CONTEXT_GRAPH_GUIDANCE)
+        if "kb" in self.valid_tool_names:
+            tool_guidance.append(KB_WIKI_GUIDANCE)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 

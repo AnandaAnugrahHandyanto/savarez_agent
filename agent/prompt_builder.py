@@ -179,6 +179,15 @@ CONTEXT_GRAPH_GUIDANCE = (
     "Do NOT ingest trivial interactions — only decisions, learnings, and project milestones."
 )
 
+KB_WIKI_GUIDANCE = (
+    "You have a persistent knowledge base wiki at ~/hermes-kb/ accessible via the 'kb' tool. "
+    "The wiki is a compounding knowledge artifact — concepts and articles that grow richer "
+    "over time. Use 'kb search' to check for existing knowledge before researching topics "
+    "from scratch. When you synthesize valuable, non-obvious insights during a conversation, "
+    "use 'kb file' to write them back into the wiki as concepts or articles — this is how "
+    "knowledge compounds across sessions. Use 'kb list' to browse what's available."
+)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

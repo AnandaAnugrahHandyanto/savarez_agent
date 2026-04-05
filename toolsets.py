@@ -70,6 +70,8 @@ _HERMES_CORE_TOOLS = [
     "context_graph",
     # Structured knowledge store (notes, people, projects, decisions)
     "knowledge",
+    # Wiki knowledge base (persistent compounding wiki at ~/hermes-kb/)
+    "kb",
     # macOS help & workflows (gated on macOS + ~/.hermes/macos-kb/ via check_fn)
     "mac_help", "mac_workflow",
 ]
@@ -236,8 +238,8 @@ TOOLSETS = {
     },
 
     "knowledge": {
-        "description": "Structured personal knowledge store (notes, people, projects, decisions with tag cross-linking)",
-        "tools": ["knowledge"],
+        "description": "Structured personal knowledge store (notes, people, projects, decisions with tag cross-linking) plus wiki KB",
+        "tools": ["knowledge", "kb"],
         "includes": []
     },
 
