@@ -1,13 +1,24 @@
-FROM ghcr.io/astral-sh/uv:trixie-slim
+FROM node:lts-trixie-slim AS node_runtime
+FROM ghcr.io/astral-sh/uv:latest AS uv_runtime
+FROM python:3.14-slim-trixie
 
 WORKDIR /opt/hermes
 
 # Install system packages required
 RUN apt-get update &&\
     apt-get install -y --no-install-recommends \
-        git curl nodejs npm ripgrep ffmpeg gcc python3 python3-pip systemctl &&\
-    rm -rf /var/lib/apt/lists/* &&\
-    npm cache clean --force
+        git curl ripgrep ffmpeg gcc systemctl &&\
+    rm -rf /var/lib/apt/lists/*
+
+# Copy Node.js and uv from upstream images instead of installing them with apt/curl.
+COPY --from=node_runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node_runtime /usr/local/bin/npm /usr/local/bin/npm
+COPY --from=node_runtime /usr/local/bin/npx /usr/local/bin/npx
+COPY --from=node_runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm &&\
+    ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+COPY --from=uv_runtime /uv /usr/local/bin/uv
+COPY --from=uv_runtime /uvx /usr/local/bin/uvx
 
 # Install root Node.js dependencies.
 COPY package*.json ./
