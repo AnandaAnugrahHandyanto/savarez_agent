@@ -2138,6 +2138,71 @@ class AIAgent:
             
         return cleaned
 
+    @staticmethod
+    def _extract_api_error_context(error: Exception) -> Dict[str, Any]:
+        """Extract structured rate-limit details from provider errors."""
+        context: Dict[str, Any] = {}
+
+        body = getattr(error, "body", None)
+        payload = None
+        if isinstance(body, dict):
+            payload = body.get("error") if isinstance(body.get("error"), dict) else body
+        if isinstance(payload, dict):
+            reason = payload.get("code") or payload.get("error")
+            if isinstance(reason, str) and reason.strip():
+                context["reason"] = reason.strip()
+            message = payload.get("message") or payload.get("error_description")
+            if isinstance(message, str) and message.strip():
+                context["message"] = message.strip()
+            for key in ("resets_at", "reset_at"):
+                value = payload.get(key)
+                if value not in (None, ""):
+                    context["reset_at"] = value
+                    break
+            retry_after = payload.get("retry_after")
+            if retry_after not in (None, "") and "reset_at" not in context:
+                try:
+                    context["reset_at"] = time.time() + float(retry_after)
+                except (TypeError, ValueError):
+                    pass
+
+        response = getattr(error, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers:
+            retry_after = headers.get("retry-after") or headers.get("Retry-After")
+            if retry_after and "reset_at" not in context:
+                try:
+                    context["reset_at"] = time.time() + float(retry_after)
+                except (TypeError, ValueError):
+                    pass
+            ratelimit_reset = headers.get("x-ratelimit-reset")
+            if ratelimit_reset and "reset_at" not in context:
+                context["reset_at"] = ratelimit_reset
+
+        if "message" not in context:
+            raw_message = str(error).strip()
+            if raw_message:
+                context["message"] = raw_message[:500]
+
+        if "reset_at" not in context:
+            message = context.get("message") or ""
+            if isinstance(message, str):
+                delay_match = re.search(r"quotaResetDelay[:\s\"]+(\\d+(?:\\.\\d+)?)(ms|s)", message, re.IGNORECASE)
+                if delay_match:
+                    value = float(delay_match.group(1))
+                    seconds = value / 1000.0 if delay_match.group(2).lower() == "ms" else value
+                    context["reset_at"] = time.time() + seconds
+                else:
+                    sec_match = re.search(
+                        r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)",
+                        message,
+                        re.IGNORECASE,
+                    )
+                    if sec_match:
+                        context["reset_at"] = time.time() + float(sec_match.group(1))
+
+        return context
+
     def _dump_api_request_debug(
         self,
         api_kwargs: Dict[str, Any],
@@ -3846,6 +3911,7 @@ class AIAgent:
         *,
         status_code: Optional[int],
         has_retried_429: bool,
+        error_context: Optional[Dict[str, Any]] = None,
     ) -> tuple[bool, bool]:
         """Attempt credential recovery via pool rotation.
 
@@ -3860,7 +3926,7 @@ class AIAgent:
             return False, has_retried_429
 
         if status_code == 402:
-            next_entry = pool.mark_exhausted_and_rotate(status_code=402)
+            next_entry = pool.mark_exhausted_and_rotate(status_code=402, error_context=error_context)
             if next_entry is not None:
                 logger.info(f"Credential 402 (billing) — rotated to pool entry {getattr(next_entry, 'id', '?')}")
                 self._swap_credential(next_entry)
@@ -3870,7 +3936,7 @@ class AIAgent:
         if status_code == 429:
             if not has_retried_429:
                 return False, True
-            next_entry = pool.mark_exhausted_and_rotate(status_code=429)
+            next_entry = pool.mark_exhausted_and_rotate(status_code=429, error_context=error_context)
             if next_entry is not None:
                 logger.info(f"Credential 429 (rate limit) — rotated to pool entry {getattr(next_entry, 'id', '?')}")
                 self._swap_credential(next_entry)
@@ -3885,7 +3951,7 @@ class AIAgent:
                 return True, has_retried_429
             # Refresh failed — rotate to next credential instead of giving up.
             # The failed entry is already marked exhausted by try_refresh_current().
-            next_entry = pool.mark_exhausted_and_rotate(status_code=401)
+            next_entry = pool.mark_exhausted_and_rotate(status_code=401, error_context=error_context)
             if next_entry is not None:
                 logger.info(f"Credential 401 (refresh failed) — rotated to pool entry {getattr(next_entry, 'id', '?')}")
                 self._swap_credential(next_entry)
@@ -5324,15 +5390,18 @@ class AIAgent:
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:
         """Strip Codex Responses API fields from tool_calls for strict providers.
 
-        Providers like Mistral strictly validate the Chat Completions schema
-        and reject unknown fields (call_id, response_item_id) with 422.
-        These fields are preserved in the internal message history — this
-        method only modifies the outgoing API copy.
+        Providers like Mistral, Fireworks, and other strict OpenAI-compatible APIs
+        validate the Chat Completions schema and reject unknown fields (call_id,
+        response_item_id) with 400 or 422 errors. These fields are preserved in
+        the internal message history — this method only modifies the outgoing
+        API copy.
 
         Creates new tool_call dicts rather than mutating in-place, so the
         original messages list retains call_id/response_item_id for Codex
         Responses API compatibility (e.g. if the session falls back to a
         Codex provider later).
+
+        Fields stripped: call_id, response_item_id
         """
         tool_calls = api_msg.get("tool_calls")
         if not isinstance(tool_calls, list):
@@ -5344,6 +5413,19 @@ class AIAgent:
             for tc in tool_calls
         ]
         return api_msg
+
+    def _should_sanitize_tool_calls(self) -> bool:
+        """Determine if tool_calls need sanitization for strict APIs.
+
+        Codex Responses API uses fields like call_id and response_item_id
+        that are not part of the standard Chat Completions schema. These
+        fields must be stripped when calling any other API to avoid
+        validation errors (400 Bad Request).
+
+        Returns:
+            bool: True if sanitization is needed (non-Codex API), False otherwise.
+        """
+        return self.api_mode != "codex_responses"
 
     def flush_memories(self, messages: list = None, min_turns: int = None):
         """Give the model one turn to persist memories before context is lost.
@@ -5383,7 +5465,7 @@ class AIAgent:
 
         try:
             # Build API messages for the flush call
-            _is_strict_api = "api.mistral.ai" in self._base_url_lower
+            _needs_sanitize = self._should_sanitize_tool_calls()
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
@@ -5394,7 +5476,7 @@ class AIAgent:
                 api_msg.pop("reasoning", None)
                 api_msg.pop("finish_reason", None)
                 api_msg.pop("_flush_sentinel", None)
-                if _is_strict_api:
+                if _needs_sanitize:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
 
@@ -6269,13 +6351,13 @@ class AIAgent:
         try:
             # Build API messages, stripping internal-only fields
             # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
-            _is_strict_api = "api.mistral.ai" in self._base_url_lower
+            _needs_sanitize = self._should_sanitize_tool_calls()
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
                 for internal_field in ("reasoning", "finish_reason"):
                     api_msg.pop(internal_field, None)
-                if _is_strict_api:
+                if _needs_sanitize:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
 
@@ -6797,10 +6879,10 @@ class AIAgent:
                 if "finish_reason" in api_msg:
                     api_msg.pop("finish_reason")
                 # Strip Codex Responses API fields (call_id, response_item_id) for
-                # strict providers like Mistral that reject unknown fields with 422.
+                # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
                 # Uses new dicts so the internal messages list retains the fields
                 # for Codex Responses compatibility.
-                if "api.mistral.ai" in self._base_url_lower:
+                if self._should_sanitize_tool_calls():
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
                 # The signature field helps maintain reasoning continuity
@@ -7361,9 +7443,11 @@ class AIAgent:
                         # prompt or prefill.  Fall through to normal error path.
 
                     status_code = getattr(api_error, "status_code", None)
+                    error_context = self._extract_api_error_context(api_error)
                     recovered_with_pool, has_retried_429 = self._recover_with_credential_pool(
                         status_code=status_code,
                         has_retried_429=has_retried_429,
+                        error_context=error_context,
                     )
                     if recovered_with_pool:
                         continue
