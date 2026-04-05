@@ -40,8 +40,17 @@ def _save_snapshots(data: Dict[str, str]) -> None:
     """Persist snapshot ID mapping to disk."""
     _SNAPSHOT_STORE.parent.mkdir(parents=True, exist_ok=True)
     _tmp = _SNAPSHOT_STORE.with_suffix(".tmp")
-    _tmp.write_text(json.dumps(data, indent=2))
-    _tmp.replace(_SNAPSHOT_STORE)
+    with open(_tmp, "w") as f:
+        f.write(json.dumps(data, indent=2))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(str(_tmp), str(_SNAPSHOT_STORE))
+    try:
+        dir_fd = os.open(str(_SNAPSHOT_STORE.parent), os.O_RDONLY)
+        os.fsync(dir_fd)
+        os.close(dir_fd)
+    except OSError:
+        pass
 
 
 def _direct_snapshot_key(task_id: str) -> str:
