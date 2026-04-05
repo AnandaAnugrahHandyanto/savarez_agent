@@ -29,10 +29,14 @@ from typing import Any, Dict, List, Optional
 DELEGATE_BLOCKED_TOOLS = frozenset([
     "delegate_task",   # no recursive delegation
     "clarify",         # no user interaction
-    "memory",          # no writes to shared MEMORY.md
+    "memory",          # no writes to shared MEMORY.md (use fabric_write instead)
     "send_message",    # no cross-platform side effects
     "execute_code",    # children should reason step-by-step, not write scripts
 ])
+
+# fabric_write is intentionally NOT in DELEGATE_BLOCKED_TOOLS.
+# It is a narrow append-only tool for subagents to persist key findings.
+# The fabric toolset is injected automatically when the parent has memory enabled.
 
 MAX_CONCURRENT_CHILDREN = 3
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
@@ -45,7 +49,11 @@ def check_delegate_requirements() -> bool:
     return True
 
 
-def _build_child_system_prompt(goal: str, context: Optional[str] = None) -> str:
+def _build_child_system_prompt(
+    goal: str,
+    context: Optional[str] = None,
+    memory_write_enabled: bool = False,
+) -> str:
     """Build a focused system prompt for a child agent."""
     parts = [
         "You are a focused subagent working on a specific delegated task.",
@@ -54,6 +62,18 @@ def _build_child_system_prompt(goal: str, context: Optional[str] = None) -> str:
     ]
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
+
+    if memory_write_enabled:
+        parts.append(
+            "\nMEMORY (fabric_write):\n"
+            "Before finishing, write at most 3 key findings using fabric_write.\n"
+            "Write root causes, non-obvious facts, and constraints that the parent "
+            "would need to re-investigate without this information.\n"
+            "Do not write routine progress or anything already captured in your summary.\n"
+            "Each entry must be under 400 chars. Choose a descriptive snake_case topic "
+            "(e.g. 'root_cause', 'auth_config', 'migration_order')."
+        )
+
     parts.append(
         "\nComplete this task using the tools available to you. "
         "When finished, provide a clear, concise summary of:\n"
@@ -68,11 +88,41 @@ def _build_child_system_prompt(goal: str, context: Optional[str] = None) -> str:
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
-    """Remove toolsets that contain only blocked tools."""
+    """Remove toolsets that contain only blocked tools.
+
+    'fabric' is intentionally absent from this list -- fabric_write is
+    the narrow, append-only path for subagent memory writes and is managed
+    separately via _inject_fabric_toolset().
+    """
     blocked_toolset_names = {
         "delegation", "clarify", "memory", "code_execution",
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
+
+
+def _inject_fabric_toolset(
+    child_toolsets: List[str],
+    parent_agent,
+    write_memory: Optional[bool],
+) -> List[str]:
+    """Conditionally add the fabric toolset to the child's enabled toolsets.
+
+    fabric_write is injected when:
+      1. The parent has memory enabled (parent._memory_store is not None), AND
+      2. write_memory is not explicitly False.
+
+    When write_memory is None (default), the presence of a parent memory store
+    is the only gate. When write_memory is True, the caller asserts intent but
+    the store must still exist.
+    """
+    if write_memory is False:
+        return child_toolsets
+    parent_has_memory = getattr(parent_agent, "_memory_store", None) is not None
+    if not parent_has_memory:
+        return child_toolsets
+    if "fabric" not in child_toolsets:
+        return child_toolsets + ["fabric"]
+    return child_toolsets
 
 
 def _build_child_progress_callback(task_index: int, parent_agent, task_count: int = 1) -> Optional[callable]:
@@ -171,6 +221,9 @@ def _build_child_agent(
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # Memory write control: None = auto (enabled when parent has memory),
+    # True = require, False = disable
+    write_memory: Optional[bool] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -194,7 +247,12 @@ def _build_child_agent(
     else:
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
 
-    child_prompt = _build_child_system_prompt(goal, context)
+    # Inject fabric_write access when parent has memory and write_memory is not disabled.
+    # This is done after _strip_blocked_tools so fabric is never accidentally removed.
+    child_toolsets = _inject_fabric_toolset(child_toolsets, parent_agent, write_memory)
+    memory_write_enabled = "fabric" in child_toolsets
+
+    child_prompt = _build_child_system_prompt(goal, context, memory_write_enabled=memory_write_enabled)
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -434,6 +492,7 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
+    write_memory: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -517,6 +576,7 @@ def delegate_task(
                 override_api_mode=creds["api_mode"],
                 override_acp_command=t.get("acp_command") or acp_command,
                 override_acp_args=t.get("acp_args") or acp_args,
+                write_memory=write_memory,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -750,6 +810,10 @@ DELEGATE_TASK_SCHEMA = {
         "info (file paths, error messages, constraints) via the 'context' field.\n"
         "- Subagents CANNOT call: delegate_task, clarify, memory, send_message, "
         "execute_code.\n"
+        "- When you have memory enabled, subagents get access to fabric_write -- "
+        "a narrow append-only tool for persisting key findings (root causes, "
+        "config paths, non-obvious constraints) to your MEMORY.md before they complete. "
+        "Set write_memory=false to disable this.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task."
     ),
@@ -838,6 +902,14 @@ DELEGATE_TASK_SCHEMA = {
                     "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
                 ),
             },
+            "write_memory": {
+                "type": "boolean",
+                "description": (
+                    "Whether subagents may write key findings to your MEMORY.md via fabric_write. "
+                    "Default: true when you have memory enabled, false otherwise. "
+                    "Set to false to prevent any subagent memory writes for this delegation."
+                ),
+            },
         },
         "required": [],
     },
@@ -859,6 +931,7 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
+        write_memory=args.get("write_memory"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",

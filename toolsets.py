@@ -194,6 +194,16 @@ TOOLSETS = {
         "includes": []
     },
 
+    "fabric": {
+        "description": (
+            "Subagent memory persistence -- append key findings to MEMORY.md "
+            "before a subagent completes. Injected automatically by delegate_task "
+            "when the parent agent has memory enabled. Not for direct use in full sessions."
+        ),
+        "tools": ["fabric_write"],
+        "includes": []
+    },
+
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 
