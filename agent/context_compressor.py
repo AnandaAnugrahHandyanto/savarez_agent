@@ -65,7 +65,7 @@ class ContextCompressor:
         self,
         model: str,
         threshold_percent: float = 0.50,
-        protect_first_n: int = 3,
+        protect_first_n: int = 1,
         protect_last_n: int = 20,
         summary_target_ratio: float = 0.20,
         quiet_mode: bool = False,
@@ -640,6 +640,15 @@ Write only the summary body. Do not include any preamble or prefix."""
                     (msg.get("content") or "")
                     + "\n\n[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work.]"
                 )
+            elif msg.get("role") in ("user", "assistant") and not msg.get("tool_calls"):
+                # Mark preserved head messages as historical so the model
+                # doesn't re-address old user requests after compaction.
+                content = msg.get("content") or ""
+                if content and not content.startswith("[HISTORICAL"):
+                    msg["content"] = (
+                        "[HISTORICAL — from the start of this session, already addressed]\n"
+                        + content
+                    )
             compressed.append(msg)
 
         _merge_summary_into_tail = False
