@@ -7,7 +7,7 @@ WORKDIR /opt/hermes
 # Install system packages required
 RUN apt-get update &&\
     apt-get install -y --no-install-recommends \
-        git curl ripgrep ffmpeg gcc systemctl &&\
+        git curl ripgrep ffmpeg systemctl &&\
     rm -rf /var/lib/apt/lists/*
 
 # Copy Node.js and uv from upstream images instead of installing them with apt/curl.
