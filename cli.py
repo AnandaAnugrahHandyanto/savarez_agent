@@ -1200,6 +1200,8 @@ class HermesCLI:
         self.steering_dispatch = "all_at_once" if str(_sdm).strip().lower() == "all_at_once" else "one_by_one"
         _fdm = CLI_CONFIG["display"].get("followup_dispatch", "one_by_one")
         self.followup_dispatch = "all_at_once" if str(_fdm).strip().lower() == "all_at_once" else "one_by_one"
+        _sar = CLI_CONFIG.get('display', {}).get('stash_auto_restore', False)
+        self.stash_auto_restore: bool = bool(_sar)
         self._show_full_user_message: bool = bool(
             CLI_CONFIG["display"].get("show_full_user_message", False)
         )
@@ -8966,22 +8968,25 @@ class HermesCLI:
                         # but only if the buffer is empty — never clobber text
                         # the user started typing while the agent was responding.
                         if self._stashed_input:
-                            stashed_text, stashed_images = self._stashed_input
-                            try:
-                                buf = app.layout.current_buffer
-                                if buf.text.strip():
-                                    # Buffer has content — leave stash intact,
-                                    # user can pop it manually with Ctrl+S.
-                                    _cprint(f"  {_DIM}📌 Stash kept (buffer not empty — Ctrl+S to pop){_RST}")
-                                else:
-                                    self._stashed_input = None
-                                    if stashed_images:
-                                        self._attached_images.extend(stashed_images)
-                                    buf.text = stashed_text
-                                    buf.cursor_position = len(stashed_text)
-                                    _cprint(f"  {_DIM}📌 Stashed input restored{_RST}")
-                            except Exception:
-                                pass
+                            if self.stash_auto_restore:
+                                stashed_text, stashed_images = self._stashed_input
+                                try:
+                                    buf = app.layout.current_buffer
+                                    if buf.text.strip():
+                                        # Buffer has content — leave stash intact,
+                                        # user can pop it manually with Ctrl+S.
+                                        _cprint(f"  {_DIM}📌 Stash kept (buffer not empty — Ctrl+S to pop){_RST}")
+                                    else:
+                                        self._stashed_input = None
+                                        if stashed_images:
+                                            self._attached_images.extend(stashed_images)
+                                        buf.text = stashed_text
+                                        buf.cursor_position = len(stashed_text)
+                                        _cprint(f"  {_DIM}📌 Stashed input restored{_RST}")
+                                except Exception:
+                                    pass
+                            else:
+                                _cprint(f"  {_DIM}📌 Stash ready — Ctrl+S to pop{_RST}")
 
                         # Post-turn queue dispatch.
                         # Steering always takes priority — follow-up only runs when steering is empty.
