@@ -1,6 +1,6 @@
 FROM node:lts-trixie-slim AS node_runtime
 FROM ghcr.io/astral-sh/uv:latest AS uv_runtime
-FROM python:3.14-slim-trixie
+FROM python:slim-trixie
 
 WORKDIR /opt/hermes
 
