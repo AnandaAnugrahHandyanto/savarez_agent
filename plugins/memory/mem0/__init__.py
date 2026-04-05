@@ -7,7 +7,7 @@ Original PR #2933 by kartik-mem0, adapted to MemoryProvider ABC.
 
 Config via environment variables:
   MEM0_API_KEY       — Mem0 Platform API key (required)
-  MEM0_USER_ID       — User identifier (default: hermes-user)
+  MEM0_USER_ID       — User identifier (default: ctx)
   MEM0_AGENT_ID      — Agent identifier (default: hermes)
 
 Or via $HERMES_HOME/mem0.json.
@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -31,6 +32,15 @@ logger = logging.getLogger(__name__)
 # for _BREAKER_COOLDOWN_SECS to avoid hammering a down server.
 _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_SECS = 120
+
+
+def _normalize_run_id(session_id: str) -> str:
+    value = (session_id or "").strip()
+    if not value:
+        return ""
+    slug = re.sub(r"[^A-Za-z0-9._:-]+", "-", value)
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    return slug or value
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +58,7 @@ def _load_config() -> dict:
 
     config = {
         "api_key": os.environ.get("MEM0_API_KEY", ""),
-        "user_id": os.environ.get("MEM0_USER_ID", "hermes-user"),
+        "user_id": os.environ.get("MEM0_USER_ID", "ctx"),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "rerank": True,
         "keyword_search": False,
@@ -124,8 +134,9 @@ class Mem0MemoryProvider(MemoryProvider):
         self._client = None
         self._client_lock = threading.Lock()
         self._api_key = ""
-        self._user_id = "hermes-user"
+        self._user_id = "ctx"
         self._agent_id = "hermes"
+        self._run_id = ""
         self._rerank = True
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
@@ -160,7 +171,7 @@ class Mem0MemoryProvider(MemoryProvider):
     def get_config_schema(self):
         return [
             {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
-            {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
+            {"key": "user_id", "description": "User identifier", "default": "ctx"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
         ]
@@ -203,9 +214,19 @@ class Mem0MemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = _load_config()
         self._api_key = self._config.get("api_key", "")
-        self._user_id = self._config.get("user_id", "hermes-user")
+        self._user_id = self._config.get("user_id", "ctx")
         self._agent_id = self._config.get("agent_id", "hermes")
+        self._run_id = _normalize_run_id(session_id)
         self._rerank = self._config.get("rerank", True)
+
+    def _build_filters(self) -> Dict[str, Any]:
+        filters: Dict[str, Any] = {
+            "user_id": self._user_id,
+            "agent_id": self._agent_id,
+        }
+        if self._run_id:
+            filters["run_id"] = self._run_id
+        return filters
 
     def system_prompt_block(self) -> str:
         return (
@@ -234,7 +255,7 @@ class Mem0MemoryProvider(MemoryProvider):
                 client = self._get_client()
                 results = client.search(
                     query=query,
-                    filters={"user_id": self._user_id},
+                    filters=self._build_filters(),
                     rerank=self._rerank,
                     top_k=5,
                 )
@@ -264,7 +285,7 @@ class Mem0MemoryProvider(MemoryProvider):
                     {"role": "user", "content": user_content},
                     {"role": "assistant", "content": assistant_content},
                 ]
-                client.add(messages, user_id=self._user_id, agent_id=self._agent_id)
+                client.add(messages, **self._build_filters())
                 self._record_success()
             except Exception as e:
                 self._record_failure()
@@ -293,7 +314,7 @@ class Mem0MemoryProvider(MemoryProvider):
 
         if tool_name == "mem0_profile":
             try:
-                memories = client.get_all(filters={"user_id": self._user_id})
+                memories = client.get_all(filters=self._build_filters())
                 if isinstance(memories, dict):
                     memories = memories.get("results", [])
                 self._record_success()
@@ -314,7 +335,7 @@ class Mem0MemoryProvider(MemoryProvider):
             try:
                 results = client.search(
                     query=query,
-                    filters={"user_id": self._user_id},
+                    filters=self._build_filters(),
                     rerank=rerank,
                     top_k=top_k,
                 )
@@ -336,8 +357,7 @@ class Mem0MemoryProvider(MemoryProvider):
             try:
                 client.add(
                     [{"role": "user", "content": conclusion}],
-                    user_id=self._user_id,
-                    agent_id=self._agent_id,
+                    **self._build_filters(),
                     infer=False,
                 )
                 self._record_success()

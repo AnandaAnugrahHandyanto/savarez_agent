@@ -1,10 +1,12 @@
-from plugins.memory.mem0 import Mem0MemoryProvider
+from plugins.memory.mem0 import Mem0MemoryProvider, _normalize_run_id
 
 
 def test_mem0_search_uses_filters_not_top_level_user_id(monkeypatch):
     provider = Mem0MemoryProvider()
     provider.initialize("test")
     provider._user_id = "u123"
+    provider._agent_id = "hermes"
+    provider._run_id = "test"
 
     captured = {}
 
@@ -24,7 +26,7 @@ def test_mem0_search_uses_filters_not_top_level_user_id(monkeypatch):
     assert captured["query"] == "hello"
     assert captured["top_k"] == 3
     assert captured["rerank"] is False
-    assert captured["filters"] == {"user_id": "u123"}
+    assert captured["filters"] == {"user_id": "u123", "agent_id": "hermes", "run_id": "test"}
     assert "user_id" not in captured
 
 
@@ -32,6 +34,8 @@ def test_mem0_profile_uses_filters_not_top_level_user_id(monkeypatch):
     provider = Mem0MemoryProvider()
     provider.initialize("test")
     provider._user_id = "u123"
+    provider._agent_id = "hermes"
+    provider._run_id = "test"
 
     captured = {}
 
@@ -45,7 +49,7 @@ def test_mem0_profile_uses_filters_not_top_level_user_id(monkeypatch):
     result = provider.handle_tool_call("mem0_profile", {})
 
     assert '"result": "No memories stored yet."' in result
-    assert captured["filters"] == {"user_id": "u123"}
+    assert captured["filters"] == {"user_id": "u123", "agent_id": "hermes", "run_id": "test"}
     assert "user_id" not in captured
 
 
@@ -53,6 +57,8 @@ def test_mem0_prefetch_uses_filters_not_top_level_user_id(monkeypatch):
     provider = Mem0MemoryProvider()
     provider.initialize("test")
     provider._user_id = "u123"
+    provider._agent_id = "hermes"
+    provider._run_id = "test"
 
     captured = {}
 
@@ -68,7 +74,7 @@ def test_mem0_prefetch_uses_filters_not_top_level_user_id(monkeypatch):
 
     assert captured["query"] == "hello"
     assert captured["top_k"] == 5
-    assert captured["filters"] == {"user_id": "u123"}
+    assert captured["filters"] == {"user_id": "u123", "agent_id": "hermes", "run_id": "test"}
     assert "user_id" not in captured
 
 
@@ -104,3 +110,55 @@ def test_mem0_search_accepts_dict_results(monkeypatch):
     assert '"count": 1' in result
     assert "alpha" in result
     assert '"score": 0.9' in result
+
+
+def test_mem0_sync_turn_writes_include_agent_and_run_id(monkeypatch):
+    provider = Mem0MemoryProvider()
+    provider.initialize("session 1")
+    provider._user_id = "ctx"
+    provider._agent_id = "hermes"
+
+    captured = {}
+
+    class FakeClient:
+        def add(self, messages, **kwargs):
+            captured["messages"] = messages
+            captured.update(kwargs)
+
+    monkeypatch.setattr(provider, "_get_client", lambda: FakeClient())
+
+    provider.sync_turn("u", "a", session_id="session 1")
+    provider._sync_thread.join(timeout=2)
+
+    assert captured["user_id"] == "ctx"
+    assert captured["agent_id"] == "hermes"
+    assert captured["run_id"] == "session-1"
+    assert captured["messages"][0]["content"] == "u"
+
+
+def test_mem0_conclude_writes_include_agent_and_run_id(monkeypatch):
+    provider = Mem0MemoryProvider()
+    provider.initialize("session 1")
+    provider._user_id = "ctx"
+    provider._agent_id = "hermes"
+
+    captured = {}
+
+    class FakeClient:
+        def add(self, messages, **kwargs):
+            captured["messages"] = messages
+            captured.update(kwargs)
+
+    monkeypatch.setattr(provider, "_get_client", lambda: FakeClient())
+
+    result = provider.handle_tool_call("mem0_conclude", {"conclusion": "fact"})
+
+    assert '"result": "Fact stored."' in result
+    assert captured["user_id"] == "ctx"
+    assert captured["agent_id"] == "hermes"
+    assert captured["run_id"] == "session-1"
+    assert captured["infer"] is False
+
+
+def test_normalize_run_id_slugifies_session_name():
+    assert _normalize_run_id("  session name / 42 ") == "session-name-42"
