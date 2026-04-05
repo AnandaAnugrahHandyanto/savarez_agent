@@ -445,6 +445,7 @@ def create_job(
         },
         "enabled": True,
         "state": "scheduled",
+        "started_at": None,
         "paused_at": None,
         "paused_reason": None,
         "created_at": now,
@@ -588,6 +589,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
             job["last_run_at"] = now
             job["last_status"] = "ok" if success else "error"
             job["last_error"] = error if not success else None
+            job["started_at"] = None
             
             # Increment completed count
             if job.get("repeat"):
@@ -646,6 +648,25 @@ def advance_next_run(job_id: str) -> bool:
     return False
 
 
+def mark_job_in_progress(job_id: str) -> bool:
+    """Mark a job as in-progress before execution begins.
+
+    Sets state to 'in_progress' and records started_at so that if the
+    process crashes mid-run, detect_stale_jobs() can identify it on the
+    next gateway boot.
+
+    Returns True if the job was found and updated.
+    """
+    jobs = load_jobs()
+    for job in jobs:
+        if job["id"] == job_id:
+            job["state"] = "in_progress"
+            job["started_at"] = _hermes_now().isoformat()
+            save_jobs(jobs)
+            return True
+    return False
+
+
 def get_due_jobs() -> List[Dict[str, Any]]:
     """Get all jobs that are due to run now.
 
@@ -662,6 +683,8 @@ def get_due_jobs() -> List[Dict[str, Any]]:
 
     for job in jobs:
         if not job.get("enabled", True):
+            continue
+        if job.get("state") in ("in_progress", "stale"):
             continue
 
         next_run = job.get("next_run_at")

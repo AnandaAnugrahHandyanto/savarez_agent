@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import get_due_jobs, mark_job_run, mark_job_in_progress, save_job_output, load_jobs, save_jobs
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -629,6 +629,34 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
 
+_startup_checked = False
+
+
+def detect_stale_jobs() -> list[dict]:
+    """Detect jobs left in 'in_progress' state from a previous crash.
+
+    Any job with state=='in_progress' at boot time is a crash victim —
+    the scheduler would have completed or failed it during normal operation.
+    Marks them as 'stale' so the user is informed.
+
+    Returns the list of stale job dicts (after marking).
+    """
+    jobs = load_jobs()
+    stale = []
+    changed = False
+    for job in jobs:
+        if job.get("state") == "in_progress":
+            job["state"] = "stale"
+            job["started_at"] = None
+            job["last_status"] = "stale"
+            job["last_error"] = "Job was in progress when the scheduler restarted"
+            stale.append(dict(job))
+            changed = True
+    if changed:
+        save_jobs(jobs)
+    return stale
+
+
 def tick(verbose: bool = True) -> int:
     """
     Check and run all due jobs.
@@ -659,6 +687,17 @@ def tick(verbose: bool = True) -> int:
         return 0
 
     try:
+        global _startup_checked
+        if not _startup_checked:
+            _startup_checked = True
+            stale = detect_stale_jobs()
+            if stale:
+                logger.warning(
+                    "%d stale cron job(s) detected from before restart: %s",
+                    len(stale),
+                    ", ".join(j.get("name", j["id"]) for j in stale),
+                )
+
         due_jobs = get_due_jobs()
 
         if verbose and not due_jobs:
@@ -671,11 +710,9 @@ def tick(verbose: bool = True) -> int:
         executed = 0
         for job in due_jobs:
             try:
-                # For recurring jobs (cron/interval), advance next_run_at to the
-                # next future occurrence BEFORE execution.  This way, if the
-                # process crashes mid-run, the job won't re-fire on restart.
-                # One-shot jobs are left alone so they can retry on restart.
-                advance_next_run(job["id"])
+                # Mark job as in-progress before execution so crash victims
+                # can be detected on restart (see detect_stale_jobs).
+                mark_job_in_progress(job["id"])
 
                 success, output, final_response, error = run_job(job)
 
