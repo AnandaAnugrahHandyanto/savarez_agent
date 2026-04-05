@@ -33,9 +33,9 @@
 | B | compression + consolidation | 90.0% | 93.3% | **100%** | skipped** |
 | C | scopes | 65.0% | skipped | skipped | skipped |
 | D | adversarial | 86.7% | **100%** | **100%** | 93.3% |
-| E | scale / needle-in-haystack | **100%** | **100%** | **100%** | pending |
-| M | format_sensitivity | **90.0%** | **90.0%** | **90.0%** | pending |
-| N | retrieval_ablation | **88.9%** | 66.7% | **88.9%** | pending |
+| E | scale / needle-in-haystack | **100%** | **100%** | **100%** | **100%** |
+| M | format_sensitivity | **90.0%** | **90.0%** | **90.0%** | 80.0% |
+| N | retrieval_ablation | **88.9%** | 66.7% | **88.9%** | 55.6% |
 | O | timestamp_integrity | **100%** | 62.5% | 62.5% | skipped |
 
 **Bold** = best or tied-for-best among tested backends.
@@ -62,9 +62,7 @@ as failures**. This ensures fair comparison:
 | **mnemoria** | **94.1%** | 5/5 |
 | baseline-flat | 89.7% | 3/5 |
 | holographic | 85.3% | 3/5 |
-| mem0 | 74.7%+ | 1/2+ |
-
-+ mem0 partial (Suites E, M, N still pending at time of writing).
+| mem0 | 77.8% | 1/5 |
 
 ## Analysis
 
@@ -79,12 +77,16 @@ as failures**. This ensures fair comparison:
 
 ### Mem0 — Cloud Service Trade-offs
 
-- **Suite A (56.1%)**: Significantly lower. The cloud API's managed embeddings
-  don't match local ONNX precision on paraphrased recall. Also penalized by
-  `reset()` being a no-op — memories from previous scenarios leak into later ones.
+- **Suite E (100%)**: Perfect scale/needle-in-haystack despite cloud latency.
 - **Suite D (93.3%)**: Good adversarial robustness, slightly below local backends.
+- **Suite M (80.0%)**: Slightly below others on format sensitivity.
+- **Suite A (56.1%)**: Significantly lower. Penalized by `reset()` being a no-op —
+  memories from previous scenarios leak into later ones, polluting retrieval.
+- **Suite N (55.6%)**: Weakest retrieval ablation. Accumulated leftover memories
+  from no-reset degrade keyword-only and semantic-only signal isolation.
 - **No reset**: Mem0 API doesn't expose bulk-delete. Benchmark accuracy degrades
-  as leftover memories accumulate across scenarios.
+  as leftover memories accumulate across scenarios. Use a dedicated API key for
+  clean benchmark runs.
 
 ### Holographic — Strong Adversarial, Weak Retrieval Precision
 
