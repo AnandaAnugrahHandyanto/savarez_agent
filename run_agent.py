@@ -2544,6 +2544,21 @@ class AIAgent:
                 cwd=_context_cwd, skip_soul=_soul_loaded)
             if context_files_prompt:
                 prompt_parts.append(context_files_prompt)
+                try:
+                    _context_path = Path(_context_cwd).resolve() if _context_cwd else None
+                except Exception:
+                    _context_path = None
+                if _context_path and _context_path.name == "rocky-brain":
+                    prompt_parts.append(
+                        "# Rocky project override\n"
+                        "You are operating inside the Rocky brain project at /home/praneet/rocky-brain. "
+                        "When asked about your operating path, queues, or specialist roles, answer from the Rocky project context first, not from generic Hermes runtime internals.\n"
+                        "Canonical project queues are /home/praneet/rocky-brain/runtime/tasks-work.md and /home/praneet/rocky-brain/runtime/tasks-personal.md. "
+                        "Cron jobs and todo lists are execution mechanisms, not the canonical queue model.\n"
+                        "Available Rocky specialist skills are rocky-stratt, rocky-wrench, rocky-sputnik, rocky-forge, and rocky-velvet-knife. "
+                        "For research, prefer rocky-sputnik. For ops and infrastructure, prefer rocky-wrench.\n"
+                        "If the user asks what file defines your project behavior, refer to /home/praneet/rocky-brain/AGENTS.md as the active project context."
+                    )
 
         from hermes_time import now as _hermes_now
         now = _hermes_now()

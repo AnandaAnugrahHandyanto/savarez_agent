@@ -20,9 +20,11 @@ import json
 import logging
 logger = logging.getLogger(__name__)
 import os
+import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
+from pathlib import Path
 
 
 # Tools that children must never have access to
@@ -43,6 +45,42 @@ DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 def check_delegate_requirements() -> bool:
     """Delegation has no external requirements -- always available."""
     return True
+
+
+def _enforce_model_discipline(requested_model: str, budget_tokens: int = 1000, task_id: str = None) -> str:
+    """Call enforce_token_discipline.py to get the actual model to use.
+    
+    Returns the chosen model string, or requested_model if enforcement fails.
+    """
+    try:
+        enforce_script = os.path.expanduser("~/rocky-brain/tools/enforce_token_discipline.py")
+        if not os.path.exists(enforce_script):
+            logger.debug(f"enforce_token_discipline.py not found at {enforce_script}, using requested model")
+            return requested_model
+        
+        cmd = [
+            "python3",
+            enforce_script,
+            "--requested-model", requested_model or "",
+            "--budget-tokens", str(budget_tokens),
+        ]
+        if task_id:
+            cmd.extend(["--task-id", task_id])
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            logger.debug(f"enforce_token_discipline returned {result.returncode}: {result.stderr}")
+            return requested_model
+        
+        entry = json.loads(result.stdout)
+        chosen = entry.get("chosen_model", requested_model)
+        reason = entry.get("reason", "")
+        logger.info(f"[enforce] requested={requested_model} chosen={chosen} reason={reason}")
+        return chosen
+    
+    except Exception as e:
+        logger.debug(f"enforce_token_discipline failed: {e}")
+        return requested_model
 
 
 def _build_child_system_prompt(goal: str, context: Optional[str] = None) -> str:
@@ -400,6 +438,56 @@ def _run_single_child(
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 
+def _check_daily_budget(context: Optional[str] = None, parent_agent=None) -> Dict[str, Any]:
+    """
+    Check and enforce daily token budget before delegation.
+    
+    Returns dict with:
+      - allowed: bool - whether to proceed
+      - message: str - reason if blocked or warning
+      - context_limited: str - context truncated to 2000 tokens if needed
+    """
+    try:
+        from tools.enforce_token_discipline import (
+            check_and_enforce_budget,
+            apply_context_limit,
+            log_token_usage,
+            get_allowed_premium_models,
+        )
+    except ImportError as e:
+        logger.warning(f"Could not import enforce_token_discipline: {e}")
+        return {"allowed": True, "message": "", "context_limited": context}
+    
+    # Estimate tokens from context
+    task_id = getattr(parent_agent, '_session_id', 'delegate')
+    estimated_tokens = len(context or "") // 4 if context else 500  # Conservative est
+    
+    # Check budget
+    budget_ok, budget_msg = check_and_enforce_budget(
+        job_id=task_id,
+        estimated_tokens=estimated_tokens,
+        is_background_job=True,
+    )
+    
+    if not budget_ok:
+        return {
+            "allowed": False,
+            "message": budget_msg,
+            "context_limited": context,
+        }
+    
+    # Apply context limit (max 2000 tokens = ~8000 chars)
+    context_limited, _ = apply_context_limit(context or "", max_tokens=2000)
+    
+    result = {
+        "allowed": True,
+        "message": budget_msg,  # May contain warning
+        "context_limited": context_limited,
+    }
+    
+    return result
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -415,6 +503,11 @@ def delegate_task(
       - Single: provide goal (+ optional context, toolsets)
       - Batch:  provide tasks array [{goal, context, toolsets}, ...]
 
+    Budget enforcement:
+      - Hard daily cap: $5.00 USD
+      - Warning threshold: $3.00 USD
+      - Per-job context limit: 2000 tokens
+      
     Returns JSON with results array, one entry per task.
     """
     if parent_agent is None:
@@ -429,6 +522,21 @@ def delegate_task(
                 "Subagents cannot spawn further subagents."
             )
         })
+    
+    # Check budget and apply context limits BEFORE proceeding
+    budget_check = _check_daily_budget(context, parent_agent)
+    if not budget_check["allowed"]:
+        return json.dumps({
+            "error": budget_check["message"],
+            "status": "blocked_by_budget",
+        })
+    
+    # Log any warning but continue
+    if budget_check["message"]:
+        logger.warning(f"[delegate] {budget_check['message']}")
+    
+    # Use limited context for all tasks
+    context = budget_check["context_limited"]
 
     # Load config
     cfg = _load_config()
@@ -444,6 +552,21 @@ def delegate_task(
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
         return json.dumps({"error": str(exc)})
+    
+    # Enforce token discipline: check if the resolved model is within budget
+    if creds.get("model"):
+        # Estimate budget: use parent's remaining iteration budget if available, else default
+        budget_tokens = 1000
+        if hasattr(parent_agent, 'iteration_budget') and parent_agent.iteration_budget:
+            budget_tokens = int(getattr(parent_agent.iteration_budget, 'remaining', 1000))
+        
+        task_id_for_log = getattr(parent_agent, '_session_id', None) or "delegate_batch"
+        enforced_model = _enforce_model_discipline(
+            creds["model"],
+            budget_tokens=budget_tokens,
+            task_id=task_id_for_log
+        )
+        creds["model"] = enforced_model
 
     # Normalize to task list
     if tasks and isinstance(tasks, list):
