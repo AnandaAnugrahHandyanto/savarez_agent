@@ -974,9 +974,9 @@ def refresh_launchd_plist_if_needed() -> bool:
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     # Unload/reload so launchd picks up the new definition
     subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
-    subprocess.run(["launchctl", "load", str(plist_path)], check=False)
+    result = subprocess.run(["launchctl", "load", str(plist_path)], check=False)
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
-    return True
+    return result.returncode == 0
 
 
 def launchd_install(force: bool = False):
