@@ -2198,7 +2198,6 @@ def set_config_value(key: str, value: str):
         "terminal.persistent_shell": "TERMINAL_PERSISTENT_SHELL",
     }
     if key in _config_to_env_sync:
-logout
         save_env_value(_config_to_env_sync[key], str(value))
 
     print(f"✓ Set {key} = {value} in {config_path}")

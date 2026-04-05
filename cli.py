@@ -4722,8 +4722,7 @@ class HermesCLI:
                         print(f"   ⚠ Chrome launched but port {_port} isn't responding yet")
                         print("     You may need to close existing Chrome windows first and retry")
                 else:
-                    print("   ⚠ Could not auto-lalogout
-unch Chrome")
+                    print("   ⚠ Could not auto-launch Chrome")
                     # Show manual instructions as fallback
                     sys_name = _plat.system()
                     if sys_name == "Darwin":
@@ -4731,8 +4730,7 @@ unch Chrome")
                     elif sys_name == "Windows":
                         chrome_cmd = 'chrome.exe --remote-debugging-port=9222'
                     else:
-                        logout
-chrome_cmd = "google-chrome --remote-debugging-port=9222"
+                        chrome_cmd = "google-chrome --remote-debugging-port=9222"
                     print(f"     Launch Chrome manually: {chrome_cmd}")
             else:
                 print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
@@ -4892,8 +4890,7 @@ chrome_cmd = "google-chrome --remote-debugging-port=9222"
             self.console.print("  ⚠ YOLO mode [bold red]OFF[/] — dangerous commands will require approval.")
         else:
             os.environ["HERMES_YOLO_MODE"] = "1"
-            self.console.print("  ⚡ YOlogout
-LO mode [bold green]ON[/] — all commands auto-approved. Use with caution.")
+            self.console.print("  ⚡ YOLO mode [bold green]ON[/] — all commands auto-approved. Use with caution.")
 
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.
@@ -5266,8 +5263,7 @@ LO mode [bold green]ON[/] — all commands auto-approved. Use with caution.")
         """
         if getattr(self, "_stream_box_opened", False):
             self._flush_stream()
-            self._stream_blogout
-ox_opened = False
+            self._stream_box_opened = False
         self._close_reasoning_box()
 
         from agent.display import get_tool_emoji
@@ -5664,8 +5660,7 @@ ox_opened = False
         if recorder is not None:
             def _bg_shutdown(rec=recorder):
                 try:
-                    rec.shutdlogout
-own()
+                    rec.shutdown()
                 except Exception:
                     pass
             threading.Thread(target=_bg_shutdown, daemon=True).start()
@@ -5707,8 +5702,7 @@ own()
 
 
         _cprint(f"\n{_BOLD}Voice Mode Status{_RST}")
-        _cprint(f"  Mode:      {'ON' if self.logout
-_voice_mode else 'OFF'}")
+        _cprint(f"  Mode:      {'ON' if self._voice_mode else 'OFF'}")
         _cprint(f"  TTS:       {'ON' if self._voice_tts else 'OFF'}")
         _cprint(f"  Recording: {'YES' if self._voice_recording else 'no'}")
         _raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
