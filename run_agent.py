@@ -1787,7 +1787,6 @@ class AIAgent:
         )
         should_compress = bool(
             self.compression_enabled
-            and is_local_custom
             and context_pressure_signals
             and not stripped_content
         )
