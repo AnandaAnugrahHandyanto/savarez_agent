@@ -222,9 +222,9 @@ def _build_child_agent(
     if child_runtime_signature == parent_runtime_signature:
         child_request_options = parent_request_options
     else:
-        from hermes_cli.runtime_provider import resolve_runtime_request_options
+        from hermes_cli.runtime_provider import build_runtime_bundle
 
-        child_request_options = resolve_runtime_request_options(
+        child_request_options = build_runtime_bundle(
             {
                 "provider": effective_provider,
                 "base_url": effective_base_url,
@@ -233,7 +233,7 @@ def _build_child_agent(
                 "command": effective_acp_command,
                 "args": effective_acp_args,
             }
-        )
+        )["request_options"]
 
     child = AIAgent(
         base_url=effective_base_url,

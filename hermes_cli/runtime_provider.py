@@ -27,7 +27,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
 
-_VALID_SERVICE_TIERS = frozenset({"auto", "default", "flex", "scale", "priority"})
+_VALID_SERVICE_TIERS = frozenset({"auto", "default", "flex", "priority"})
 _UNSUPPORTED_SERVICE_TIER_WARNINGS: set[tuple[str, str, str, str]] = set()
 
 
@@ -88,6 +88,14 @@ def _get_model_config() -> Dict[str, Any]:
     if isinstance(model_cfg, str) and model_cfg.strip():
         return {"default": model_cfg.strip()}
     return {}
+
+
+def _coerce_model_cfg(model_cfg: Optional[Any]) -> Optional[Dict[str, Any]]:
+    if isinstance(model_cfg, dict):
+        return dict(model_cfg)
+    if isinstance(model_cfg, str) and model_cfg.strip():
+        return {"default": model_cfg.strip()}
+    return None
 
 
 def _provider_supports_explicit_api_mode(provider: Optional[str], configured_provider: Optional[str] = None) -> bool:
@@ -192,6 +200,32 @@ def supports_openai_service_tier_runtime(runtime: Dict[str, Any]) -> bool:
     return bool(api_key) and api_key != "no-key-required"
 
 
+def normalize_openai_service_tier(
+    raw_value: Any,
+    *,
+    field_name: str,
+    allow_blank: bool = False,
+) -> Optional[str]:
+    """Validate and normalize an OpenAI ``service_tier`` value."""
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, str):
+        raise ValueError(f"{field_name} must be a string")
+
+    service_tier = raw_value.strip().lower()
+    if not service_tier:
+        if allow_blank:
+            return None
+        raise ValueError(f"{field_name} must be a non-empty string")
+
+    if service_tier not in _VALID_SERVICE_TIERS:
+        valid_values = ", ".join(sorted(_VALID_SERVICE_TIERS))
+        raise ValueError(
+            f"{field_name} must be one of {valid_values}; got {raw_value!r}"
+        )
+    return service_tier
+
+
 def resolve_runtime_request_options(
     runtime: Dict[str, Any],
     *,
@@ -204,28 +238,20 @@ def resolve_runtime_request_options(
     are normalized adjacent to it so CLI, gateway, cron, ACP, and helper
     surfaces can all reuse the same config-to-request-policy seam.
     """
-    model_cfg = model_cfg or _get_model_config()
+    model_cfg = _coerce_model_cfg(model_cfg) or _get_model_config()
     raw_request_options = model_cfg.get("request_options")
     if raw_request_options is None:
         return {}
     if not isinstance(raw_request_options, dict):
         raise ValueError("config model.request_options must be a mapping when set")
 
-    raw_service_tier = raw_request_options.get("service_tier")
-    if raw_service_tier is None:
+    service_tier = normalize_openai_service_tier(
+        raw_request_options.get("service_tier"),
+        field_name="config model.request_options.service_tier",
+        allow_blank=True,
+    )
+    if service_tier is None:
         return {}
-    if not isinstance(raw_service_tier, str):
-        raise ValueError("config model.request_options.service_tier must be a string")
-
-    service_tier = raw_service_tier.strip().lower()
-    if not service_tier:
-        return {}
-    if service_tier not in _VALID_SERVICE_TIERS:
-        valid_values = ", ".join(sorted(_VALID_SERVICE_TIERS))
-        raise ValueError(
-            "config model.request_options.service_tier must be one of "
-            f"{valid_values}; got {raw_service_tier!r}"
-        )
 
     if supports_openai_service_tier_runtime(runtime):
         return {"service_tier": service_tier}
@@ -244,6 +270,50 @@ def resolve_runtime_request_options(
             str(runtime.get("base_url") or "").strip(),
         )
     return {}
+
+
+def build_runtime_bundle(
+    runtime: Dict[str, Any],
+    *,
+    model_cfg: Optional[Any] = None,
+    warning_cache: Optional[set[tuple[str, str, str, str]]] = None,
+) -> Dict[str, Any]:
+    """Attach normalized request options to an already-resolved runtime."""
+    normalized_runtime = dict(runtime or {})
+    kwargs: Dict[str, Any] = {}
+    if model_cfg is not None:
+        kwargs["model_cfg"] = model_cfg
+    if warning_cache is not None:
+        kwargs["warning_cache"] = warning_cache
+    return {
+        "runtime": normalized_runtime,
+        "request_options": resolve_runtime_request_options(normalized_runtime, **kwargs),
+    }
+
+
+def resolve_runtime_bundle(
+    *,
+    requested: Optional[str] = None,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+    model_cfg: Optional[Any] = None,
+    warning_cache: Optional[set[tuple[str, str, str, str]]] = None,
+) -> Dict[str, Any]:
+    """Resolve runtime transport plus normalized request options together."""
+    runtime_kwargs: Dict[str, Any] = {}
+    if requested is not None:
+        runtime_kwargs["requested"] = requested
+    if explicit_api_key is not None:
+        runtime_kwargs["explicit_api_key"] = explicit_api_key
+    if explicit_base_url is not None:
+        runtime_kwargs["explicit_base_url"] = explicit_base_url
+
+    runtime = resolve_runtime_provider(**runtime_kwargs)
+    return build_runtime_bundle(
+        runtime,
+        model_cfg=model_cfg,
+        warning_cache=warning_cache,
+    )
 
 
 def _resolve_runtime_from_pool_entry(

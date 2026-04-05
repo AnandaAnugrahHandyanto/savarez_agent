@@ -423,8 +423,8 @@ class SessionManager:
         from run_agent import AIAgent
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import (
+            build_runtime_bundle,
             resolve_runtime_provider,
-            resolve_runtime_request_options,
         )
 
         config = load_config()
@@ -455,10 +455,11 @@ class SessionManager:
                 "command": runtime.get("command"),
                 "args": list(runtime.get("args") or []),
             }
+            runtime_bundle = build_runtime_bundle(effective_runtime)
             kwargs.update(
                 {
-                    **effective_runtime,
-                    "request_options": resolve_runtime_request_options(effective_runtime),
+                    **runtime_bundle["runtime"],
+                    "request_options": runtime_bundle["request_options"],
                 }
             )
         except Exception:

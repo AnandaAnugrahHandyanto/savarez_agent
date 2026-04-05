@@ -3128,9 +3128,13 @@ class AIAgent:
 
         service_tier = api_kwargs.get("service_tier")
         if service_tier is not None:
-            if not isinstance(service_tier, str) or not service_tier.strip():
-                raise ValueError("Codex Responses request 'service_tier' must be a non-empty string when provided.")
-            normalized["service_tier"] = service_tier.strip().lower()
+            from hermes_cli.runtime_provider import normalize_openai_service_tier
+
+            normalized["service_tier"] = normalize_openai_service_tier(
+                service_tier,
+                field_name="Codex Responses request 'service_tier'",
+                allow_blank=False,
+            )
 
         if allow_stream:
             stream = api_kwargs.get("stream")

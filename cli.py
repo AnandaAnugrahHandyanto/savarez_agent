@@ -2137,7 +2137,7 @@ class HermesCLI:
 
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Resolve model/runtime overrides for a single user turn."""
-        from hermes_cli.runtime_provider import resolve_runtime_request_options
+        from hermes_cli.runtime_provider import build_runtime_bundle
         from agent.smart_model_routing import resolve_turn_route
 
         primary = {
@@ -2150,7 +2150,7 @@ class HermesCLI:
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
         }
-        primary_request_options = resolve_runtime_request_options(primary)
+        primary_request_options = build_runtime_bundle(primary)["request_options"]
 
         return resolve_turn_route(
             user_message,
@@ -2227,6 +2227,8 @@ class HermesCLI:
                 pass
         
         try:
+            from hermes_cli.runtime_provider import build_runtime_bundle
+
             runtime = runtime_override or {
                 "api_key": self.api_key,
                 "base_url": self.base_url,
@@ -2236,6 +2238,8 @@ class HermesCLI:
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
+            if request_options_override is None:
+                request_options_override = build_runtime_bundle(runtime)["request_options"]
             effective_model = model_override or self.model
             self.agent = AIAgent(
                 model=effective_model,

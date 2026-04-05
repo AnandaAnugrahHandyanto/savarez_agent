@@ -120,7 +120,10 @@ def apply_openai_service_tier(
     """Inject OpenAI ``service_tier`` only for canonical supported routes."""
     if not isinstance(request_options, dict):
         return request_kwargs
-    from hermes_cli.runtime_provider import supports_openai_service_tier_runtime
+    from hermes_cli.runtime_provider import (
+        normalize_openai_service_tier,
+        supports_openai_service_tier_runtime,
+    )
 
     if not supports_openai_service_tier_runtime(
         {
@@ -132,10 +135,11 @@ def apply_openai_service_tier(
     ):
         return request_kwargs
 
-    raw_service_tier = request_options.get("service_tier")
-    if not isinstance(raw_service_tier, str):
-        return request_kwargs
-    service_tier = raw_service_tier.strip().lower()
+    service_tier = normalize_openai_service_tier(
+        request_options.get("service_tier"),
+        field_name="request_options.service_tier",
+        allow_blank=True,
+    )
     if not service_tier:
         return request_kwargs
 
@@ -1769,6 +1773,17 @@ def _build_call_kwargs(
     )
 
 
+def _effective_auxiliary_api_mode(provider: str, base_url: Optional[str]) -> str:
+    """Derive the effective API mode for auxiliary request-option normalization."""
+    normalized_provider = str(provider or "").strip().lower()
+    normalized_base = str(base_url or "").strip().lower().rstrip("/")
+    if normalized_provider == "openai-codex":
+        return "codex_responses"
+    if normalized_provider == "anthropic" or normalized_base.endswith("/anthropic"):
+        return "anthropic_messages"
+    return "chat_completions"
+
+
 def call_llm(
     task: str = None,
     *,
@@ -1858,25 +1873,29 @@ def call_llm(
                             task or "call", resolved_provider)
                 client, final_model = _get_cached_client(
                     "openrouter", resolved_model or _OPENROUTER_MODEL)
+                if client is not None:
+                    resolved_provider = "openrouter"
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
     effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
-    from hermes_cli.runtime_provider import resolve_runtime_request_options
+    from hermes_cli.runtime_provider import build_runtime_bundle
 
-    request_options = resolve_runtime_request_options(
+    effective_base_url = getattr(client, "base_url", resolved_base_url)
+    effective_api_key = getattr(client, "api_key", resolved_api_key)
+    request_options = build_runtime_bundle(
         {
             "provider": resolved_provider,
-            "base_url": getattr(client, "base_url", resolved_base_url),
-            "api_key": getattr(client, "api_key", resolved_api_key),
-            "api_mode": "chat_completions",
+            "base_url": effective_base_url,
+            "api_key": effective_api_key,
+            "api_mode": _effective_auxiliary_api_mode(resolved_provider, effective_base_url),
         }
-    )
+    )["request_options"]
 
     # Log what we're about to do — makes auxiliary operations visible
-    _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
+    _base_info = str(effective_base_url or "")
     if task:
         logger.info("Auxiliary %s: using %s (%s)%s",
                      task, resolved_provider or "auto", final_model or "default",
@@ -1886,8 +1905,8 @@ def call_llm(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
-        base_url=getattr(client, "base_url", resolved_base_url),
-        api_key=getattr(client, "api_key", resolved_api_key),
+        base_url=effective_base_url,
+        api_key=effective_api_key,
         request_options=request_options)
 
     # Handle max_tokens vs max_completion_tokens retry
@@ -2025,29 +2044,33 @@ async def async_call_llm(
                 client, final_model = _get_cached_client(
                     "openrouter", resolved_model or _OPENROUTER_MODEL,
                     async_mode=True)
+                if client is not None:
+                    resolved_provider = "openrouter"
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
     effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
-    from hermes_cli.runtime_provider import resolve_runtime_request_options
+    from hermes_cli.runtime_provider import build_runtime_bundle
 
-    request_options = resolve_runtime_request_options(
+    effective_base_url = getattr(client, "base_url", resolved_base_url)
+    effective_api_key = getattr(client, "api_key", resolved_api_key)
+    request_options = build_runtime_bundle(
         {
             "provider": resolved_provider,
-            "base_url": getattr(client, "base_url", resolved_base_url),
-            "api_key": getattr(client, "api_key", resolved_api_key),
-            "api_mode": "chat_completions",
+            "base_url": effective_base_url,
+            "api_key": effective_api_key,
+            "api_mode": _effective_auxiliary_api_mode(resolved_provider, effective_base_url),
         }
-    )
+    )["request_options"]
 
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
-        base_url=getattr(client, "base_url", resolved_base_url),
-        api_key=getattr(client, "api_key", resolved_api_key),
+        base_url=effective_base_url,
+        api_key=effective_api_key,
         request_options=request_options)
 
     try:

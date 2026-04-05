@@ -646,6 +646,15 @@ def test_preflight_codex_api_kwargs_allows_service_tier(monkeypatch):
     assert result["service_tier"] == "priority"
 
 
+def test_preflight_codex_api_kwargs_rejects_invalid_service_tier(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    kwargs = _codex_request_kwargs()
+    kwargs["service_tier"] = "scale"
+
+    with pytest.raises(ValueError, match="must be one of"):
+        agent._preflight_codex_api_kwargs(kwargs)
+
+
 def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
     agent = _build_agent(monkeypatch)
     responses = [_codex_tool_call_response(), _codex_message_response("done")]

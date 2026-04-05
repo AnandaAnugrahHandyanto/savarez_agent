@@ -281,16 +281,17 @@ _AGENT_PENDING_SENTINEL = object()
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances."""
     from hermes_cli.runtime_provider import (
-        resolve_runtime_provider,
+        resolve_runtime_bundle,
         format_runtime_provider_error,
     )
 
     try:
-        runtime = resolve_runtime_provider(
+        runtime_bundle = resolve_runtime_bundle(
             requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
         )
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
+    runtime = runtime_bundle["runtime"]
 
     return {
         "api_key": runtime.get("api_key"),
@@ -305,7 +306,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
 
 def _resolve_runtime_request_options(runtime_kwargs: dict, config: dict | None = None) -> dict:
     """Resolve request-time options adjacent to gateway runtime resolution."""
-    from hermes_cli.runtime_provider import resolve_runtime_request_options
+    from hermes_cli.runtime_provider import build_runtime_bundle
 
     model_cfg = None
     if isinstance(config, dict):
@@ -315,7 +316,10 @@ def _resolve_runtime_request_options(runtime_kwargs: dict, config: dict | None =
         elif isinstance(candidate, str) and candidate.strip():
             model_cfg = {"default": candidate.strip()}
 
-    return resolve_runtime_request_options(dict(runtime_kwargs or {}), model_cfg=model_cfg)
+    return build_runtime_bundle(
+        dict(runtime_kwargs or {}),
+        model_cfg=model_cfg,
+    )["request_options"]
 
 
 def _build_media_placeholder(event) -> str:

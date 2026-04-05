@@ -47,9 +47,16 @@ def _run_boot_agent(content: str) -> None:
     """Spawn a one-shot agent session to execute the boot instructions."""
     try:
         from run_agent import AIAgent
+        from gateway.run import _load_gateway_config, _resolve_gateway_model, _resolve_runtime_agent_kwargs, _resolve_runtime_request_options
 
         prompt = _build_boot_prompt(content)
+        gateway_config = _load_gateway_config()
+        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        request_options = _resolve_runtime_request_options(runtime_kwargs, config=gateway_config)
         agent = AIAgent(
+            model=_resolve_gateway_model(gateway_config),
+            **runtime_kwargs,
+            request_options=request_options,
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,

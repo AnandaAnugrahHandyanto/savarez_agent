@@ -9,6 +9,8 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from agent.auxiliary_client import (
+    async_call_llm,
+    call_llm,
     get_text_auxiliary_client,
     get_vision_auxiliary_client,
     get_available_vision_backends,
@@ -1195,4 +1197,67 @@ class TestCodexCompletionsAdapterServiceTier:
         )
 
         assert response.choices[0].message.content == "ok"
+        assert captured["kwargs"]["service_tier"] == "priority"
+
+
+class TestAuxiliaryCallLlmServiceTier:
+    def test_call_llm_codex_route_includes_service_tier(self, monkeypatch):
+        captured = {}
+
+        def _fake_create(**kwargs):
+            captured["kwargs"] = kwargs
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+
+        fake_client = SimpleNamespace(
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="oauth-token",
+            chat=SimpleNamespace(completions=SimpleNamespace(create=_fake_create)),
+        )
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda *args, **kwargs: ("openai-codex", "gpt-5.2-codex", None, None),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client",
+            lambda *args, **kwargs: (fake_client, "gpt-5.2-codex"),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {"request_options": {"service_tier": "priority"}},
+        )
+
+        call_llm(messages=[{"role": "user", "content": "hi"}])
+
+        assert captured["kwargs"]["service_tier"] == "priority"
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_codex_route_includes_service_tier(self, monkeypatch):
+        captured = {}
+
+        async def _fake_create(**kwargs):
+            captured["kwargs"] = kwargs
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+
+        fake_client = SimpleNamespace(
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="oauth-token",
+            chat=SimpleNamespace(completions=SimpleNamespace(create=_fake_create)),
+        )
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda *args, **kwargs: ("openai-codex", "gpt-5.2-codex", None, None),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client",
+            lambda *args, **kwargs: (fake_client, "gpt-5.2-codex"),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {"request_options": {"service_tier": "priority"}},
+        )
+
+        await async_call_llm(messages=[{"role": "user", "content": "hi"}])
+
         assert captured["kwargs"]["service_tier"] == "priority"

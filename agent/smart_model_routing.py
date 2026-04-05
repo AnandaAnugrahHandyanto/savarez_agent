@@ -143,10 +143,7 @@ def resolve_turn_route(
             ),
         }
 
-    from hermes_cli.runtime_provider import (
-        resolve_runtime_provider,
-        resolve_runtime_request_options,
-    )
+    from hermes_cli.runtime_provider import build_runtime_bundle, resolve_runtime_provider
 
     explicit_api_key = None
     api_key_env = str(route.get("api_key_env") or "").strip()
@@ -183,24 +180,26 @@ def resolve_turn_route(
             ),
         }
 
+    runtime_bundle = build_runtime_bundle(runtime)
+    effective_runtime = runtime_bundle["runtime"]
     return {
         "model": route.get("model"),
         "runtime": {
-            "api_key": runtime.get("api_key"),
-            "base_url": runtime.get("base_url"),
-            "provider": runtime.get("provider"),
-            "api_mode": runtime.get("api_mode"),
-            "command": runtime.get("command"),
-            "args": list(runtime.get("args") or []),
+            "api_key": effective_runtime.get("api_key"),
+            "base_url": effective_runtime.get("base_url"),
+            "provider": effective_runtime.get("provider"),
+            "api_mode": effective_runtime.get("api_mode"),
+            "command": effective_runtime.get("command"),
+            "args": list(effective_runtime.get("args") or []),
         },
-        "request_options": resolve_runtime_request_options(runtime),
-        "label": f"smart route → {route.get('model')} ({runtime.get('provider')})",
+        "request_options": runtime_bundle["request_options"],
+        "label": f"smart route → {route.get('model')} ({effective_runtime.get('provider')})",
         "signature": (
             route.get("model"),
-            runtime.get("provider"),
-            runtime.get("base_url"),
-            runtime.get("api_mode"),
-            runtime.get("command"),
-            tuple(runtime.get("args") or ()),
+            effective_runtime.get("provider"),
+            effective_runtime.get("base_url"),
+            effective_runtime.get("api_mode"),
+            effective_runtime.get("command"),
+            tuple(effective_runtime.get("args") or ()),
         ),
     }

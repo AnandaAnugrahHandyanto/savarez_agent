@@ -48,9 +48,10 @@ SILENT_MARKER = "[SILENT]"
 # Resolve Hermes home directory (respects HERMES_HOME override)
 _hermes_home = get_hermes_home()
 
-# File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
-_LOCK_DIR = _hermes_home / "cron"
-_LOCK_FILE = _LOCK_DIR / ".tick.lock"
+def _tick_lock_paths() -> tuple[Path, Path]:
+    """Resolve the tick lock paths from the current Hermes home."""
+    lock_dir = _hermes_home / "cron"
+    return lock_dir, lock_dir / ".tick.lock"
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -484,9 +485,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         smart_routing = _cfg.get("smart_model_routing", {}) or {}
 
         from hermes_cli.runtime_provider import (
-            resolve_runtime_provider,
-            resolve_runtime_request_options,
             format_runtime_provider_error,
+            resolve_runtime_bundle,
         )
         try:
             runtime_kwargs = {
@@ -494,12 +494,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             }
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
-            runtime = resolve_runtime_provider(**runtime_kwargs)
+            runtime_bundle = resolve_runtime_bundle(**runtime_kwargs)
         except Exception as exc:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
 
-        primary_request_options = resolve_runtime_request_options(runtime)
+        runtime = runtime_bundle["runtime"]
+        primary_request_options = runtime_bundle["request_options"]
 
         from agent.smart_model_routing import resolve_turn_route
         turn_route = resolve_turn_route(
@@ -647,12 +648,13 @@ def tick(verbose: bool = True) -> int:
     Returns:
         Number of jobs executed (0 if another tick is already running)
     """
-    _LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    lock_dir, lock_file = _tick_lock_paths()
+    lock_dir.mkdir(parents=True, exist_ok=True)
 
     # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
     lock_fd = None
     try:
-        lock_fd = open(_LOCK_FILE, "w")
+        lock_fd = open(lock_file, "w")
         if fcntl:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         elif msvcrt:
