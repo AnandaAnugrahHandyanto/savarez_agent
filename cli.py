@@ -836,7 +836,20 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     Using Rich Text.from_ansi preserves literal bracketed text like
     ``[not markup]`` while still interpreting real ANSI color codes.
     """
-    return _RichText.from_ansi(text or "")
+    return _RichText.from_ansi(_normalize_ansi_c1(text or ""))
+
+
+def _normalize_ansi_c1(text: str) -> str:
+    """Normalize 8-bit C1 CSI controls to ESC-prefixed ANSI sequences.
+
+    Some tools emit CSI as the single-byte C1 control ``\x9b`` instead of the
+    more common ``\x1b[`` form. prompt_toolkit / Rich do not reliably treat that
+    form as ANSI in every environment, which can leak visible ``?[...m`` text
+    into the CLI. Converting it up front keeps the rendering path stable.
+    """
+    if "\x9b" not in text:
+        return text
+    return text.replace("\x9b", "\x1b[")
 
 
 def _cprint(text: str):
@@ -846,7 +859,16 @@ def _cprint(text: str):
     StdoutProxy.  Routing through print_formatted_text(ANSI(...)) lets
     prompt_toolkit parse the escapes and render real colors.
     """
-    _pt_print(_PT_ANSI(text))
+    _pt_print(_PT_ANSI(_normalize_ansi_c1(text)))
+
+
+def _dim_lines(text: str) -> list[str]:
+    """Return lines wrapped in DIM/RESET individually.
+
+    Per-line wrapping keeps reasoning blocks consistently dim even when a
+    line contains its own reset sequence.
+    """
+    return [f"{_DIM}{line}{_RST}" for line in text.splitlines()]
 
 
 # ---------------------------------------------------------------------------
@@ -1820,9 +1842,9 @@ class HermesCLI:
         # reasoning is visible in real-time even without newlines.
         while "\n" in self._reasoning_buf:
             line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
-            _cprint(f"{_DIM}{line}{_RST}")
+            _cprint(_dim_lines(line)[0])
         if len(self._reasoning_buf) > 80:
-            _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
+            _cprint(_dim_lines(self._reasoning_buf)[0])
             self._reasoning_buf = ""
 
     def _close_reasoning_box(self) -> None:
@@ -1831,7 +1853,7 @@ class HermesCLI:
             # Flush remaining reasoning buffer
             buf = getattr(self, "_reasoning_buf", "")
             if buf:
-                _cprint(f"{_DIM}{buf}{_RST}")
+                _cprint(_dim_lines(buf)[0])
                 self._reasoning_buf = ""
             w = shutil.get_terminal_size().columns
             _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
@@ -2096,7 +2118,7 @@ class HermesCLI:
             )
         except Exception as exc:
             message = format_runtime_provider_error(exc)
-            self.console.print(f"[bold red]{message}[/]")
+            self._print_cli_markup(f"[bold red]{message}[/]")
             return False
 
         api_key = runtime.get("api_key")
@@ -2156,6 +2178,13 @@ class HermesCLI:
             self._active_agent_route_signature = None
 
         return True
+
+    def _print_cli_markup(self, markup: str) -> None:
+        """Render Rich markup safely inside the interactive prompt_toolkit UI."""
+        if self._app:
+            ChatConsole().print(markup)
+            return
+        self.console.print(markup)
 
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Resolve model/runtime overrides for a single user turn."""
@@ -6287,10 +6316,11 @@ class HermesCLI:
                     lines = reasoning.strip().splitlines()
                     if len(lines) > 10:
                         display_reasoning = "\n".join(lines[:10])
-                        display_reasoning += f"\n{_DIM}  ... ({len(lines) - 10} more lines){_RST}"
+                        display_reasoning += f"\n  ... ({len(lines) - 10} more lines)"
                     else:
                         display_reasoning = reasoning.strip()
-                    _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
+                    rendered_reasoning = "\n".join(_dim_lines(display_reasoning))
+                    _cprint(f"\n{r_top}\n{rendered_reasoning}\n{r_bot}")
 
             if response and not response_previewed:
                 # Use skin engine for label/color with fallback
