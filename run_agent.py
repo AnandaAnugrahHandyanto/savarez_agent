@@ -5239,9 +5239,17 @@ class AIAgent:
                 except Exception:
                     pass
 
+        # Sanitize surrogates from API response content before storing.
+        # Ollama-hosted models (Kimi K2.5, GLM-5, Qwen) can return lone
+        # surrogates that crash json.dumps() when persisting or logging.
+        raw_content = assistant_message.content or ""
+        sanitized_content = _sanitize_surrogates(raw_content)
+        if reasoning_text:
+            reasoning_text = _sanitize_surrogates(reasoning_text)
+
         msg = {
             "role": "assistant",
-            "content": assistant_message.content or "",
+            "content": sanitized_content,
             "reasoning": reasoning_text,
             "finish_reason": finish_reason,
         }
@@ -6840,6 +6848,12 @@ class AIAgent:
             # manual message manipulation are always caught.
             api_messages = self._sanitize_api_messages(api_messages)
 
+            # Proactive surrogate sanitization: clean lone surrogates from tool
+            # results, session history, or prior model output before the API call.
+            # Prevents UnicodeEncodeError during json.dumps() serialization when
+            # Ollama-hosted models return invalid surrogate code points.
+            _sanitize_messages_surrogates(api_messages)
+
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)
             approx_tokens = total_chars // 4  # Rough estimate: 4 chars per token
@@ -7351,7 +7365,12 @@ class AIAgent:
                     # -----------------------------------------------------------
                     if isinstance(api_error, UnicodeEncodeError) and not getattr(self, '_surrogate_sanitized', False):
                         self._surrogate_sanitized = True
-                        if _sanitize_messages_surrogates(messages):
+                        # Sanitize api_messages (the list sent to the API), not
+                        # the internal messages list.  Also sanitize messages so
+                        # surrogates don't persist in session history.
+                        found = _sanitize_messages_surrogates(api_messages)
+                        found = _sanitize_messages_surrogates(messages) or found
+                        if found:
                             self._vprint(
                                 f"{self.log_prefix}⚠️  Stripped invalid surrogate characters from messages. Retrying...",
                                 force=True,
