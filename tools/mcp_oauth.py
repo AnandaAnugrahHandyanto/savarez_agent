@@ -159,10 +159,6 @@ def _make_callback_handler():
     return Handler, result
 
 
-# Port chosen at build time and shared with the callback handler via closure.
-_oauth_port: int | None = None
-
-
 async def _redirect_to_browser(auth_url: str) -> None:
     """Open the authorization URL in the user's browser."""
     try:
@@ -175,40 +171,40 @@ async def _redirect_to_browser(auth_url: str) -> None:
         print(f"\n  Open this URL to authorize:\n  {auth_url}\n")
 
 
-async def _wait_for_callback() -> tuple[str, str | None]:
-    """Start a local HTTP server on the pre-registered port and wait for the OAuth redirect.
+def _make_wait_for_callback(port: int):
+    """Create a callback handler bound to a specific port via closure.
 
-    If the callback times out, raises ``OAuthNonInteractiveError`` instead of
-    calling blocking ``input()`` — the old ``input()`` call would block the
-    entire MCP asyncio event loop, preventing all other MCP servers from
-    connecting and potentially hanging Hermes startup indefinitely.
+    Each MCP server gets its own port so concurrent OAuth flows don't collide.
     """
-    global _oauth_port
-    port = _oauth_port or _find_free_port()
-    HandlerClass, result = _make_callback_handler()
-    server = HTTPServer(("127.0.0.1", port), HandlerClass)
 
-    def _serve():
-        server.timeout = 120
-        server.handle_request()
+    async def _wait_for_callback() -> tuple[str, str | None]:
+        """Start a local HTTP server on the designated port and wait for the OAuth redirect."""
+        HandlerClass, result = _make_callback_handler()
+        server = HTTPServer(("127.0.0.1", port), HandlerClass)
 
-    thread = threading.Thread(target=_serve, daemon=True)
-    thread.start()
+        def _serve():
+            server.timeout = 120
+            server.handle_request()
 
-    for _ in range(1200):  # 120 seconds
-        await asyncio.sleep(0.1)
-        if result["auth_code"] is not None:
-            break
+        thread = threading.Thread(target=_serve, daemon=True)
+        thread.start()
 
-    server.server_close()
-    code = result["auth_code"] or ""
-    state = result["state"]
-    if not code:
-        raise OAuthNonInteractiveError(
-            "OAuth browser callback timed out after 120 seconds. "
-            "Run 'hermes mcp auth <server-name>' to authorize interactively."
-        )
-    return code, state
+        for _ in range(1200):  # 120 seconds
+            await asyncio.sleep(0.1)
+            if result["auth_code"] is not None:
+                break
+
+        server.server_close()
+        code = result["auth_code"] or ""
+        state = result["state"]
+        if not code:
+            raise OAuthNonInteractiveError(
+                "OAuth browser callback timed out after 120 seconds. "
+                "Run 'hermes mcp auth <server-name>' to authorize interactively."
+            )
+        return code, state
+
+    return _wait_for_callback
 
 
 def _can_open_browser() -> bool:
@@ -274,9 +270,21 @@ def build_oauth_auth(server_name: str, server_url: str):
                 server_name, server_name,
             )
 
-    global _oauth_port
-    _oauth_port = _find_free_port()
-    redirect_uri = f"http://127.0.0.1:{_oauth_port}/callback"
+    # Reuse the port from an existing client registration if available,
+    # so the redirect_uri matches what the OAuth provider has on file.
+    # Only pick a new port if there's no prior registration.
+    port = None
+    existing_client = storage._read_json(storage._client_path())
+    if existing_client:
+        uris = existing_client.get("redirect_uris", [])
+        if uris:
+            try:
+                port = int(urlparse(uris[0]).port)
+            except (TypeError, ValueError):
+                pass
+    if port is None:
+        port = _find_free_port()
+    redirect_uri = f"http://127.0.0.1:{port}/callback"
 
     client_metadata = OAuthClientMetadata(
         client_name="Hermes Agent",
@@ -290,7 +298,7 @@ def build_oauth_auth(server_name: str, server_url: str):
     # In non-interactive mode, the redirect handler logs the URL and the
     # callback handler raises immediately — no blocking, no input().
     redirect_handler = _redirect_to_browser
-    callback_handler = _wait_for_callback
+    callback_handler = _make_wait_for_callback(port)
 
     if not interactive:
         async def _noninteractive_redirect(auth_url: str) -> None:
