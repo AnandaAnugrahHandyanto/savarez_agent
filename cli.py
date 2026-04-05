@@ -7401,8 +7401,8 @@ class HermesCLI:
                         _stag = _uuid_mod.uuid4().hex
                         _steer_text = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
                         cli_ref._steering_queue.append({"id": _stag, "payload": payload, "text": _steer_text})
-                        if cli_ref.steering_dispatch == "one_by_one":
-                            cli_ref._pending_input.put({"_steering_tag": _stag, "payload": payload})
+                        # Never put directly into _pending_input — post-turn drain owns dispatch
+                        # so steering always takes priority over any queued follow-ups.
                         _sdepth = len(cli_ref._steering_queue)
                         _spreview = _steer_text[:60] + ("..." if len(_steer_text) > 60 else "")
                         _cprint(f"  {_DIM}🎯 Steering queued #{_sdepth}: \"{_spreview}\"{_RST}")
@@ -7446,9 +7446,12 @@ class HermesCLI:
             import uuid as _uuid_mod
             tag = _uuid_mod.uuid4().hex
             cli_ref._followup_queue.append({"id": tag, "payload": payload, "text": text})
-            if cli_ref.followup_dispatch == "one_by_one":
-                # Wrap with tag so process_loop can identify and cancel by ID, not text
+            if not cli_ref._agent_running:
+                # Agent idle — send immediately so there's no delay
                 cli_ref._pending_input.put({"_followup_tag": tag, "payload": payload})
+                cli_ref._followup_queue.pop()  # already dispatched, remove from list
+            # When agent is running: hold in list — post-turn drain dispatches follow-ups
+            # only after the steering queue is empty.
             event.app.current_buffer.reset(append_to_history=True)
 
             queue_depth = len(cli_ref._followup_queue)
@@ -8973,41 +8976,45 @@ class HermesCLI:
                             except Exception:
                                 pass
 
-                        # all_at_once dispatch: drain queues and combine into one message
-                        for _qname, _queue, _tag_key, _mode, _icon in [
-                            ("steering",  self._steering_queue,  "_steering_tag",  self.steering_dispatch,  "🎯"),
-                            ("followup",  self._followup_queue,  "_followup_tag",  self.followup_dispatch,  "📬"),
-                        ]:
-                            if _mode == "all_at_once" and _queue:
-                                # Filter out cancelled items, then drain the whole queue
-                                _items = [
-                                    it for it in _queue
-                                    if it["id"] not in (
-                                        self._cancelled_steerings if _qname == "steering"
-                                        else self._cancelled_followups
-                                    )
-                                ]
+                        # Post-turn queue dispatch.
+                        # Steering always takes priority — follow-up only runs when steering is empty.
+                        def _dispatch_queue(_queue, _cancelled, _mode, _icon, _tag_key):
+                            """Drain one turn's worth from a queue. Returns True if anything dispatched."""
+                            _active = [it for it in _queue if it["id"] not in _cancelled]
+                            if not _active:
                                 _queue.clear()
-                                if _qname == "steering":
-                                    self._cancelled_steerings.clear()
-                                else:
-                                    self._cancelled_followups.clear()
-                                if _items:
-                                    # Join text with separator; images from last item only
-                                    _texts = [it["text"] for it in _items]
-                                    _combined_text = "\n---\n".join(_texts)
-                                    # Carry images from all items
-                                    _all_images = []
-                                    for it in _items:
-                                        p = it["payload"]
-                                        if isinstance(p, tuple):
-                                            _all_images.extend(p[1])
-                                    _combined = (_combined_text, _all_images) if _all_images else _combined_text
-                                    _cprint(
-                                        f"  {_DIM}{_icon} Dispatching {len(_items)} queued message"
-                                        f"{'s' if len(_items) != 1 else ''} as one turn{_RST}"
-                                    )
-                                    self._pending_input.put(_combined)
+                                _cancelled.clear()
+                                return False
+                            if _mode == "all_at_once":
+                                _queue.clear()
+                                _cancelled.clear()
+                                _texts = [it["text"] for it in _active]
+                                _imgs = [img for it in _active
+                                         if isinstance(it["payload"], tuple)
+                                         for img in it["payload"][1]]
+                                _combined = ("\n---\n".join(_texts), _imgs) if _imgs else "\n---\n".join(_texts)
+                                _cprint(f"  {_DIM}{_icon} Dispatching {len(_active)} queued"
+                                        f" message{'s' if len(_active) != 1 else ''} as one turn{_RST}")
+                                self._pending_input.put(_combined)
+                            else:
+                                # one_by_one: pop first, leave the rest for subsequent turns
+                                first = _active[0]
+                                _queue.clear()
+                                _cancelled.discard(first["id"])
+                                for remaining in _active[1:]:
+                                    _queue.append(remaining)
+                                self._pending_input.put({_tag_key: first["id"], "payload": first["payload"]})
+                                if len(_active) > 1:
+                                    _cprint(f"  {_DIM}{_icon} Dispatched 1, {len(_active)-1} still queued{_RST}")
+                            return True
+
+                        _steered = _dispatch_queue(
+                            self._steering_queue, self._cancelled_steerings,
+                            self.steering_dispatch, "🎯", "_steering_tag")
+                        if not _steered:
+                            _dispatch_queue(
+                                self._followup_queue, self._cancelled_followups,
+                                self.followup_dispatch, "📬", "_followup_tag")
 
                         app.invalidate()  # Refresh status line
 
