@@ -71,6 +71,7 @@ from model_tools import (
 from tools.terminal_tool import cleanup_vm
 from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool import cleanup_browser
+from tools.memory_tool import consume_next_session_handoff
 
 
 from hermes_constants import OPENROUTER_BASE_URL
@@ -2775,6 +2776,15 @@ class AIAgent:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
                     prompt_parts.append(user_block)
+
+        handoff = consume_next_session_handoff()
+        if handoff:
+            prompt_parts.append(
+                "## Next Session Handoff\n"
+                "This is a one-shot carryover note from the immediately previous session. "
+                "Use it only if it is still relevant to the user's current message.\n"
+                f"- {handoff['message']}"
+            )
 
         # External memory provider system prompt block (additive to built-in)
         if self._memory_manager:

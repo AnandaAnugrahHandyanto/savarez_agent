@@ -1856,6 +1856,22 @@ class TestFlushSentinelNotLeaked:
             )
 
 
+class TestNextSessionHandoff:
+    def test_build_system_prompt_consumes_one_shot_handoff(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            "run_agent.consume_next_session_handoff",
+            lambda: {
+                "message": "Start with a short Turkish recap.",
+                "use_once": True,
+            },
+        )
+
+        prompt = agent._build_system_prompt()
+
+        assert "## Next Session Handoff" in prompt
+        assert "Start with a short Turkish recap." in prompt
+
+
 # ---------------------------------------------------------------------------
 # Conversation history mutation
 # ---------------------------------------------------------------------------
