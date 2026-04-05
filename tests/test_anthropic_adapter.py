@@ -424,6 +424,32 @@ class TestResolveWithRefresh:
 
         assert result == "refreshed-token"
 
+    def test_falls_back_to_api_key_when_both_refreshable_stores_are_expired_and_refresh_fails(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-fallback-key")
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+        expired_hermes_creds = {
+            "accessToken": "expired-hermes-token",
+            "refreshToken": "hermes-refresh-token",
+            "expiresAt": int(time.time() * 1000) - 3600_000,
+        }
+        expired_claude_creds = {
+            "accessToken": "expired-claude-token",
+            "refreshToken": "claude-refresh-token",
+            "expiresAt": int(time.time() * 1000) - 3600_000,
+        }
+
+        with patch("agent.anthropic_adapter.read_hermes_oauth_credentials", return_value=expired_hermes_creds), \
+             patch("agent.anthropic_adapter.read_claude_code_credentials", return_value=expired_claude_creds), \
+             patch("agent.anthropic_adapter.refresh_hermes_oauth_token", return_value=None) as hermes_refresh, \
+             patch("agent.anthropic_adapter._refresh_oauth_token", return_value=None) as claude_refresh:
+            result = resolve_anthropic_token()
+
+        assert result == "sk-ant-api03-fallback-key"
+        hermes_refresh.assert_called_once()
+        claude_refresh.assert_called_once()
+
 
 class TestRunOauthSetupToken:
     def test_raises_when_claude_not_installed(self, monkeypatch):
