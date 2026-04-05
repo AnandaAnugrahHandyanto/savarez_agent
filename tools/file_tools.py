@@ -8,7 +8,6 @@ import os
 import threading
 from pathlib import Path
 from tools.file_operations import ShellFileOperations
-from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
@@ -371,10 +370,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 "file_size": file_size,
             }, ensure_ascii=False)
 
-        # ── Redact secrets (after guard check to skip oversized content) ──
-        if result.content:
-            result.content = redact_sensitive_text(result.content)
-            result_dict["content"] = result.content
+        # NOTE: We intentionally do NOT redact file content here.
+        # Redaction is for display/logging only (see agent/redact.py).
+        # Applying redaction to read_file content causes file corruption:
+        # the model sees redacted values (e.g. `api_key=***`) and writes
+        # them back to disk via write_file/patch, destroying the original
+        # content.  See https://github.com/NousResearch/hermes-agent/issues/5322
 
         # Large-file hint: if the file is big and the caller didn't ask
         # for a narrow window, nudge toward targeted reads.
@@ -682,10 +683,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             pattern=pattern, path=path, target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
-        if hasattr(result, 'matches'):
-            for m in result.matches:
-                if hasattr(m, 'content') and m.content:
-                    m.content = redact_sensitive_text(m.content)
+        # NOTE: We intentionally do NOT redact search results here.
+        # See read_file_tool comment and issue #5322 — redacted content
+        # fed back into write operations corrupts files on disk.
         result_dict = result.to_dict()
 
         if count >= 3:
