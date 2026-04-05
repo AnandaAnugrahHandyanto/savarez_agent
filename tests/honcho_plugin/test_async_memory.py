@@ -263,6 +263,54 @@ class TestSaveRouting:
             mgr._cache[sess.key] = sess
         return sess
 
+    def _wait_for_thread(self, thread, timeout=2.0):
+        import time
+
+        deadline = time.time() + timeout
+        while thread.is_alive() and time.time() < deadline:
+            thread.join(timeout=0.05)
+        assert not thread.is_alive(), "background sync thread did not finish in time"
+
+    def test_sync_turn_prefers_session_id(self):
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        provider = HonchoMemoryProvider()
+        manager = MagicMock()
+        session = MagicMock()
+        manager.get_or_create.return_value = session
+        provider._manager = manager
+        provider._session_key = "cli:cached"
+        provider._cron_skipped = False
+        provider._sync_thread = None
+
+        provider.sync_turn("hello user", "hello assistant", session_id="cli:live")
+        self._wait_for_thread(provider._sync_thread)
+
+        manager.get_or_create.assert_called_once_with("cli:live")
+        session.add_message.assert_any_call("user", "hello user")
+        session.add_message.assert_any_call("assistant", "hello assistant")
+        manager._flush_session.assert_called_once_with(session)
+
+    def test_sync_turn_falls_back_to_cached_session_key(self):
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        provider = HonchoMemoryProvider()
+        manager = MagicMock()
+        session = MagicMock()
+        manager.get_or_create.return_value = session
+        provider._manager = manager
+        provider._session_key = "cli:cached"
+        provider._cron_skipped = False
+        provider._sync_thread = None
+
+        provider.sync_turn("hello user", "hello assistant")
+        self._wait_for_thread(provider._sync_thread)
+
+        manager.get_or_create.assert_called_once_with("cli:cached")
+        session.add_message.assert_any_call("user", "hello user")
+        session.add_message.assert_any_call("assistant", "hello assistant")
+        manager._flush_session.assert_called_once_with(session)
+
     def test_turn_flushes_immediately(self):
         mgr = _make_manager(write_frequency="turn")
         sess = self._make_session_with_message(mgr)
