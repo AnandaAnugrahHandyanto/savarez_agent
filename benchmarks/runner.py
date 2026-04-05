@@ -61,12 +61,12 @@ try:
 except ImportError:
     pass  # structured_memory not available
 
-# Register unified memory backend
+# Register mnemoria backend
 try:
-    from unified_memory.benchmark_adapter import UnifiedBenchmarkAdapter, BACKEND_CAPABILITIES as UNIFIED_CAPS
-    register_backend("unified", UnifiedBenchmarkAdapter, UNIFIED_CAPS)
+    from mnemoria.benchmark_adapter import MnemoriaBenchmarkAdapter, BACKEND_CAPABILITIES as MNEMORIA_CAPS
+    register_backend("mnemoria", MnemoriaBenchmarkAdapter, MNEMORIA_CAPS)
 except ImportError:
-    pass  # unified_memory not available
+    pass  # mnemoria not available
 
 # Auto-discover plugin backends from benchmarks/backends/
 try:
@@ -1751,6 +1751,305 @@ def run_capacity_stress(backend: BenchmarkableStore, scenarios: list,
     )
 
 
+# --- Suite M: Format Sensitivity (Omni-SimpleMem) ---
+
+def run_format_sensitivity(backend: BenchmarkableStore, scenarios: list,
+                           judge: MemoryJudge) -> CategoryResult:
+    """Run format sensitivity scenarios (Suite M).
+
+    Based on Omni-SimpleMem paper findings that LLM memory systems are sensitive
+    to output format constraints embedded in stored facts and queries.
+
+    Three sub-categories:
+      clean_structured  — facts stored as JSON/YAML/structured strings; tests
+                          whether the backend preserves and retrieves structured
+                          content without mangling it.
+      refusal           — no stored fact answers the query; correct behaviour is
+                          returning an empty result set (gold_answer == 'NONE').
+      constraint_start  — format directive prepended to the key fact; tests
+                          whether retrieval survives a noisy preamble.
+      constraint_end    — format directive appended after the key fact; tests
+                          whether retrieval survives a noisy suffix.
+    """
+    correct = 0
+    details = []
+    total_recall_tokens = 0
+    total_recall_chars = 0
+
+    for sc in scenarios:
+        backend.reset()
+
+        for fact in sc["facts"]:
+            backend.store(fact, category="factual")
+
+        fmt_type = sc.get("format_type", "clean_structured")
+        results = backend.recall(sc["query"], top_k=5)
+        actual = results[0] if results else ""
+        rt, rc = count_recall_tokens(results)
+        total_recall_tokens += rt
+        total_recall_chars += rc
+
+        if fmt_type == "refusal":
+            # Correct if the backend returns nothing relevant (empty result set
+            # or the top result genuinely does not contain the queried info).
+            if not results:
+                scenario_correct = True
+            elif actual == "" or actual.strip().upper() in ("NONE", "N/A", "UNKNOWN"):
+                scenario_correct = True
+            else:
+                # If backend returned something, judge whether it actually answers
+                # the query (it shouldn't). Correct = judge says NOT answered.
+                jr = judge.judge_answer(sc["query"], sc["gold_answer"], actual)
+                scenario_correct = not jr.correct
+        else:
+            jr = judge.judge_answer(sc["query"], sc["gold_answer"], actual)
+            scenario_correct = jr.correct
+
+        if scenario_correct:
+            correct += 1
+
+        details.append({
+            "id": sc["id"],
+            "format_type": fmt_type,
+            "difficulty": sc["difficulty"],
+            "correct": scenario_correct,
+            "actual": actual,
+            "gold": sc["gold_answer"],
+        })
+        scenario_metrics = compute_scenario_metrics(results, sc["gold_answer"])
+        details[-1]["metrics"] = scenario_metrics
+
+    # Sub-scores by format type and by difficulty
+    sub_scores = {}
+    for ftype in ["clean_structured", "refusal", "constraint_start", "constraint_end"]:
+        fsubset = [d for d in details if d["format_type"] == ftype]
+        if fsubset:
+            sub_scores[ftype] = sum(1 for d in fsubset if d["correct"]) / len(fsubset)
+    for diff in ["easy", "medium", "hard"]:
+        dsubset = [d for d in details if d["difficulty"] == diff]
+        if dsubset:
+            sub_scores[diff] = sum(1 for d in dsubset if d["correct"]) / len(dsubset)
+
+    all_metrics = [d.get("metrics", {}) for d in details if "metrics" in d]
+    avg_retrieval_metrics = {}
+    if all_metrics:
+        for key in all_metrics[0]:
+            values = [m[key] for m in all_metrics if key in m]
+            avg_retrieval_metrics[key] = sum(values) / len(values) if values else 0.0
+
+    return CategoryResult(
+        category="format_sensitivity",
+        total=len(scenarios),
+        correct=correct,
+        score=correct / len(scenarios) if scenarios else 0,
+        sub_scores=sub_scores,
+        details=details,
+        recall_tokens=total_recall_tokens,
+        recall_chars=total_recall_chars,
+        retrieval_metrics=avg_retrieval_metrics,
+    )
+
+
+# --- Suite N: Retrieval Ablation (Omni-SimpleMem) ---
+
+def run_retrieval_ablation(backend: BenchmarkableStore, scenarios: list,
+                           judge: MemoryJudge) -> CategoryResult:
+    """Run retrieval ablation scenarios (Suite N).
+
+    Based on Omni-SimpleMem findings that hybrid retrieval (BM25 + dense) outperforms
+    either signal alone. Tests three retrieval signal conditions:
+
+      keyword  — target fact shares exact lexical tokens with the query (BM25 advantage);
+                 distractors are semantic paraphrases that dense retrieval might rank higher.
+      semantic — target fact is conceptually aligned but uses different vocabulary (dense
+                 advantage); distractors share keywords with the query but are wrong.
+      hybrid   — both lexical and semantic signals are required to disambiguate the correct
+                 fact from strong distractors; neither BM25-only nor dense-only succeeds.
+
+    Sub-scores by retrieval_signal allow ablation of each signal's contribution.
+    """
+    correct = 0
+    details = []
+    total_recall_tokens = 0
+    total_recall_chars = 0
+
+    for sc in scenarios:
+        backend.reset()
+
+        for fact in sc["facts"]:
+            backend.store(fact, category="factual")
+
+        signal = sc.get("retrieval_signal", "hybrid")
+        results = backend.recall(sc["query"], top_k=5)
+        # Pass top-3 for hybrid scenarios where the correct fact may not rank #1
+        # in a single-signal backend but should appear in top-3
+        if signal == "hybrid" and len(results) > 1:
+            actual = " | ".join(results[:3])
+        else:
+            actual = results[0] if results else ""
+        rt, rc = count_recall_tokens(results)
+        total_recall_tokens += rt
+        total_recall_chars += rc
+
+        jr = judge.judge_answer(sc["query"], sc["gold_answer"], actual)
+        if jr.correct:
+            correct += 1
+
+        details.append({
+            "id": sc["id"],
+            "retrieval_signal": signal,
+            "difficulty": sc["difficulty"],
+            "correct": jr.correct,
+            "actual": actual,
+            "gold": sc["gold_answer"],
+        })
+        scenario_metrics = compute_scenario_metrics(results, sc["gold_answer"])
+        details[-1]["metrics"] = scenario_metrics
+
+    # Sub-scores by retrieval signal (ablation analysis)
+    sub_scores = {}
+    for sig in ["keyword", "semantic", "hybrid"]:
+        ssubset = [d for d in details if d["retrieval_signal"] == sig]
+        if ssubset:
+            sub_scores[sig] = sum(1 for d in ssubset if d["correct"]) / len(ssubset)
+    for diff in ["easy", "medium", "hard"]:
+        dsubset = [d for d in details if d["difficulty"] == diff]
+        if dsubset:
+            sub_scores[diff] = sum(1 for d in dsubset if d["correct"]) / len(dsubset)
+
+    all_metrics = [d.get("metrics", {}) for d in details if "metrics" in d]
+    avg_retrieval_metrics = {}
+    if all_metrics:
+        for key in all_metrics[0]:
+            values = [m[key] for m in all_metrics if key in m]
+            avg_retrieval_metrics[key] = sum(values) / len(values) if values else 0.0
+
+    return CategoryResult(
+        category="retrieval_ablation",
+        total=len(scenarios),
+        correct=correct,
+        score=correct / len(scenarios) if scenarios else 0,
+        sub_scores=sub_scores,
+        details=details,
+        recall_tokens=total_recall_tokens,
+        recall_chars=total_recall_chars,
+        retrieval_metrics=avg_retrieval_metrics,
+    )
+
+
+# --- Suite O: Timestamp Integrity (Omni-SimpleMem) ---
+
+def run_timestamp_integrity(backend: BenchmarkableStore, scenarios: list,
+                            judge: MemoryJudge) -> CategoryResult:
+    """Run timestamp integrity scenarios (Suite O).
+
+    Based on Omni-SimpleMem findings that consolidation and compression operations
+    can corrupt temporal metadata, causing older facts to outrank newer ones.
+
+    Each scenario stores facts at staggered simulated ages (oldest first), optionally
+    advances time and/or runs consolidation, then checks that temporal ordering is
+    preserved and the expected fact (usually the most recent) is correctly recalled.
+
+    Facts use the same stored_days_ago convention as Suite A temporal_decay tests so
+    the two suites can be compared directly.
+    """
+    correct = 0
+    details = []
+    total_recall_tokens = 0
+    total_recall_chars = 0
+
+    for sc in scenarios:
+        backend.reset()
+
+        # Store facts oldest-first so simulated time advances forward naturally
+        sorted_facts = sorted(sc["facts"], key=lambda f: -f["stored_days_ago"])
+        prev_days_ago = sorted_facts[0]["stored_days_ago"] if sorted_facts else 0
+
+        for fact in sorted_facts:
+            time_gap = prev_days_ago - fact["stored_days_ago"]
+            if time_gap > 0:
+                backend.simulate_time(time_gap)
+            prev_days_ago = fact["stored_days_ago"]
+            backend.store(fact["content"], category="factual")
+
+        # Advance remaining time to reach the scenario's "now"
+        if prev_days_ago > 0:
+            backend.simulate_time(prev_days_ago)
+
+        # Optional additional time advance after all facts are stored
+        extra_advance = sc.get("time_advance_days", 0)
+        if extra_advance > 0:
+            backend.simulate_time(extra_advance)
+
+        # Optional consolidation cycle — this is where timestamp corruption is most likely
+        if sc.get("run_consolidation", False):
+            backend.consolidate()
+
+        results = backend.recall(sc["query"], top_k=5)
+        # For hard scenarios pass top-2 — consolidation may produce merged facts
+        if sc.get("difficulty") == "hard" and len(results) > 1:
+            actual = " | ".join(results[:2])
+        else:
+            actual = results[0] if results else ""
+        rt, rc = count_recall_tokens(results)
+        total_recall_tokens += rt
+        total_recall_chars += rc
+
+        jr = judge.judge_answer(sc["query"], sc["gold_answer"], actual)
+        if jr.correct:
+            correct += 1
+
+        details.append({
+            "id": sc["id"],
+            "difficulty": sc["difficulty"],
+            "run_consolidation": sc.get("run_consolidation", False),
+            "time_advance_days": sc.get("time_advance_days", 0),
+            "num_facts": len(sc["facts"]),
+            "correct": jr.correct,
+            "actual": actual,
+            "gold": sc["gold_answer"],
+        })
+        scenario_metrics = compute_scenario_metrics(results, sc["gold_answer"])
+        details[-1]["metrics"] = scenario_metrics
+
+    sub_scores = {}
+    for diff in ["easy", "medium", "hard"]:
+        dsubset = [d for d in details if d["difficulty"] == diff]
+        if dsubset:
+            sub_scores[diff] = sum(1 for d in dsubset if d["correct"]) / len(dsubset)
+
+    # Sub-score: with vs without consolidation (reveals timestamp corruption risk)
+    with_consol = [d for d in details if d["run_consolidation"]]
+    without_consol = [d for d in details if not d["run_consolidation"]]
+    if with_consol:
+        sub_scores["with_consolidation"] = (
+            sum(1 for d in with_consol if d["correct"]) / len(with_consol)
+        )
+    if without_consol:
+        sub_scores["without_consolidation"] = (
+            sum(1 for d in without_consol if d["correct"]) / len(without_consol)
+        )
+
+    all_metrics = [d.get("metrics", {}) for d in details if "metrics" in d]
+    avg_retrieval_metrics = {}
+    if all_metrics:
+        for key in all_metrics[0]:
+            values = [m[key] for m in all_metrics if key in m]
+            avg_retrieval_metrics[key] = sum(values) / len(values) if values else 0.0
+
+    return CategoryResult(
+        category="timestamp_integrity",
+        total=len(scenarios),
+        correct=correct,
+        score=correct / len(scenarios) if scenarios else 0,
+        sub_scores=sub_scores,
+        details=details,
+        recall_tokens=total_recall_tokens,
+        recall_chars=total_recall_chars,
+        retrieval_metrics=avg_retrieval_metrics,
+    )
+
+
 CATEGORY_RUNNERS = {
     "semantic_recall": run_semantic_recall,
     "contradictions": run_contradictions,
@@ -1780,6 +2079,12 @@ CATEGORY_RUNNERS = {
     # Suite I — Conversation & Stress
     "conversation_memory": run_conversation_memory,
     "capacity_stress": run_capacity_stress,
+    # Suite M — Format Sensitivity (Omni-SimpleMem)
+    "format_sensitivity": run_format_sensitivity,
+    # Suite N — Retrieval Ablation (Omni-SimpleMem)
+    "retrieval_ablation": run_retrieval_ablation,
+    # Suite O — Timestamp Integrity (Omni-SimpleMem)
+    "timestamp_integrity": run_timestamp_integrity,
 }
 
 

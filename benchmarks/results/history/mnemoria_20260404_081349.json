@@ -1,0 +1,198 @@
+{
+  "backend": "mnemoria",
+  "profile": "balanced",
+  "embedding_model": "auto",
+  "timestamp": "2026-04-04T08:13:49.005557Z",
+  "suites": [
+    "a"
+  ],
+  "mean_score": 0.93,
+  "std": 0.0,
+  "ci_95": [
+    0.93,
+    0.93
+  ],
+  "per_category_mean": {
+    "semantic_recall": 1.0,
+    "importance_filtering": 0.8,
+    "cross_reference": 0.9555555555555556,
+    "temporal_decay": 0.9333333333333333,
+    "contradictions": 0.95
+  },
+  "per_category_std": {
+    "semantic_recall": 0.0,
+    "importance_filtering": 0.0,
+    "cross_reference": 0.0,
+    "temporal_decay": 0.0,
+    "contradictions": 0.0
+  },
+  "num_runs": 1,
+  "retrieval_metrics": {
+    "recall_at_1": 0.38933333333333336,
+    "recall_at_3": 0.45488888888888884,
+    "recall_at_5": 0.45488888888888884,
+    "recall_at_10": 0.45488888888888884,
+    "mrr": 0.4221111111111111,
+    "ndcg_at_5": 0.43069428384524,
+    "ndcg_at_10": 0.43069428384524,
+    "average_precision": 0.43544444444444447,
+    "exact_match": 0.0,
+    "token_f1": 0.4070400704486382,
+    "token_precision": 0.31525137177637175,
+    "token_recall": 0.7086081348108566
+  },
+  "cost_metrics": {
+    "tokens_per_query": 31.545,
+    "tokens_per_correct": 33.91935483870968,
+    "cost_efficiency": 0.1850980538657201,
+    "score": 0.93,
+    "total_tokens": 6309.0,
+    "total_queries": 200.0,
+    "correct": 186.0,
+    "total": 200.0
+  },
+  "runs": [
+    {
+      "seed": 42,
+      "overall_score": 0.93,
+      "wall_time_seconds": 0.14876317977905273,
+      "token_usage": {
+        "recall_tokens": 6309,
+        "recall_chars": 26155,
+        "recall_queries": 200,
+        "avg_recall_tokens_per_query": 31
+      },
+      "retrieval_metrics": {
+        "recall_at_1": 0.38933333333333336,
+        "recall_at_3": 0.45488888888888884,
+        "recall_at_5": 0.45488888888888884,
+        "recall_at_10": 0.45488888888888884,
+        "mrr": 0.4221111111111111,
+        "ndcg_at_5": 0.43069428384524,
+        "ndcg_at_10": 0.43069428384524,
+        "average_precision": 0.43544444444444447,
+        "exact_match": 0.0,
+        "token_f1": 0.4070400704486382,
+        "token_precision": 0.31525137177637175,
+        "token_recall": 0.7086081348108566
+      },
+      "cost_metrics": {
+        "tokens_per_query": 31.545,
+        "tokens_per_correct": 33.91935483870968,
+        "cost_efficiency": 0.1850980538657201,
+        "score": 0.93,
+        "total_tokens": 6309,
+        "total_queries": 200,
+        "correct": 186,
+        "total": 200
+      },
+      "categories": {
+        "contradictions": {
+          "score": 0.95,
+          "correct": 19,
+          "total": 20,
+          "recall_tokens": 984,
+          "recall_chars": 4152,
+          "retrieval_metrics": {
+            "recall_at_1": 0.55,
+            "recall_at_3": 0.65,
+            "recall_at_5": 0.65,
+            "recall_at_10": 0.65,
+            "mrr": 0.6,
+            "ndcg_at_5": 0.6130929753571458,
+            "ndcg_at_10": 0.6130929753571458,
+            "average_precision": 0.6,
+            "exact_match": 0.0,
+            "token_f1": 0.4037149615090792,
+            "token_precision": 0.28513014763014766,
+            "token_recall": 0.8145833333333332
+          }
+        },
+        "cross_reference": {
+          "score": 0.9555555555555556,
+          "correct": 43,
+          "total": 45,
+          "recall_tokens": 1259,
+          "recall_chars": 5237,
+          "retrieval_metrics": {
+            "recall_at_1": 0.24444444444444444,
+            "recall_at_3": 0.37777777777777777,
+            "recall_at_5": 0.37777777777777777,
+            "recall_at_10": 0.37777777777777777,
+            "mrr": 0.3111111111111111,
+            "ndcg_at_5": 0.3285684115873055,
+            "ndcg_at_10": 0.3285684115873055,
+            "average_precision": 0.3111111111111111,
+            "exact_match": 0.0,
+            "token_f1": 0.2867612114980536,
+            "token_precision": 0.26357142857142857,
+            "token_recall": 0.4284940676607343
+          }
+        },
+        "importance_filtering": {
+          "score": 0.8,
+          "correct": 32,
+          "total": 40,
+          "recall_tokens": 2085,
+          "recall_chars": 8598,
+          "retrieval_metrics": {
+            "recall_at_1": 0.25,
+            "recall_at_3": 0.3,
+            "recall_at_5": 0.3,
+            "recall_at_10": 0.3,
+            "mrr": 0.275,
+            "ndcg_at_5": 0.2815464876785729,
+            "ndcg_at_10": 0.2815464876785729,
+            "average_precision": 0.275,
+            "exact_match": 0.0,
+            "token_f1": 0.32562323546019195,
+            "token_precision": 0.26376644189144194,
+            "token_recall": 0.5575294106263533
+          }
+        },
+        "semantic_recall": {
+          "score": 1.0,
+          "correct": 50,
+          "total": 50,
+          "recall_tokens": 866,
+          "recall_chars": 3543,
+          "retrieval_metrics": {
+            "recall_at_1": 0.28,
+            "recall_at_3": 0.28,
+            "recall_at_5": 0.28,
+            "recall_at_10": 0.28,
+            "mrr": 0.28,
+            "ndcg_at_5": 0.28,
+            "ndcg_at_10": 0.28,
+            "average_precision": 0.28,
+            "exact_match": 0.0,
+            "token_f1": 0.5842327297745254,
+            "token_precision": 0.4427147297147296,
+            "token_recall": 0.9235714285714286
+          }
+        },
+        "temporal_decay": {
+          "score": 0.9333333333333333,
+          "correct": 42,
+          "total": 45,
+          "recall_tokens": 1115,
+          "recall_chars": 4625,
+          "retrieval_metrics": {
+            "recall_at_1": 0.6222222222222222,
+            "recall_at_3": 0.6666666666666666,
+            "recall_at_5": 0.6666666666666666,
+            "recall_at_10": 0.6666666666666666,
+            "mrr": 0.6444444444444445,
+            "ndcg_at_5": 0.6502635446031759,
+            "ndcg_at_10": 0.6502635446031759,
+            "average_precision": 0.7111111111111111,
+            "exact_match": 0.0,
+            "token_f1": 0.4348682140013409,
+            "token_precision": 0.321074111074111,
+            "token_recall": 0.8188624338624338
+          }
+        }
+      }
+    }
+  ]
+}

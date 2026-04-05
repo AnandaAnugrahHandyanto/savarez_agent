@@ -181,7 +181,7 @@ A time-simulation benchmark should not penalize a backend that legitimately has 
 |---------|-------------|
 | `baseline-flat` | universal_store_recall |
 | `structured` | universal_store_recall, access_rehearsal, consolidation, scopes, typed_facts |
-| `unified` (mnemoria) | All capabilities |
+| `mnemoria` | All capabilities |
 | `holographic` | universal_store_recall |
 | `honcho` | universal_store_recall |
 | `mem0` | universal_store_recall |
@@ -407,10 +407,10 @@ Tested with TF-IDF embeddings (no ML model needed):
 |---------|------------|---------|---------|-------|
 | baseline-flat | 80.4% | 66.0% | 86.7% | Simple list + substring match |
 | cognitive | 96.8% | 90.6% | 86.7% | ACT-R + Hebbian + Q-value |
-| unified | 97.2% | 73.6%* | 86.7% | Full cognitive + structured + Ori-Mnemos |
+| mnemoria | 97.2% | 73.6%* | 86.7% | Full cognitive + structured + Ori-Mnemos |
 
-*Suite H unified score lower due to TF-IDF limitations on notation parsing.
-With sentence-transformers embeddings, unified scores significantly higher.
+*Suite H mnemoria score lower due to TF-IDF limitations on notation parsing.
+With sentence-transformers embeddings, mnemoria scores significantly higher.
 
 ## Adding New Suites
 
