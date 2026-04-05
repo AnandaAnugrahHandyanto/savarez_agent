@@ -1694,20 +1694,15 @@ class HermesCLI:
         """Return prompt_toolkit formatted_text fragments for the stash panel box."""
         W = min(width - 4, 80)
 
-        HDR_PREFIX = "╭─ 📌 Stash ("
         n = len(stash_list)
-        title_mid = f"{n} item{'s' if n != 1 else ''}) "
+        hdr_prefix_str = f"╭─ 📌 Stash ({n} item{'s' if n != 1 else ''}) "
         HDR_SUFFIX = " Ctrl+S ─╮"
         FTR_PREFIX = "╰"
         FTR_SUFFIX = " ↑↓ Enter=restore  D=delete  Esc ─╯"
 
-        # Header dashes fill between title and suffix
-        # HDR_PREFIX includes emoji (📌 = 2 wide) — measure in display cols
-        hdr_fixed = 2 + len(HDR_PREFIX) - 2 + len(title_mid) + len(HDR_SUFFIX)
-        # 📌 is 2 wide, "╭─ " already counted title chars fine since we
-        # just need to fit in W columns
-        hdr_prefix_str = f"{HDR_PREFIX}{title_mid}"
-        hdr_dashes = max(0, W - len(hdr_prefix_str) - len(HDR_SUFFIX))
+        # len() counts 📌 as 1 char but it renders as 2 wide — subtract 1
+        # from the len() result so dashes fill the remaining visual width.
+        hdr_dashes = max(0, W - (len(hdr_prefix_str) - 1) - len(HDR_SUFFIX))
         ftr_dashes = max(0, W - len(FTR_PREFIX) - len(FTR_SUFFIX))
 
         # Row inner width: W minus 2 border chars '│' on each side
