@@ -48,6 +48,10 @@ _PREFIX_PATTERNS = [
     r"sk_[A-Za-z0-9_]{10,}",            # ElevenLabs TTS key (sk_ underscore, not sk- dash)
     r"tvly-[A-Za-z0-9]{10,}",           # Tavily search API key
     r"exa_[A-Za-z0-9]{10,}",            # Exa search API key
+    r"xapp-[A-Za-z0-9_-]{10,}",          # Slack app-level token (Socket Mode)
+    r"glpat-[A-Za-z0-9_-]{10,}",         # GitLab PAT
+    r"dp-[A-Za-z0-9]{10,}",              # Deepgram API key
+    r"lin_api_[A-Za-z0-9]{10,}",         # Linear API key
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name
