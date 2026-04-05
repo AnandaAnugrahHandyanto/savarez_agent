@@ -121,6 +121,25 @@ class TestCompress:
 class TestGenerateSummaryNoneContent:
     """Regression: content=None (from tool-call-only assistant messages) must not crash."""
 
+    def test_generate_summary_forwards_session_identity(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: summarized"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, session_id="compress-sess-1")
+
+        captured = {}
+
+        def _mock_call_llm(**kwargs):
+            captured.update(kwargs)
+            return mock_response
+
+        with patch("agent.context_compressor.call_llm", side_effect=_mock_call_llm):
+            c._generate_summary([{"role": "user", "content": "compress this"}])
+
+        assert captured["session_id"] == "compress-sess-1"
+
     def test_none_content_does_not_crash(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]

@@ -72,11 +72,13 @@ class ContextCompressor:
         api_key: str = "",
         config_context_length: int | None = None,
         provider: str = "",
+        session_id: str = "",
     ):
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
         self.provider = provider
+        self.session_id = session_id
         self.threshold_percent = threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
@@ -351,6 +353,8 @@ Write only the summary body. Do not include any preamble or prefix."""
             }
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
+            if self.session_id:
+                call_kwargs["session_id"] = self.session_id
             response = call_llm(**call_kwargs)
             content = response.choices[0].message.content
             # Handle cases where content is not a string (e.g., dict from llama.cpp)

@@ -48,6 +48,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from openai import OpenAI
 
 from agent.credential_pool import load_pool
+from agent.model_metadata import build_openai_request_session_routing
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 
@@ -226,6 +227,11 @@ class _CodexCompletionsAdapter:
             "store": False,
         }
 
+        for field in ("prompt_cache_key", "extra_headers", "extra_body"):
+            value = kwargs.get(field)
+            if value is not None:
+                resp_kwargs[field] = value
+
         # Note: the Codex endpoint (chatgpt.com/backend-api/codex) does NOT
         # support max_output_tokens or temperature — omit to avoid 400 errors.
 
@@ -327,6 +333,7 @@ class CodexAuxiliaryClient:
         self.chat = _CodexChatShim(adapter)
         self.api_key = real_client.api_key
         self.base_url = real_client.base_url
+        self.api_mode = "codex_responses"
 
     def close(self):
         self._real_client.close()
@@ -361,6 +368,7 @@ class AsyncCodexAuxiliaryClient:
         self.chat = _AsyncCodexChatShim(async_adapter)
         self.api_key = sync_wrapper.api_key
         self.base_url = sync_wrapper.base_url
+        self.api_mode = sync_wrapper.api_mode
 
 
 class _AnthropicCompletionsAdapter:
@@ -443,6 +451,7 @@ class AnthropicAuxiliaryClient:
         self.chat = _AnthropicChatShim(adapter)
         self.api_key = api_key
         self.base_url = base_url
+        self.api_mode = "anthropic_messages"
 
     def close(self):
         close_fn = getattr(self._real_client, "close", None)
@@ -471,6 +480,7 @@ class AsyncAnthropicAuxiliaryClient:
         self.chat = _AsyncAnthropicChatShim(async_adapter)
         self.api_key = sync_wrapper.api_key
         self.base_url = sync_wrapper.base_url
+        self.api_mode = sync_wrapper.api_mode
 
 
 def _read_nous_auth() -> Optional[dict]:
@@ -716,6 +726,32 @@ def _read_main_provider() -> str:
     return ""
 
 
+def _has_explicit_custom_runtime() -> bool:
+    env_openai_base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+    if env_openai_base_url:
+        return True
+
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+        if isinstance(model_cfg, dict):
+            base_url = str(model_cfg.get("base_url") or "").strip()
+            provider = str(model_cfg.get("provider") or "").strip().lower()
+            if (
+                base_url
+                and provider in {"", "auto", "custom", "main"}
+                and "openrouter.ai" not in base_url.lower()
+            ):
+                return True
+    except Exception:
+        pass
+
+    return False
+
+
+
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
     """Resolve the active custom/main endpoint the same way the main CLI does.
 
@@ -723,6 +759,9 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
     endpoints where the base URL lives in config.yaml instead of the live
     environment.
     """
+    if not _has_explicit_custom_runtime():
+        return None, None
+
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -1656,6 +1695,21 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
     return default
 
 
+def _resolve_request_api_mode(client: Any, provider: str, base_url: Optional[str]) -> str:
+    """Infer the actual wire protocol used by the resolved auxiliary client."""
+    client_api_mode = str(getattr(client, "api_mode", "") or "").strip().lower()
+    if client_api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
+        return client_api_mode
+
+    normalized_provider = (provider or "").strip().lower()
+    normalized_base_url = str(base_url or getattr(client, "base_url", "") or "").strip().lower()
+    if normalized_provider == "openai-codex" or "chatgpt.com/backend-api/codex" in normalized_base_url:
+        return "codex_responses"
+    if normalized_provider == "anthropic" or normalized_base_url.rstrip("/").endswith("/anthropic"):
+        return "anthropic_messages"
+    return "chat_completions"
+
+
 def _build_call_kwargs(
     provider: str,
     model: str,
@@ -1666,6 +1720,8 @@ def _build_call_kwargs(
     timeout: float = 30.0,
     extra_body: Optional[dict] = None,
     base_url: Optional[str] = None,
+    api_mode: str = "chat_completions",
+    session_id: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
     kwargs: Dict[str, Any] = {
@@ -1696,8 +1752,26 @@ def _build_call_kwargs(
     merged_extra = dict(extra_body or {})
     if provider == "nous" or auxiliary_is_nous:
         merged_extra.setdefault("tags", []).extend(["product=hermes-agent"])
+
+    routing = build_openai_request_session_routing(
+        provider=provider,
+        base_url=base_url or "",
+        api_mode=api_mode,
+        session_id=session_id,
+    )
+    routing_extra_body = routing.get("extra_body") or {}
+    if routing_extra_body:
+        merged_extra.update(routing_extra_body)
     if merged_extra:
         kwargs["extra_body"] = merged_extra
+
+    extra_headers = routing.get("extra_headers") or {}
+    if extra_headers:
+        kwargs.setdefault("extra_headers", {}).update(extra_headers)
+
+    prompt_cache_key = routing.get("prompt_cache_key")
+    if prompt_cache_key:
+        kwargs["prompt_cache_key"] = prompt_cache_key
 
     return kwargs
 
@@ -1715,6 +1789,7 @@ def call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    session_id: str = None,
 ) -> Any:
     """Centralized synchronous LLM call.
 
@@ -1733,6 +1808,7 @@ def call_llm(
         tools: Tool definitions (for function calling).
         timeout: Request timeout in seconds (None = read from auxiliary.{task}.timeout config).
         extra_body: Additional request body fields.
+        session_id: Stable Hermes session identifier for request-level affinity hints.
 
     Returns:
         Response object with .choices[0].message.content
@@ -1805,11 +1881,13 @@ def call_llm(
                      task, resolved_provider or "auto", final_model or "default",
                      f" at {_base_info}" if _base_info and "openrouter" not in _base_info else "")
 
+    request_base_url = resolved_base_url or str(getattr(client, "base_url", "") or "")
+    request_api_mode = _resolve_request_api_mode(client, resolved_provider, request_base_url)
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
-        base_url=resolved_base_url)
+        base_url=request_base_url, api_mode=request_api_mode, session_id=session_id)
 
     # Handle max_tokens vs max_completion_tokens retry
     try:
@@ -1892,6 +1970,7 @@ async def async_call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    session_id: str = None,
 ) -> Any:
     """Centralized asynchronous LLM call.
 
@@ -1953,11 +2032,13 @@ async def async_call_llm(
 
     effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
 
+    request_base_url = resolved_base_url or str(getattr(client, "base_url", "") or "")
+    request_api_mode = _resolve_request_api_mode(client, resolved_provider, request_base_url)
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
-        base_url=resolved_base_url)
+        base_url=request_base_url, api_mode=request_api_mode, session_id=session_id)
 
     try:
         return await client.chat.completions.create(**kwargs)
