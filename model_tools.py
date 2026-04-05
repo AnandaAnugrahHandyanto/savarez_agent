@@ -20,11 +20,13 @@ Public API (signatures preserved from the original 2,400-line version):
     check_tool_availability(quiet) -> tuple
 """
 
-import json
 import asyncio
+import json
 import logging
+import re
 import threading
-from typing import Dict, Any, List, Optional, Tuple
+import uuid
+from typing import Any, Dict, List, Optional, Tuple
 
 from tools.registry import registry
 from toolsets import resolve_toolset, validate_toolset
@@ -36,7 +38,7 @@ logger = logging.getLogger(__name__)
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
 # =============================================================================
 
-_tool_loop = None          # persistent loop for the main (CLI) thread
+_tool_loop = None  # persistent loop for the main (CLI) thread
 _tool_loop_lock = threading.Lock()
 _worker_thread_local = threading.local()  # per-worker-thread persistent loops
 
@@ -63,14 +65,14 @@ def _get_worker_loop():
     gets its own long-lived loop stored in thread-local storage.  This
     prevents the "Event loop is closed" errors that occurred when
     asyncio.run() was used per-call: asyncio.run() creates a loop, runs
-    the coroutine, then *closes* the loop — but cached httpx/AsyncOpenAI
+    the coroutine, then *closes* the loop - but cached httpx/AsyncOpenAI
     clients remain bound to that now-dead loop and raise RuntimeError
     during garbage collection or subsequent use.
 
     By keeping the loop alive for the thread's lifetime, cached clients
     stay valid and their cleanup runs on a live loop.
     """
-    loop = getattr(_worker_thread_local, 'loop', None)
+    loop = getattr(_worker_thread_local, "loop", None)
     if loop is None or loop.is_closed():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -106,8 +108,9 @@ def _run_async(coro):
         loop = None
 
     if loop and loop.is_running():
-        # Inside an async context (gateway, RL env) — run in a fresh thread.
+        # Inside an async context (gateway, RL env) - run in a fresh thread.
         import concurrent.futures
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, coro)
             return future.result(timeout=300)
@@ -116,7 +119,7 @@ def _run_async(coro):
     # delegate_task), use a per-thread persistent loop.  This avoids
     # contention with the main thread's shared loop while keeping cached
     # httpx/AsyncOpenAI clients bound to a live loop for the thread's
-    # lifetime — preventing "Event loop is closed" on GC cleanup.
+    # lifetime - preventing "Event loop is closed" on GC cleanup.
     if threading.current_thread() is not threading.main_thread():
         worker_loop = _get_worker_loop()
         return worker_loop.run_until_complete(coro)
@@ -128,6 +131,7 @@ def _run_async(coro):
 # =============================================================================
 # Tool Discovery  (importing each module triggers its registry.register calls)
 # =============================================================================
+
 
 def _discover_tools():
     """Import all tool modules to trigger their registry.register() calls.
@@ -160,6 +164,7 @@ def _discover_tools():
         "tools.homeassistant_tool",
     ]
     import importlib
+
     for mod_name in _modules:
         try:
             importlib.import_module(mod_name)
@@ -172,6 +177,7 @@ _discover_tools()
 # MCP tool discovery (external MCP servers from config)
 try:
     from tools.mcp_tool import discover_mcp_tools
+
     discover_mcp_tools()
 except Exception as e:
     logger.debug("MCP tool discovery failed: %s", e)
@@ -179,6 +185,7 @@ except Exception as e:
 # Plugin tool discovery (user/project/pip plugins)
 try:
     from hermes_cli.plugins import discover_plugins
+
     discover_plugins()
 except Exception as e:
     logger.debug("Plugin discovery failed: %s", e)
@@ -209,18 +216,30 @@ _LEGACY_TOOLSET_MAP = {
     "image_tools": ["image_generate"],
     "skills_tools": ["skills_list", "skill_view", "skill_manage"],
     "browser_tools": [
-        "browser_navigate", "browser_snapshot", "browser_click",
-        "browser_type", "browser_scroll", "browser_back",
-        "browser_press", "browser_close", "browser_get_images",
-        "browser_vision", "browser_console"
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+        "browser_scroll",
+        "browser_back",
+        "browser_press",
+        "browser_close",
+        "browser_get_images",
+        "browser_vision",
+        "browser_console",
     ],
     "cronjob_tools": ["cronjob"],
     "rl_tools": [
-        "rl_list_environments", "rl_select_environment",
-        "rl_get_current_config", "rl_edit_config",
-        "rl_start_training", "rl_check_status",
-        "rl_stop_training", "rl_get_results",
-        "rl_list_runs", "rl_test_inference"
+        "rl_list_environments",
+        "rl_select_environment",
+        "rl_get_current_config",
+        "rl_edit_config",
+        "rl_start_training",
+        "rl_check_status",
+        "rl_stop_training",
+        "rl_get_results",
+        "rl_list_runs",
+        "rl_test_inference",
     ],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
     "tts_tools": ["text_to_speech"],
@@ -230,6 +249,7 @@ _LEGACY_TOOLSET_MAP = {
 # =============================================================================
 # get_tool_definitions  (the main schema provider)
 # =============================================================================
+
 
 def get_tool_definitions(
     enabled_toolsets: List[str] = None,
@@ -258,18 +278,27 @@ def get_tool_definitions(
                 resolved = resolve_toolset(toolset_name)
                 tools_to_include.update(resolved)
                 if not quiet_mode:
-                    print(f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
+                    logger.info(
+                        "Enabled toolset '%s': %s",
+                        toolset_name,
+                        ", ".join(resolved) if resolved else "no tools",
+                    )
             elif toolset_name in _LEGACY_TOOLSET_MAP:
                 legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
                 tools_to_include.update(legacy_tools)
                 if not quiet_mode:
-                    print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+                    logger.info(
+                        "Enabled legacy toolset '%s': %s",
+                        toolset_name,
+                        ", ".join(legacy_tools),
+                    )
             else:
                 if not quiet_mode:
-                    print(f"⚠️  Unknown toolset: {toolset_name}")
+                    logger.warning("Unknown toolset: %s", toolset_name)
 
     elif disabled_toolsets:
         from toolsets import get_all_toolsets
+
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
@@ -278,23 +307,32 @@ def get_tool_definitions(
                 resolved = resolve_toolset(toolset_name)
                 tools_to_include.difference_update(resolved)
                 if not quiet_mode:
-                    print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
+                    logger.info(
+                        "Disabled toolset '%s': %s",
+                        toolset_name,
+                        ", ".join(resolved) if resolved else "no tools",
+                    )
             elif toolset_name in _LEGACY_TOOLSET_MAP:
                 legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
                 tools_to_include.difference_update(legacy_tools)
                 if not quiet_mode:
-                    print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+                    logger.info(
+                        "Disabled legacy toolset '%s': %s",
+                        toolset_name,
+                        ", ".join(legacy_tools),
+                    )
             else:
                 if not quiet_mode:
-                    print(f"⚠️  Unknown toolset: {toolset_name}")
+                    logger.warning("Unknown toolset: %s", toolset_name)
     else:
         from toolsets import get_all_toolsets
+
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
     # Plugin-registered tools are now resolved through the normal toolset
-    # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
-    # all check the tool registry for plugin-provided toolsets.  No bypass
+    # path - validate_toolset() / resolve_toolset() / get_all_toolsets()
+    # all check the tool registry for plugin-provided toolsets. No bypass
     # needed; plugins respect enabled_toolsets / disabled_toolsets like any
     # other toolset.
 
@@ -303,7 +341,7 @@ def get_tool_definitions(
 
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references
-    # other tools by name — otherwise the model sees tools mentioned in
+    # other tools by name - otherwise the model sees tools mentioned in
     # descriptions that don't actually exist, and hallucinates calls to them.
     available_tool_names = {t["function"]["name"] for t in filtered_tools}
 
@@ -312,7 +350,11 @@ def get_tool_definitions(
     # execute_code" even when the API key isn't configured or the toolset is
     # disabled (#560-discord).
     if "execute_code" in available_tool_names:
-        from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema
+        from tools.code_execution_tool import (
+            SANDBOX_ALLOWED_TOOLS,
+            build_execute_code_schema,
+        )
+
         sandbox_enabled = SANDBOX_ALLOWED_TOOLS & available_tool_names
         dynamic_schema = build_execute_code_schema(sandbox_enabled)
         for i, td in enumerate(filtered_tools):
@@ -343,9 +385,13 @@ def get_tool_definitions(
     if not quiet_mode:
         if filtered_tools:
             tool_names = [t["function"]["name"] for t in filtered_tools]
-            print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(tool_names)}")
+            logger.info(
+                "Final tool selection (%d tools): %s",
+                len(filtered_tools),
+                ", ".join(tool_names),
+            )
         else:
-            print("🛠️  No tools selected (all filtered out or unavailable)")
+            logger.info("No tools selected (all filtered out or unavailable)")
 
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
@@ -487,39 +533,61 @@ def handle_function_call(
     if function_name not in _READ_SEARCH_TOOLS:
         try:
             from tools.file_tools import notify_other_tool_call
+
             notify_other_tool_call(task_id or "default")
         except Exception:
             pass  # file_tools may not be loaded yet
 
     try:
         if function_name in _AGENT_LOOP_TOOLS:
-            return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
+            return json.dumps(
+                {"error": f"{function_name} must be handled by the agent loop"}
+            )
 
         try:
             from hermes_cli.plugins import invoke_hook
-            invoke_hook("pre_tool_call", tool_name=function_name, args=function_args, task_id=task_id or "")
+
+            invoke_hook(
+                "pre_tool_call",
+                tool_name=function_name,
+                args=function_args,
+                task_id=task_id or "",
+            )
         except Exception:
             pass
 
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
             # the parent's tool set via the process-global.
-            sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+            sandbox_enabled = (
+                enabled_tools
+                if enabled_tools is not None
+                else _last_resolved_tool_names
+            )
             result = registry.dispatch(
-                function_name, function_args,
+                function_name,
+                function_args,
                 task_id=task_id,
                 enabled_tools=sandbox_enabled,
             )
         else:
             result = registry.dispatch(
-                function_name, function_args,
+                function_name,
+                function_args,
                 task_id=task_id,
                 user_task=user_task,
             )
 
         try:
             from hermes_cli.plugins import invoke_hook
-            invoke_hook("post_tool_call", tool_name=function_name, args=function_args, result=result, task_id=task_id or "")
+
+            invoke_hook(
+                "post_tool_call",
+                tool_name=function_name,
+                args=function_args,
+                result=result,
+                task_id=task_id or "",
+            )
         except Exception:
             pass
 
@@ -534,6 +602,7 @@ def handle_function_call(
 # =============================================================================
 # Backward-compat wrapper functions
 # =============================================================================
+
 
 def get_all_tool_names() -> List[str]:
     """Return all registered tool names."""
@@ -558,3 +627,116 @@ def check_toolset_requirements() -> Dict[str, bool]:
 def check_tool_availability(quiet: bool = False) -> Tuple[List[str], List[dict]]:
     """Return (available_toolsets, unavailable_info)."""
     return registry.check_tool_availability(quiet=quiet)
+
+
+# =============================================================================
+# Fallback Tool Parsing (for Universal Tool Strategy)
+# =============================================================================
+
+
+def parse_tool_calls_from_text(text: str) -> Tuple[List[Any], Optional[str]]:
+    """
+    Extract tool calls from raw assistant text using multiple fallback patterns.
+    Returns (list_of_tool_calls, cleaned_content).
+    """
+    import ast
+    import json
+    import re
+    import uuid
+
+    tool_calls = []
+    cleaned_text = text
+
+    # --- Pattern 1: <tool_code>...</tool_code> or <tool_call>...</tool_call> ---
+    # These can contain comments and multiple function calls.
+    tag_pattern = re.compile(r"<(tool_code|tool_call)>(.*?)</\1>", re.DOTALL)
+    for tag_match in tag_pattern.finditer(text):
+        full_tag_text = tag_match.group(0)
+        inner_content = tag_match.group(2)
+
+        # Remove from cleaned text
+        cleaned_text = cleaned_text.replace(full_tag_text, "")
+
+        # Find all function_name(args) patterns inside the tag
+        # We look for something that looks like a function call
+        fn_pattern = re.compile(r"(\w+)\((.*?)\)", re.DOTALL)
+        for fn_match in fn_pattern.finditer(inner_content):
+            name = fn_match.group(1)
+            args_str = fn_match.group(2)
+
+            # Try to parse arguments
+            args = {}
+            if args_str.strip():
+                try:
+                    # Attempt safe AST evaluation of keyword arguments
+                    # We wrap it in a stub to use the AST parser's call handling
+                    tree = ast.parse(f"stub({args_str})")
+                    call_node = tree.body[0].value
+                    args = {
+                        kw.arg: ast.literal_eval(kw.value) for kw in call_node.keywords
+                    }
+                except Exception:
+                    # Fallback: simple key="value" or key='value' regex
+                    arg_pairs = re.findall(
+                        r'(\w+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^,\s\)]+))', args_str
+                    )
+                    for k, v1, v2, v3 in arg_pairs:
+                        val = v1 or v2 or v3
+                        # Try to convert to int/float if possible
+                        if val.lower() == "true":
+                            val = True
+                        elif val.lower() == "false":
+                            val = False
+                        elif val.isdigit():
+                            val = int(val)
+                        args[k] = val
+
+            tool_calls.append(
+                {
+                    "id": f"call_{uuid.uuid4().hex[:8]}",
+                    "name": name,
+                    "arguments": json.dumps(args),
+                }
+            )
+
+    # --- Pattern 2: Tool-Name-as-Tag Hallucinations (e.g. <read_file path="...">) ---
+    # Common tools the model often hallucinates tags for
+    known_tools = r"(read_file|write_file|patch|terminal|execute_code|ls|search_files)"
+    xml_tool_pattern = re.compile(rf"<{known_tools}\s+(.*?)/*>", re.DOTALL)
+
+    for xml_match in xml_tool_pattern.finditer(cleaned_text):
+        name = xml_match.group(1)
+        attr_str = xml_match.group(2)
+
+        # Check if there's a closing tag like </read_file> nearby
+        closing_tag = f"</{name}>"
+        full_match_text = xml_match.group(0)
+
+        if closing_tag in cleaned_text:
+            # Multi-line XML: <read_file path="..."> [content] </read_file>
+            # We'll just take the attributes for now as they usually contain the path
+            end_pos = cleaned_text.find(closing_tag) + len(closing_tag)
+            # This is complex to replace correctly, so we just remove the start tag for now
+            cleaned_text = cleaned_text.replace(full_match_text, "")
+            cleaned_text = cleaned_text.replace(closing_tag, "")
+        else:
+            # Single-line XML: <read_file path="..."/>
+            cleaned_text = cleaned_text.replace(full_match_text, "")
+
+        # Parse attributes (path="/foo", original="bar", etc.)
+        args = {}
+        attr_pairs = re.findall(
+            r'(\w+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^,\s\>]+))', attr_str
+        )
+        for k, v1, v2, v3 in attr_pairs:
+            args[k] = v1 or v2 or v3
+
+        tool_calls.append(
+            {
+                "id": f"call_{uuid.uuid4().hex[:8]}",
+                "name": name,
+                "arguments": json.dumps(args),
+            }
+        )
+
+    return tool_calls, cleaned_text
