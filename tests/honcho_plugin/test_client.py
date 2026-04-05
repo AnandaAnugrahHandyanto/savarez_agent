@@ -186,6 +186,23 @@ class TestFromGlobalConfig:
         config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.recall_mode == "hybrid"
 
+    def test_recall_mode_legacy_memory_mode_is_accepted(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "***",
+            "memoryMode": "tools",
+            "hosts": {"hermes": {"memoryMode": "context"}},
+        }))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.recall_mode == "context"
+
+    def test_api_key_legacy_snake_case_is_accepted(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"api_key": "legacy-key"}))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.api_key == "legacy-key"
+        assert config.enabled is True
+
     def test_corrupt_config_falls_back_to_env(self, tmp_path):
         config_file = tmp_path / "config.json"
         config_file.write_text("not valid json{{{")

@@ -276,6 +276,8 @@ class HonchoClientConfig:
         api_key = (
             host_block.get("apiKey")
             or raw.get("apiKey")
+            or host_block.get("api_key")
+            or raw.get("api_key")
             or os.environ.get("HONCHO_API_KEY")
         )
 
@@ -369,6 +371,8 @@ class HonchoClientConfig:
             recall_mode=_normalize_recall_mode(
                 host_block.get("recallMode")
                 or raw.get("recallMode")
+                or host_block.get("memoryMode")
+                or raw.get("memoryMode")
                 or "hybrid"
             ),
             init_on_session_start=_resolve_bool(
