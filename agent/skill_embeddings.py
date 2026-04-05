@@ -37,6 +37,7 @@ class SkillEmbeddingStore:
     ):
         self._cache_path = cache_path or _DEFAULT_CACHE_PATH
         self._embedding_model = embedding_model
+        self._active_model_id: str = embedding_model  # tracks actual model used
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._loaded = False
 
@@ -67,10 +68,22 @@ class SkillEmbeddingStore:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
     def embed_text(self, text: str) -> Optional[List[float]]:
-        """Embed text via the configured embedding API.
+        """Embed text using local-first strategy (Ollama, then OpenAI fallback).
 
         Returns the embedding vector, or None on failure.
         """
+        try:
+            from agent.local_embeddings import get_embedding_provider
+            provider = get_embedding_provider()
+            result = provider.embed(text)
+            if result is not None:
+                # Track which model was used for cache compatibility
+                self._active_model_id = provider.model_id
+                return result
+        except ImportError:
+            pass
+
+        # Direct OpenAI fallback if local_embeddings module unavailable
         api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
         if not api_key:
             logger.debug("No API key available for embeddings")
@@ -83,8 +96,9 @@ class SkillEmbeddingStore:
             client = OpenAI(api_key=api_key, base_url=base_url)
             response = client.embeddings.create(
                 model=self._embedding_model,
-                input=text[:8000],  # Truncate to stay within limits
+                input=text[:8000],
             )
+            self._active_model_id = self._embedding_model
             return response.data[0].embedding
         except ImportError:
             logger.debug("openai package not installed — embeddings unavailable")
@@ -97,13 +111,19 @@ class SkillEmbeddingStore:
         """Embed a skill's content, using cache when available.
 
         Returns the embedding vector, or None on failure.
+        Cache entries are invalidated if content changed or embedding model changed.
         """
         self._load_cache()
 
         content_hash = self._content_hash(skill_text)
         cached = self._cache.get(skill_name)
 
-        if cached and cached.get("content_hash") == content_hash:
+        cache_hit = (
+            cached
+            and cached.get("content_hash") == content_hash
+            and cached.get("model_id", self._embedding_model) == self._active_model_id
+        )
+        if cache_hit:
             return cached.get("embedding")
 
         embedding = self.embed_text(skill_text)
@@ -113,6 +133,7 @@ class SkillEmbeddingStore:
         self._cache[skill_name] = {
             "embedding": embedding,
             "content_hash": content_hash,
+            "model_id": self._active_model_id,
             "updated_at": time.time(),
         }
         self._save_cache()
@@ -132,14 +153,21 @@ class SkillEmbeddingStore:
         skill_texts: Dict[str, str],
         top_k: int = 5,
         min_similarity: float = 0.3,
+        adaptive_gap: float = 0.15,
     ) -> List[Tuple[str, float]]:
         """Find skills matching a query by cosine similarity.
+
+        Uses adaptive gap-based cutoff: after sorting by similarity, cuts at the
+        first gap > adaptive_gap between consecutive scores. This naturally handles
+        queries that match many skills vs queries with one strong match.
 
         Args:
             query: The user's message or search query.
             skill_texts: Dict of {skill_name: skill_text} for all available skills.
             top_k: Number of top results to return.
-            min_similarity: Minimum cosine similarity threshold.
+            min_similarity: Minimum cosine similarity floor.
+            adaptive_gap: Maximum allowed gap between consecutive similarities.
+                Set to 0 to disable gap-based cutoff and use fixed threshold only.
 
         Returns:
             List of (skill_name, similarity_score) sorted by score descending.
@@ -166,6 +194,17 @@ class SkillEmbeddingStore:
                 results.append((name, similarity))
 
         results.sort(key=lambda x: x[1], reverse=True)
+
+        # Apply adaptive gap-based cutoff
+        if adaptive_gap > 0 and len(results) > 1:
+            cutoff_idx = len(results)
+            for i in range(1, len(results)):
+                gap = results[i - 1][1] - results[i][1]
+                if gap > adaptive_gap:
+                    cutoff_idx = i
+                    break
+            results = results[:cutoff_idx]
+
         return results[:top_k]
 
     def refresh_stale(self, skills_dir: Path) -> int:

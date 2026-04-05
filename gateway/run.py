@@ -2373,7 +2373,14 @@ class GatewayRunner:
                     # 85% * 1.4 = 119% of context — which exceeds the model's limit
                     # and prevented hygiene from ever firing for ~200K models (GLM-5).
 
-                _needs_compress = _approx_tokens >= _compress_token_threshold
+                # Hard safety valve (v0.7.0): force compression if message
+                # count is extreme, regardless of token estimates. Breaks
+                # death spiral where disconnects prevent token data. (#2153)
+                _HARD_MSG_LIMIT = 400
+                _needs_compress = (
+                    _approx_tokens >= _compress_token_threshold
+                    or _msg_count >= _HARD_MSG_LIMIT
+                )
 
                 if _needs_compress:
                     logger.info(

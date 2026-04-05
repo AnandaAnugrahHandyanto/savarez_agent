@@ -271,15 +271,35 @@ class CronAnomalyDetector:
         field: str,
         current: float,
         baseline: List[float],
+        use_ewma: bool = True,
+        alpha: float = 0.1,
     ) -> Optional[Anomaly]:
-        """Check if a single field value is anomalous vs its baseline."""
+        """Check if a single field value is anomalous vs its baseline.
+
+        When use_ewma=True, computes exponentially weighted moving average
+        and variance. More recent observations have higher weight, making
+        the detector sensitive to sudden changes while adapting to gradual
+        trends. Alpha controls the decay: lower = longer memory.
+        """
         n = len(baseline)
         if n < 2:
             return None
 
-        mean = sum(baseline) / n
-        variance = sum((x - mean) ** 2 for x in baseline) / (n - 1)
-        stddev = math.sqrt(variance) if variance > 0 else 0.0
+        if use_ewma and n >= 3:
+            # EWMA: baseline is ordered oldest → newest
+            ewma_mean = baseline[0]
+            ewma_var = 0.0
+            for val in baseline[1:]:
+                diff = val - ewma_mean
+                ewma_mean = ewma_mean + alpha * diff
+                ewma_var = (1 - alpha) * (ewma_var + alpha * diff * diff)
+            mean = ewma_mean
+            stddev = math.sqrt(ewma_var) if ewma_var > 0 else 0.0
+        else:
+            # Simple mean/stddev fallback for small baselines
+            mean = sum(baseline) / n
+            variance = sum((x - mean) ** 2 for x in baseline) / (n - 1)
+            stddev = math.sqrt(variance) if variance > 0 else 0.0
 
         # If stddev is near zero, any deviation is potentially anomalous
         if stddev < 1e-10:
@@ -311,6 +331,44 @@ class CronAnomalyDetector:
             z_score=z_score,
             severity=severity,
         )
+
+    def check_staleness(
+        self,
+        job_id: str,
+        expected_interval_seconds: float,
+        tolerance_factor: float = 2.0,
+    ) -> Optional[Anomaly]:
+        """Detect when a cron job has not produced output for longer than expected.
+
+        Returns an Anomaly if the last output is older than
+        expected_interval_seconds * tolerance_factor.
+        """
+        baseline_rows = self._db.get_cron_output_stats(
+            job_id=job_id, limit=1,
+        )
+        if not baseline_rows:
+            return None
+
+        import time
+        last_row = baseline_rows[0]
+        last_ts = last_row.get("created_at")
+        if last_ts is None:
+            return None
+
+        elapsed = time.time() - float(last_ts)
+        threshold = expected_interval_seconds * tolerance_factor
+
+        if elapsed > threshold:
+            return Anomaly(
+                field="staleness",
+                expected_mean=expected_interval_seconds,
+                expected_stddev=0.0,
+                actual=elapsed,
+                z_score=elapsed / expected_interval_seconds,
+                severity="warning" if elapsed < threshold * 2 else "critical",
+            )
+
+        return None
 
 
 class MarketAnomalyDetector(CronAnomalyDetector):

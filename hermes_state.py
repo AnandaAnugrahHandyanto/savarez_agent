@@ -200,6 +200,21 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_people_name ON knowledge_people(name);
 CREATE INDEX IF NOT EXISTS idx_knowledge_projects_status ON knowledge_projects(name, status);
 CREATE INDEX IF NOT EXISTS idx_knowledge_notes_created ON knowledge_notes(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_knowledge_decisions_status ON knowledge_decisions(status);
+
+CREATE TABLE IF NOT EXISTS implicit_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_type TEXT NOT NULL,
+    context_id TEXT,
+    session_id TEXT,
+    signal_value REAL NOT NULL,
+    signal_source TEXT NOT NULL,
+    message_text TEXT,
+    metadata TEXT,
+    created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_implicit_signals_type ON implicit_signals(signal_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_implicit_signals_session ON implicit_signals(session_id, created_at DESC);
 """
 
 FTS_SQL = """
@@ -637,6 +652,29 @@ class SessionDB:
                         ON action_log(timestamp DESC);
                 """)
                 cursor.execute("UPDATE schema_version SET version = 11")
+
+            if current_version < 12:
+                # v12: implicit_signals — automatic quality signals from conversation
+                # patterns for continuous improvement of routing, reasoning, and skill
+                # matching classifiers
+                cursor.executescript("""
+                    CREATE TABLE IF NOT EXISTS implicit_signals (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        signal_type TEXT NOT NULL,
+                        context_id TEXT,
+                        session_id TEXT,
+                        signal_value REAL NOT NULL,
+                        signal_source TEXT NOT NULL,
+                        message_text TEXT,
+                        metadata TEXT,
+                        created_at REAL NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_implicit_signals_type
+                        ON implicit_signals(signal_type, created_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_implicit_signals_session
+                        ON implicit_signals(session_id, created_at DESC);
+                """)
+                cursor.execute("UPDATE schema_version SET version = 12")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -1496,6 +1534,94 @@ class SessionDB:
                 params,
             ).fetchall()
             return [dict(r) for r in rows]
+
+    # =========================================================================
+    # Implicit Signals (automatic quality signals for ML classifiers)
+    # =========================================================================
+
+    def log_implicit_signal(
+        self,
+        signal_type: str,
+        signal_value: float,
+        signal_source: str,
+        context_id: str = None,
+        session_id: str = None,
+        message_text: str = None,
+        metadata: str = None,
+    ) -> int:
+        """Record an implicit quality signal from conversation patterns.
+
+        Signal types:
+        - routing_quality: Was the cheap/primary routing decision correct?
+        - reasoning_effort: Was the reasoning effort level appropriate?
+        - skill_match: Was the matched skill actually used?
+
+        Signal sources:
+        - implicit_continuation: Conversation continued normally (positive signal)
+        - implicit_correction: User corrected or re-asked (negative signal)
+        - implicit_skip: Suggested resource was ignored (mild negative)
+
+        Returns the row ID.
+        """
+        result_holder = []
+
+        def _do(conn):
+            cursor = conn.execute(
+                """INSERT INTO implicit_signals
+                   (signal_type, context_id, session_id, signal_value,
+                    signal_source, message_text, metadata, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    signal_type,
+                    context_id,
+                    session_id,
+                    signal_value,
+                    signal_source,
+                    (message_text or "")[:2000] or None,
+                    metadata,
+                    time.time(),
+                ),
+            )
+            result_holder.append(cursor.lastrowid)
+
+        self._execute_write(_do)
+        return result_holder[0] if result_holder else 0
+
+    def get_implicit_signals(
+        self,
+        signal_type: str = None,
+        session_id: str = None,
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve implicit signals, optionally filtered by type or session."""
+        with self._lock:
+            clauses = []
+            params = []
+            if signal_type:
+                clauses.append("signal_type = ?")
+                params.append(signal_type)
+            if session_id:
+                clauses.append("session_id = ?")
+                params.append(session_id)
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            params.append(limit)
+            rows = self._conn.execute(
+                f"SELECT * FROM implicit_signals {where} ORDER BY created_at DESC LIMIT ?",
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def count_implicit_signals(self, signal_type: str = None) -> int:
+        """Count accumulated signals, optionally by type."""
+        with self._lock:
+            if signal_type:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) FROM implicit_signals WHERE signal_type = ?",
+                    (signal_type,),
+                ).fetchone()
+            else:
+                row = self._conn.execute("SELECT COUNT(*) FROM implicit_signals").fetchone()
+            return row[0] if row else 0
 
     # =========================================================================
     # Action log (accountability log for side-effecting tool invocations)

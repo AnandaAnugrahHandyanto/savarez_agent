@@ -1094,6 +1094,46 @@ class AIAgent:
             except Exception:
                 pass  # Memory is optional -- don't break agent init
 
+        # Pluggable memory provider (v0.7.0) — external backends alongside built-in.
+        # Reads memory.provider from config to select which plugin to activate.
+        self._memory_manager = None
+        if not skip_memory:
+            try:
+                mem_config = _agent_cfg.get("memory", {})
+                _mem_provider_name = mem_config.get("provider", "")
+                if _mem_provider_name:
+                    from agent.memory_manager import MemoryManager as _MemoryManager
+                    from plugins.memory import load_memory_provider as _load_mem
+                    self._memory_manager = _MemoryManager()
+                    _mp = _load_mem(_mem_provider_name)
+                    if _mp and _mp.is_available():
+                        self._memory_manager.add_provider(_mp)
+                    if self._memory_manager.providers:
+                        _init_kwargs = {
+                            "session_id": self.session_id,
+                            "platform": platform or "cli",
+                            "hermes_home": str(Path(os.environ.get(
+                                "HERMES_HOME", Path.home() / ".hermes"))),
+                            "agent_context": "primary",
+                        }
+                        self._memory_manager.initialize_all(**_init_kwargs)
+                        logger.info("Memory provider '%s' activated",
+                                    _mem_provider_name)
+                    else:
+                        self._memory_manager = None
+            except Exception as _mpe:
+                logger.warning("Memory provider plugin init failed: %s", _mpe)
+                self._memory_manager = None
+
+        # Inject memory provider tool schemas into the tool surface
+        if self._memory_manager and self.tools is not None:
+            for _schema in self._memory_manager.get_all_tool_schemas():
+                _wrapped = {"type": "function", "function": _schema}
+                self.tools.append(_wrapped)
+                _tname = _schema.get("name", "")
+                if _tname:
+                    self.valid_tool_names.add(_tname)
+
         # Guardrail pipeline (agno-inspired) — config-gated, off by default
         self._guardrail_pipeline = None
         try:
@@ -2331,7 +2371,24 @@ class AIAgent:
         self._interrupt_requested = False
         self._interrupt_message = None
         _set_interrupt(False)
-    
+
+    def shutdown_memory_provider(self, messages: list = None) -> None:
+        """Shut down the memory provider — call at actual session boundaries.
+
+        This calls on_session_end() then shutdown_all() on the memory
+        manager. NOT called per-turn — only at CLI exit, /reset, gateway
+        session expiry, etc.
+        """
+        if self._memory_manager:
+            try:
+                self._memory_manager.on_session_end(messages or [])
+            except Exception:
+                pass
+            try:
+                self._memory_manager.shutdown_all()
+            except Exception:
+                pass
+
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
         """
         Recover todo state from conversation history.
@@ -2745,6 +2802,15 @@ class AIAgent:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
                     prompt_parts.append(user_block)
+
+        # External memory provider system prompt block (pluggable, v0.7.0)
+        if self._memory_manager:
+            try:
+                _ext_mem_block = self._memory_manager.build_system_prompt()
+                if _ext_mem_block:
+                    prompt_parts.append(_ext_mem_block)
+            except Exception:
+                pass
 
         # Session state (persistent k/v surviving compression)
         if self._session_state:
@@ -5028,7 +5094,7 @@ class AIAgent:
                 or "api.githubcopilot.com" in self.base_url.lower()
             )
 
-            # Resolve reasoning effort: config > default (medium)
+            # Resolve reasoning effort: predictor override > config > default (medium)
             reasoning_effort = "medium"
             reasoning_enabled = True
             if self.reasoning_config and isinstance(self.reasoning_config, dict):
@@ -5036,6 +5102,27 @@ class AIAgent:
                     reasoning_enabled = False
                 elif self.reasoning_config.get("effort"):
                     reasoning_effort = self.reasoning_config["effort"]
+
+            # Let the ML predictor suggest an override when confident
+            if reasoning_enabled:
+                try:
+                    from agent.reasoning_effort_predictor import get_reasoning_predictor
+                    from agent.routing_features import extract_features
+                    predictor = get_reasoning_predictor()
+                    if predictor is not None:
+                        last_user_text = ""
+                        for msg in reversed(payload_messages):
+                            if isinstance(msg, dict) and msg.get("role") == "user":
+                                content = msg.get("content", "")
+                                last_user_text = content if isinstance(content, str) else str(content)
+                                break
+                        if last_user_text:
+                            features = extract_features(last_user_text, conversation_depth=len(payload_messages))
+                            suggested = predictor.suggest_effort(features, current_effort=reasoning_effort)
+                            if suggested:
+                                reasoning_effort = suggested
+                except Exception:
+                    pass  # Predictor unavailable — use configured effort
 
             kwargs = {
                 "model": self.model,
@@ -5609,6 +5696,13 @@ class AIAgent:
         # Pre-compression memory flush: let the model save memories before they're lost
         self.flush_memories(messages, min_turns=0)
 
+        # External memory provider pre-compression hook (v0.7.0)
+        if self._memory_manager:
+            try:
+                self._memory_manager.on_pre_compress(messages)
+            except Exception:
+                pass
+
         compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
 
         todo_snapshot = self._todo_store.format_for_injection()
@@ -5765,7 +5859,26 @@ class AIAgent:
             # Also send user observations to Honcho when active
             if self._honcho and target == "user" and function_args.get("action") == "add":
                 self._honcho_save_user_observation(function_args.get("content", ""))
+            # Bridge memory writes to external provider (pluggable, v0.7.0)
+            if self._memory_manager and function_args.get("action") in ("add", "replace"):
+                try:
+                    self._memory_manager.on_memory_write(
+                        action=function_args.get("action", ""),
+                        target=target,
+                        content=function_args.get("content", ""),
+                    )
+                except Exception:
+                    pass
             return result
+        elif self._memory_manager and self._memory_manager.has_tool(function_name):
+            # Route to external memory provider tool
+            try:
+                return self._memory_manager.handle_tool_call(
+                    function_name, function_args)
+            except Exception as _mte:
+                logger.error("memory_manager.handle_tool_call raised for %s: %s",
+                             function_name, _mte, exc_info=True)
+                return json.dumps({"error": str(_mte)})
         elif function_name == "session_state":
             from tools.session_state_tool import session_state_tool as _state_tool
             result = _state_tool(
@@ -6177,9 +6290,28 @@ class AIAgent:
                 # Also send user observations to Honcho when active
                 if self._honcho and target == "user" and function_args.get("action") == "add":
                     self._honcho_save_user_observation(function_args.get("content", ""))
+                # Bridge memory writes to external provider (pluggable, v0.7.0)
+                if self._memory_manager and function_args.get("action") in ("add", "replace"):
+                    try:
+                        self._memory_manager.on_memory_write(
+                            action=function_args.get("action", ""),
+                            target=target,
+                            content=function_args.get("content", ""),
+                        )
+                    except Exception:
+                        pass
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
+            elif self._memory_manager and self._memory_manager.has_tool(function_name):
+                # Route to external memory provider tool (sequential path)
+                try:
+                    function_result = self._memory_manager.handle_tool_call(
+                        function_name, function_args)
+                except Exception as _mte:
+                    logger.error("memory_manager.handle_tool_call raised for %s: %s",
+                                 function_name, _mte, exc_info=True)
+                    function_result = json.dumps({"error": str(_mte)})
             elif function_name == "session_state":
                 from tools.session_state_tool import session_state_tool as _state_tool
                 function_result = _state_tool(
@@ -6814,6 +6946,16 @@ class AIAgent:
                         self._honcho_turn_context = prefetched_context
             except Exception as e:
                 logger.debug("Honcho prefetch failed (non-fatal): %s", e)
+
+        # External memory provider prefetch (pluggable, v0.7.0)
+        if self._memory_manager:
+            try:
+                _ext_prefetch = self._memory_manager.prefetch_all(
+                    original_user_message, session_id=self.session_id)
+                if _ext_prefetch:
+                    user_message = f"{user_message}\n\n[Memory context]\n{_ext_prefetch}"
+            except Exception:
+                pass
 
         # Add user message
         user_msg = {"role": "user", "content": user_message}
@@ -7824,7 +7966,37 @@ class AIAgent:
                                 f"treating as probable context overflow.",
                                 force=True,
                             )
-                    
+
+                    # Server disconnect heuristic (v0.7.0) — disconnects on
+                    # large sessions are often context/payload limit without
+                    # proper HTTP error. Treat as context-length error to
+                    # trigger compression and break the death spiral. (#2153)
+                    if not is_context_length_error and not status_code:
+                        error_type = type(e).__name__
+                        _is_server_disconnect = (
+                            'server disconnected' in error_msg
+                            or 'peer closed connection' in error_msg
+                            or error_type in (
+                                'ReadError', 'RemoteProtocolError',
+                                'ServerDisconnectedError')
+                        )
+                        if _is_server_disconnect:
+                            ctx_len = getattr(getattr(
+                                self, 'context_compressor', None),
+                                'context_length', 200000)
+                            _is_large = (approx_tokens > ctx_len * 0.6
+                                         or len(api_messages) > 200)
+                            if _is_large:
+                                is_context_length_error = True
+                                self._vprint(
+                                    f"{self.log_prefix}⚠️  Server disconnected "
+                                    f"with large session (~{approx_tokens:,} "
+                                    f"tokens, {len(api_messages)} msgs) — "
+                                    f"treating as context-length error, "
+                                    f"attempting compression.",
+                                    force=True,
+                                )
+
                     if is_context_length_error:
                         compressor = self.context_compressor
                         old_ctx = compressor.context_length
@@ -8449,11 +8621,18 @@ class AIAgent:
                     # threshold (default 50%) leaves ample headroom; if tool
                     # results push past it, the next API call will report the
                     # real total and trigger compression then.
+                    # Stale token counter fallback (v0.7.0) — after API
+                    # disconnects, last_prompt_tokens can be 0, causing
+                    # should_compress(0) to never fire → death spiral. (#2153)
                     _compressor = self.context_compressor
-                    _real_tokens = (
-                        _compressor.last_prompt_tokens
-                        + _compressor.last_completion_tokens
-                    )
+                    if _compressor.last_prompt_tokens > 0:
+                        _real_tokens = (
+                            _compressor.last_prompt_tokens
+                            + _compressor.last_completion_tokens
+                        )
+                    else:
+                        from agent.model_metadata import estimate_messages_tokens_rough
+                        _real_tokens = estimate_messages_tokens_rough(messages)
 
                     # ── Context pressure warnings (user-facing only) ──────────
                     # Notify the user (NOT the LLM) as context approaches the
@@ -8717,6 +8896,16 @@ class AIAgent:
         if final_response and not interrupted and sync_honcho:
             self._honcho_sync(original_user_message, final_response)
             self._queue_honcho_prefetch(original_user_message)
+
+        # Sync turn to external memory provider (pluggable, v0.7.0)
+        if self._memory_manager and final_response and original_user_message:
+            try:
+                self._memory_manager.sync_all(
+                    original_user_message, final_response)
+                self._memory_manager.queue_prefetch_all(
+                    original_user_message)
+            except Exception:
+                pass
 
         # Plugin hook: post_llm_call
         # Fired once per turn after the tool-calling loop completes.

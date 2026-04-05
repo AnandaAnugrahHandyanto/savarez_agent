@@ -146,6 +146,97 @@ class ContextCompressor:
         }
 
     # ------------------------------------------------------------------
+    # Message importance scoring (ML-guided, no LLM call)
+    # ------------------------------------------------------------------
+
+    def _score_message_importance(
+        self,
+        message: Dict[str, Any],
+        tail_messages: List[Dict[str, Any]],
+    ) -> float:
+        """Score a message's importance for compression decisions (0.0-1.0).
+
+        Higher scores mean the message should be preserved verbatim.
+        Uses heuristic features — no LLM or embedding calls required.
+        """
+        content = message.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        role = message.get("role", "")
+
+        score = 0.5  # baseline
+
+        # User instructions are more important than tool/assistant output
+        if role == "user":
+            score += 0.15
+        elif role == "tool":
+            score -= 0.1
+
+        # Error/exception patterns are critical to preserve
+        error_patterns = ("error", "exception", "traceback", "failed", "crash", "bug")
+        content_lower = content.lower()
+        if any(p in content_lower for p in error_patterns):
+            score += 0.25
+
+        # File paths are often referenced later
+        if "/" in content or "\\" in content:
+            path_count = content_lower.count("/") + content_lower.count("\\")
+            score += min(path_count * 0.02, 0.15)
+
+        # Code blocks contain high-information-density content
+        if "```" in content:
+            score += 0.15
+
+        # Short messages are cheap to keep
+        if len(content) < 200:
+            score += 0.1
+
+        # Very long tool outputs are low information density
+        if role == "tool" and len(content) > 2000:
+            score -= 0.2
+
+        # Check if content overlaps with tail (still-relevant context)
+        if tail_messages:
+            tail_text = " ".join(
+                str(m.get("content", ""))[:500] for m in tail_messages[:5]
+            ).lower()
+            # Simple word overlap check (fast, no embeddings needed)
+            msg_words = set(content_lower.split())
+            tail_words = set(tail_text.split())
+            # Remove common stop words
+            stop = {"the", "a", "an", "is", "are", "was", "were", "in", "on", "at", "to", "for", "of", "and", "or", "it", "i", "you", "that", "this"}
+            msg_significant = msg_words - stop
+            tail_significant = tail_words - stop
+            if msg_significant and tail_significant:
+                overlap = len(msg_significant & tail_significant) / max(len(msg_significant), 1)
+                score += overlap * 0.2
+
+        return max(0.0, min(1.0, score))
+
+    def _partition_by_importance(
+        self,
+        middle_messages: List[Dict[str, Any]],
+        tail_messages: List[Dict[str, Any]],
+        keep_ratio: float = 0.3,
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Split middle messages into important (keep verbatim) and summarizable.
+
+        Returns (important_messages, messages_to_summarize).
+        """
+        scored = []
+        for msg in middle_messages:
+            importance = self._score_message_importance(msg, tail_messages)
+            scored.append((importance, msg))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        keep_count = max(1, int(len(scored) * keep_ratio))
+        important = [msg for _, msg in scored[:keep_count]]
+        to_summarize = [msg for _, msg in scored[keep_count:]]
+
+        return important, to_summarize
+
+    # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)
     # ------------------------------------------------------------------
 
@@ -584,7 +675,16 @@ Write only the summary body. Do not include any preamble or prefix."""
         if compress_start >= compress_end:
             return messages
 
-        turns_to_summarize = messages[compress_start:compress_end]
+        middle_messages = messages[compress_start:compress_end]
+        tail_messages = messages[compress_end:]
+
+        # Phase 2.5: Score message importance and partition.
+        # Important messages get preserved in the summary text (not as separate
+        # messages, to avoid breaking role alternation requirements).
+        important_msgs, low_importance_msgs = self._partition_by_importance(
+            middle_messages, tail_messages, keep_ratio=0.3,
+        )
+        turns_to_summarize = middle_messages  # Summarize all, but hint important ones
 
         if not self.quiet_mode:
             logger.info(
@@ -600,10 +700,12 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
             tail_msgs = n_messages - compress_end
             logger.info(
-                "Summarizing turns %d-%d (%d turns), protecting %d head + %d tail messages",
+                "Summarizing turns %d-%d (%d turns, %d high-importance), "
+                "protecting %d head + %d tail messages",
                 compress_start + 1,
                 compress_end,
-                len(turns_to_summarize),
+                len(middle_messages),
+                len(important_msgs),
                 compress_start,
                 tail_msgs,
             )

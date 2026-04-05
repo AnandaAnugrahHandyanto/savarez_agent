@@ -55,6 +55,9 @@ class ProviderMetrics:
     _latency_count: int = 0
     demoted: bool = False
     demoted_at: float = 0.0
+    # Learned recovery tracking
+    _recovery_times: list = field(default_factory=list)  # seconds from demotion to first success
+    _demotion_count: int = 0
 
     @property
     def error_rate(self) -> float:
@@ -85,6 +88,17 @@ class ProviderMetrics:
         )
         return max(0.0, min(1.0, score))
 
+    @property
+    def learned_recovery_window(self) -> Optional[float]:
+        """Median recovery time based on historical demotions, or None if insufficient data."""
+        if len(self._recovery_times) < 2:
+            return None
+        sorted_times = sorted(self._recovery_times)
+        mid = len(sorted_times) // 2
+        if len(sorted_times) % 2 == 0:
+            return (sorted_times[mid - 1] + sorted_times[mid]) / 2.0
+        return sorted_times[mid]
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "provider": self.provider,
@@ -95,6 +109,8 @@ class ProviderMetrics:
             "avg_latency_ms": round(self.avg_latency_ms, 1),
             "health_score": round(self.health_score, 3),
             "demoted": self.demoted,
+            "demotion_count": self._demotion_count,
+            "learned_recovery_window": self.learned_recovery_window,
         }
 
 
@@ -127,11 +143,20 @@ class ProviderHealthTracker:
             m._latency_count += 1
             m.avg_latency_ms = m._latency_sum / m._latency_count
 
-        # Auto-promote if was demoted
+        # Auto-promote if was demoted, and record recovery time
         if m.demoted:
+            recovery_seconds = time.time() - m.demoted_at
+            m._recovery_times.append(recovery_seconds)
+            # Keep only last 20 recovery times to avoid unbounded growth
+            if len(m._recovery_times) > 20:
+                m._recovery_times = m._recovery_times[-20:]
             m.demoted = False
             m.demoted_at = 0.0
-            logger.info("Provider %s promoted (recovered after demotion)", provider)
+            logger.info(
+                "Provider %s promoted (recovered in %.0fs, median recovery=%.0fs)",
+                provider, recovery_seconds,
+                m.learned_recovery_window or recovery_seconds,
+            )
 
     def record_failure(self, provider: str, error: str = "") -> None:
         """Record a failed API call."""
@@ -146,22 +171,34 @@ class ProviderHealthTracker:
         if m.consecutive_failures >= self.demotion_threshold and not m.demoted:
             m.demoted = True
             m.demoted_at = time.time()
+            m._demotion_count += 1
             logger.warning(
-                "Provider %s demoted (%d consecutive failures: %s)",
-                provider, m.consecutive_failures, error,
+                "Provider %s demoted (%d consecutive failures: %s, demotion #%d)",
+                provider, m.consecutive_failures, error, m._demotion_count,
             )
 
     def should_skip(self, provider: str) -> bool:
-        """Check if a provider should be skipped (demoted and not recovered)."""
+        """Check if a provider should be skipped (demoted and not recovered).
+
+        Uses the learned per-provider recovery window when available (based on
+        historical demotion/recovery data), falling back to the configured
+        default recovery window.
+        """
         m = self._metrics.get(provider)
         if not m or not m.demoted:
             return False
 
-        # Check recovery window
+        # Use learned recovery window if we have enough history,
+        # otherwise fall back to the configured default
+        effective_window = m.learned_recovery_window or self.recovery_window
+
         elapsed = time.time() - m.demoted_at
-        if elapsed >= self.recovery_window:
-            # Recovery window passed — allow retry
-            logger.info("Provider %s eligible for recovery (%.0fs since demotion)", provider, elapsed)
+        if elapsed >= effective_window:
+            logger.info(
+                "Provider %s eligible for recovery (%.0fs since demotion, window=%.0fs %s)",
+                provider, elapsed, effective_window,
+                "learned" if m.learned_recovery_window else "default",
+            )
             return False
 
         return True

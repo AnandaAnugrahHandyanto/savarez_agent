@@ -18,13 +18,29 @@ from hermes_constants import get_hermes_home
 logger = logging.getLogger(__name__)
 
 _MODEL_PATH = get_hermes_home() / "models" / "routing_classifier.pkl"
-_CONFIDENCE_THRESHOLD = 0.85
+_META_PATH = get_hermes_home() / "models" / "routing_classifier.json"
+_DEFAULT_CONFIDENCE_THRESHOLD = 0.85
 
 # Singleton state
 _classifier: Optional[Any] = None
 _classifier_mtime: float = 0.0
 _classifier_checked_at: float = 0.0
 _CHECK_INTERVAL = 60.0  # Re-check file mtime every 60 seconds
+
+
+def _load_confidence_threshold() -> float:
+    """Read calibrated confidence threshold from model metadata, or use default."""
+    meta_path = Path(os.getenv("HERMES_ROUTING_MODEL", str(_MODEL_PATH))).with_suffix(".json")
+    try:
+        if meta_path.exists():
+            import json
+            with open(meta_path, "r") as f:
+                meta = json.load(f)
+            threshold = meta.get("confidence_threshold", _DEFAULT_CONFIDENCE_THRESHOLD)
+            return float(threshold)
+    except Exception:
+        pass
+    return _DEFAULT_CONFIDENCE_THRESHOLD
 
 
 def get_routing_classifier() -> Optional["RoutingClassifier"]:
@@ -58,9 +74,10 @@ def get_routing_classifier() -> Optional["RoutingClassifier"]:
         import pickle
         with open(model_path, "rb") as f:
             model = pickle.load(f)
-        _classifier = RoutingClassifier(model)
+        threshold = _load_confidence_threshold()
+        _classifier = RoutingClassifier(model, confidence_threshold=threshold)
         _classifier_mtime = current_mtime
-        logger.info("Loaded routing classifier from %s", model_path)
+        logger.info("Loaded routing classifier from %s (threshold=%.2f)", model_path, threshold)
         return _classifier
     except ImportError:
         logger.debug("scikit-learn not available — routing classifier disabled")
@@ -75,8 +92,9 @@ def get_routing_classifier() -> Optional["RoutingClassifier"]:
 class RoutingClassifier:
     """Wrapper around a trained sklearn model for routing predictions."""
 
-    def __init__(self, model: Any):
+    def __init__(self, model: Any, confidence_threshold: float = _DEFAULT_CONFIDENCE_THRESHOLD):
         self._model = model
+        self._confidence_threshold = confidence_threshold
 
     def predict_with_confidence(
         self, features: Dict[str, float]
@@ -103,8 +121,12 @@ class RoutingClassifier:
     def should_route_cheap(
         self,
         features: Dict[str, float],
-        threshold: float = _CONFIDENCE_THRESHOLD,
+        threshold: Optional[float] = None,
     ) -> bool:
-        """Convenience: returns True if classifier is confident the message is simple."""
+        """Convenience: returns True if classifier is confident the message is simple.
+
+        Uses the calibrated threshold from model metadata by default.
+        """
+        effective_threshold = threshold if threshold is not None else self._confidence_threshold
         label, confidence = self.predict_with_confidence(features)
-        return label == "cheap" and confidence >= threshold
+        return label == "cheap" and confidence >= effective_threshold

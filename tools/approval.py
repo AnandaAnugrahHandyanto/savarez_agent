@@ -8,6 +8,7 @@ This module is the single source of truth for the dangerous command system:
 - Permanent allowlist persistence (config.yaml)
 """
 
+import contextvars
 import logging
 import os
 import re
@@ -17,6 +18,33 @@ import unicodedata
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Per-thread/per-task gateway session identity (v0.7.0).
+# Gateway runs agent turns concurrently in executor threads, so reading a
+# process-global env var for session identity is racy. Keep env fallback for
+# legacy single-threaded callers, but prefer the context-local value when set.
+_approval_session_key: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "approval_session_key",
+    default="",
+)
+
+
+def set_current_session_key(session_key: str) -> contextvars.Token[str]:
+    """Bind the active approval session key to the current context."""
+    return _approval_session_key.set(session_key or "")
+
+
+def reset_current_session_key(token: contextvars.Token[str]) -> None:
+    """Restore the prior approval session key context."""
+    _approval_session_key.reset(token)
+
+
+def get_current_session_key(default: str = "default") -> str:
+    """Return the active session key, preferring context-local state."""
+    session_key = _approval_session_key.get()
+    if session_key:
+        return session_key
+    return os.getenv("HERMES_SESSION_KEY", default)
 
 # Sensitive write targets that should trigger approval even when referenced
 # via shell expansions like $HOME or $HERMES_HOME.
@@ -146,6 +174,78 @@ _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _permanent_approved: set = set()
 
+# =========================================================================
+# Blocking gateway approval (v0.7.0 — mirrors CLI's synchronous input())
+# =========================================================================
+# Per-session QUEUE of pending approvals.  Multiple threads (parallel
+# subagents, execute_code RPC handlers) can block concurrently — each gets
+# its own threading.Event.
+
+
+class _ApprovalEntry:
+    """One pending dangerous-command approval inside a gateway session."""
+    __slots__ = ("event", "data", "result")
+
+    def __init__(self, data: dict):
+        self.event = threading.Event()
+        self.data = data
+        self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
+
+
+_gateway_queues: dict[str, list] = {}
+_gateway_notify_cbs: dict[str, object] = {}
+
+
+def register_gateway_notify(session_key: str, cb) -> None:
+    """Register a per-session callback for sending approval requests."""
+    with _lock:
+        _gateway_notify_cbs[session_key] = cb
+
+
+def unregister_gateway_notify(session_key: str) -> None:
+    """Unregister callback and signal all blocked threads."""
+    with _lock:
+        _gateway_notify_cbs.pop(session_key, None)
+        entries = _gateway_queues.pop(session_key, [])
+        for entry in entries:
+            entry.event.set()
+
+
+def resolve_gateway_approval(session_key: str, choice: str,
+                             resolve_all: bool = False) -> int:
+    """Unblock waiting agent thread(s) with user's choice.
+
+    Returns the number of approvals resolved (0 = nothing pending).
+    """
+    with _lock:
+        queue = _gateway_queues.get(session_key)
+        if not queue:
+            return 0
+        if resolve_all:
+            targets = list(queue)
+            queue.clear()
+        else:
+            targets = [queue.pop(0)]
+        if not queue:
+            _gateway_queues.pop(session_key, None)
+
+    for entry in targets:
+        entry.result = choice
+        entry.event.set()
+    return len(targets)
+
+
+def has_blocking_approval(session_key: str) -> bool:
+    """Check if a session has blocking gateway approvals waiting."""
+    with _lock:
+        return bool(_gateway_queues.get(session_key))
+
+
+def pending_approval_count(session_key: str) -> int:
+    """Return count of pending blocking approvals for a session."""
+    with _lock:
+        return len(_gateway_queues.get(session_key, []))
+
 
 def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
@@ -202,6 +302,11 @@ def clear_session(session_key: str):
     with _lock:
         _session_approved.pop(session_key, None)
         _pending.pop(session_key, None)
+        _gateway_notify_cbs.pop(session_key, None)
+        # Signal ALL blocked threads so they don't hang forever
+        entries = _gateway_queues.pop(session_key, [])
+        for entry in entries:
+            entry.event.set()
 
 
 # =========================================================================
@@ -468,7 +573,7 @@ def check_dangerous_command(command: str, env_type: str,
     if not is_dangerous:
         return {"approved": True, "message": None}
 
-    session_key = os.getenv("HERMES_SESSION_KEY", "default")
+    session_key = get_current_session_key()
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
@@ -594,7 +699,7 @@ def check_all_command_guards(command: str, env_type: str,
     # Collect warnings that need approval
     warnings = []  # list of (pattern_key, description, is_tirith)
 
-    session_key = os.getenv("HERMES_SESSION_KEY", "default")
+    session_key = get_current_session_key()
 
     # Tirith block/warn → approvable warning with rich findings.
     # Previously, tirith "block" was a hard block with no approval prompt.
