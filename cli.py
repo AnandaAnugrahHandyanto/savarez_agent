@@ -7844,9 +7844,19 @@ class HermesCLI:
         #
         # Strategy: poll GetAsyncKeyState for Ctrl+V at 20Hz.  When detected,
         # check clipboard for images and auto-attach.  A 1s cooldown prevents
-        # repeated triggers from key repeat.  The GetAsyncKeyState approach is
-        # global (not per-window), but we only act when there's actually an image
-        # in the clipboard and the agent isn't running, which limits false positives.
+        # repeated triggers from key repeat.
+        #
+        # Focus guard: GetAsyncKeyState is system-global — ALL running Hermes
+        # instances see the same Ctrl+V.  To prevent multiple instances from
+        # racing to grab the same clipboard image, we use two layers:
+        #
+        # 1. Focus detection (cmd.exe/PowerShell/conhost): compare
+        #    GetForegroundWindow() against GetConsoleWindow() and our PID.
+        #    Precise, but doesn't work in Windows Terminal (WT owns the HWND).
+        #
+        # 2. Clipboard sequence dedup (Windows Terminal fallback): track
+        #    GetClipboardSequenceNumber() via a shared lock file so only one
+        #    instance claims each clipboard state.  First writer wins.
         if sys.platform == "win32":
             def _clipboard_watcher():
                 import time as _time
@@ -7856,10 +7866,117 @@ class HermesCLI:
                     _GetAsyncKeyState = ctypes.windll.user32.GetAsyncKeyState
                     _GetAsyncKeyState.argtypes = [ctypes.c_int]
                     _GetAsyncKeyState.restype = ctypes.wintypes.SHORT
+                    _GetForegroundWindow = ctypes.windll.user32.GetForegroundWindow
+                    _GetForegroundWindow.argtypes = []
+                    _GetForegroundWindow.restype = ctypes.wintypes.HWND
+                    _GetConsoleWindow = ctypes.windll.kernel32.GetConsoleWindow
+                    _GetConsoleWindow.argtypes = []
+                    _GetConsoleWindow.restype = ctypes.wintypes.HWND
+                    _GetWindowThreadProcessId = ctypes.windll.user32.GetWindowThreadProcessId
+                    _GetWindowThreadProcessId.argtypes = [ctypes.wintypes.HWND, ctypes.POINTER(ctypes.wintypes.DWORD)]
+                    _GetWindowThreadProcessId.restype = ctypes.wintypes.DWORD
                     _VK_CONTROL = 0x11
                     _VK_V = 0x56
                 except Exception:
                     return  # Can't set up watcher, bail out silently
+
+                # Resolve our console window once at startup.
+                _console_hwnd = _GetConsoleWindow()
+                _our_pid = os.getpid()
+
+                # Detect if we're running inside Windows Terminal (wt.exe).
+                # In WT, GetConsoleWindow() returns a pseudo-console HWND that
+                # never matches GetForegroundWindow(), so focus detection is
+                # unreliable.  We detect WT by checking if WT_SESSION env var
+                # is set (WT always sets this).
+                _in_windows_terminal = bool(os.environ.get("WT_SESSION"))
+
+                # Clipboard sequence number: GetClipboardSequenceNumber() returns
+                # a monotonically increasing value that changes each time the
+                # clipboard is modified.  By tracking the last sequence we processed,
+                # we ensure only ONE instance grabs each paste — whoever gets there
+                # first bumps the "last seen" sequence and the others skip it.
+                try:
+                    _GetClipboardSequenceNumber = ctypes.windll.user32.GetClipboardSequenceNumber
+                    _GetClipboardSequenceNumber.argtypes = []
+                    _GetClipboardSequenceNumber.restype = ctypes.wintypes.DWORD
+                except Exception:
+                    _GetClipboardSequenceNumber = None
+                _last_processed_seq = 0
+
+                def _is_our_window_focused() -> bool:
+                    """Check if the foreground window belongs to this Hermes instance.
+
+                    Two strategies (any match = focused):
+                    1. GetForegroundWindow() == GetConsoleWindow() — works for
+                       cmd.exe, PowerShell, conhost-hosted terminals.
+                    2. Foreground window owned by our process — direct match.
+
+                    For Windows Terminal, neither may match (WT owns the window,
+                    not our python.exe process).  In that case we return False
+                    and rely on the clipboard sequence number dedup as a fallback.
+                    """
+                    fg = _GetForegroundWindow()
+                    if not fg:
+                        return False
+                    # Strategy 1: direct console window match
+                    if _console_hwnd and fg == _console_hwnd:
+                        return True
+                    # Strategy 2: foreground window owned by our process
+                    pid = ctypes.wintypes.DWORD(0)
+                    _GetWindowThreadProcessId(fg, ctypes.byref(pid))
+                    fg_pid = pid.value
+                    if fg_pid == _our_pid:
+                        return True
+                    return False
+
+                # Lock file for cross-process clipboard dedup (Windows Terminal
+                # case where focus detection can't distinguish between tabs/windows).
+                # Each instance tries to atomically claim a clipboard sequence number
+                # by writing it to a shared lock file.  First writer wins.
+                _clip_lock_path = get_hermes_home() / ".clipboard_seq"
+
+                def _try_claim_clipboard_seq() -> bool:
+                    """Atomically claim the current clipboard sequence number.
+
+                    Returns True if we won the race (or seq tracking unavailable).
+                    Uses the clipboard sequence number written to a shared file.
+                    """
+                    nonlocal _last_processed_seq
+                    if not _GetClipboardSequenceNumber:
+                        return True  # Can't track, allow (focus check is primary guard)
+                    seq = _GetClipboardSequenceNumber()
+                    if seq == _last_processed_seq:
+                        return False  # Already processed this clipboard state
+                    # Try to claim by writing our PID + seq atomically
+                    try:
+                        import json as _json
+                        claim = {"seq": seq, "pid": _our_pid, "t": _time.monotonic()}
+                        # Read existing claim
+                        try:
+                            existing = _json.loads(_clip_lock_path.read_text())
+                            if existing.get("seq") == seq and existing.get("pid") != _our_pid:
+                                # Another instance already claimed this sequence
+                                _last_processed_seq = seq
+                                return False
+                        except Exception:
+                            pass  # No file or corrupt — we can claim
+                        # Write our claim
+                        _clip_lock_path.write_text(_json.dumps(claim))
+                        # Re-read to verify we won (poor man's compare-and-swap)
+                        _time.sleep(0.02)  # Brief yield for race window
+                        try:
+                            final = _json.loads(_clip_lock_path.read_text())
+                            if final.get("pid") != _our_pid:
+                                _last_processed_seq = seq
+                                return False
+                        except Exception:
+                            pass
+                        _last_processed_seq = seq
+                        return True
+                    except Exception:
+                        _last_processed_seq = seq
+                        return True  # On error, allow (don't block all instances)
 
                 _cooldown_until = 0.0
                 while not self._should_exit:
@@ -7873,9 +7990,19 @@ class HermesCLI:
                         v_down = _GetAsyncKeyState(_VK_V) & 0x8000
                         if not (ctrl_down and v_down):
                             continue
+                        # Focus check — definitive for cmd.exe / PowerShell / conhost.
+                        # For Windows Terminal, focus detection doesn't work (WT owns
+                        # the HWND, not python.exe), so we skip this check and rely
+                        # on clipboard sequence dedup below.
+                        if not _in_windows_terminal and not _is_our_window_focused():
+                            continue
                         # Ctrl+V detected — check for clipboard image
                         from hermes_cli.clipboard import has_clipboard_image
                         if not has_clipboard_image():
+                            continue
+                        # Dedup: only one instance should process each clipboard state
+                        if not _try_claim_clipboard_seq():
+                            _cooldown_until = _time.monotonic() + 1.0
                             continue
                         # Don't auto-attach while agent is running
                         if self._agent_running:
