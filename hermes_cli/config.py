@@ -407,9 +407,12 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API)
+        "provider": "local",  # "local_parakeet" | "local" (faster-whisper) | "groq" | "openai"
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
+        },
+        "parakeet": {
+            "model": "mlx-community/parakeet-tdt-0.6b-v2",
         },
         "openai": {
             "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
