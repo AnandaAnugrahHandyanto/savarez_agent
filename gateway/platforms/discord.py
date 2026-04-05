@@ -2082,6 +2082,22 @@ class DiscordAdapter(BasePlatformAdapter):
                 if self._client.user not in message.mentions:
                     return
 
+            # OpenClaw-style: even when require_mention is bypassed (e.g. in_bot_thread),
+            # other bots must still satisfy DISCORD_ALLOW_BOTS — mentions mode requires an
+            # @mention of us here too (defense in depth vs on_message).
+            author = message.author
+            if (
+                self._client
+                and self._client.user
+                and getattr(author, "bot", False)
+                and author.id != self._client.user.id
+            ):
+                allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+                if allow_bots == "none":
+                    return
+                if allow_bots == "mentions" and self._client.user not in message.mentions:
+                    return
+
             if self._client.user and self._client.user in message.mentions:
                 message.content = message.content.replace(f"<@{self._client.user.id}>", "").strip()
                 message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()

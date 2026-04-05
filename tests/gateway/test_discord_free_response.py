@@ -95,8 +95,9 @@ def adapter(monkeypatch):
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None):
-    author = SimpleNamespace(id=42, display_name="Jezza", name="Jezza")
+def make_message(*, channel, content: str, mentions=None, author=None):
+    if author is None:
+        author = SimpleNamespace(id=42, display_name="Jezza", name="Jezza")
     return SimpleNamespace(
         id=123,
         content=content,
@@ -358,3 +359,47 @@ async def test_discord_thread_participation_tracked_on_dispatch(adapter, monkeyp
     await adapter._handle_message(message)
 
     assert "777" in adapter._bot_participated_threads
+
+
+@pytest.mark.asyncio
+async def test_discord_allow_bots_mentions_blocks_bot_in_participated_thread(adapter, monkeypatch):
+    """OpenClaw-style: in_bot_thread bypass does not waive allowBots=mentions for other bots."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    adapter._bot_participated_threads.add("891")
+    thread = FakeThread(channel_id=891, name="relaxed")
+    our = adapter._client.user
+    ext_bot = SimpleNamespace(id=66001, bot=True, display_name="ExtBot", name="ExtBot")
+    message = make_message(channel=thread, content="hi", mentions=[], author=ext_bot)
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_allow_bots_mentions_allows_bot_with_mention_in_participated_thread(
+    adapter, monkeypatch,
+):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    adapter._bot_participated_threads.add("892")
+    thread = FakeThread(channel_id=892, name="relaxed")
+    our = adapter._client.user
+    ext_bot = SimpleNamespace(id=66002, bot=True, display_name="ExtBot", name="ExtBot")
+    message = make_message(
+        channel=thread,
+        content=f"<@{our.id}> hi",
+        mentions=[our],
+        author=ext_bot,
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
