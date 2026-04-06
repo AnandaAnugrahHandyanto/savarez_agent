@@ -187,7 +187,69 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
-TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex")
+TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma")
+
+# OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
+# where GPT models abandon work on partial results, skip prerequisite lookups,
+# hallucinate instead of using tools, and declare "done" without verification.
+# Inspired by patterns from OpenAI's GPT-5.4 prompting guide & OpenClaw PR #38953.
+OPENAI_MODEL_EXECUTION_GUIDANCE = (
+    "# Execution discipline\n"
+    "<tool_persistence>\n"
+    "- Use tools whenever they improve correctness, completeness, or grounding.\n"
+    "- Do not stop early when another tool call would materially improve the result.\n"
+    "- If a tool returns empty or partial results, retry with a different query or "
+    "strategy before giving up.\n"
+    "- Keep calling tools until: (1) the task is complete, AND (2) you have verified "
+    "the result.\n"
+    "</tool_persistence>\n"
+    "\n"
+    "<prerequisite_checks>\n"
+    "- Before taking an action, check whether prerequisite discovery, lookup, or "
+    "context-gathering steps are needed.\n"
+    "- Do not skip prerequisite steps just because the final action seems obvious.\n"
+    "- If a task depends on output from a prior step, resolve that dependency first.\n"
+    "</prerequisite_checks>\n"
+    "\n"
+    "<verification>\n"
+    "Before finalizing your response:\n"
+    "- Correctness: does the output satisfy every stated requirement?\n"
+    "- Grounding: are factual claims backed by tool outputs or provided context?\n"
+    "- Formatting: does the output match the requested format or schema?\n"
+    "- Safety: if the next step has side effects (file writes, commands, API calls), "
+    "confirm scope before executing.\n"
+    "</verification>\n"
+    "\n"
+    "<missing_context>\n"
+    "- If required context is missing, do NOT guess or hallucinate an answer.\n"
+    "- Use the appropriate lookup tool when missing information is retrievable "
+    "(search_files, web_search, read_file, etc.).\n"
+    "- Ask a clarifying question only when the information cannot be retrieved by tools.\n"
+    "- If you must proceed with incomplete information, label assumptions explicitly.\n"
+    "</missing_context>"
+)
+
+# Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.
+# Injected alongside TOOL_USE_ENFORCEMENT_GUIDANCE when the model is Gemini or Gemma.
+GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
+    "# Google model operational directives\n"
+    "Follow these operational rules strictly:\n"
+    "- **Absolute paths:** Always construct and use absolute file paths for all "
+    "file system operations. Combine the project root with relative paths.\n"
+    "- **Verify first:** Use read_file/search_files to check file contents and "
+    "project structure before making changes. Never guess at file contents.\n"
+    "- **Dependency checks:** Never assume a library is available. Check "
+    "package.json, requirements.txt, Cargo.toml, etc. before importing.\n"
+    "- **Conciseness:** Keep explanatory text brief — a few sentences, not "
+    "paragraphs. Focus on actions and results over narration.\n"
+    "- **Parallel tool calls:** When you need to perform multiple independent "
+    "operations (e.g. reading several files), make all the tool calls in a "
+    "single response rather than sequentially.\n"
+    "- **Non-interactive commands:** Use flags like -y, --yes, --non-interactive "
+    "to prevent CLI tools from hanging on prompts.\n"
+    "- **Keep going:** Work autonomously until the task is fully resolved. "
+    "Don't stop with a plan — execute it.\n"
+)
 
 # Model name substrings that should use the 'developer' role instead of
 # 'system' for the system prompt.  OpenAI's newer models (GPT-5, Codex)
@@ -466,11 +528,19 @@ def build_skills_system_prompt(
         return ""
 
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
+    # Include the resolved platform so per-platform disabled-skill lists
+    # produce distinct cache entries (gateway serves multiple platforms).
+    _platform_hint = (
+        os.environ.get("HERMES_PLATFORM")
+        or os.environ.get("HERMES_SESSION_PLATFORM")
+        or ""
+    )
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
+        _platform_hint,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
