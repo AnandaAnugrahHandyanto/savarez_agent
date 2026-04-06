@@ -2825,8 +2825,19 @@ class GatewayRunner:
                 history_len = agent_result.get("history_offset", len(history))
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
                 
+                # DEBUG: Log the state of message processing
+                logger.info(
+                    "DEBUG_PERSIST: session=%s history_len=%d agent_msgs=%d new_msgs=%d",
+                    session_entry.session_id, history_len, len(agent_messages), len(new_messages)
+                )
+                
                 # If no new messages found (edge case), fall back to simple user/assistant
                 if not new_messages:
+                    logger.warning(
+                        "DEBUG_PERSIST: No new messages for session %s (history_len=%d, agent_msgs=%d). "
+                        "Using fallback user/assistant persistence.",
+                        session_entry.session_id, history_len, len(agent_messages)
+                    )
                     self.session_store.append_to_transcript(
                         session_entry.session_id,
                         {"role": "user", "content": message_text, "timestamp": ts}
@@ -2845,8 +2856,21 @@ class GatewayRunner:
                     if self._session_db is not None:
                         try:
                             agent_persisted_count = self._session_db.count_messages(session_entry.session_id)
-                        except Exception:
-                            pass  # Will trigger fallback persistence
+                            logger.info(
+                                "DEBUG_PERSIST: session=%s agent_persisted_count=%d",
+                                session_entry.session_id, agent_persisted_count
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "DEBUG_PERSIST: count_messages failed for %s: %s",
+                                session_entry.session_id, e
+                            )
+                    else:
+                        logger.error(
+                            "DEBUG_PERSIST: _session_db is None for session %s! "
+                            "Cannot verify agent persistence.",
+                            session_entry.session_id
+                        )
                     
                     # Expected count: messages from this turn (excluding system)
                     expected_count = len([m for m in new_messages if m.get("role") != "system"])
@@ -2854,6 +2878,11 @@ class GatewayRunner:
                     # If DB has fewer messages than expected, agent failed to persist.
                     # Persist from gateway to ensure SQLite has the data.
                     agent_persisted_ok = agent_persisted_count >= expected_count and expected_count > 0
+                    
+                    logger.info(
+                        "DEBUG_PERSIST: session=%s agent_count=%d expected=%d agent_persisted_ok=%s",
+                        session_entry.session_id, agent_persisted_count, expected_count, agent_persisted_ok
+                    )
                     
                     if not agent_persisted_ok and self._session_db is not None:
                         logger.warning(

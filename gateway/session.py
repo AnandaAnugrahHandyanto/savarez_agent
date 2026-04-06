@@ -717,26 +717,30 @@ class SessionStore:
                 reset_had_activity=reset_had_activity,
             )
 
+            # Create in SQLite FIRST before saving to memory/disk.
+            # If this fails after retries, we don't want an orphaned session.
+            if self._db:
+                try:
+                    self._db.create_session(
+                        session_id=session_id,
+                        source=source.platform.value,
+                        user_id=source.user_id,
+                    )
+                except Exception as e:
+                    # SQLite failed even after retries - this is critical
+                    logger.error("[Session] CRITICAL: Failed to create session in SQLite: %s", e)
+                    raise RuntimeError(f"Failed to create session in database: {e}") from e
+
+            # Only save to memory/disk if SQLite succeeded
             self._entries[session_key] = entry
             self._save()
-            db_create_kwargs = {
-                "session_id": session_id,
-                "source": source.platform.value,
-                "user_id": source.user_id,
-            }
 
-        # SQLite operations outside the lock
+        # SQLite operations outside the lock (for ending previous session)
         if self._db and db_end_session_id:
             try:
                 self._db.end_session(db_end_session_id, "session_reset")
             except Exception as e:
-                logger.debug("Session DB operation failed: %s", e)
-
-        if self._db and db_create_kwargs:
-            try:
-                self._db.create_session(**db_create_kwargs)
-            except Exception as e:
-                print(f"[gateway] Warning: Failed to create SQLite session: {e}")
+                logger.debug("Session DB end_session failed (non-critical): %s", e)
 
         # Seed new DM thread sessions with parent DM session history.
         # When a bot reply creates a Slack thread and the user responds in it,

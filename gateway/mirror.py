@@ -33,10 +33,13 @@ def mirror_to_session(
     Append a delivery-mirror message to the target session's transcript.
 
     Finds the gateway session that matches the given platform + chat_id,
-    then writes a mirror entry to both the JSONL transcript and SQLite DB.
+    then writes a mirror entry to both SQLite DB and JSONL transcript.
+
+    IMPORTANT: SQLite is written FIRST. If SQLite fails, the operation fails
+    and no JSONL is written. This prevents orphaned transcript files.
 
     Returns True if mirrored successfully, False if no matching session or error.
-    All errors are caught -- this is never fatal.
+    SQLite errors are now treated as failures (not silently ignored).
     """
     try:
         session_id = _find_session_id(platform, str(chat_id), thread_id=thread_id)
@@ -50,16 +53,25 @@ def mirror_to_session(
             "timestamp": datetime.now().isoformat(),
             "mirror": True,
             "mirror_source": source_label,
+            "platform": platform,  # Include platform for auto-create
         }
 
+        # Write SQLite FIRST - if this fails, we don't write JSONL
+        # This prevents orphaned transcript files
+        try:
+            _append_to_sqlite(session_id, mirror_msg)
+        except Exception as e:
+            logger.error("[mirror] SQLite write failed for %s:%s:%s: %s", platform, chat_id, thread_id, e)
+            return False
+
+        # Only write JSONL if SQLite succeeded
         _append_to_jsonl(session_id, mirror_msg)
-        _append_to_sqlite(session_id, mirror_msg)
 
         logger.debug("Mirror: wrote to session %s (from %s)", session_id, source_label)
         return True
 
     except Exception as e:
-        logger.debug("Mirror failed for %s:%s:%s: %s", platform, chat_id, thread_id, e)
+        logger.error("[mirror] Failed for %s:%s:%s: %s", platform, chat_id, thread_id, e)
         return False
 
 
@@ -115,7 +127,10 @@ def _append_to_jsonl(session_id: str, message: dict) -> None:
 
 
 def _append_to_sqlite(session_id: str, message: dict) -> None:
-    """Append a message to the SQLite session database."""
+    """Append a message to the SQLite session database.
+    
+    Raises exceptions on failure - caller must handle.
+    """
     db = None
     try:
         from hermes_state import SessionDB
@@ -124,9 +139,10 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
             session_id=session_id,
             role=message.get("role", "assistant"),
             content=message.get("content"),
+            tool_calls=message.get("tool_calls"),
+            tool_call_id=message.get("tool_call_id"),
+            tool_name=message.get("tool_name"),
         )
-    except Exception as e:
-        logger.debug("Mirror SQLite write failed: %s", e)
     finally:
         if db is not None:
             db.close()
