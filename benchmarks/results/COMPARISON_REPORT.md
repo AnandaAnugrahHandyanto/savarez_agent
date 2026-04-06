@@ -3,12 +3,12 @@
 **Date:** 2026-04-05/06
 **Environment:** macOS, Apple Silicon, 16GB RAM, seed=42 (deterministic fixtures)
 **Framework version:** 0.1.0 with capability-based category skipping
-**Suites:** 15 (A-O), of which 12 have runners, 3 (J/K/L) need implementation
+**Suites:** 15 (A-O), all with runners
 
 ## Full Results Matrix
 
 All values are accuracy percentages (seed=42). `sk` = capability-skipped (fair),
-`nr` = no runner implemented yet.
+`—` = not yet run.
 
 | Suite | Category | #Scen | base | holo | mnem | mem0 | honch | hind |
 |-------|----------|-------|------|------|------|------|-------|------|
@@ -20,26 +20,28 @@ All values are accuracy percentages (seed=42). `sk` = capability-skipped (fair),
 | **F** | integration | 11 | sk | sk | sk | sk | sk | sk |
 | **G** | qlearning | var | sk | sk | sk | sk | sk | sk |
 | **H** | dedup (only) | 8 | **100** | 87.5 | 75.0 | — | 87.5~ | — |
-| **I** | conv+stress | 15 | 86.7 | 80.0 | **86.7** | — | pend~ | — |
-| **J** | topic_shift | 8 | nr | nr | nr | nr | nr | nr |
-| **K** | compress_survival | 8 | nr | nr | nr | nr | nr | nr |
-| **L** | delegation | 8 | nr | nr | nr | nr | nr | nr |
+| **I** | conv+stress | 15 | 86.7 | 80.0 | **86.7** | — | —~ | — |
+| **J** | topic_shift | 8 | **100** | **100** | **100** | **100** | **100**~ | **100** |
+| **K** | compress_survival | 8 | **100** | **100** | 75.0 | 75.0 | **100**~ | **100** |
+| **L** | delegation | 8 | **75.0** | 62.5 | 50.0 | 50.0 | **75.0**~ | **75.0** |
 | **M** | format_sensitivity | 10 | **90.0** | **90.0** | **90.0** | **90.0** | 80.0~ | 80.0 |
 | **N** | retrieval_ablation | 9 | **88.9** | 66.7 | **88.9** | 66.7 | 77.8~ | 66.7 |
 | **O** | timestamp | 8 | **100** | 62.5 | 62.5 | sk | sk | sk |
 
 **Bold** = best or tied-for-best. `~` = degraded mode (see notes). `—` = not yet run.
 
-### Aggregate Scores (comparable suites: A, D, E, M, N)
+### Aggregate Scores (comparable suites: A, D, E, J, K, L, M, N)
+
+These suites have no required capabilities and all 6 backends can run them.
 
 | Rank | Backend | Mean | Type | Notes |
 |------|---------|------|------|-------|
-| 1 | **mnemoria** | **94.1%** | local | New plugin (this PR) |
-| 2 | baseline-flat | 89.7% | reference | Word overlap — surprisingly strong |
-| 3 | mem0 | 86.4% | cloud | After reset fix (+8.6% vs broken reset) |
-| 4 | holographic | 85.3% | local | Existing plugin |
-| 5 | honcho | 85.2% | local Docker | Degraded: no semantic search~ |
-| 6 | hindsight | 80.4% | local | Embeddings only, no LLM extraction |
+| 1 | **baseline-flat** | **90.4%** | reference | Word overlap — surprisingly strong |
+| 2 | honcho | 87.6%~ | local Docker | Degraded: no semantic search~ |
+| 3 | mnemoria | 86.2% | local | New plugin (this PR) |
+| 3 | holographic | 86.2% | local | Existing plugin |
+| 5 | hindsight | 84.6% | local | Embeddings only, no LLM extraction |
+| 6 | mem0 | 82.2% | cloud | After reset fix (+8.6% vs broken reset) |
 
 ### Additional Backends (not fully tested)
 
@@ -61,7 +63,7 @@ All values are accuracy percentages (seed=42). `sk` = capability-skipped (fair),
   `recall()` uses semantic similarity. This is fair for retrieval quality but
   does not exercise hindsight's full knowledge graph capabilities.
 
-### Degraded Mode (results carry asterisk)
+### Degraded Mode (results carry tilde)
 - **honcho~**: Local Docker server has an expired OpenAI key (renews Apr 9).
   Embeddings fail, so our adapter falls back to client-side word overlap on
   raw session messages. Effectively tests message storage + basic recall,
@@ -71,13 +73,12 @@ All values are accuracy percentages (seed=42). `sk` = capability-skipped (fair),
   upgraded plan / BYO provider key.
 - **openviking**: VLM extraction pipeline is async. With a local 14B model,
   each fact takes ~minutes to extract. Benchmark requires synchronous
-  store→recall. Would need a fast cloud LLM or architectural changes.
+  store-then-recall. Would need a fast cloud LLM or architectural changes.
 
 ## Bugs Found During Benchmarking
 
 | Bug | Impact | Fix |
 |-----|--------|-----|
-| `CATEGORY_RUNNERS` missing J/K/L | Suites J, K, L always score 0 | Need `run_topic_shift_recall`, `run_compression_survival`, `run_delegation_memory` |
 | mem0 adapter `reset()` was no-op | Scores 8-19% lower than reality | Fixed: now calls `delete_all(user_id=...)` |
 | mem0 adapter `search()` missing filters | 400 error on v2 API | Fixed: added `filters={"user_id": ...}` |
 | Capability skipping not applied | Backends scored on unsupported features | Fixed: runner now checks `backend_supports_category()` |
@@ -95,13 +96,13 @@ Each suite tests specific memory capabilities grounded in research:
 | C | Scope isolation (project/session boundaries) | Context-dependent memory retrieval |
 | D | Adversarial prompt injection resistance | Prompt Injection (Perez & Ribeiro 2022) |
 | E | Scale (10-200 facts), needle-in-haystack | Signal-to-noise discrimination, BM25/RRF |
-| F | Full lifecycle (store→time→access→consolidate→recall) | End-to-end system verification |
+| F | Full lifecycle (store, time, access, consolidate, recall) | End-to-end system verification |
 | G | Q-value learning from reward signals | Q-Learning (Watkins & Dayan 1992) |
 | H | Dedup, supersession, typed decay, notation parsing, scope lifecycle | Graph integrity (Tarjan 1972), structured knowledge |
 | I | Multi-turn conversation, capacity stress (50-1000 facts) | Conversational memory patterns |
-| J | Topic shift recall (recover context after pivot) | **Runner not implemented** |
-| K | Compression survival (critical facts survive summarization) | **Runner not implemented** |
-| L | Delegation memory (child agent results) | **Runner not implemented** |
+| J | Topic shift recall (recover context after pivot) | Working memory interference |
+| K | Compression survival (critical facts survive summarization + noise) | Context window compression robustness |
+| L | Delegation memory (child agent results recallable) | Multi-agent coordination |
 | M | Format sensitivity (structured output handling) | Omni-SimpleMem (arXiv:2604.01007) |
 | N | Retrieval ablation (keyword-only vs semantic-only signals) | Omni-SimpleMem (arXiv:2604.01007) |
 | O | Timestamp integrity (temporal ordering) | Omni-SimpleMem (arXiv:2604.01007) |
@@ -115,4 +116,4 @@ Each suite tests specific memory capabilities grounded in research:
 | hindsight | 130s | 12s | — | Local API (embedded PG) |
 | mnemoria | 716s | 57s | 2620s | Subprocess (ONNX) |
 | mem0 | 1422s | 165s | — | Cloud API + reset |
-| honcho | 2016s | 196s | pend | Docker API |
+| honcho | 2016s | 196s | — | Docker API |

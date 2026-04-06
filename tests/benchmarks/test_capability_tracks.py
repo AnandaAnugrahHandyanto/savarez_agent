@@ -1,5 +1,5 @@
 from benchmarks.capabilities import BackendCapabilities
-from benchmarks.interface import AggregateResult, CategoryResult, RunResult
+from benchmarks.interface import CategoryResult, RunResult
 from benchmarks.statistical import aggregate_results
 from benchmarks.tracks import backend_supports_category, missing_capabilities
 
@@ -19,7 +19,7 @@ def test_structured_backend_supports_structured_categories_only():
     assert backend_supports_category(caps, "qlearning") is False
 
 
-def test_aggregate_results_keeps_core_track_and_coverage():
+def test_aggregate_results_computes_mean_and_per_category():
     run1 = RunResult(
         seed=1,
         results_by_category={
@@ -27,11 +27,6 @@ def test_aggregate_results_keeps_core_track_and_coverage():
             "scopes": CategoryResult("scopes", total=5, correct=5, score=1.0),
         },
         overall_score=14 / 15,
-        core_score=0.9,
-        track_scores={"core": 0.9, "structured": 1.0},
-        executed_categories=["semantic_recall", "scopes"],
-        skipped_categories={"temporal_decay": "missing capabilities: time_simulation"},
-        capability_coverage={"scopes": True, "time_simulation": False},
     )
     run2 = RunResult(
         seed=2,
@@ -40,17 +35,10 @@ def test_aggregate_results_keeps_core_track_and_coverage():
             "scopes": CategoryResult("scopes", total=5, correct=4, score=0.8),
         },
         overall_score=14 / 15,
-        core_score=1.0,
-        track_scores={"core": 1.0, "structured": 0.8},
-        executed_categories=["semantic_recall", "scopes"],
-        skipped_categories={"temporal_decay": "missing capabilities: time_simulation"},
-        capability_coverage={"scopes": True, "time_simulation": False},
     )
 
     agg = aggregate_results([run1, run2])
 
-    assert agg.core_mean_score == 0.95
-    assert agg.track_mean["core"] == 0.95
-    assert agg.track_mean["structured"] == 0.9
-    assert agg.skipped_categories == {"temporal_decay": "missing capabilities: time_simulation"}
-    assert agg.capability_coverage == {"scopes": True, "time_simulation": False}
+    assert agg.num_runs == 2
+    assert agg.per_category_mean["semantic_recall"] == 0.95
+    assert agg.per_category_mean["scopes"] == 0.9

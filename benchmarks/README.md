@@ -125,6 +125,24 @@ The benchmark draws on established memory research:
 | conversation_memory | 10 | Multi-turn dialogue: preferences, corrections, evolving state | Works in real conversation patterns |
 | capacity_stress | 5 | 50-1000 facts with importance discrimination | Scales to production fact counts |
 
+### Suite J — Topic Shift Recall (8 scenarios)
+
+| Category | # | What It Tests | Passing Means |
+|----------|---|---------------|---------------|
+| topic_shift_recall | 8 | Store topic A facts, then topic B facts, query about topic B | Correct context is recovered after a topic pivot without leaking the old topic |
+
+### Suite K — Compression Survival (8 scenarios)
+
+| Category | # | What It Tests | Passing Means |
+|----------|---|---------------|---------------|
+| compression_survival | 8 | Compressed summary stored, then noise facts, query for critical detail | Important facts in compressed summaries survive recent noise |
+
+### Suite L — Delegation Memory (8 scenarios)
+
+| Category | # | What It Tests | Passing Means |
+|----------|---|---------------|---------------|
+| delegation_memory | 8 | Store delegation task + result, query for outcome | Delegated child-agent work is recallable by the parent |
+
 ## Fairness Principles
 
 Each memory system is tested honestly against what it actually supports. We distinguish between a system's **inherent limitations** (what it fundamentally cannot do) and **bugs** (what it should do but does not). This matters for fair comparison.
@@ -402,15 +420,17 @@ When using `--compare`, the suite runs both backends with identical seeds and re
 
 Tested on macOS, 16GB RAM, seed=42:
 
-| Backend | A | B | D | E | M | N |
-|---------|---|---|---|---|---|---|
-| baseline-flat | 82.5% | 90.0% | 86.7% | **100%** | **90.0%** | **88.9%** |
-| holographic | 70.0% | 93.3% | **100%** | **100%** | **90.0%** | 66.7% |
-| mnemoria | **86.0%** | **100%** | **100%** | **100%** | **90.0%** | **88.9%** |
+| Backend | A | D | E | J | K | L | M | N |
+|---------|---|---|---|---|---|---|---|---|
+| baseline-flat | 82.5% | 86.7% | **100%** | **100%** | **100%** | **75.0%** | **90.0%** | **88.9%** |
+| holographic | 70.0% | **100%** | **100%** | **100%** | **100%** | 62.5% | **90.0%** | 66.7% |
+| mnemoria | **86.0%** | **100%** | **100%** | **100%** | 75.0% | 50.0% | **90.0%** | **88.9%** |
+| mem0 | 75.5% | **100%** | **100%** | **100%** | 75.0% | 50.0% | **90.0%** | 66.7% |
+| honcho~ | 74.8% | 93.3% | **100%** | **100%** | **100%** | **75.0%** | 80.0% | 77.8% |
+| hindsight | 61.9% | 93.3% | **100%** | **100%** | **100%** | **75.0%** | 80.0% | 66.7% |
 
-Suites C and O are only scored for backends that declare `scopes` and
-`time_simulation` capabilities respectively. See `benchmarks/results/COMPARISON_REPORT.md`
-for detailed analysis.
+Suites B/C/F/G/O require specific capabilities; see `benchmarks/results/COMPARISON_REPORT.md`
+for the full matrix. `~` = degraded mode, `—` = not yet run.
 
 ## Adding New Suites
 

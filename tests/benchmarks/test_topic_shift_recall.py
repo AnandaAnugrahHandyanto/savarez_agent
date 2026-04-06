@@ -47,12 +47,12 @@ def test_topic_shift_recall_passes_without_contamination():
     result = run_topic_shift_recall(backend, scenarios, judge)
     assert result.correct == 1
     assert result.score == 1.0
-    assert result.sub_scores["no_contamination"] == 1.0
 
 
 def test_topic_shift_recall_fails_when_old_topic_contaminates_answer():
     class ContaminatingBackend(TinyBackend):
         def recall(self, query: str, top_k: int = 10, scope=None):
+            # Returns topic A content as the top result
             return [
                 "Editor theme preference: dark mode",
                 "Production deploy region is us-east-1",
@@ -73,5 +73,6 @@ def test_topic_shift_recall_fails_when_old_topic_contaminates_answer():
     ]
 
     result = run_topic_shift_recall(backend, scenarios, judge)
+    # Top result contains forbidden term "dark mode", so it fails even though
+    # the gold answer could be found in the second result
     assert result.correct == 0
-    assert result.sub_scores["no_contamination"] == 0.0

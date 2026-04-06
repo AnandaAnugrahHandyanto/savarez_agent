@@ -2029,6 +2029,219 @@ def run_timestamp_integrity(backend: BenchmarkableStore, scenarios: list,
     )
 
 
+# --- Suite J: Topic Shift Recall ---
+
+def run_topic_shift_recall(backend: BenchmarkableStore, scenarios: list,
+                           judge: MemoryJudge) -> CategoryResult:
+    """Run topic shift recall scenarios (Suite J).
+
+    Stores facts from topic A, then topic B (simulating a conversation pivot),
+    then queries about topic B. Tests whether the system retrieves the correct
+    context after a topic shift. Forbidden terms from topic A must not appear.
+    """
+    correct = 0
+    details = []
+    total_recall_tokens = 0
+    total_recall_chars = 0
+
+    for sc in scenarios:
+        backend.reset()
+
+        for fact in sc["topic_a_facts"]:
+            backend.store(fact, category="factual")
+        for fact in sc["topic_b_facts"]:
+            backend.store(fact, category="factual")
+
+        results = backend.recall(sc["query"], top_k=5)
+        actual = results[0] if results else ""
+        rt, rc = count_recall_tokens(results)
+        total_recall_tokens += rt
+        total_recall_chars += rc
+
+        jr = judge.judge_answer(sc["query"], sc["gold_answer"], actual)
+        scenario_correct = jr.correct
+
+        # Check forbidden terms — if topic A content leaks into the answer, fail
+        if scenario_correct and sc.get("forbidden_terms"):
+            for term in sc["forbidden_terms"]:
+                if term.lower() in actual.lower():
+                    scenario_correct = False
+                    break
+
+        if scenario_correct:
+            correct += 1
+
+        details.append({
+            "id": sc["id"],
+            "difficulty": sc.get("difficulty", "medium"),
+            "correct": scenario_correct,
+            "actual": actual,
+            "gold": sc["gold_answer"],
+        })
+        scenario_metrics = compute_scenario_metrics(results, sc["gold_answer"])
+        details[-1]["metrics"] = scenario_metrics
+
+    sub_scores = {}
+    for diff in ["easy", "medium", "hard"]:
+        dsubset = [d for d in details if d["difficulty"] == diff]
+        if dsubset:
+            sub_scores[diff] = sum(1 for d in dsubset if d["correct"]) / len(dsubset)
+
+    all_metrics = [d.get("metrics", {}) for d in details if "metrics" in d]
+    avg_retrieval_metrics = {}
+    if all_metrics:
+        for key in all_metrics[0]:
+            values = [m[key] for m in all_metrics if key in m]
+            avg_retrieval_metrics[key] = sum(values) / len(values) if values else 0.0
+
+    return CategoryResult(
+        category="topic_shift_recall",
+        total=len(scenarios),
+        correct=correct,
+        score=correct / len(scenarios) if scenarios else 0,
+        sub_scores=sub_scores,
+        details=details,
+        recall_tokens=total_recall_tokens,
+        recall_chars=total_recall_chars,
+        retrieval_metrics=avg_retrieval_metrics,
+    )
+
+
+# --- Suite K: Compression Survival ---
+
+def run_compression_survival(backend: BenchmarkableStore, scenarios: list,
+                             judge: MemoryJudge) -> CategoryResult:
+    """Run compression survival scenarios (Suite K).
+
+    Stores a compressed summary (simulating context window compression),
+    then stores recent noise facts. Queries for a critical detail from
+    the summary. Tests whether important facts survive compression + noise.
+    """
+    correct = 0
+    details = []
+    total_recall_tokens = 0
+    total_recall_chars = 0
+
+    for sc in scenarios:
+        backend.reset()
+
+        backend.store(sc["compressed_summary"], category="factual")
+        for noise in sc["recent_noise"]:
+            backend.store(noise, category="factual")
+
+        results = backend.recall(sc["query"], top_k=5)
+        actual = results[0] if results else ""
+        rt, rc = count_recall_tokens(results)
+        total_recall_tokens += rt
+        total_recall_chars += rc
+
+        jr = judge.judge_answer(sc["query"], sc["gold_answer"], actual)
+        if jr.correct:
+            correct += 1
+
+        details.append({
+            "id": sc["id"],
+            "difficulty": sc.get("difficulty", "medium"),
+            "correct": jr.correct,
+            "actual": actual,
+            "gold": sc["gold_answer"],
+        })
+        scenario_metrics = compute_scenario_metrics(results, sc["gold_answer"])
+        details[-1]["metrics"] = scenario_metrics
+
+    sub_scores = {}
+    for diff in ["easy", "medium", "hard"]:
+        dsubset = [d for d in details if d["difficulty"] == diff]
+        if dsubset:
+            sub_scores[diff] = sum(1 for d in dsubset if d["correct"]) / len(dsubset)
+
+    all_metrics = [d.get("metrics", {}) for d in details if "metrics" in d]
+    avg_retrieval_metrics = {}
+    if all_metrics:
+        for key in all_metrics[0]:
+            values = [m[key] for m in all_metrics if key in m]
+            avg_retrieval_metrics[key] = sum(values) / len(values) if values else 0.0
+
+    return CategoryResult(
+        category="compression_survival",
+        total=len(scenarios),
+        correct=correct,
+        score=correct / len(scenarios) if scenarios else 0,
+        sub_scores=sub_scores,
+        details=details,
+        recall_tokens=total_recall_tokens,
+        recall_chars=total_recall_chars,
+        retrieval_metrics=avg_retrieval_metrics,
+    )
+
+
+# --- Suite L: Delegation Memory ---
+
+def run_delegation_memory(backend: BenchmarkableStore, scenarios: list,
+                          judge: MemoryJudge) -> CategoryResult:
+    """Run delegation memory scenarios (Suite L).
+
+    Stores a delegation task and its result (simulating a child agent
+    returning findings). Queries for the outcome. Tests whether delegated
+    work is recallable.
+    """
+    correct = 0
+    details = []
+    total_recall_tokens = 0
+    total_recall_chars = 0
+
+    for sc in scenarios:
+        backend.reset()
+
+        backend.store(sc["delegation_task"], category="factual")
+        backend.store(sc["delegation_result"], category="factual")
+
+        results = backend.recall(sc["query"], top_k=5)
+        actual = results[0] if results else ""
+        rt, rc = count_recall_tokens(results)
+        total_recall_tokens += rt
+        total_recall_chars += rc
+
+        jr = judge.judge_answer(sc["query"], sc["gold_answer"], actual)
+        if jr.correct:
+            correct += 1
+
+        details.append({
+            "id": sc["id"],
+            "difficulty": sc.get("difficulty", "medium"),
+            "correct": jr.correct,
+            "actual": actual,
+            "gold": sc["gold_answer"],
+        })
+        scenario_metrics = compute_scenario_metrics(results, sc["gold_answer"])
+        details[-1]["metrics"] = scenario_metrics
+
+    sub_scores = {}
+    for diff in ["easy", "medium", "hard"]:
+        dsubset = [d for d in details if d["difficulty"] == diff]
+        if dsubset:
+            sub_scores[diff] = sum(1 for d in dsubset if d["correct"]) / len(dsubset)
+
+    all_metrics = [d.get("metrics", {}) for d in details if "metrics" in d]
+    avg_retrieval_metrics = {}
+    if all_metrics:
+        for key in all_metrics[0]:
+            values = [m[key] for m in all_metrics if key in m]
+            avg_retrieval_metrics[key] = sum(values) / len(values) if values else 0.0
+
+    return CategoryResult(
+        category="delegation_memory",
+        total=len(scenarios),
+        correct=correct,
+        score=correct / len(scenarios) if scenarios else 0,
+        sub_scores=sub_scores,
+        details=details,
+        recall_tokens=total_recall_tokens,
+        recall_chars=total_recall_chars,
+        retrieval_metrics=avg_retrieval_metrics,
+    )
+
+
 CATEGORY_RUNNERS = {
     "semantic_recall": run_semantic_recall,
     "contradictions": run_contradictions,
@@ -2064,6 +2277,12 @@ CATEGORY_RUNNERS = {
     "retrieval_ablation": run_retrieval_ablation,
     # Suite O — Timestamp Integrity (Omni-SimpleMem)
     "timestamp_integrity": run_timestamp_integrity,
+    # Suite J — Topic Shift Recall
+    "topic_shift_recall": run_topic_shift_recall,
+    # Suite K — Compression Survival
+    "compression_survival": run_compression_survival,
+    # Suite L — Delegation Memory
+    "delegation_memory": run_delegation_memory,
 }
 
 
@@ -2283,7 +2502,7 @@ def main():
 
     # Parse suite argument: 'a' -> ['a'], 'a,b,c' -> ['a','b','c'], 'all' -> all
     if args.suite == "all":
-        suites = ["a", "b", "c", "d", "e", "f", "g"]
+        suites = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o"]
     else:
         suites = [s.strip() for s in args.suite.split(",")]
 
@@ -2392,7 +2611,23 @@ def main():
             ],
         }
 
-    # Save latest result (overwrites)
+    # Merge with existing results (preserve categories from prior runs)
+    if result_file.exists():
+        try:
+            with open(result_file) as f:
+                existing = json.load(f)
+            # Merge per_category_mean: keep old categories, update/add new ones
+            old_cats = existing.get("per_category_mean", {})
+            new_cats = result_data.get("per_category_mean", {})
+            merged_cats = {**old_cats, **new_cats}
+            result_data["per_category_mean"] = merged_cats
+            # Same for per_category_std
+            old_std = existing.get("per_category_std", {})
+            new_std = result_data.get("per_category_std", {})
+            result_data["per_category_std"] = {**old_std, **new_std}
+        except (json.JSONDecodeError, KeyError):
+            pass  # Corrupted file, just overwrite
+
     with open(result_file, "w") as f:
         json.dump(result_data, f, indent=2)
 
