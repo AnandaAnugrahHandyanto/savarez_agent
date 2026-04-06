@@ -74,12 +74,23 @@ class TestChildSystemPrompt(unittest.TestCase):
         self.assertIn("Fix the tests", prompt)
         self.assertIn("YOUR TASK", prompt)
         self.assertNotIn("CONTEXT", prompt)
+        self.assertIn("Never assume a repository lives at", prompt)
 
     def test_goal_with_context(self):
         prompt = _build_child_system_prompt("Fix the tests", "Error: assertion failed in test_foo.py line 42")
         self.assertIn("Fix the tests", prompt)
         self.assertIn("CONTEXT", prompt)
         self.assertIn("assertion failed", prompt)
+
+    def test_goal_with_workspace_hint(self):
+        prompt = _build_child_system_prompt(
+            "Inspect the repo",
+            "Need local validation",
+            workspace_path="/home/ubuntu/.hermes/hermes-agent",
+        )
+        self.assertIn("WORKSPACE PATH", prompt)
+        self.assertIn("/home/ubuntu/.hermes/hermes-agent", prompt)
+        self.assertIn("Use this exact path", prompt)
 
     def test_empty_context_ignored(self):
         prompt = _build_child_system_prompt("Do something", "  ")
@@ -126,6 +137,29 @@ class TestDelegateTask(unittest.TestCase):
         parent = _make_mock_parent()
         result = json.loads(delegate_task(tasks=[{"context": "no goal here"}], parent_agent=parent))
         self.assertIn("error", result)
+
+    @patch("run_agent.AIAgent")
+    def test_child_prompt_includes_workspace_hint_when_parent_cwd_is_repo(self, MockAgent):
+        parent = _make_mock_parent()
+        mock_child = MagicMock()
+        MockAgent.return_value = mock_child
+
+        with patch("tools.delegate_tool.os.getenv", return_value="/home/ubuntu/.hermes/hermes-agent"), \
+             patch("tools.delegate_tool.os.path.isdir", return_value=True):
+            _build_child_agent(
+                task_index=0,
+                goal="Inspect repo",
+                context="Need local git commands",
+                toolsets=["terminal"],
+                model=None,
+                max_iterations=5,
+                parent_agent=parent,
+            )
+
+        _, kwargs = MockAgent.call_args
+        prompt = kwargs["ephemeral_system_prompt"]
+        self.assertIn("WORKSPACE PATH", prompt)
+        self.assertIn("/home/ubuntu/.hermes/hermes-agent", prompt)
 
     @patch("tools.delegate_tool._run_single_child")
     def test_single_task_mode(self, mock_run):

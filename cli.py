@@ -6238,6 +6238,18 @@ class HermesCLI:
             except Exception:
                 pass
 
+    def _should_queue_busy_input(self) -> bool:
+        """Return True when busy input should be queued instead of interrupting.
+
+        Queue mode always queues. In interrupt mode, we still prefer queueing when
+        active delegated child agents are running, because interrupting the parent
+        will propagate to those children and discard in-flight delegated work.
+        """
+        if getattr(self, "busy_input_mode", "interrupt") == "queue":
+            return True
+        agent = getattr(self, "agent", None)
+        children = getattr(agent, "_active_children", None) or []
+        return bool(children)
 
     def chat(self, message, images: list = None) -> Optional[str]:
         """
@@ -6450,6 +6462,9 @@ class HermesCLI:
                             # input directly; this queue shouldn't have anything.
                             # But if it does (race condition), don't interrupt.
                             if self._clarify_state or self._clarify_freetext:
+                                continue
+                            if self._should_queue_busy_input():
+                                self._pending_input.put(interrupt_msg)
                                 continue
                             print("\n⚡ New message detected, interrupting...")
                             # Signal TTS to stop on interrupt
@@ -7074,7 +7089,7 @@ class HermesCLI:
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
                 if self._agent_running and not (text and _looks_like_slash_command(text)):
-                    if self.busy_input_mode == "queue":
+                    if self._should_queue_busy_input():
                         # Queue for the next turn instead of interrupting
                         self._pending_input.put(payload)
                         preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"

@@ -148,6 +148,22 @@ class TestBusyInputMode:
         assert cli._interrupt_queue.get_nowait() == "redirect"
         assert cli._pending_input.empty()
 
+    def test_active_subagents_force_queue_even_in_interrupt_mode(self):
+        cli = _make_cli()
+        cli._agent_running = True
+        cli.agent = MagicMock()
+        cli.agent._active_children = [MagicMock()]
+        assert cli.busy_input_mode == "interrupt"
+        assert cli._should_queue_busy_input() is True
+
+    def test_no_active_subagents_keeps_interrupt_mode_behavior(self):
+        cli = _make_cli()
+        cli._agent_running = True
+        cli.agent = MagicMock()
+        cli.agent._active_children = []
+        assert cli.busy_input_mode == "interrupt"
+        assert cli._should_queue_busy_input() is False
+
 
 class TestSingleQueryState:
     def test_voice_and_interrupt_state_initialized_before_run(self):
