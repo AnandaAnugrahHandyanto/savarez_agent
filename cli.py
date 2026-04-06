@@ -8569,19 +8569,76 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._approval_state is not None),
         )
 
-        # Horizontal rules above and below the input (bronze, 1 line each).
-        # The bottom rule moves down as the TextArea grows with newlines.
-        # Using char='─' instead of hardcoded repetition so the rule
-        # always spans the full terminal width on any screen size.
+        # Horizontal rules above and below the input with scroll indicators.
+        # When text exceeds the 8-line input area, ▲ (top) or ▼ (bottom)
+        # arrows appear on the border to signal scrollable content above/below.
+        _scroll_cli_ref = self
+
+        def _get_input_rule_top():
+            """Top border with ▲ when cursor is scrolled past the visual top."""
+            try:
+                from prompt_toolkit.application import get_app as _scroll_app
+                buf = input_area.buffer
+                doc = buf.document
+                pw = max(2, len(_scroll_cli_ref._get_tui_prompt_text()))
+                tw = shutil.get_terminal_size().columns
+                try:
+                    cols = _scroll_app().output.get_size().columns
+                    if cols < 20:
+                        cols = tw
+                except Exception:
+                    cols = tw
+                aw = max(10, cols - pw)
+                total_visual = 0
+                for line in doc.lines:
+                    total_visual += max(1, -(-len(line) // aw)) if len(line) > 0 else 1
+                if total_visual <= 8:
+                    return [("class:input-rule", "─" * cols)]
+                cu = doc.cursor_position_row
+                if cu <= 0:
+                    return [("class:input-rule", "   " + "─" * (cols - 3))]
+                return [("class:input-rule-dim", " ▲ "), ("class:input-rule", "─" * (cols - 3))]
+            except Exception:
+                return [("class:input-rule", "─" * shutil.get_terminal_size((80, 24)).columns)]
+
+        def _get_input_rule_bot():
+            """Bottom border with ▼ when cursor is before the visual bottom."""
+            try:
+                from prompt_toolkit.application import get_app as _scroll_app
+                buf = input_area.buffer
+                doc = buf.document
+                pw = max(2, len(_scroll_cli_ref._get_tui_prompt_text()))
+                tw = shutil.get_terminal_size().columns
+                try:
+                    cols = _scroll_app().output.get_size().columns
+                    if cols < 20:
+                        cols = tw
+                except Exception:
+                    cols = tw
+                aw = max(10, cols - pw)
+                total_visual = 0
+                for line in doc.lines:
+                    total_visual += max(1, -(-len(line) // aw)) if len(line) > 0 else 1
+                if total_visual <= 8:
+                    return [("class:input-rule", "─" * cols)]
+                cu = doc.cursor_position_row
+                has_below = cu + 8 < total_visual
+                if has_below:
+                    return [("class:input-rule", "─" * (cols - 3)), ("class:input-rule-dim", " ▼ ")]
+                return [("class:input-rule", "─" * (cols - 3)), ("class:input-rule", "   ")]
+            except Exception:
+                return [("class:input-rule", "─" * shutil.get_terminal_size((80, 24)).columns)]
+
+        # Need to store refs for the dynamic controls
+        from prompt_toolkit.layout import FormattedTextControl as _Scroll_FTC
+
         input_rule_top = Window(
-            char='─',
+            content=_Scroll_FTC(_get_input_rule_top),
             height=1,
-            style='class:input-rule',
         )
         input_rule_bot = Window(
-            char='─',
+            content=_Scroll_FTC(_get_input_rule_bot),
             height=1,
-            style='class:input-rule',
         )
 
         # Image attachment indicator — shows badges like [📎 Image #1] above input
