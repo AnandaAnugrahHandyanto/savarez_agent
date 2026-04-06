@@ -18,6 +18,7 @@ from hermes_cli.plugins import (
     PluginManager,
     PluginManifest,
     get_plugin_manager,
+    get_pre_tool_call_block_message,
     get_plugin_tool_names,
     discover_plugins,
     invoke_hook,
@@ -276,6 +277,33 @@ class TestPluginHooks:
             mgr.discover_and_load()
 
         assert any("on_banana" in record.message for record in caplog.records)
+
+
+class TestPreToolCallDirective:
+    """Tests for the supported pre_tool_call block directive helper."""
+
+    def test_get_pre_tool_call_block_message_returns_block_message(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "block", "message": "blocked by plugin"}],
+        )
+
+        assert get_pre_tool_call_block_message("todo", {"todos": []}, task_id="t1") == "blocked by plugin"
+
+    def test_get_pre_tool_call_block_message_ignores_invalid_returns(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                "block",
+                123,
+                {"action": "block"},
+                {"action": "deny", "message": "nope"},
+                {"message": "missing action"},
+                {"action": "block", "message": 123},
+            ],
+        )
+
+        assert get_pre_tool_call_block_message("todo", {"todos": []}, task_id="t1") is None
 
 
 # ── TestPluginContext ──────────────────────────────────────────────────────

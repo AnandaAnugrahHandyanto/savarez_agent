@@ -38,6 +38,82 @@ class TestHandleFunctionCall:
         assert len(parsed["error"]) > 0
         assert "error" in parsed["error"].lower() or "failed" in parsed["error"].lower()
 
+    def test_pre_tool_call_block_directive_returns_json_error_and_skips_dispatch(self, monkeypatch):
+        hook_calls = []
+        dispatch_called = False
+
+        def fake_invoke_hook(hook_name, **kwargs):
+            hook_calls.append(hook_name)
+            if hook_name == "pre_tool_call":
+                return [{"action": "block", "message": "Tool call blocked by plugin"}]
+            return []
+
+        def fake_dispatch(*args, **kwargs):
+            nonlocal dispatch_called
+            dispatch_called = True
+            raise AssertionError("dispatch should not run when pre_tool_call blocks")
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
+
+        result = json.loads(handle_function_call("read_file", {"path": "notes.txt"}, task_id="t1"))
+
+        assert result == {"error": "Tool call blocked by plugin"}
+        assert dispatch_called is False
+        assert hook_calls == ["pre_tool_call"]
+
+    def test_blocked_tool_does_not_notify_other_tool_call(self, monkeypatch):
+        notifications = []
+
+        def fake_invoke_hook(hook_name, **kwargs):
+            if hook_name == "pre_tool_call":
+                return [{"action": "block", "message": "Tool call blocked by plugin"}]
+            return []
+
+        def fake_dispatch(*args, **kwargs):
+            raise AssertionError("dispatch should not run when pre_tool_call blocks")
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr(
+            "tools.file_tools.notify_other_tool_call",
+            lambda task_id: notifications.append(task_id),
+        )
+        monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
+
+        result = json.loads(handle_function_call("web_search", {"q": "test"}, task_id="t1"))
+
+        assert result == {"error": "Tool call blocked by plugin"}
+        assert notifications == []
+
+    def test_invalid_pre_tool_call_hook_returns_are_ignored(self, monkeypatch):
+        hook_calls = []
+
+        def fake_invoke_hook(hook_name, **kwargs):
+            hook_calls.append(hook_name)
+            if hook_name == "pre_tool_call":
+                return [
+                    "block",
+                    123,
+                    {"action": "block"},
+                    {"action": "deny", "message": "nope"},
+                    {"message": "missing action"},
+                    {"action": "block", "message": 123},
+                ]
+            return []
+
+        def fake_dispatch(tool_name, tool_args, **kwargs):
+            assert tool_name == "read_file"
+            assert tool_args == {"path": "notes.txt"}
+            return json.dumps({"ok": True})
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
+
+        result = json.loads(handle_function_call("read_file", {"path": "notes.txt"}, task_id="t1"))
+
+        assert result == {"ok": True}
+        assert hook_calls == ["pre_tool_call", "post_tool_call"]
+
 
 # =========================================================================
 # Agent loop tools

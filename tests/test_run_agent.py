@@ -1259,7 +1259,7 @@ class TestConcurrentToolExecution:
             mock_hfc.assert_called_once_with(
                 "web_search", {"q": "test"}, "task-1",
                 enabled_tools=list(agent.valid_tool_names),
-
+                skip_pre_tool_call_hook=True,
             )
             assert result == "result"
 
@@ -1305,6 +1305,78 @@ class TestConcurrentToolExecution:
             result = agent._invoke_tool("todo", {"todos": []}, "task-1")
             mock_todo.assert_called_once()
         assert "ok" in result
+
+    def test_invoke_tool_blocked_agent_level_tool_skips_direct_execution(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Tool call blocked by plugin",
+        )
+
+        with patch("tools.todo_tool.todo_tool", side_effect=AssertionError("todo should not run")) as mock_todo:
+            result = agent._invoke_tool("todo", {"todos": []}, "task-1")
+
+        assert json.loads(result) == {"error": "Tool call blocked by plugin"}
+        mock_todo.assert_not_called()
+
+    def test_sequential_blocked_agent_level_tool_skips_execution_and_records_error(self, agent, monkeypatch):
+        tool_call = _mock_tool_call(name="todo", arguments='{"todos":[]}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Tool call blocked by plugin",
+        )
+
+        with patch("tools.todo_tool.todo_tool", side_effect=AssertionError("todo should not run")) as mock_todo:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        mock_todo.assert_not_called()
+        assert len(messages) == 1
+        assert messages[0]["role"] == "tool"
+        assert messages[0]["tool_call_id"] == "c1"
+        assert json.loads(messages[0]["content"]) == {"error": "Tool call blocked by plugin"}
+
+    def test_blocked_memory_tool_does_not_reset_memory_counter(self, agent_with_memory_tool, monkeypatch):
+        agent_with_memory_tool._turns_since_memory = 5
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Tool call blocked by plugin",
+        )
+
+        with patch("tools.memory_tool.memory_tool", side_effect=AssertionError("memory should not run")):
+            result = agent_with_memory_tool._invoke_tool(
+                "memory",
+                {"action": "add", "target": "memory", "content": "x"},
+                "task-1",
+            )
+
+        assert json.loads(result) == {"error": "Tool call blocked by plugin"}
+        assert agent_with_memory_tool._turns_since_memory == 5
+
+    def test_concurrent_blocked_registry_tool_skips_checkpoint_and_execution(self, agent, monkeypatch):
+        tool_call = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"notes.txt","content":"hello"}',
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Tool call blocked by plugin",
+        )
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.ensure_checkpoint = MagicMock(side_effect=AssertionError("checkpoint should not run"))
+
+        with patch("run_agent.handle_function_call", side_effect=AssertionError("handle_function_call should not run")):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        agent._checkpoint_mgr.ensure_checkpoint.assert_not_called()
+        assert len(messages) == 1
+        assert messages[0]["tool_call_id"] == "c1"
+        assert json.loads(messages[0]["content"]) == {"error": "Tool call blocked by plugin"}
 
 
 class TestPathsOverlap:

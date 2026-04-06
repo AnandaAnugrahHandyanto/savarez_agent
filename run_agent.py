@@ -5960,13 +5960,51 @@ class AIAgent:
         finally:
             self._executing_tools = False
 
-    def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str) -> str:
+    def _get_pre_tool_call_block_message(
+        self,
+        function_name: str,
+        function_args: dict,
+        effective_task_id: str,
+    ) -> str | None:
+        try:
+            from hermes_cli.plugins import get_pre_tool_call_block_message
+            return get_pre_tool_call_block_message(
+                function_name,
+                function_args,
+                task_id=effective_task_id or "",
+            )
+        except Exception:
+            return None
+
+    def _invoke_tool(
+        self,
+        function_name: str,
+        function_args: dict,
+        effective_task_id: str,
+        *,
+        pre_tool_call_checked: bool = False,
+        block_message: str | None = None,
+    ) -> str:
         """Invoke a single tool and return the result string. No display logic.
 
         Handles both agent-level tools (todo, memory, etc.) and registry-dispatched
         tools. Used by the concurrent execution path; the sequential path retains
         its own inline invocation for backward-compatible display handling.
         """
+        if not pre_tool_call_checked:
+            block_message = self._get_pre_tool_call_block_message(
+                function_name,
+                function_args,
+                effective_task_id,
+            )
+        if block_message is not None:
+            return json.dumps({"error": block_message}, ensure_ascii=False)
+
+        if function_name == "memory":
+            self._turns_since_memory = 0
+        elif function_name == "skill_manage":
+            self._iters_since_skill = 0
+
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
             return _todo_tool(
@@ -6029,6 +6067,7 @@ class AIAgent:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                skip_pre_tool_call_hook=True,
             )
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -6052,15 +6091,9 @@ class AIAgent:
             return
 
         # ── Parse args + pre-execution bookkeeping ───────────────────────
-        parsed_calls = []  # list of (tool_call, function_name, function_args)
+        parsed_calls = []  # list of (tool_call, function_name, function_args, block_message)
         for tool_call in tool_calls:
             function_name = tool_call.function.name
-
-            # Reset nudge counters
-            if function_name == "memory":
-                self._turns_since_memory = 0
-            elif function_name == "skill_manage":
-                self._iters_since_skill = 0
 
             try:
                 function_args = json.loads(tool_call.function.arguments)
@@ -6069,8 +6102,18 @@ class AIAgent:
             if not isinstance(function_args, dict):
                 function_args = {}
 
+            block_message = self._get_pre_tool_call_block_message(
+                function_name,
+                function_args,
+                effective_task_id,
+            )
+
             # Checkpoint for file-mutating tools
-            if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
+            if (
+                block_message is None
+                and function_name in ("write_file", "patch")
+                and self._checkpoint_mgr.enabled
+            ):
                 try:
                     file_path = function_args.get("path", "")
                     if file_path:
@@ -6080,7 +6123,7 @@ class AIAgent:
                     pass
 
             # Checkpoint before destructive terminal commands
-            if function_name == "terminal" and self._checkpoint_mgr.enabled:
+            if block_message is None and function_name == "terminal" and self._checkpoint_mgr.enabled:
                 try:
                     cmd = function_args.get("command", "")
                     if _is_destructive_command(cmd):
@@ -6091,13 +6134,13 @@ class AIAgent:
                 except Exception:
                     pass
 
-            parsed_calls.append((tool_call, function_name, function_args))
+            parsed_calls.append((tool_call, function_name, function_args, block_message))
 
         # ── Logging / callbacks ──────────────────────────────────────────
-        tool_names_str = ", ".join(name for _, name, _ in parsed_calls)
+        tool_names_str = ", ".join(name for _, name, _, _ in parsed_calls)
         if not self.quiet_mode:
             print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
-            for i, (tc, name, args) in enumerate(parsed_calls, 1):
+            for i, (tc, name, args, _block_message) in enumerate(parsed_calls, 1):
                 args_str = json.dumps(args, ensure_ascii=False)
                 if self.verbose_logging:
                     print(f"  📞 Tool {i}: {name}({list(args.keys())})")
@@ -6106,7 +6149,9 @@ class AIAgent:
                     args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
                     print(f"  📞 Tool {i}: {name}({list(args.keys())}) - {args_preview}")
 
-        for tc, name, args in parsed_calls:
+        for tc, name, args, block_message in parsed_calls:
+            if block_message is not None:
+                continue
             if self.tool_progress_callback:
                 try:
                     preview = _build_tool_preview(name, args)
@@ -6114,7 +6159,9 @@ class AIAgent:
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
 
-        for tc, name, args in parsed_calls:
+        for tc, name, args, block_message in parsed_calls:
+            if block_message is not None:
+                continue
             if self.tool_start_callback:
                 try:
                     self.tool_start_callback(tc.id, name, args)
@@ -6125,11 +6172,17 @@ class AIAgent:
         # Each slot holds (function_name, function_args, function_result, duration, error_flag)
         results = [None] * num_tools
 
-        def _run_tool(index, tool_call, function_name, function_args):
+        def _run_tool(index, tool_call, function_name, function_args, block_message):
             """Worker function executed in a thread."""
             start = time.time()
             try:
-                result = self._invoke_tool(function_name, function_args, effective_task_id)
+                result = self._invoke_tool(
+                    function_name,
+                    function_args,
+                    effective_task_id,
+                    pre_tool_call_checked=True,
+                    block_message=block_message,
+                )
             except Exception as tool_error:
                 result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
@@ -6148,8 +6201,8 @@ class AIAgent:
             max_workers = min(num_tools, _MAX_TOOL_WORKERS)
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = []
-                for i, (tc, name, args) in enumerate(parsed_calls):
-                    f = executor.submit(_run_tool, i, tc, name, args)
+                for i, (tc, name, args, block_message) in enumerate(parsed_calls):
+                    f = executor.submit(_run_tool, i, tc, name, args, block_message)
                     futures.append(f)
 
                 # Wait for all to complete (exceptions are captured inside _run_tool)
@@ -6162,7 +6215,7 @@ class AIAgent:
                 spinner.stop(f"⚡ {completed}/{num_tools} tools completed in {total_dur:.1f}s total")
 
         # ── Post-execution: display per-tool results ─────────────────────
-        for i, (tc, name, args) in enumerate(parsed_calls):
+        for i, (tc, name, args, _block_message) in enumerate(parsed_calls):
             r = results[i]
             if r is None:
                 # Shouldn't happen, but safety fallback
@@ -6265,12 +6318,6 @@ class AIAgent:
 
             function_name = tool_call.function.name
 
-            # Reset nudge counters when the relevant tool is actually used
-            if function_name == "memory":
-                self._turns_since_memory = 0
-            elif function_name == "skill_manage":
-                self._iters_since_skill = 0
-
             try:
                 function_args = json.loads(tool_call.function.arguments)
             except json.JSONDecodeError as e:
@@ -6278,6 +6325,12 @@ class AIAgent:
                 function_args = {}
             if not isinstance(function_args, dict):
                 function_args = {}
+
+            block_message = self._get_pre_tool_call_block_message(
+                function_name,
+                function_args,
+                effective_task_id,
+            )
 
             if not self.quiet_mode:
                 args_str = json.dumps(function_args, ensure_ascii=False)
@@ -6288,24 +6341,29 @@ class AIAgent:
                     args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
                     print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
 
-            self._current_tool = function_name
-            self._touch_activity(f"executing tool: {function_name}")
+            if block_message is None:
+                self._current_tool = function_name
+                self._touch_activity(f"executing tool: {function_name}")
 
-            if self.tool_progress_callback:
+            if block_message is None and self.tool_progress_callback:
                 try:
                     preview = _build_tool_preview(function_name, function_args)
                     self.tool_progress_callback("tool.started", function_name, preview, function_args)
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
 
-            if self.tool_start_callback:
+            if block_message is None and self.tool_start_callback:
                 try:
                     self.tool_start_callback(tool_call.id, function_name, function_args)
                 except Exception as cb_err:
                     logging.debug(f"Tool start callback error: {cb_err}")
 
             # Checkpoint: snapshot working dir before file-mutating tools
-            if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
+            if (
+                block_message is None
+                and function_name in ("write_file", "patch")
+                and self._checkpoint_mgr.enabled
+            ):
                 try:
                     file_path = function_args.get("path", "")
                     if file_path:
@@ -6317,7 +6375,7 @@ class AIAgent:
                     pass  # never block tool execution
 
             # Checkpoint before destructive terminal commands
-            if function_name == "terminal" and self._checkpoint_mgr.enabled:
+            if block_message is None and function_name == "terminal" and self._checkpoint_mgr.enabled:
                 try:
                     cmd = function_args.get("command", "")
                     if _is_destructive_command(cmd):
@@ -6329,8 +6387,18 @@ class AIAgent:
                     pass  # never block tool execution
 
             tool_start_time = time.time()
+            blocked_result = (
+                json.dumps({"error": block_message}, ensure_ascii=False)
+                if block_message is not None
+                else None
+            )
+            if blocked_result is None and function_name == "skill_manage":
+                self._iters_since_skill = 0
 
-            if function_name == "todo":
+            if blocked_result is not None:
+                function_result = blocked_result
+                tool_duration = time.time() - tool_start_time
+            elif function_name == "todo":
                 from tools.todo_tool import todo_tool as _todo_tool
                 function_result = _todo_tool(
                     todos=function_args.get("todos"),
@@ -6356,6 +6424,7 @@ class AIAgent:
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
             elif function_name == "memory":
+                self._turns_since_memory = 0
                 target = function_args.get("target", "memory")
                 from tools.memory_tool import memory_tool as _memory_tool
                 function_result = _memory_tool(
@@ -6448,6 +6517,7 @@ class AIAgent:
                     function_result = handle_function_call(
                         function_name, function_args, effective_task_id,
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                        skip_pre_tool_call_hook=True,
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -6465,6 +6535,7 @@ class AIAgent:
                     function_result = handle_function_call(
                         function_name, function_args, effective_task_id,
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                        skip_pre_tool_call_hook=True,
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
