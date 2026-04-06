@@ -473,6 +473,115 @@ class AsyncAnthropicAuxiliaryClient:
         self.base_url = sync_wrapper.base_url
 
 
+# ── MiniMax VLM → chat.completions adapter ──────────────────────────────────
+# The MiniMax VLM endpoint (POST /v1/coding_plan/vlm) is NOT OpenAI-compatible.
+# This adapter wraps it behind client.chat.completions.create() so the vision
+# pipeline can use it transparently.
+
+class _MiniMaxVLMCompletionsAdapter:
+    """Sync adapter that translates chat.completions.create() → MiniMax VLM API."""
+
+    def __init__(self, api_key: str, api_host: str):
+        self._api_key = api_key
+        self._api_host = api_host.rstrip("/")
+
+    def create(self, **kwargs) -> Any:
+        import httpx
+
+        messages = kwargs.get("messages", [])
+        prompt, image_url = self._extract_vision_parts(messages)
+
+        url = f"{self._api_host}/v1/coding_plan/vlm"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._api_key}",
+        }
+        payload = {"prompt": prompt, "image_url": image_url}
+
+        resp = httpx.post(url, json=payload, headers=headers, timeout=120)
+        resp.raise_for_status()
+        data = resp.json()
+
+        base_resp = data.get("base_resp", {})
+        if base_resp.get("status_code", 0) != 0:
+            raise RuntimeError(
+                f"MiniMax VLM error: {base_resp.get('status_msg', 'unknown error')}"
+            )
+
+        content = data.get("content", "")
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                index=0,
+                message=SimpleNamespace(content=content, reasoning=None),
+                finish_reason="stop",
+            )],
+            model="minimax-vlm",
+            usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+        )
+
+    @staticmethod
+    def _extract_vision_parts(messages: list) -> Tuple[str, str]:
+        """Extract text prompt and image data URL from OpenAI vision message format."""
+        prompt = ""
+        image_url = ""
+        for msg in messages:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                prompt = content
+                continue
+            if isinstance(content, list):
+                for part in content:
+                    if part.get("type") == "text":
+                        prompt = part.get("text", "")
+                    elif part.get("type") == "image_url":
+                        image_url = part.get("image_url", {}).get("url", "")
+        return prompt, image_url
+
+
+class _MiniMaxVLMChatShim:
+    def __init__(self, adapter: _MiniMaxVLMCompletionsAdapter):
+        self.completions = adapter
+
+
+class MiniMaxVLMClient:
+    """OpenAI-client-compatible wrapper for MiniMax VLM endpoint."""
+
+    def __init__(self, api_key: str, api_host: Optional[str] = None):
+        host = (api_host or os.getenv("MINIMAX_API_HOST") or "https://api.minimax.io").rstrip("/")
+        adapter = _MiniMaxVLMCompletionsAdapter(api_key, host)
+        self.chat = _MiniMaxVLMChatShim(adapter)
+        self.api_key = api_key
+        self.base_url = host
+
+    def close(self):
+        pass
+
+
+class _AsyncMiniMaxVLMCompletionsAdapter:
+    def __init__(self, sync_adapter: _MiniMaxVLMCompletionsAdapter):
+        self._sync = sync_adapter
+
+    async def create(self, **kwargs) -> Any:
+        import asyncio
+        return await asyncio.to_thread(self._sync.create, **kwargs)
+
+
+class _AsyncMiniMaxVLMChatShim:
+    def __init__(self, adapter: _AsyncMiniMaxVLMCompletionsAdapter):
+        self.completions = adapter
+
+
+class AsyncMiniMaxVLMClient:
+    """Async-compatible wrapper matching AsyncOpenAI.chat.completions.create()."""
+
+    def __init__(self, sync_wrapper: "MiniMaxVLMClient"):
+        sync_adapter = sync_wrapper.chat.completions
+        async_adapter = _AsyncMiniMaxVLMCompletionsAdapter(sync_adapter)
+        self.chat = _AsyncMiniMaxVLMChatShim(async_adapter)
+        self.api_key = sync_wrapper.api_key
+        self.base_url = sync_wrapper.base_url
+
+
 def _read_nous_auth() -> Optional[dict]:
     """Read and validate ~/.hermes/auth.json for an active Nous provider.
 
@@ -831,6 +940,19 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
     return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
 
 
+def _try_minimax_vision() -> Tuple[Optional[Any], Optional[str]]:
+    """Try to build a MiniMax VLM client for vision tasks."""
+    pool_present, entry = _select_pool_entry("minimax")
+    if pool_present:
+        api_key = _pool_runtime_api_key(entry)
+    else:
+        api_key = os.getenv("MINIMAX_API_KEY", "").strip()
+    if not api_key:
+        return None, None
+    logger.debug("Auxiliary vision client: MiniMax VLM")
+    return MiniMaxVLMClient(api_key), "minimax-vlm"
+
+
 def _resolve_forced_provider(forced: str) -> Tuple[Optional[OpenAI], Optional[str]]:
     """Resolve a specific forced provider.  Returns (None, None) if creds missing."""
     if forced == "openrouter":
@@ -943,6 +1065,8 @@ def _to_async_client(sync_client, model: str):
         return AsyncCodexAuxiliaryClient(sync_client), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
+    if isinstance(sync_client, MiniMaxVLMClient):
+        return AsyncMiniMaxVLMClient(sync_client), model
 
     async_kwargs = {
         "api_key": sync_client.api_key,
@@ -1206,6 +1330,7 @@ _VISION_AUTO_PROVIDER_ORDER = (
     "nous",
     "openai-codex",
     "anthropic",
+    "minimax",
     "custom",
 )
 
@@ -1214,6 +1339,8 @@ def _normalize_vision_provider(provider: Optional[str]) -> str:
     provider = (provider or "auto").strip().lower()
     if provider == "codex":
         return "openai-codex"
+    if provider in ("minimax", "minimax-cn"):
+        return "minimax"
     if provider == "main":
         return "custom"
     return provider
@@ -1229,6 +1356,8 @@ def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Option
         return _try_codex()
     if provider == "anthropic":
         return _try_anthropic()
+    if provider == "minimax":
+        return _try_minimax_vision()
     if provider == "custom":
         return _try_custom_endpoint()
     return None, None
