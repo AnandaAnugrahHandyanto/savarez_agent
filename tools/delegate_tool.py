@@ -302,6 +302,18 @@ def _run_single_child(
     _saved_tool_names = getattr(child, "_delegate_saved_tool_names",
                                 list(model_tools._last_resolved_tool_names))
 
+    child_pool = getattr(child, '_credential_pool', None)
+    leased_cred_id = None
+    if child_pool is not None:
+        leased_cred_id = child_pool.acquire_lease()
+        if leased_cred_id is not None:
+            try:
+                leased_entry = child_pool.current()
+                if leased_entry is not None and hasattr(child, '_swap_credential'):
+                    child._swap_credential(leased_entry)
+            except Exception as exc:
+                logger.debug("Failed to bind child to leased credential: %s", exc)
+
     try:
         result = child.run_conversation(user_message=goal)
 
@@ -412,13 +424,19 @@ def _run_single_child(
         }
 
     finally:
+        if child_pool is not None and leased_cred_id is not None:
+            try:
+                child_pool.release_lease(leased_cred_id)
+            except Exception as exc:
+                logger.debug("Failed to release credential lease: %s", exc)
+
         # Restore the parent's tool names so the process-global is correct
         # for any subsequent execute_code calls or other consumers.
         import model_tools
+        model_tools._last_resolved_tool_names = _saved_tool_names
 
-        saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
-        if isinstance(saved_tool_names, list):
-            model_tools._last_resolved_tool_names = list(saved_tool_names)
+        # Remove child from active tracking
+
 
         # Unregister child from interrupt propagation
         if hasattr(parent_agent, '_active_children'):
