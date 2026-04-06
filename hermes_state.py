@@ -894,10 +894,14 @@ class SessionDB:
         def _do(conn):
             # Ensure session exists before inserting message (auto-create if missing)
             # This fixes the "orphan messages" bug where messages exist but session row doesn't
+            # Use 'platform' from message if available, otherwise 'unknown'
+            source = message.get("platform") if isinstance(message, dict) else None
+            if not source:
+                source = "unknown"
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, started_at, message_count)
                    VALUES (?, ?, ?, 0)""",
-                (session_id, "unknown", time.time()),
+                (session_id, source, time.time()),
             )
 
             cursor = conn.execute(
