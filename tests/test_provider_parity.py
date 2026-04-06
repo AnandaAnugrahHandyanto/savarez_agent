@@ -669,10 +669,24 @@ class TestAuxiliaryClientProviderPriority:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         from agent.auxiliary_client import get_text_auxiliary_client, CodexAuxiliaryClient
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._resolve_custom_runtime", return_value=(None, None)), \
              patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-tok"), \
              patch("agent.auxiliary_client.OpenAI"):
             client, model = get_text_auxiliary_client()
         assert model == "gpt-5.2-codex"
+        assert isinstance(client, CodexAuxiliaryClient)
+
+    def test_explicit_copilot_gpt5_uses_responses_wrapper(self, monkeypatch):
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_test_token")
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        from agent.auxiliary_client import CodexAuxiliaryClient, resolve_provider_client
+
+        with patch("agent.auxiliary_client.OpenAI", _FakeOpenAI):
+            client, model = resolve_provider_client("copilot", model="gpt-5.4-mini")
+
+        assert model == "gpt-5.4-mini"
         assert isinstance(client, CodexAuxiliaryClient)
 
 

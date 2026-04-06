@@ -1032,15 +1032,19 @@ def _to_async_client(sync_client, model: str):
         "api_key": sync_client.api_key,
         "base_url": str(sync_client.base_url),
     }
-    base_lower = str(sync_client.base_url).lower()
-    if "openrouter" in base_lower:
-        async_kwargs["default_headers"] = dict(_OR_HEADERS)
-    elif "api.githubcopilot.com" in base_lower:
-        from hermes_cli.models import copilot_default_headers
+    preserved_headers = dict(getattr(sync_client, "_default_headers", {}) or {})
+    if preserved_headers:
+        async_kwargs["default_headers"] = preserved_headers
+    else:
+        base_lower = str(sync_client.base_url).lower()
+        if "openrouter" in base_lower:
+            async_kwargs["default_headers"] = dict(_OR_HEADERS)
+        elif "api.githubcopilot.com" in base_lower:
+            from hermes_cli.models import copilot_default_headers
 
-        async_kwargs["default_headers"] = copilot_default_headers()
-    elif "api.kimi.com" in base_lower:
-        async_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
+            async_kwargs["default_headers"] = copilot_default_headers()
+        elif "api.kimi.com" in base_lower:
+            async_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -1051,6 +1055,7 @@ def resolve_provider_client(
     raw_codex: bool = False,
     explicit_base_url: str = None,
     explicit_api_key: str = None,
+    is_vision: bool = False,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Central router: given a provider name and optional model, return a
     configured client with the correct auth, base URL, and API format.
@@ -1221,12 +1226,25 @@ def resolve_provider_client(
         if "api.kimi.com" in base_url.lower():
             headers["User-Agent"] = "KimiCLI/1.0"
         elif "api.githubcopilot.com" in base_url.lower():
-            from hermes_cli.models import copilot_default_headers
+            from hermes_cli.copilot_auth import copilot_request_headers
 
-            headers.update(copilot_default_headers())
+            headers.update(copilot_request_headers(is_agent_turn=True, is_vision=is_vision))
 
         client = OpenAI(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
+
+        if provider == "copilot":
+            try:
+                from hermes_cli.models import copilot_model_api_mode
+
+                if copilot_model_api_mode(final_model, api_key=api_key) == "codex_responses":
+                    wrapped = CodexAuxiliaryClient(client, final_model)
+                    logger.debug("resolve_provider_client: %s (%s) via Responses adapter", provider, final_model)
+                    return (_to_async_client(wrapped, final_model) if async_mode
+                            else (wrapped, final_model))
+            except Exception:
+                pass
+
         logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
@@ -1286,6 +1304,7 @@ def get_async_text_auxiliary_client(task: str = ""):
 
 
 _VISION_AUTO_PROVIDER_ORDER = (
+    "copilot",
     "openrouter",
     "nous",
     "openai-codex",
@@ -1305,6 +1324,8 @@ def _normalize_vision_provider(provider: Optional[str]) -> str:
 
 def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Optional[str]]:
     provider = _normalize_vision_provider(provider)
+    if provider == "copilot":
+        return resolve_provider_client("copilot", model="gpt-4.1", is_vision=True)
     if provider == "openrouter":
         return _try_openrouter()
     if provider == "nous":
