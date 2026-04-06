@@ -446,6 +446,7 @@ def delegate_task(
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    tier: Optional[str] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     parent_agent=None,
@@ -472,16 +473,14 @@ def delegate_task(
             )
         })
 
-    # Load config
-    cfg = _load_config()
+    # Load config and resolve top-level tier first
+    raw_cfg = _load_config()
+    cfg = resolve_tier_config(raw_cfg, tier=tier)
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
+    # Resolve effective model/provider/credentials.
+    # When unconfigured, returns None values so children inherit from the parent.
     try:
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
@@ -522,16 +521,24 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            task_tier = t.get("tier") or tier
+            task_cfg = resolve_tier_config(raw_cfg, tier=task_tier)
+            task_max_iter = max_iterations or task_cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+            try:
+                task_creds = _resolve_delegation_credentials(task_cfg, parent_agent)
+            except ValueError:
+                task_creds = creds
+
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
-                max_iterations=effective_max_iter, parent_agent=parent_agent,
-                override_provider=creds["provider"], override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                toolsets=t.get("toolsets") or toolsets, model=task_creds["model"],
+                max_iterations=task_max_iter, parent_agent=parent_agent,
+                override_provider=task_creds["provider"], override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_acp_command=t.get("acp_command") or acp_command,
                 override_acp_args=t.get("acp_args") or acp_args,
-                override_reasoning_effort=creds.get("reasoning_effort"),
+                override_reasoning_effort=task_creds.get("reasoning_effort"),
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -623,6 +630,48 @@ def delegate_task(
         "results": results,
         "total_duration_seconds": total_duration,
     }, ensure_ascii=False)
+
+
+SUPPORTED_TIERS = frozenset({"light", "heavy", "review", "planning", "research"})
+
+
+def resolve_tier_config(cfg: dict, tier: Optional[str] = None) -> dict:
+    """Resolve a delegation tier into an effective config dict.
+
+    Tier values override the flat delegation config. When no matching tier is
+    configured, returns the original flat config unchanged.
+    """
+    tiers = cfg.get("tiers")
+    if not isinstance(tiers, dict) or not tiers:
+        return cfg
+
+    effective_tier = str(tier or cfg.get("default_tier") or "").strip().lower() or None
+    if not effective_tier or effective_tier not in tiers:
+        return cfg
+
+    tier_cfg = tiers.get(effective_tier)
+    if not isinstance(tier_cfg, dict):
+        return cfg
+
+    merged = dict(cfg)
+    merged.pop("tiers", None)
+    merged.pop("default_tier", None)
+    merged.update(tier_cfg)
+
+    tier_reasoning_floor = {
+        "heavy": "medium",
+        "research": "medium",
+        "planning": "high",
+        "review": "high",
+    }
+    floor = tier_reasoning_floor.get(effective_tier)
+    if floor:
+        current = str(merged.get("reasoning_effort") or "").strip().lower()
+        order = {"none": 0, "low": 1, "medium": 2, "high": 3, "max": 4, "xhigh": 4}
+        if order.get(current, 0) < order[floor]:
+            merged["reasoning_effort"] = floor
+
+    return merged
 
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
@@ -809,6 +858,11 @@ DELEGATE_TASK_SCHEMA = {
                     "properties": {
                         "goal": {"type": "string", "description": "Task goal"},
                         "context": {"type": "string", "description": "Task-specific context"},
+                        "tier": {
+                            "type": "string",
+                            "enum": ["light", "heavy", "review", "planning", "research"],
+                            "description": "Task-specific tier override for this batch item",
+                        },
                         "toolsets": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -838,6 +892,16 @@ DELEGATE_TASK_SCHEMA = {
                 "description": (
                     "Max tool-calling turns per subagent (default: 50). "
                     "Only set lower for simple tasks."
+                ),
+            },
+            "tier": {
+                "type": "string",
+                "enum": ["light", "heavy", "review", "planning", "research"],
+                "description": (
+                    "Task complexity tier. Controls which model, reasoning effort, "
+                    "and iteration budget the subagent uses. Tiers are defined in "
+                    "config.yaml under delegation.tiers. When omitted, uses "
+                    "delegation.default_tier or the flat delegation config."
                 ),
             },
             "acp_command": {
@@ -876,6 +940,7 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        tier=args.get("tier"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         parent_agent=kw.get("parent_agent")),
