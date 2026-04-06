@@ -5035,8 +5035,8 @@ class GatewayRunner:
             if "display" not in user_config:
                 user_config["display"] = {}
             user_config["display"]["gateway_timestamp"] = new_val
-            with open(config_path, "w", encoding="utf-8") as f:
-                yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+            from utils import atomic_yaml_write
+            atomic_yaml_write(config_path, user_config)
         except Exception as e:
             return f"Failed to save config: {e}"
 
