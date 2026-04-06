@@ -732,6 +732,7 @@ class GatewayRunner:
     async def _async_flush_memories(
         self,
         old_session_id: str,
+        session_key: str = "",
     ):
         """Run the sync memory flush in a thread pool so it won't block the event loop."""
         loop = asyncio.get_event_loop()
