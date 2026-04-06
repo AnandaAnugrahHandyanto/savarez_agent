@@ -192,6 +192,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
         "mattermost": Platform.MATTERMOST,
         "homeassistant": Platform.HOMEASSISTANT,
         "dingtalk": Platform.DINGTALK,
+        "weixin": Platform.WEIXIN,
         "feishu": Platform.FEISHU,
         "wecom": Platform.WECOM,
         "email": Platform.EMAIL,

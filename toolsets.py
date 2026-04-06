@@ -345,6 +345,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "hermes-weixin": {
+        "description": "WeChat (Weixin) bot toolset - iLink Bot API messaging",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
     "hermes-feishu": {
         "description": "Feishu/Lark bot toolset - enterprise messaging via Feishu/Lark (full access)",
         "tools": _HERMES_CORE_TOOLS,

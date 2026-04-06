@@ -285,6 +285,23 @@ PLATFORM_HINTS = {
         "only — no markdown, no formatting. SMS messages are limited to ~1600 "
         "characters, so be brief and direct."
     ),
+    "weixin": (
+    "You are on WeChat (Weixin), a Chinese messaging platform. "
+    "Keep responses concise, clear, and well-structured. "
+    "You MAY use markdown formatting to improve readability, including: "
+    "- headings (##), "
+    "- bold (**text**), "
+    "- lists (- or 1.), "
+    "- code blocks (```), "
+    "- and tables. "
+    "Ensure the output remains readable even if markdown is not fully rendered. "
+    "Avoid overly complex or deeply nested formatting. "
+    "Prefer clean layouts, short sections, and visually pleasant structure. "
+    "Use tables when presenting structured data. "
+    "You can also send images, videos, and files as native attachments. "
+    "Voice messages may arrive as speech-to-text transcriptions."
+    "Prefer using tables over long paragraphs when presenting structured or numeric data."
+    ),
 }
 
 CONTEXT_FILE_MAX_CHARS = 20_000

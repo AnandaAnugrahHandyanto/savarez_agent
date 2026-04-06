@@ -661,6 +661,99 @@ def cmd_gateway(args):
     gateway_command(args)
 
 
+def cmd_wechat(args):
+    """Set up WeChat via official QR login and save credentials into .env."""
+    _require_tty("wechat")
+    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.wechat_login import DEFAULT_BASE_URL, run_wechat_login
+
+    print()
+    print("⚕ WeChat Setup")
+    print("=" * 50)
+
+    try:
+        login_result = asyncio.run(run_wechat_login())
+    except KeyboardInterrupt:
+        print("\nSetup cancelled.")
+        return
+    except Exception as e:
+        print(f"\n✗ WeChat login failed: {e}")
+        return
+
+    token = str(login_result.get("token", "")).strip()
+    account_id = str(login_result.get("account_id", "")).strip()
+    base_url = str(login_result.get("base_url", DEFAULT_BASE_URL)).strip() or DEFAULT_BASE_URL
+    user_id = str(login_result.get("user_id", "")).strip()
+
+    if not token or not account_id:
+        print("\n✗ WeChat login succeeded but returned incomplete credentials.")
+        return
+
+    save_env_value("WEIXIN_TOKEN", token)
+    save_env_value("WEIXIN_ACCOUNT_ID", account_id)
+    if base_url != DEFAULT_BASE_URL:
+        save_env_value("WEIXIN_BASE_URL", base_url)
+
+    existing_allowed = get_env_value("WEIXIN_ALLOWED_USERS") or ""
+    print()
+    print("✓ WeChat credentials saved")
+    print(f"  Account ID: {account_id}")
+    if user_id:
+        print(f"  User ID:    {user_id}")
+    if not existing_allowed and user_id:
+        save_env_value("WEIXIN_ALLOWED_USERS", user_id)
+        print(f"  Allowed:    {user_id}")
+    elif existing_allowed:
+        print(f"  Allowed:    {existing_allowed}")
+
+    current_home = get_env_value("WEIXIN_HOME_CHANNEL") or ""
+def cmd_wechat(args):
+    """Set up WeChat via official QR login and save credentials into .env."""
+    _require_tty("wechat")
+    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.wechat_login import DEFAULT_BASE_URL, run_wechat_login
+
+    print()
+    print("⚕ WeChat Setup")
+    print("=" * 50)
+
+    try:
+        login_result = asyncio.run(run_wechat_login())
+    except KeyboardInterrupt:
+        print("\nSetup cancelled.")
+        return
+    except Exception as e:
+        print(f"\n✗ WeChat login failed: {e}")
+        return
+
+    token = str(login_result.get("token", "")).strip()
+    account_id = str(login_result.get("account_id", "")).strip()
+    base_url = str(login_result.get("base_url", DEFAULT_BASE_URL)).strip() or DEFAULT_BASE_URL
+    user_id = str(login_result.get("user_id", "")).strip()
+
+    if not token or not account_id:
+        print("\n✗ WeChat login succeeded but returned incomplete credentials.")
+        return
+
+    save_env_value("WEIXIN_TOKEN", token)
+    save_env_value("WEIXIN_ACCOUNT_ID", account_id)
+    if base_url != DEFAULT_BASE_URL:
+        save_env_value("WEIXIN_BASE_URL", base_url)
+
+    existing_allowed = get_env_value("WEIXIN_ALLOWED_USERS") or ""
+    print()
+    print("✓ WeChat credentials saved")
+    print(f"  Account ID: {account_id}")
+    if user_id:
+        print(f"  User ID:    {user_id}")
+    if not existing_allowed and user_id:
+        save_env_value("WEIXIN_ALLOWED_USERS", user_id)
+        print(f"  Allowed:    {user_id}")
+    elif existing_allowed:
+        print(f"  Allowed:    {existing_allowed}")
+
+    current_home = get_env_value("WEIXIN_HOME_CHANNEL") or ""
+
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
     _require_tty("whatsapp")
@@ -4313,6 +4406,15 @@ For more help on a command:
         description="Configure WhatsApp and pair via QR code"
     )
     whatsapp_parser.set_defaults(func=cmd_whatsapp)
+
+
+    wechat_parser = subparsers.add_parser(
+        "wechat",
+        help="Set up WeChat integration",
+        description="Configure WeChat and pair via QR code"
+    )
+    wechat_parser.set_defaults(func=cmd_wechat)
+
 
     # =========================================================================
     # login command

@@ -1407,6 +1407,12 @@ _PLATFORMS = [
         ],
     },
     {
+        "key": "weixin",
+        "label": "WeChat (Weixin)",
+        "emoji": "💬",
+        "token_var": "WEIXIN_TOKEN",
+    },
+    {
         "key": "feishu",
         "label": "Feishu / Lark",
         "emoji": "🪽",
@@ -1476,6 +1482,13 @@ def _platform_status(platform: dict) -> str:
             if session_file.exists():
                 return "configured + paired"
             return "enabled, not paired"
+        return "not configured"
+    if platform.get("key") == "weixin":
+        account_id = get_env_value("WEIXIN_ACCOUNT_ID")
+        if val and account_id:
+            return "configured"
+        if val or account_id:
+            return "partially configured"
         return "not configured"
     if platform.get("key") == "signal":
         account = get_env_value("SIGNAL_ACCOUNT")
@@ -1858,6 +1871,8 @@ def gateway_setup():
 
         if platform["key"] == "whatsapp":
             _setup_whatsapp()
+        elif platform["key"] == "weixin":
+            _setup_wechat()
         elif platform["key"] == "signal":
             _setup_signal()
         else:
