@@ -2081,6 +2081,9 @@ class GatewayRunner:
         if canonical == "verbose":
             return await self._handle_verbose_command(event)
 
+        if canonical == "timestamps":
+            return await self._handle_timestamps_command(event)
+
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
 
@@ -4989,6 +4992,57 @@ class GatewayRunner:
             logger.warning("Failed to save tool_progress mode: %s", e)
             return f"{descriptions[new_mode]}\n_(could not save to config: {e})_"
 
+    async def _handle_timestamps_command(self, event: MessageEvent) -> str:
+        """Handle /timestamps command — toggle gateway timestamp injection.
+
+        When enabled (default), a human-readable timestamp is prepended to every
+        user message before it reaches the agent.  When disabled, the raw message
+        is forwarded unchanged.
+
+        The setting is persisted in ``display.gateway_timestamp`` in config.yaml
+        and takes effect immediately (no restart required).
+        """
+        import yaml
+        config_path = _hermes_home / "config.yaml"
+
+        # Read current value
+        try:
+            user_config = {}
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+            current = user_config.get("display", {}).get("gateway_timestamp", True)
+        except Exception:
+            current = True
+
+        # Toggle
+        new_val = not current
+
+        # Save
+        try:
+            if "display" not in user_config:
+                user_config["display"] = {}
+            user_config["display"]["gateway_timestamp"] = new_val
+            from hermes_constants import atomic_yaml_write
+            atomic_yaml_write(config_path, user_config)
+        except Exception as e:
+            return f"Failed to save config: {e}"
+
+        # Also update the in-memory config so it takes effect immediately
+        if isinstance(self.config, dict):
+            if "display" not in self.config:
+                self.config["display"] = {}
+            self.config["display"]["gateway_timestamp"] = new_val
+        else:
+            _disp = getattr(self.config, "display", None)
+            if _disp is not None:
+                setattr(_disp, "gateway_timestamp", new_val)
+
+        if new_val:
+            return "Timestamp injection: ON -- [Current time: ...] will be prepended to every message."
+        else:
+            return "Timestamp injection: OFF -- messages forwarded without timestamp."
+
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context."""
         source = event.source
@@ -6915,14 +6969,21 @@ class GatewayRunner:
             try:
                 # Inject current timestamp into every user message so the agent
                 # always knows the current time without needing a tool call.
-                _now = datetime.now()
-                import locale as _locale
-                try:
-                    _locale.setlocale(_locale.LC_TIME, 'en_US.UTF-8')
-                except Exception:
-                    pass
-                _ts_str = _now.strftime('%A, %B %d, %Y %I:%M %p')
-                message = f"[Current time: {_ts_str}]\n\n{message}"
+                # Toggle via display.gateway_timestamp in config.yaml (default: true).
+                _inject_ts = True
+                if isinstance(self.config, dict):
+                    _inject_ts = self.config.get("display", {}).get("gateway_timestamp", True)
+                else:
+                    _inject_ts = getattr(getattr(self.config, "display", None), "gateway_timestamp", True)
+                if _inject_ts:
+                    _now = datetime.now()
+                    import locale as _locale
+                    try:
+                        _locale.setlocale(_locale.LC_TIME, 'en_US.UTF-8')
+                    except Exception:
+                        pass
+                    _ts_str = _now.strftime('%A, %B %d, %Y %I:%M %p')
+                    message = f"[Current time: {_ts_str}]\n\n{message}"
                 result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
             finally:
                 unregister_gateway_notify(_approval_session_key)
