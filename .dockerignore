@@ -9,7 +9,21 @@ node_modules
 # CI/CD
 .github
 
-# Environment files
+# Environment files (never bake secrets into the image)
 .env
+.env.fleet
+.env.fleet.example
 
+# Exclude markdown docs from image to save space...
 *.md
+# ...except persona files and A2A docs (needed at runtime)
+!docker/personas/*.md
+!docker/SOUL.md
+!docs/a2a-architecture.md
+!docs/a2a-user-guide.md
+
+# Data volumes (never copy local dev data into image)
+data/
+
+# Fleet compose file not needed inside image
+docker-compose.yml

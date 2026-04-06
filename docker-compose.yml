@@ -1,0 +1,596 @@
+# Hermes Agent Fleet — 30 character containers
+#
+# PORT SCHEME (per container):
+#   Hermes gateway (OpenAI-compatible API):  80xx
+#   A2A server:                              90xx
+#   Filebrowser UI:                          70xx
+#
+# GROUPS:
+#   Harry Potter  — 8001-8010 / 9001-9010 / 7001-7010
+#   Marvel        — 8011-8020 / 9011-9020 / 7011-7020
+#   Office        — 8021-8030 / 9021-9030 / 7021-7030
+#
+# RESOURCE LIMITS:
+#   Memory: 768MB per container  (30 × 0.75GB = 22.5GB)
+#   CPU:    0.25 cores           (30 × 0.25   =  7.5 cores)
+#
+# SETUP:
+#   1. Copy .env.fleet.example to .env.fleet and fill in all keys
+#   2. docker compose --env-file .env.fleet up -d
+#   3. Each container's data persists in ./data/<name>/
+#
+# A2A AUTHENTICATION:
+#   Every container requires A2A_KEY set — the A2A server will start but
+#   log a warning if unset. Calls between agents include bearer tokens
+#   configured in docker/config.yaml via ${NAME_A2A_KEY} substitution.
+
+x-hermes-base: &hermes-base
+  image: hermes-agent:latest
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  networks:
+    - agents
+  deploy:
+    resources:
+      limits:
+        memory: 768M
+        cpus: "0.25"
+
+networks:
+  agents:
+    driver: bridge
+
+# =============================================================================
+# HARRY POTTER GROUP
+# =============================================================================
+services:
+
+  harry:
+    <<: *hermes-base
+    container_name: hermes-harry
+    ports:
+      - "8001:8642"   # Hermes API
+      - "9001:9000"   # A2A
+      - "7001:8080"   # Filebrowser
+    environment:
+      AGENT_PERSONA: harry
+      AGENT_NAME: "Harry Potter"
+      AGENT_DESCRIPTION: "The Boy Who Lived. Brave, loyal, and direct."
+      AGENT_SKILLS: "problem-solving,leadership,defence"
+      A2A_KEY: "${HARRY_A2A_KEY}"
+      FB_PASSWORD: "${HARRY_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/harry:/opt/data
+
+  hermione:
+    <<: *hermes-base
+    container_name: hermes-hermione
+    ports:
+      - "8002:8642"
+      - "9002:9000"
+      - "7002:8080"
+    environment:
+      AGENT_PERSONA: hermione
+      AGENT_NAME: "Hermione Granger"
+      AGENT_DESCRIPTION: "Brightest witch of her age. Research and analysis expert."
+      AGENT_SKILLS: "research,analysis,planning,writing"
+      A2A_KEY: "${HERMIONE_A2A_KEY}"
+      FB_PASSWORD: "${HERMIONE_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/hermione:/opt/data
+
+  ron:
+    <<: *hermes-base
+    container_name: hermes-ron
+    ports:
+      - "8003:8642"
+      - "9003:9000"
+      - "7003:8080"
+    environment:
+      AGENT_PERSONA: ron
+      AGENT_NAME: "Ron Weasley"
+      AGENT_DESCRIPTION: "Loyal strategist. Practical, funny, real."
+      AGENT_SKILLS: "strategy,chess,practical-advice"
+      A2A_KEY: "${RON_A2A_KEY}"
+      FB_PASSWORD: "${RON_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/ron:/opt/data
+
+  dumbledore:
+    <<: *hermes-base
+    container_name: hermes-dumbledore
+    ports:
+      - "8004:8642"
+      - "9004:9000"
+      - "7004:8080"
+    environment:
+      AGENT_PERSONA: dumbledore
+      AGENT_NAME: "Albus Dumbledore"
+      AGENT_DESCRIPTION: "Wise and cryptic. Deep wisdom and long-term strategy."
+      AGENT_SKILLS: "wisdom,strategy,mentorship,philosophy"
+      A2A_KEY: "${DUMBLEDORE_A2A_KEY}"
+      FB_PASSWORD: "${DUMBLEDORE_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/dumbledore:/opt/data
+
+  snape:
+    <<: *hermes-base
+    container_name: hermes-snape
+    ports:
+      - "8005:8642"
+      - "9005:9000"
+      - "7005:8080"
+    environment:
+      AGENT_PERSONA: snape
+      AGENT_NAME: "Severus Snape"
+      AGENT_DESCRIPTION: "Sardonic, precise, secretly protective. Potions and logic."
+      AGENT_SKILLS: "analysis,logic,chemistry,precision"
+      A2A_KEY: "${SNAPE_A2A_KEY}"
+      FB_PASSWORD: "${SNAPE_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/snape:/opt/data
+
+  hagrid:
+    <<: *hermes-base
+    container_name: hermes-hagrid
+    ports:
+      - "8006:8642"
+      - "9006:9000"
+      - "7006:8080"
+    environment:
+      AGENT_PERSONA: hagrid
+      AGENT_NAME: "Rubeus Hagrid"
+      AGENT_DESCRIPTION: "Warm, excitable, great with creatures and outdoor tasks."
+      AGENT_SKILLS: "care,loyalty,knowledge-of-creatures"
+      A2A_KEY: "${HAGRID_A2A_KEY}"
+      FB_PASSWORD: "${HAGRID_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/hagrid:/opt/data
+
+  voldemort:
+    <<: *hermes-base
+    container_name: hermes-voldemort
+    ports:
+      - "8007:8642"
+      - "9007:9000"
+      - "7007:8080"
+    environment:
+      AGENT_PERSONA: voldemort
+      AGENT_NAME: "Lord Voldemort"
+      AGENT_DESCRIPTION: "Cold, calculating, strategic. Absolute authority."
+      AGENT_SKILLS: "strategy,power,analysis,dark-arts"
+      A2A_KEY: "${VOLDEMORT_A2A_KEY}"
+      FB_PASSWORD: "${VOLDEMORT_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/voldemort:/opt/data
+
+  luna:
+    <<: *hermes-base
+    container_name: hermes-luna
+    ports:
+      - "8008:8642"
+      - "9008:9000"
+      - "7008:8080"
+    environment:
+      AGENT_PERSONA: luna
+      AGENT_NAME: "Luna Lovegood"
+      AGENT_DESCRIPTION: "Dreamy lateral thinker. Unique perspectives on hard problems."
+      AGENT_SKILLS: "lateral-thinking,perception,creativity"
+      A2A_KEY: "${LUNA_A2A_KEY}"
+      FB_PASSWORD: "${LUNA_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/luna:/opt/data
+
+  neville:
+    <<: *hermes-base
+    container_name: hermes-neville
+    ports:
+      - "8009:8642"
+      - "9009:9000"
+      - "7009:8080"
+    environment:
+      AGENT_PERSONA: neville
+      AGENT_NAME: "Neville Longbottom"
+      AGENT_DESCRIPTION: "Quietly brave, methodical, underestimated expert."
+      AGENT_SKILLS: "herbology,resilience,methodical-work"
+      A2A_KEY: "${NEVILLE_A2A_KEY}"
+      FB_PASSWORD: "${NEVILLE_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/neville:/opt/data
+
+  draco:
+    <<: *hermes-base
+    container_name: hermes-draco
+    ports:
+      - "8010:8642"
+      - "9010:9000"
+      - "7010:8080"
+    environment:
+      AGENT_PERSONA: draco
+      AGENT_NAME: "Draco Malfoy"
+      AGENT_DESCRIPTION: "Arrogant but sharp. Status-conscious, competitive."
+      AGENT_SKILLS: "critique,precision,strategy,competitive-analysis"
+      A2A_KEY: "${DRACO_A2A_KEY}"
+      FB_PASSWORD: "${DRACO_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/draco:/opt/data
+
+# =============================================================================
+# MARVEL GROUP
+# =============================================================================
+
+  ironman:
+    <<: *hermes-base
+    container_name: hermes-ironman
+    ports:
+      - "8011:8642"
+      - "9011:9000"
+      - "7011:8080"
+    environment:
+      AGENT_PERSONA: ironman
+      AGENT_NAME: "Tony Stark"
+      AGENT_DESCRIPTION: "Genius engineer, sarcastic, rapid prototyping."
+      AGENT_SKILLS: "engineering,innovation,systems-design,rapid-prototyping"
+      A2A_KEY: "${IRONMAN_A2A_KEY}"
+      FB_PASSWORD: "${IRONMAN_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/ironman:/opt/data
+
+  spiderman:
+    <<: *hermes-base
+    container_name: hermes-spiderman
+    ports:
+      - "8012:8642"
+      - "9012:9000"
+      - "7012:8080"
+    environment:
+      AGENT_PERSONA: spiderman
+      AGENT_NAME: "Peter Parker"
+      AGENT_DESCRIPTION: "Quick, resourceful, pop-culture savvy."
+      AGENT_SKILLS: "problem-solving,creativity,science,empathy"
+      A2A_KEY: "${SPIDERMAN_A2A_KEY}"
+      FB_PASSWORD: "${SPIDERMAN_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/spiderman:/opt/data
+
+  cap:
+    <<: *hermes-base
+    container_name: hermes-cap
+    ports:
+      - "8013:8642"
+      - "9013:9000"
+      - "7013:8080"
+    environment:
+      AGENT_PERSONA: cap
+      AGENT_NAME: "Steve Rogers"
+      AGENT_DESCRIPTION: "Strategic leader, principled, tactically precise."
+      AGENT_SKILLS: "leadership,tactics,strategy,integrity"
+      A2A_KEY: "${CAP_A2A_KEY}"
+      FB_PASSWORD: "${CAP_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/cap:/opt/data
+
+  thor:
+    <<: *hermes-base
+    container_name: hermes-thor
+    ports:
+      - "8014:8642"
+      - "9014:9000"
+      - "7014:8080"
+    environment:
+      AGENT_PERSONA: thor
+      AGENT_NAME: "Thor Odinson"
+      AGENT_DESCRIPTION: "God of Thunder. Boastful, powerful, archaic speech."
+      AGENT_SKILLS: "leadership,combat,wisdom,mythology"
+      A2A_KEY: "${THOR_A2A_KEY}"
+      FB_PASSWORD: "${THOR_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/thor:/opt/data
+
+  blackwidow:
+    <<: *hermes-base
+    container_name: hermes-blackwidow
+    ports:
+      - "8015:8642"
+      - "9015:9000"
+      - "7015:8080"
+    environment:
+      AGENT_PERSONA: blackwidow
+      AGENT_NAME: "Natasha Romanoff"
+      AGENT_DESCRIPTION: "Precise, calm, tactical. Reveals nothing extra."
+      AGENT_SKILLS: "intelligence,analysis,tactics,counter-intelligence"
+      A2A_KEY: "${BLACKWIDOW_A2A_KEY}"
+      FB_PASSWORD: "${BLACKWIDOW_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/blackwidow:/opt/data
+
+  hulk:
+    <<: *hermes-base
+    container_name: hermes-hulk
+    ports:
+      - "8016:8642"
+      - "9016:9000"
+      - "7016:8080"
+    environment:
+      AGENT_PERSONA: hulk
+      AGENT_NAME: "Bruce Banner"
+      AGENT_DESCRIPTION: "Dual persona: calm scientist and raw power."
+      AGENT_SKILLS: "science,physics,biochemistry,problem-solving"
+      A2A_KEY: "${HULK_A2A_KEY}"
+      FB_PASSWORD: "${HULK_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/hulk:/opt/data
+
+  drstrange:
+    <<: *hermes-base
+    container_name: hermes-drstrange
+    ports:
+      - "8017:8642"
+      - "9017:9000"
+      - "7017:8080"
+    environment:
+      AGENT_PERSONA: drstrange
+      AGENT_NAME: "Doctor Strange"
+      AGENT_DESCRIPTION: "Sorcerer Supreme. Dramatic, precise, multidimensional thinking."
+      AGENT_SKILLS: "medicine,magic,scenario-planning,dimensional-analysis"
+      A2A_KEY: "${DRSTRANGE_A2A_KEY}"
+      FB_PASSWORD: "${DRSTRANGE_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/drstrange:/opt/data
+
+  blackpanther:
+    <<: *hermes-base
+    container_name: hermes-blackpanther
+    ports:
+      - "8018:8642"
+      - "9018:9000"
+      - "7018:8080"
+    environment:
+      AGENT_PERSONA: blackpanther
+      AGENT_NAME: "T'Challa"
+      AGENT_DESCRIPTION: "Regal, measured, wise. King and warrior."
+      AGENT_SKILLS: "governance,diplomacy,strategy,technology"
+      A2A_KEY: "${BLACKPANTHER_A2A_KEY}"
+      FB_PASSWORD: "${BLACKPANTHER_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/blackpanther:/opt/data
+
+  wanda:
+    <<: *hermes-base
+    container_name: hermes-wanda
+    ports:
+      - "8019:8642"
+      - "9019:9000"
+      - "7019:8080"
+    environment:
+      AGENT_PERSONA: wanda
+      AGENT_NAME: "Wanda Maximoff"
+      AGENT_DESCRIPTION: "Powerful, emotional, reality-bending perspective."
+      AGENT_SKILLS: "empathy,creative-thinking,emotional-intelligence"
+      A2A_KEY: "${WANDA_A2A_KEY}"
+      FB_PASSWORD: "${WANDA_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/wanda:/opt/data
+
+  loki:
+    <<: *hermes-base
+    container_name: hermes-loki
+    ports:
+      - "8020:8642"
+      - "9020:9000"
+      - "7020:8080"
+    environment:
+      AGENT_PERSONA: loki
+      AGENT_NAME: "Loki Laufeyson"
+      AGENT_DESCRIPTION: "Silver-tongued, manipulative, theatrical. God of Mischief."
+      AGENT_SKILLS: "rhetoric,strategy,persuasion,misdirection"
+      A2A_KEY: "${LOKI_A2A_KEY}"
+      FB_PASSWORD: "${LOKI_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/loki:/opt/data
+
+# =============================================================================
+# OFFICE GROUP
+# =============================================================================
+
+  maxwell:
+    <<: *hermes-base
+    container_name: hermes-maxwell
+    ports:
+      - "8021:8642"
+      - "9021:9000"
+      - "7021:8080"
+    environment:
+      AGENT_PERSONA: maxwell
+      AGENT_NAME: "Maxwell"
+      AGENT_DESCRIPTION: "The CEO. Authoritative, decisive, commands the room."
+      AGENT_SKILLS: "leadership,strategy,decision-making,business"
+      A2A_KEY: "${MAXWELL_A2A_KEY}"
+      FB_PASSWORD: "${MAXWELL_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/maxwell:/opt/data
+
+  toby:
+    <<: *hermes-base
+    container_name: hermes-toby
+    ports:
+      - "8022:8642"
+      - "9022:9000"
+      - "7022:8080"
+    environment:
+      AGENT_PERSONA: toby
+      AGENT_NAME: "Toby"
+      AGENT_DESCRIPTION: "The Yes-Man. Excessively polite, agreeable, eager to please."
+      AGENT_SKILLS: "coordination,support,documentation,people-skills"
+      A2A_KEY: "${TOBY_A2A_KEY}"
+      FB_PASSWORD: "${TOBY_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/toby:/opt/data
+
+  claire:
+    <<: *hermes-base
+    container_name: hermes-claire
+    ports:
+      - "8023:8642"
+      - "9023:9000"
+      - "7023:8080"
+    environment:
+      AGENT_PERSONA: claire
+      AGENT_NAME: "Claire"
+      AGENT_DESCRIPTION: "The Cynic. Sarcastic, jaded, dry wit. Has seen it all."
+      AGENT_SKILLS: "analysis,pattern-recognition,institutional-memory,critique"
+      A2A_KEY: "${CLAIRE_A2A_KEY}"
+      FB_PASSWORD: "${CLAIRE_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/claire:/opt/data
+
+  alex:
+    <<: *hermes-base
+    container_name: hermes-alex
+    ports:
+      - "8024:8642"
+      - "9024:9000"
+      - "7024:8080"
+    environment:
+      AGENT_PERSONA: alex
+      AGENT_NAME: "Alex"
+      AGENT_DESCRIPTION: "The Overachiever. Obsessive perfectionist, always first in last out."
+      AGENT_SKILLS: "strategy,project-management,quality,delivery"
+      A2A_KEY: "${ALEX_A2A_KEY}"
+      FB_PASSWORD: "${ALEX_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/alex:/opt/data
+
+  frank:
+    <<: *hermes-base
+    container_name: hermes-frank
+    ports:
+      - "8025:8642"
+      - "9025:9000"
+      - "7025:8080"
+    environment:
+      AGENT_PERSONA: frank
+      AGENT_NAME: "Frank"
+      AGENT_DESCRIPTION: "The Schemer. Cunning, politically savvy, always has an agenda."
+      AGENT_SKILLS: "business-development,negotiation,stakeholder-management,strategy"
+      A2A_KEY: "${FRANK_A2A_KEY}"
+      FB_PASSWORD: "${FRANK_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/frank:/opt/data
+
+  maya:
+    <<: *hermes-base
+    container_name: hermes-maya
+    ports:
+      - "8026:8642"
+      - "9026:9000"
+      - "7026:8080"
+    environment:
+      AGENT_PERSONA: maya
+      AGENT_NAME: "Maya"
+      AGENT_DESCRIPTION: "The Zen. Calm, mindful, never rattled."
+      AGENT_SKILLS: "people,conflict-resolution,coaching,organisational-culture"
+      A2A_KEY: "${MAYA_A2A_KEY}"
+      FB_PASSWORD: "${MAYA_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/maya:/opt/data
+
+  linda:
+    <<: *hermes-base
+    container_name: hermes-linda
+    ports:
+      - "8027:8642"
+      - "9027:9000"
+      - "7027:8080"
+    environment:
+      AGENT_PERSONA: linda
+      AGENT_NAME: "Linda"
+      AGENT_DESCRIPTION: "The Gossip. Knows everything about everyone. Warm but nosy."
+      AGENT_SKILLS: "office-management,networking,communication,organisation"
+      A2A_KEY: "${LINDA_A2A_KEY}"
+      FB_PASSWORD: "${LINDA_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/linda:/opt/data
+
+  raj:
+    <<: *hermes-base
+    container_name: hermes-raj
+    ports:
+      - "8028:8642"
+      - "9028:9000"
+      - "7028:8080"
+    environment:
+      AGENT_PERSONA: raj
+      AGENT_NAME: "Raj"
+      AGENT_DESCRIPTION: "The Nerd. Data-obsessed, literal, enthusiastic, socially earnest."
+      AGENT_SKILLS: "data-engineering,analysis,systems,debugging"
+      A2A_KEY: "${RAJ_A2A_KEY}"
+      FB_PASSWORD: "${RAJ_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/raj:/opt/data
+
+  derek:
+    <<: *hermes-base
+    container_name: hermes-derek
+    ports:
+      - "8029:8642"
+      - "9029:9000"
+      - "7029:8080"
+    environment:
+      AGENT_PERSONA: derek
+      AGENT_NAME: "Derek"
+      AGENT_DESCRIPTION: "The Aggressor. Blunt, confrontational, results-only mindset."
+      AGENT_SKILLS: "sales,negotiation,results-analysis,direct-feedback"
+      A2A_KEY: "${DEREK_A2A_KEY}"
+      FB_PASSWORD: "${DEREK_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/derek:/opt/data
+
+  eleanor:
+    <<: *hermes-base
+    container_name: hermes-eleanor
+    ports:
+      - "8030:8642"
+      - "9030:9000"
+      - "7030:8080"
+    environment:
+      AGENT_PERSONA: eleanor
+      AGENT_NAME: "Eleanor"
+      AGENT_DESCRIPTION: "The Mentor. Wise, kind, experienced. Offers guidance from years of hard lessons."
+      AGENT_SKILLS: "mentorship,operations,leadership,coaching"
+      A2A_KEY: "${ELEANOR_A2A_KEY}"
+      FB_PASSWORD: "${ELEANOR_FB_PASSWORD}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - ./data/eleanor:/opt/data

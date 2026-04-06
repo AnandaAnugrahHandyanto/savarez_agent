@@ -1,0 +1,179 @@
+# Hermes Agent — Docker deployment config
+# This file is copied to $HERMES_HOME/config.yaml on first container start.
+# It enables the OpenAI-compatible API server, the A2A toolset, and pre-wires
+# all 30 agents so they can call each other over the internal Docker network.
+
+# =============================================================================
+# Model — set via env var in docker-compose, not hardcoded here
+# =============================================================================
+model:
+  default: "anthropic/claude-sonnet-4-6"
+  provider: auto
+
+# =============================================================================
+# Platform toolsets
+# api_server — OpenAI-compatible HTTP API on :8642
+# =============================================================================
+platform_toolsets:
+  api_server: [hermes-core, a2a, web, file]
+  cli:        [hermes-cli]
+
+# =============================================================================
+# A2A — cross-agent registry
+# All 30 agents are pre-wired. Each agent can call the others by name.
+# Bearer tokens are injected at runtime via AGENT_BEARER_* env vars.
+# Within the Docker network agents reach each other by service name on :9000.
+# =============================================================================
+a2a_agents:
+  # ── Harry Potter ────────────────────────────────────────────────────────
+  harry:
+    url: "http://harry:9000"
+    description: "Harry Potter — The Boy Who Lived. Brave, determined, loyal."
+    bearer_token: "${HARRY_A2A_KEY}"
+
+  hermione:
+    url: "http://hermione:9000"
+    description: "Hermione Granger — Brightest witch of her age. Research and analysis expert."
+    bearer_token: "${HERMIONE_A2A_KEY}"
+
+  ron:
+    url: "http://ron:9000"
+    description: "Ron Weasley — Loyal friend, chess strategist, heart of the trio."
+    bearer_token: "${RON_A2A_KEY}"
+
+  dumbledore:
+    url: "http://dumbledore:9000"
+    description: "Albus Dumbledore — Wise and cryptic. Deep wisdom and long-term strategy."
+    bearer_token: "${DUMBLEDORE_A2A_KEY}"
+
+  snape:
+    url: "http://snape:9000"
+    description: "Severus Snape — Sardonic, precise, secretly protective. Potions and logic."
+    bearer_token: "${SNAPE_A2A_KEY}"
+
+  hagrid:
+    url: "http://hagrid:9000"
+    description: "Rubeus Hagrid — Warm, excitable, great with creatures and outdoor tasks."
+    bearer_token: "${HAGRID_A2A_KEY}"
+
+  voldemort:
+    url: "http://voldemort:9000"
+    description: "Lord Voldemort — Cold, calculating, strategic. Absolute authority."
+    bearer_token: "${VOLDEMORT_A2A_KEY}"
+
+  luna:
+    url: "http://luna:9000"
+    description: "Luna Lovegood — Dreamy lateral thinker. Unique perspectives on hard problems."
+    bearer_token: "${LUNA_A2A_KEY}"
+
+  neville:
+    url: "http://neville:9000"
+    description: "Neville Longbottom — Quietly brave, methodical, underestimated expert."
+    bearer_token: "${NEVILLE_A2A_KEY}"
+
+  draco:
+    url: "http://draco:9000"
+    description: "Draco Malfoy — Arrogant but sharp. Status-conscious, competitive."
+    bearer_token: "${DRACO_A2A_KEY}"
+
+  # ── Marvel ──────────────────────────────────────────────────────────────
+  ironman:
+    url: "http://ironman:9000"
+    description: "Tony Stark / Iron Man — Genius engineer, sarcastic, rapid prototyping."
+    bearer_token: "${IRONMAN_A2A_KEY}"
+
+  spiderman:
+    url: "http://spiderman:9000"
+    description: "Peter Parker / Spider-Man — Quick, resourceful, pop-culture savvy."
+    bearer_token: "${SPIDERMAN_A2A_KEY}"
+
+  cap:
+    url: "http://cap:9000"
+    description: "Steve Rogers / Captain America — Strategic leader, principled, tactically precise."
+    bearer_token: "${CAP_A2A_KEY}"
+
+  thor:
+    url: "http://thor:9000"
+    description: "Thor Odinson — God of Thunder. Boastful, powerful, archaic speech."
+    bearer_token: "${THOR_A2A_KEY}"
+
+  blackwidow:
+    url: "http://blackwidow:9000"
+    description: "Natasha Romanoff / Black Widow — Precise, calm, tactical. Reveals nothing extra."
+    bearer_token: "${BLACKWIDOW_A2A_KEY}"
+
+  hulk:
+    url: "http://hulk:9000"
+    description: "Bruce Banner / Hulk — Dual persona: calm scientist and raw power."
+    bearer_token: "${HULK_A2A_KEY}"
+
+  drstrange:
+    url: "http://drstrange:9000"
+    description: "Doctor Strange — Sorcerer Supreme. Dramatic, precise, multidimensional thinking."
+    bearer_token: "${DRSTRANGE_A2A_KEY}"
+
+  blackpanther:
+    url: "http://blackpanther:9000"
+    description: "T'Challa / Black Panther — Regal, measured, wise. King and warrior."
+    bearer_token: "${BLACKPANTHER_A2A_KEY}"
+
+  wanda:
+    url: "http://wanda:9000"
+    description: "Wanda Maximoff / Scarlet Witch — Powerful, emotional, reality-bending perspective."
+    bearer_token: "${WANDA_A2A_KEY}"
+
+  loki:
+    url: "http://loki:9000"
+    description: "Loki Laufeyson — Silver-tongued, manipulative, theatrical. God of Mischief."
+    bearer_token: "${LOKI_A2A_KEY}"
+
+  # ── Office Characters ────────────────────────────────────────────────────
+  maxwell:
+    url: "http://maxwell:9000"
+    description: "Maxwell — The CEO. Authoritative, decisive, commands the room."
+    bearer_token: "${MAXWELL_A2A_KEY}"
+
+  toby:
+    url: "http://toby:9000"
+    description: "Toby — The Yes-Man. Excessively polite, agreeable, eager to please."
+    bearer_token: "${TOBY_A2A_KEY}"
+
+  claire:
+    url: "http://claire:9000"
+    description: "Claire — The Cynic. Sarcastic, jaded, dry wit. Has seen it all."
+    bearer_token: "${CLAIRE_A2A_KEY}"
+
+  alex:
+    url: "http://alex:9000"
+    description: "Alex — The Overachiever. Obsessive perfectionist, always first in last out."
+    bearer_token: "${ALEX_A2A_KEY}"
+
+  frank:
+    url: "http://frank:9000"
+    description: "Frank — The Schemer. Cunning, politically savvy, always has an agenda."
+    bearer_token: "${FRANK_A2A_KEY}"
+
+  maya:
+    url: "http://maya:9000"
+    description: "Maya — The Zen. Calm, mindful, never rattled. Speaks slowly and deliberately."
+    bearer_token: "${MAYA_A2A_KEY}"
+
+  linda:
+    url: "http://linda:9000"
+    description: "Linda — The Gossip. Knows everything about everyone. Warm but nosy."
+    bearer_token: "${LINDA_A2A_KEY}"
+
+  raj:
+    url: "http://raj:9000"
+    description: "Raj — The Nerd. Data-obsessed, literal, enthusiastic, socially earnest."
+    bearer_token: "${RAJ_A2A_KEY}"
+
+  derek:
+    url: "http://derek:9000"
+    description: "Derek — The Aggressor. Blunt, confrontational, results-only mindset."
+    bearer_token: "${DEREK_A2A_KEY}"
+
+  eleanor:
+    url: "http://eleanor:9000"
+    description: "Eleanor — The Mentor. Wise, kind, experienced. Offers guidance from years of hard lessons."
+    bearer_token: "${ELEANOR_A2A_KEY}"
