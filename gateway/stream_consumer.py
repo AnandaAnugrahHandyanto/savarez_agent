@@ -35,6 +35,7 @@ class StreamConsumerConfig:
     edit_interval: float = 0.3
     buffer_threshold: int = 40
     cursor: str = " ▉"
+    separator: str = "///"  # Custom separator to split message into new bubbles
 
 
 class GatewayStreamConsumer:
@@ -109,14 +110,28 @@ class GatewayStreamConsumer:
                 # Decide whether to flush an edit
                 now = time.monotonic()
                 elapsed = now - self._last_edit_time
+                has_separator = self.cfg.separator and self.cfg.separator in self._accumulated
                 should_edit = (
                     got_done
+                    or has_separator
                     or (elapsed >= self.cfg.edit_interval
                         and len(self._accumulated) > 0)
                     or len(self._accumulated) >= self.cfg.buffer_threshold
                 )
 
                 if should_edit and self._accumulated:
+                    # Split by custom separator (e.g. "///")
+                    if self.cfg.separator:
+                        while self.cfg.separator in self._accumulated:
+                            split_at = self._accumulated.find(self.cfg.separator)
+                            chunk = self._accumulated[:split_at].rstrip()
+                            # Finalize this chunk (no cursor)
+                            await self._send_or_edit(chunk)
+                            # Strip separator and leading whitespace from remainder
+                            self._accumulated = self._accumulated[split_at + len(self.cfg.separator):].lstrip()
+                            self._message_id = None
+                            self._last_sent_text = ""
+
                     # Split overflow: if accumulated text exceeds the platform
                     # limit, finalize the current message and start a new one.
                     while (
