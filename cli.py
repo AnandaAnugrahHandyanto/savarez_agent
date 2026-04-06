@@ -1919,6 +1919,8 @@ class HermesCLI:
         # Conversation state
         self.conversation_history: List[Dict[str, Any]] = []
         self.session_start = datetime.now()
+        self._inference_total_seconds: float = 0.0  # cumulative inference time across session
+        self._last_inference_seconds: float = 0.0   # inference time for the last response
         self._resumed = False
         # Initialize SQLite session store early so /title works before first message
         self._session_db = None
@@ -2031,7 +2033,14 @@ class HermesCLI:
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
-        elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
+        _agent_running = getattr(self, '_agent_running', False)
+        _inference_total = getattr(self, '_inference_total_seconds', 0.0)
+        if _agent_running:
+            # Live counter while inference is in progress (from message send time)
+            elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
+        else:
+            # Frozen total inference time when idle; 0 means no message sent yet
+            elapsed_seconds = _inference_total
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
@@ -2243,15 +2252,19 @@ class HermesCLI:
             # line and produce duplicated status bar rows over long sessions.
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
+            _show_timer = getattr(self, '_agent_running', False) or getattr(self, '_inference_total_seconds', 0.0) > 0
 
             if width < 52:
                 frags = [
                     ("class:status-bar", " ⚕ "),
                     ("class:status-bar-strong", snapshot["model_short"]),
-                    ("class:status-bar-dim", " · "),
-                    ("class:status-bar-dim", duration_label),
-                    ("class:status-bar", " "),
                 ]
+                if _show_timer:
+                    frags += [
+                        ("class:status-bar-dim", " · "),
+                        ("class:status-bar-dim", duration_label),
+                    ]
+                frags.append(("class:status-bar", " "))
             else:
                 percent = snapshot["context_percent"]
                 percent_label = f"{percent}%" if percent is not None else "--"
@@ -2261,10 +2274,13 @@ class HermesCLI:
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
-                        ("class:status-bar-dim", " · "),
-                        ("class:status-bar-dim", duration_label),
-                        ("class:status-bar", " "),
                     ]
+                    if _show_timer:
+                        frags += [
+                            ("class:status-bar-dim", " · "),
+                            ("class:status-bar-dim", duration_label),
+                        ]
+                    frags.append(("class:status-bar", " "))
                 else:
                     if snapshot["context_length"]:
                         ctx_total = _format_context_length(snapshot["context_length"])
@@ -2274,19 +2290,43 @@ class HermesCLI:
                         context_label = "ctx --"
 
                     bar_style = self._status_bar_context_style(percent)
-                    frags = [
-                        ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
-                        ("class:status-bar-dim", " │ "),
-                        ("class:status-bar-dim", context_label),
-                        ("class:status-bar-dim", " │ "),
-                        (bar_style, self._build_context_bar(percent)),
-                        ("class:status-bar-dim", " "),
-                        (bar_style, percent_label),
-                        ("class:status-bar-dim", " │ "),
-                        ("class:status-bar-dim", duration_label),
-                        ("class:status-bar", " "),
-                    ]
+                    # After a response, show ∑ total and ↩ last inference times
+                    _has_response = getattr(self, '_response_received', False)
+                    if _has_response:
+                        total_label = format_duration_compact(getattr(self, '_inference_total_seconds', 0.0))
+                        last_label = format_duration_compact(getattr(self, '_last_inference_seconds', 0.0))
+                        frags = [
+                            ("class:status-bar", " ⚕ "),
+                            ("class:status-bar-strong", snapshot["model_short"]),
+                            ("class:status-bar-dim", " │ "),
+                            ("class:status-bar-dim", context_label),
+                            ("class:status-bar-dim", " │ "),
+                            (bar_style, self._build_context_bar(percent)),
+                            ("class:status-bar-dim", " "),
+                            (bar_style, percent_label),
+                            ("class:status-bar-dim", " │ ∑ "),
+                            ("class:status-bar-dim", total_label),
+                            ("class:status-bar-dim", " │ ↩ "),
+                            ("class:status-bar-dim", last_label),
+                            ("class:status-bar", " "),
+                        ]
+                    else:
+                        frags = [
+                            ("class:status-bar", " ⚕ "),
+                            ("class:status-bar-strong", snapshot["model_short"]),
+                            ("class:status-bar-dim", " │ "),
+                            ("class:status-bar-dim", context_label),
+                            ("class:status-bar-dim", " │ "),
+                            (bar_style, self._build_context_bar(percent)),
+                            ("class:status-bar-dim", " "),
+                            (bar_style, percent_label),
+                        ]
+                        if _show_timer:
+                            frags += [
+                                ("class:status-bar-dim", " │ "),
+                                ("class:status-bar-dim", duration_label),
+                            ]
+                        frags.append(("class:status-bar", " "))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
@@ -2733,9 +2773,7 @@ class HermesCLI:
                 self._stream_text_ansi = f"\033[38;2;{_r};{_g};{_b}m"
             except (ValueError, IndexError):
                 self._stream_text_ansi = ""
-            w = shutil.get_terminal_size().columns
-            fill = w - 2 - len(label)
-            _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+            _cprint("")  # blank line before streamed response
 
         self._stream_buf += text
 
@@ -2771,10 +2809,9 @@ class HermesCLI:
             _cprint(f"{_STREAM_PAD}{_tc}{self._stream_buf}{_RST}" if _tc else f"{_STREAM_PAD}{self._stream_buf}")
             self._stream_buf = ""
 
-        # Close the response box
+        # Add blank line after streamed response
         if self._stream_box_opened:
-            w = shutil.get_terminal_size().columns
-            _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
+            _cprint("")
 
     # -- Streaming markdown helpers ------------------------------------------
 
@@ -2887,8 +2924,7 @@ class HermesCLI:
                 label = "⚕ Hermes"
             w = shutil.get_terminal_size().columns
             self._stream_md_term_width = w  # cache for chunk rendering; avoids syscall per chunk
-            fill = w - 2 - len(label)
-            _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+            _cprint("")  # blank line before streamed response
 
         # Find the safe render boundary
         boundary = self._find_block_boundary(self._stream_md_buf, self._stream_md_rendered)
@@ -6205,10 +6241,9 @@ class HermesCLI:
                     import time as _tmod
                     _tmod.sleep(0.05)  # brief pause for refresh
                 print()
-                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
                 _cprint(f"  ✅ Background task #{task_num} complete")
                 _cprint(f"  Prompt: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
-                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+                print()
                 if response:
                     try:
                         from hermes_cli.skin_engine import get_active_skin
@@ -6228,16 +6263,10 @@ class HermesCLI:
                         response, self.markdown_enabled,
                         code_theme=_code_theme, text_color=_resp_text,
                     )
-                    _panel_kw = dict(
-                        title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
-                        title_align="left",
-                        border_style=_resp_color,
-                        box=rich_box.HORIZONTALS,
-                        padding=(1, 2),
-                    )
-                    if not self.markdown_enabled:
-                        _panel_kw["style"] = _resp_text
-                    _chat_console.print(Panel(_renderable, **_panel_kw))
+                    # Borderless output for background task response.
+                    _chat_console.print()
+                    _chat_console.print(_renderable)
+                    _chat_console.print()
                 else:
                     _cprint("  (No response generated)")
 
@@ -6357,17 +6386,14 @@ class HermesCLI:
                     # Skin-aware markdown rendering for /btw output
                     _code_theme = _skin.get_color("code_theme", "monokai")
                     _btw_text = _skin.get_color("banner_text", "#FFF8DC")
-                    ChatConsole().print(Panel(
-                        _render_response(
-                            response, self.markdown_enabled,
-                            code_theme=_code_theme, text_color=_btw_text,
-                        ),
-                        title=f"[{_resp_color} bold]⚕ /btw[/]",
-                        title_align="left",
-                        border_style=_resp_color,
-                        box=rich_box.HORIZONTALS,
-                        padding=(1, 4),
+                    # Borderless output for /btw response.
+                    _cc = ChatConsole()
+                    _cc.print()
+                    _cc.print(_render_response(
+                        response, self.markdown_enabled,
+                        code_theme=_code_theme, text_color=_btw_text,
                     ))
+                    _cc.print()
                 else:
                     _cprint("  💬 /btw: (no response)")
 
@@ -6895,13 +6921,33 @@ class HermesCLI:
         except Exception as e:
             print(f"  ❌ Compression failed: {e}")
 
-    def _handle_debug_command(self):
-        """Handle /debug — upload debug report + logs and print paste URLs."""
-        from hermes_cli.debug import run_debug_share
-        from types import SimpleNamespace
+    def _print_post_response_summary(self):
+        """Print model/context info after response (replaces status bar during response)."""
+        if not self.agent:
+            return
+        try:
+            snapshot = self._get_status_bar_snapshot()
+            model_short = snapshot["model_short"]
+            ctx_used = format_token_count_compact(snapshot["context_tokens"]) if snapshot["context_tokens"] else "0"
+            ctx_total = _format_context_length(snapshot["context_length"]) if snapshot["context_length"] else "--"
+            percent = snapshot["context_percent"]
+            percent_label = f"{percent}%" if percent is not None else "--"
+            total_label = format_duration_compact(self._inference_total_seconds)
+            last_label = format_duration_compact(self._last_inference_seconds)
 
-        args = SimpleNamespace(lines=200, expire=7, local=False)
-        run_debug_share(args)
+            # Format: ⚕ Model │ Context │ Percent │ total Xs │ last Xs
+            summary = f" ⚕ {model_short} │ {ctx_used}/{ctx_total} │ [{self._context_bar_visual(percent)}] {percent_label} │ ∑ {total_label} │ ↩ {last_label} "
+            print(summary)
+        except Exception:
+            pass  # Silently skip on error
+
+    def _context_bar_visual(self, percent: Optional[int]) -> str:
+        """Return a visual bar for context usage."""
+        if percent is None:
+            percent = 0
+        width = 10
+        filled = int((percent / 100) * width)
+        return "█" * filled + "░" * (width - filled)
 
     def _show_usage(self):
         """Show rate limits (if available) and session token usage."""
@@ -6954,7 +7000,6 @@ class HermesCLI:
         elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
 
         print("  📊 Session Token Usage")
-        print(f"  {'─' * 40}")
         print(f"  Model:                     {agent.model}")
         print(f"  Input tokens:              {input_tokens:>10,}")
         print(f"  Cache read tokens:         {cache_read_tokens:>10,}")
@@ -6974,7 +7019,6 @@ class HermesCLI:
             print(f"  Total cost:              {'included':>10}")
         else:
             print(f"  Total cost:              {'n/a':>10}")
-        print(f"  {'─' * 40}")
         print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
         print(f"  Messages:         {msg_count}")
         print(f"  Compressions:     {compressions}")
@@ -8099,22 +8143,26 @@ class HermesCLI:
     def chat(self, message, images: list = None) -> Optional[str]:
         """
         Send a message to the agent and get a response.
-        
+
         Handles streaming output, interrupt detection (user typing while agent
         is working), and re-queueing of interrupted messages.
-        
+
         Uses a dedicated _interrupt_queue (separate from _pending_input) to avoid
         race conditions between the process_loop and interrupt monitoring. Messages
         typed while the agent is running go to _interrupt_queue; messages typed while
         idle go to _pending_input.
-        
+
         Args:
             message: The user's message (str or multimodal content list)
             images: Optional list of Path objects for attached images
-            
+
         Returns:
             The agent's response, or None on error
         """
+        # Reset per-turn flags for this new message
+        self._summary_printed_this_turn = False
+        self._response_received = False
+
         # Single-query and direct chat callers do not go through run(), so
         # register secure secret capture here as well.
         set_secret_capture_callback(self._secret_capture_callback)
@@ -8178,10 +8226,10 @@ class HermesCLI:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
 
-        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
-        print(flush=True)
-        
         try:
+            # Reset per-message inference timer (snapshot uses session_start for its duration label)
+            self.session_start = datetime.now()
+
             # Run the conversation with interrupt monitoring
             result = None
 
@@ -8232,11 +8280,8 @@ class HermesCLI:
                     nonlocal _streaming_box_opened
                     if not _streaming_box_opened:
                         _streaming_box_opened = True
-                        w = self.console.width
-                        label = " ⚕ Hermes "
-                        fill = w - 2 - len(label)
-                        _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
-                    _cprint(f"{_STREAM_PAD}{sentence.rstrip()}")
+                        _cprint("")  # blank line before TTS output
+                    _cprint(sentence.rstrip())
 
                 tts_thread = threading.Thread(
                     target=stream_tts_to_speaker,
@@ -8368,6 +8413,10 @@ class HermesCLI:
                 # but guard against edge cases.
                 agent_thread.join(timeout=30)
 
+            # Update inference counters
+            self._last_inference_seconds = (datetime.now() - self.session_start).total_seconds()
+            self._inference_total_seconds += self._last_inference_seconds
+
             # Proactively clean up async clients whose event loop is dead.
             # The agent thread may have created AsyncOpenAI clients bound
             # to a per-thread event loop; if that loop is now closed, those
@@ -8477,9 +8526,8 @@ class HermesCLI:
                 is_error_response = result and (result.get("failed") or result.get("partial"))
                 already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
                 if use_streaming_tts and _streaming_box_opened and not is_error_response:
-                    # Text was already printed sentence-by-sentence; just close the box
-                    w = shutil.get_terminal_size().columns
-                    _cprint(f"\n{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
+                    # Text was already printed sentence-by-sentence; add trailing newline
+                    _cprint("")
                 elif already_streamed:
                     # Response was already streamed token-by-token with box framing;
                     # _flush_stream() already closed the box. Skip Rich Panel.
@@ -8493,20 +8541,16 @@ class HermesCLI:
                         response, self.markdown_enabled,
                         code_theme=_code_theme, text_color=_resp_text,
                     )
-                    _panel_kw = dict(
-                        title=f"[{_resp_color} bold]{label}[/]",
-                        title_align="left",
-                        border_style=_resp_color,
-                        box=rich_box.HORIZONTALS,
-                        padding=(1, 2),
-                    )
-                    # Omit Panel style= when markdown is on — Panel's style
-                    # overrides ALL child styles, washing out heading/code colours.
-                    # Markdown's own style= parameter layers underneath instead.
-                    if not self.markdown_enabled:
-                        _panel_kw["style"] = _resp_text
-                    _chat_console.print(Panel(_renderable, **_panel_kw))
+                    # Borderless output: blank line, content, blank line.
+                    # No panel title or horizontal rules — clean like Claude Code.
+                    _chat_console.print()
+                    _chat_console.print(_renderable)
+                    _chat_console.print()
 
+            # Print post-response summary (model/context info that was hidden during response)
+            # Signal that a response has been received (status bar switches to ∑/↩ mode)
+            if response and not response_previewed:
+                self._response_received = True
 
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.
@@ -10277,9 +10321,7 @@ class HermesCLI:
                         expanded = _paste_ref_re.sub(_expand_ref, user_input)
                         total_lines = expanded.count('\n') + 1
                         n_pastes = len(paste_refs)
-                        _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
                         print()
-                        ChatConsole().print(_user_bar)
                         # Show any surrounding user text alongside the paste summary
                         split_parts = _paste_ref_re.split(user_input)
                         visible_user_text = " ".join(
@@ -10296,19 +10338,16 @@ class HermesCLI:
                             )
                         user_input = expanded
                     else:
-                        _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
                         if '\n' in user_input:
                             first_line = user_input.split('\n')[0]
                             line_count = user_input.count('\n') + 1
                             print()
-                            ChatConsole().print(_user_bar)
                             ChatConsole().print(
                                 f"[bold {_accent_hex()}]●[/] [bold]{_escape(first_line)}[/] "
                                 f"[dim](+{line_count - 1} lines)[/]"
                             )
                         else:
                             print()
-                            ChatConsole().print(_user_bar)
                             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
                     
                     # Show image attachment count
