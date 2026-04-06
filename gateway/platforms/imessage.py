@@ -186,7 +186,8 @@ class IMessageAdapter(BasePlatformAdapter):
 
         # Per-chat watch tasks, keyed by chat rowid
         self._watch_tasks: Dict[int, asyncio.Task] = {}
-        self._stream_chats: set = set()  # chat_ids mid-stream (suppress stream consumer sends)
+        self._stream_chats: set = set()  # chat_ids mid-stream
+        self._last_sent_content: dict = {}  # chat_id -> last text sent (for delta)
         self._running = False
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
@@ -232,7 +233,8 @@ class IMessageAdapter(BasePlatformAdapter):
         return True
 
     async def disconnect(self) -> None:
-        self._stream_chats: set = set()  # chat_ids mid-stream (suppress stream consumer sends)
+        self._stream_chats: set = set()  # chat_ids mid-stream
+        self._last_sent_content: dict = {}  # chat_id -> last text sent (for delta)
         self._running = False
         for rowid, task in list(self._watch_tasks.items()):
             task.cancel()
@@ -246,38 +248,54 @@ class IMessageAdapter(BasePlatformAdapter):
     # ── Send ─────────────────────────────────────────────────────────────────
 
     async def send(self, chat_id, content, *, reply_to=None, metadata=None, **kwargs) -> SendResult:
-        # iMessage does not support message editing, so streaming is disabled.
-        # We suppress ALL sends from the stream consumer (both intermediate
-        # cursor-bearing updates and the final cursor-free got_done send) and
-        # let the normal response path deliver one clean complete message.
-        #
-        # Strategy: track chats mid-stream via _stream_chats.
-        #   - Content ends with cursor  -> mark in-stream, suppress
-        #   - Content has no cursor but chat is in-stream -> final stream send,
-        #     suppress (clear state), normal path delivers the full response
-        #   - No cursor, not in-stream  -> genuine send, deliver normally
+        # Strip cursor characters from streaming updates.
+        # iMessage cannot edit messages so we deliver delta content as
+        # separate bubbles. Each flush sends only the NEW text since last send.
+        # Returning a fake message_id causes the stream consumer to mark
+        # already_sent=True so the normal response path does not double-send.
         has_cursor = any(content.endswith(c) for c in _STREAMING_CURSORS)
-
         if has_cursor:
-            self._stream_chats.add(chat_id)
-            return SendResult(success=True)
+            content = content
+            for cursor in _STREAMING_CURSORS:
+                if content.endswith(cursor):
+                    content = content[:-len(cursor)]
+            content = content.rstrip()
 
-        if chat_id in self._stream_chats:
-            self._stream_chats.discard(chat_id)
-            return SendResult(success=True)
-
-        # Normal (non-streaming) send — strip leading newlines and send.
         content = content.lstrip(chr(10)).rstrip()
         if not content:
             return SendResult(success=True)
 
-        chunks = self._split_message(content)
-        last_result = SendResult(success=False, error="no chunks")
-        for chunk in chunks:
-            last_result = await self._send_chunk(chat_id, chunk)
-            if not last_result.success:
+        # Compute delta: only the new content since last send
+        last = self._last_sent_content.get(str(chat_id), )
+        if last and content.startswith(last):
+            delta = content[len(last):].lstrip(chr(10)).strip()
+        else:
+            delta = content
+
+        if not delta:
+            # Nothing new to send but we're in streaming -- return fake id
+            # so stream consumer keeps session alive
+            if has_cursor:
+                return SendResult(success=True, message_id=fimsg-stream-{chat_id})
+            return SendResult(success=True)
+
+        result = SendResult(success=False, error="no chunks")
+        for chunk in self._split_message(delta):
+            result = await self._send_chunk(chat_id, chunk)
+            if not result.success:
                 break
-        return last_result
+
+        if result.success:
+            # Track what we sent so next delta is computed correctly
+            self._last_sent_content[str(chat_id)] = content
+            if has_cursor:
+                # Return fake id to establish stream session (already_sent=True)
+                return SendResult(success=True, message_id=fimsg-stream-{chat_id})
+        return result
+
+    async def edit_message(self, chat_id, message_id, content, metadata=None, **kwargs) -> SendResult:
+        """Handle edit calls from GatewayStreamConsumer -- deliver as delta sends."""
+        return await self.send(chat_id, content, metadata=metadata)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Start iMessage typing indicator via imsg."""
