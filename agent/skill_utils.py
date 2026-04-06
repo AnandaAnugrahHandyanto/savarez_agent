@@ -118,12 +118,17 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
 # ── Disabled skills ───────────────────────────────────────────────────────
 
 
-def get_disabled_skill_names() -> Set[str]:
+def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     """Read disabled skill names from config.yaml.
 
-    Resolves platform from ``HERMES_PLATFORM`` env var, falls back to
-    the global disabled list.  Reads the config file directly (no CLI
-    config imports) to stay lightweight.
+    Args:
+        platform: Explicit platform name (e.g. ``"telegram"``).  When
+            *None*, resolves from ``HERMES_PLATFORM`` or
+            ``HERMES_SESSION_PLATFORM`` env vars.  Falls back to the
+            global disabled list when no platform is determined.
+
+    Reads the config file directly (no CLI config imports) to stay
+    lightweight.
     """
     config_path = get_hermes_home() / "config.yaml"
     if not config_path.exists():
@@ -140,7 +145,11 @@ def get_disabled_skill_names() -> Set[str]:
     if not isinstance(skills_cfg, dict):
         return set()
 
-    resolved_platform = os.getenv("HERMES_PLATFORM")
+    resolved_platform = (
+        platform
+        or os.getenv("HERMES_PLATFORM")
+        or os.getenv("HERMES_SESSION_PLATFORM")
+    )
     if resolved_platform:
         platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(
             resolved_platform
@@ -158,12 +167,85 @@ def _normalize_string_set(values) -> Set[str]:
     return {str(v).strip() for v in values if str(v).strip()}
 
 
+# ── External skills directories ──────────────────────────────────────────
+
+
+def get_external_skills_dirs() -> List[Path]:
+    """Read ``skills.external_dirs`` from config.yaml and return validated paths.
+
+    Each entry is expanded (``~`` and ``${VAR}``) and resolved to an absolute
+    path.  Only directories that actually exist are returned.  Duplicates and
+    paths that resolve to the local ``~/.hermes/skills/`` are silently skipped.
+    """
+    config_path = get_hermes_home() / "config.yaml"
+    if not config_path.exists():
+        return []
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return []
+
+    raw_dirs = skills_cfg.get("external_dirs")
+    if not raw_dirs:
+        return []
+    if isinstance(raw_dirs, str):
+        raw_dirs = [raw_dirs]
+    if not isinstance(raw_dirs, list):
+        return []
+
+    local_skills = (get_hermes_home() / "skills").resolve()
+    seen: Set[Path] = set()
+    result: List[Path] = []
+
+    for entry in raw_dirs:
+        entry = str(entry).strip()
+        if not entry:
+            continue
+        # Expand ~ and environment variables
+        expanded = os.path.expanduser(os.path.expandvars(entry))
+        p = Path(expanded).resolve()
+        if p == local_skills:
+            continue
+        if p in seen:
+            continue
+        if p.is_dir():
+            seen.add(p)
+            result.append(p)
+        else:
+            logger.debug("External skills dir does not exist, skipping: %s", p)
+
+    return result
+
+
+def get_all_skills_dirs() -> List[Path]:
+    """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
+
+    The local dir is always first (and always included even if it doesn't exist
+    yet — callers handle that).  External dirs follow in config order.
+    """
+    dirs = [get_hermes_home() / "skills"]
+    dirs.extend(get_external_skills_dirs())
+    return dirs
+
+
 # ── Condition extraction ──────────────────────────────────────────────────
 
 
 def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     """Extract conditional activation fields from parsed frontmatter."""
-    hermes = (frontmatter.get("metadata") or {}).get("hermes") or {}
+    metadata = frontmatter.get("metadata")
+    # Handle cases where metadata is not a dict (e.g., a string from malformed YAML)
+    if not isinstance(metadata, dict):
+        metadata = {}
+    hermes = metadata.get("hermes") or {}
+    if not isinstance(hermes, dict):
+        hermes = {}
     return {
         "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
         "requires_toolsets": hermes.get("requires_toolsets", []),
