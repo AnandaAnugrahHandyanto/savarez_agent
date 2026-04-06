@@ -638,26 +638,30 @@ class TelegramAdapter(BasePlatformAdapter):
             # Register bot commands so Telegram shows a hint menu when users type /
             # List is derived from the central COMMAND_REGISTRY — adding a new
             # gateway command there automatically adds it to the Telegram menu.
-            try:
-                from telegram import BotCommand
-                from hermes_cli.commands import telegram_menu_commands
-                # Telegram allows up to 100 commands but has an undocumented
-                # payload size limit.  Skill descriptions are truncated to 40
-                # chars in telegram_menu_commands() to fit 100 commands safely.
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
-                await self._bot.set_my_commands([
-                    BotCommand(name, desc) for name, desc in menu_commands
-                ])
-                if hidden_count:
-                    logger.info(
-                        "[%s] Telegram menu: %d commands registered, %d hidden (over 100 limit). Use /commands for full list.",
-                        self.name, len(menu_commands), hidden_count,
-                    )
-            except Exception as e:
-                logger.warning(
-                    "[%s] Could not register Telegram command menu: %s",
-                    self.name,
-                    e,
+            _disable_menu = os.environ.get("TELEGRAM_DISABLE_MENU", "").lower() in ("true", "1", "yes")
+            if _disable_menu:
+                logger.info("[%s] Telegram command menu disabled (TELEGRAM_DISABLE_MENU)", self.name)
+            else:
+                try:
+                    from telegram import BotCommand
+                    from hermes_cli.commands import telegram_menu_commands
+                    # Telegram allows up to 100 commands but has an undocumented
+                    # payload size limit.  Skill descriptions are truncated to 40
+                    # chars in telegram_menu_commands() to fit 100 commands safely.
+                    menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
+                    await self._bot.set_my_commands([
+                        BotCommand(name, desc) for name, desc in menu_commands
+                    ])
+                    if hidden_count:
+                        logger.info(
+                            "[%s] Telegram menu: %d commands registered, %d hidden (over 100 limit). Use /commands for full list.",
+                            self.name, len(menu_commands), hidden_count,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "[%s] Could not register Telegram command menu: %s",
+                        self.name,
+                        e,
                     exc_info=True,
                 )
             
@@ -2042,6 +2046,17 @@ class TelegramAdapter(BasePlatformAdapter):
         cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", "", text).strip()
         return cleaned or text
 
+    def _telegram_allowed_chats(self) -> set[str]:
+        """Return the set of chat IDs where the bot is allowed to respond in groups.
+
+        Controlled via TELEGRAM_ALLOWED_CHATS env var (comma-separated chat IDs).
+        If empty/unset, all groups are allowed (no restriction).
+        """
+        raw = os.getenv("TELEGRAM_ALLOWED_CHATS", "").strip()
+        if not raw:
+            return set()  # empty = no restriction
+        return {part.strip() for part in raw.split(",") if part.strip()}
+
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
         """Apply Telegram group trigger rules.
 
@@ -2052,9 +2067,18 @@ class TelegramAdapter(BasePlatformAdapter):
         - the message replies to the bot
         - the bot is @mentioned
         - the text/caption matches a configured regex wake-word pattern
+
+        If TELEGRAM_ALLOWED_CHATS is set, the bot will ONLY respond in those
+        groups — all other groups are silently ignored.
         """
         if not self._is_group_chat(message):
             return True
+        # Whitelist check: if ALLOWED_CHATS is set, reject messages from other groups
+        allowed = self._telegram_allowed_chats()
+        if allowed:
+            chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+            if chat_id not in allowed:
+                return False
         if str(getattr(getattr(message, "chat", None), "id", "")) in self._telegram_free_response_chats():
             return True
         if not self._telegram_require_mention():
