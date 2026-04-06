@@ -2261,8 +2261,8 @@ class GatewayRunner:
             with open(_config_path, encoding="utf-8") as _pf:
                 _pcfg = _pii_yaml.safe_load(_pf) or {}
             _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to read PII redaction config: %s", e)
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)

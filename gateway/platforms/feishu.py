@@ -29,7 +29,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
@@ -1634,7 +1634,7 @@ class FeishuAdapter(BasePlatformAdapter):
             source=source,
             raw_message=data,
             message_id=message_id,
-            timestamp=datetime.now(),
+            timestamp=datetime.now(tz=timezone.utc),
         )
         logger.info("[Feishu] Routing reaction %s:%s on bot message %s as synthetic event", action, emoji_type, message_id)
         await self._handle_message_with_guards(synthetic_event)
@@ -1695,7 +1695,7 @@ class FeishuAdapter(BasePlatformAdapter):
             source=source,
             raw_message=data,
             message_id=token or str(uuid.uuid4()),
-            timestamp=datetime.now(),
+            timestamp=datetime.now(tz=timezone.utc),
         )
         logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
         await self._handle_message_with_guards(synthetic_event)
@@ -1857,7 +1857,7 @@ class FeishuAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=reply_to_message_id,
             reply_to_text=reply_to_text,
-            timestamp=datetime.now(),
+            timestamp=datetime.now(tz=timezone.utc),
         )
         await self._dispatch_inbound_event(normalized)
 

@@ -765,10 +765,11 @@ class SessionStore:
                 try:
                     parent_history = self.load_transcript(parent_entry.session_id)
                     if parent_history:
-                        self.rewrite_transcript(entry.session_id, parent_history)
+                        seed = parent_history[-20:]  # seed last 20 messages for context, not full history
+                        self.rewrite_transcript(entry.session_id, seed)
                         logger.info(
                             "[Session] Seeded DM thread session %s with %d messages from parent %s",
-                            entry.session_id, len(parent_history), parent_entry.session_id,
+                            entry.session_id, len(seed), parent_entry.session_id,
                         )
                 except Exception as e:
                     logger.warning("[Session] Failed to seed thread session: %s", e)
