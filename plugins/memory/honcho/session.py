@@ -880,14 +880,28 @@ class HonchoSessionManager:
 
         return []
 
-    def _fetch_peer_context(self, peer_id: str, search_query: str | None = None) -> dict[str, Any]:
-        """Fetch representation + peer card directly from a peer object."""
+    def _fetch_peer_context(
+        self,
+        peer_id: str,
+        search_query: str | None = None,
+        target_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch representation + peer card directly from a peer object.
+
+        When ``target_id`` is provided, fetch context from the observer peer's
+        perspective about that target peer (observer -> observed).
+        """
         peer = self._get_or_create_peer(peer_id)
         representation = ""
         card: list[str] = []
 
         try:
-            ctx = peer.context(search_query=search_query) if search_query else peer.context()
+            kwargs: dict[str, Any] = {}
+            if target_id:
+                kwargs["target"] = target_id
+            if search_query:
+                kwargs["search_query"] = search_query
+            ctx = peer.context(**kwargs) if kwargs else peer.context()
             representation = (
                 getattr(ctx, "representation", None)
                 or getattr(ctx, "peer_representation", None)
@@ -899,7 +913,15 @@ class HonchoSessionManager:
 
         if not representation:
             try:
-                representation = peer.representation() or ""
+                if target_id:
+                    ctx = peer.context(target=target_id)
+                    representation = (
+                        getattr(ctx, "representation", None)
+                        or getattr(ctx, "peer_representation", None)
+                        or ""
+                    )
+                else:
+                    representation = peer.representation() or ""
             except Exception as e:
                 logger.debug("Direct peer.representation() failed for '%s': %s", peer_id, e)
 
@@ -950,7 +972,21 @@ class HonchoSessionManager:
             return ""
 
         try:
-            ctx = self._fetch_peer_context(session.user_peer_id, search_query=query)
+            # Align retrieval direction with how conclusions are stored.
+            # - directional mode (default): assistant observes user
+            # - unified mode: user self-observes
+            if self._ai_observe_others:
+                observer_peer_id = session.assistant_peer_id
+                target_id = session.user_peer_id
+            else:
+                observer_peer_id = session.user_peer_id
+                target_id = None
+
+            ctx = self._fetch_peer_context(
+                observer_peer_id,
+                search_query=query,
+                target_id=target_id,
+            )
             parts = []
             if ctx["representation"]:
                 parts.append(ctx["representation"])

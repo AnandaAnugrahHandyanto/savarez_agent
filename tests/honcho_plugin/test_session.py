@@ -212,20 +212,38 @@ class TestPeerLookupHelpers:
         assert mgr.get_peer_card(session.key) == ["Name: Robert"]
         user_peer.get_card.assert_called_once_with()
 
-    def test_search_context_uses_peer_context_response(self):
+    def test_search_context_uses_assistant_perspective_with_target(self):
         mgr, session = self._make_cached_manager()
-        user_peer = MagicMock()
-        user_peer.context.return_value = SimpleNamespace(
+        assistant_peer = MagicMock()
+        assistant_peer.context.return_value = SimpleNamespace(
             representation="Robert runs neuralancer",
             peer_card=["Location: Melbourne"],
         )
-        mgr._get_or_create_peer = MagicMock(return_value=user_peer)
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
 
         result = mgr.search_context(session.key, "neuralancer")
 
         assert "Robert runs neuralancer" in result
         assert "- Location: Melbourne" in result
-        user_peer.context.assert_called_once_with(search_query="neuralancer")
+        assistant_peer.context.assert_called_once_with(
+            target="robert",
+            search_query="neuralancer",
+        )
+
+    def test_search_context_unified_mode_uses_user_self_context(self):
+        mgr, session = self._make_cached_manager()
+        mgr._ai_observe_others = False
+        user_peer = MagicMock()
+        user_peer.context.return_value = SimpleNamespace(
+            representation="Unified self context",
+            peer_card=["Name: Robert"],
+        )
+        mgr._get_or_create_peer = MagicMock(return_value=user_peer)
+
+        result = mgr.search_context(session.key, "self")
+
+        assert "Unified self context" in result
+        user_peer.context.assert_called_once_with(search_query="self")
 
     def test_get_prefetch_context_fetches_user_and_ai_from_peer_api(self):
         mgr, session = self._make_cached_manager()
