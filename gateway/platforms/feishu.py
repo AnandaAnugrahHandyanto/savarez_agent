@@ -270,6 +270,7 @@ class FeishuAdapterSettings:
     webhook_host: str
     webhook_port: int
     webhook_path: str
+    require_mention: bool  # Require @mention in group chats (default: true)
 
 
 @dataclass
@@ -973,6 +974,30 @@ class FeishuAdapter(BasePlatformAdapter):
         self._load_seen_message_ids()
 
     @staticmethod
+    def _resolve_require_mention(extra: Dict[str, Any]) -> bool:
+        """Resolve require_mention setting from extra config or env var.
+
+        Uses explicit None check to handle falsy values correctly:
+        - If extra["require_mention"] exists, use it (even if False)
+        - Otherwise fallback to FEISHU_REQUIRE_MENTION env var (default: true)
+
+        For the env var fallback, explicit false-like values disable mentions,
+        while any other value—including an empty string—keeps the documented
+        default of True.
+        """
+        configured = extra.get("require_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.strip().lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+
+        env_value = os.getenv("FEISHU_REQUIRE_MENTION")
+        if env_value is None:
+            return True
+
+        normalized = env_value.strip().lower()
+        return normalized not in ("false", "0", "no", "off")
+    @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
         return FeishuAdapterSettings(
             app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
@@ -1020,6 +1045,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 str(extra.get("webhook_path") or os.getenv("FEISHU_WEBHOOK_PATH", _DEFAULT_WEBHOOK_PATH)).strip()
                 or _DEFAULT_WEBHOOK_PATH
             ),
+            require_mention=FeishuAdapter._resolve_require_mention(extra),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1042,6 +1068,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._webhook_host = settings.webhook_host
         self._webhook_port = settings.webhook_port
         self._webhook_path = settings.webhook_path
+        self._require_mention = settings.require_mention
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -2667,9 +2694,17 @@ class FeishuAdapter(BasePlatformAdapter):
         return bool(sender_open_id and sender_open_id in self._allowed_group_users)
 
     def _should_accept_group_message(self, message: Any, sender_id: Any) -> bool:
-        """Require an explicit @mention before group messages enter the agent."""
+        """Check if a group message should be routed to the agent.
+
+        Uses require_mention setting to control whether @mention is needed:
+        - require_mention=true (default): Only route if bot is @mentioned or @_all
+        - require_mention=false: Route all allowed group messages without @mention
+        """
         if not self._allow_group_message(sender_id):
             return False
+        # If require_mention is disabled, accept all allowed group messages
+        if not self._require_mention:
+            return True
         # @_all is Feishu's @everyone placeholder — always route to the bot.
         raw_content = getattr(message, "content", "") or ""
         if "@_all" in raw_content:
