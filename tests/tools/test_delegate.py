@@ -26,6 +26,7 @@ from tools.delegate_tool import (
     _build_child_agent,
     _build_child_system_prompt,
     _strip_blocked_tools,
+    _resolve_child_credential_pool,
     _resolve_delegation_credentials,
 )
 
@@ -928,6 +929,76 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             # But provider/base_url/api_key should inherit from parent
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["base_url"], parent.base_url)
+
+
+class TestChildCredentialPoolResolution(unittest.TestCase):
+    def test_same_provider_shares_parent_pool(self):
+        parent = _make_mock_parent()
+        mock_pool = MagicMock()
+        parent._credential_pool = mock_pool
+
+        result = _resolve_child_credential_pool("openrouter", parent)
+        self.assertIs(result, mock_pool)
+
+    def test_no_provider_inherits_parent_pool(self):
+        parent = _make_mock_parent()
+        mock_pool = MagicMock()
+        parent._credential_pool = mock_pool
+
+        result = _resolve_child_credential_pool(None, parent)
+        self.assertIs(result, mock_pool)
+
+    def test_different_provider_loads_own_pool(self):
+        parent = _make_mock_parent()
+        parent._credential_pool = MagicMock()
+        mock_pool = MagicMock()
+        mock_pool.has_credentials.return_value = True
+
+        with patch("agent.credential_pool.load_pool", return_value=mock_pool):
+            result = _resolve_child_credential_pool("anthropic", parent)
+
+        self.assertIs(result, mock_pool)
+
+    def test_different_provider_empty_pool_returns_none(self):
+        parent = _make_mock_parent()
+        parent._credential_pool = MagicMock()
+        mock_pool = MagicMock()
+        mock_pool.has_credentials.return_value = False
+
+        with patch("agent.credential_pool.load_pool", return_value=mock_pool):
+            result = _resolve_child_credential_pool("anthropic", parent)
+
+        self.assertIsNone(result)
+
+    def test_different_provider_load_failure_returns_none(self):
+        parent = _make_mock_parent()
+        parent._credential_pool = MagicMock()
+
+        with patch("agent.credential_pool.load_pool", side_effect=Exception("disk error")):
+            result = _resolve_child_credential_pool("anthropic", parent)
+
+        self.assertIsNone(result)
+
+    def test_build_child_agent_assigns_parent_pool_when_shared(self):
+        parent = _make_mock_parent()
+        mock_pool = MagicMock()
+        parent._credential_pool = mock_pool
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Test pool assignment",
+                context=None,
+                toolsets=["terminal"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+            )
+
+            self.assertEqual(mock_child._credential_pool, mock_pool)
 
 
 if __name__ == "__main__":
