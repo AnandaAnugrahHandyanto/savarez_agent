@@ -120,11 +120,31 @@ These suites have no required capabilities and all tested backends can run them.
 | 4 | hindsight | 84.6% | local | Embeddings only, no LLM extraction |
 | 5 | mem0 | 82.2% | cloud | After reset fix (+8.6% vs broken reset) |
 
-### Observations
+### Known scoring bias: heuristic judge favors keyword-matching backends
 
-- **baseline-flat leads**: The reference TF-IDF + word-overlap backend scores
-  highest. This is likely because the heuristic judge also uses word overlap,
-  creating a favorable alignment. LLM-judge runs may shift rankings.
+**baseline-flat scores highest (90.4%), which is a methodological artifact,
+not a real result.** Three factors combine to inflate baseline-flat's scores:
+
+1. **Single-fact scenarios**: Suite A's `semantic_recall` stores one fact per
+   scenario then queries. baseline-flat's fallback returns the most recent
+   memory when no keywords match — so it "finds" the only item in the store
+   without doing any actual retrieval. Future work: add distractor facts.
+
+2. **Judge/baseline alignment**: Both the HeuristicJudge and baseline-flat
+   use word-overlap scoring. The judge rewards the exact signal the baseline
+   optimizes for. Semantic backends that retrieve semantically-correct but
+   lexically-different content get penalized.
+
+3. **60% keyword threshold**: The heuristic judge's keyword overlap threshold
+   is generous enough that verbatim stored facts almost always pass.
+
+**Recommendation for reviewers**: Use `--judge-model claude-haiku-4.5` for
+LLM-based semantic scoring when verifying results. The heuristic judge is
+useful for fast, reproducible iteration but should not be used to rank
+backends against each other.
+
+### Other observations
+
 - **All backends handle scale well**: Suite E (10-200 facts) shows 100% across
   all tested backends.
 - **Delegation memory is hard**: Suite L (child agent results) is the weakest
