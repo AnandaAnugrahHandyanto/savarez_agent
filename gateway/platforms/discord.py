@@ -780,11 +780,12 @@ class DiscordAdapter(BasePlatformAdapter):
                 except Exception as e:
                     logger.debug("Could not fetch reply-to message: %s", e)
 
+            # DISCORD_REPLY_QUOTE: when "false", suppress the quote-reply
+            # embed above the bot's response.  Useful in shared channels
+            # where repeated quote blocks add visual noise.
+            _reply_quote = os.getenv("DISCORD_REPLY_QUOTE", "true").lower() in ("true", "1", "yes")
+
             for i, chunk in enumerate(chunks):
-                # DISCORD_REPLY_QUOTE: when "false", suppress the quote-reply
-                # embed above the bot's response.  Useful in shared channels
-                # where repeated quote blocks add visual noise.
-                _reply_quote = os.getenv("DISCORD_REPLY_QUOTE", "true").lower() in ("true", "1", "yes")
                 chunk_reference = (reference if i == 0 else None) if _reply_quote else None
                 try:
                     msg = await channel.send(
