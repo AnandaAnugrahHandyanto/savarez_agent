@@ -220,6 +220,27 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-2.5-flash",
         "deepseek/deepseek-v3.2",
     ],
+    # RedPill TEE-protected models with capabilities:
+    # Format: "provider/model-id"  # tools: Y/N, vision: Y/N, context: NNNK
+    "redpill": [
+        "qwen/qwen3.5-27b",       # tools:Y, vision:N, context:128K - Best price/performance
+        "qwen/qwen3.5-397b-a17b", # tools:Y, vision:N, context:256K - MoE flagship
+        "z-ai/glm-5",             # tools:Y, vision:N, context:128K
+        "moonshotai/kimi-k2.5",   # tools:Y, vision:N, context:256K
+        "z-ai/glm-4.7",           # tools:Y, vision:N, context:128K - Strong reasoning
+        "z-ai/glm-4.7-flash",     # tools:Y, vision:N, context:128K - Faster, cheaper
+        "moonshotai/kimi-k2-thinking", # tools:Y, vision:N, context:256K - Extended reasoning
+        "deepseek/deepseek-v3.2", # tools:Y, vision:N, context:256K - Excellent coding
+        "deepseek/deepseek-chat-v3.1", # tools:Y, vision:N, context:128K
+        "qwen/qwen3-30b-a3b-instruct-2507", # tools:Y, vision:N, context:256K
+        "deepseek/deepseek-r1-0528", # tools:N, vision:N, context:128K - Research/math only
+        "qwen/qwen3-coder-480b-a35b-instruct", # tools:Y, vision:N, context:256K - Code specialist
+        "qwen/qwen3-vl-30b-a3b-instruct", # tools:Y, vision:Y, context:128K - Vision + language
+        "meta-llama/llama-3.3-70b-instruct", # tools:Y, vision:N, context:128K
+        "qwen/qwen-2.5-7b-instruct", # tools:Y, vision:N, context:128K - Budget option
+        "openai/gpt-oss-120b",    # tools:Y, vision:N, context:128K - OpenAI open weights
+        "openai/gpt-oss-20b",     # tools:Y, vision:N, context:128K - Fast budget option
+    ],
     "kilocode": [
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
@@ -267,6 +288,7 @@ _PROVIDER_LABELS = {
     "minimax-cn": "MiniMax (China)",
     "anthropic": "Anthropic",
     "deepseek": "DeepSeek",
+    "redpill": "RedPill",
     "opencode-zen": "OpenCode Zen",
     "opencode-go": "OpenCode Go",
     "ai-gateway": "AI Gateway",
@@ -281,6 +303,8 @@ _PROVIDER_ALIASES = {
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
+    "redpill-ai": "redpill",
+    "red-pill": "redpill",
     "github": "copilot",
     "github-copilot": "copilot",
     "github-models": "copilot",
@@ -343,7 +367,7 @@ def list_available_providers() -> list[dict[str, str]]:
     """
     # Canonical providers in display order
     _PROVIDER_ORDER = [
-        "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
+        "openrouter", "redpill", "nous", "openai-codex", "copilot", "copilot-acp",
         "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
