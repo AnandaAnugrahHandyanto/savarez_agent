@@ -443,7 +443,14 @@ agent:
   # Higher = more room for complex tasks, but costs more tokens
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 60
-  
+
+  # Tool/skill registry injection — controls how available tools and skills
+  # are surfaced to the model in the system prompt.
+  #   "disabled" — no injection (default)
+  #   "nudge"    — soft recommendation when user message suggests tool use
+  #   "full"     — always inject all available tools/skills into prompt
+  tool_registry_injection: "disabled"
+
   # Enable verbose logging
   verbose: false
   

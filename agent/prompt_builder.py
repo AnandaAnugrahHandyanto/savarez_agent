@@ -34,21 +34,38 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _CONTEXT_THREAT_PATTERNS = [
-    (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-    (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
-    (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection"),
+    (r"ignore\s+(previous|all|above|prior)\s+instructions", "prompt_injection"),
+    (r"do\s+not\s+tell\s+the\s+user", "deception_hide"),
+    (r"system\s+prompt\s+override", "sys_prompt_override"),
+    (
+        r"disregard\s+(your|all|any)\s+(instructions|rules|guidelines)",
+        "disregard_rules",
+    ),
+    (
+        r"act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)",
+        "bypass_restrictions",
+    ),
+    (
+        r"<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->",
+        "html_comment_injection",
+    ),
     (r'<\s*div\s+style\s*=\s*["\'].*display\s*:\s*none', "hidden_div"),
-    (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute"),
-    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
+    (r"translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)", "translate_execute"),
+    (r"curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)", "exfil_curl"),
+    (r"cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)", "read_secrets"),
 ]
 
 _CONTEXT_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
+    "\u200b",
+    "\u200c",
+    "\u200d",
+    "\u2060",
+    "\ufeff",
+    "\u202a",
+    "\u202b",
+    "\u202c",
+    "\u202d",
+    "\u202e",
 }
 
 
@@ -122,7 +139,7 @@ def _strip_yaml_frontmatter(content: str) -> str:
         end = content.find("\n---", 3)
         if end != -1:
             # Skip past the closing --- and any trailing newline
-            body = content[end + 4:].lstrip("\n")
+            body = content[end + 4 :].lstrip("\n")
             return body if body else content
     return content
 
@@ -249,6 +266,23 @@ GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
     "to prevent CLI tools from hanging on prompts.\n"
     "- **Keep going:** Work autonomously until the task is fully resolved. "
     "Don't stop with a plan — execute it.\n"
+)
+
+# Tool registry nudge guidance — soft recommendation when user message
+# suggests tool use. Fuzzy search on user message to recommend relevant tools.
+TOOL_REGISTRY_NUDGE_GUIDANCE = (
+    "# Tool registry nudge\n"
+    "The user's message may suggest the use of tools. "
+    "Recommended tools could be... {tool_names}. "
+    "If not, you may wish to call the tool registry skill to check."
+)
+
+# Tool registry full injection — always surfaces all available tools.
+TOOL_REGISTRY_FULL_GUIDANCE = (
+    "# Available tools and skills\n"
+    "These are the skills/tools available to you, "
+    "they should be used where needed and are provided to you for assistance:\n"
+    "{tool_names}"
 )
 
 # Model name substrings that should use the 'developer' role instead of
@@ -440,6 +474,7 @@ def _build_snapshot_entry(
 # =========================================================================
 # Skills index
 # =========================================================================
+
 
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
@@ -671,9 +706,13 @@ def build_skills_system_prompt(
                     continue
                 rel = desc_file.relative_to(ext_dir)
                 cat = "/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"
-                category_descriptions.setdefault(cat, str(cat_desc).strip().strip("'\""))
+                category_descriptions.setdefault(
+                    cat, str(cat_desc).strip().strip("'\"")
+                )
             except Exception as e:
-                logger.debug("Could not read external skill description %s: %s", desc_file, e)
+                logger.debug(
+                    "Could not read external skill description %s: %s", desc_file, e
+                )
 
     if not skills_by_category:
         result = ""
@@ -705,8 +744,7 @@ def build_skills_system_prompt(
             "If a skill you loaded was missing steps, had wrong commands, or needed "
             "pitfalls you discovered, update it before finishing.\n"
             "\n"
-            "<available_skills>\n"
-            + "\n".join(index_lines) + "\n"
+            "<available_skills>\n" + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
             "\n"
             "If none match, proceed normally without loading a skill."
@@ -793,7 +831,10 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
 # Context files (SOUL.md, AGENTS.md, .cursorrules)
 # =========================================================================
 
-def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE_MAX_CHARS) -> str:
+
+def _truncate_content(
+    content: str, filename: str, max_chars: int = CONTEXT_FILE_MAX_CHARS
+) -> str:
     """Head/tail truncation with a marker in the middle."""
     if len(content) <= max_chars:
         return content
@@ -814,6 +855,7 @@ def load_soul_md() -> Optional[str]:
     """
     try:
         from hermes_cli.config import ensure_hermes_home
+
         ensure_hermes_home()
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
@@ -908,8 +950,12 @@ def _load_cursorrules(cwd_path: Path) -> str:
             try:
                 content = mdc_file.read_text(encoding="utf-8").strip()
                 if content:
-                    content = _scan_context_content(content, f".cursor/rules/{mdc_file.name}")
-                    cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
+                    content = _scan_context_content(
+                        content, f".cursor/rules/{mdc_file.name}"
+                    )
+                    cursorrules_content += (
+                        f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
+                    )
             except Exception as e:
                 logger.debug("Could not read %s: %s", mdc_file, e)
 
@@ -918,7 +964,9 @@ def _load_cursorrules(cwd_path: Path) -> str:
     return _truncate_content(cursorrules_content, ".cursorrules")
 
 
-def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
+def build_context_files_prompt(
+    cwd: Optional[str] = None, skip_soul: bool = False
+) -> str:
     """Discover and load context files for the system prompt.
 
     Priority (first found wins — only ONE project context type is loaded):
@@ -957,4 +1005,7 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
 
     if not sections:
         return ""
-    return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)
+    return (
+        "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n"
+        + "\n".join(sections)
+    )
