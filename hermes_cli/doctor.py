@@ -73,6 +73,25 @@ def _honcho_is_configured_for_doctor() -> bool:
         return False
 
 
+def _honcho_memory_mode_label(cfg) -> str:
+    """Return a display-safe Honcho memory mode for mixed-version installs."""
+    mode = getattr(cfg, "memory_mode", None)
+    if isinstance(mode, str) and mode:
+        return mode
+
+    raw = getattr(cfg, "raw", None)
+    if isinstance(raw, dict):
+        raw_mode = raw.get("memoryMode")
+        if isinstance(raw_mode, dict):
+            default_mode = raw_mode.get("default")
+            if isinstance(default_mode, str) and default_mode:
+                return default_mode
+        elif isinstance(raw_mode, str) and raw_mode:
+            return raw_mode
+
+    return "default"
+
+
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
     if not _honcho_is_configured_for_doctor():
@@ -836,7 +855,7 @@ def run_doctor(args):
                 get_honcho_client(hcfg)
                 check_ok(
                     "Honcho connected",
-                    f"workspace={hcfg.workspace_id} mode={hcfg.memory_mode} freq={hcfg.write_frequency}",
+                    f"workspace={hcfg.workspace_id} mode={_honcho_memory_mode_label(hcfg)} freq={hcfg.write_frequency}",
                 )
             except Exception as _e:
                 check_fail("Honcho connection failed", str(_e))

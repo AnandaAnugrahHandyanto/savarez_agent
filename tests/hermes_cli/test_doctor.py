@@ -76,6 +76,28 @@ class TestHonchoDoctorConfigDetection:
         assert not doctor._honcho_is_configured_for_doctor()
 
 
+class TestHonchoDoctorMemoryModeLabel:
+    def test_uses_memory_mode_when_available(self):
+        fake_config = SimpleNamespace(memory_mode="honcho")
+
+        assert doctor._honcho_memory_mode_label(fake_config) == "honcho"
+
+    def test_falls_back_to_raw_string_memory_mode(self):
+        fake_config = SimpleNamespace(raw={"memoryMode": "hybrid"})
+
+        assert doctor._honcho_memory_mode_label(fake_config) == "hybrid"
+
+    def test_falls_back_to_raw_object_default_memory_mode(self):
+        fake_config = SimpleNamespace(raw={"memoryMode": {"default": "context"}})
+
+        assert doctor._honcho_memory_mode_label(fake_config) == "context"
+
+    def test_returns_default_for_legacy_configs(self):
+        fake_config = SimpleNamespace(raw={})
+
+        assert doctor._honcho_memory_mode_label(fake_config) == "default"
+
+
 def test_run_doctor_sets_interactive_env_for_tool_checks(monkeypatch, tmp_path):
     """Doctor should present CLI-gated tools as available in CLI context."""
     project_root = tmp_path / "project"
