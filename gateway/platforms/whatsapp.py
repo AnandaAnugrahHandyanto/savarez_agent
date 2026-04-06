@@ -146,6 +146,27 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._poll_task: Optional[asyncio.Task] = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
         self._session_lock_identity: Optional[str] = None
+        # Waiki: group debounce — equipo tiene N seg para responder
+        self._group_debounce_sec: int = int(
+            os.getenv("WHATSAPP_GROUP_DEBOUNCE_SECONDS", "0")
+        )
+        self._team_jids: set = set()
+        _raw_team = os.getenv("WHATSAPP_TEAM_NUMBERS", "")
+        for num in _raw_team.split(","):
+            num = num.strip().replace("+", "")
+            if num:
+                self._team_jids.add(num)
+        # {chat_id: timestamp} del ultimo mensaje del equipo
+        self._team_last_seen: dict = {}
+        # {chat_id: asyncio.Event} para cancelar delays
+        self._debounce_cancel: dict = {}
+        if self._group_debounce_sec and self._team_jids:
+            logger.info(
+                "[%s] Group debounce: %ds, team JIDs: %s",
+                self.name,
+                self._group_debounce_sec,
+                self._team_jids,
+            )
 
     def _whatsapp_require_mention(self) -> bool:
         configured = self.config.extra.get("require_mention")
@@ -600,6 +621,25 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 content[:80],
             )
             return SendResult(success=True, message_id="suppressed")
+        # Waiki: bloquear envio a grupos no autorizados
+        if chat_id and "@g.us" in chat_id:
+            _allowed_raw = os.getenv(
+                "WHATSAPP_ALLOWED_GROUPS", ""
+            )
+            _allowed_jids = {
+                j.strip()
+                for j in _allowed_raw.split(",")
+                if j.strip()
+            }
+            if not _allowed_jids or chat_id not in _allowed_jids:
+                logger.warning(
+                    "WA blocked send to unauthorized group: %s",
+                    chat_id,
+                )
+                return SendResult(
+                    success=False,
+                    error="Envio a grupos de clientes bloqueado",
+                )
         if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
         bridge_exit = await self._check_managed_bridge_exit()
@@ -809,6 +849,81 @@ class WhatsAppAdapter(BasePlatformAdapter):
         
         return {"name": chat_id, "type": "dm"}
     
+    def _is_team_member(self, sender_id: str) -> bool:
+        """Waiki: verifica si el sender es del equipo."""
+        if not self._team_jids or not sender_id:
+            return False
+        # Normalizar: quitar +, @s.whatsapp.net, :lid
+        bare = (
+            str(sender_id)
+            .strip()
+            .replace("+", "")
+            .split(":", 1)[0]
+            .split("@", 1)[0]
+        )
+        return bare in self._team_jids
+
+    async def _waiki_debounce(self, msg_data: dict) -> bool:
+        """Waiki: debounce en grupos WhatsApp.
+
+        Retorna True si el mensaje debe ignorarse (equipo
+        respondio o hay que esperar). False si debe procesarse.
+        """
+        if not self._group_debounce_sec or not self._team_jids:
+            return False
+        if not msg_data.get("isGroup"):
+            return False
+
+        chat_id = msg_data.get("chatId", "")
+        sender_id = msg_data.get("senderId", "")
+
+        # Si es del equipo: registrar y no procesar
+        if self._is_team_member(sender_id):
+            import time
+            self._team_last_seen[chat_id] = time.time()
+            # Cancelar delay pendiente en este chat
+            cancel_evt = self._debounce_cancel.get(chat_id)
+            if cancel_evt:
+                cancel_evt.set()
+            logger.debug(
+                "WA debounce: team member %s in %s",
+                sender_id, chat_id,
+            )
+            return True
+
+        # Si es de un cliente: esperar antes de procesar
+        import time
+        cancel_evt = asyncio.Event()
+        self._debounce_cancel[chat_id] = cancel_evt
+
+        try:
+            await asyncio.wait_for(
+                cancel_evt.wait(),
+                timeout=self._group_debounce_sec,
+            )
+            # Si llegamos aca, el evento se disparo (equipo
+            # respondio durante el delay)
+            logger.info(
+                "WA debounce: cancelled in %s (team responded)",
+                chat_id,
+            )
+            return True
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            self._debounce_cancel.pop(chat_id, None)
+
+        # Verificar si el equipo respondio justo despues
+        last = self._team_last_seen.get(chat_id, 0)
+        if time.time() - last < self._group_debounce_sec + 10:
+            logger.info(
+                "WA debounce: skip in %s (team seen recently)",
+                chat_id,
+            )
+            return True
+
+        return False
+
     async def _poll_messages(self) -> None:
         """Poll the bridge for incoming messages."""
         import aiohttp
@@ -828,7 +943,14 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     if resp.status == 200:
                         messages = await resp.json()
                         for msg_data in messages:
-                            event = await self._build_message_event(msg_data)
+                            # Waiki: group debounce
+                            if await self._waiki_debounce(
+                                msg_data
+                            ):
+                                continue
+                            event = await self._build_message_event(
+                                msg_data
+                            )
                             if event:
                                 await self.handle_message(event)
             except asyncio.CancelledError:
