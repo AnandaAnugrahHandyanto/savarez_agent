@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Hermes CLI - Main entry point.
-
+from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 Usage:
     hermes                     # Interactive chat (default)
     hermes chat                # Interactive chat
@@ -42,31 +42,21 @@ Usage:
 
     hermes claw migrate --dry-run  # Preview migration without changes
 """
-
-import argparse
+# Eğer LangChain paketlerini bulamıyorsa, hata vermemesi için boş bir sınıf tanımlayalım
+try:
+    from langchain_community.callbacks import StreamingStdOutCallbackHandler
+except (ImportError, ModuleNotFoundError):
+    class StreamingStdOutCallbackHandler:
+        def __init__(self): pass
 import os
+import argparse
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
-
-def _require_tty(command_name: str) -> None:
-    """Exit with a clear error if stdin is not a terminal.
-
-    Interactive TUI commands (hermes tools, hermes setup, hermes model) use
-    curses or input() prompts that spin at 100% CPU when stdin is a pipe.
-    This guard prevents accidental non-interactive invocation.
-    """
-    if not sys.stdin.isatty():
-        print(
-            f"Error: 'hermes {command_name}' requires an interactive terminal.\n"
-            f"It cannot be run through a pipe or non-interactive subprocess.\n"
-            f"Run it directly in your terminal instead.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-
+def get_timestamp():
+    return f"[{datetime.now().strftime('%H:%M:%S')}] "
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -152,7 +142,6 @@ except Exception:
 
 import logging
 import time as _time
-from datetime import datetime
 
 from hermes_cli import __version__, __release_date__
 from hermes_constants import OPENROUTER_BASE_URL
@@ -490,12 +479,13 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
     for i, s in enumerate(sessions):
         title = (s.get("title") or "").strip()
         preview = (s.get("preview") or "").strip()
-        label = title or preview or s["id"]
+        label = s.get("label", "Untitled Session")
         if len(label) > 50:
             label = label[:47] + "..."
+
         last_active = _relative_time(s.get("last_active"))
         src = s.get("source", "")[:6]
-        print(f"  {i + 1:>3}. {label:<50}  {last_active:<10}  {src}")
+        print(f"{get_timestamp()}{i + 1:>3}. {label:<50} {last_active:<10} {src}")
 
     while True:
         try:
@@ -644,6 +634,7 @@ def cmd_chat(args):
         "toolsets": args.toolsets,
         "skills": getattr(args, "skills", None),
         "verbose": args.verbose,
+    "callbacks": [StreamingStdOutCallbackHandler()] if getattr(args, "verbose", False) else [],
         "quiet": getattr(args, "quiet", False),
         "query": args.query,
         "resume": getattr(args, "resume", None),
@@ -656,7 +647,7 @@ def cmd_chat(args):
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
     
     try:
-        cli_main(**kwargs)
+        cli_main(**{k: v for k, v in kwargs.items() if k != 'callbacks'})
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)
@@ -5466,6 +5457,12 @@ Examples:
         return
     
     # Default to chat if no command specified
+    # Execute the command
+    if hasattr(args, 'func'):
+        args.func(args)
+        return  # 
+    else:
+        parser.print_help()
     if args.command is None:
         args.query = None
         args.model = None
@@ -5479,11 +5476,7 @@ Examples:
         cmd_chat(args)
         return
     
-    # Execute the command
-    if hasattr(args, 'func'):
-        args.func(args)
-    else:
-        parser.print_help()
+    
 
 
 if __name__ == "__main__":
