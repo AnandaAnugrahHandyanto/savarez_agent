@@ -125,8 +125,18 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 # Provider discovery
 # ---------------------------------------------------------------------------
 
-def _install_dependencies(provider_name: str) -> None:
-    """Install pip dependencies declared in plugin.yaml."""
+def _install_dependencies(provider_name: str, provider_config: dict | None = None) -> None:
+    """Install pip dependencies declared in plugin.yaml.
+
+    pip_dependencies can be a flat list or a dict keyed by a config field.
+    When it's a dict, the key names a field in provider_config and each value
+    maps a field value to its dependency list.  Example::
+
+        pip_dependencies:
+          mode:
+            cloud: [hindsight-client]
+            local: [hindsight-all]
+    """
     import subprocess
     from pathlib import Path as _Path
 
@@ -142,9 +152,19 @@ def _install_dependencies(provider_name: str) -> None:
     except Exception:
         return
 
-    pip_deps = meta.get("pip_dependencies", [])
-    if not pip_deps:
+    raw_deps = meta.get("pip_dependencies", [])
+    if not raw_deps:
         return
+
+    if isinstance(raw_deps, list):
+        pip_deps = raw_deps
+    elif isinstance(raw_deps, dict) and provider_config:
+        pip_deps = []
+        for field, mapping in raw_deps.items():
+            value = provider_config.get(field, next(iter(mapping)))
+            pip_deps.extend(mapping.get(value, []))
+    else:
+        pip_deps = []
 
     # pip name → import name mapping for packages where they differ
     _IMPORT_NAMES = {
@@ -320,12 +340,10 @@ def cmd_setup(args) -> None:
 
     name, _, provider = providers[selected]
 
-    # Install pip dependencies if declared in plugin.yaml
-    _install_dependencies(name)
-
     # If the provider has a post_setup hook, delegate entirely to it.
     # The hook handles its own config, connection test, and activation.
     if hasattr(provider, "post_setup"):
+        _install_dependencies(name)
         hermes_home = str(Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))))
         provider.post_setup(hermes_home, config)
         return
@@ -394,6 +412,8 @@ def cmd_setup(args) -> None:
                 val = _prompt(desc, default=str(effective_default) if effective_default else None)
                 if val:
                     provider_config[key] = val
+
+    _install_dependencies(name, provider_config=provider_config)
 
     # Write activation key to config.yaml
     config["memory"]["provider"] = name
