@@ -375,6 +375,7 @@ def create_job(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    script: Optional[str] = None,
     wrap_response: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
@@ -392,6 +393,9 @@ def create_job(
         model: Optional per-job model override
         provider: Optional per-job provider override
         base_url: Optional per-job base URL override
+        script: Optional path to a Python script whose stdout is injected into the
+                prompt each run.  The script runs before the agent turn, and its output
+                is prepended as context.  Useful for data collection / change detection.
         wrap_response: Optional per-job override for delivery wrapping (None = use global config)
 
     Returns:
@@ -421,6 +425,8 @@ def create_job(
     normalized_model = normalized_model or None
     normalized_provider = normalized_provider or None
     normalized_base_url = normalized_base_url or None
+    normalized_script = str(script).strip() if isinstance(script, str) else None
+    normalized_script = normalized_script or None
 
     label_source = (prompt or (normalized_skills[0] if normalized_skills else None)) or "cron job"
     job = {
@@ -432,6 +438,7 @@ def create_job(
         "model": normalized_model,
         "provider": normalized_provider,
         "base_url": normalized_base_url,
+        "script": normalized_script,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {

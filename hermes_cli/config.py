@@ -22,6 +22,8 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
+from tools.tool_backend_helpers import managed_nous_tools_enabled as _managed_nous_tools_enabled
+
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
@@ -40,8 +42,8 @@ _EXTRA_ENV_KEYS = frozenset({
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_HOME_ROOM",
+    "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD",
 })
-
 import yaml
 
 from hermes_cli.colors import Colors, color
@@ -196,12 +198,18 @@ def ensure_hermes_home():
 # =============================================================================
 
 DEFAULT_CONFIG = {
-    "model": "anthropic/claude-opus-4.6",
+    "model": "",
+    "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
+        # Inactivity timeout for gateway agent execution (seconds).
+        # The agent can run indefinitely as long as it's actively calling
+        # tools or receiving API responses.  Only fires when the agent has
+        # been completely idle for this duration.  0 = unlimited.
+        "gateway_timeout": 1800,
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
         # Values: "auto" (default — applies to gpt/codex models), true/false
@@ -212,6 +220,7 @@ DEFAULT_CONFIG = {
     
     "terminal": {
         "backend": "local",
+        "modal_mode": "auto",
         "cwd": ".",  # Use current directory
         "timeout": 180,
         # Environment variables to pass through to sandboxed execution
@@ -220,6 +229,12 @@ DEFAULT_CONFIG = {
         "env_passthrough": [],
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "docker_forward_env": [],
+        # Explicit environment variables to set inside Docker containers.
+        # Unlike docker_forward_env (which reads values from the host process),
+        # docker_env lets you specify exact key-value pairs — useful when Hermes
+        # runs as a systemd service without access to the user's shell environment.
+        # Example: {"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock"}
+        "docker_env": {},
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
@@ -247,6 +262,13 @@ DEFAULT_CONFIG = {
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
+        "camofox": {
+            # When true, Hermes sends a stable profile-scoped userId to Camofox
+            # so the server can map it to a persistent browser profile directory.
+            # Requires Camofox server to be configured with CAMOFOX_PROFILE_DIR.
+            # When false (default), each session gets a random userId (ephemeral).
+            "managed_persistence": False,
+        },
     },
 
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
@@ -298,7 +320,7 @@ DEFAULT_CONFIG = {
             "model": "",
             "base_url": "",
             "api_key": "",
-            "timeout": 30,         # seconds — increase for slow local models
+            "timeout": 360,        # seconds (6min) — per-attempt LLM summarization timeout; increase for slow local models
         },
         "compression": {
             "provider": "auto",
@@ -352,6 +374,7 @@ DEFAULT_CONFIG = {
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,
+        "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
@@ -418,6 +441,11 @@ DEFAULT_CONFIG = {
         "user_profile_enabled": True,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # External memory provider plugin (empty = built-in only).
+        # Set to a provider name to activate: "openviking", "mem0",
+        # "hindsight", "holographic", "retaindb", "byterover".
+        # Only ONE external provider is allowed at a time.
+        "provider": "",
     },
 
     # Subagent delegation — override the provider:model used by delegate_task
@@ -509,7 +537,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 11,
+    "_config_version": 12,
 }
 
 # =============================================================================
@@ -524,6 +552,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
+    11: ["TERMINAL_MODAL_MODE"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -742,6 +771,38 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
         "advanced": True,
     },
+    "FIRECRAWL_GATEWAY_URL": {
+        "description": "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)",
+        "prompt": "Firecrawl gateway URL (leave empty to derive from domain)",
+        "url": None,
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "TOOL_GATEWAY_DOMAIN": {
+        "description": "Shared tool-gateway domain suffix for Nous Subscribers only, used to derive vendor hosts, e.g. nousresearch.com -> firecrawl-gateway.nousresearch.com",
+        "prompt": "Tool-gateway domain suffix",
+        "url": None,
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "TOOL_GATEWAY_SCHEME": {
+        "description": "Shared tool-gateway URL scheme for Nous Subscribers only, used to derive vendor hosts (`https` by default, set `http` for local gateway testing)",
+        "prompt": "Tool-gateway URL scheme",
+        "url": None,
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "TOOL_GATEWAY_USER_TOKEN": {
+        "description": "Explicit Nous Subscriber access token for tool-gateway requests (optional; otherwise read from the Hermes auth store)",
+        "prompt": "Tool-gateway user token",
+        "url": None,
+        "password": True,
+        "category": "tool",
+        "advanced": True,
+    },
     "TAVILY_API_KEY": {
         "description": "Tavily API key for AI-native web search, extract, and crawl",
         "prompt": "Tavily API key",
@@ -954,6 +1015,30 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
     },
+    "MATRIX_REQUIRE_MENTION": {
+        "description": "Require @mention in Matrix rooms (default: true). Set to false to respond to all messages.",
+        "prompt": "Require @mention in rooms (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "MATRIX_FREE_RESPONSE_ROOMS": {
+        "description": "Comma-separated Matrix room IDs where bot responds without @mention",
+        "prompt": "Free-response room IDs (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "MATRIX_AUTO_THREAD": {
+        "description": "Auto-create threads for messages in Matrix rooms (default: true)",
+        "prompt": "Auto-create threads in rooms (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
     "GATEWAY_ALLOW_ALL_USERS": {
         "description": "Allow all users to interact with messaging bots (true/false). Default: false.",
         "prompt": "Allow all users (true/false)",
@@ -1070,6 +1155,15 @@ OPTIONAL_ENV_VARS = {
         "category": "setting",
     },
 }
+
+if not _managed_nous_tools_enabled():
+    for _hidden_var in (
+        "FIRECRAWL_GATEWAY_URL",
+        "TOOL_GATEWAY_DOMAIN",
+        "TOOL_GATEWAY_SCHEME",
+        "TOOL_GATEWAY_USER_TOKEN",
+    ):
+        OPTIONAL_ENV_VARS.pop(_hidden_var, None)
 
 
 def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
@@ -1223,6 +1317,69 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     print("  ✓ Cleared ANTHROPIC_TOKEN from .env (no longer used)")
         except Exception:
             pass
+
+    # ── Version 11 → 12: migrate custom_providers list → providers dict ──
+    if current_ver < 12:
+        config = load_config()
+        custom_list = config.get("custom_providers")
+        if isinstance(custom_list, list) and custom_list:
+            providers_dict = config.get("providers", {})
+            if not isinstance(providers_dict, dict):
+                providers_dict = {}
+            migrated_count = 0
+            for entry in custom_list:
+                if not isinstance(entry, dict):
+                    continue
+                old_name = entry.get("name", "")
+                old_url = entry.get("base_url", "") or entry.get("url", "") or ""
+                old_key = entry.get("api_key", "")
+                if not old_url:
+                    continue  # skip entries with no URL
+
+                # Generate a kebab-case key from the display name
+                key = old_name.strip().lower().replace(" ", "-").replace("(", "").replace(")", "")
+                # Remove consecutive hyphens and trailing hyphens
+                while "--" in key:
+                    key = key.replace("--", "-")
+                key = key.strip("-")
+                if not key:
+                    # Fallback: derive from URL hostname
+                    try:
+                        from urllib.parse import urlparse
+                        parsed = urlparse(old_url)
+                        key = (parsed.hostname or "endpoint").replace(".", "-")
+                    except Exception:
+                        key = f"endpoint-{migrated_count}"
+
+                # Don't overwrite existing entries
+                if key in providers_dict:
+                    key = f"{key}-{migrated_count}"
+
+                new_entry = {"api": old_url}
+                if old_name:
+                    new_entry["name"] = old_name
+                if old_key and old_key not in ("no-key", "no-key-required", ""):
+                    new_entry["api_key"] = old_key
+
+                # Carry over model and api_mode if present
+                if entry.get("model"):
+                    new_entry["default_model"] = entry["model"]
+                if entry.get("api_mode"):
+                    new_entry["transport"] = entry["api_mode"]
+
+                providers_dict[key] = new_entry
+                migrated_count += 1
+
+            if migrated_count > 0:
+                config["providers"] = providers_dict
+                # Remove the old list
+                del config["custom_providers"]
+                save_config(config)
+                if not quiet:
+                    print(f"  ✓ Migrated {migrated_count} custom provider(s) to providers: section")
+                    for key in list(providers_dict.keys())[-migrated_count:]:
+                        ep = providers_dict[key]
+                        print(f"    → {key}: {ep.get('api', '')}")
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
@@ -1748,6 +1905,51 @@ def save_env_value(key: str, value: str):
             pass
 
 
+def remove_env_value(key: str) -> bool:
+    """Remove a key from ~/.hermes/.env and os.environ.
+
+    Returns True if the key was found and removed, False otherwise.
+    """
+    if is_managed():
+        managed_error(f"remove {key}")
+        return False
+    if not _ENV_VAR_NAME_RE.match(key):
+        raise ValueError(f"Invalid environment variable name: {key!r}")
+    env_path = get_env_path()
+    if not env_path.exists():
+        os.environ.pop(key, None)
+        return False
+
+    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
+    write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+
+    with open(env_path, **read_kw) as f:
+        lines = f.readlines()
+    lines = _sanitize_env_lines(lines)
+
+    new_lines = [line for line in lines if not line.strip().startswith(f"{key}=")]
+    found = len(new_lines) < len(lines)
+
+    if found:
+        fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+        try:
+            with os.fdopen(fd, 'w', **write_kw) as f:
+                f.writelines(new_lines)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, env_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        _secure_file(env_path)
+
+    os.environ.pop(key, None)
+    return found
+
+
 def save_anthropic_oauth_token(value: str, save_fn=None):
     """Persist an Anthropic OAuth/setup token and clear the API-key slot."""
     writer = save_fn or save_env_value
@@ -1986,7 +2188,9 @@ def set_config_value(key: str, value: str):
     # Check if it's an API key (goes to .env)
     api_keys = [
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
-        'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL', 'TAVILY_API_KEY',
+        'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
+        'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
+        'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY',
         'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
@@ -2042,6 +2246,7 @@ def set_config_value(key: str, value: str):
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
     _config_to_env_sync = {
         "terminal.backend": "TERMINAL_ENV",
+        "terminal.modal_mode": "TERMINAL_MODAL_MODE",
         "terminal.docker_image": "TERMINAL_DOCKER_IMAGE",
         "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
