@@ -617,6 +617,16 @@ class MattermostAdapter(BasePlatformAdapter):
         # For DMs, user_id is sufficient.  For channels, check for @mention.
         message_text = post.get("message", "")
 
+        # Waiki: ignorar DMs si configurado
+        _ignore_dms = os.getenv(
+            "MATTERMOST_IGNORE_DMS", ""
+        ).lower() == "true"
+        if channel_type_raw == "D" and _ignore_dms:
+            logger.debug(
+                "Mattermost: ignoring DM (MATTERMOST_IGNORE_DMS=true)"
+            )
+            return
+
         # Mention-gating for non-DM channels.
         # Config (env vars):
         #   MATTERMOST_REQUIRE_MENTION: Require @mention in channels (default: true)
@@ -629,6 +639,38 @@ class MattermostAdapter(BasePlatformAdapter):
             free_channels_raw = os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS", "")
             free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
             is_free_channel = channel_id in free_channels
+
+            # Waiki: match por prefijo de nombre de canal
+            if not is_free_channel:
+                _prefix_raw = os.getenv(
+                    "MATTERMOST_NO_MENTION_PREFIX", ""
+                )
+                _prefixes = [
+                    p.strip()
+                    for p in _prefix_raw.split(",")
+                    if p.strip()
+                ]
+                if _prefixes:
+                    if not hasattr(self, "_channel_name_cache"):
+                        self._channel_name_cache = {}
+                    _ch_name = self._channel_name_cache.get(
+                        channel_id
+                    )
+                    if _ch_name is None:
+                        try:
+                            _ch = await self._api_get(
+                                f"channels/{channel_id}"
+                            )
+                            _ch_name = _ch.get("name", "")
+                        except Exception:
+                            _ch_name = ""
+                        self._channel_name_cache[
+                            channel_id
+                        ] = _ch_name
+                    is_free_channel = any(
+                        _ch_name.startswith(p)
+                        for p in _prefixes
+                    )
 
             mention_patterns = [
                 f"@{self._bot_username}",
