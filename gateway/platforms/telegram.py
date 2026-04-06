@@ -743,20 +743,122 @@ class TelegramAdapter(BasePlatformAdapter):
         else:  # "first" (default)
             return chunk_index == 0
 
+    @staticmethod
+    def _parse_buttons(buttons_meta: Any) -> Optional["InlineKeyboardMarkup"]:
+        """Build an InlineKeyboardMarkup from flexible button metadata.
+
+        Accepted input formats:
+          - List[str]: "Label|url" per entry, all placed in a single row
+          - List[List[str|Dict]]: each inner list is a row
+          - List[Dict]: each dict has 'text' and optional 'url'/'callback_data'
+
+        Returns InlineKeyboardMarkup or None if buttons_meta is empty/unusable.
+        """
+        if not buttons_meta:
+            return None
+
+        try:
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        except ImportError:
+            return None
+
+        def _make_button(item) -> Optional[InlineKeyboardButton]:
+            if isinstance(item, str):
+                parts = item.split("|", 1)
+                text = parts[0].strip()
+                url = parts[1].strip() if len(parts) > 1 else None
+                if url and (url.startswith("http://") or url.startswith("https://") or url.startswith("t.me/")):
+                    return InlineKeyboardButton(text=text, url=url)
+                return InlineKeyboardButton(text=text, callback_data=item if not url else url)
+            if isinstance(item, dict):
+                text = item.get("text", "")
+                if not text:
+                    return None
+                url = item.get("url")
+                callback_data = item.get("callback_data")
+                if url:
+                    return InlineKeyboardButton(text=text, url=url)
+                if callback_data:
+                    return InlineKeyboardButton(text=text, callback_data=callback_data)
+                return InlineKeyboardButton(text=text, callback_data=text)
+            return None
+
+        rows: List[List[InlineKeyboardButton]] = []
+
+        if isinstance(buttons_meta, list):
+            if not buttons_meta:
+                return None
+
+            # Case 1: List[str] — single row
+            if all(isinstance(b, str) for b in buttons_meta):
+                buttons = [_make_button(b) for b in buttons_meta]
+                buttons = [b for b in buttons if b is not None]
+                if buttons:
+                    rows.append(buttons)
+                # Done — single row
+
+            # Case 2: List[List[...]] — each inner list is a row
+            elif all(isinstance(b, list) for b in buttons_meta):
+                for row_items in buttons_meta:
+                    buttons = [_make_button(b) for b in row_items]
+                    buttons = [b for b in buttons if b is not None]
+                    if buttons:
+                        rows.append(buttons)
+
+            # Case 3: List[Dict] — single row
+            elif all(isinstance(b, dict) for b in buttons_meta):
+                buttons = [_make_button(b) for b in buttons_meta]
+                buttons = [b for b in buttons if b is not None]
+                if buttons:
+                    rows.append(buttons)
+
+            else:
+                # Mixed / unknown — try to handle gracefully
+                single_row = []
+                for b in buttons_meta:
+                    btn = _make_button(b)
+                    if btn:
+                        single_row.append(btn)
+                if single_row:
+                    rows.append(single_row)
+
+        if rows:
+            return InlineKeyboardMarkup(rows)
+        return None
+
     async def send(
         self,
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        inline_keyboard: Any = None,
+        enable_streaming: bool = False,
     ) -> SendResult:
         """Send a message to a Telegram chat."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
-        
-        # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
+
+        # Build inline keyboard from parameter or metadata
+        reply_markup: Any = None
+        if inline_keyboard is not None:
+            reply_markup = self._parse_buttons(inline_keyboard)
+        elif metadata:
+            raw_buttons = metadata.get("buttons") or metadata.get("reply_markup")
+            if raw_buttons:
+                reply_markup = self._parse_buttons(raw_buttons)
+            elif metadata.get("attach_keyboard"):
+                reply_markup = self._make_action_keyboard(
+                    metadata.get("session_key", ""))
+
+        # Skip whitespace-only text, but allow empty content when
+        # buttons are present (Telegram requires non-empty text;
+        # use a zero-width space as invisible filler).
         if not content or not content.strip():
-            return SendResult(success=True, message_id=None)
+            if reply_markup is not None and enable_streaming:
+                content = "\u200B"
+            else:
+                return SendResult(success=True, message_id=None)
         
         try:
             # Format and split message if needed
@@ -789,7 +891,10 @@ class TelegramAdapter(BasePlatformAdapter):
             except (ImportError, AttributeError):
                 _TimedOut = None  # type: ignore[assignment,misc]
 
+            last_index = len(chunks) - 1
             for i, chunk in enumerate(chunks):
+                # Only attach inline keyboard to the final chunk
+                chunk_markup = reply_markup if (i == last_index) else None
                 should_thread = self._should_thread_reply(reply_to, i)
                 reply_to_id = int(reply_to) if should_thread else None
                 effective_thread_id = int(thread_id) if thread_id else None
@@ -805,6 +910,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
                                 message_thread_id=effective_thread_id,
+                                reply_markup=chunk_markup,
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
@@ -817,6 +923,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
                                     message_thread_id=effective_thread_id,
+                                    reply_markup=chunk_markup,
                                 )
                             else:
                                 raise
@@ -899,29 +1006,55 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id: str,
         message_id: str,
         content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        inline_keyboard: Any = None,
     ) -> SendResult:
-        """Edit a previously sent Telegram message."""
+        """Edit a previously sent Telegram message.
+
+        If *metadata* contains a ``buttons`` key, the inline keyboard is
+        attached / updated on the edited message — enabling streaming consumers
+        to add buttons once the response is finalised.
+        """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+
+        # Build inline keyboard from parameter (preferred) or metadata
+        reply_markup: Any = None
+        if inline_keyboard is not None:
+            reply_markup = self._parse_buttons(inline_keyboard)
+        elif metadata:
+            raw_buttons = metadata.get("buttons") or metadata.get("reply_markup")
+            if raw_buttons:
+                reply_markup = self._parse_buttons(raw_buttons)
+            elif metadata.get("attach_keyboard"):
+                reply_markup = self._make_action_keyboard(
+                    metadata.get("session_key", ""))
+
         try:
             formatted = self.format_message(content)
+            edit_kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "message_id": int(message_id),
+                "text": formatted,
+                "parse_mode": ParseMode.MARKDOWN_V2,
+            }
+            if reply_markup is not None:
+                edit_kwargs["reply_markup"] = reply_markup
             try:
-                await self._bot.edit_message_text(
-                    chat_id=int(chat_id),
-                    message_id=int(message_id),
-                    text=formatted,
-                    parse_mode=ParseMode.MARKDOWN_V2,
-                )
+                await self._bot.edit_message_text(**edit_kwargs)
             except Exception as fmt_err:
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
                 # Fallback: retry without markdown formatting
-                await self._bot.edit_message_text(
-                    chat_id=int(chat_id),
-                    message_id=int(message_id),
-                    text=content,
-                )
+                fb_kwargs: Dict[str, Any] = {
+                    "chat_id": int(chat_id),
+                    "message_id": int(message_id),
+                    "text": content,
+                }
+                if reply_markup is not None:
+                    fb_kwargs["reply_markup"] = reply_markup
+                await self._bot.edit_message_text(**fb_kwargs)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
@@ -1008,16 +1141,93 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_update_prompt failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    def _make_action_keyboard(
+        self,
+        session_key: str = "",
+        extra_buttons: Optional[List[Dict[str, str]]] = None,
+    ) -> "InlineKeyboardMarkup":
+        """Build an InlineKeyboardMarkup with standard action buttons.
+
+        Buttons:
+        - Regenerate: re-runs the last user message
+        - Copy: strips markdown for easy copying
+        """
+        buttons: List[List["InlineKeyboardButton"]] = [
+            [
+                InlineKeyboardButton("\U0001f504 Regenerate", callback_data="hermes:regenerate:" + (session_key or "local")),
+                InlineKeyboardButton("\U0001f4cb Copy", callback_data="hermes:copy"),
+            ]
+        ]
+        if extra_buttons:
+            row: List["InlineKeyboardButton"] = []
+            for btn in extra_buttons:
+                row.append(
+                    InlineKeyboardButton(
+                        btn.get("text", ""),
+                        callback_data=btn.get("callback_data", ""),
+                        url=btn.get("url"),
+                    )
+                )
+            buttons.append(row)
+        return InlineKeyboardMarkup(buttons)
+
+    def _parse_buttons(
+        self, raw: Any
+    ) -> Optional["InlineKeyboardMarkup"]:
+        """Convert a button specification into an InlineKeyboardMarkup.
+
+        Accepts:
+        - An already-built InlineKeyboardMarkup (passed through)
+        - A list of lists of dicts: [[{"text":"X","callback_data":"y"}], ...]
+        - A single list of dicts (converted to a single row)
+        """
+        if isinstance(raw, InlineKeyboardMarkup):
+            return raw
+        if not isinstance(raw, list) or not raw:
+            return None
+
+        first = raw[0]
+        if isinstance(first, list):
+            rows = raw
+        else:
+            rows = [raw]
+
+        keyboard: List[List["InlineKeyboardButton"]] = []
+        for row in rows:
+            kb_row: List["InlineKeyboardButton"] = []
+            for btn in row:
+                if isinstance(btn, dict):
+                    kb_row.append(
+                        InlineKeyboardButton(
+                            btn.get("text", ""),
+                            callback_data=btn.get("callback_data", ""),
+                            url=btn.get("url"),
+                        )
+                    )
+            if kb_row:
+                keyboard.append(kb_row)
+
+        return InlineKeyboardMarkup(keyboard) if keyboard else None
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
-        """Handle inline keyboard button clicks (update prompts)."""
+        """Handle inline keyboard button clicks."""
         query = update.callback_query
         if not query or not query.data:
             return
         data = query.data
-        if not data.startswith("update_prompt:"):
-            return
+
+        # Dispatch by prefix
+        if data.startswith("update_prompt:"):
+            await self._handle_callback_update_prompt(query, data)
+        elif data.startswith("hermes:"):
+            await self._handle_hermes_callback(query, data)
+
+    async def _handle_callback_update_prompt(
+        self, query, data: str
+    ) -> None:
+        """Handle update-prompt Yes/No buttons."""
         answer = data.split(":", 1)[1]  # "y" or "n"
         await query.answer(text=f"Sent '{answer}' to the update process.")
         # Edit the message to show the choice and remove buttons
@@ -1042,6 +1252,54 @@ class TelegramAdapter(BasePlatformAdapter):
                         answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
+
+    async def _handle_hermes_callback(self, query, data: str) -> None:
+        """Handle Hermes action buttons (Regenerate, Copy)."""
+        await query.answer()  # dismiss spinner immediately
+
+        if data == "hermes:copy":
+            # Edit message to show content in a code block for easy copying
+            if query.message and query.message.text:
+                clean = re.sub(r'[*_~`\[\]()>#+\-=|{}.!\\]', '', query.message.text)
+                if len(clean) > 4000:
+                    clean = clean[:3997] + "..."
+                try:
+                    await query.edit_message_text(
+                        text=clean,
+                        reply_markup=self._make_action_keyboard(
+                            session_key="",
+                        ),
+                    )
+                except Exception:
+                    pass  # non-fatal
+            return
+
+        if data.startswith("hermes:regenerate:") or data.startswith("hermes:regen:"):
+            # Signal via update_response file that regeneration was requested.
+            # The gateway's monitor loop picks this up and re-runs the session.
+            try:
+                from hermes_constants import get_hermes_home
+                home = get_hermes_home()
+                response_path = home / ".update_response"
+                tmp = response_path.with_suffix(".tmp")
+                # Write a special token that the gateway interprets as
+                # "regenerate last turn" — format: hermes_regenerate:<session_key>
+                session_key = data.split(":", 2)[-1] if ":" in data else ""
+                tmp.write_text(f"hermes_regenerate:{session_key}")
+                tmp.replace(response_path)
+                logger.info(
+                    "Telegram regenerate requested by user %s (session=%s)",
+                    getattr(query.from_user, "id", "unknown"),
+                    session_key[:20] if session_key else "?",
+                )
+                # Update the button text to show acknowledgment
+                try:
+                    keyboard = self._make_action_keyboard(session_key)
+                    await query.edit_message_reply_markup(reply_markup=keyboard)
+                except Exception:
+                    pass
+            except Exception as exc:
+                logger.error("Failed to write regenerate request: %s", exc)
 
     async def send_voice(
         self,

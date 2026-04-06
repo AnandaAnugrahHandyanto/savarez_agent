@@ -459,6 +459,71 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     return None
 
 
+def _extract_buttons_from_response(text: str) -> Optional[List[Any]]:
+    """Extract inline button metadata from an agent response.
+
+    Looks for two syntaxes:
+
+    1.  Fenced code block::
+
+            ```buttons
+            [{"text":"Open","url":"https://example.com"},{"text":"Help","callback_data":"help"}]
+
+        The first line after the fence is the ``buttons`` language hint; the
+        following lines are parsed as JSON.
+
+    2.  Inline markers::
+
+            [button:Label|https://example.com]
+
+        Multiple markers can appear in the response text.
+
+    Returns a list of button dicts (``{"text", "url"}`` or ``{"text","callback_data"}``)
+    or ``None`` when no buttons are found.
+    """
+    if not text:
+        return None
+
+    buttons: List[Any] = []
+
+    # 1) ```buttons JSON block
+    m = re.search(r'```buttons\s*\n([\s\S]*?)```', text)
+    if m:
+        try:
+            parsed = json.loads(m.group(1).strip())
+            if isinstance(parsed, list):
+                # Normalise entries to dicts
+                for item in parsed:
+                    if isinstance(item, dict):
+                        buttons.append(item)
+                    elif isinstance(item, str):
+                        btn: Dict[str, Any] = {"text": item.split("|", 1)[0].strip()}
+                        if "|" in item:
+                            val = item.split("|", 1)[1].strip()
+                            if val.startswith("http://") or val.startswith("https://") or val.startswith("t.me/"):
+                                btn["url"] = val
+                            else:
+                                btn["callback_data"] = val
+                        else:
+                            btn["callback_data"] = item.strip()
+                        buttons.append(btn)
+        except Exception:
+            pass
+
+    # 2) [button:Label|url] inline markers
+    for m2 in re.finditer(r'\[button:([^\]|]+)\|([^\]]+)\]', text):
+        label = m2.group(1).strip()
+        target = m2.group(2).strip()
+        btn = {"text": label}
+        if target.startswith("http://") or target.startswith("https://") or target.startswith("t.me/"):
+            btn["url"] = target
+        else:
+            btn["callback_data"] = target
+        buttons.append(btn)
+
+    return buttons if buttons else None
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -6662,10 +6727,16 @@ class GatewayRunner:
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
 
+            # Extract buttons from the agent response and pass them to the
+            # stream consumer so they appear on the final edit.
+            _pending_buttons = _extract_buttons_from_response(result.get("final_response", ""))
+
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
+                if _pending_buttons is not None:
+                    _stream_consumer.set_buttons(_pending_buttons)
                 _stream_consumer.finish()
-            
+
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
 

@@ -21,7 +21,7 @@ import queue
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger("gateway.stream_consumer")
 
@@ -70,6 +70,7 @@ class GatewayStreamConsumer:
         self._edit_supported = True  # Disabled on first edit failure (Signal/Email/HA)
         self._last_edit_time = 0.0
         self._last_sent_text = ""   # Track last-sent text to skip redundant edits
+        self._pending_buttons: Any = None  # Buttons to attach on final edit
 
     @property
     def already_sent(self) -> bool:
@@ -85,6 +86,14 @@ class GatewayStreamConsumer:
     def finish(self) -> None:
         """Signal that the stream is complete."""
         self._queue.put(_DONE)
+
+    def set_buttons(self, buttons: Any) -> None:
+        """Store buttons to attach when the stream finishes.
+        
+        Buttons are only attached to the final edit, not during
+        intermediate streaming edits.
+        """
+        self._pending_buttons = buttons
 
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
@@ -140,9 +149,9 @@ class GatewayStreamConsumer:
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
-                    # Final edit without cursor
+                    # Final edit without cursor — attach buttons if stored
                     if self._accumulated and self._message_id:
-                        await self._send_or_edit(self._accumulated)
+                        await self._send_or_edit(self._accumulated, include_buttons=True)
                     return
 
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
@@ -182,7 +191,7 @@ class GatewayStreamConsumer:
         # Strip trailing whitespace/newlines but preserve leading content
         return cleaned.rstrip()
 
-    async def _send_or_edit(self, text: str) -> None:
+    async def _send_or_edit(self, text: str, include_buttons: bool = False) -> None:
         """Send or edit the streaming message."""
         # Strip MEDIA: directives so they don't appear as visible text.
         # Media files are delivered as native attachments after the stream
@@ -194,14 +203,17 @@ class GatewayStreamConsumer:
             if self._message_id is not None:
                 if self._edit_supported:
                     # Skip if text is identical to what we last sent
-                    if text == self._last_sent_text:
+                    if text == self._last_sent_text and not include_buttons:
                         return
-                    # Edit existing message
-                    result = await self.adapter.edit_message(
-                        chat_id=self.chat_id,
-                        message_id=self._message_id,
-                        content=text,
-                    )
+                    # Build edit kwargs — attach buttons only on final edit
+                    edit_kwargs: Dict[str, Any] = {
+                        "chat_id": self.chat_id,
+                        "message_id": self._message_id,
+                        "content": text,
+                    }
+                    if include_buttons and self._pending_buttons is not None:
+                        edit_kwargs["inline_keyboard"] = self._pending_buttons
+                    result = await self.adapter.edit_message(**edit_kwargs)
                     if result.success:
                         self._already_sent = True
                         self._last_sent_text = text

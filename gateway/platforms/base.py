@@ -539,7 +539,8 @@ class BasePlatformAdapter(ABC):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        inline_keyboard: Any = None
     ) -> SendResult:
         """
         Send a message to a chat.
@@ -549,6 +550,7 @@ class BasePlatformAdapter(ABC):
             content: Message content (may be markdown)
             reply_to: Optional message ID to reply to
             metadata: Additional platform-specific options
+            inline_keyboard: Optional inline keyboard markup (platform-specific)
         
         Returns:
             SendResult with success status and message ID
@@ -560,11 +562,15 @@ class BasePlatformAdapter(ABC):
         chat_id: str,
         message_id: str,
         content: str,
+        inline_keyboard: Any = None,
     ) -> SendResult:
         """
         Edit a previously sent message. Optional — platforms that don't
         support editing return success=False and callers fall back to
         sending a new message.
+        
+        Args:
+            inline_keyboard: Optional inline keyboard markup to attach/replace.
         """
         return SendResult(success=False, error="Not supported")
 
