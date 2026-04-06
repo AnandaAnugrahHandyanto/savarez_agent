@@ -4147,7 +4147,12 @@ class GatewayRunner:
                 history_snapshot = list(getattr(running_agent, "_session_messages", []) or [])
             else:
                 session_entry = self.session_store.get_or_create_session(source)
-                history_snapshot = self.session_store.load_transcript(session_entry.session_id)
+                raw_history = self.session_store.load_transcript(session_entry.session_id)
+                # Filter out session_meta entries (internal bookkeeping, not for LLM API)
+                history_snapshot = [
+                    msg for msg in raw_history
+                    if msg.get("role") != "session_meta"
+                ]
 
             btw_prompt = (
                 "[Ephemeral /btw side question. Answer using the conversation "
