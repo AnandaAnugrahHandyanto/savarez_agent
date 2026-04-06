@@ -413,12 +413,15 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API)
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
         },
         "openai": {
             "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
+        },
+        "mistral": {
+            "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
         },
     },
 
