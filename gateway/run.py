@@ -3250,6 +3250,28 @@ class GatewayRunner:
                 _flush_task.add_done_callback(self._background_tasks.discard)
         except Exception as e:
             logger.debug("Gateway memory flush on reset failed: %s", e)
+        
+        # Shut down memory provider before evicting the agent — actual session boundary.
+        # This triggers MemoryProvider.on_session_end() for plugins that need cleanup.
+        cached_agent = self._agent_cache.get(session_key)
+        if cached_agent and cached_agent is not _AGENT_PENDING_SENTINEL:
+            try:
+                cached_agent.shutdown_memory_provider()
+            except Exception:
+                pass
+        
+        # Plugin hook: session:end — lets plugins react to session resets.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "session:end",
+                session_key=session_key,
+                platform=source.platform.value if source.platform else "",
+                user_id=source.user_id,
+            )
+        except Exception as exc:
+            logger.debug("session:end plugin hook failed: %s", exc)
+        
         self._evict_cached_agent(session_key)
         
         # Reset the session
@@ -3268,6 +3290,18 @@ class GatewayRunner:
             "user_id": source.user_id,
             "session_key": session_key,
         })
+
+        # Plugin hook: session:reset — lets plugins initialize for the new session.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "session:reset",
+                session_key=session_key,
+                platform=source.platform.value if source.platform else "",
+                user_id=source.user_id,
+            )
+        except Exception as exc:
+            logger.debug("session:reset plugin hook failed: %s", exc)
         
         # Resolve session config info to surface to the user
         try:

@@ -3467,6 +3467,12 @@ class HermesCLI:
 
     def reset_conversation(self):
         """Reset the conversation by starting a new session."""
+        # Plugin hook: session:end — lets plugins react to session resets.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook("session:end", session_id=self.session_id, platform="cli")
+        except Exception:
+            pass
         # Shut down memory provider before resetting — actual session boundary
         if hasattr(self, 'agent') and self.agent:
             self.agent.shutdown_memory_provider(self.conversation_history)
@@ -4347,7 +4353,7 @@ class HermesCLI:
                 else:
                     _cprint("  Session database not available.")
         elif canonical == "new":
-            self.new_session()
+            self.reset_conversation()
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
         elif canonical == "model":
