@@ -918,6 +918,7 @@ def select_provider_and_model(args=None):
         "kimi-coding": "Kimi / Moonshot",
         "minimax": "MiniMax",
         "minimax-cn": "MiniMax (China)",
+        "deepseek": "DeepSeek",
         "opencode-zen": "OpenCode Zen",
         "opencode-go": "OpenCode Go",
         "ai-gateway": "AI Gateway",
@@ -945,6 +946,7 @@ def select_provider_and_model(args=None):
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
         ("minimax", "MiniMax (global direct API)"),
         ("minimax-cn", "MiniMax China (domestic direct API)"),
+        ("deepseek", "DeepSeek (direct API)"),
         ("kilocode", "Kilo Code (Kilo Gateway API)"),
         ("opencode-zen", "OpenCode Zen (35+ curated models, pay-as-you-go)"),
         ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
@@ -1023,7 +1025,7 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
+    elif selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn", "deepseek", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
