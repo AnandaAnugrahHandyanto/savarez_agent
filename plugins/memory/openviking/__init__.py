@@ -23,15 +23,41 @@ Capabilities:
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
 import threading
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
 from agent.memory_provider import MemoryProvider
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Process-level atexit safety net -- ensures pending sessions are committed
+# even if shutdown_memory_provider is never called (e.g. gateway crash,
+# SIGKILL, or the gateway bug where _async_flush_memories exception prevents
+# shutdown_memory_provider from being called on session expiry).
+# ---------------------------------------------------------------------------
+_last_active_provider = None
+
+
+def _atexit_commit_sessions():
+    """Fire on_session_end for the last active provider on process exit."""
+    global _last_active_provider
+    provider = _last_active_provider
+    if provider is None:
+        return
+    _last_active_provider = None
+    try:
+        provider.on_session_end([])
+    except Exception:
+        pass  # best-effort at shutdown time
+
+
+atexit.register(_atexit_commit_sessions)
 
 _DEFAULT_ENDPOINT = "http://127.0.0.1:1933"
 _TIMEOUT = 30.0
@@ -81,7 +107,10 @@ class _VikingClient:
             self._url(path), headers=self._headers(), timeout=_TIMEOUT, **kwargs
         )
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise ValueError(f'Expected dict response, got {type(data).__name__} from {path}')
+        return data
 
     def post(self, path: str, payload: dict = None, **kwargs) -> dict:
         resp = self._httpx.post(
@@ -89,7 +118,10 @@ class _VikingClient:
             timeout=_TIMEOUT, **kwargs
         )
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise ValueError(f'Expected dict response, got {type(data).__name__} from {path}')
+        return data
 
     def health(self) -> bool:
         try:
@@ -242,8 +274,20 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return "openviking"
 
     def is_available(self) -> bool:
-        """Check if OpenViking endpoint is configured. No network calls."""
-        return bool(os.environ.get("OPENVIKING_ENDPOINT"))
+        """Check if OpenViking is configured via env var or defaults."""
+        # Check env var first
+        if os.environ.get("OPENVIKING_ENDPOINT"):
+            return True
+        # Also register if the default endpoint is reachable (local dev)
+        endpoint = os.environ.get("OPENVIKING_ENDPOINT", "http://127.0.0.1:1933").strip() or "http://127.0.0.1:1933"
+        try:
+            import httpx
+            resp = httpx.get(f"{endpoint}/health", timeout=3.0)
+            if resp.status_code == 200:
+                return True
+        except Exception:
+            pass
+        return False
 
     def get_config_schema(self):
         return [
@@ -277,15 +321,19 @@ class OpenVikingMemoryProvider(MemoryProvider):
             logger.warning("httpx not installed — OpenViking plugin disabled")
             self._client = None
 
+        # Register this provider as the last active one for atexit safety net
+        global _last_active_provider
+        _last_active_provider = self
+
     def system_prompt_block(self) -> str:
         if not self._client:
             return ""
         # Provide brief info about the knowledge base
         try:
             # Check what's in the knowledge base via a root listing
-            resp = self._client.get("/api/v1/fs/ls", params={"uri": "viking://"})
-            result = resp.get("result", [])
-            children = len(result) if isinstance(result, list) else 0
+            resp = self._client.get("/api/v1/fs/stat?" + urlencode({"uri": "viking://"}))
+            result = resp.get("result", {})
+            children = result.get("children", 0)
             if children == 0:
                 return ""
             return (
@@ -329,7 +377,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 result = resp.get("result", {})
                 parts = []
                 for ctx_type in ("memories", "resources"):
-                    items = result.get(ctx_type, [])
+                    items = raw.get(ctx_type, [])
                     for item in items[:3]:
                         uri = item.get("uri", "")
                         abstract = item.get("abstract", "")
@@ -387,12 +435,19 @@ class OpenVikingMemoryProvider(MemoryProvider):
         OpenViking automatically extracts 6 categories of memories:
         profile, preferences, entities, events, cases, and patterns.
         """
-        if not self._client or self._turn_count == 0:
+        if not self._client:
+            logger.debug("OpenViking on_session_end: no client configured")
             return
 
-        # Wait for any pending sync to finish first
+        # Wait for any pending sync to finish first -- do this even if
+        # _turn_count is 0 to ensure the last turn messages are flushed.
         if self._sync_thread and self._sync_thread.is_alive():
+            logger.debug("OpenViking: waiting for pending sync thread (turn_count=%d)", self._turn_count)
             self._sync_thread.join(timeout=10.0)
+
+        if self._turn_count == 0:
+            logger.debug("OpenViking on_session_end: no turns recorded, skipping commit")
+            return
 
         try:
             self._client.post(f"/api/v1/sessions/{self._session_id}/commit")
@@ -449,6 +504,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
         for t in (self._sync_thread, self._prefetch_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
+        # Clear atexit reference so atexit doesn't try to commit again
+        global _last_active_provider
+        if _last_active_provider is self:
+            _last_active_provider = None
 
     # -- Tool implementations ------------------------------------------------
 
@@ -467,12 +526,14 @@ class OpenVikingMemoryProvider(MemoryProvider):
             payload["top_k"] = args["limit"]
 
         resp = self._client.post("/api/v1/search/find", payload)
-        result = resp.get("result", {})
+        raw = resp.get("result")
+        if not isinstance(raw, dict):
+            raw = {}
 
         # Format results for the model — keep it concise
         formatted = []
         for ctx_type in ("memories", "resources", "skills"):
-            items = result.get(ctx_type, [])
+            items = raw.get(ctx_type, [])
             for item in items:
                 entry = {
                     "uri": item.get("uri", ""),
@@ -486,7 +547,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         return json.dumps({
             "results": formatted,
-            "total": result.get("total", len(formatted)),
+            "total": raw.get("total", len(formatted)),
         }, ensure_ascii=False)
 
     def _tool_read(self, args: dict) -> str:
@@ -495,17 +556,22 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return json.dumps({"error": "uri is required"})
 
         level = args.get("level", "overview")
-        # Map our level names to OpenViking GET endpoints
-        if level == "abstract":
-            resp = self._client.get("/api/v1/content/abstract", params={"uri": uri})
-        elif level == "full":
-            resp = self._client.get("/api/v1/content/read", params={"uri": uri})
-        else:  # overview
-            resp = self._client.get("/api/v1/content/overview", params={"uri": uri})
+        # Map our level names to OpenViking GET endpoints with query params
+        params: Dict[str, Any] = {"uri": uri}
+        if level in ("full", "overview", "abstract"):
+            params["level"] = level
+        # Use content/read with level param for all levels (abstract/overview/full)
+        endpoint = "/api/v1/content/read"
+        resp = self._client.get(endpoint + "?" + urlencode(params))
+        raw = resp.get("result")
 
-        result = resp.get("result", "")
-        # result is a plain string from the content endpoints
-        content = result if isinstance(result, str) else result.get("content", "")
+        # OpenViking returns result as a string (the content) for content/read
+        if isinstance(raw, str):
+            content = raw
+        elif isinstance(raw, dict):
+            content = raw.get("content", "")
+        else:
+            content = ""
 
         # Truncate very long content to avoid flooding the context
         if len(content) > 8000:
@@ -521,25 +587,32 @@ class OpenVikingMemoryProvider(MemoryProvider):
         action = args.get("action", "list")
         path = args.get("path", "viking://")
 
-        # Map action to the correct fs endpoint (all GET with uri= param)
-        endpoint_map = {"tree": "/api/v1/fs/tree", "list": "/api/v1/fs/ls", "stat": "/api/v1/fs/stat"}
-        endpoint = endpoint_map.get(action, "/api/v1/fs/ls")
-        resp = self._client.get(endpoint, params={"uri": path})
-        result = resp.get("result", {})
+        # Map to OpenViking GET /api/v1/fs/* endpoints
+        if action == "list":
+            endpoint = "/api/v1/fs/ls?" + urlencode({"uri": path})
+        elif action == "tree":
+            endpoint = "/api/v1/fs/tree?" + urlencode({"uri": path})
+        elif action == "stat":
+            endpoint = "/api/v1/fs/stat?" + urlencode({"uri": path})
+        else:
+            return json.dumps({"error": f"Unknown action: {action}"})
 
-        # Format list/tree results for readability
-        if action in ("list", "tree") and isinstance(result, list):
+        resp = self._client.get(endpoint)
+        result = resp.get("result", [])
+
+        # Format for readability
+        if action == "list":
+            # fs/ls returns a list directly, not a dict with "entries"
             entries = []
-            for e in result[:50]:  # cap at 50 entries
+            for e in (result if isinstance(result, list) else [])[:50]:
                 entries.append({
-                    "name": e.get("rel_path", e.get("name", "")),
+                    "name": e.get("rel_path", e.get("uri", "").split("/")[-1]),
                     "uri": e.get("uri", ""),
-                    "type": "dir" if e.get("isDir") else "file",
-                    "abstract": e.get("abstract", ""),
+                    "type": "dir" if e.get("isDir", e.get("is_dir", False)) else "file",
                 })
             return json.dumps({"path": path, "entries": entries}, ensure_ascii=False)
 
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps({"path": path, "result": result}, ensure_ascii=False)
 
     def _tool_remember(self, args: dict) -> str:
         content = args.get("content", "")
