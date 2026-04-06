@@ -22,16 +22,17 @@ from unittest.mock import patch, MagicMock
 from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
+    _MODEL_CACHE_TTL,
     _strip_provider_prefix,
-    estimate_tokens_rough,
+    build_openai_request_session_routing,
     estimate_messages_tokens_rough,
+    estimate_tokens_rough,
+    fetch_model_metadata,
+    get_cached_context_length,
     get_model_context_length,
     get_next_probe_tier,
-    get_cached_context_length,
     parse_context_limit_from_error,
     save_context_length,
-    fetch_model_metadata,
-    _MODEL_CACHE_TTL,
 )
 
 
@@ -194,6 +195,100 @@ class TestGetModelContextLength:
             result = get_model_context_length("custom/model")
             assert result == CONTEXT_PROBE_TIERS[0]
 
+
+class TestBuildOpenAIRequestSessionRouting:
+    def test_chat_completions_fireworks_route_uses_session_affinity_header(self):
+        routing = build_openai_request_session_routing(
+            provider="custom",
+            base_url="https://api.fireworks.ai/inference/v1",
+            api_mode="chat_completions",
+            session_id="sess-123",
+        )
+
+        assert routing == {"extra_headers": {"x-session-affinity": "sess-123"}}
+
+    def test_chat_completions_unknown_custom_route_omits_session_routing(self):
+        routing = build_openai_request_session_routing(
+            provider="custom",
+            base_url="http://localhost:1234/v1",
+            api_mode="chat_completions",
+            session_id="sess-123",
+        )
+
+        assert routing == {}
+
+    def test_chat_completions_without_session_id_omits_session_routing(self):
+        routing = build_openai_request_session_routing(
+            provider="custom",
+            base_url="https://api.fireworks.ai/inference/v1",
+            api_mode="chat_completions",
+            session_id=None,
+        )
+
+        assert routing == {}
+
+    def test_codex_responses_openai_routes_use_prompt_cache_key(self):
+        routing = build_openai_request_session_routing(
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_mode="codex_responses",
+            session_id="sess-codex-1",
+        )
+
+        assert routing == {"prompt_cache_key": "sess-codex-1"}
+
+    def test_codex_responses_direct_openai_route_uses_prompt_cache_key(self):
+        routing = build_openai_request_session_routing(
+            provider="custom",
+            base_url="https://api.openai.com/v1",
+            api_mode="codex_responses",
+            session_id="sess-openai-1",
+        )
+
+        assert routing == {"prompt_cache_key": "sess-openai-1"}
+
+    def test_codex_responses_github_route_omits_prompt_cache_key(self):
+        routing = build_openai_request_session_routing(
+            provider="copilot",
+            base_url="https://api.githubcopilot.com",
+            api_mode="codex_responses",
+            session_id="sess-gh-1",
+        )
+
+        assert routing == {}
+
+    def test_openrouter_provider_yields_to_specific_fireworks_base_url(self):
+        routing = build_openai_request_session_routing(
+            provider="openrouter",
+            base_url="https://api.fireworks.ai/inference/v1",
+            api_mode="chat_completions",
+            session_id="sess-fw-via-or",
+        )
+
+        assert routing == {"extra_headers": {"x-session-affinity": "sess-fw-via-or"}}
+
+    def test_openrouter_provider_yields_to_direct_openai_base_url_for_responses(self):
+        routing = build_openai_request_session_routing(
+            provider="openrouter",
+            base_url="https://api.openai.com/v1",
+            api_mode="codex_responses",
+            session_id="sess-openai-via-or",
+        )
+
+        assert routing == {"prompt_cache_key": "sess-openai-via-or"}
+
+    def test_codex_responses_unknown_custom_route_omits_prompt_cache_key(self):
+        routing = build_openai_request_session_routing(
+            provider="custom",
+            base_url="https://llm.example.com/v1",
+            api_mode="codex_responses",
+            session_id="sess-custom-1",
+        )
+
+        assert routing == {}
+
+
+class TestGetModelContextLengthCustomEndpoints:
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
     def test_custom_endpoint_metadata_beats_fuzzy_default(self, mock_endpoint_fetch, mock_fetch):

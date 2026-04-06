@@ -2,18 +2,23 @@
 
 import json
 import os
+import asyncio
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from types import SimpleNamespace
+from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
 from agent.auxiliary_client import (
+    call_llm,
+    async_call_llm,
     get_text_auxiliary_client,
     get_vision_auxiliary_client,
     get_available_vision_backends,
     resolve_vision_provider_client,
     resolve_provider_client,
     auxiliary_max_tokens_param,
+    _CodexCompletionsAdapter,
     _read_codex_access_token,
     _get_auxiliary_provider,
     _resolve_forced_provider,
@@ -1106,3 +1111,194 @@ class TestAuxiliaryMaxTokensParam:
              patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
             result = auxiliary_max_tokens_param(1024)
         assert result == {"max_tokens": 1024}
+
+
+class TestSessionRoutingMetadata:
+    def test_call_llm_adds_session_routing_header_for_fireworks_route(self):
+        client = MagicMock()
+        client.base_url = "https://api.fireworks.ai/inference/v1"
+        client.chat.completions.create.return_value = object()
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("custom", "fw-model", "https://api.fireworks.ai/inference/v1", "fw-key"),
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "fw-model"),
+        ):
+            call_llm(
+                provider="custom",
+                messages=[{"role": "user", "content": "hi"}],
+                session_id="sess-123",
+            )
+
+        assert client.chat.completions.create.call_args.kwargs["extra_headers"] == {
+            "x-session-affinity": "sess-123"
+        }
+
+    def test_call_llm_omits_session_routing_without_session_id(self):
+        client = MagicMock()
+        client.base_url = "https://api.fireworks.ai/inference/v1"
+        client.chat.completions.create.return_value = object()
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("custom", "fw-model", "https://api.fireworks.ai/inference/v1", "fw-key"),
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "fw-model"),
+        ):
+            call_llm(
+                provider="custom",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert "x-session-affinity" not in client.chat.completions.create.call_args.kwargs.get("extra_headers", {})
+
+    def test_call_llm_omits_session_routing_for_unknown_custom_route(self):
+        client = MagicMock()
+        client.base_url = "http://localhost:1234/v1"
+        client.chat.completions.create.return_value = object()
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("custom", "local-model", "http://localhost:1234/v1", "local-key"),
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "local-model"),
+        ):
+            call_llm(
+                provider="custom",
+                messages=[{"role": "user", "content": "hi"}],
+                session_id="sess-local-1",
+            )
+
+        assert "x-session-affinity" not in client.chat.completions.create.call_args.kwargs.get("extra_headers", {})
+
+    def test_call_llm_infers_session_routing_from_client_base_url(self):
+        client = MagicMock()
+        client.base_url = "https://api.fireworks.ai/inference/v1"
+        client.chat.completions.create.return_value = object()
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("custom", "fw-model", None, "fw-key"),
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "fw-model"),
+        ):
+            call_llm(
+                provider="custom",
+                messages=[{"role": "user", "content": "hi"}],
+                session_id="sess-fallback",
+            )
+
+        assert client.chat.completions.create.call_args.kwargs["extra_headers"] == {
+            "x-session-affinity": "sess-fallback"
+        }
+
+    def test_call_llm_main_provider_still_infers_session_routing_from_base_url(self):
+        client = MagicMock()
+        client.base_url = "https://api.fireworks.ai/inference/v1"
+        client.chat.completions.create.return_value = object()
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("main", "fw-model", "https://api.fireworks.ai/inference/v1", "fw-key"),
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "fw-model"),
+        ):
+            call_llm(
+                provider="main",
+                messages=[{"role": "user", "content": "hi"}],
+                session_id="sess-main-1",
+            )
+
+        assert client.chat.completions.create.call_args.kwargs["extra_headers"] == {
+            "x-session-affinity": "sess-main-1"
+        }
+
+    def test_call_llm_adds_prompt_cache_key_for_codex_responses_transport(self):
+        client = MagicMock()
+        client.api_mode = "codex_responses"
+        client.base_url = "https://chatgpt.com/backend-api/codex"
+        client.chat.completions.create.return_value = object()
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "gpt-5.2-codex", None, "codex-key"),
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "gpt-5.2-codex"),
+        ):
+            call_llm(
+                provider="auto",
+                messages=[{"role": "user", "content": "hi"}],
+                session_id="sess-codex-aux",
+            )
+
+        assert client.chat.completions.create.call_args.kwargs["prompt_cache_key"] == "sess-codex-aux"
+
+    def test_async_call_llm_adds_session_routing_header_for_fireworks_route(self):
+        create = AsyncMock(return_value=object())
+        client = MagicMock()
+        client.base_url = "https://api.fireworks.ai/inference/v1"
+        client.chat.completions.create = create
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("custom", "fw-model", None, "fw-key"),
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "fw-model"),
+        ):
+            asyncio.run(
+                async_call_llm(
+                    provider="custom",
+                    messages=[{"role": "user", "content": "hi"}],
+                    session_id="async-sess-123",
+                )
+            )
+
+        assert create.call_args.kwargs["extra_headers"] == {
+            "x-session-affinity": "async-sess-123"
+        }
+
+
+class TestCodexResponsesAdapterRouting:
+    def test_codex_adapter_forwards_responses_routing_kwargs(self):
+        final_response = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="ok")],
+                )
+            ],
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+        )
+
+        class _FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter(())
+
+            def get_final_response(self):
+                return final_response
+
+        real_client = MagicMock()
+        real_client.responses.stream.return_value = _FakeStream()
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.2-codex")
+
+        response = adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            prompt_cache_key="sess-codex-wire",
+        )
+
+        assert response.choices[0].message.content == "ok"
+        assert real_client.responses.stream.call_args.kwargs["prompt_cache_key"] == "sess-codex-wire"

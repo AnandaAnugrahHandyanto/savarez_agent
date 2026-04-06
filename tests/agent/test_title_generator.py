@@ -82,6 +82,21 @@ class TestGenerateTitle:
         user_content = captured_kwargs["messages"][1]["content"]
         assert len(user_content) < 1100  # 500 + 500 + formatting
 
+    def test_forwards_session_identity_to_auxiliary_call(self):
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Short Title"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            generate_title("question", "answer", session_id="title-sess-1")
+
+        assert captured_kwargs["session_id"] == "title-sess-1"
+
 
 class TestAutoTitleSession:
     """Tests for auto_title_session() — the sync worker function."""
@@ -104,6 +119,15 @@ class TestAutoTitleSession:
         with patch("agent.title_generator.generate_title", return_value="New Title"):
             auto_title_session(db, "sess-1", "hi", "hello")
             db.set_session_title.assert_called_once_with("sess-1", "New Title")
+
+    def test_auto_title_passes_session_identity_to_generator(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+
+        with patch("agent.title_generator.generate_title", return_value="New Title") as gen:
+            auto_title_session(db, "sess-1", "hi", "hello")
+
+        gen.assert_called_once_with("hi", "hello", session_id="sess-1")
 
     def test_skips_if_generation_fails(self):
         db = MagicMock()

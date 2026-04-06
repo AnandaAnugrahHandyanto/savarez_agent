@@ -9,7 +9,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 from urllib.parse import urlparse
 
 import requests
@@ -184,6 +184,37 @@ _URL_TO_PROVIDER: Dict[str, str] = {
 }
 
 
+class OpenAIRequestSessionRouting(TypedDict, total=False):
+    """Request-local session routing metadata for OpenAI-compatible APIs."""
+
+    extra_headers: Dict[str, str]
+    extra_body: Dict[str, Any]
+    prompt_cache_key: str
+
+
+class _OpenAIRequestSessionRoutingCapability(TypedDict, total=False):
+    """Data-driven routing policy for a provider + transport pair."""
+
+    extra_headers: Dict[str, str]
+    extra_body: Dict[str, Any]
+    prompt_cache_key: bool
+
+
+_GENERIC_RUNTIME_PROVIDERS = {"", "auto", "custom", "main", "local"}
+_SESSION_ID_TEMPLATE = "{session_id}"
+_OPENAI_SESSION_ROUTING_CAPABILITIES: Dict[tuple[str, str], _OpenAIRequestSessionRoutingCapability] = {
+    ("fireworks", "chat_completions"): {
+        "extra_headers": {"x-session-affinity": _SESSION_ID_TEMPLATE},
+    },
+    ("openai", "codex_responses"): {
+        "prompt_cache_key": True,
+    },
+    ("openai-codex", "codex_responses"): {
+        "prompt_cache_key": True,
+    },
+}
+
+
 def _infer_provider_from_url(base_url: str) -> Optional[str]:
     """Infer the models.dev provider name from a base URL.
 
@@ -204,6 +235,87 @@ def _infer_provider_from_url(base_url: str) -> Optional[str]:
 
 def _is_known_provider_base_url(base_url: str) -> bool:
     return _infer_provider_from_url(base_url) is not None
+
+
+def _normalize_request_provider(provider: str) -> str:
+    normalized = (provider or "").strip().lower()
+    if not normalized or normalized in _GENERIC_RUNTIME_PROVIDERS:
+        return ""
+    try:
+        from hermes_cli.auth import AuthError, resolve_provider
+
+        return resolve_provider(normalized)
+    except Exception as exc:
+        try:
+            if isinstance(exc, AuthError):
+                return normalized
+        except Exception:
+            pass
+        return normalized
+
+
+
+def _resolve_request_provider(provider: str, base_url: str) -> Optional[str]:
+    normalized = _normalize_request_provider(provider)
+    inferred = _infer_provider_from_url(base_url)
+    if normalized:
+        if normalized in {"openrouter"} and inferred and inferred != normalized:
+            return inferred
+        return normalized
+    return inferred
+
+
+
+def _render_request_session_routing(
+    capability: _OpenAIRequestSessionRoutingCapability,
+    session_id: str,
+) -> OpenAIRequestSessionRouting:
+    routing: OpenAIRequestSessionRouting = {}
+
+    extra_headers = capability.get("extra_headers") or {}
+    if extra_headers:
+        routing["extra_headers"] = {
+            key: value.format(session_id=session_id)
+            for key, value in extra_headers.items()
+        }
+
+    extra_body = capability.get("extra_body") or {}
+    if extra_body:
+        routing["extra_body"] = {
+            key: value.format(session_id=session_id)
+            if isinstance(value, str) else value
+            for key, value in extra_body.items()
+        }
+
+    if capability.get("prompt_cache_key"):
+        routing["prompt_cache_key"] = session_id
+
+    return routing
+
+
+
+def build_openai_request_session_routing(
+    *,
+    provider: str = "",
+    base_url: str = "",
+    api_mode: str = "",
+    session_id: Optional[str] = None,
+) -> OpenAIRequestSessionRouting:
+    """Return request-local session routing metadata for OpenAI-compatible APIs."""
+    if not session_id:
+        return {}
+
+    effective_provider = _resolve_request_provider(provider, base_url)
+    effective_api_mode = (api_mode or "").strip().lower()
+    if not effective_provider or effective_api_mode not in {"chat_completions", "codex_responses"}:
+        return {}
+
+    capability = _OPENAI_SESSION_ROUTING_CAPABILITIES.get((effective_provider, effective_api_mode))
+    if not capability:
+        return {}
+
+    return _render_request_session_routing(capability, session_id)
+
 
 
 def is_local_endpoint(base_url: str) -> bool:

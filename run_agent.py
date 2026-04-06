@@ -83,6 +83,7 @@ from agent.prompt_builder import (
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
+    build_openai_request_session_routing,
     fetch_model_metadata,
     estimate_tokens_rough, estimate_messages_tokens_rough, estimate_request_tokens_rough,
     get_next_probe_tier, parse_context_limit_from_error,
@@ -1192,7 +1193,9 @@ class AIAgent:
             api_key=getattr(self, "api_key", ""),
             config_context_length=_config_context_length,
             provider=self.provider,
+            session_id=session_id or "",
         )
+        self.context_compressor.session_id = self.session_id
         self.compression_enabled = compression_enabled
         self._subdirectory_hints = SubdirectoryHintTracker(
             working_dir=os.getenv("TERMINAL_CWD") or None,
@@ -5230,6 +5233,25 @@ class AIAgent:
         base = (getattr(self, "base_url", "") or "").lower()
         return "dashscope" in base or "aliyuncs" in base
 
+    def _apply_request_session_routing(self, api_kwargs: dict, *, api_mode: Optional[str] = None) -> dict:
+        """Attach request-local session routing metadata for OpenAI-compatible routes."""
+        routing = build_openai_request_session_routing(
+            provider=getattr(self, "provider", ""),
+            base_url=getattr(self, "base_url", ""),
+            api_mode=api_mode or getattr(self, "api_mode", ""),
+            session_id=getattr(self, "session_id", None),
+        )
+        extra_body = routing.get("extra_body") or {}
+        if extra_body:
+            api_kwargs.setdefault("extra_body", {}).update(extra_body)
+        extra_headers = routing.get("extra_headers") or {}
+        if extra_headers:
+            api_kwargs.setdefault("extra_headers", {}).update(extra_headers)
+        prompt_cache_key = routing.get("prompt_cache_key")
+        if prompt_cache_key:
+            api_kwargs["prompt_cache_key"] = prompt_cache_key
+        return api_kwargs
+
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
         if self.api_mode == "anthropic_messages":
@@ -5283,8 +5305,7 @@ class AIAgent:
                 "store": False,
             }
 
-            if not is_github_responses:
-                kwargs["prompt_cache_key"] = self.session_id
+            self._apply_request_session_routing(kwargs)
 
             if reasoning_enabled:
                 if is_github_responses:
@@ -5436,7 +5457,7 @@ class AIAgent:
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
-        return api_kwargs
+        return self._apply_request_session_routing(api_kwargs)
 
     def _supports_reasoning_extra_body(self) -> bool:
         """Return True when reasoning extra_body is safe to send for this route/model.
@@ -5742,6 +5763,7 @@ class AIAgent:
                     temperature=0.3,
                     max_tokens=5120,
                     timeout=30.0,
+                    session_id=self.session_id,
                 )
             except RuntimeError:
                 _aux_available = False
@@ -5773,6 +5795,7 @@ class AIAgent:
                     "temperature": 0.3,
                     **self._max_tokens_param(5120),
                 }
+                self._apply_request_session_routing(api_kwargs, api_mode="chat_completions")
                 response = self._ensure_primary_openai_client(reason="flush_memories").chat.completions.create(**api_kwargs, timeout=30.0)
 
             # Extract tool calls from the response, handling all API formats
@@ -5859,6 +5882,7 @@ class AIAgent:
                 self._session_db.end_session(self.session_id, "compression")
                 old_session_id = self.session_id
                 self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                self.context_compressor.session_id = self.session_id
                 # Update session_log_file to point to the new session's JSON file
                 self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
                 self._session_db.create_session(
@@ -6704,6 +6728,7 @@ class AIAgent:
                     _msg, _ = _nar(summary_response, strip_tool_prefix=self._is_anthropic_oauth)
                     final_response = (_msg.content or "").strip()
                 else:
+                    self._apply_request_session_routing(summary_kwargs, api_mode="chat_completions")
                     summary_response = self._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
 
                     if summary_response.choices and summary_response.choices[0].message.content:
@@ -6745,6 +6770,7 @@ class AIAgent:
                     if summary_extra_body:
                         summary_kwargs["extra_body"] = summary_extra_body
 
+                    self._apply_request_session_routing(summary_kwargs, api_mode="chat_completions")
                     summary_response = self._ensure_primary_openai_client(reason="iteration_limit_summary_retry").chat.completions.create(**summary_kwargs)
 
                     if summary_response.choices and summary_response.choices[0].message.content:

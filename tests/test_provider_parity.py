@@ -290,7 +290,7 @@ class TestBuildApiKwargsCustomEndpoint:
         extra = kwargs.get("extra_body", {})
         assert "reasoning" not in extra
 
-    def test_fireworks_tool_call_payload_strips_codex_only_fields(self, monkeypatch):
+    def test_fireworks_custom_route_sanitizes_payload_and_applies_session_routing(self, monkeypatch):
         agent = _make_agent(
             monkeypatch,
             "custom",
@@ -325,6 +325,7 @@ class TestBuildApiKwargsCustomEndpoint:
         assert kwargs["tools"][0]["function"]["name"] == "web_search"
         assert "input" not in kwargs
         assert kwargs.get("extra_body", {}) == {}
+        assert kwargs["extra_headers"]["x-session-affinity"] == agent.session_id
 
         assistant_msg = kwargs["messages"][1]
         tool_call = assistant_msg["tool_calls"][0]

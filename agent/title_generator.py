@@ -19,7 +19,12 @@ _TITLE_PROMPT = (
 )
 
 
-def generate_title(user_message: str, assistant_response: str, timeout: float = 30.0) -> Optional[str]:
+def generate_title(
+    user_message: str,
+    assistant_response: str,
+    timeout: float = 30.0,
+    session_id: str = "",
+) -> Optional[str]:
     """Generate a session title from the first exchange.
 
     Uses the auxiliary LLM client (cheapest/fastest available model).
@@ -41,6 +46,7 @@ def generate_title(user_message: str, assistant_response: str, timeout: float = 
             max_tokens=30,
             temperature=0.3,
             timeout=timeout,
+            session_id=session_id or None,
         )
         title = (response.choices[0].message.content or "").strip()
         # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
@@ -81,7 +87,7 @@ def auto_title_session(
     except Exception:
         return
 
-    title = generate_title(user_message, assistant_response)
+    title = generate_title(user_message, assistant_response, session_id=session_id)
     if not title:
         return
 

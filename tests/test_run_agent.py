@@ -872,6 +872,25 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["max_tokens"] == 4096
 
+    def test_chat_completions_session_routing_uses_session_id_for_fireworks(self, agent):
+        agent.base_url = "https://api.fireworks.ai/inference/v1"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_headers"]["x-session-affinity"] == agent.session_id
+
+    def test_chat_completions_session_routing_omits_fireworks_header_for_unknown_custom_route(self, agent):
+        agent.base_url = "http://localhost:1234/v1"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "x-session-affinity" not in kwargs.get("extra_headers", {})
+
+    def test_chat_completions_session_routing_uses_current_session_id(self, agent):
+        agent.base_url = "https://api.fireworks.ai/inference/v1"
+        agent.session_id = "continued-session-123"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_headers"]["x-session-affinity"] == "continued-session-123"
+
 
 class TestBuildAssistantMessage:
     def test_basic_message(self, agent):
