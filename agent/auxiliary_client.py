@@ -1318,6 +1318,25 @@ def resolve_vision_provider_client(
             ordered.remove(preferred)
             ordered.insert(0, preferred)
 
+        # ── Non-aggregator main provider: try first (mirrors _resolve_auto fix #5091) ──
+        # Users on Alibaba, DeepSeek, ZAI, Gemini, etc. don't have OpenRouter/Nous keys.
+        # Their main provider supports vision but isn't in _VISION_AUTO_PROVIDER_ORDER,
+        # so the loop below skips them silently. We try their main provider first.
+        main_provider = _read_main_provider()
+        main_model = _read_main_model()
+        if (main_provider
+                and main_model
+                and main_provider not in _AGGREGATOR_PROVIDERS
+                and main_provider not in _VISION_AUTO_PROVIDER_ORDER
+                and main_provider not in ("auto", "")):
+            sync_client, resolved_model = resolve_provider_client(main_provider, main_model)
+            if sync_client is not None:
+                logger.info(
+                    "Vision auto-detect: using main provider %s (%s)",
+                    main_provider, resolved_model or main_model,
+                )
+                return _finalize(main_provider, sync_client, resolved_model or main_model)
+
         for candidate in ordered:
             sync_client, default_model = _resolve_strict_vision_backend(candidate)
             if sync_client is not None:
