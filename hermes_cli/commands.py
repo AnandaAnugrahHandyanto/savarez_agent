@@ -357,21 +357,48 @@ def gateway_help_lines() -> list[str]:
 def telegram_bot_commands() -> list[tuple[str, str]]:
     """Return (command_name, description) pairs for Telegram setMyCommands.
 
-    Telegram command names cannot contain hyphens, so they are replaced with
-    underscores.  Aliases are skipped -- Telegram shows one menu entry per
-    canonical command.
+    Note: Core commands are expected to be unique after Telegram sanitization.
+    We still de-duplicate defensively to avoid Telegram `Bot_command_invalid`.
     """
     overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
+    used: set[str] = set()
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
-        tg_name = cmd.name.replace("-", "_")
+        tg_name = _sanitize_telegram_command_name(cmd.name)
+        if not tg_name:
+            continue
+        if tg_name in used:
+            continue
+        used.add(tg_name)
         result.append((tg_name, cmd.description))
     return result
 
 
 _TG_NAME_LIMIT = 32
+
+
+_TG_CMD_RE = re.compile(r"[^a-z0-9_]")
+
+
+def _sanitize_telegram_command_name(cmd_key: str) -> str:
+    """Sanitize a command name for Telegram setMyCommands.
+
+    Telegram command names must be 1-32 chars and contain only [a-z0-9_].
+    They must also start with a letter.
+
+    Returns "" if the name cannot be made valid.
+    """
+    name = str(cmd_key or "").lstrip("/").replace("-", "_").lower()
+    name = _TG_CMD_RE.sub("", name)
+    if not name:
+        return ""
+    if not re.match(r"^[a-z]", name):
+        name = "c_" + name
+    if len(name) > _TG_NAME_LIMIT:
+        name = name[:_TG_NAME_LIMIT]
+    return name
 
 
 def _clamp_telegram_names(
@@ -380,30 +407,30 @@ def _clamp_telegram_names(
 ) -> list[tuple[str, str]]:
     """Enforce Telegram's 32-char command name limit with collision avoidance.
 
-    Names exceeding 32 chars are truncated.  If truncation creates a duplicate
-    (against *reserved* names or earlier entries in the same batch), the name is
-    shortened to 31 chars and a digit ``0``-``9`` is appended to differentiate.
+    Names exceeding 32 chars are truncated. If truncation OR sanitization creates
+    a duplicate (against *reserved* names or earlier entries in the same batch),
+    the name is shortened to 31 chars and a digit ``0``-``9`` is appended.
     If all 10 digit slots are taken the entry is silently dropped.
     """
     used: set[str] = set(reserved)
     result: list[tuple[str, str]] = []
     for name, desc in entries:
         if len(name) > _TG_NAME_LIMIT:
-            candidate = name[:_TG_NAME_LIMIT]
-            if candidate in used:
-                prefix = name[:_TG_NAME_LIMIT - 1]
-                for digit in range(10):
-                    candidate = f"{prefix}{digit}"
-                    if candidate not in used:
-                        break
-                else:
-                    # All 10 digit slots exhausted — skip entry
-                    continue
-            name = candidate
-        if name in used:
-            continue
-        used.add(name)
-        result.append((name, desc))
+            name = name[:_TG_NAME_LIMIT]
+
+        candidate = name
+        if candidate in used:
+            prefix = candidate[:_TG_NAME_LIMIT - 1]
+            for digit in range(10):
+                cand2 = f"{prefix}{digit}"
+                if cand2 not in used:
+                    candidate = cand2
+                    break
+            else:
+                continue
+
+        used.add(candidate)
+        result.append((candidate, desc))
     return result
 
 
@@ -436,7 +463,9 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
         pm = get_plugin_manager()
         plugin_cmds = getattr(pm, "_plugin_commands", {})
         for cmd_name in sorted(plugin_cmds):
-            tg_name = cmd_name.replace("-", "_")
+            tg_name = _sanitize_telegram_command_name(cmd_name)
+            if not tg_name:
+                continue
             desc = "Plugin command"
             if len(desc) > 40:
                 desc = desc[:37] + "..."
@@ -479,7 +508,9 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
             skill_name = info.get("name", "")
             if skill_name in _platform_disabled:
                 continue
-            name = cmd_key.lstrip("/").replace("-", "_")
+            name = _sanitize_telegram_command_name(cmd_key)
+            if not name:
+                continue
             desc = info.get("description", "")
             # Keep descriptions short — setMyCommands has an undocumented
             # total payload limit.  40 chars fits 100 commands safely.
