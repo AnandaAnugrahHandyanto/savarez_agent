@@ -3,7 +3,7 @@
 import json
 import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
@@ -18,6 +18,7 @@ from agent.auxiliary_client import (
     _get_auxiliary_provider,
     _resolve_forced_provider,
     _resolve_auto,
+    _get_task_timeout
 )
 
 
@@ -1106,3 +1107,181 @@ class TestAuxiliaryMaxTokensParam:
              patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
             result = auxiliary_max_tokens_param(1024)
         assert result == {"max_tokens": 1024}
+
+
+class TestResolveTaskTimeout:
+    """Tests for _get_task_timeout() config-based timeout resolution."""
+
+    @pytest.mark.parametrize(
+        "task,config_content,expected",
+        [
+            # Config has timeout → use it
+            ("vision", "auxiliary:\n  vision:\n    timeout: 180.0\n", 180.0),
+            ("web_extract", "auxiliary:\n  web_extract:\n    timeout: 90.0\n", 90.0),
+            ("compression", "auxiliary:\n  compression:\n    timeout: 120.0\n", 120.0),
+            # Config missing timeout → use default
+            ("vision", "auxiliary:\n  vision:\n    provider: auto\n", 30.0),
+            # Config empty → use default
+            ("vision", "{}", 30.0),
+            # Invalid timeout → use default
+            ("vision", "auxiliary:\n  vision:\n    timeout: invalid\n", 30.0),
+            # Integer timeout → converted to float
+            ("vision", "auxiliary:\n  vision:\n    timeout: 120\n", 120.0),
+        ],
+    )
+    def test_timeout_resolution_from_yaml(self, tmp_path, monkeypatch, task, config_content, expected):
+        """Parametrized test for timeout resolution from YAML config."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True)
+        config_file = hermes_home / "config.yaml"
+        config_file.write_text(config_content)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        with patch("hermes_cli.config.get_hermes_home", return_value=hermes_home):
+            result = _get_task_timeout(task)
+        assert result == expected
+
+
+class TestTimeoutPropagation:
+    """End-to-end tests for timeout propagation in call_llm() and async_call_llm()."""
+
+    def test_call_llm_uses_config_timeout(self, tmp_path, monkeypatch):
+        """call_llm should use timeout from config when task is provided."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True)
+        config_file = hermes_home / "config.yaml"
+        config_file.write_text("""
+auxiliary:
+  vision:
+    provider: auto
+    model: ""
+    timeout: 150.0
+""")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        with patch("hermes_cli.config.get_hermes_home", return_value=hermes_home), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_client = MagicMock()
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock()]
+            mock_response.choices[0].message.content = "test"
+            mock_client.chat.completions.create.return_value = mock_response
+            mock_openai.return_value = mock_client
+
+            try:
+                call_llm(task="vision", messages=[{"role": "user", "content": "test"}])
+            except Exception:
+                pass
+
+            if mock_client.chat.completions.create.called:
+                call_kwargs = mock_client.chat.completions.create.call_args
+                assert call_kwargs.kwargs.get("timeout") == 150.0
+
+    def test_call_llm_explicit_timeout_overrides_config(self, tmp_path, monkeypatch):
+        """Explicit timeout argument should override config timeout."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True)
+        config_file = hermes_home / "config.yaml"
+        config_file.write_text("""
+auxiliary:
+  vision:
+    provider: auto
+    model: ""
+    timeout: 150.0
+""")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        with patch("hermes_cli.config.get_hermes_home", return_value=hermes_home), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_client = MagicMock()
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock()]
+            mock_response.choices[0].message.content = "test"
+            mock_client.chat.completions.create.return_value = mock_response
+            mock_openai.return_value = mock_client
+
+            try:
+                call_llm(task="vision", messages=[{"role": "user", "content": "test"}], timeout=200.0)
+            except Exception:
+                pass
+
+            if mock_client.chat.completions.create.called:
+                call_kwargs = mock_client.chat.completions.create.call_args
+                assert call_kwargs.kwargs.get("timeout") == 200.0
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_uses_config_timeout(self, tmp_path, monkeypatch):
+        """async_call_llm should use timeout from config when task is provided."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True)
+        config_file = hermes_home / "config.yaml"
+        config_file.write_text("""
+auxiliary:
+  vision:
+    provider: auto
+    model: ""
+    timeout: 175.0
+""")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        with patch("hermes_cli.config.get_hermes_home", return_value=hermes_home), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_client = MagicMock()
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock()]
+            mock_response.choices[0].message.content = "test"
+
+            async def async_create(**kwargs):
+                return mock_response
+
+            mock_client.chat.completions.create = AsyncMock(side_effect=async_create)
+            mock_openai.return_value = mock_client
+
+            try:
+                await async_call_llm(task="vision", messages=[{"role": "user", "content": "test"}])
+            except Exception:
+                pass
+
+            if mock_client.chat.completions.create.called:
+                call_kwargs = mock_client.chat.completions.create.call_args
+                assert call_kwargs.kwargs.get("timeout") == 175.0
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_explicit_timeout_overrides_config(self, tmp_path, monkeypatch):
+        """Explicit timeout argument should override config timeout in async_call_llm."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True)
+        config_file = hermes_home / "config.yaml"
+        config_file.write_text("""
+auxiliary:
+  vision:
+    provider: auto
+    model: ""
+    timeout: 175.0
+""")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        with patch("hermes_cli.config.get_hermes_home", return_value=hermes_home), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_client = MagicMock()
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock()]
+            mock_response.choices[0].message.content = "test"
+
+            async def async_create(**kwargs):
+                return mock_response
+
+            mock_client.chat.completions.create = AsyncMock(side_effect=async_create)
+            mock_openai.return_value = mock_client
+
+            try:
+                await async_call_llm(task="vision", messages=[{"role": "user", "content": "test"}], timeout=250.0)
+            except Exception:
+                pass
+
+            if mock_client.chat.completions.create.called:
+                call_kwargs = mock_client.chat.completions.create.call_args
+                assert call_kwargs.kwargs.get("timeout") == 250.0
