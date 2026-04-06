@@ -335,3 +335,103 @@ class TestBuildOAuthAuthNonInteractive:
 
         assert auth is not None
         assert "no cached tokens found" not in caplog.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Tests for fixes: AnyUrl serialization, port reuse, expired token refresh
+# ---------------------------------------------------------------------------
+
+class TestAnyUrlSerialization:
+    """model_dump(mode='json') handles Pydantic AnyUrl objects."""
+
+    def test_set_tokens_with_anyurl(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("test-anyurl")
+        import asyncio
+
+        mock_token = MagicMock()
+        mock_token.model_dump.return_value = {
+            "access_token": "abc",
+            "token_type": "Bearer",
+        }
+        # Verify mode="json" is passed
+        asyncio.run(storage.set_tokens(mock_token))
+        mock_token.model_dump.assert_called_with(mode="json", exclude_none=True)
+
+    def test_set_client_info_with_anyurl(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("test-anyurl")
+        import asyncio
+
+        mock_client = MagicMock()
+        mock_client.model_dump.return_value = {"client_id": "test"}
+        asyncio.run(storage.set_client_info(mock_client))
+        mock_client.model_dump.assert_called_with(mode="json", exclude_none=True)
+
+
+class TestExpiredTokenRefresh:
+    """get_tokens() clears expired access_token to trigger refresh flow."""
+
+    def test_expired_token_cleared(self, tmp_path, monkeypatch):
+        """When access token is expired, get_tokens() clears it but keeps refresh_token."""
+        try:
+            from mcp.shared.auth import OAuthToken
+        except ImportError:
+            pytest.skip("MCP SDK auth not available")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("test-expired")
+
+        # Write token file with expires_in=1
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True)
+        token_path = d / "test-expired.json"
+        token_path.write_text(json.dumps({
+            "access_token": "old-expired-token",
+            "token_type": "Bearer",
+            "refresh_token": "valid-refresh",
+            "expires_in": 1,
+        }))
+
+        # Set mtime to 2 hours ago so token is expired
+        import time
+        old_mtime = time.time() - 7200
+        os.utime(token_path, (old_mtime, old_mtime))
+
+        import asyncio
+        token = asyncio.run(storage.get_tokens())
+
+        assert token is not None
+        assert token.access_token == ""  # cleared
+        assert token.refresh_token == "valid-refresh"  # kept
+
+    def test_fresh_token_not_cleared(self, tmp_path, monkeypatch):
+        """When access token is still valid, get_tokens() returns it as-is."""
+        try:
+            from mcp.shared.auth import OAuthToken
+        except ImportError:
+            pytest.skip("MCP SDK auth not available")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("test-fresh")
+
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True)
+        token_path = d / "test-fresh.json"
+        token_path.write_text(json.dumps({
+            "access_token": "valid-token",
+            "token_type": "Bearer",
+            "refresh_token": "valid-refresh",
+            "expires_in": 3600,
+        }))
+        # mtime is now, so token is fresh
+
+        import asyncio
+        token = asyncio.run(storage.get_tokens())
+
+        assert token is not None
+        assert token.access_token == "valid-token"
+        assert token.refresh_token == "valid-refresh"
+
+
+

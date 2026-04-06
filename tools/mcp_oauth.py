@@ -81,12 +81,34 @@ class HermesTokenStorage:
             return None
         try:
             from mcp.shared.auth import OAuthToken
+
+            # Check if the access token has expired based on file mtime + expires_in.
+            # The SDK only tracks expiry for tokens obtained during the current session,
+            # not for tokens loaded from storage.  Without this check, the SDK sends
+            # an expired access token, gets 401, and goes straight to full browser auth
+            # instead of trying the refresh token first.
+            expires_in = data.get("expires_in")
+            if expires_in and self._tokens_path().exists():
+                import time
+                file_mtime = self._tokens_path().stat().st_mtime
+                if time.time() > file_mtime + expires_in:
+                    # Access token expired — clear it so the SDK knows to refresh.
+                    # Keep refresh_token so can_refresh_token() returns True.
+                    data["access_token"] = ""
+                    logger.debug(
+                        "Cached access token for '%s' has expired (age %.0fs > %ds), "
+                        "will use refresh token",
+                        self._server_name,
+                        time.time() - file_mtime,
+                        expires_in,
+                    )
+
             return OAuthToken(**data)
         except Exception:
             return None
 
     async def set_tokens(self, tokens) -> None:
-        self._write_json(self._tokens_path(), tokens.model_dump(exclude_none=True))
+        self._write_json(self._tokens_path(), tokens.model_dump(mode="json", exclude_none=True))
 
     async def get_client_info(self):
         data = self._read_json(self._client_path())
@@ -99,7 +121,7 @@ class HermesTokenStorage:
             return None
 
     async def set_client_info(self, client_info) -> None:
-        self._write_json(self._client_path(), client_info.model_dump(exclude_none=True))
+        self._write_json(self._client_path(), client_info.model_dump(mode="json", exclude_none=True))
 
     # -- helpers --
 
