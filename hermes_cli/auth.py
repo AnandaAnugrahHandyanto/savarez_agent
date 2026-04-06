@@ -654,6 +654,30 @@ def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Pa
         return _save_auth_store(auth_store)
 
 
+def read_credential_pool_runtime(provider_id: Optional[str] = None) -> Dict[str, Any]:
+    """Return persisted credential pool runtime state, or one provider slice."""
+    auth_store = _load_auth_store()
+    runtime = auth_store.get("credential_pool_runtime")
+    if not isinstance(runtime, dict):
+        runtime = {}
+    if provider_id is None:
+        return dict(runtime)
+    provider_runtime = runtime.get(provider_id)
+    return dict(provider_runtime) if isinstance(provider_runtime, dict) else {}
+
+
+def write_credential_pool_runtime(provider_id: str, runtime_entries: Dict[str, Dict[str, Any]]) -> Path:
+    """Persist runtime state for one provider's credential pool."""
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        runtime = auth_store.get("credential_pool_runtime")
+        if not isinstance(runtime, dict):
+            runtime = {}
+            auth_store["credential_pool_runtime"] = runtime
+        runtime[provider_id] = dict(runtime_entries)
+        return _save_auth_store(auth_store)
+
+
 def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
     """Return persisted auth state for a provider, or None."""
     auth_store = _load_auth_store()
@@ -687,6 +711,10 @@ def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
         if not isinstance(pool, dict):
             pool = {}
             auth_store["credential_pool"] = pool
+        runtime = auth_store.get("credential_pool_runtime")
+        if not isinstance(runtime, dict):
+            runtime = {}
+            auth_store["credential_pool_runtime"] = runtime
 
         cleared = False
         if target in providers:
@@ -694,6 +722,9 @@ def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
             cleared = True
         if target in pool:
             del pool[target]
+            cleared = True
+        if target in runtime:
+            del runtime[target]
             cleared = True
 
         if not cleared:

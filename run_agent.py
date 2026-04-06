@@ -2307,7 +2307,7 @@ class AIAgent:
 
     @staticmethod
     def _extract_api_error_context(error: Exception) -> Dict[str, Any]:
-        """Extract structured rate-limit details from provider errors."""
+        """Extract structured cooldown metadata from provider errors."""
         context: Dict[str, Any] = {}
 
         body = getattr(error, "body", None)
@@ -2354,16 +2354,18 @@ class AIAgent:
         if "reset_at" not in context:
             message = context.get("message") or ""
             if isinstance(message, str):
-                delay_match = re.search(r"quotaResetDelay[:\s\"]+(\\d+(?:\\.\\d+)?)(ms|s)", message, re.IGNORECASE)
+                import re as _re
+
+                delay_match = _re.search(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", message, _re.IGNORECASE)
                 if delay_match:
                     value = float(delay_match.group(1))
                     seconds = value / 1000.0 if delay_match.group(2).lower() == "ms" else value
                     context["reset_at"] = time.time() + seconds
                 else:
-                    sec_match = re.search(
+                    sec_match = _re.search(
                         r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)",
                         message,
-                        re.IGNORECASE,
+                        _re.IGNORECASE,
                     )
                     if sec_match:
                         context["reset_at"] = time.time() + float(sec_match.group(1))
@@ -5634,18 +5636,15 @@ class AIAgent:
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:
         """Strip Codex Responses API fields from tool_calls for strict providers.
 
-        Providers like Mistral, Fireworks, and other strict OpenAI-compatible APIs
-        validate the Chat Completions schema and reject unknown fields (call_id,
-        response_item_id) with 400 or 422 errors. These fields are preserved in
-        the internal message history — this method only modifies the outgoing
-        API copy.
+        Providers like Mistral strictly validate the Chat Completions schema
+        and reject unknown fields (call_id, response_item_id) with 422.
+        These fields are preserved in the internal message history — this
+        method only modifies the outgoing API copy.
 
         Creates new tool_call dicts rather than mutating in-place, so the
         original messages list retains call_id/response_item_id for Codex
         Responses API compatibility (e.g. if the session falls back to a
         Codex provider later).
-
-        Fields stripped: call_id, response_item_id
         """
         tool_calls = api_msg.get("tool_calls")
         if not isinstance(tool_calls, list):
@@ -5657,19 +5656,6 @@ class AIAgent:
             for tc in tool_calls
         ]
         return api_msg
-
-    def _should_sanitize_tool_calls(self) -> bool:
-        """Determine if tool_calls need sanitization for strict APIs.
-
-        Codex Responses API uses fields like call_id and response_item_id
-        that are not part of the standard Chat Completions schema. These
-        fields must be stripped when calling any other API to avoid
-        validation errors (400 Bad Request).
-
-        Returns:
-            bool: True if sanitization is needed (non-Codex API), False otherwise.
-        """
-        return self.api_mode != "codex_responses"
 
     def flush_memories(self, messages: list = None, min_turns: int = None):
         """Give the model one turn to persist memories before context is lost.
@@ -5709,7 +5695,7 @@ class AIAgent:
 
         try:
             # Build API messages for the flush call
-            _needs_sanitize = self._should_sanitize_tool_calls()
+            _is_strict_api = "api.mistral.ai" in self._base_url_lower
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
@@ -5720,7 +5706,7 @@ class AIAgent:
                 api_msg.pop("reasoning", None)
                 api_msg.pop("finish_reason", None)
                 api_msg.pop("_flush_sentinel", None)
-                if _needs_sanitize:
+                if _is_strict_api:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
 
@@ -6639,13 +6625,13 @@ class AIAgent:
         try:
             # Build API messages, stripping internal-only fields
             # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
-            _needs_sanitize = self._should_sanitize_tool_calls()
+            _is_strict_api = "api.mistral.ai" in self._base_url_lower
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
                 for internal_field in ("reasoning", "finish_reason"):
                     api_msg.pop(internal_field, None)
-                if _needs_sanitize:
+                if _is_strict_api:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
 
@@ -7181,10 +7167,10 @@ class AIAgent:
                 if "finish_reason" in api_msg:
                     api_msg.pop("finish_reason")
                 # Strip Codex Responses API fields (call_id, response_item_id) for
-                # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
+                # strict providers like Mistral that reject unknown fields with 422.
                 # Uses new dicts so the internal messages list retains the fields
                 # for Codex Responses compatibility.
-                if self._should_sanitize_tool_calls():
+                if "api.mistral.ai" in self._base_url_lower:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
                 # The signature field helps maintain reasoning continuity

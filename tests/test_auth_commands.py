@@ -236,6 +236,174 @@ def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
     assert entries[0]["priority"] == 0
 
 
+def test_auth_reset_clears_provider_statuses(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-ant-api-primary",
+                        "last_status": "exhausted",
+                        "last_status_at": 1711230000.0,
+                        "last_error_code": 402,
+                    }
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_reset_command
+
+    class _Args:
+        provider = "anthropic"
+
+    auth_reset_command(_Args())
+
+    out = capsys.readouterr().out
+    assert "Reset status" in out
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entry = payload["credential_pool"]["anthropic"][0]
+    assert entry.get("last_status") is None
+    assert entry.get("last_status_at") is None
+    assert entry.get("last_error_code") is None
+    runtime = payload["credential_pool_runtime"]["anthropic"]
+    assert runtime == {}
+
+
+def test_clear_provider_auth_removes_provider_pool_entries(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "anthropic",
+            "providers": {
+                "anthropic": {"access_token": "legacy-token"},
+            },
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:hermes_pkce",
+                        "access_token": "pool-token",
+                    }
+                ],
+                "openrouter": [
+                    {
+                        "id": "cred-2",
+                        "label": "other-provider",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-or-test",
+                    }
+                ],
+            },
+            "credential_pool_runtime": {
+                "anthropic": {
+                    "cred-1": {
+                        "last_status": "exhausted",
+                        "last_status_at": 1711230000.0,
+                        "last_error_code": 429,
+                    }
+                }
+            },
+        },
+    )
+
+    from hermes_cli.auth import clear_provider_auth
+
+    assert clear_provider_auth("anthropic") is True
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert payload["active_provider"] is None
+    assert "anthropic" not in payload.get("providers", {})
+    assert "anthropic" not in payload.get("credential_pool", {})
+    assert "anthropic" not in payload.get("credential_pool_runtime", {})
+    assert "openrouter" in payload.get("credential_pool", {})
+
+
+def test_auth_list_does_not_call_mutating_select(monkeypatch, capsys):
+    from hermes_cli.auth_commands import auth_list_command
+
+    class _Entry:
+        id = "cred-1"
+        label = "primary"
+        auth_type="***"
+        source = "manual"
+        last_status = None
+        last_error_code = None
+        last_status_at = None
+
+    class _Pool:
+        def entries(self):
+            return [_Entry()]
+
+        def peek(self):
+            return _Entry()
+
+        def select(self):
+            raise AssertionError("auth_list_command should not call select()")
+
+    monkeypatch.setattr(
+        "hermes_cli.auth_commands.load_pool",
+        lambda provider: _Pool() if provider == "openrouter" else type("_EmptyPool", (), {"entries": lambda self: []})(),
+    )
+
+    class _Args:
+        provider = "openrouter"
+
+    auth_list_command(_Args())
+
+    out = capsys.readouterr().out
+    assert "openrouter (1 credentials):" in out
+    assert "primary" in out
+
+
+def test_auth_list_shows_exhausted_cooldown(monkeypatch, capsys):
+    from hermes_cli.auth_commands import auth_list_command
+
+    class _Entry:
+        id = "cred-1"
+        label = "primary"
+        auth_type = "api_key"
+        source = "manual"
+        last_status = "exhausted"
+        last_error_code = 429
+        last_status_at = 1000.0
+
+    class _Pool:
+        def entries(self):
+            return [_Entry()]
+
+        def peek(self):
+            return None
+
+    monkeypatch.setattr("hermes_cli.auth_commands.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr("hermes_cli.auth_commands.time.time", lambda: 1030.0)
+
+    class _Args:
+        provider = "openrouter"
+
+    auth_list_command(_Args())
+
+    out = capsys.readouterr().out
+    assert "exhausted (429)" in out
+    assert "59m 30s left" in out
+
+
 def test_auth_remove_accepts_label_target(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(
@@ -327,162 +495,6 @@ def test_auth_remove_prefers_exact_numeric_label_over_index(tmp_path, monkeypatc
     payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
     labels = [entry["label"] for entry in payload["credential_pool"]["openai-codex"]]
     assert labels == ["first", "third"]
-
-
-def test_auth_reset_clears_provider_statuses(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    _write_auth_store(
-        tmp_path,
-        {
-            "version": 1,
-            "credential_pool": {
-                "anthropic": [
-                    {
-                        "id": "cred-1",
-                        "label": "primary",
-                        "auth_type": "api_key",
-                        "priority": 0,
-                        "source": "manual",
-                        "access_token": "sk-ant-api-primary",
-                        "last_status": "exhausted",
-                        "last_status_at": 1711230000.0,
-                        "last_error_code": 402,
-                    }
-                ]
-            },
-        },
-    )
-
-    from hermes_cli.auth_commands import auth_reset_command
-
-    class _Args:
-        provider = "anthropic"
-
-    auth_reset_command(_Args())
-
-    out = capsys.readouterr().out
-    assert "Reset status" in out
-
-    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
-    entry = payload["credential_pool"]["anthropic"][0]
-    assert entry["last_status"] is None
-    assert entry["last_status_at"] is None
-    assert entry["last_error_code"] is None
-
-
-def test_clear_provider_auth_removes_provider_pool_entries(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    _write_auth_store(
-        tmp_path,
-        {
-            "version": 1,
-            "active_provider": "anthropic",
-            "providers": {
-                "anthropic": {"access_token": "legacy-token"},
-            },
-            "credential_pool": {
-                "anthropic": [
-                    {
-                        "id": "cred-1",
-                        "label": "primary",
-                        "auth_type": "oauth",
-                        "priority": 0,
-                        "source": "manual:hermes_pkce",
-                        "access_token": "pool-token",
-                    }
-                ],
-                "openrouter": [
-                    {
-                        "id": "cred-2",
-                        "label": "other-provider",
-                        "auth_type": "api_key",
-                        "priority": 0,
-                        "source": "manual",
-                        "access_token": "sk-or-test",
-                    }
-                ],
-            },
-        },
-    )
-
-    from hermes_cli.auth import clear_provider_auth
-
-    assert clear_provider_auth("anthropic") is True
-
-    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
-    assert payload["active_provider"] is None
-    assert "anthropic" not in payload.get("providers", {})
-    assert "anthropic" not in payload.get("credential_pool", {})
-    assert "openrouter" in payload.get("credential_pool", {})
-
-
-def test_auth_list_does_not_call_mutating_select(monkeypatch, capsys):
-    from hermes_cli.auth_commands import auth_list_command
-
-    class _Entry:
-        id = "cred-1"
-        label = "primary"
-        auth_type="***"
-        source = "manual"
-        last_status = None
-        last_error_code = None
-        last_status_at = None
-
-    class _Pool:
-        def entries(self):
-            return [_Entry()]
-
-        def peek(self):
-            return _Entry()
-
-        def select(self):
-            raise AssertionError("auth_list_command should not call select()")
-
-    monkeypatch.setattr(
-        "hermes_cli.auth_commands.load_pool",
-        lambda provider: _Pool() if provider == "openrouter" else type("_EmptyPool", (), {"entries": lambda self: []})(),
-    )
-
-    class _Args:
-        provider = "openrouter"
-
-    auth_list_command(_Args())
-
-    out = capsys.readouterr().out
-    assert "openrouter (1 credentials):" in out
-    assert "primary" in out
-
-
-def test_auth_list_shows_exhausted_cooldown(monkeypatch, capsys):
-    from hermes_cli.auth_commands import auth_list_command
-
-    class _Entry:
-        id = "cred-1"
-        label = "primary"
-        auth_type = "api_key"
-        source = "manual"
-        last_status = "exhausted"
-        last_error_code = 429
-        last_status_at = 1000.0
-
-    class _Pool:
-        def entries(self):
-            return [_Entry()]
-
-        def peek(self):
-            return None
-
-    monkeypatch.setattr("hermes_cli.auth_commands.load_pool", lambda provider: _Pool())
-    monkeypatch.setattr("hermes_cli.auth_commands.time.time", lambda: 1030.0)
-
-    class _Args:
-        provider = "openrouter"
-
-    auth_list_command(_Args())
-
-    out = capsys.readouterr().out
-    assert "exhausted (429)" in out
-    assert "59m 30s left" in out
 
 
 def test_auth_list_prefers_explicit_reset_time(monkeypatch, capsys):
