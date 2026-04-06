@@ -186,6 +186,7 @@ class IMessageAdapter(BasePlatformAdapter):
 
         # Per-chat watch tasks, keyed by chat rowid
         self._watch_tasks: Dict[int, asyncio.Task] = {}
+        self._stream_chats: set = set()  # chat_ids mid-stream (suppress stream consumer sends)
         self._running = False
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
@@ -231,6 +232,7 @@ class IMessageAdapter(BasePlatformAdapter):
         return True
 
     async def disconnect(self) -> None:
+        self._stream_chats: set = set()  # chat_ids mid-stream (suppress stream consumer sends)
         self._running = False
         for rowid, task in list(self._watch_tasks.items()):
             task.cancel()
@@ -244,53 +246,27 @@ class IMessageAdapter(BasePlatformAdapter):
     # ── Send ─────────────────────────────────────────────────────────────────
 
     async def send(self, chat_id, content, *, reply_to=None, metadata=None, **kwargs) -> SendResult:
-        # Detect intermediate streaming updates: GatewayStreamConsumer appends
-        # a cursor character while the agent is still generating.  iMessage has
-        # no edit-message API so we suppress partial fragments.
-        # Returning a fake message_id lets the stream consumer establish an
-        # "edit session" -- subsequent streaming deltas go via edit_message()
-        # which we also suppress, and the final cursor-free edit is the only
-        # real send that reaches AppleScript.
-        for cursor in _STREAMING_CURSORS:
-            if content.endswith(cursor):
-                return SendResult(success=True, message_id=f"imsg-stream-{chat_id}")
+        # iMessage does not support message editing, so streaming is disabled.
+        # We suppress ALL sends from the stream consumer (both intermediate
+        # cursor-bearing updates and the final cursor-free got_done send) and
+        # let the normal response path deliver one clean complete message.
+        #
+        # Strategy: track chats mid-stream via _stream_chats.
+        #   - Content ends with cursor  -> mark in-stream, suppress
+        #   - Content has no cursor but chat is in-stream -> final stream send,
+        #     suppress (clear state), normal path delivers the full response
+        #   - No cursor, not in-stream  -> genuine send, deliver normally
+        has_cursor = any(content.endswith(c) for c in _STREAMING_CURSORS)
 
-        # Strip leading newlines (streaming artifacts) and trailing cursor chars.
-        content = content.lstrip(chr(10))
-        for cursor in _STREAMING_CURSORS:
-            if content.endswith(cursor):
-                content = content[: -len(cursor)].rstrip()
-
-        if not content.strip():
+        if has_cursor:
+            self._stream_chats.add(chat_id)
             return SendResult(success=True)
 
-        chunks = self._split_message(content)
-        last_result = SendResult(success=False, error="no chunks")
-        for chunk in chunks:
-            last_result = await self._send_chunk(chat_id, chunk)
-            if not last_result.success:
-                break
-        return last_result
+        if chat_id in self._stream_chats:
+            self._stream_chats.discard(chat_id)
+            return SendResult(success=True)
 
-    async def edit_message(
-        self,
-        chat_id: str,
-        message_id: str,
-        content: str,
-        metadata=None,
-        **kwargs,
-    ) -> SendResult:
-        """Handle streaming edit calls from GatewayStreamConsumer.
-
-        Intermediate edits (content ends with cursor) are suppressed.
-        The final cursor-free edit is the one real send we deliver.
-        """
-        # Suppress all intermediate streaming edits (have cursor appended).
-        for cursor in _STREAMING_CURSORS:
-            if content.endswith(cursor):
-                return SendResult(success=True)
-
-        # Final edit: strip leading newlines and send the clean text.
+        # Normal (non-streaming) send — strip leading newlines and send.
         content = content.lstrip(chr(10)).rstrip()
         if not content:
             return SendResult(success=True)
@@ -302,38 +278,6 @@ class IMessageAdapter(BasePlatformAdapter):
             if not last_result.success:
                 break
         return last_result
-
-    async def _send_chunk(self, chat_id: str, text: str) -> SendResult:
-        if chat_id.isdigit():
-            identifier = self._chat_identifiers.get(int(chat_id))
-            if not identifier:
-                return SendResult(success=False, error="no identifier for chat")
-        else:
-            identifier = chat_id
-        escaped = text.replace("\\", "\\\\").replace('"', '\\"')
-        script = (
-            'tell application "Messages"\n'
-            '  set targetService to 1st service whose service type = iMessage\n'
-            f'  send "{escaped}" to buddy "{identifier}" of targetService\n'
-            'end tell'
-        )
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "/usr/bin/osascript", "-e", script,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                stdin=asyncio.subprocess.DEVNULL,
-                env=_SUBPROCESS_ENV,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
-            if proc.returncode == 0:
-                return SendResult(success=True)
-            err = (stderr or stdout or b"unknown").decode(errors="replace").strip()
-            return SendResult(success=False, error=err)
-        except asyncio.TimeoutError:
-            return SendResult(success=False, error="timeout")
-        except Exception as exc:
-            return SendResult(success=False, error=str(exc))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Start iMessage typing indicator via imsg."""
