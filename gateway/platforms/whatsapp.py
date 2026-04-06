@@ -559,6 +559,32 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._session_lock_identity = None
         print(f"[{self.name}] Disconnected")
     
+    # Waiki: patrones que nunca deben llegar a WhatsApp
+    _SUPPRESS_PATTERNS = [
+        r"(?i)silencio\s*absoluto",
+        r"(?i)cero\s*output",
+        r"(?i)alguien\s*(del\s*equipo\s*)?ya\s*(contest|respond)",
+        r"(?i)no\s*responder",
+        r"(?i)regla\s*cr[ií]tica",
+        r"(?i)\(empty\)",
+        r"📬\s*No home channel",
+        r"💾\s*Memory updated",
+        r"🔊\s*Audio:\s*/",
+        r"Type\s*/sethome\s+to\s+make",
+        r"(?i)skill.+created",
+        r"📚\s*skill_view",
+        r"🧠\s*memory:",
+    ]
+    _SUPPRESS_RE = None
+
+    @classmethod
+    def _get_suppress_re(cls):
+        if cls._SUPPRESS_RE is None:
+            cls._SUPPRESS_RE = re.compile(
+                "|".join(cls._SUPPRESS_PATTERNS)
+            )
+        return cls._SUPPRESS_RE
+
     async def send(
         self,
         chat_id: str,
@@ -567,6 +593,13 @@ class WhatsAppAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
         """Send a message via the WhatsApp bridge."""
+        # Waiki: suprimir mensajes internos
+        if content and self._get_suppress_re().search(content):
+            logger.debug(
+                "WA suppressed internal message: %s",
+                content[:80],
+            )
+            return SendResult(success=True, message_id="suppressed")
         if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
         bridge_exit = await self._check_managed_bridge_exit()
