@@ -36,6 +36,7 @@ import sys
 import tempfile
 import time
 import threading
+from email.utils import parsedate_to_datetime
 import weakref
 from types import SimpleNamespace
 import uuid
@@ -4117,12 +4118,106 @@ class AIAgent:
         self._apply_client_headers_for_base_url(self.base_url)
         self._replace_primary_openai_client(reason="credential_rotation")
 
+    def _extract_retry_after_seconds(self, api_error: Any) -> Optional[float]:
+        """Extract Retry-After/reset hints from an API error response if present."""
+        response = getattr(api_error, "response", None)
+        headers = getattr(response, "headers", None) if response is not None else None
+        if not headers:
+            headers = getattr(api_error, "headers", None)
+        if not headers:
+            return None
+
+        def _header(name: str) -> Optional[str]:
+            value = None
+            try:
+                value = headers.get(name)
+            except Exception:
+                value = None
+            if value is None:
+                try:
+                    value = headers.get(name.lower())
+                except Exception:
+                    value = None
+            if value is None:
+                try:
+                    value = headers[name]
+                except Exception:
+                    value = None
+            if value is None:
+                return None
+            text = str(value).strip()
+            return text or None
+
+        retry_after = _header("Retry-After")
+        if retry_after:
+            try:
+                return max(0.0, float(retry_after))
+            except ValueError:
+                try:
+                    retry_dt = parsedate_to_datetime(retry_after)
+                    return max(0.0, retry_dt.timestamp() - time.time())
+                except Exception:
+                    pass
+
+        for header_name in (
+            "x-ratelimit-reset",
+            "x-rate-limit-reset",
+            "ratelimit-reset",
+            "rate-limit-reset",
+        ):
+            raw_reset = _header(header_name)
+            if not raw_reset:
+                continue
+            try:
+                reset_value = float(raw_reset)
+            except ValueError:
+                continue
+            now = time.time()
+            if reset_value > now + 1:
+                return max(0.0, reset_value - now)
+            if reset_value > 0:
+                return reset_value
+        return None
+
+    def _classify_api_failure(self, api_error: Any, status_code: Optional[int]) -> str:
+        """Classify API failures into stable categories for pool/logging decisions."""
+        error_msg = str(api_error).lower() if api_error is not None else ""
+
+        if status_code == 429 or any(term in error_msg for term in ("rate limit", "too many requests", "rate_limit")):
+            return "transient_rate_limit"
+        if status_code == 402 or "quota" in error_msg or "usage limit" in error_msg:
+            return "quota_exhausted"
+        if status_code in (500, 502, 503, 504, 529) or any(term in error_msg for term in ("overloaded", "temporarily unavailable", "service unavailable", "bad gateway")):
+            return "transient_overload"
+        if status_code == 401:
+            return "auth_structural"
+        if status_code == 403:
+            return "provider_misconfigured"
+        if isinstance(api_error, TimeoutError) or any(term in error_msg for term in ("timed out", "timeout", "read timeout", "connect timeout")):
+            return "transient_network"
+        if any(term in error_msg for term in ("connection reset", "connection aborted", "connection refused", "network error", "temporary failure in name resolution")):
+            return "transient_network"
+        if status_code == 413:
+            return "payload_too_large"
+        return "unknown_error"
+
+    def _should_defer_fallback_to_credential_pool(self) -> bool:
+        """Return True when fallback providers should wait for pool recovery first.
+
+        We prefer exhausting healthy credentials within the current provider before
+        jumping to a fallback provider. This keeps the runtime on the same backend
+        when the issue is account-local rather than provider-wide.
+        """
+        pool = self._credential_pool
+        return bool(pool is not None and pool.has_available())
+
     def _recover_with_credential_pool(
         self,
         *,
         status_code: Optional[int],
         has_retried_429: bool,
         error_context: Optional[Dict[str, Any]] = None,
+        api_error: Any = None,
     ) -> tuple[bool, bool]:
         """Attempt credential recovery via pool rotation.
 
@@ -4136,8 +4231,16 @@ class AIAgent:
         if pool is None or status_code is None:
             return False, has_retried_429
 
+        retry_after_seconds = self._extract_retry_after_seconds(api_error)
+        error_category = self._classify_api_failure(api_error, status_code)
+
         if status_code == 402:
-            next_entry = pool.mark_exhausted_and_rotate(status_code=402, error_context=error_context)
+            next_entry = pool.mark_exhausted_and_rotate(
+                status_code=402,
+                error_context=error_context,
+                retry_after_seconds=retry_after_seconds,
+                error_category=error_category,
+            )
             if next_entry is not None:
                 logger.info(f"Credential 402 (billing) — rotated to pool entry {getattr(next_entry, 'id', '?')}")
                 self._swap_credential(next_entry)
@@ -4147,7 +4250,12 @@ class AIAgent:
         if status_code == 429:
             if not has_retried_429:
                 return False, True
-            next_entry = pool.mark_exhausted_and_rotate(status_code=429, error_context=error_context)
+            next_entry = pool.mark_exhausted_and_rotate(
+                status_code=429,
+                error_context=error_context,
+                retry_after_seconds=retry_after_seconds,
+                error_category=error_category,
+            )
             if next_entry is not None:
                 logger.info(f"Credential 429 (rate limit) — rotated to pool entry {getattr(next_entry, 'id', '?')}")
                 self._swap_credential(next_entry)
@@ -4161,8 +4269,12 @@ class AIAgent:
                 self._swap_credential(refreshed)
                 return True, has_retried_429
             # Refresh failed — rotate to next credential instead of giving up.
-            # The failed entry is already marked exhausted by try_refresh_current().
-            next_entry = pool.mark_exhausted_and_rotate(status_code=401, error_context=error_context)
+            next_entry = pool.mark_exhausted_and_rotate(
+                status_code=401,
+                error_context=error_context,
+                retry_after_seconds=retry_after_seconds,
+                error_category=error_category,
+            )
             if next_entry is not None:
                 logger.info(f"Credential 401 (refresh failed) — rotated to pool entry {getattr(next_entry, 'id', '?')}")
                 self._swap_credential(next_entry)
@@ -7851,9 +7963,7 @@ class AIAgent:
                         # still recover.  The pool's retry-then-rotate cycle needs
                         # at least one more attempt to fire — jumping to a fallback
                         # provider here short-circuits it.
-                        pool = self._credential_pool
-                        pool_may_recover = pool is not None and pool.has_available()
-                        if not pool_may_recover:
+                        if not self._should_defer_fallback_to_credential_pool():
                             self._emit_status("⚠️ Rate limited — switching to fallback provider...")
                             if self._try_activate_fallback():
                                 retry_count = 0
