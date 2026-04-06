@@ -184,7 +184,7 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 ### How it works
 
-- **Read-only**: External dirs are only scanned for skill discovery. When the agent creates or edits a skill, it always writes to `~/.hermes/skills/`.
+- **Read-only (copy-on-write)**: External dirs are treated as read-only. When the agent creates a new skill, it always writes to `~/.hermes/skills/`. When the agent **edits an existing external skill** (via `skill_edit`, `skill_patch`, `skill_write_file`, or `skill_remove_file`), Hermes first copies the whole skill directory into the profile-local `~/.hermes/skills/` and then applies the change to the copy. The external source is never mutated by the agent — the edited skill becomes a profile-local override that shadows the shared version by name. Deleting an external skill is rejected with a message pointing to `skills.disabled` (to hide it from the current profile) or direct filesystem removal (to unshare it from all profiles).
 - **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
 - **Non-existent paths are silently skipped**: If a configured directory doesn't exist, Hermes ignores it without errors. Useful for optional shared directories that may not be present on every machine.
