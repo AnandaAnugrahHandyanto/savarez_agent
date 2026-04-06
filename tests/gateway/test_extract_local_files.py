@@ -278,10 +278,25 @@ class TestEdgeCases:
         paths, _ = _extract("File at /tmp/my file.png here")
         assert paths == []
 
-    def test_windows_path_not_matched(self):
-        """Windows-style paths should not match."""
-        paths, _ = _extract("See C:\\Users\\test\\image.png")
+    def test_windows_path_matched_when_file_exists(self):
+        """Windows drive-absolute media paths should be extracted."""
+        win_path = r"C:\Users\test\image.png"
+        paths, cleaned = _extract(
+            f"See {win_path}",
+            existing_files={win_path},
+        )
+        assert paths == [win_path]
+        assert win_path not in cleaned
+
+    def test_windows_path_skipped_when_missing(self):
+        """Non-existent Windows paths should still be ignored."""
+        win_path = r"C:\Users\test\image.png"
+        paths, cleaned = _extract(
+            f"See {win_path}",
+            existing_files=set(),
+        )
         assert paths == []
+        assert win_path in cleaned
 
     def test_relative_path_not_matched(self):
         """Relative paths like ./image.png should not match."""
