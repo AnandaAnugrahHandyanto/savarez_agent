@@ -282,7 +282,37 @@ class IMessageAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        pass  # iMessage doesn't expose typing indicators via imsg
+        """Start iMessage typing indicator via imsg."""
+        imsg = _find_imsg()
+        if not imsg:
+            return
+        try:
+            await asyncio.create_subprocess_exec(
+                imsg, "typing", "--chat-id", str(chat_id), "--duration", "45s",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.DEVNULL,
+                env=_SUBPROCESS_ENV,
+            )
+        except Exception:
+            pass
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Stop iMessage typing indicator."""
+        imsg = _find_imsg()
+        if not imsg:
+            return
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                imsg, "typing", "--chat-id", str(chat_id), "--stop", "true",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.DEVNULL,
+                env=_SUBPROCESS_ENV,
+            )
+            await asyncio.wait_for(proc.communicate(), timeout=5)
+        except Exception:
+            pass
 
     async def get_chat_info(self, chat_id: str) -> dict:
         identifier = self._chat_identifiers.get(int(chat_id) if chat_id.isdigit() else -1, chat_id)
@@ -291,26 +321,16 @@ class IMessageAdapter(BasePlatformAdapter):
     # ── Processing lifecycle hooks ────────────────────────────────────────────
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Mark the conversation as read in Messages.app when processing begins."""
+        """Start typing indicator when processing begins."""
         chat_id = event.source.chat_id if event.source else None
-        if not chat_id:
-            return
-        identifier = self._chat_identifiers.get(
-            int(chat_id) if str(chat_id).isdigit() else -1
-        )
-        if not identifier:
-            return
-        # AppleScript to mark all messages in the chat as read.
-        escaped_id = identifier.replace("\\", "\\\\").replace('"', '\\"')
-        script = (
-            f'tell application "Messages"\n'
-            f'  set targetChat to first chat whose id is "{escaped_id}"\n'
-            f'  mark targetChat as read\n'
-            f'end tell'
-        )
-        asyncio.create_task(self._run_applescript(script))
+        if chat_id:
+            await self.send_typing(chat_id)
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    async def on_processing_complete(self, event: MessageEvent, success: bool) -> None:
+        """Stop typing indicator when processing finishes."""
+        chat_id = event.source.chat_id if event.source else None
+        if chat_id:
+            await self.stop_typing(chat_id)
 
     async def _run_applescript(self, script: str) -> None:
         """Fire-and-forget AppleScript execution."""
