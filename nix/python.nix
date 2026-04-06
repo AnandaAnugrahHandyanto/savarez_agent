@@ -23,77 +23,44 @@ let
     dependency-groups = { };
   };
 
+  mkPrebuiltOverride = final: from: dependencies:
+    hacks.nixpkgsPrebuilt {
+      inherit from;
+      prev = {
+        nativeBuildInputs = [ final.pyprojectHook ];
+        passthru = mkPrebuiltPassthru dependencies;
+      };
+    };
+
   pythonPackageOverrides = final: _prev: {
-    numpy = hacks.nixpkgsPrebuilt {
-      from = python311.pkgs.numpy;
-      prev = {
-        nativeBuildInputs = [ final.pyprojectHook ];
-        passthru = mkPrebuiltPassthru { };
-      };
+    numpy = mkPrebuiltOverride final python311.pkgs.numpy { };
+
+    av = mkPrebuiltOverride final python311.pkgs.av { };
+
+    humanfriendly = mkPrebuiltOverride final python311.pkgs.humanfriendly { };
+
+    coloredlogs = mkPrebuiltOverride final python311.pkgs.coloredlogs {
+      humanfriendly = [ ];
     };
 
-    av = hacks.nixpkgsPrebuilt {
-      from = python311.pkgs.av;
-      prev = {
-        nativeBuildInputs = [ final.pyprojectHook ];
-        passthru = mkPrebuiltPassthru { };
-      };
+    onnxruntime = mkPrebuiltOverride final python311.pkgs.onnxruntime {
+      coloredlogs = [ ];
+      numpy = [ ];
+      packaging = [ ];
     };
 
-    humanfriendly = hacks.nixpkgsPrebuilt {
-      from = python311.pkgs.humanfriendly;
-      prev = {
-        nativeBuildInputs = [ final.pyprojectHook ];
-        passthru = mkPrebuiltPassthru { };
-      };
+    ctranslate2 = mkPrebuiltOverride final python311.pkgs.ctranslate2 {
+      numpy = [ ];
+      pyyaml = [ ];
     };
 
-    coloredlogs = hacks.nixpkgsPrebuilt {
-      from = python311.pkgs.coloredlogs;
-      prev = {
-        nativeBuildInputs = [ final.pyprojectHook ];
-        passthru = mkPrebuiltPassthru {
-          humanfriendly = [ ];
-        };
-      };
-    };
-
-    onnxruntime = hacks.nixpkgsPrebuilt {
-      from = python311.pkgs.onnxruntime;
-      prev = {
-        nativeBuildInputs = [ final.pyprojectHook ];
-        passthru = mkPrebuiltPassthru {
-          coloredlogs = [ ];
-          numpy = [ ];
-          packaging = [ ];
-        };
-      };
-    };
-
-    ctranslate2 = hacks.nixpkgsPrebuilt {
-      from = python311.pkgs.ctranslate2;
-      prev = {
-        nativeBuildInputs = [ final.pyprojectHook ];
-        passthru = mkPrebuiltPassthru {
-          numpy = [ ];
-          pyyaml = [ ];
-        };
-      };
-    };
-
-    faster-whisper = hacks.nixpkgsPrebuilt {
-      from = python311.pkgs.faster-whisper;
-      prev = {
-        nativeBuildInputs = [ final.pyprojectHook ];
-        passthru = mkPrebuiltPassthru {
-          av = [ ];
-          ctranslate2 = [ ];
-          huggingface-hub = [ ];
-          onnxruntime = [ ];
-          tokenizers = [ ];
-          tqdm = [ ];
-        };
-      };
+    faster-whisper = mkPrebuiltOverride final python311.pkgs.faster-whisper {
+      av = [ ];
+      ctranslate2 = [ ];
+      huggingface-hub = [ ];
+      onnxruntime = [ ];
+      tokenizers = [ ];
+      tqdm = [ ];
     };
   };
 
