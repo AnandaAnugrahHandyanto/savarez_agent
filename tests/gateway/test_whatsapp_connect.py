@@ -38,6 +38,68 @@ class _AsyncCM:
         return False
 
 
+class _MockResponse:
+    """Simple aiohttp-like response for WhatsApp bridge tests."""
+
+    def __init__(self, *, status=200, json_data=None, json_side_effect=None, text_data=""):
+        self.status = status
+        self._json_data = json_data or {}
+        self._json_side_effect = json_side_effect
+        self._text_data = text_data
+
+    async def json(self):
+        if self._json_side_effect:
+            raise self._json_side_effect
+        return self._json_data
+
+    async def text(self):
+        return self._text_data
+
+
+class _MockClientSession:
+    """aiohttp.ClientSession stand-in that records headers and requests."""
+
+    def __init__(self, response_queue, *, headers=None):
+        self._response_queue = response_queue
+        self.headers = headers or {}
+        self.get_calls = []
+        self.post_calls = []
+        self.closed = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        self.closed = True
+        return False
+
+    def get(self, url, **kwargs):
+        self.get_calls.append({"url": url, **kwargs})
+        response = self._response_queue.pop(0)
+        return _AsyncCM(response)
+
+    def post(self, url, **kwargs):
+        self.post_calls.append({"url": url, **kwargs})
+        response = self._response_queue.pop(0)
+        return _AsyncCM(response)
+
+    async def close(self):
+        self.closed = True
+
+
+class _ClientSessionFactory:
+    """Factory that mimics aiohttp.ClientSession and captures constructed sessions."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.sessions = []
+
+    def __call__(self, *args, **kwargs):
+        session = _MockClientSession(self._responses, headers=kwargs.get("headers"))
+        self.sessions.append(session)
+        return session
+
+
 def _make_adapter():
     """Create a WhatsAppAdapter with test attributes (bypass __init__)."""
     from gateway.platforms.whatsapp import WhatsAppAdapter
@@ -45,6 +107,7 @@ def _make_adapter():
     adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
     adapter.platform = Platform.WHATSAPP
     adapter.config = MagicMock()
+    adapter.config.extra = {}
     adapter._bridge_port = 19876
     adapter._bridge_script = "/tmp/test-bridge.js"
     adapter._session_path = Path("/tmp/test-wa-session")
@@ -64,6 +127,8 @@ def _make_adapter():
     adapter._auto_tts_disabled_chats = set()
     adapter._message_queue = asyncio.Queue()
     adapter._http_session = None
+    adapter._session_lock_identity = None
+    adapter._bridge_token = None
     return adapter
 
 
@@ -143,6 +208,74 @@ class TestCloseBridgeLog:
         adapter._close_bridge_log()  # must not raise
 
         assert adapter._bridge_log_fh is None
+
+
+class TestBridgeToken:
+    """Verify bridge-token persistence and authenticated bridge requests."""
+
+    def test_bridge_token_persists_in_session_directory(self, tmp_path):
+        adapter = _make_adapter()
+        adapter._session_path = tmp_path / "wa-session"
+
+        token1 = adapter._get_or_create_bridge_token()
+        token2 = adapter._get_or_create_bridge_token()
+
+        token_path = adapter._session_path / ".bridge_token"
+        assert token1
+        assert token1 == token2
+        assert token_path.read_text(encoding="utf-8").strip() == token1
+
+        adapter2 = _make_adapter()
+        adapter2._session_path = adapter._session_path
+        assert adapter2._get_or_create_bridge_token() == token1
+
+    @pytest.mark.asyncio
+    async def test_connect_passes_bridge_token_to_bridge_process_and_http_sessions(self):
+        adapter = _make_adapter()
+        token = "bridge-secret-token"
+        adapter._get_or_create_bridge_token = MagicMock(return_value=token)
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+
+        mock_fh = MagicMock()
+        client_factory = _ClientSessionFactory([
+            _MockResponse(status=503),  # Existing bridge probe
+            _MockResponse(status=200, json_data={"status": "connected"}),  # Phase 1 ready
+        ])
+        patches = _connect_patches(mock_proc, mock_fh)
+
+        with patches[0], patches[1], patches[2], patches[3], \
+             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patches[5], patches[6], patches[7], \
+             patch("aiohttp.ClientSession", client_factory), \
+             patch.object(type(adapter), "_poll_messages", return_value=MagicMock()):
+            result = await adapter.connect()
+
+        assert result is True
+        assert mock_popen.call_args.kwargs["env"]["WHATSAPP_BRIDGE_TOKEN"] == token
+        assert any(session.headers.get("X-Hermes-Bridge-Token") == token for session in client_factory.sessions)
+        assert adapter._http_session.headers["X-Hermes-Bridge-Token"] == token
+
+    @pytest.mark.asyncio
+    async def test_connect_fails_closed_on_bridge_auth_mismatch(self):
+        adapter = _make_adapter()
+        adapter._get_or_create_bridge_token = MagicMock(return_value="bridge-secret-token")
+
+        client_factory = _ClientSessionFactory([
+            _MockResponse(status=401, text_data="Unauthorized"),
+        ])
+
+        with patch("gateway.platforms.whatsapp.check_whatsapp_requirements", return_value=True), \
+             patch.object(Path, "exists", return_value=True), \
+             patch.object(Path, "mkdir", return_value=None), \
+             patch("aiohttp.ClientSession", client_factory), \
+             patch("gateway.platforms.whatsapp._kill_port_process") as mock_kill:
+            result = await adapter.connect()
+
+        assert result is False
+        assert adapter.fatal_error_code == "whatsapp_bridge_auth"
+        mock_kill.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

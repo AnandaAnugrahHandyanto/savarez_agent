@@ -24,7 +24,7 @@ import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
-import { randomBytes } from 'crypto';
+import { randomBytes, timingSafeEqual } from 'crypto';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 
@@ -49,10 +49,31 @@ const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cac
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
+const BRIDGE_TOKEN_PATH = path.join(SESSION_DIR, '.bridge_token');
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
+
+function loadBridgeToken() {
+  const envToken = String(process.env.WHATSAPP_BRIDGE_TOKEN || '').trim();
+  if (envToken) return envToken;
+  try {
+    return String(readFileSync(BRIDGE_TOKEN_PATH, 'utf8') || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+const BRIDGE_TOKEN = loadBridgeToken();
+
+function hasValidBridgeToken(candidate) {
+  if (!BRIDGE_TOKEN || !candidate) return false;
+  const expected = Buffer.from(BRIDGE_TOKEN, 'utf8');
+  const actual = Buffer.from(String(candidate), 'utf8');
+  if (expected.length !== actual.length) return false;
+  return timingSafeEqual(expected, actual);
+}
 
 function formatOutgoingMessage(message) {
   // In bot mode, messages come from a different number so the prefix is
@@ -363,6 +384,16 @@ async function startSocket() {
 // HTTP server
 const app = express();
 app.use(express.json());
+app.use((req, res, next) => {
+  if (!BRIDGE_TOKEN) {
+    return res.status(503).json({ error: 'Bridge token is not configured' });
+  }
+  const candidate = req.get('X-Hermes-Bridge-Token') || '';
+  if (!hasValidBridgeToken(candidate)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  return next();
+});
 
 // Poll for new messages (long-poll style)
 app.get('/messages', (req, res) => {
@@ -556,6 +587,10 @@ if (PAIR_ONLY) {
   console.log();
   startSocket();
 } else {
+  if (!BRIDGE_TOKEN) {
+    console.error('Missing WhatsApp bridge token. Start the bridge via Hermes or configure WHATSAPP_BRIDGE_TOKEN.');
+    process.exit(1);
+  }
   app.listen(PORT, '127.0.0.1', () => {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
