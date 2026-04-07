@@ -2386,12 +2386,38 @@ class AIAgent:
         summary["total_tokens"] = cu.total_tokens
         return summary
 
+    def _append_copilot_429_index(
+        self,
+        *,
+        dump_file: Path,
+        request_meta: Dict[str, Any],
+        error_info: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        try:
+            index_file = self.logs_dir / "copilot_429_index.jsonl"
+            payload = {
+                "timestamp": datetime.now().isoformat(),
+                "session_id": self.session_id,
+                "bundle_path": str(dump_file),
+                **dict(request_meta or {}),
+            }
+            gateway_ctx = getattr(self, "_gateway_debug_context", None)
+            if isinstance(gateway_ctx, dict) and gateway_ctx:
+                payload["gateway"] = gateway_ctx
+            if error_info is not None:
+                payload["error"] = error_info
+            with index_file.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+        except Exception as exc:
+            logger.debug("Failed to append Copilot 429 index: %s", exc)
+
     def _dump_api_request_debug(
         self,
         api_kwargs: Dict[str, Any],
         *,
         reason: str,
         error: Optional[Exception] = None,
+        request_meta: Optional[Dict[str, Any]] = None,
     ) -> Optional[Path]:
         """
         Dump a debug-friendly HTTP request record for the active inference API.
@@ -2411,10 +2437,35 @@ class AIAgent:
             except Exception as e:
                 logger.debug("Could not extract API key for debug dump: %s", e)
 
+            request_meta = dict(request_meta or {})
+            request_meta.setdefault("provider", getattr(self, "provider", None))
+            request_meta.setdefault("model", getattr(self, "model", None))
+            request_meta.setdefault("api_mode", getattr(self, "api_mode", None))
+            request_meta.setdefault("base_url", getattr(self, "base_url", None))
+            request_meta.setdefault("tools_present", bool(body.get("tools")))
+            request_meta.setdefault("tool_count", len(body.get("tools") or []))
+            request_meta.setdefault("reasoning", body.get("reasoning"))
+            request_meta.setdefault("store", body.get("store"))
+            request_meta.setdefault("request_keys", sorted(body.keys()))
+            request_meta.setdefault("api_message_count", len(body.get("messages") or []))
+            gateway_ctx = getattr(self, "_gateway_debug_context", None)
+            if isinstance(gateway_ctx, dict) and gateway_ctx:
+                request_meta.setdefault("gateway", gateway_ctx)
+            if "approx_tokens" not in request_meta:
+                try:
+                    request_meta["approx_tokens"] = estimate_request_tokens_rough(
+                        body.get("messages") or [],
+                        system_prompt="",
+                        tools=body.get("tools") or None,
+                    )
+                except Exception:
+                    pass
+
             dump_payload: Dict[str, Any] = {
                 "timestamp": datetime.now().isoformat(),
                 "session_id": self.session_id,
                 "reason": reason,
+                "request_meta": request_meta,
                 "request": {
                     "method": "POST",
                     "url": f"{self.base_url.rstrip('/')}{'/responses' if self.api_mode == 'codex_responses' else '/chat/completions'}",
@@ -2426,8 +2477,9 @@ class AIAgent:
                 },
             }
 
+            error_info: Optional[Dict[str, Any]] = None
             if error is not None:
-                error_info: Dict[str, Any] = {
+                error_info = {
                     "type": type(error).__name__,
                     "message": str(error),
                 }
@@ -2451,11 +2503,21 @@ class AIAgent:
                 dump_payload["error"] = error_info
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            dump_file = self.logs_dir / f"request_dump_{self.session_id}_{timestamp}.json"
+            filename_prefix = "request_dump"
+            if reason.startswith("copilot_429"):
+                filename_prefix = "copilot_429_bundle"
+            dump_file = self.logs_dir / f"{filename_prefix}_{self.session_id}_{timestamp}.json"
             dump_file.write_text(
                 json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str),
                 encoding="utf-8",
             )
+
+            if reason.startswith("copilot_429"):
+                self._append_copilot_429_index(
+                    dump_file=dump_file,
+                    request_meta=request_meta,
+                    error_info=error_info,
+                )
 
             self._vprint(f"{self.log_prefix}🧾 Request debug dump written to: {dump_file}")
 
@@ -5431,20 +5493,24 @@ class AIAgent:
 
         if self.max_tokens is not None:
             api_kwargs.update(self._max_tokens_param(self.max_tokens))
-        elif self._is_openrouter_url() and "claude" in (self.model or "").lower():
-            # OpenRouter translates requests to Anthropic's Messages API,
-            # which requires max_tokens as a mandatory field.  When we omit
-            # it, OpenRouter picks a default that can be too low — the model
-            # spends its output budget on thinking and has almost nothing
-            # left for the actual response (especially large tool calls like
-            # write_file).  Sending the model's real output limit ensures
-            # full capacity.  Other providers handle the default fine.
+        elif "claude" in (self.model or "").lower() and (
+            self._is_openrouter_url()
+            or "api.githubcopilot.com" in self._base_url_lower
+            or "models.github.ai" in self._base_url_lower
+        ):
+            # OpenRouter and GitHub Copilot translate requests to Anthropic's
+            # Messages API, which requires max_tokens as a mandatory field.
+            # When we omit it, the proxy picks a default that can be too low
+            # — the model spends its output budget on thinking and has almost
+            # nothing left for the actual response (especially large tool
+            # calls like write_file).  Sending the model's real output limit
+            # ensures full capacity.
             try:
                 from agent.anthropic_adapter import _get_anthropic_max_output
                 _model_output_limit = _get_anthropic_max_output(self.model)
                 api_kwargs["max_tokens"] = _model_output_limit
             except Exception:
-                pass  # fail open — let OpenRouter pick its default
+                pass  # fail open — let the proxy pick its default
 
         extra_body = {}
 
@@ -7309,9 +7375,13 @@ class AIAgent:
             
             api_start_time = time.time()
             retry_count = 0
-            max_retries = 3
+            max_retries = 5 if str(getattr(self, "provider", "")).lower() == "copilot" else 3
             primary_recovery_attempted = False
             max_compression_attempts = 3
+            debug_rate_limit_events = 0
+            debug_last_rate_limit_summary = None
+            self.debug_rate_limit_events = 0
+            self.debug_last_rate_limit_summary = None
             codex_auth_retry_attempted=False
             anthropic_auth_retry_attempted=False
             nous_auth_retry_attempted=False
@@ -7797,6 +7867,19 @@ class AIAgent:
                             if not self.quiet_mode:
                                 self._vprint(f"{self.log_prefix}   💾 Cache: {cached:,}/{prompt:,} tokens ({hit_pct:.0f}% hit, {written:,} written)")
                     
+                    if debug_rate_limit_events:
+                        logger.info(
+                            "[DEBUG] Turn recovered after transient rate limits: session_id=%s provider=%s model=%s "
+                            "rate_limit_events=%s api_calls=%s final_prompt_tokens=%s last_rate_limit=%s gateway=%s",
+                            self.session_id,
+                            getattr(self, "provider", None),
+                            getattr(self, "model", None),
+                            debug_rate_limit_events,
+                            api_call_count,
+                            getattr(self.context_compressor, "last_prompt_tokens", None),
+                            debug_last_rate_limit_summary,
+                            getattr(self, "_gateway_debug_context", None),
+                        )
                     has_retried_429 = False  # Reset on success
                     self._touch_activity(f"API call #{api_call_count} completed")
                     break  # Success, exit retry loop
@@ -7999,10 +8082,11 @@ class AIAgent:
                         # Fall through to normal error handling if compression
                         # is exhausted or didn't help.
 
-                    # Eager fallback for rate-limit errors (429 or quota exhaustion).
-                    # When a fallback model is configured, switch immediately instead
-                    # of burning through retries with exponential backoff -- the
-                    # primary provider won't recover within the retry window.
+                    # Eager fallback for ordinary rate-limit errors (429 / quota).
+                    # Copilot gpt-5.x is a special case: their recent 429s often
+                    # reflect flaky upstream service behavior, so we should keep
+                    # retrying the primary request instead of immediately bailing
+                    # out to a fallback provider.
                     is_rate_limited = (
                         status_code == 429
                         or "rate limit" in error_msg
@@ -8011,7 +8095,15 @@ class AIAgent:
                         or "usage limit" in error_msg
                         or "quota" in error_msg
                     )
-                    if is_rate_limited and self._fallback_index < len(self._fallback_chain):
+                    is_copilot_service_429 = (
+                        status_code == 429
+                        and str(getattr(self, "provider", "")).lower() == "copilot"
+                    )
+                    if (
+                        is_rate_limited
+                        and not is_copilot_service_429
+                        and self._fallback_index < len(self._fallback_chain)
+                    ):
                         # Don't eagerly fallback if credential pool rotation may
                         # still recover.  The pool's retry-then-rotate cycle needs
                         # at least one more attempt to fire — jumping to a fallback
@@ -8286,7 +8378,68 @@ class AIAgent:
                             "error": str(api_error),
                         }
 
+                    if is_rate_limited:
+                        debug_rate_limit_events += 1
+                        debug_last_rate_limit_summary = self._summarize_api_error(api_error)
+                        self.debug_rate_limit_events = debug_rate_limit_events
+                        self.debug_last_rate_limit_summary = debug_last_rate_limit_summary
+                        # Persist the current transcript snapshot before any
+                        # retry wait so transient provider outages don't risk
+                        # losing the user's latest message if the process dies
+                        # mid-backoff.
+                        self._persist_session(messages, conversation_history)
+                        logger.warning(
+                            "[DEBUG] API retry scheduled: session_id=%s provider=%s model=%s status=%s retry=%s/%s "
+                            "wait_pending context_tokens=~%s api_messages=%s conv_messages=%s gateway=%s",
+                            self.session_id,
+                            _provider,
+                            _model,
+                            status_code,
+                            retry_count,
+                            max_retries,
+                            f"{approx_tokens:,}",
+                            len(api_messages),
+                            len(messages),
+                            getattr(self, "_gateway_debug_context", None),
+                        )
+                        if is_copilot_service_429:
+                            self._dump_api_request_debug(
+                                api_kwargs,
+                                reason="copilot_429_attempt",
+                                error=api_error,
+                                request_meta={
+                                    "provider": _provider,
+                                    "model": _model,
+                                    "api_mode": getattr(self, "api_mode", None),
+                                    "retry_count": retry_count,
+                                    "max_retries": max_retries,
+                                    "approx_tokens": approx_tokens,
+                                    "api_message_count": len(api_messages),
+                                    "conversation_message_count": len(messages),
+                                    "tool_count": len(self.tools or []),
+                                    "final_failure": retry_count >= max_retries,
+                                },
+                            )
+
                     if retry_count >= max_retries:
+                        if is_copilot_service_429:
+                            self._dump_api_request_debug(
+                                api_kwargs,
+                                reason="copilot_429_final_failure",
+                                error=api_error,
+                                request_meta={
+                                    "provider": _provider,
+                                    "model": _model,
+                                    "api_mode": getattr(self, "api_mode", None),
+                                    "retry_count": retry_count,
+                                    "max_retries": max_retries,
+                                    "approx_tokens": approx_tokens,
+                                    "api_message_count": len(api_messages),
+                                    "conversation_message_count": len(messages),
+                                    "tool_count": len(self.tools or []),
+                                    "final_failure": True,
+                                },
+                            )
                         # Before falling back, try rebuilding the primary
                         # client once for transient transport errors (stale
                         # connection pool, TCP reset).  Only attempted once
@@ -8339,9 +8492,20 @@ class AIAgent:
                             )
 
                         logging.error(
-                            "%sAPI call failed after %s retries. %s | provider=%s model=%s msgs=%s tokens=~%s",
+                            "%sAPI call failed after %s retries. %s | session_id=%s provider=%s model=%s msgs=%s tokens=~%s",
                             self.log_prefix, max_retries, _final_summary,
-                            _provider, _model, len(api_messages), f"{approx_tokens:,}",
+                            self.session_id, _provider, _model, len(api_messages), f"{approx_tokens:,}",
+                        )
+                        logger.warning(
+                            "[DEBUG] Turn ended after rate limits: session_id=%s provider=%s model=%s "
+                            "rate_limit_events=%s api_calls=%s final_summary=%s gateway=%s",
+                            self.session_id,
+                            _provider,
+                            _model,
+                            debug_rate_limit_events,
+                            api_call_count,
+                            _final_summary,
+                            getattr(self, "_gateway_debug_context", None),
                         )
                         self._dump_api_request_debug(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
@@ -8383,12 +8547,13 @@ class AIAgent:
                     else:
                         self._emit_status(f"⏳ Retrying in {wait_time}s (attempt {retry_count}/{max_retries})...")
                     logger.warning(
-                        "Retrying API call in %ss (attempt %s/%s) %s error=%s",
+                        "[DEBUG] Retrying API call in %ss (attempt %s/%s) %s error=%s gateway=%s",
                         wait_time,
                         retry_count,
                         max_retries,
                         self._client_log_context(),
                         api_error,
+                        getattr(self, "_gateway_debug_context", None),
                     )
                     # Sleep in small increments so we can respond to interrupts quickly
                     # instead of blocking the entire wait_time in one sleep() call
@@ -8429,6 +8594,14 @@ class AIAgent:
             # the `response` variable is still None. Break out cleanly.
             if response is None:
                 print(f"{self.log_prefix}❌ All API retries exhausted with no successful response.")
+                logger.warning(
+                    "[DEBUG] API retry loop ended with no response: session_id=%s provider=%s model=%s api_calls=%s gateway=%s",
+                    self.session_id,
+                    getattr(self, "provider", None),
+                    getattr(self, "model", None),
+                    api_call_count,
+                    getattr(self, "_gateway_debug_context", None),
+                )
                 self._persist_session(messages, conversation_history)
                 break
 
