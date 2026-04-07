@@ -80,6 +80,8 @@ _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
 _PASSTHROUGH_PROVIDERS: frozenset[str] = frozenset({
     "gemini",
     "zai",
+    "zai-coding",
+    "mimo",
     "kimi-coding",
     "minimax",
     "minimax-cn",

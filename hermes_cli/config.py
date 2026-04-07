@@ -646,6 +646,30 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "GLM_CODING_BASE_URL": {
+        "description": "Z.AI Coding Plan base URL override",
+        "prompt": "Z.AI Coding Plan base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "MIMO_API_KEY": {
+        "description": "Mimo API key",
+        "prompt": "Mimo API key",
+        "url": "https://token-plan-sgp.xiaomimimo.com/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "MIMO_BASE_URL": {
+        "description": "Mimo base URL override",
+        "prompt": "Mimo base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "KIMI_API_KEY": {
         "description": "Kimi / Moonshot API key",
         "prompt": "Kimi API key",
@@ -2082,18 +2106,16 @@ def _sanitize_env_lines(lines: list) -> list:
         split_positions = []
         for key_name in known_keys:
             needle = key_name + "="
-            idx = stripped.find(needle)
-            while idx >= 0:
-                split_positions.append(idx)
-                idx = stripped.find(needle, idx + len(needle))
+            pos = raw.find(needle)
+            if pos > 0:
+                split_positions.append(pos)
 
-        if len(split_positions) > 1:
-            split_positions.sort()
-            # Deduplicate (shouldn't happen, but be safe)
+        if split_positions:
             split_positions = sorted(set(split_positions))
-            for i, pos in enumerate(split_positions):
-                end = split_positions[i + 1] if i + 1 < len(split_positions) else len(stripped)
-                part = stripped[pos:end].strip()
+            start = 0
+            for pos in split_positions + [len(raw)]:
+                part = raw[start:pos].strip()
+                start = pos
                 if part:
                     sanitized.append(part + "\n")
         else:

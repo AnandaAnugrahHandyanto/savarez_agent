@@ -148,6 +148,8 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openrouter": "openrouter",
     "anthropic": "anthropic",
     "zai": "zai",
+    "zai-coding": "zai",
+    "mimo": "xiaomi-token-plan-sgp",
     "kimi-coding": "kimi-for-coding",
     "minimax": "minimax",
     "minimax-cn": "minimax-cn",
@@ -173,6 +175,14 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
 
 # Reverse mapping: models.dev → Hermes (built lazily)
 _MODELS_DEV_TO_PROVIDER: Optional[Dict[str, str]] = None
+
+# Provider-level fallback catalogs when the primary mapping is more specific
+# than the full family catalog (for example Mimo token-plan Singapore vs the
+# broader Xiaomi catalog that still contains flash-model metadata).
+PROVIDER_MODELS_DEV_FALLBACKS: Dict[str, Tuple[str, ...]] = {
+    "mimo": ("xiaomi", "xiaomi-token-plan-ams", "xiaomi-token-plan-cn"),
+    "zai-coding": ("zai",),
+}
 
 
 def _get_reverse_mapping() -> Dict[str, str]:
@@ -345,6 +355,30 @@ def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
     return models
 
 
+def _iter_provider_model_sets(provider: str) -> List[Tuple[str, Dict[str, Any]]]:
+    """Return primary + fallback model catalogs for a Hermes provider."""
+    data = fetch_models_dev()
+    provider_ids: list[str] = []
+
+    primary = PROVIDER_TO_MODELS_DEV.get(provider)
+    if primary:
+        provider_ids.append(primary)
+
+    for fallback in PROVIDER_MODELS_DEV_FALLBACKS.get(provider, ()):
+        if fallback not in provider_ids:
+            provider_ids.append(fallback)
+
+    results: list[Tuple[str, Dict[str, Any]]] = []
+    for provider_id in provider_ids:
+        provider_data = data.get(provider_id)
+        if not isinstance(provider_data, dict):
+            continue
+        models = provider_data.get("models", {})
+        if isinstance(models, dict):
+            results.append((provider_id, models))
+    return results
+
+
 def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:
     """Find a model entry by exact match, then case-insensitive fallback."""
     # Exact match
@@ -375,11 +409,11 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
       - limit.output  (int) → max_output_tokens
       - family     (str)   → model_family
     """
-    models = _get_provider_models(provider)
-    if models is None:
-        return None
-
-    entry = _find_model_entry(models, model)
+    entry = None
+    for _provider_id, models in _iter_provider_model_sets(provider):
+        entry = _find_model_entry(models, model)
+        if entry is not None:
+            break
     if entry is None:
         return None
 
@@ -682,27 +716,27 @@ def get_model_info(
     Accepts Hermes or models.dev provider ID.  Tries exact match then
     case-insensitive fallback.  Returns None if not found.
     """
-    mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
+    provider_sets = _iter_provider_model_sets(provider_id)
+    if not provider_sets:
+        mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
+        data = fetch_models_dev()
+        pdata = data.get(mdev_id)
+        if isinstance(pdata, dict):
+            models = pdata.get("models", {})
+            if isinstance(models, dict):
+                provider_sets = [(mdev_id, models)]
 
-    data = fetch_models_dev()
-    pdata = data.get(mdev_id)
-    if not isinstance(pdata, dict):
-        return None
+    for mdev_id, models in provider_sets:
+        # Exact match
+        raw = models.get(model_id)
+        if isinstance(raw, dict):
+            return _parse_model_info(model_id, raw, mdev_id)
 
-    models = pdata.get("models", {})
-    if not isinstance(models, dict):
-        return None
-
-    # Exact match
-    raw = models.get(model_id)
-    if isinstance(raw, dict):
-        return _parse_model_info(model_id, raw, mdev_id)
-
-    # Case-insensitive fallback
-    model_lower = model_id.lower()
-    for mid, mdata in models.items():
-        if mid.lower() == model_lower and isinstance(mdata, dict):
-            return _parse_model_info(mid, mdata, mdev_id)
+        # Case-insensitive fallback
+        model_lower = model_id.lower()
+        for mid, mdata in models.items():
+            if mid.lower() == model_lower and isinstance(mdata, dict):
+                return _parse_model_info(mid, mdata, mdev_id)
 
     return None
 

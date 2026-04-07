@@ -923,6 +923,8 @@ def select_provider_and_model(args=None):
         "anthropic": "Anthropic",
         "gemini": "Google AI Studio",
         "zai": "Z.AI / GLM",
+        "zai-coding": "Z.AI Coding Plan",
+        "mimo": "Mimo",
         "kimi-coding": "Kimi / Moonshot",
         "minimax": "MiniMax",
         "minimax-cn": "MiniMax (China)",

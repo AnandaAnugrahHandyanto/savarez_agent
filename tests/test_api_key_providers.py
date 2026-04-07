@@ -40,6 +40,8 @@ class TestProviderRegistry:
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
+        ("zai-coding", "Z.AI Coding Plan", "api_key"),
+        ("mimo", "Mimo", "api_key"),
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
@@ -62,6 +64,16 @@ class TestProviderRegistry:
         pconfig = PROVIDER_REGISTRY["copilot"]
         assert pconfig.api_key_env_vars == ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
         assert pconfig.base_url_env_var == ""
+
+    def test_zai_coding_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["zai-coding"]
+        assert pconfig.api_key_env_vars == ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY")
+        assert pconfig.base_url_env_var == "GLM_CODING_BASE_URL"
+
+    def test_mimo_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["mimo"]
+        assert pconfig.api_key_env_vars == ("MIMO_API_KEY", "XIAOMI_API_KEY")
+        assert pconfig.base_url_env_var == "MIMO_BASE_URL"
 
     def test_kimi_env_vars(self):
         pconfig = PROVIDER_REGISTRY["kimi-coding"]
@@ -97,6 +109,8 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
+        assert PROVIDER_REGISTRY["zai-coding"].inference_base_url == "https://api.z.ai/api/coding/paas/v4"
+        assert PROVIDER_REGISTRY["mimo"].inference_base_url == "https://token-plan-sgp.xiaomimimo.com/v1"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
@@ -119,7 +133,8 @@ class TestProviderRegistry:
 PROVIDER_ENV_VARS = (
     "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
-    "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
+    "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY", "GLM_CODING_BASE_URL",
+    "MIMO_API_KEY", "MIMO_BASE_URL", "XIAOMI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
@@ -143,6 +158,12 @@ class TestResolveProvider:
     def test_explicit_zai(self):
         assert resolve_provider("zai") == "zai"
 
+    def test_explicit_zai_coding(self):
+        assert resolve_provider("zai-coding") == "zai-coding"
+
+    def test_explicit_mimo(self):
+        assert resolve_provider("mimo") == "mimo"
+
     def test_explicit_kimi_coding(self):
         assert resolve_provider("kimi-coding") == "kimi-coding"
 
@@ -158,11 +179,17 @@ class TestResolveProvider:
     def test_alias_glm(self):
         assert resolve_provider("glm") == "zai"
 
+    def test_alias_glm_coding(self):
+        assert resolve_provider("glm-coding") == "zai-coding"
+
     def test_alias_z_ai(self):
         assert resolve_provider("z-ai") == "zai"
 
     def test_alias_zhipu(self):
         assert resolve_provider("zhipu") == "zai"
+
+    def test_alias_xiaomi(self):
+        assert resolve_provider("xiaomi") == "mimo"
 
     def test_alias_kimi(self):
         assert resolve_provider("kimi") == "kimi-coding"
@@ -237,6 +264,10 @@ class TestResolveProvider:
     def test_auto_detects_kimi_key(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "test-kimi-key")
         assert resolve_provider("auto") == "kimi-coding"
+
+    def test_auto_detects_mimo_key(self, monkeypatch):
+        monkeypatch.setenv("MIMO_API_KEY", "test-mimo-key")
+        assert resolve_provider("auto") == "mimo"
 
     def test_auto_detects_minimax_key(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_API_KEY", "test-mm-key")

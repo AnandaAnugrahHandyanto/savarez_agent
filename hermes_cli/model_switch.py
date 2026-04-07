@@ -731,6 +731,7 @@ def list_authenticated_providers(
         get_provider_info as _mdev_pinfo,
     )
     from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
+    from hermes_cli.providers import get_overlay
 
     results: List[dict] = []
     seen_slugs: set = set()
@@ -750,7 +751,12 @@ def list_authenticated_providers(
         if not isinstance(pdata, dict):
             continue
 
-        env_vars = pdata.get("env", [])
+        env_vars = list(pdata.get("env", []))
+        overlay = get_overlay(hermes_id)
+        if overlay and overlay.extra_env_vars:
+            for ev in overlay.extra_env_vars:
+                if ev not in env_vars:
+                    env_vars.append(ev)
         if not isinstance(env_vars, list):
             continue
 
@@ -791,9 +797,10 @@ def list_authenticated_providers(
         if overlay.auth_type in ("oauth_device_code", "oauth_external", "external_process"):
             # These use auth stores, not env vars — check for auth.json entries
             try:
-                from hermes_cli.auth import _read_auth_store
-                store = _read_auth_store()
-                if store and pid in store:
+                from hermes_cli.auth import _load_auth_store
+                store = _load_auth_store() or {}
+                providers_state = store.get("providers") if isinstance(store, dict) else {}
+                if isinstance(providers_state, dict) and pid in providers_state:
                     has_creds = True
             except Exception:
                 pass

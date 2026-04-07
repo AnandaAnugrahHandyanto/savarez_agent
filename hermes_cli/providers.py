@@ -77,6 +77,17 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
         base_url_env_var="GLM_BASE_URL",
     ),
+    "zai-coding": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
+        base_url_env_var="GLM_CODING_BASE_URL",
+    ),
+    "mimo": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("MIMO_API_KEY", "XIAOMI_API_KEY"),
+        base_url_override="https://token-plan-sgp.xiaomimimo.com/v1",
+        base_url_env_var="MIMO_BASE_URL",
+    ),
     "kimi-for-coding": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="KIMI_BASE_URL",
@@ -157,9 +168,17 @@ ALIASES: Dict[str, str] = {
 
     # zai
     "glm": "zai",
+    "glm-coding": "zai-coding",
+    "zai-coding": "zai-coding",
+    "z-ai-coding": "zai-coding",
+    "z.ai-coding": "zai-coding",
+    "zhipu-coding": "zai-coding",
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
+    "xiaomi": "mimo",
+    "xiaomi-token-plan": "mimo",
+    "mimo-token-plan": "mimo",
 
     # kimi-for-coding (models.dev ID)
     "kimi": "kimi-for-coding",
@@ -231,6 +250,8 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
+    "zai-coding": "Z.AI Coding Plan",
+    "mimo": "Mimo",
     "local": "Local endpoint",
 }
 
@@ -367,6 +388,8 @@ LABELS: Dict[str, str] = {
     "github-copilot": "GitHub Copilot",
     "anthropic": "Anthropic",
     "zai": "Z.AI / GLM",
+    "zai-coding": "Z.AI Coding Plan",
+    "mimo": "Mimo",
     "kimi-for-coding": "Kimi / Moonshot",
     "minimax": "MiniMax",
     "minimax-cn": "MiniMax (China)",

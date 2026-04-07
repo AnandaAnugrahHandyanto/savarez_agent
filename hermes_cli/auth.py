@@ -142,6 +142,22 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
         base_url_env_var="GLM_BASE_URL",
     ),
+    "zai-coding": ProviderConfig(
+        id="zai-coding",
+        name="Z.AI Coding Plan",
+        auth_type="api_key",
+        inference_base_url="https://api.z.ai/api/coding/paas/v4",
+        api_key_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
+        base_url_env_var="GLM_CODING_BASE_URL",
+    ),
+    "mimo": ProviderConfig(
+        id="mimo",
+        name="Mimo",
+        auth_type="api_key",
+        inference_base_url="https://token-plan-sgp.xiaomimimo.com/v1",
+        api_key_env_vars=("MIMO_API_KEY", "XIAOMI_API_KEY"),
+        base_url_env_var="MIMO_BASE_URL",
+    ),
     "kimi-coding": ProviderConfig(
         id="kimi-coding",
         name="Kimi / Moonshot",
@@ -809,6 +825,7 @@ def resolve_provider(
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
+        "xiaomi": "mimo", "xiaomi-token-plan": "mimo", "mimo-token-plan": "mimo",
         "kimi": "kimi-coding", "moonshot": "kimi-coding",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
