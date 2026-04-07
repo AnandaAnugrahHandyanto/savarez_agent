@@ -4,8 +4,8 @@ from agent.smart_model_routing import choose_cheap_model_route
 _BASE_CONFIG = {
     "enabled": True,
     "cheap_model": {
-        "provider": "anthropic",
-        "model": "claude-haiku-4-5-20251001",
+        "provider": "google",
+        "model": "google/gemini-2.5-flash",
     },
 }
 
@@ -18,8 +18,8 @@ def test_returns_none_when_disabled():
 def test_routes_short_simple_prompt():
     result = choose_cheap_model_route("what time is it in tokyo?", _BASE_CONFIG)
     assert result is not None
-    assert result["provider"] == "anthropic"
-    assert result["model"] == "claude-haiku-4-5-20251001"
+    assert result["provider"] == "google"
+    assert result["model"] == "google/gemini-2.5-flash"
     assert result["routing_reason"] == "simple_turn"
 
 
@@ -28,7 +28,7 @@ def test_routes_medium_length_simple_prompt():
     prompt = "Can you explain what the compression threshold config option does and what a good default value would be?"
     result = choose_cheap_model_route(prompt, _BASE_CONFIG)
     assert result is not None
-    assert result["model"] == "claude-haiku-4-5-20251001"
+    assert result["model"] == "google/gemini-2.5-flash"
 
 
 def test_skips_long_prompt():
