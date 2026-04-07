@@ -291,7 +291,6 @@ class TestDelegateTask(unittest.TestCase):
                 max_iterations=10,
                 parent_agent=parent,
             )
-
         self.assertTrue(callable(mock_child.thinking_callback))
         mock_child.thinking_callback("deliberating...")
         parent.tool_progress_callback.assert_not_called()
