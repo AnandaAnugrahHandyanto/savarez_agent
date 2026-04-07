@@ -540,6 +540,11 @@ def _run_cleanup():
         shutdown_cached_clients()
     except Exception:
         pass
+    # NOTE: upstream bdc72ec3 also fires `on_session_finalize` from here
+    # via a global `_active_agent_ref`, but our fork never imported the
+    # prerequisite that defines that ref.  The session-boundary hooks
+    # still fire from HermesCLI.new_session() and HermesCLI._notify_session_boundary(),
+    # which is the path that matters for `/new`, `/reset`, and clean exit.
 
 
 # =============================================================================
@@ -3084,6 +3089,22 @@ class HermesCLI:
         flush_tool_summary()
         print()
     
+    def _notify_session_boundary(self, event_type: str) -> None:
+        """Fire a session-boundary plugin hook (on_session_finalize or on_session_reset).
+
+        Non-blocking — errors are caught and logged.  Safe to call from any
+        lifecycle point (shutdown, /new, /reset).
+        """
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                event_type,
+                session_id=self.agent.session_id if self.agent else None,
+                platform=getattr(self, "platform", None) or "cli",
+            )
+        except Exception:
+            pass
+
     def new_session(self, silent=False):
         """Start a fresh session with a new session ID and cleared agent state."""
         if self.agent and self.conversation_history:
@@ -3091,6 +3112,10 @@ class HermesCLI:
                 self.agent.flush_memories(self.conversation_history)
             except (Exception, KeyboardInterrupt):
                 pass
+            self._notify_session_boundary("on_session_finalize")
+        elif self.agent:
+            # First session or empty history — still finalize the old session
+            self._notify_session_boundary("on_session_finalize")
 
         old_session_id = self.session_id
         if self._session_db and old_session_id:
@@ -3135,6 +3160,7 @@ class HermesCLI:
                     )
                 except Exception:
                     pass
+            self._notify_session_boundary("on_session_reset")
 
         if not silent:
             print("(^_^)v New session started!")
