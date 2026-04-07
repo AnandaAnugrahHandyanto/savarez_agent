@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -86,9 +87,7 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     }
 
     try:
-        DIRECTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(DIRECTORY_PATH, "w", encoding="utf-8") as f:
-            json.dump(directory, f, indent=2, ensure_ascii=False)
+        atomic_json_write(DIRECTORY_PATH, directory)
     except Exception as e:
         logger.warning("Channel directory: failed to write: %s", e)
 
@@ -125,7 +124,6 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
 
 def _build_slack(adapter) -> List[Dict[str, str]]:
     """List Slack channels the bot has joined."""
-    channels = []
     # Slack adapter may expose a web client
     client = getattr(adapter, "_app", None) or getattr(adapter, "_client", None)
     if not client:

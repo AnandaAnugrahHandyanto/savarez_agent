@@ -21,22 +21,16 @@ OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, NamedTuple, Optional
 
 from hermes_cli.providers import (
-    ALIASES,
-    LABELS,
-    TRANSPORT_TO_API_MODE,
     determine_api_mode,
     get_label,
-    get_provider,
     is_aggregator,
-    normalize_provider,
     resolve_provider_full,
 )
 from hermes_cli.model_normalize import (
-    detect_vendor,
     normalize_model_for_provider,
 )
 from agent.models_dev import (
@@ -339,12 +333,37 @@ def resolve_alias(
     return None
 
 
+def get_authenticated_provider_slugs(
+    current_provider: str = "",
+    user_providers: dict = None,
+) -> list[str]:
+    """Return slugs of providers that have credentials.
+
+    Uses ``list_authenticated_providers()`` which is backed by the models.dev
+    in-memory cache (1 hr TTL) — no extra network cost.
+    """
+    try:
+        providers = list_authenticated_providers(
+            current_provider=current_provider,
+            user_providers=user_providers,
+            max_models=0,
+        )
+        return [p["slug"] for p in providers]
+    except Exception:
+        return []
+
+
 def _resolve_alias_fallback(
     raw_input: str,
-    fallback_providers: tuple[str, ...] = ("openrouter", "nous"),
+    authenticated_providers: list[str] = (),
 ) -> Optional[tuple[str, str, str]]:
-    """Try to resolve an alias on fallback providers."""
-    for provider in fallback_providers:
+    """Try to resolve an alias on the user's authenticated providers.
+
+    Falls back to ``("openrouter", "nous")`` only when no authenticated
+    providers are supplied (backwards compat for non-interactive callers).
+    """
+    providers = authenticated_providers or ("openrouter", "nous")
+    for provider in providers:
         result = resolve_alias(raw_input, provider)
         if result is not None:
             return result
@@ -494,7 +513,11 @@ def switch_model(
             # --- Step b: Alias exists but not on current provider -> fallback ---
             key = raw_input.strip().lower()
             if key in MODEL_ALIASES:
-                fallback_result = _resolve_alias_fallback(raw_input)
+                authed = get_authenticated_provider_slugs(
+                    current_provider=current_provider,
+                    user_providers=user_providers,
+                )
+                fallback_result = _resolve_alias_fallback(raw_input, authed)
                 if fallback_result is not None:
                     target_provider, new_model, resolved_alias = fallback_result
                     logger.debug(

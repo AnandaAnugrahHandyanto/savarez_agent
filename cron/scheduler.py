@@ -25,7 +25,6 @@ except ImportError:
         import msvcrt
     except ImportError:
         msvcrt = None
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -159,6 +158,44 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     }
 
 
+# Media extension sets — keep in sync with gateway/platforms/base.py:_process_message_background
+_AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a'})
+_VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
+_IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
+
+
+def _send_media_via_adapter(adapter, chat_id: str, media_files: list, metadata: dict | None, loop, job: dict) -> None:
+    """Send extracted MEDIA files as native platform attachments via a live adapter.
+
+    Routes each file to the appropriate adapter method (send_voice, send_image_file,
+    send_video, send_document) based on file extension — mirroring the routing logic
+    in ``BasePlatformAdapter._process_message_background``.
+    """
+    from pathlib import Path
+
+    for media_path, _is_voice in media_files:
+        try:
+            ext = Path(media_path).suffix.lower()
+            if ext in _AUDIO_EXTS:
+                coro = adapter.send_voice(chat_id=chat_id, audio_path=media_path, metadata=metadata)
+            elif ext in _VIDEO_EXTS:
+                coro = adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=metadata)
+            elif ext in _IMAGE_EXTS:
+                coro = adapter.send_image_file(chat_id=chat_id, image_path=media_path, metadata=metadata)
+            else:
+                coro = adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=metadata)
+
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            result = future.result(timeout=30)
+            if result and not getattr(result, "success", True):
+                logger.warning(
+                    "Job '%s': media send failed for %s: %s",
+                    job.get("id", "?"), media_path, getattr(result, "error", "unknown"),
+                )
+        except Exception as e:
+            logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
     """
     Deliver job output to the configured target (origin chat, specific platform, etc.).
@@ -237,24 +274,38 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
     else:
         delivery_content = content
 
+    # Extract MEDIA: tags so attachments are forwarded as files, not raw text
+    from gateway.platforms.base import BasePlatformAdapter
+    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+
     # Prefer the live adapter when the gateway is running — this supports E2EE
     # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
     runtime_adapter = (adapters or {}).get(platform)
     if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
         send_metadata = {"thread_id": thread_id} if thread_id else None
         try:
-            future = asyncio.run_coroutine_threadsafe(
-                runtime_adapter.send(chat_id, delivery_content, metadata=send_metadata),
-                loop,
-            )
-            send_result = future.result(timeout=60)
-            if send_result and not getattr(send_result, "success", True):
-                err = getattr(send_result, "error", "unknown")
-                logger.warning(
-                    "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
-                    job["id"], platform_name, chat_id, err,
+            # Send cleaned text (MEDIA tags stripped) — not the raw content
+            text_to_send = cleaned_delivery_content.strip()
+            adapter_ok = True
+            if text_to_send:
+                future = asyncio.run_coroutine_threadsafe(
+                    runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata),
+                    loop,
                 )
-            else:
+                send_result = future.result(timeout=60)
+                if send_result and not getattr(send_result, "success", True):
+                    err = getattr(send_result, "error", "unknown")
+                    logger.warning(
+                        "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
+                        job["id"], platform_name, chat_id, err,
+                    )
+                    adapter_ok = False  # fall through to standalone path
+
+            # Send extracted media files as native attachments via the live adapter
+            if adapter_ok and media_files:
+                _send_media_via_adapter(runtime_adapter, chat_id, media_files, send_metadata, loop, job)
+
+            if adapter_ok:
                 logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                 return
         except Exception as e:
@@ -264,7 +315,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
             )
 
     # Standalone path: run the async send in a fresh event loop (safe from any thread)
-    coro = _send_to_platform(platform, pconfig, chat_id, delivery_content, thread_id=thread_id)
+    coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
     try:
         result = asyncio.run(coro)
     except RuntimeError:
@@ -275,7 +326,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
         coro.close()
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, delivery_content, thread_id=thread_id))
+            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
             result = future.result(timeout=30)
     except Exception as e:
         logger.error("Job '%s': delivery to %s:%s failed: %s", job["id"], platform_name, chat_id, e)
@@ -293,8 +344,15 @@ _SCRIPT_TIMEOUT = 120  # seconds
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
+    Scripts must reside within HERMES_HOME/scripts/.  Both relative and
+    absolute paths are resolved and validated against this directory to
+    prevent arbitrary script execution via path traversal or absolute
+    path injection.
+
     Args:
-        script_path: Path to a Python script (resolved via HERMES_HOME/scripts/ or absolute).
+        script_path: Path to a Python script.  Relative paths are resolved
+            against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
+            are also validated to ensure they stay within the scripts dir.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -302,16 +360,25 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     """
     from hermes_constants import get_hermes_home
 
-    path = Path(script_path).expanduser()
-    if not path.is_absolute():
-        # Resolve relative paths against HERMES_HOME/scripts/
-        scripts_dir = get_hermes_home() / "scripts"
-        path = (scripts_dir / path).resolve()
-        # Guard against path traversal (e.g. "../../etc/passwd")
-        try:
-            path.relative_to(scripts_dir.resolve())
-        except ValueError:
-            return False, f"Script path escapes the scripts directory: {script_path!r}"
+    scripts_dir = get_hermes_home() / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    scripts_dir_resolved = scripts_dir.resolve()
+
+    raw = Path(script_path).expanduser()
+    if raw.is_absolute():
+        path = raw.resolve()
+    else:
+        path = (scripts_dir / raw).resolve()
+
+    # Guard against path traversal, absolute path injection, and symlink
+    # escape — scripts MUST reside within HERMES_HOME/scripts/.
+    try:
+        path.relative_to(scripts_dir_resolved)
+    except ValueError:
+        return False, (
+            f"Blocked: script path resolves outside the scripts directory "
+            f"({scripts_dir_resolved}): {script_path!r}"
+        )
 
     if not path.exists():
         return False, f"Script not found: {path}"
@@ -469,14 +536,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
-    # Inject origin context so the agent's send_message tool knows the chat
-    if origin:
-        os.environ["HERMES_SESSION_PLATFORM"] = origin["platform"]
-        os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
-        if origin.get("chat_name"):
-            os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
-
     try:
+        # Inject origin context so the agent's send_message tool knows the chat.
+        # Must be INSIDE the try block so the finally cleanup always runs.
+        if origin:
+            os.environ["HERMES_SESSION_PLATFORM"] = origin["platform"]
+            os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
+            if origin.get("chat_name"):
+                os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
         from dotenv import load_dotenv
@@ -797,7 +864,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 # output is already saved above).  Failed jobs always deliver.
                 deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
                 should_deliver = bool(deliver_content)
-                if should_deliver and success and deliver_content.strip().upper().startswith(SILENT_MARKER):
+                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                     should_deliver = False
 
