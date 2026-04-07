@@ -152,6 +152,48 @@ python -m benchmarks --backend <name> --suite d --runs 1 --seeds 42
 
 4. Add focused tests under `tests/benchmarks/`
 
+## Academic Benchmark Adapters
+
+In addition to the synthetic scenario suite, the framework includes adapters for
+established external benchmarks.  These run independently of the suite A–O
+framework and are invoked via `python -m benchmarks --academic`.
+
+### LongMemEval
+
+Integrates the [LongMemEval](https://github.com/xiaowu0162/LongMemEval) benchmark
+(ICLR 2025) with the Hermes memory system.  500 questions drawn from
+`xiaowu0162/longmemeval-cleaned` on HuggingFace, covering temporal-reasoning,
+multi-session recall, knowledge-update, and single-session question types.
+See [`benchmarks/longmemeval/README.md`](longmemeval/README.md).
+
+### LoCoMo
+
+Integrates the [LoCoMo](https://github.com/snap-research/LoCoMo) benchmark
+(arXiv:2402.17753, Snap Research) — ~50 long conversations, ~2,000 QA pairs
+from `snap-research/locomo` on HuggingFace, covering single-hop, multi-hop,
+temporal, and open-domain question types.
+See [`benchmarks/locomo/README.md`](locomo/README.md).
+
+### HotpotQA
+
+Evaluates multi-hop question answering using the HotpotQA dataset
+(arXiv:1809.09600, Yang et al., 2018).  500-question stratified sample from the
+distractor-split validation set.  Primary metric is `supporting_facts_recall`
+— whether the store retrieves the gold paragraphs needed to answer the question.
+See [`benchmarks/hotpotqa/README.md`](hotpotqa/README.md).
+
+### ConvoMem
+
+Integrates the [ConvoMem](https://huggingface.co/datasets/Salesforce/ConvoMem)
+benchmark (arXiv:2511.10523, Salesforce AI Research) — 75,336 QA pairs from
+`Salesforce/ConvoMem` on HuggingFace, covering 6 evidence types
+(`abstention_evidence`, `assistant_facts_evidence`, `changing_evidence`,
+`implicit_connection_evidence`, `preference_evidence`, `user_evidence`) at
+n_evidence levels 1–6.  Note: the HuggingFace streaming API returned a PyArrow
+schema error; the adapter uses direct HTTP fetching via `urllib.request` — see
+the adapter docstring for details.
+See [`benchmarks/convomem/README.md`](convomem/README.md).
+
 ## References
 
 The suite draws from practical IR evaluation, adversarial robustness, and cognitive-memory-inspired testing ideas. See `benchmarks/METHODOLOGY_REVIEW.md` for the audit trail and current methodological caveats.
