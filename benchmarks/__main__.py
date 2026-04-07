@@ -5,7 +5,7 @@ Usage:
   python -m benchmarks                          # default: suite=a, runs=1
   python -m benchmarks --quick                   # Suite A only, 1 run
   python -m benchmarks --full                    # All suites, 3 runs
-  python -m benchmarks --academic                # LongMemEval + LoCoMo + HotpotQA
+  python -m benchmarks --academic                # LongMemEval + LoCoMo + HotpotQA + ConvoMem
   python -m benchmarks --compare before.json after.json
   python -m benchmarks --report                  # Markdown report from latest results
   python -m benchmarks --dashboard               # ASCII dashboard from latest results
@@ -80,6 +80,7 @@ def mode_academic(full: bool, passthrough: list[str]) -> None:
     lme_sample  = None if full else 50
     loc_sample  = None if full else 50
     hpq_sample  = None if full else 100
+    cvm_sample  = None if full else 100
 
     summaries = {}
 
@@ -91,7 +92,7 @@ def mode_academic(full: bool, passthrough: list[str]) -> None:
             argv += ["--sample", str(lme_sample)]
         argv += passthrough
         _inject_sys_argv(argv[1:])
-        print(f"\n[1/3] LongMemEval  (sample={lme_sample or 'all'})")
+        print(f"\n[1/4] LongMemEval  (sample={lme_sample or 'all'})")
         lme_main()
         result_path = Path("benchmarks/results/longmemeval.json")
         if result_path.exists():
@@ -108,7 +109,7 @@ def mode_academic(full: bool, passthrough: list[str]) -> None:
             argv += ["--sample", str(loc_sample)]
         argv += passthrough
         _inject_sys_argv(argv[1:])
-        print(f"\n[2/3] LoCoMo  (sample={loc_sample or 'all'})")
+        print(f"\n[2/4] LoCoMo  (sample={loc_sample or 'all'})")
         loc_main()
         result_path = Path("benchmarks/results/locomo.json")
         if result_path.exists():
@@ -125,7 +126,7 @@ def mode_academic(full: bool, passthrough: list[str]) -> None:
             argv += ["--sample", str(hpq_sample)]
         argv += passthrough
         _inject_sys_argv(argv[1:])
-        print(f"\n[3/3] HotpotQA  (sample={hpq_sample or 'all'})")
+        print(f"\n[3/4] HotpotQA  (sample={hpq_sample or 'all'})")
         hpq_main()
         result_path = Path("benchmarks/results/hotpotqa.json")
         if result_path.exists():
@@ -133,6 +134,23 @@ def mode_academic(full: bool, passthrough: list[str]) -> None:
                 summaries["hotpotqa"] = json.load(f)
     except Exception as exc:
         print(f"  WARNING: HotpotQA failed: {exc}", file=sys.stderr)
+
+    # ---- ConvoMem ----
+    try:
+        from benchmarks.convomem.runner import main as cvm_main
+        argv = [sys.argv[0]]
+        if cvm_sample is not None:
+            argv += ["--sample", str(cvm_sample)]
+        argv += passthrough
+        _inject_sys_argv(argv[1:])
+        print(f"\n[4/4] ConvoMem  (sample={cvm_sample or 'all'})")
+        cvm_main()
+        result_path = Path("benchmarks/results/convomem_baseline-flat.json")
+        if result_path.exists():
+            with open(result_path) as f:
+                summaries["convomem"] = json.load(f)
+    except Exception as exc:
+        print(f"  WARNING: ConvoMem failed: {exc}", file=sys.stderr)
 
     # ---- Combined summary ----
     print()
@@ -303,7 +321,7 @@ def main() -> None:
     mode_group.add_argument("--full",     action="store_true",
                             help="All suites, 3 runs")
     mode_group.add_argument("--academic", action="store_true",
-                            help="LongMemEval + LoCoMo + HotpotQA")
+                            help="LongMemEval + LoCoMo + HotpotQA + ConvoMem")
     mode_group.add_argument("--compare",  nargs=2, metavar=("BEFORE", "AFTER"),
                             help="Compare two result JSON files")
     mode_group.add_argument("--report",   action="store_true",
