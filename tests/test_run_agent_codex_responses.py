@@ -148,7 +148,8 @@ def _codex_ack_message_response(text: str):
 
 
 class _FakeResponsesStream:
-    def __init__(self, *, final_response=None, final_error=None):
+    def __init__(self, *, events=None, final_response=None, final_error=None):
+        self._events = events or []
         self._final_response = final_response
         self._final_error = final_error
 
@@ -159,7 +160,7 @@ class _FakeResponsesStream:
         return False
 
     def __iter__(self):
-        return iter(())
+        return iter(self._events)
 
     def get_final_response(self):
         if self._final_error is not None:
@@ -1039,3 +1040,82 @@ def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch
     ]
     assert "enc_first" in encrypted_contents
     assert "enc_second" in encrypted_contents
+
+
+def test_run_codex_stream_backfills_tool_calls_from_function_call_done(monkeypatch):
+    """When output_item.done is not emitted, backfill from function_call_arguments.done."""
+    agent = _build_agent(monkeypatch)
+    # Stream emits function_call events but NO response.output_item.done
+    stream_events = [
+        SimpleNamespace(
+            type="response.function_call_arguments.delta",
+            call_id="call_1",
+            name="terminal",
+            delta='{"cmd": "ls"}',
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            call_id="call_1",
+            name="terminal",
+            arguments='{"cmd": "ls"}',
+        ),
+        SimpleNamespace(type="response.completed"),
+    ]
+    # Final response has empty output (the bug this fixes)
+    empty_response = SimpleNamespace(output=[], status="completed", model="gpt-5.4")
+
+    def _fake_stream(**kwargs):
+        return _FakeResponsesStream(events=stream_events, final_response=empty_response)
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(stream=_fake_stream)
+    )
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    # Should have backfilled the tool call from function_call_arguments.done
+    assert len(response.output) == 1
+    assert response.output[0].type == "function_call"
+    assert response.output[0].call_id == "call_1"
+    assert response.output[0].name == "terminal"
+    assert response.output[0].arguments == '{"cmd": "ls"}'
+
+
+def test_run_codex_stream_prefers_output_item_done_over_function_call_done(monkeypatch):
+    """When both output_item.done and function_call_arguments.done exist, prefer output_item.done."""
+    agent = _build_agent(monkeypatch)
+    # Both event types present
+    stream_events = [
+        SimpleNamespace(
+            type="response.function_call_arguments.delta",
+            call_id="call_1",
+            name="terminal",
+            delta="{}",
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            call_id="call_1",
+            name="terminal",
+            arguments="{}",
+        ),
+        SimpleNamespace(
+            type="response.output_item.done",
+            item=SimpleNamespace(
+                type="function_call",
+                call_id="call_1",
+                name="terminal",
+                arguments="{}",
+            ),
+        ),
+        SimpleNamespace(type="response.completed"),
+    ]
+    empty_response = SimpleNamespace(output=[], status="completed")
+
+    def _fake_stream(**kwargs):
+        return _FakeResponsesStream(events=stream_events, final_response=empty_response)
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(stream=_fake_stream)
+    )
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    # Should use output_item.done (collected_output_items takes precedence)
+    assert len(response.output) == 1
+    assert response.output[0].type == "function_call"

@@ -3807,6 +3807,7 @@ class AIAgent:
         self._codex_streamed_text_parts: list = []
         for attempt in range(max_stream_retries + 1):
             collected_output_items: list = []
+            collected_tool_calls: list = []  # Fallback: collect from function_call_arguments.done
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
                     for event in stream:
@@ -3827,9 +3828,22 @@ class AIAgent:
                                         except Exception:
                                             pass
                                 self._fire_stream_delta(delta_text)
-                        # Track tool calls to suppress text streaming
+                        # Track tool calls and collect completed call data
                         elif "function_call" in event_type:
                             has_tool_calls = True
+                            # Collect complete function call data from done events
+                            # as fallback when output_item.done is not emitted
+                            if event_type.endswith(".done") or event_type == "response.function_call_arguments.done":
+                                call_id = getattr(event, "call_id", None) or getattr(event, "id", None)
+                                name = getattr(event, "name", None)
+                                arguments = getattr(event, "arguments", None)
+                                if call_id and (name or arguments):
+                                    collected_tool_calls.append({
+                                        "type": "function_call",
+                                        "call_id": call_id,
+                                        "name": name or "",
+                                        "arguments": arguments or "",
+                                    })
                         # Fire reasoning callbacks
                         elif "reasoning" in event_type and "delta" in event_type:
                             reasoning_text = getattr(event, "delta", "")
@@ -3866,6 +3880,14 @@ class AIAgent:
                             logger.debug(
                                 "Codex stream: backfilled %d output items from stream events",
                                 len(collected_output_items),
+                            )
+                        elif collected_tool_calls:
+                            # Fallback: reconstruct from function_call_arguments.done events
+                            # when output_item.done was not emitted by the backend.
+                            final_response.output = [SimpleNamespace(**tc) for tc in collected_tool_calls]
+                            logger.debug(
+                                "Codex stream: backfilled %d tool calls from function_call_arguments.done events",
+                                len(collected_tool_calls),
                             )
                         elif self._codex_streamed_text_parts and not has_tool_calls:
                             assembled = "".join(self._codex_streamed_text_parts)
@@ -3932,6 +3954,7 @@ class AIAgent:
         terminal_response = None
         collected_output_items: list = []
         collected_text_deltas: list = []
+        collected_tool_calls: list = []  # Fallback: collect from function_call_arguments.done
         try:
             for event in stream_or_response:
                 event_type = getattr(event, "type", None)
@@ -3951,6 +3974,18 @@ class AIAgent:
                         delta = event.get("delta", "")
                     if delta:
                         collected_text_deltas.append(delta)
+                # Collect completed function calls as fallback
+                elif event_type and ("function_call" in event_type) and ("done" in event_type):
+                    call_id = getattr(event, "call_id", None) or (event.get("call_id") if isinstance(event, dict) else None)
+                    name = getattr(event, "name", None) or (event.get("name") if isinstance(event, dict) else None)
+                    arguments = getattr(event, "arguments", None) or (event.get("arguments") if isinstance(event, dict) else None)
+                    if call_id and (name or arguments):
+                        collected_tool_calls.append({
+                            "type": "function_call",
+                            "call_id": call_id,
+                            "name": name or "",
+                            "arguments": arguments or "",
+                        })
 
                 if event_type not in {"response.completed", "response.incomplete", "response.failed"}:
                     continue
@@ -3967,6 +4002,12 @@ class AIAgent:
                             logger.debug(
                                 "Codex fallback stream: backfilled %d output items",
                                 len(collected_output_items),
+                            )
+                        elif collected_tool_calls:
+                            terminal_response.output = [SimpleNamespace(**tc) for tc in collected_tool_calls]
+                            logger.debug(
+                                "Codex fallback stream: backfilled %d tool calls from function_call_arguments.done",
+                                len(collected_tool_calls),
                             )
                         elif collected_text_deltas:
                             assembled = "".join(collected_text_deltas)
