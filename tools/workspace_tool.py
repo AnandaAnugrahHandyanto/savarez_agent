@@ -8,6 +8,7 @@ from typing import Any
 
 from agent.workspace import (
     index_workspace_knowledgebase,
+    workspace_delete_file,
     workspace_list,
     workspace_retrieve,
     workspace_search,
@@ -25,8 +26,8 @@ WORKSPACE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["status", "index", "list", "search", "retrieve"],
-                "description": "What to do: status shows roots and counts, index rebuilds the manifest and chunk index, list enumerates files, search searches text lines, retrieve returns ranked chunk-level retrieval results.",
+                "enum": ["status", "index", "list", "search", "retrieve", "delete"],
+                "description": "What to do: status shows roots and counts, index rebuilds the manifest and chunk index, list enumerates files, search searches text lines, retrieve returns ranked chunk-level retrieval results, delete removes a single file from the index.",
             },
             "query": {
                 "type": "string",
@@ -98,6 +99,11 @@ def workspace_tool(
                 query=query,
                 config=config,
                 limit=limit,
+            )
+        elif action == "delete":
+            result = workspace_delete_file(
+                relative_path=path,
+                config=config,
             )
         else:
             result = {"success": False, "error": f"Unknown action: {action}"}

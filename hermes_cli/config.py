@@ -570,6 +570,8 @@ DEFAULT_CONFIG = {
             "provider": "local",  # local | cohere | voyage | heuristic
             "model": "",
         },
+        "watch_for_changes": False,
+        "watch_interval_seconds": 10,
         "indexing": {
             "max_file_mb": 10,
         },

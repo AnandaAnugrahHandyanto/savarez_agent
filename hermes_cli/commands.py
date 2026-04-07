@@ -126,8 +126,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills", cli_only=True),
     CommandDef("workspace", "Workspace status, search, index, and root management",
                "Tools & Skills", cli_only=True,
-               args_hint="[status|index|list|search|retrieve|roots]",
-               subcommands=("status", "index", "list", "search", "retrieve", "roots")),
+               args_hint="[status|index|list|search|retrieve|delete|roots]",
+               subcommands=("status", "index", "list", "search", "retrieve", "delete", "roots")),
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",

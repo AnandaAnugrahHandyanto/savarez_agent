@@ -5519,6 +5519,8 @@ Examples:
     ws_retrieve = workspace_subs.add_parser("retrieve", help="Hybrid RAG retrieval from workspace index")
     ws_retrieve.add_argument("query", help="Retrieval query")
     ws_retrieve.add_argument("--limit", type=int, default=8, help="Max results to return")
+    ws_delete = workspace_subs.add_parser("delete", help="Remove a file from the workspace index")
+    ws_delete.add_argument("path", help="Relative path of the file to remove from the index")
     ws_roots = workspace_subs.add_parser("roots", help="Manage additional workspace roots")
     ws_roots_subs = ws_roots.add_subparsers(dest="root_action")
     ws_roots_subs.add_parser("list", help="List active workspace roots")

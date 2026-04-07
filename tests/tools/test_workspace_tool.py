@@ -3,46 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from tests.conftest import make_workspace_config
+
 
 def _config(tmp_path: Path) -> dict:
-    return {
-        "workspace": {
-            "enabled": True,
-            "path": str(tmp_path / "workspace"),
-            "auto_create": True,
-            "persist_gateway_uploads": "ask",
-        },
-        "knowledgebase": {
-            "enabled": True,
-            "path": str(tmp_path / "knowledgebase"),
-            "roots": [],
-            "retrieval_mode": "off",
-            "auto_index": True,
-            "watch_for_changes": False,
-            "max_injected_chunks": 6,
-            "max_injected_tokens": 3200,
-            "dense_top_k": 40,
-            "sparse_top_k": 40,
-            "fused_top_k": 30,
-            "final_top_k": 8,
-            "min_fused_score": 0.0,
-            "injection_format": "sourced_note",
-            "chunking": {
-                "default_tokens": 512,
-                "overlap_tokens": 80,
-                "code_strategy": "structural",
-                "markdown_strategy": "headings",
-            },
-            "embeddings": {"provider": "local", "model": "google/embeddinggemma-300m", "dimensions": 768},
-            "reranker": {"enabled": False, "provider": "local", "model": "bge-reranker-v2-m3"},
-            "indexing": {
-                "respect_gitignore": True,
-                "respect_hermesignore": True,
-                "include_hidden": False,
-                "max_file_mb": 10,
-            },
-        },
-    }
+    return make_workspace_config(tmp_path)
 
 
 class TestWorkspaceTool:
@@ -80,6 +45,35 @@ class TestWorkspaceTool:
         assert retrieved["success"] is True
         assert retrieved["count"] >= 1
         assert retrieved["results"][0]["relative_path"] == "docs/deploy.md"
+
+    def test_delete_removes_file_from_index(self, tmp_path, monkeypatch):
+        from tools.workspace_tool import workspace_tool
+
+        cfg = _config(tmp_path)
+        workspace = Path(cfg["workspace"]["path"])
+        (workspace / "docs").mkdir(parents=True)
+        (workspace / "docs" / "deploy.md").write_text("deployment checklist and rollback plan\n", encoding="utf-8")
+        monkeypatch.setattr("tools.workspace_tool.load_config", lambda: cfg)
+
+        # Index the file
+        indexed = json.loads(workspace_tool(action="index"))
+        assert indexed["success"] is True
+        assert indexed["file_count"] == 1
+
+        # Verify file is searchable
+        searched = json.loads(workspace_tool(action="search", query="deployment"))
+        assert searched["success"] is True
+        assert searched["count"] == 1
+
+        # Delete from index
+        deleted = json.loads(workspace_tool(action="delete", path="docs/deploy.md"))
+        assert deleted["success"] is True
+        assert deleted["deleted"] == "docs/deploy.md"
+
+        # Verify file is gone from retrieval results
+        retrieved = json.loads(workspace_tool(action="retrieve", query="deployment"))
+        assert retrieved["success"] is True
+        assert retrieved["count"] == 0
 
     def test_list_returns_relative_paths(self, tmp_path, monkeypatch):
         from tools.workspace_tool import workspace_tool

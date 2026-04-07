@@ -9,6 +9,7 @@ from agent.workspace import (
     index_workspace_knowledgebase,
     list_workspace_roots,
     remove_workspace_root_from_config,
+    workspace_delete_file,
     workspace_list,
     workspace_retrieve,
     workspace_search,
@@ -50,7 +51,10 @@ def _print_status(console: Console) -> None:
 
 
 def _print_index(console: Console) -> None:
-    data = index_workspace_knowledgebase(load_config())
+    def _progress(current: int, total: int, path: str) -> None:
+        console.print(f"  Indexing [{current}/{total}] {path}", highlight=False)
+
+    data = index_workspace_knowledgebase(load_config(), progress_callback=_progress)
     if not data.get("success"):
         console.print(f"[bold red]{data.get('error', 'Index failed')}[/]")
         return
@@ -140,6 +144,14 @@ def _print_retrieve(console: Console, query: str, limit: int = 8) -> None:
         console.print()
 
 
+def _print_delete(console: Console, path: str) -> None:
+    data = workspace_delete_file(path, load_config())
+    if not data.get("success"):
+        console.print(f"[bold red]{data.get('error', 'Delete failed')}[/]")
+        return
+    console.print(f"Deleted from index: {data['deleted']}")
+
+
 def workspace_command(args, console: Optional[Console] = None) -> None:
     console = _console(console)
     action = getattr(args, "workspace_action", None) or "status"
@@ -174,6 +186,12 @@ def workspace_command(args, console: Optional[Console] = None) -> None:
             console.print("Usage: hermes workspace retrieve <query>")
             return
         _print_retrieve(console, query=query, limit=getattr(args, "limit", 8))
+    elif action == "delete":
+        path = getattr(args, "path", "") or ""
+        if not path.strip():
+            console.print("Usage: hermes workspace delete <path>")
+            return
+        _print_delete(console, path)
     elif action == "roots":
         root_action = getattr(args, "root_action", "list") or "list"
         if root_action == "list":
@@ -238,6 +256,13 @@ def handle_workspace_slash(cmd: str, console: Optional[Console] = None) -> None:
             return
         _print_retrieve(console, query=query)
         return
+    if action == "delete":
+        path = parts[1] if len(parts) > 1 else ""
+        if not path:
+            console.print("Usage: /workspace delete <path>")
+            return
+        _print_delete(console, path)
+        return
     if action == "roots":
         if len(parts) == 1 or parts[1].lower() == "list":
             _print_roots(console)
@@ -270,4 +295,4 @@ def handle_workspace_slash(cmd: str, console: Optional[Console] = None) -> None:
         console.print("Usage: /workspace roots [list|add|remove]")
         return
 
-    console.print("Usage: /workspace [status|index|list [path]|search <query>|retrieve <query>|roots ...]")
+    console.print("Usage: /workspace [status|index|list [path]|search <query>|retrieve <query>|delete <path>|roots ...]")
