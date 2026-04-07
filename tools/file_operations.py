@@ -429,20 +429,11 @@ class ShellFileOperations(FileOperations):
                     return home
                 elif path.startswith('~/'):
                     return home + path[1:]  # Replace ~ with home
-                # ~username format - extract and validate username before
-                # letting shell expand it (prevent shell injection via
-                # paths like "~; rm -rf /").
-                rest = path[1:]  # strip leading ~
-                slash_idx = rest.find('/')
-                username = rest[:slash_idx] if slash_idx >= 0 else rest
-                if username and re.fullmatch(r'[a-zA-Z0-9._-]+', username):
-                    # Only expand ~username (not the full path) to avoid shell
-                    # injection via path suffixes like "~user/$(malicious)".
-                    expand_result = self._exec(f"echo ~{username}")
-                    if expand_result.exit_code == 0 and expand_result.stdout.strip():
-                        user_home = expand_result.stdout.strip()
-                        suffix = path[1 + len(username):]  # e.g. "/rest/of/path"
-                        return user_home + suffix
+                # ~username format - use pathlib to expand without invoking shell
+                try:
+                    return str(Path(path).expanduser())
+                except RuntimeError:
+                    pass
         
         return path
     
@@ -630,19 +621,22 @@ class ShellFileOperations(FileOperations):
         dir_path = os.path.dirname(path) or "."
         filename = os.path.basename(path)
         
-        # List files in directory
-        ls_cmd = f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null | head -20"
-        ls_result = self._exec(ls_cmd)
-        
+        # List files in directory, constrained to workspace root to prevent
+        # path-traversal leaking listings outside the working directory.
         similar = []
-        if ls_result.exit_code == 0 and ls_result.stdout.strip():
-            files = ls_result.stdout.strip().split('\n')
-            # Simple similarity: files that share some characters with the target
-            for f in files:
-                # Check if filenames share significant overlap
-                common = set(filename.lower()) & set(f.lower())
-                if len(common) >= len(filename) * 0.5:  # 50% character overlap
-                    similar.append(os.path.join(dir_path, f))
+        real_dir = os.path.realpath(dir_path)
+        real_cwd = os.path.realpath(self.cwd)
+        if real_dir == real_cwd or real_dir.startswith(real_cwd + os.sep):
+            try:
+                files = [e.name for e in Path(real_dir).iterdir()][:20]
+                # Simple similarity: files that share some characters with the target
+                for f in files:
+                    # Check if filenames share significant overlap
+                    common = set(filename.lower()) & set(f.lower())
+                    if len(common) >= len(filename) * 0.5:  # 50% character overlap
+                        similar.append(os.path.join(dir_path, f))
+            except OSError:
+                pass
         
         return ReadResult(
             error=f"File not found: {path}",
