@@ -129,6 +129,22 @@ def _pool_runtime_api_key(entry: Any) -> str:
     return str(key or "").strip()
 
 
+def _to_openai_base_url(base_url: str) -> str:
+    """Normalize an Anthropic-style base URL to OpenAI-compatible format.
+
+    Some providers (MiniMax, MiniMax-CN) use an ``/anthropic`` path suffix for
+    their Anthropic Messages API endpoint.  The auxiliary client uses the OpenAI
+    SDK (chat completions), which requires the ``/v1`` path instead.  Passing the
+    raw ``inference_base_url`` causes requests to land on
+    ``/anthropic/chat/completions`` — a 404 on every provider that separates the
+    two API surfaces.
+    """
+    url = str(base_url or "").strip().rstrip("/")
+    if url.endswith("/anthropic"):
+        return url[: -len("/anthropic")] + "/v1"
+    return url
+
+
 def _pool_runtime_base_url(entry: Any, fallback: str = "") -> str:
     if entry is None:
         return str(fallback or "").strip().rstrip("/")
@@ -634,7 +650,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             if not api_key:
                 continue
 
-            base_url = _pool_runtime_base_url(entry, pconfig.inference_base_url) or pconfig.inference_base_url
+            base_url = _to_openai_base_url(
+                _pool_runtime_base_url(entry, pconfig.inference_base_url) or pconfig.inference_base_url
+            )
             model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id, "default")
             logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
             extra = {}
@@ -651,7 +669,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         if not api_key:
             continue
 
-        base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
+        base_url = _to_openai_base_url(
+            str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
+        )
         model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id, "default")
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
         extra = {}
