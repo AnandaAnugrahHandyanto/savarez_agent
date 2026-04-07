@@ -1,6 +1,8 @@
 """Unit tests for the Daytona cloud sandbox environment backend."""
 
+import shlex
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, PropertyMock
 
@@ -319,6 +321,23 @@ class TestExecute:
         result = env.execute("echo retry")
         assert result["output"] == "ok"
         assert result["returncode"] == 0
+
+
+class TestSyncSafety:
+    def test_upload_if_changed_quotes_parent_path(self, make_env, tmp_path):
+        env = make_env()
+        env._sandbox.process.exec.reset_mock()
+
+        host_file = tmp_path / "token.txt"
+        host_file.write_text("secret", encoding="utf-8")
+        remote_path = "/root/.hermes/skills/evil; touch /tmp/daytona-owned/file.txt"
+
+        uploaded = env._upload_if_changed(str(host_file), remote_path)
+
+        assert uploaded is True
+        expected_parent = str(Path(remote_path).parent)
+        mkdir_cmd = env._sandbox.process.exec.call_args_list[0][0][0]
+        assert mkdir_cmd == f"mkdir -p {shlex.quote(expected_parent)}"
 
 
 # ---------------------------------------------------------------------------
