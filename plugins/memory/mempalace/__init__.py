@@ -290,6 +290,11 @@ class MemPalaceMemoryProvider(MemoryProvider):
         self._breaker_open_until: float = 0.0
         self._breaker_lock = threading.Lock()
 
+        # ChromaDB client cache (FIX 3: avoid recreating PersistentClient on every call)
+        self._chroma_client = None
+        self._chroma_collection = None
+        self._chroma_lock = threading.Lock()
+
         # Async context tracking
         self._agent_context: str = "primary"
 
@@ -302,12 +307,12 @@ class MemPalaceMemoryProvider(MemoryProvider):
     # -- Availability --------------------------------------------------------
 
     def is_available(self) -> bool:
-        """Check if mempalace is installed — no I/O, no network calls."""
+        # FIX 2: silent check — no logging, add chromadb to imports checked
         try:
             import mempalace  # noqa: F401
+            import chromadb   # noqa: F401
             return True
         except ImportError:
-            logger.warning("MemPalace not installed. Run: pip install mempalace")
             return False
 
     # -- Config schema -------------------------------------------------------
@@ -417,13 +422,10 @@ class MemPalaceMemoryProvider(MemoryProvider):
     # -- Palace helpers ------------------------------------------------------
 
     def _get_collection(self):
-        """Get or create the mempalace_drawers ChromaDB collection."""
-        import chromadb
-        client = chromadb.PersistentClient(path=str(self._palace_path))
-        try:
-            return client.get_collection("mempalace_drawers")
-        except Exception:
-            return client.create_collection("mempalace_drawers")
+        """Return the cached mempalace_drawers ChromaDB collection."""
+        # FIX 3: return cached collection — PersistentClient created once in initialize()
+        with self._chroma_lock:
+            return self._chroma_collection
 
     def _refresh_wakeup(self) -> None:
         """Regenerate and cache the L0+L1 wake-up text."""
@@ -450,23 +452,47 @@ class MemPalaceMemoryProvider(MemoryProvider):
         """Load palace config, wing routing, and identity; start worker."""
         self._agent_context = kwargs.get("agent_context", "primary")
 
-        # Resolve palace path from hermes config
-        hermes_home = kwargs.get("hermes_home", "")
-        if hermes_home:
-            cfg_path = Path(hermes_home) / "mempalace.json"
-            if cfg_path.exists():
-                try:
-                    self._config = json.loads(cfg_path.read_text(encoding="utf-8"))
-                    if self._config.get("palace_path"):
-                        self._palace_path = Path(
-                            os.path.expanduser(self._config["palace_path"])
-                        )
-                except Exception:
-                    pass
+        # FIX 5+6: Resolve hermes_home robustly with get_hermes_home() fallback
+        _raw_hermes_home = kwargs.get("hermes_home", "")
+        hermes_home = Path(_raw_hermes_home or str(Path.home() / ".hermes"))
+        try:
+            from hermes_constants import get_hermes_home
+            _hermes_home = get_hermes_home()
+        except ImportError:
+            _hermes_home = hermes_home
+
+        cfg_path = _hermes_home / "mempalace.json"
+        if cfg_path.exists():
+            try:
+                self._config = json.loads(cfg_path.read_text(encoding="utf-8"))
+                if self._config.get("palace_path"):
+                    self._palace_path = Path(
+                        os.path.expanduser(self._config["palace_path"])
+                    )
+            except Exception:
+                pass
+
+        # FIX 5: Update mempalace_dir based on config, not hardcoded in __init__
+        if self._config.get("mempalace_dir"):
+            self._mempalace_dir = Path(
+                os.path.expanduser(self._config["mempalace_dir"])
+            )
+        elif (_hermes_home / "mempalace").exists():
+            self._mempalace_dir = _hermes_home / "mempalace"
+        # else keep default ~/.mempalace (backward compat)
+        self._diary_path = self._mempalace_dir / "diary.jsonl"
 
         # Ensure palace directory exists
         self._palace_path.mkdir(parents=True, exist_ok=True)
         self._mempalace_dir.mkdir(parents=True, exist_ok=True)
+
+        # FIX 3: Create ChromaDB client once during initialize — not on every call
+        import chromadb
+        self._chroma_client = chromadb.PersistentClient(path=str(self._palace_path))
+        try:
+            self._chroma_collection = self._chroma_client.get_collection("mempalace_drawers")
+        except Exception:
+            self._chroma_collection = self._chroma_client.create_collection("mempalace_drawers")
 
         # Load wing config if it exists — do not create it
         wing_config_path = self._mempalace_dir / "wing_config.json"
@@ -497,11 +523,11 @@ class MemPalaceMemoryProvider(MemoryProvider):
             else ""
         )
 
-        # Cache wake-up context for system_prompt_block()
-        self._refresh_wakeup()
-
-        # Start background worker
+        # FIX 4: Start worker FIRST, then queue wake-up in background
+        # This avoids blocking initialize() with a potentially slow mempalace call.
+        # system_prompt_block() already returns "" when cache is empty — safe.
         self._start_worker()
+        self._enqueue(self._refresh_wakeup)
 
         logger.info(
             "MemPalace: initialized (session=%s, palace=%s)",
@@ -643,6 +669,53 @@ class MemPalaceMemoryProvider(MemoryProvider):
         except Exception as exc:
             self._record_failure()
             logger.warning("MemPalace sync_turn failed: %s", exc)
+
+    # -- Memory write hook ---------------------------------------------------
+
+    def on_memory_write(self, action: str, target: str, content: str) -> None:
+        """Mirror built-in memory writes to the palace."""
+        # FIX 7: capture explicit memory writes from the core memory system
+        if action not in ("add", "replace") or not content.strip():
+            return
+        hall = "hall_preferences" if target == "user" else "hall_facts"
+        self._enqueue(self._do_file_single, content, "wing_general", hall, "memory-writes")
+
+    def _do_file_single(self, content: str, wing: str, hall: str, room: str) -> None:
+        """File a single text entry to the palace collection (background helper)."""
+        try:
+            drawer_hash = hashlib.md5(content[:300].encode("utf-8")).hexdigest()[:16]
+            drawer_id = f"drawer_{wing}_{room}_{drawer_hash}"
+
+            col = self._get_collection()
+
+            existing = col.get(ids=[drawer_id])
+            if existing.get("ids"):
+                logger.debug("MemPalace: skipping duplicate drawer %s", drawer_id)
+                self._record_success()
+                return
+
+            col.add(
+                documents=[content],
+                ids=[drawer_id],
+                metadatas=[
+                    {
+                        "wing": wing,
+                        "room": room,
+                        "hall": hall,
+                        "source_file": f"hermes_memory_write_{drawer_hash}",
+                        "added_by": "hermes",
+                        "filed_at": datetime.now().isoformat(),
+                        "ingest_mode": "memory_write",
+                    }
+                ],
+            )
+            self._record_success()
+            logger.info(
+                "MemPalace: filed memory-write drawer %s/%s/%s", wing, room, hall
+            )
+        except Exception as exc:
+            self._record_failure()
+            logger.warning("MemPalace _do_file_single failed: %s", exc)
 
     # -- Session end ---------------------------------------------------------
 
@@ -813,12 +886,10 @@ class MemPalaceMemoryProvider(MemoryProvider):
             return json.dumps({"error": f"Status failed: {exc}"})
 
     def _tool_list_wings(self) -> str:
+        # FIX 3: use cached collection instead of creating a new PersistentClient
         try:
-            import chromadb
-            client = chromadb.PersistentClient(path=str(self._palace_path))
-            try:
-                col = client.get_collection("mempalace_drawers")
-            except Exception:
+            col = self._get_collection()
+            if col is None:
                 return json.dumps({"wings": {}, "total_drawers": 0})
 
             results = col.get(include=["metadatas"], limit=10000)
@@ -838,12 +909,10 @@ class MemPalaceMemoryProvider(MemoryProvider):
 
     def _tool_list_rooms(self, args: Dict[str, Any]) -> str:
         wing = args.get("wing") or None
+        # FIX 3: use cached collection instead of creating a new PersistentClient
         try:
-            import chromadb
-            client = chromadb.PersistentClient(path=str(self._palace_path))
-            try:
-                col = client.get_collection("mempalace_drawers")
-            except Exception:
+            col = self._get_collection()
+            if col is None:
                 return json.dumps({"rooms": {}, "wing": wing})
 
             get_kwargs: Dict[str, Any] = {"include": ["metadatas"], "limit": 10000}

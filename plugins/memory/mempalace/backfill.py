@@ -26,26 +26,13 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# FIX 8: import _extract_text_content from the main module — no duplication
+from plugins.memory.mempalace import _extract_text_content  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _extract_text_content(content: Any) -> str:
-    """Flatten message content (string or content-block list) to plain text."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, dict):
-                if block.get("type") == "text":
-                    parts.append(block.get("text", ""))
-            elif isinstance(block, str):
-                parts.append(block)
-        return " ".join(parts)
-    return str(content) if content else ""
-
 
 def _load_wing_config() -> Dict[str, Any]:
     """Load wing config from ~/.mempalace/wing_config.json if it exists."""
