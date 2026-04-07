@@ -979,6 +979,63 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=False, error=str(e))
 
+    async def send_exec_approval(
+        self, chat_id: str, command: str, session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send button-based exec approval prompt for a dangerous command.
+
+        Called by the gateway's approval notify callback (which already
+        checks for this method via ``hasattr``).  Same interface as
+        Discord's ``send_exec_approval``.
+        """
+        cmd_preview = command[:200] + "..." if len(command) > 200 else command
+        text = (
+            f"⚠️ *Approval required:*\n"
+            f"```\n{cmd_preview}\n```\n"
+            f"Reason: {description}"
+        )
+        options = [
+            [
+                {"label": "✓ Allow Once", "data": f"approve:once:{session_key}"},
+                {"label": "Allow Session", "data": f"approve:session:{session_key}"},
+            ],
+            [
+                {"label": "Always Allow", "data": f"approve:always:{session_key}"},
+                {"label": "✗ Deny", "data": f"approve:deny:{session_key}"},
+            ],
+        ]
+        return await self.send_inline_options(chat_id, text, options, metadata)
+
+    async def send_inline_options(self, chat_id, text, options, metadata=None):
+        """Send a message with inline keyboard buttons.
+
+        Overrides the base text fallback with native Telegram buttons.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            buttons = []
+            for row in options:
+                buttons.append([
+                    InlineKeyboardButton(opt["label"], callback_data=opt["data"])
+                    for opt in row
+                ])
+            keyboard = InlineKeyboardMarkup(buttons)
+            thread_id = metadata.get("thread_id") if metadata else None
+            msg = await self._bot.send_message(
+                chat_id=int(chat_id),
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+                message_thread_id=int(thread_id) if thread_id else None,
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_inline_options failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",
@@ -1308,7 +1365,15 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
-        """Handle inline keyboard button clicks."""
+        """Handle inline keyboard button clicks.
+
+        Routes by callback_data prefix:
+        - ``mp:/mm:/mb/mx/mg:`` — model picker (upstream)
+        - ``update_prompt:`` — hermes update yes/no
+        - ``approve:`` — dangerous command approval
+        - ``mc`` — generic cancel (edit message, remove buttons)
+        - ``cmd:args`` — generic: synthetic ``/cmd args`` through _message_handler
+        """
         query = update.callback_query
         if not query or not query.data:
             return
@@ -1322,32 +1387,146 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         # --- Update prompt callbacks ---
-        if not data.startswith("update_prompt:"):
+        if data.startswith("update_prompt:"):
+            answer = data.split(":", 1)[1]
+            await query.answer(text=f"Sent '{answer}' to the update process.")
+            label = "Yes" if answer == "y" else "No"
+            try:
+                await query.edit_message_text(
+                    text=f"⚕ Update prompt answered: *{label}*",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+            try:
+                from hermes_constants import get_hermes_home
+                home = get_hermes_home()
+                response_path = home / ".update_response"
+                tmp = response_path.with_suffix(".tmp")
+                tmp.write_text(answer)
+                tmp.replace(response_path)
+                logger.info("Telegram update prompt answered '%s' by user %s",
+                            answer, getattr(query.from_user, "id", "unknown"))
+            except Exception as exc:
+                logger.error("Failed to write update response from callback: %s", exc)
             return
-        answer = data.split(":", 1)[1]  # "y" or "n"
-        await query.answer(text=f"Sent '{answer}' to the update process.")
-        # Edit the message to show the choice and remove buttons
-        label = "Yes" if answer == "y" else "No"
+
+        # --- Cancel: edit message, remove buttons ---
+        if data == "mc":
+            await query.answer(text="Cancelled")
+            try:
+                await query.edit_message_text("Cancelled.")
+            except Exception:
+                pass
+            return
+
+        # --- Commands pagination: edit in-place ---
+        if data.startswith("cpg:"):
+            await self._on_commands_page_callback(query, data)
+            return
+
+        # --- Approval: special handler ---
+        if data.startswith("approve:"):
+            await self._on_approve_callback(query, data)
+            return
+
+        # --- Generic: cmd:args → synthetic /cmd args ---
+        await self._on_generic_callback(query, data)
+
+    async def _on_generic_callback(self, query, data: str) -> None:
+        """Generic callback: ``cmd:args`` → synthetic ``/cmd args``.
+
+        Constructs a synthetic MessageEvent and feeds it through the
+        existing ``_message_handler`` (GatewayRunner._handle_message).
+        Edits the keyboard message with the response.
+        """
+        await query.answer()
+        cmd, _, args = data.partition(":")
+        synthetic_text = f"/{cmd} {args}".strip()
+
+        from gateway.session import SessionSource
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=str(query.message.chat_id),
+            user_id=str(query.from_user.id) if query.from_user else "",
+        )
+        synthetic = MessageEvent(text=synthetic_text, source=source)
+
+        try:
+            response = await self._message_handler(synthetic)
+        except Exception as exc:
+            logger.warning("[%s] generic callback handler failed: %s", self.name, exc)
+            response = None
+
+        try:
+            text = response or "✓ Done"
+            await query.edit_message_text(text)
+        except Exception:
+            pass
+
+    async def _on_commands_page_callback(self, query, data: str) -> None:
+        """Handle ``cpg:<page>`` callbacks — edit message in-place with new page."""
+        await query.answer()
+        try:
+            page = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            return
+
+        if not getattr(self, "gateway_runner", None):
+            return
+
+        text, nav, _, _ = self.gateway_runner._build_commands_page(page, is_telegram=True)
+        buttons = []
+        if nav:
+            nav.append({"label": "✕ Close", "data": "mc"})
+            buttons.append([
+                InlineKeyboardButton(opt["label"], callback_data=opt["data"])
+                for opt in nav
+            ])
+        keyboard = InlineKeyboardMarkup(buttons) if buttons else None
+
         try:
             await query.edit_message_text(
-                text=f"⚕ Update prompt answered: *{label}*",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=None,
+                text, reply_markup=keyboard,
             )
-        except Exception:
-            pass  # non-fatal if edit fails
-        # Write the response file
-        try:
-            from hermes_constants import get_hermes_home
-            home = get_hermes_home()
-            response_path = home / ".update_response"
-            tmp = response_path.with_suffix(".tmp")
-            tmp.write_text(answer)
-            tmp.replace(response_path)
-            logger.info("Telegram update prompt answered '%s' by user %s",
-                        answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
-            logger.error("Failed to write update response from callback: %s", exc)
+            logger.warning("[%s] commands page edit failed: %s", self.name, exc)
+
+    async def _on_approve_callback(self, query, data: str) -> None:
+        """Handle ``approve:<choice>:<session_key>`` callbacks.
+
+        Calls ``resolve_gateway_approval()`` directly — same pattern as
+        Discord's ExecApprovalView.
+        """
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            await query.answer(text="Invalid callback")
+            return
+        _, choice, session_key = parts
+
+        await query.answer(text="Processing...")
+        from tools.approval import resolve_gateway_approval, has_blocking_approval
+
+        if not has_blocking_approval(session_key):
+            try:
+                await query.edit_message_text("⚠️ Approval expired — agent is no longer waiting.")
+            except Exception:
+                pass
+            return
+
+        if choice == "deny":
+            count = resolve_gateway_approval(session_key, "deny")
+            label = "Denied"
+        else:
+            count = resolve_gateway_approval(session_key, choice)
+            scope = {"once": "", "session": " (for session)", "always": " (permanently)"}
+            label = f"Approved{scope.get(choice, '')}"
+
+        try:
+            await query.edit_message_text(f"✅ {label}. Agent resuming...")
+        except Exception:
+            pass
 
     async def send_voice(
         self,

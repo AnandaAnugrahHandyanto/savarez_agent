@@ -1128,6 +1128,7 @@ class GatewayRunner:
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
+            adapter.gateway_runner = self
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
@@ -1426,6 +1427,7 @@ class GatewayRunner:
                     adapter.set_message_handler(self._handle_message)
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
+                    adapter.gateway_runner = self
 
                     success = await adapter.connect()
                     if success:
@@ -3411,10 +3413,51 @@ class GatewayRunner:
             pass
         return "\n".join(lines)
 
-    async def _handle_commands_command(self, event: MessageEvent) -> str:
-        """Handle /commands [page] - paginated list of all commands and skills."""
+    def _build_commands_page(self, page: int = 1, is_telegram: bool = False):
+        """Build a commands list page. Returns (text, nav_buttons, total_pages, page)."""
         from hermes_cli.commands import gateway_help_lines
 
+        entries = list(gateway_help_lines())
+        try:
+            from agent.skill_commands import get_skill_commands
+            skill_cmds = get_skill_commands()
+            if skill_cmds:
+                entries.append("")
+                entries.append("⚡ **Skill Commands**:")
+                max_desc = 120 if is_telegram else 300
+                for cmd in sorted(skill_cmds):
+                    desc = skill_cmds[cmd].get("description", "").strip() or "Skill command"
+                    if len(desc) > max_desc:
+                        desc = desc[:max_desc].rstrip() + "…"
+                    entries.append(f"`{cmd}` — {desc}")
+        except Exception:
+            pass
+
+        if not entries:
+            return "No commands available.", [], 1, 1
+
+        page_size = 15 if is_telegram else 20
+        total_pages = max(1, (len(entries) + page_size - 1) // page_size)
+        page = max(1, min(page, total_pages))
+        start = (page - 1) * page_size
+        page_entries = entries[start:start + page_size]
+
+        lines = [
+            f"📚 **Commands** ({len(entries)} total, page {page}/{total_pages})",
+            "",
+            *page_entries,
+        ]
+        nav = []
+        if total_pages > 1:
+            if page > 1:
+                nav.append({"label": "◀ Prev", "data": f"cpg:{page - 1}"})
+            if page < total_pages:
+                nav.append({"label": "Next ▶", "data": f"cpg:{page + 1}"})
+
+        return "\n".join(lines), nav, total_pages, page
+
+    async def _handle_commands_command(self, event: MessageEvent) -> str:
+        """Handle /commands [page] - paginated list of all commands and skills."""
         raw_args = event.get_command_args().strip()
         if raw_args:
             try:
@@ -3424,45 +3467,30 @@ class GatewayRunner:
         else:
             requested_page = 1
 
-        # Build combined entry list: built-in commands + skill commands
-        entries = list(gateway_help_lines())
-        try:
-            from agent.skill_commands import get_skill_commands
-            skill_cmds = get_skill_commands()
-            if skill_cmds:
-                entries.append("")
-                entries.append("⚡ **Skill Commands**:")
-                for cmd in sorted(skill_cmds):
-                    desc = skill_cmds[cmd].get("description", "").strip() or "Skill command"
-                    entries.append(f"`{cmd}` — {desc}")
-        except Exception:
-            pass
-
-        if not entries:
-            return "No commands available."
-
         from gateway.config import Platform
-        page_size = 15 if event.source.platform == Platform.TELEGRAM else 20
-        total_pages = max(1, (len(entries) + page_size - 1) // page_size)
-        page = max(1, min(requested_page, total_pages))
-        start = (page - 1) * page_size
-        page_entries = entries[start:start + page_size]
+        is_telegram = event.source.platform == Platform.TELEGRAM
+        text, nav, total_pages, page = self._build_commands_page(requested_page, is_telegram)
 
-        lines = [
-            f"📚 **Commands** ({len(entries)} total, page {page}/{total_pages})",
-            "",
-            *page_entries,
-        ]
-        if total_pages > 1:
+        if nav:
+            adapter = self.adapters.get(event.source.platform)
+            if adapter:
+                nav.append({"label": "✕ Close", "data": "mc"})
+                await adapter.send_inline_options(
+                    event.source.chat_id, text, [nav],
+                    metadata={"thread_id": event.source.thread_id} if event.source.thread_id else None,
+                )
+                return None
+            # Fallback: text nav
             nav_parts = []
             if page > 1:
                 nav_parts.append(f"`/commands {page - 1}` ← prev")
             if page < total_pages:
                 nav_parts.append(f"next → `/commands {page + 1}`")
-            lines.extend(["", " | ".join(nav_parts)])
+            text += "\n\n" + " | ".join(nav_parts)
+
         if page != requested_page:
-            lines.append(f"_(Requested page {requested_page} was out of range, showing page {page}.)_")
-        return "\n".join(lines)
+            text += f"\n_(Requested page {requested_page} was out of range, showing page {page}.)_"
+        return text
     
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model for this session.
@@ -3853,6 +3881,18 @@ class GatewayRunner:
             return "No personalities configured in `~/.hermes/config.yaml`"
 
         if not args:
+            text = "🎭 **Choose a personality:**"
+            adapter = self.adapters.get(event.source.platform)
+            if adapter:
+                options = [[{"label": f"✕ {n}" if n == "none" else n, "data": f"personality:{n}"}]
+                           for n in ["none"] + list(personalities.keys())]
+                options.append([{"label": "✕ Cancel", "data": "mc"}])
+                await adapter.send_inline_options(
+                    event.source.chat_id, text, options,
+                    metadata={"thread_id": event.source.thread_id} if event.source.thread_id else None,
+                )
+                return None
+            # Fallback: text list
             lines = ["🎭 **Available Personalities**\n"]
             lines.append("• `none` — (no personality overlay)")
             for name, prompt in personalities.items():
@@ -4437,6 +4477,18 @@ class GatewayRunner:
 
         if not arg:
             checkpoints = mgr.list_checkpoints(cwd)
+            adapter = self.adapters.get(event.source.platform)
+            if adapter and checkpoints:
+                text = "🔄 **Restore a checkpoint:**"
+                options = [[{"label": f"#{i+1} {cp.get('reason', 'checkpoint')[:30]}",
+                             "data": f"rollback:{i+1}"}]
+                           for i, cp in enumerate(checkpoints[:8])]
+                options.append([{"label": "✕ Cancel", "data": "mc"}])
+                await adapter.send_inline_options(
+                    event.source.chat_id, text, options,
+                    metadata={"thread_id": event.source.thread_id} if event.source.thread_id else None,
+                )
+                return None
             return format_checkpoint_list(checkpoints, cwd)
 
         # Restore by number or hash
@@ -4817,7 +4869,7 @@ class GatewayRunner:
                 return False
 
         if not args:
-            # Show current state
+            # Show current state with inline buttons
             rc = self._reasoning_config
             if rc is None:
                 level = "medium (default)"
@@ -5074,6 +5126,19 @@ class GatewayRunner:
                         "Use `/title My Session` to name your current session, "
                         "then `/resume My Session` to return to it later."
                     )
+                # Try inline buttons
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    text = "📋 **Resume a session:**"
+                    options = [[{"label": s["title"][:40], "data": f"resume:{s['title']}"}]
+                               for s in titled[:8]]
+                    options.append([{"label": "✕ Cancel", "data": "mc"}])
+                    await adapter.send_inline_options(
+                        source.chat_id, text, options,
+                        metadata={"thread_id": source.thread_id} if source.thread_id else None,
+                    )
+                    return None
+                # Fallback: text list
                 lines = ["📋 **Named Sessions**\n"]
                 for s in titled[:10]:
                     title = s["title"]

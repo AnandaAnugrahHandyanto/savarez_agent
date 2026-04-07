@@ -628,6 +628,32 @@ class BasePlatformAdapter(ABC):
         """
         return SendResult(success=False, error="Not supported")
 
+    async def send_inline_options(
+        self,
+        chat_id: str,
+        text: str,
+        options: list,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a message with interactive options.
+
+        *options* is a list of rows.  Each row is a list of dicts with
+        ``"label"`` (display text) and ``"data"`` (callback identifier)::
+
+            [[{"label": "High", "data": "reasoning:high"},
+              {"label": "Low",  "data": "reasoning:low"}],
+             [{"label": "Cancel", "data": "mc"}]]
+
+        Platform adapters override this to render native interactive
+        elements (inline keyboards, buttons, select menus).  The default
+        implementation renders a plain text list and sends via ``send()``.
+        """
+        lines = [text, ""]
+        for row in options:
+            labels = "  ".join(f"• {opt['label']}" for opt in row)
+            lines.append(labels)
+        return await self.send(chat_id, "\n".join(lines), metadata=metadata)
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """
         Send a typing indicator.
