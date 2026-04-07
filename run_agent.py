@@ -3369,8 +3369,14 @@ class AIAgent:
         if isinstance(temperature, (int, float)):
             normalized["temperature"] = float(temperature)
 
-        # Pass through tool_choice, parallel_tool_calls, prompt_cache_key
-        for passthrough_key in ("tool_choice", "parallel_tool_calls", "prompt_cache_key"):
+        if normalized_tools:
+            for passthrough_key in ("tool_choice", "parallel_tool_calls"):
+                val = api_kwargs.get(passthrough_key)
+                if val is not None:
+                    normalized[passthrough_key] = val
+
+        # prompt_cache_key is independent of tool availability
+        for passthrough_key in ("prompt_cache_key",):
             val = api_kwargs.get(passthrough_key)
             if val is not None:
                 normalized[passthrough_key] = val
@@ -3392,6 +3398,72 @@ class AIAgent:
             )
 
         return normalized
+
+    @staticmethod
+    def _clear_codex_tool_settings(api_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove Responses tool fields together so no stale tool hints survive."""
+        api_kwargs.pop("tools", None)
+        api_kwargs.pop("tool_choice", None)
+        api_kwargs.pop("parallel_tool_calls", None)
+        return api_kwargs
+
+    @staticmethod
+    def _strip_prompt_section(text: str, header: str) -> str:
+        if not text or not header:
+            return text
+        pattern = re.compile(rf"(?:^|\n){re.escape(header)}\n.*?(?=\n#{{1,2}}\s|\Z)", re.DOTALL)
+        return pattern.sub("\n", text)
+
+    def _should_slim_codex_instructions(self) -> bool:
+        if self.api_mode != "codex_responses":
+            return False
+        if self.provider == "openai-codex":
+            return True
+        return "chatgpt.com/backend-api/codex" in self._base_url_lower
+
+    def _slim_codex_instructions(self, instructions: str) -> str:
+        if not isinstance(instructions, str):
+            instructions = str(instructions or "")
+
+        slimmed = instructions
+        # Smallest viable first-pass slimming for Codex prompts: drop the
+        # highest-cost scaffolding sections that are safe to recover from tools/files.
+        for header in (
+            "## Skills (mandatory)",
+            "# Project Context",
+        ):
+            slimmed = self._strip_prompt_section(slimmed, header)
+
+        session_overlay_pattern = re.compile(
+            r"(?:^|\n)Conversation started: .*?(?=\n#{{1,2}}\s|\Z)",
+            re.DOTALL,
+        )
+        slimmed = session_overlay_pattern.sub("\n", slimmed)
+        slimmed = re.sub(r"\n{3,}", "\n\n", slimmed).strip()
+        return slimmed or DEFAULT_AGENT_IDENTITY
+
+    def _log_codex_request_shape(self, api_kwargs: Dict[str, Any], *, original_instructions: str) -> None:
+        try:
+            input_items = api_kwargs.get("input") or []
+            instructions = str(api_kwargs.get("instructions") or "")
+            input_chars = len(json.dumps(input_items, ensure_ascii=False)) if input_items else 0
+            tools = api_kwargs.get("tools") or []
+            logger.info(
+                "Codex request shape %s instructions_chars=%s slimmed=%s input_items=%s input_chars=%s tools=%s has_tool_choice=%s has_parallel_tool_calls=%s has_skills_block=%s has_project_context=%s has_session_overlay=%s",
+                self._client_log_context(),
+                len(instructions),
+                instructions != (original_instructions or ""),
+                len(input_items),
+                input_chars,
+                len(tools),
+                "tool_choice" in api_kwargs,
+                "parallel_tool_calls" in api_kwargs,
+                "## Skills (mandatory)" in (original_instructions or ""),
+                "# Project Context" in (original_instructions or ""),
+                "Conversation started:" in (original_instructions or ""),
+            )
+        except Exception as exc:
+            logger.debug("Failed to log Codex request shape: %s", exc)
 
     def _extract_responses_message_text(self, item: Any) -> str:
         """Extract assistant text from a Responses message output item."""
@@ -5363,15 +5435,22 @@ class AIAgent:
                 elif self.reasoning_config.get("effort"):
                     reasoning_effort = self.reasoning_config["effort"]
 
+            response_tools = self._responses_tools()
+            response_instructions = instructions
+            if self._should_slim_codex_instructions():
+                response_instructions = self._slim_codex_instructions(instructions)
             kwargs = {
                 "model": self.model,
-                "instructions": instructions,
+                "instructions": response_instructions,
                 "input": self._chat_messages_to_responses_input(payload_messages),
-                "tools": self._responses_tools(),
-                "tool_choice": "auto",
-                "parallel_tool_calls": True,
                 "store": False,
             }
+            if response_tools:
+                kwargs["tools"] = response_tools
+                kwargs["tool_choice"] = "auto"
+                kwargs["parallel_tool_calls"] = True
+
+            self._log_codex_request_shape(kwargs, original_instructions=instructions)
 
             if not is_github_responses:
                 kwargs["prompt_cache_key"] = self.session_id
@@ -6761,8 +6840,7 @@ class AIAgent:
                 summary_extra_body["tags"] = ["product=hermes-agent"]
 
             if self.api_mode == "codex_responses":
-                codex_kwargs = self._build_api_kwargs(api_messages)
-                codex_kwargs.pop("tools", None)
+                codex_kwargs = self._clear_codex_tool_settings(self._build_api_kwargs(api_messages))
                 summary_response = self._run_codex_stream(codex_kwargs)
                 assistant_message, _ = self._normalize_codex_response(summary_response)
                 final_response = (assistant_message.content or "").strip() if assistant_message else ""
@@ -6817,8 +6895,7 @@ class AIAgent:
             else:
                 # Retry summary generation
                 if self.api_mode == "codex_responses":
-                    codex_kwargs = self._build_api_kwargs(api_messages)
-                    codex_kwargs.pop("tools", None)
+                    codex_kwargs = self._clear_codex_tool_settings(self._build_api_kwargs(api_messages))
                     retry_response = self._run_codex_stream(codex_kwargs)
                     retry_msg, _ = self._normalize_codex_response(retry_response)
                     final_response = (retry_msg.content or "").strip() if retry_msg else ""

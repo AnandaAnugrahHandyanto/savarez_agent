@@ -287,12 +287,75 @@ def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_mo
     assert "prompt_cache_key" not in kwargs
 
 
+def test_build_api_kwargs_codex_omits_tool_fields_when_no_tools(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    monkeypatch.setattr(run_agent, "get_tool_definitions", lambda **kwargs: [])
+
+    agent = run_agent.AIAgent(
+        model="gpt-5-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="codex-token",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": "Ping"},
+    ])
+
+    assert "tools" not in kwargs
+    assert "tool_choice" not in kwargs
+    assert "parallel_tool_calls" not in kwargs
+
+
+def test_build_api_kwargs_codex_slims_large_instruction_sections(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    instructions = "".join([
+        "Base identity\n\n",
+        "## Skills (mandatory)\nskill listing\n\n",
+        "# Project Context\ncontext files here\n\n",
+        "Conversation started: Tuesday\nSession ID: abc\nModel: gpt-5-codex\nProvider: openai-codex\n",
+    ])
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": instructions},
+        {"role": "user", "content": "Ping"},
+    ])
+
+    assert kwargs["instructions"] == "Base identity"
+
+
+def test_build_api_kwargs_github_responses_does_not_slim_instruction_sections(monkeypatch):
+    agent = _build_copilot_agent(monkeypatch)
+    instructions = "".join([
+        "Base identity\n\n",
+        "## Skills (mandatory)\nskill listing\n\n",
+        "# Project Context\ncontext files here\n\n",
+        "Conversation started: Tuesday\nSession ID: abc\nModel: gpt-5-codex\nProvider: openai-codex\n",
+    ])
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": instructions},
+        {"role": "user", "content": "Ping"},
+    ])
+
+    assert kwargs["instructions"] == instructions.strip()
+    assert "## Skills (mandatory)" in kwargs["instructions"]
+    assert "# Project Context" in kwargs["instructions"]
+    assert "Conversation started:" in kwargs["instructions"]
+
+
 def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):
     agent = _build_agent(monkeypatch)
     calls = {"stream": 0}
 
     def _fake_stream(**kwargs):
         calls["stream"] += 1
+        assert kwargs.get("tools")
+        assert kwargs.get("tool_choice") == "auto"
         if calls["stream"] == 1:
             return _FakeResponsesStream(
                 final_error=RuntimeError("Didn't receive a `response.completed` event.")
@@ -306,7 +369,14 @@ def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):
         )
     )
 
-    response = agent._run_codex_stream(_codex_request_kwargs())
+    response = agent._run_codex_stream(
+        agent._build_api_kwargs(
+            [
+                {"role": "system", "content": "You are Hermes."},
+                {"role": "user", "content": "Ping"},
+            ]
+        )
+    )
     assert calls["stream"] == 2
     assert response.output[0].content[0].text == "stream ok"
 
@@ -596,6 +666,17 @@ def test_preflight_codex_api_kwargs_allows_reasoning_and_temperature(monkeypatch
     assert result["include"] == ["reasoning.encrypted_content"]
     assert result["temperature"] == 0.7
     assert result["max_output_tokens"] == 4096
+
+
+def test_preflight_codex_api_kwargs_omits_tool_fields_without_tools(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    kwargs = _codex_request_kwargs()
+    kwargs["tool_choice"] = "auto"
+    kwargs["parallel_tool_calls"] = True
+
+    result = agent._preflight_codex_api_kwargs(kwargs)
+    assert "tool_choice" not in result
+    assert "parallel_tool_calls" not in result
 
 
 def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
