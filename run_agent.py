@@ -405,6 +405,27 @@ def _strip_budget_warnings_from_history(messages: list) -> None:
             msg["content"] = cleaned
 
 
+def _safe_session_filename_component(session_id: str) -> str:
+    """Return a stable, path-safe filename component for a session ID."""
+    raw = str(session_id or "").strip()
+    sanitized = re.sub(r"[^\w-]", "_", raw).strip("._")
+    sanitized = sanitized[:96] or "session"
+    if raw and sanitized == raw:
+        return sanitized
+    digest = hashlib.sha256(
+        raw.encode("utf-8", errors="surrogatepass")
+    ).hexdigest()[:12]
+    return f"{sanitized}_{digest}"
+
+
+def _session_artifact_path(
+    logs_dir: Path, session_id: str, prefix: str, suffix: str = ".json"
+) -> Path:
+    """Build a session-scoped artifact path without allowing path traversal."""
+    safe_session_id = _safe_session_filename_component(session_id)
+    return logs_dir / f"{prefix}_{safe_session_id}{suffix}"
+
+
 # =========================================================================
 # Large tool result handler — save oversized output to temp file
 # =========================================================================
@@ -965,7 +986,9 @@ class AIAgent:
         hermes_home = get_hermes_home()
         self.logs_dir = hermes_home / "sessions"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
-        self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
+        self.session_log_file = _session_artifact_path(
+            self.logs_dir, self.session_id, "session"
+        )
         
         # Track conversation messages for session logging
         self._session_messages: List[Dict[str, Any]] = []
@@ -2382,7 +2405,11 @@ class AIAgent:
                 dump_payload["error"] = error_info
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            dump_file = self.logs_dir / f"request_dump_{self.session_id}_{timestamp}.json"
+            dump_file = _session_artifact_path(
+                self.logs_dir,
+                f"{self.session_id}_{timestamp}",
+                "request_dump",
+            )
             dump_file.write_text(
                 json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str),
                 encoding="utf-8",
@@ -5890,7 +5917,9 @@ class AIAgent:
                 old_session_id = self.session_id
                 self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
                 # Update session_log_file to point to the new session's JSON file
-                self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
+                self.session_log_file = _session_artifact_path(
+                    self.logs_dir, self.session_id, "session"
+                )
                 self._session_db.create_session(
                     session_id=self.session_id,
                     source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),

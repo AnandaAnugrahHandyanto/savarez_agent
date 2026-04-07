@@ -2482,6 +2482,35 @@ class TestSaveSessionLogAtomicWrite:
         assert call_args.kwargs["indent"] == 2
         assert call_args.kwargs["default"] is str
 
+    def test_session_id_cannot_escape_sessions_dir(self):
+        """Traversal-shaped session IDs must not redirect session logs."""
+        malicious_session_id = "../../../../outside_dir/pwned"
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                session_id=malicious_session_id,
+            )
+
+        messages = [{"role": "user", "content": "hello"}]
+        agent._save_session_log(messages)
+
+        sessions_dir = agent.logs_dir.resolve()
+        written_path = agent.session_log_file.resolve()
+
+        assert sessions_dir in written_path.parents
+        assert written_path.exists()
+        assert not (sessions_dir.parent.parent / "outside_dir").exists()
+
 
 # ===================================================================
 # Anthropic adapter integration fixes
