@@ -3867,6 +3867,7 @@ class AIAgent:
         max_stream_retries = 1
         has_tool_calls = False
         first_delta_fired = False
+        streamed_text_parts: List[str] = []
         self._reasoning_deltas_fired = False
         for attempt in range(max_stream_retries + 1):
             try:
@@ -3879,6 +3880,7 @@ class AIAgent:
                         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
                             delta_text = getattr(event, "delta", "")
                             if delta_text and not has_tool_calls:
+                                streamed_text_parts.append(delta_text)
                                 if not first_delta_fired:
                                     first_delta_fired = True
                                     if on_first_delta:
@@ -3895,7 +3897,28 @@ class AIAgent:
                             reasoning_text = getattr(event, "delta", "")
                             if reasoning_text:
                                 self._fire_reasoning_delta(reasoning_text)
-                    return stream.get_final_response()
+                    final_response = stream.get_final_response()
+                    output_items = getattr(final_response, "output", None)
+                    streamed_text = "".join(streamed_text_parts).strip()
+                    if (
+                        isinstance(output_items, list)
+                        and len(output_items) == 0
+                        and streamed_text
+                        and not has_tool_calls
+                    ):
+                        # Some Codex Responses backends now emit the assistant
+                        # answer only through output_text.delta events while the
+                        # terminal response object arrives with output=[].
+                        # Rehydrate a minimal message item so the existing
+                        # parser/validator can consume the streamed answer.
+                        final_response.output = [
+                            SimpleNamespace(
+                                type="message",
+                                status="completed",
+                                content=[SimpleNamespace(type="output_text", text=streamed_text)],
+                            )
+                        ]
+                    return final_response
             except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
                 if attempt < max_stream_retries:
                     logger.debug(

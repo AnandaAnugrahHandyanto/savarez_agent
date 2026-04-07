@@ -148,9 +148,10 @@ def _codex_ack_message_response(text: str):
 
 
 class _FakeResponsesStream:
-    def __init__(self, *, final_response=None, final_error=None):
+    def __init__(self, *, final_response=None, final_error=None, events=None):
         self._final_response = final_response
         self._final_error = final_error
+        self._events = list(events or [])
 
     def __enter__(self):
         return self
@@ -159,7 +160,7 @@ class _FakeResponsesStream:
         return False
 
     def __iter__(self):
-        return iter(())
+        return iter(self._events)
 
     def get_final_response(self):
         if self._final_error is not None:
@@ -372,6 +373,35 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_stream_rehydrates_text_when_final_output_is_empty(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    def _fake_stream(**kwargs):
+        return _FakeResponsesStream(
+            events=[
+                SimpleNamespace(type="response.output_text.delta", delta="po"),
+                SimpleNamespace(type="response.output_text.delta", delta="ng"),
+            ],
+            final_response=SimpleNamespace(
+                output=[],
+                usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+                status="completed",
+                model="gpt-5.4",
+            ),
+        )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.output[0].type == "message"
+    assert response.output[0].content[0].text == "pong"
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):
