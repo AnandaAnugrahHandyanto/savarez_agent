@@ -3,7 +3,8 @@
 import json
 import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from types import SimpleNamespace
+from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
@@ -13,6 +14,8 @@ from agent.auxiliary_client import (
     get_available_vision_backends,
     resolve_vision_provider_client,
     resolve_provider_client,
+    call_llm,
+    async_call_llm,
     auxiliary_max_tokens_param,
     call_llm,
     _read_codex_access_token,
@@ -22,6 +25,7 @@ from agent.auxiliary_client import (
     _try_payment_fallback,
     _resolve_forced_provider,
     _resolve_auto,
+    _to_async_client,
 )
 
 
@@ -567,6 +571,8 @@ class TestGetTextAuxiliaryClient:
 
     def test_codex_fallback_when_nothing_else(self, codex_auth_dir):
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._resolve_custom_runtime", return_value=(None, None)), \
+             patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "", "base_url": ""}), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_text_auxiliary_client()
         assert model == "gpt-5.2-codex"
@@ -606,10 +612,19 @@ class TestGetTextAuxiliaryClient:
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
-             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
+             patch("agent.auxiliary_client._resolve_custom_runtime", return_value=(None, None)), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
+             patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "", "base_url": ""}):
             client, model = get_text_auxiliary_client()
         assert client is None
         assert model is None
+
+
+class _FakeStatusError(Exception):
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = {"error": {"message": message, "code": status_code}}
 
 
 class TestVisionClientFallback:
@@ -619,6 +634,10 @@ class TestVisionClientFallback:
         with (
             patch("agent.auxiliary_client._read_nous_auth", return_value=None),
             patch("agent.auxiliary_client._try_anthropic", return_value=(None, None)),
+            patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)),
+            patch("agent.auxiliary_client._resolve_custom_runtime", return_value=(None, None)),
+            patch("agent.auxiliary_client._read_codex_access_token", return_value=None),
+            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "", "base_url": ""}),
         ):
             client, model = get_vision_auxiliary_client()
         assert client is None
@@ -686,7 +705,7 @@ class TestAuxiliaryPoolAwareness:
                 "hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={
                     "provider": "copilot",
-                    "api_key": "gh-cli-token",
+                    "api_key": "***",
                     "base_url": "https://api.githubcopilot.com",
                     "source": "gh auth token",
                 },
@@ -698,22 +717,62 @@ class TestAuxiliaryPoolAwareness:
         assert client is not None
         assert model == "gpt-5.4"
         call_kwargs = mock_openai.call_args.kwargs
-        assert call_kwargs["api_key"] == "gh-cli-token"
+        assert call_kwargs["api_key"] == "***"
         assert call_kwargs["base_url"] == "https://api.githubcopilot.com"
         assert call_kwargs["default_headers"]["Editor-Version"]
 
-    def test_vision_auto_uses_anthropic_when_no_higher_priority_backend(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
+    def test_resolve_provider_client_copilot_vision_sets_vision_header(self, monkeypatch):
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
         with (
-            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
-            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api03-key"),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={
+                    "provider": "copilot",
+                    "api_key": "***",
+                    "base_url": "https://api.githubcopilot.com",
+                    "source": "gh auth token",
+                },
+            ),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            client, model = resolve_provider_client("copilot", model="gpt-4.1", is_vision=True)
+
+        assert client is not None
+        assert model == "gpt-4.1"
+        call_kwargs = mock_openai.call_args.kwargs
+        assert call_kwargs["default_headers"]["Copilot-Vision-Request"] == "true"
+
+    def test_to_async_client_preserves_copilot_vision_headers(self):
+        sync_client = SimpleNamespace(
+            api_key="***",
+            base_url="https://api.githubcopilot.com",
+            _default_headers={
+                "Editor-Version": "vscode/1.104.1",
+                "Copilot-Vision-Request": "true",
+            },
+        )
+
+        with patch("openai.AsyncOpenAI") as mock_async_openai:
+            _to_async_client(sync_client, "gpt-4.1")
+
+        assert mock_async_openai.call_args.kwargs["default_headers"]["Copilot-Vision-Request"] == "true"
+
+    def test_vision_auto_uses_copilot_when_available(self, monkeypatch):
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(MagicMock(), "gpt-4.1")) as mock_resolve,
+            patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)),
+            patch("agent.auxiliary_client._try_nous", return_value=(None, None)),
+            patch("agent.auxiliary_client._try_codex", return_value=(None, None)),
+            patch("agent.auxiliary_client._try_anthropic", return_value=(None, None)),
+            patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)),
         ):
             client, model = get_vision_auxiliary_client()
 
         assert client is not None
-        assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
-        assert model == "claude-haiku-4-5-20251001"
+        assert model == "gpt-4.1"
+        mock_resolve.assert_called_with("copilot", model="gpt-4.1", is_vision=True)
 
     def test_selected_anthropic_provider_is_preferred_for_vision_auto(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -762,11 +821,68 @@ class TestAuxiliaryPoolAwareness:
     def test_vision_auto_includes_codex(self, codex_auth_dir):
         """Codex supports vision (gpt-5.3-codex), so auto mode should use it."""
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
+             patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "", "base_url": ""}), \
              patch("agent.auxiliary_client.OpenAI"):
             client, model = get_vision_auxiliary_client()
         from agent.auxiliary_client import CodexAuxiliaryClient
         assert isinstance(client, CodexAuxiliaryClient)
         assert model == "gpt-5.2-codex"
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_vision_falls_back_after_openrouter_quota_error(self):
+        exhausted = MagicMock()
+        exhausted.chat.completions.create = AsyncMock(
+            side_effect=_FakeStatusError(403, "Key limit exceeded (total limit). Manage it using https://openrouter.ai/settings/keys")
+        )
+        fallback_response = MagicMock()
+        fallback_response.choices = [MagicMock(message=SimpleNamespace(content="vision ok"))]
+        fallback = MagicMock()
+        fallback.chat.completions.create = AsyncMock(return_value=fallback_response)
+
+        with (
+            patch("agent.auxiliary_client.resolve_vision_provider_client", side_effect=[
+                ("openrouter", exhausted, "google/gemini-3-flash-preview"),
+                ("nous", fallback, "gemini-3-flash"),
+            ]) as mock_resolve,
+            patch("agent.auxiliary_client.get_available_vision_backends", return_value=["openrouter", "nous"]),
+        ):
+            response = await async_call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "describe image"}],
+                max_tokens=32,
+            )
+
+        assert response is fallback_response
+        assert mock_resolve.call_count == 2
+        fallback.chat.completions.create.assert_awaited_once()
+
+    def test_call_llm_vision_falls_back_after_openrouter_quota_error(self):
+        exhausted = MagicMock()
+        exhausted.chat.completions.create = MagicMock(
+            side_effect=_FakeStatusError(403, "Key limit exceeded (total limit). Manage it using https://openrouter.ai/settings/keys")
+        )
+        fallback_response = MagicMock()
+        fallback_response.choices = [MagicMock(message=SimpleNamespace(content="vision ok"))]
+        fallback = MagicMock()
+        fallback.chat.completions.create = MagicMock(return_value=fallback_response)
+
+        with (
+            patch("agent.auxiliary_client.resolve_vision_provider_client", side_effect=[
+                ("openrouter", exhausted, "google/gemini-3-flash-preview"),
+                ("nous", fallback, "gemini-3-flash"),
+            ]) as mock_resolve,
+            patch("agent.auxiliary_client.get_available_vision_backends", return_value=["openrouter", "nous"]),
+        ):
+            response = call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "describe image"}],
+                max_tokens=32,
+            )
+
+        assert response is fallback_response
+        assert mock_resolve.call_count == 2
+        fallback.chat.completions.create.assert_called_once()
 
     def test_vision_auto_falls_back_to_custom_endpoint(self, monkeypatch):
         """Custom endpoint is used as fallback in vision auto mode.
@@ -809,13 +925,21 @@ class TestAuxiliaryPoolAwareness:
 
     def test_vision_uses_openrouter_when_available(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        with patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
+             patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "", "base_url": ""}), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_vision_auxiliary_client()
         assert model == "google/gemini-3-flash-preview"
         assert client is not None
 
     def test_vision_uses_nous_when_available(self, monkeypatch):
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth") as mock_nous, \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
+             patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "", "base_url": ""}), \
              patch("agent.auxiliary_client.OpenAI"):
             mock_nous.return_value = {"access_token": "nous-tok"}
             client, model = get_vision_auxiliary_client()
@@ -848,7 +972,9 @@ class TestAuxiliaryPoolAwareness:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
-             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
+             patch("agent.auxiliary_client._resolve_custom_runtime", return_value=(None, None)), \
+             patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "", "base_url": ""}):
             client, model = get_vision_auxiliary_client()
         assert client is None
         assert model is None
@@ -989,6 +1115,8 @@ class TestResolveForcedProvider:
 
     def test_forced_main_falls_to_codex(self, codex_auth_dir, monkeypatch):
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._resolve_custom_runtime", return_value=(None, None)), \
+             patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "", "base_url": ""}), \
              patch("agent.auxiliary_client.OpenAI"):
             client, model = _resolve_forced_provider("main")
         from agent.auxiliary_client import CodexAuxiliaryClient

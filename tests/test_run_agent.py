@@ -1856,6 +1856,283 @@ class TestRetryExhaustion:
 # ---------------------------------------------------------------------------
 
 
+class TestCopilot429RetryHandling:
+    """Copilot 429s should be retried patiently and persisted safely."""
+
+    def _setup_agent(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.provider = "copilot"
+        agent.model = "gpt-5.4"
+        agent._credential_pool = None
+
+    @staticmethod
+    def _make_fast_time_mock():
+        mock_time = MagicMock()
+        _t = [1000.0]
+
+        def _advancing_time():
+            _t[0] += 500.0
+            return _t[0]
+
+        mock_time.time.side_effect = _advancing_time
+        mock_time.sleep = MagicMock()
+        mock_time.monotonic.return_value = 12345.0
+        return mock_time
+
+    def test_copilot_429_uses_extended_retry_budget(self, agent):
+        self._setup_agent(agent)
+
+        class _CopilotQuotaError(RuntimeError):
+            def __init__(self):
+                super().__init__("Error code: 429 - quota exceeded")
+                self.status_code = 429
+                self.body = {"error": {"message": "quota exceeded", "code": "rate_limit_exceeded"}}
+
+        agent.client.chat.completions.create.side_effect = [_CopilotQuotaError() for _ in range(5)]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert agent.client.chat.completions.create.call_count == 5
+        assert result.get("completed") is False
+        assert result.get("failed") is True
+        assert "quota exceeded" in result.get("error", "")
+
+    def test_copilot_429_persists_session_before_retry_wait(self, agent):
+        self._setup_agent(agent)
+
+        class _CopilotQuotaError(RuntimeError):
+            def __init__(self):
+                super().__init__("Error code: 429 - quota exceeded")
+                self.status_code = 429
+                self.body = {"error": {"message": "quota exceeded", "code": "rate_limit_exceeded"}}
+
+        ok_resp = _mock_response(content="Recovered", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [_CopilotQuotaError(), ok_resp]
+
+        with (
+            patch.object(agent, "_persist_session") as mock_persist,
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result.get("completed") is True
+        assert result.get("final_response") == "Recovered"
+        assert mock_persist.call_count >= 1
+
+    def test_copilot_429_skips_eager_fallback_until_retries_exhaust(self, agent):
+        self._setup_agent(agent)
+
+        class _CopilotQuotaError(RuntimeError):
+            def __init__(self):
+                super().__init__("Error code: 429 - quota exceeded")
+                self.status_code = 429
+                self.body = {"error": {"message": "quota exceeded", "code": "rate_limit_exceeded"}}
+
+        agent.client.chat.completions.create.side_effect = [_CopilotQuotaError() for _ in range(5)]
+        agent._fallback_chain = [{"provider": "openrouter"}]
+        agent._fallback_index = 0
+
+        with (
+            patch.object(agent, "_try_activate_fallback", return_value=False) as mock_fallback,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+        ):
+            agent.run_conversation("hello")
+
+        assert mock_fallback.call_count == 1
+
+
+class TestCopilot429Diagnostics:
+    """Automatic diagnostic bundles for Copilot 429s."""
+
+    def _setup_agent(self, agent, tmp_path):
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.provider = "copilot"
+        agent.model = "gpt-5.4"
+        agent.base_url = "https://api.githubcopilot.com"
+        agent.logs_dir = tmp_path
+        agent.session_id = "diagtest"
+        agent._credential_pool = None
+
+    @staticmethod
+    def _make_fast_time_mock():
+        mock_time = MagicMock()
+        _t = [1000.0]
+
+        def _advancing_time():
+            _t[0] += 500.0
+            return _t[0]
+
+        mock_time.time.side_effect = _advancing_time
+        mock_time.sleep = MagicMock()
+        mock_time.monotonic.return_value = 12345.0
+        return mock_time
+
+    def test_dump_api_request_debug_includes_request_metadata(self, agent, tmp_path):
+        self._setup_agent(agent, tmp_path)
+        agent.client.api_key = "test-key-1234567890"
+        api_kwargs = {
+            "model": "gpt-5.4",
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{"type": "function", "function": {"name": "todo"}}],
+            "reasoning": {"effort": "high"},
+            "store": False,
+            "timeout": 30,
+        }
+
+        dump_file = agent._dump_api_request_debug(
+            api_kwargs,
+            reason="copilot_429_attempt",
+            request_meta={
+                "provider": "copilot",
+                "model": "gpt-5.4",
+                "api_mode": "codex_responses",
+                "retry_count": 2,
+                "max_retries": 5,
+                "approx_tokens": 12345,
+                "api_message_count": 7,
+                "conversation_message_count": 5,
+                "tool_count": 1,
+            },
+        )
+
+        payload = json.loads(dump_file.read_text())
+        assert payload["request_meta"]["provider"] == "copilot"
+        assert payload["request_meta"]["retry_count"] == 2
+        assert payload["request_meta"]["max_retries"] == 5
+        assert payload["request_meta"]["approx_tokens"] == 12345
+        assert payload["request_meta"]["api_message_count"] == 7
+        assert payload["request_meta"]["conversation_message_count"] == 5
+        assert payload["request_meta"]["tool_count"] == 1
+        assert payload["request_meta"]["reasoning"] == {"effort": "high"}
+        assert payload["request_meta"]["store"] is False
+        assert payload["request_meta"]["tools_present"] is True
+
+    def test_copilot_429_writes_diagnostic_bundle_automatically(self, agent, tmp_path):
+        self._setup_agent(agent, tmp_path)
+
+        class _CopilotQuotaError(RuntimeError):
+            def __init__(self):
+                super().__init__("Error code: 429 - quota exceeded")
+                self.status_code = 429
+                self.body = {"error": {"message": "quota exceeded", "code": "rate_limit_exceeded"}}
+
+        agent.client.chat.completions.create.side_effect = [_CopilotQuotaError() for _ in range(5)]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result.get("failed") is True
+        bundles = sorted(tmp_path.glob("copilot_429_bundle_diagtest_*.json"))
+        assert bundles, "expected automatic Copilot 429 diagnostic bundle"
+        payload = json.loads(bundles[-1].read_text())
+        assert payload["error"]["status_code"] == 429
+        assert payload["request_meta"]["provider"] == "copilot"
+        assert payload["request_meta"]["max_retries"] == 5
+        assert payload["request_meta"]["final_failure"] is True
+        assert "reasoning" in payload["request_meta"]
+        assert payload["request_meta"]["tools_present"] is True
+
+    def test_copilot_429_appends_jsonl_index(self, agent, tmp_path):
+        self._setup_agent(agent, tmp_path)
+        agent.client.api_key = "test-key-1234567890"
+
+        class _CopilotQuotaError(RuntimeError):
+            def __init__(self):
+                super().__init__("Error code: 429 - quota exceeded")
+                self.status_code = 429
+                self.body = {"error": {"message": "quota exceeded", "code": "rate_limit_exceeded"}}
+
+        bundle = agent._dump_api_request_debug(
+            {
+                "model": "gpt-5.4",
+                "messages": [{"role": "user", "content": "hello"}],
+                "reasoning": {"effort": "high"},
+                "store": False,
+            },
+            reason="copilot_429_attempt",
+            error=_CopilotQuotaError(),
+            request_meta={
+                "provider": "copilot",
+                "model": "gpt-5.4",
+                "retry_count": 1,
+                "max_retries": 5,
+                "approx_tokens": 321,
+                "api_message_count": 2,
+                "conversation_message_count": 2,
+                "tool_count": 0,
+                "final_failure": False,
+            },
+        )
+
+        index_file = tmp_path / "copilot_429_index.jsonl"
+        assert index_file.exists(), "expected rolling Copilot 429 index file"
+        lines = [line for line in index_file.read_text().splitlines() if line.strip()]
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["provider"] == "copilot"
+        assert entry["retry_count"] == 1
+        assert entry["max_retries"] == 5
+        assert entry["approx_tokens"] == 321
+        assert entry["final_failure"] is False
+        assert entry["bundle_path"] == str(bundle)
+        assert entry["error"]["status_code"] == 429
+
+    def test_recovered_rate_limit_turn_emits_debug_log(self, agent, tmp_path, caplog):
+        self._setup_agent(agent, tmp_path)
+        caplog.set_level(logging.INFO)
+
+        class _CopilotQuotaError(RuntimeError):
+            def __init__(self):
+                super().__init__("Error code: 429 - quota exceeded")
+                self.status_code = 429
+                self.body = {"error": {"message": "quota exceeded", "code": "rate_limit_exceeded"}}
+
+        mock_response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok", tool_calls=None), finish_reason="stop")],
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+        )
+        agent.client.chat.completions.create.side_effect = [_CopilotQuotaError(), mock_response]
+        agent._gateway_debug_context = {"platform": "discord", "chat_id": "c1"}
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+            patch("run_agent.estimate_usage_cost", return_value=SimpleNamespace(amount_usd=None, status="unknown", source="test")),
+            patch("run_agent.logger.info") as mock_info,
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result.get("final_response") == "ok"
+        assert agent.debug_rate_limit_events == 1
+        assert any("[DEBUG] Turn recovered after transient rate limits" in str(call.args[0]) for call in mock_info.call_args_list)
+
+
 class TestFlushSentinelNotLeaked:
     """_flush_sentinel must be stripped before sending messages to the API."""
 

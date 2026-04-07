@@ -236,6 +236,25 @@ class TestSummaryFailureCooldown:
         assert mock_call.call_count == 1
 
 
+class TestCompressionSummaryFailureFallback:
+    def test_failed_summary_still_returns_compacted_messages(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        msgs = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(10)
+        ]
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("summary backend failed")):
+            result = c.compress(msgs)
+
+        assert len(result) < len(msgs)
+        assert result[0]["content"] == msgs[0]["content"]
+        assert result[-1]["content"] == msgs[-1]["content"]
+        assert not any((m.get("content") or "").startswith(SUMMARY_PREFIX) for m in result)
+
+
 class TestSummaryPrefixNormalization:
     def test_legacy_prefix_is_replaced(self):
         summary = ContextCompressor._with_summary_prefix("[CONTEXT SUMMARY]: did work")
