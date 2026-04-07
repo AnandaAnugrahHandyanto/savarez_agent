@@ -28,6 +28,8 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_hermes_dir
+from tools.url_safety import is_safe_url
+from tools.website_policy import check_website_access
 
 
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
@@ -110,6 +112,88 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     return str(filepath)
 
 
+def _enforce_media_download_url_policy(url: str) -> None:
+    """Reject blocked or private/internal media URLs before downloading."""
+    blocked = check_website_access(url)
+    if blocked:
+        raise PermissionError(blocked["message"])
+    if not is_safe_url(url):
+        raise PermissionError(
+            "Blocked: URL targets a private or internal network address"
+        )
+
+
+def _build_media_redirect_guard():
+    """Re-check each redirect target so public URLs cannot bounce into SSRF."""
+
+    async def _guard(response):
+        if response.is_redirect and response.next_request:
+            _enforce_media_download_url_policy(str(response.next_request.url))
+
+    return _guard
+
+
+async def _cache_media_from_url(
+    url: str,
+    *,
+    ext: str,
+    retries: int,
+    accept_header: str,
+    cache_writer,
+    retry_log_label: str,
+) -> str:
+    """Download media with retry logic and SSRF-safe URL validation."""
+    import httpx
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    _enforce_media_download_url_policy(url)
+
+    last_exc = None
+    async with httpx.AsyncClient(
+        timeout=30.0,
+        follow_redirects=True,
+        event_hooks={"response": [_build_media_redirect_guard()]},
+    ) as client:
+        for attempt in range(retries + 1):
+            try:
+                response = await client.get(
+                    url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
+                        "Accept": accept_header,
+                    },
+                )
+                response.raise_for_status()
+                _enforce_media_download_url_policy(str(response.url))
+                return cache_writer(response.content, ext)
+            except PermissionError:
+                raise
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                last_exc = exc
+                if (
+                    isinstance(exc, httpx.HTTPStatusError)
+                    and exc.response.status_code < 429
+                ):
+                    raise
+                if attempt < retries:
+                    wait = 1.5 * (attempt + 1)
+                    _log.debug(
+                        "%s retry %d/%d for %s (%.1fs): %s",
+                        retry_log_label,
+                        attempt + 1,
+                        retries,
+                        _safe_url_for_log(url),
+                        wait,
+                        exc,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                raise
+
+    raise last_exc
+
+
 async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
     """
     Download an image from a URL and save it to the local cache.
@@ -125,42 +209,14 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
     Returns:
         Absolute path to the cached image file as a string.
     """
-    import asyncio
-    import httpx
-    import logging as _logging
-    _log = _logging.getLogger(__name__)
-
-    last_exc = None
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        for attempt in range(retries + 1):
-            try:
-                response = await client.get(
-                    url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
-                        "Accept": "image/*,*/*;q=0.8",
-                    },
-                )
-                response.raise_for_status()
-                return cache_image_from_bytes(response.content, ext)
-            except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-                last_exc = exc
-                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
-                    raise
-                if attempt < retries:
-                    wait = 1.5 * (attempt + 1)
-                    _log.debug(
-                        "Media cache retry %d/%d for %s (%.1fs): %s",
-                        attempt + 1,
-                        retries,
-                        _safe_url_for_log(url),
-                        wait,
-                        exc,
-                    )
-                    await asyncio.sleep(wait)
-                    continue
-                raise
-    raise last_exc
+    return await _cache_media_from_url(
+        url,
+        ext=ext,
+        retries=retries,
+        accept_header="image/*,*/*;q=0.8",
+        cache_writer=cache_image_from_bytes,
+        retry_log_label="Media cache",
+    )
 
 
 def cleanup_image_cache(max_age_hours: int = 24) -> int:
@@ -233,42 +289,14 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
     Returns:
         Absolute path to the cached audio file as a string.
     """
-    import asyncio
-    import httpx
-    import logging as _logging
-    _log = _logging.getLogger(__name__)
-
-    last_exc = None
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        for attempt in range(retries + 1):
-            try:
-                response = await client.get(
-                    url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
-                        "Accept": "audio/*,*/*;q=0.8",
-                    },
-                )
-                response.raise_for_status()
-                return cache_audio_from_bytes(response.content, ext)
-            except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-                last_exc = exc
-                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
-                    raise
-                if attempt < retries:
-                    wait = 1.5 * (attempt + 1)
-                    _log.debug(
-                        "Audio cache retry %d/%d for %s (%.1fs): %s",
-                        attempt + 1,
-                        retries,
-                        _safe_url_for_log(url),
-                        wait,
-                        exc,
-                    )
-                    await asyncio.sleep(wait)
-                    continue
-                raise
-    raise last_exc
+    return await _cache_media_from_url(
+        url,
+        ext=ext,
+        retries=retries,
+        accept_header="audio/*,*/*;q=0.8",
+        cache_writer=cache_audio_from_bytes,
+        retry_log_label="Audio cache",
+    )
 
 
 # ---------------------------------------------------------------------------

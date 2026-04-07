@@ -48,6 +48,7 @@ class TestCacheImageFromUrl:
         fake_response = MagicMock()
         fake_response.content = b"\xff\xd8\xff fake jpeg"
         fake_response.raise_for_status = MagicMock()
+        fake_response.url = "http://example.com/img.jpg"
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=fake_response)
@@ -72,6 +73,7 @@ class TestCacheImageFromUrl:
         fake_response = MagicMock()
         fake_response.content = b"image data"
         fake_response.raise_for_status = MagicMock()
+        fake_response.url = "http://example.com/img.jpg"
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(
@@ -102,6 +104,7 @@ class TestCacheImageFromUrl:
         ok_response = MagicMock()
         ok_response.content = b"image data"
         ok_response.raise_for_status = MagicMock()
+        ok_response.url = "http://example.com/img.jpg"
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(
@@ -170,6 +173,83 @@ class TestCacheImageFromUrl:
         assert mock_client.get.call_count == 1
         mock_sleep.assert_not_called()
 
+    def test_blocks_private_url_before_network_request(self, tmp_path, monkeypatch):
+        """Private/internal URLs must be rejected before httpx connects."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+
+        from gateway.platforms import base as base_module
+
+        monkeypatch.setattr(base_module, "check_website_access", lambda url: None)
+        monkeypatch.setattr(base_module, "is_safe_url", lambda url: False)
+
+        async def run():
+            with patch("httpx.AsyncClient") as mock_client:
+                with pytest.raises(
+                    PermissionError,
+                    match="private or internal network address",
+                ):
+                    await base_module.cache_image_from_url(
+                        "http://169.254.169.254/latest/meta-data/",
+                        ext=".jpg",
+                    )
+                mock_client.assert_not_called()
+
+        asyncio.run(run())
+
+    def test_blocks_redirect_to_private_address(self, tmp_path, monkeypatch):
+        """A public image URL must not be allowed to redirect into internal IPs."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+
+        from gateway.platforms import base as base_module
+
+        monkeypatch.setattr(base_module, "check_website_access", lambda url: None)
+        monkeypatch.setattr(
+            base_module,
+            "is_safe_url",
+            lambda url: "169.254.169.254" not in url,
+        )
+
+        class RedirectingClient:
+            def __init__(self, *args, **kwargs):
+                self._event_hooks = kwargs.get("event_hooks", {})
+                self.get_calls = 0
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, url, headers=None):
+                self.get_calls += 1
+                redirect_response = MagicMock()
+                redirect_response.is_redirect = True
+                redirect_response.next_request = httpx.Request(
+                    "GET",
+                    "http://169.254.169.254/latest/meta-data/",
+                )
+                for hook in self._event_hooks.get("response", []):
+                    await hook(redirect_response)
+
+                final_response = MagicMock()
+                final_response.url = "http://example.com/final.jpg"
+                final_response.content = b"image data"
+                final_response.raise_for_status = MagicMock()
+                return final_response
+
+        async def run():
+            with patch("httpx.AsyncClient", RedirectingClient):
+                with pytest.raises(
+                    PermissionError,
+                    match="private or internal network address",
+                ):
+                    await base_module.cache_image_from_url(
+                        "http://example.com/image.jpg",
+                        ext=".jpg",
+                    )
+
+        asyncio.run(run())
+
 
 # ---------------------------------------------------------------------------
 # cache_audio_from_url (base.py)
@@ -185,6 +265,7 @@ class TestCacheAudioFromUrl:
         fake_response = MagicMock()
         fake_response.content = b"\x00\x01 fake audio"
         fake_response.raise_for_status = MagicMock()
+        fake_response.url = "http://example.com/voice.ogg"
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=fake_response)
@@ -209,6 +290,7 @@ class TestCacheAudioFromUrl:
         fake_response = MagicMock()
         fake_response.content = b"audio data"
         fake_response.raise_for_status = MagicMock()
+        fake_response.url = "http://example.com/voice.ogg"
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(
@@ -239,6 +321,7 @@ class TestCacheAudioFromUrl:
         ok_response = MagicMock()
         ok_response.content = b"audio data"
         ok_response.raise_for_status = MagicMock()
+        ok_response.url = "http://example.com/voice.ogg"
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(
@@ -266,6 +349,7 @@ class TestCacheAudioFromUrl:
         ok_response = MagicMock()
         ok_response.content = b"audio data"
         ok_response.raise_for_status = MagicMock()
+        ok_response.url = "http://example.com/voice.ogg"
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(
@@ -333,6 +417,30 @@ class TestCacheAudioFromUrl:
         # Only 1 attempt, no sleep
         assert mock_client.get.call_count == 1
         mock_sleep.assert_not_called()
+
+    def test_blocks_website_policy_before_network_request(self, tmp_path, monkeypatch):
+        """Configured website policy must block audio downloads before fetching."""
+        monkeypatch.setattr("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio")
+
+        from gateway.platforms import base as base_module
+
+        monkeypatch.setattr(
+            base_module,
+            "check_website_access",
+            lambda url: {"message": "Blocked by website policy"},
+        )
+        monkeypatch.setattr(base_module, "is_safe_url", lambda url: True)
+
+        async def run():
+            with patch("httpx.AsyncClient") as mock_client:
+                with pytest.raises(PermissionError, match="Blocked by website policy"):
+                    await base_module.cache_audio_from_url(
+                        "https://blocked.example/audio.ogg",
+                        ext=".ogg",
+                    )
+                mock_client.assert_not_called()
+
+        asyncio.run(run())
 
 
 # ---------------------------------------------------------------------------
