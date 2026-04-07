@@ -1773,6 +1773,28 @@ class GatewayRunner:
         """
         source = event.source
 
+        try:
+            _evt_ts = event.timestamp.isoformat() if getattr(event, "timestamp", None) else None
+        except Exception:
+            _evt_ts = None
+        _evt_preview = (event.text or "").replace("\n", "\\n")
+        if len(_evt_preview) > 160:
+            _evt_preview = _evt_preview[:157] + "..."
+        logger.info(
+            "[DEBUG] Incoming message: platform=%s chat_id=%s chat_type=%s thread_id=%s user_id=%s "
+            "message_id=%s timestamp=%s text_len=%d command=%s preview=%r",
+            source.platform.value if source.platform else "",
+            source.chat_id,
+            getattr(source, "chat_type", None),
+            getattr(source, "thread_id", None),
+            getattr(source, "user_id", None),
+            getattr(event, "message_id", None),
+            _evt_ts,
+            len(event.text or ""),
+            event.get_command(),
+            _evt_preview,
+        )
+
         # Check if user is authorized
         if not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
@@ -2302,6 +2324,17 @@ class GatewayRunner:
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        logger.info(
+            "[DEBUG] Session resolved: platform=%s chat_id=%s thread_id=%s message_id=%s "
+            "session_key=%s session_id=%s was_auto_reset=%s",
+            source.platform.value if source.platform else "",
+            source.chat_id,
+            getattr(source, "thread_id", None),
+            getattr(event, "message_id", None),
+            session_key,
+            session_entry.session_id,
+            getattr(session_entry, "was_auto_reset", False),
+        )
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
@@ -2898,6 +2931,7 @@ class GatewayRunner:
                 session_id=session_entry.session_id,
                 session_key=session_key,
                 event_message_id=event.message_id,
+                event_timestamp=(event.timestamp.isoformat() if getattr(event, "timestamp", None) else None),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -2950,6 +2984,14 @@ class GatewayRunner:
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
+                logger.info(
+                    "[DEBUG] Session id updated during agent run: old=%s new=%s platform=%s chat_id=%s thread_id=%s",
+                    session_entry.session_id,
+                    agent_result["session_id"],
+                    source.platform.value if source.platform else "",
+                    source.chat_id,
+                    getattr(source, "thread_id", None),
+                )
                 session_entry.session_id = agent_result["session_id"]
 
             # Prepend reasoning/thinking if display is enabled
@@ -6069,6 +6111,7 @@ class GatewayRunner:
         session_key: str = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        event_timestamp: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -6492,6 +6535,34 @@ class GatewayRunner:
             agent.stream_delta_callback = _stream_delta_cb
             agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config
+            agent._gateway_debug_context = {
+                "platform": source.platform.value if source.platform else None,
+                "chat_id": source.chat_id,
+                "chat_type": getattr(source, "chat_type", None),
+                "thread_id": getattr(source, "thread_id", None),
+                "user_id": getattr(source, "user_id", None),
+                "message_id": event_message_id,
+                "message_timestamp": event_timestamp or datetime.now().isoformat(),
+                "session_key": session_key,
+                "session_id": session_id,
+                "interrupt_depth": _interrupt_depth,
+            }
+            agent.debug_rate_limit_events = 0
+            agent.debug_last_rate_limit_summary = None
+            logger.info(
+                "[DEBUG] Agent run starting: session_id=%s session_key=%s platform=%s chat_id=%s thread_id=%s "
+                "message_id=%s history_len=%d message_len=%d model=%s provider=%s",
+                session_id,
+                session_key,
+                source.platform.value if source.platform else "",
+                source.chat_id,
+                getattr(source, "thread_id", None),
+                event_message_id,
+                len(history or []),
+                len(message or ""),
+                turn_route["model"],
+                turn_route["runtime"].get("provider"),
+            )
 
             # Background review delivery — send "💾 Memory updated" etc. to user
             def _bg_review_send(message: str) -> None:
@@ -6657,6 +6728,36 @@ class GatewayRunner:
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
             try:
                 result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
+                logger.info(
+                    "[DEBUG] Agent run finished: session_id=%s session_key=%s platform=%s chat_id=%s thread_id=%s "
+                    "message_id=%s completed=%s failed=%s api_calls=%s final_response_len=%d",
+                    session_id,
+                    session_key,
+                    source.platform.value if source.platform else "",
+                    source.chat_id,
+                    getattr(source, "thread_id", None),
+                    event_message_id,
+                    bool(result.get("completed")) if isinstance(result, dict) else False,
+                    bool(result.get("failed")) if isinstance(result, dict) else False,
+                    result.get("api_calls") if isinstance(result, dict) else None,
+                    len((result or {}).get("final_response") or "") if isinstance(result, dict) else 0,
+                )
+                _debug_rate_events = getattr(agent, "debug_rate_limit_events", 0)
+                if _debug_rate_events:
+                    logger.info(
+                        "[DEBUG] Gateway turn summary: session_id=%s session_key=%s platform=%s chat_id=%s "
+                        "thread_id=%s message_id=%s rate_limit_events=%s recovered=%s failed=%s api_calls=%s",
+                        session_id,
+                        session_key,
+                        source.platform.value if source.platform else "",
+                        source.chat_id,
+                        getattr(source, "thread_id", None),
+                        event_message_id,
+                        _debug_rate_events,
+                        not bool(result.get("failed")) if isinstance(result, dict) else False,
+                        bool(result.get("failed")) if isinstance(result, dict) else False,
+                        result.get("api_calls") if isinstance(result, dict) else None,
+                    )
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)
