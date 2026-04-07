@@ -1938,7 +1938,8 @@ def get_nous_auth_status() -> Dict[str, Any]:
 
     Checks the legacy provider state first, then falls back to the
     credential pool (where ``hermes auth add`` stores credentials).
-    This mirrors the approach used by ``get_codex_auth_status()``.
+    Like ``get_codex_auth_status()``, this consults both legacy provider
+    state and the credential pool, but not necessarily in the same order.
     """
     state = get_provider_auth_state("nous")
     if state and state.get("access_token"):
