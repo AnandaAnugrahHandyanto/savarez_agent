@@ -111,6 +111,11 @@ class TestProviderRegistry:
         assert "openai-codex" in PROVIDER_REGISTRY
         assert PROVIDER_REGISTRY["openai-codex"].auth_type == "oauth_external"
 
+    def test_openai_provider_is_api_key(self):
+        assert "openai" in PROVIDER_REGISTRY
+        assert PROVIDER_REGISTRY["openai"].auth_type == "api_key"
+        assert PROVIDER_REGISTRY["openai"].inference_base_url == "https://api.openai.com/v1"
+
 
 # =============================================================================
 # Provider Resolution tests
@@ -155,11 +160,11 @@ class TestResolveProvider:
     def test_explicit_ai_gateway(self):
         assert resolve_provider("ai-gateway") == "ai-gateway"
 
+    def test_explicit_openai(self):
+        assert resolve_provider("openai") == "openai"
+
     def test_alias_glm(self):
         assert resolve_provider("glm") == "zai"
-
-    def test_alias_openai(self):
-        assert resolve_provider("openai") == "openrouter"
 
     def test_alias_z_ai(self):
         assert resolve_provider("z-ai") == "zai"

@@ -484,7 +484,6 @@ _PROVIDER_LABELS = {
 }
 
 _PROVIDER_ALIASES = {
-    "openai": "openrouter",
     "glm": "zai",
     "z-ai": "zai",
     "z.ai": "zai",

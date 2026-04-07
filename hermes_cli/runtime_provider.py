@@ -148,6 +148,9 @@ def _resolve_runtime_from_pool_entry(
     if provider == "openai-codex":
         api_mode = "codex_responses"
         base_url = base_url or DEFAULT_CODEX_BASE_URL
+    elif provider == "openai":
+        configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+        api_mode = configured_mode or _detect_api_mode_for_url(base_url) or "chat_completions"
     elif provider == "anthropic":
         api_mode = "anthropic_messages"
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
@@ -728,6 +731,13 @@ def resolve_runtime_provider(
         api_mode = "chat_completions"
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
+        elif provider == "openai":
+            configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+            configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+            if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
+                api_mode = configured_mode
+            else:
+                api_mode = _detect_api_mode_for_url(base_url) or "chat_completions"
         else:
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             # Only honor persisted api_mode when it belongs to the same provider family.

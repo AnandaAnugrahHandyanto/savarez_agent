@@ -152,9 +152,6 @@ class ProviderDef:
 # Uses models.dev IDs where possible.
 
 ALIASES: Dict[str, str] = {
-    # openrouter
-    "openai": "openrouter",     # bare "openai" → route through aggregator
-
     # zai
     "glm": "zai",
     "z-ai": "zai",

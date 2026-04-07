@@ -960,25 +960,26 @@ def test_resolve_runtime_provider_openai_alias_uses_openrouter(monkeypatch):
             }
         },
     )
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai")
     monkeypatch.setattr(rp, "load_pool", lambda provider: None)
     monkeypatch.setattr(
         rp,
-        "_resolve_openrouter_runtime",
-        lambda **kwargs: {
-            "provider": "openrouter",
-            "api_mode": "chat_completions",
-            "base_url": "https://openrouter.ai/api/v1",
-            "api_key": "or-key",
+        "resolve_api_key_provider_credentials",
+        lambda provider: {
+            "provider": provider,
+            "api_key": "openai-key",
+            "base_url": "https://api.openai.com/v1",
             "source": "env",
-            "requested_provider": kwargs["requested_provider"],
         },
     )
 
     resolved = rp.resolve_runtime_provider()
 
-    assert resolved["provider"] == "openrouter"
+    assert resolved["provider"] == "openai"
     assert resolved["requested_provider"] == "openai"
+    assert resolved["base_url"] == "https://api.openai.com/v1"
+    assert resolved["api_key"] == "openai-key"
+    assert resolved["api_mode"] == "codex_responses"
 
 
 def test_custom_provider_runtime_preserves_provider_name(monkeypatch):
