@@ -88,6 +88,8 @@ terminal:
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
 ```
 
+For cloud sandboxes such as Modal and Daytona, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
+
 ### Backend Overview
 
 | Backend | Where commands run | Isolation | Best for |
@@ -188,7 +190,7 @@ terminal:
 
 **Required:** Either `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` environment variables, or a `~/.modal.toml` config file.
 
-**Persistence:** When enabled, the sandbox filesystem is snapshotted on cleanup and restored on next session. Snapshots are tracked in `~/.hermes/modal_snapshots.json`.
+**Persistence:** When enabled, the sandbox filesystem is snapshotted on cleanup and restored on next session. Snapshots are tracked in `~/.hermes/modal_snapshots.json`. This preserves filesystem state, not live processes, PID space, or background jobs.
 
 **Credential files:** Automatically mounted from `~/.hermes/` (OAuth tokens, etc.) and synced before each command.
 
@@ -243,7 +245,7 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
 - **Daytona** — Needs `DAYTONA_API_KEY`. The Daytona SDK handles server URL configuration.
 - **Singularity** — Needs `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.
 
-When in doubt, set `terminal.backend` back to `local` and verify commands run there first.
+When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.
 
 ### Docker Volume Mounts
 
@@ -349,6 +351,31 @@ Commands that require `stdin_data` or sudo automatically fall back to one-shot m
 :::
 
 See [Code Execution](features/code-execution.md) and the [Terminal section of the README](features/tools.md) for details on each backend.
+
+## Skill Settings
+
+Skills can declare their own configuration settings via their SKILL.md frontmatter. These are non-secret values (paths, preferences, domain settings) stored under the `skills.config` namespace in `config.yaml`.
+
+```yaml
+skills:
+  config:
+    wiki:
+      path: ~/wiki          # Used by the llm-wiki skill
+```
+
+**How skill settings work:**
+
+- `hermes config migrate` scans all enabled skills, finds unconfigured settings, and offers to prompt you
+- `hermes config show` displays all skill settings under "Skill Settings" with the skill they belong to
+- When a skill loads, its resolved config values are injected into the skill context automatically
+
+**Setting values manually:**
+
+```bash
+hermes config set skills.config.wiki.path ~/my-research-wiki
+```
+
+For details on declaring config settings in your own skills, see [Creating Skills — Config Settings](/docs/developer-guide/creating-skills#config-settings-configyaml).
 
 ## Memory Configuration
 
@@ -547,7 +574,7 @@ auxiliary:
     model: ""                  # e.g. "google/gemini-2.5-flash"
     base_url: ""
     api_key: ""
-    timeout: 30                # seconds
+    timeout: 360               # seconds (6min) — per-attempt LLM summarization
 
   # Dangerous command approval classifier
   approval:
@@ -595,7 +622,7 @@ auxiliary:
 ```
 
 :::tip
-Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 30s, web_extract 30s, approval 30s, compression 120s. Increase these if you use slow local models for auxiliary tasks. Vision also has a separate `download_timeout` (default 30s) for the HTTP image download — increase this for slow connections or self-hosted image servers.
+Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 30s, web_extract 360s, approval 30s, compression 120s. Increase these if you use slow local models for auxiliary tasks. Vision also has a separate `download_timeout` (default 30s) for the HTTP image download — increase this for slow connections or self-hosted image servers.
 :::
 
 :::info
@@ -624,7 +651,7 @@ AUXILIARY_VISION_MODEL=openai/gpt-4o
 |----------|-------------|-------------|
 | `"auto"` | Best available (default). Vision tries OpenRouter → Nous → Codex. | — |
 | `"openrouter"` | Force OpenRouter — routes to any model (Gemini, GPT-4o, Claude, etc.) | `OPENROUTER_API_KEY` |
-| `"nous"` | Force Nous Portal | `hermes login` |
+| `"nous"` | Force Nous Portal | `hermes auth` |
 | `"codex"` | Force Codex OAuth (ChatGPT account). Supports vision (gpt-5.3-codex). | `hermes model` → Codex |
 | `"main"` | Use your active custom/main endpoint. This can come from `OPENAI_BASE_URL` + `OPENAI_API_KEY` or from a custom endpoint saved via `hermes model` / `config.yaml`. Works with OpenAI, local models, or any OpenAI-compatible API. | Custom endpoint credentials + base URL |
 
@@ -777,29 +804,15 @@ display:
   tool_progress: all      # off | new | all | verbose
   tool_progress_command: false  # Enable /verbose slash command in messaging gateway
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
-  theme_mode: auto        # auto | light | dark — color scheme for skin-aware rendering
   personality: "kawaii"  # Legacy cosmetic field still surfaced in some summaries
   compact: false          # Compact output mode (less whitespace)
   resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
   bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
   show_reasoning: false   # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
-  background_process_notifications: all  # all | result | error | off (gateway only)
   show_cost: false        # Show estimated $ cost in the CLI status bar
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
 ```
-
-### Theme mode
-
-The `theme_mode` setting controls whether skins render in light or dark mode:
-
-| Mode | Behavior |
-|------|----------|
-| `auto` (default) | Detects your terminal's background color automatically. Falls back to `dark` if detection fails. |
-| `light` | Forces light-mode skin colors. Skins that define a `colors_light` override use those colors instead of the default dark-mode palette. |
-| `dark` | Forces dark-mode skin colors. |
-
-This works with any skin — built-in or custom. Skin authors can provide `colors_light` in their skin definition for optimal light-terminal appearance.
 
 | Mode | What you see |
 |------|-------------|
@@ -1016,6 +1029,8 @@ browser:
   inactivity_timeout: 120        # Seconds before auto-closing idle sessions
   command_timeout: 30             # Timeout in seconds for browser commands (screenshot, navigate, etc.)
   record_sessions: false         # Auto-record browser sessions as WebM videos to ~/.hermes/browser_recordings/
+  camofox:
+    managed_persistence: false   # When true, Camofox sessions persist cookies/logins across restarts
 ```
 
 The browser toolset supports multiple providers. See the [Browser feature page](/docs/user-guide/features/browser) for details on Browserbase, Browser Use, and local Chrome CDP setup.
