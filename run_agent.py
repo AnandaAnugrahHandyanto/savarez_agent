@@ -3952,11 +3952,13 @@ class AIAgent:
                         # Track tool calls to suppress text streaming
                         elif "function_call" in event_type:
                             has_tool_calls = True
-                            # Collect function_call details from done events
-                            if event_type in ("response.function_call_arguments.done",):
-                                _collected_tool_calls.append(event)
-                            elif getattr(event, "name", None) and event_type == "response.output_item.added":
-                                _collected_tool_calls.append(event)
+                        # Collect completed output items (messages + function calls)
+                        # for synthetic response reconstruction.
+                        elif event_type == "response.output_item.done":
+                            done_item = getattr(event, "item", None)
+                            if done_item and getattr(done_item, "type", None) == "function_call":
+                                _collected_tool_calls.append(done_item)
+                                has_tool_calls = True
                         # Fire reasoning callbacks
                         elif "reasoning" in event_type and "delta" in event_type:
                             reasoning_text = getattr(event, "delta", "")
@@ -4006,15 +4008,15 @@ class AIAgent:
                                 )],
                             ))
 
-                        # Reconstruct function calls
-                        for tc_event in _collected_tool_calls:
+                        # Reconstruct function calls from output_item.done items
+                        for done_item in _collected_tool_calls:
                             synthetic_output.append(SimpleNamespace(
                                 type="function_call",
-                                id=getattr(tc_event, "item_id", None) or getattr(tc_event, "id", ""),
-                                call_id=getattr(tc_event, "call_id", "") or getattr(tc_event, "item_id", ""),
-                                name=getattr(tc_event, "name", ""),
-                                arguments=getattr(tc_event, "arguments", "{}"),
-                                status="completed",
+                                id=getattr(done_item, "id", ""),
+                                call_id=getattr(done_item, "call_id", ""),
+                                name=getattr(done_item, "name", ""),
+                                arguments=getattr(done_item, "arguments", "{}"),
+                                status=getattr(done_item, "status", "completed"),
                             ))
 
                         final_resp.output = synthetic_output
