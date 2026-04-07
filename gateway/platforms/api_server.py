@@ -406,6 +406,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
+        model_override: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -414,6 +415,11 @@ class APIServerAdapter(BasePlatformAdapter):
         base_url, etc. from config.yaml / env vars.  Toolsets are resolved
         from config.yaml platform_toolsets.api_server (same as all other
         gateway platforms), falling back to the hermes-api-server default.
+
+        When *model_override* is provided, it replaces the config default.
+        If the override matches a named provider in config.yaml (e.g.
+        "ollama/gemma4:26b"), the provider's base_url and api_key are
+        resolved from the providers section.
         """
         from run_agent import AIAgent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
@@ -422,7 +428,26 @@ class APIServerAdapter(BasePlatformAdapter):
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         model = _resolve_gateway_model()
 
-        user_config = _load_gateway_config()
+        # Allow callers to override the model (e.g. from the request body).
+        # If the override contains a provider prefix ("ollama/gemma4:26b"),
+        # resolve that provider's base_url and credentials from config.yaml.
+        if model_override:
+            user_config = _load_gateway_config()
+            if "/" in model_override:
+                provider_name, model_name = model_override.split("/", 1)
+                providers = user_config.get("providers") or {}
+                if provider_name in providers:
+                    pcfg = providers[provider_name]
+                    runtime_kwargs["base_url"] = pcfg.get("api") or pcfg.get("base_url")
+                    runtime_kwargs["api_key"] = pcfg.get("api_key") or "no-key-required"
+                    runtime_kwargs["api_mode"] = pcfg.get("transport") or pcfg.get("api_mode") or "chat_completions"
+                    runtime_kwargs["provider"] = provider_name
+                model = model_name
+            else:
+                model = model_override
+        else:
+            user_config = _load_gateway_config()
+
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
@@ -546,6 +571,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", "hermes-agent")
+        # Resolve model override: if the caller specified a model other than
+        # the default "hermes-agent", pass it through to _create_agent so the
+        # request can target a specific provider/model (e.g. "ollama/gemma4:26b"
+        # or "claude-sonnet-4-20250514").
+        _model_override = model_name if model_name != "hermes-agent" else None
         created = int(time.time())
 
         if stream:
@@ -583,6 +613,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
+                model_override=_model_override,
             ))
 
             return await self._write_sse_chat_completion(
@@ -597,6 +628,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                model_override=_model_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1269,6 +1301,7 @@ class APIServerAdapter(BasePlatformAdapter):
         stream_delta_callback=None,
         tool_progress_callback=None,
         agent_ref: Optional[list] = None,
+        model_override: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -1289,6 +1322,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 stream_delta_callback=stream_delta_callback,
                 tool_progress_callback=tool_progress_callback,
+                model_override=model_override,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
