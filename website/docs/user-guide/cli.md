@@ -88,7 +88,7 @@ When resuming a previous session (`hermes -c` or `hermes --resume <id>`), a "Pre
 | Key | Action |
 |-----|--------|
 | `Enter` | Send message |
-| `Alt+Enter` or `Ctrl+J` | New line (multi-line input) |
+| `Shift+Enter`, `Alt+Enter`, or `Ctrl+J` | New line (multi-line input). `Shift+Enter` depends on terminal support; `Alt+Enter` and `Ctrl+J` stay as portable fallbacks. |
 | `Alt+V` | Paste an image from the clipboard when supported by the terminal |
 | `Ctrl+V` | Paste text and opportunistically attach clipboard images |
 | `Ctrl+B` | Start/stop voice recording when voice mode is enabled (`voice.record_key`, default: `ctrl+b`) |
@@ -191,7 +191,7 @@ personalities:
 
 There are two ways to enter multi-line messages:
 
-1. **`Alt+Enter` or `Ctrl+J`** — inserts a new line
+1. **`Shift+Enter`, `Alt+Enter`, or `Ctrl+J`** — inserts a new line. `Shift+Enter` works where the terminal exposes it; `Alt+Enter`/`Ctrl+J` keep working everywhere.
 2. **Backslash continuation** — end a line with `\` to continue:
 
 ```
@@ -201,7 +201,7 @@ There are two ways to enter multi-line messages:
 ```
 
 :::info
-Pasting multi-line text is supported — use `Alt+Enter` or `Ctrl+J` to insert newlines, or simply paste content directly.
+Pasting multi-line text is supported — use `Shift+Enter` when your terminal surfaces it, or rely on `Alt+Enter` / `Ctrl+J` as reliable fallbacks. You can also paste content directly.
 :::
 
 ## Interrupting the Agent

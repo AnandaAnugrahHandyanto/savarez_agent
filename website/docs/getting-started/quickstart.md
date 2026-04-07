@@ -102,7 +102,7 @@ Type `/` to see an autocomplete dropdown of all commands:
 
 ### Multi-line input
 
-Press `Alt+Enter` or `Ctrl+J` to add a new line. Great for pasting code or writing detailed prompts.
+Press `Shift+Enter` to add a new line when your terminal supports it, with `Alt+Enter` and `Ctrl+J` as dependable fallbacks for pasting code or writing detailed prompts.
 
 ### Interrupt the agent
 

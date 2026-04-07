@@ -36,7 +36,7 @@ Before writing a long prompt explaining how to do something, check if there's al
 
 ### Multi-Line Input
 
-Press **Alt+Enter** (or **Ctrl+J**) to insert a newline without sending. This lets you compose multi-line prompts, paste code blocks, or structure complex requests before hitting Enter to send.
+Press **Shift+Enter** when your terminal supports it, with **Alt+Enter** and **Ctrl+J** as reliable fallbacks, to insert a newline without sending. This lets you compose multi-line prompts, paste code blocks, or structure complex requests before hitting Enter to send.
 
 ### Paste Detection
 

@@ -77,6 +77,8 @@ _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 
+_XTERM_SHIFT_ENTER_SEQUENCE = "\x1b[27;2;13~"  # xterm-style CSI for Shift+Enter when modifiers are encoded
+
 
 # =============================================================================
 # Configuration Loading
@@ -175,6 +177,20 @@ def _get_chrome_debug_candidates(system: str) -> list[str]:
         )
 
     return candidates
+
+
+def _enable_shift_enter_newline_support() -> bool:
+    """Shift-Enter terminals should reuse the existing newline handler."""
+    try:
+        from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+        from prompt_toolkit.keys import Keys
+    except Exception:
+        return False
+
+    if ANSI_SEQUENCES.get(_XTERM_SHIFT_ENTER_SEQUENCE) == Keys.ControlM:
+        ANSI_SEQUENCES[_XTERM_SHIFT_ENTER_SEQUENCE] = Keys.ControlJ
+
+    return ANSI_SEQUENCES.get(_XTERM_SHIFT_ENTER_SEQUENCE) == Keys.ControlJ
 
 
 def load_cli_config() -> Dict[str, Any]:
@@ -7056,7 +7072,9 @@ class HermesCLI:
                             f"— command scanning will use pattern matching only{_RST}")
         except Exception:
             pass  # Non-fatal — fail-open at scan time if unavailable
-        
+
+        _enable_shift_enter_newline_support()
+
         # Key bindings for the input area
         kb = KeyBindings()
         
