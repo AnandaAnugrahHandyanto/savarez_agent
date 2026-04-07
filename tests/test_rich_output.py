@@ -1,0 +1,508 @@
+"""Tests for agent/rich_output.py — syntax highlighting, diff rendering, code block detection."""
+
+import pytest
+
+from agent.rich_output import (
+    _DIFF_MAX_LINES,
+    DiffRenderer,
+    FilePathFormatter,
+    LanguageDetector,
+    SyntaxHighlighter,
+    _DIFF_BG_ADD_HL,
+    _DIFF_BG_DEL_HL,
+    _intra_diff,
+    _parse_diff_filename,
+)
+
+
+# ---------------------------------------------------------------------------
+# Shared test helpers
+# ---------------------------------------------------------------------------
+
+def _seg_color(seg) -> str:
+    """Return the colour name of a Text segment as a plain string."""
+    return seg.style.color.name  # rich.color.Color.name is the canonical name string
+
+
+def _renderables(diff: str) -> list:
+    """Return the list of Text children from DiffRenderer._style().
+
+    Uses ``group.renderables`` which is an internal Rich attribute.  If a
+    future Rich upgrade removes it, switch to rendering the Group to a Console
+    buffer and inspecting the output instead.
+    """
+    return list(DiffRenderer()._style(diff.splitlines()).renderables)
+
+
+# ---------------------------------------------------------------------------
+# LanguageDetector
+# ---------------------------------------------------------------------------
+
+class TestLanguageDetector:
+    def setup_method(self):
+        self.det = LanguageDetector()
+
+    def test_detect_python_from_extension(self):
+        assert self.det.detect_from_filename("foo.py") == "python"
+
+    def test_detect_typescript_from_extension(self):
+        assert self.det.detect_from_filename("app.ts") == "typescript"
+
+    def test_detect_unknown_extension_returns_none(self):
+        assert self.det.detect_from_filename("file.xyz") is None
+
+    def test_detect_dockerfile(self):
+        assert self.det.detect_from_filename("Dockerfile") == "dockerfile"
+
+    def test_detect_makefile(self):
+        assert self.det.detect_from_filename("Makefile") == "makefile"
+
+    def test_detect_python_from_content(self):
+        code = "def hello():\n    return 42\n"
+        assert self.det.detect_from_content(code) == "python"
+
+    def test_detect_javascript_from_content(self):
+        code = "const x = require('fs');\nmodule.exports = x;\n"
+        assert self.det.detect_from_content(code) == "javascript"
+
+    def test_detect_bash_from_content(self):
+        code = "#!/bin/bash\nif [ -f foo ]; then echo hi; fi\n"
+        assert self.det.detect_from_content(code) == "bash"
+
+    def test_detect_empty_content_returns_none(self):
+        assert self.det.detect_from_content("") is None
+        assert self.det.detect_from_content("   \n  ") is None
+
+    def test_detect_prefers_filename_over_content(self):
+        # .js extension should win even if content looks like Python
+        assert self.det.detect("def foo(): pass", filename="script.js") == "javascript"
+
+
+# ---------------------------------------------------------------------------
+# FilePathFormatter
+# ---------------------------------------------------------------------------
+
+class TestFilePathFormatter:
+    def test_python_icon(self):
+        assert FilePathFormatter.get_file_icon("main.py") == "🐍"
+
+    def test_rust_icon(self):
+        assert FilePathFormatter.get_file_icon("lib.rs") == "🦀"
+
+    def test_unknown_extension_fallback(self):
+        assert FilePathFormatter.get_file_icon("weird.xyz") == "📄"
+
+    def test_titled_includes_icon_and_path(self):
+        result = FilePathFormatter.titled("main.py", compact=False)
+        assert "🐍" in result
+        assert "main.py" in result
+
+    def test_format_path_compact_returns_relative(self, tmp_path):
+        file_path = str(tmp_path / "sub" / "foo.py")
+        result = FilePathFormatter.format_path(file_path, compact=True, cwd=str(tmp_path))
+        assert result == "sub/foo.py"
+
+    def test_format_path_verbose_returns_full(self, tmp_path):
+        file_path = str(tmp_path / "foo.py")
+        result = FilePathFormatter.format_path(file_path, compact=False)
+        assert result == file_path
+
+
+# ---------------------------------------------------------------------------
+# SyntaxHighlighter
+# ---------------------------------------------------------------------------
+
+class TestSyntaxHighlighter:
+    def setup_method(self):
+        self.hl = SyntaxHighlighter()
+
+    def test_to_ansi_returns_string(self):
+        result = self.hl.to_ansi("x = 1", language="python")
+        assert isinstance(result, str)
+        assert "x" in result
+
+    def test_to_ansi_contains_ansi_codes(self):
+        result = self.hl.to_ansi("def foo(): pass", language="python")
+        # Should contain at least one ANSI escape sequence
+        assert "\033[" in result
+
+    def test_to_markup_returns_string(self):
+        result = self.hl.to_markup("x = 1", language="python")
+        assert isinstance(result, str)
+
+    def test_to_ansi_empty_string(self):
+        result = self.hl.to_ansi("")
+        assert isinstance(result, str)
+
+    def test_to_ansi_fallback_on_unknown_language(self):
+        # Unknown language should not crash
+        result = self.hl.to_ansi("some text", language="nonexistentlang123")
+        assert isinstance(result, str)
+        assert "some text" in result
+
+
+# ---------------------------------------------------------------------------
+# DiffRenderer
+# ---------------------------------------------------------------------------
+
+class TestDiffRenderer:
+    def setup_method(self):
+        self.dr = DiffRenderer()
+
+    def test_to_lines_returns_list(self):
+        diff = "--- a/foo.py\n+++ b/foo.py\n@@ -1 +1 @@\n-old\n+new\n"
+        lines = self.dr.to_lines(diff)
+        assert isinstance(lines, list)
+        assert len(lines) > 0
+
+    def test_to_lines_contains_content(self):
+        diff = "--- a/foo.py\n+++ b/foo.py\n@@ -1 +1 @@\n-old\n+new\n"
+        lines = self.dr.to_lines(diff)
+        combined = "\n".join(lines)
+        assert "old" in combined
+        assert "new" in combined
+
+    def test_from_content_produces_renderable(self):
+        from rich.console import Group
+        result = self.dr.from_content("old line\n", "new line\n", file_path="test.py")
+        assert isinstance(result, Group)
+
+    def test_from_unified_empty_diff(self):
+        # Empty diff should not crash
+        result = self.dr.to_lines("")
+        assert isinstance(result, list)
+
+    def test_file_header_formatted(self):
+        diff = "--- a/src/main.py\n+++ b/src/main.py\n@@ -1 +1 @@\n-x\n+y\n"
+        lines = self.dr.to_lines(diff)
+        combined = "\n".join(lines)
+        assert "main.py" in combined
+
+    def test_to_lines_does_not_crash_on_malformed_diff(self):
+        result = self.dr.to_lines("not a real diff at all\njust some text\n")
+        assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# _intra_diff unit tests
+# ---------------------------------------------------------------------------
+
+class TestIntraDiff:
+    # _intra_diff now returns ([del_text], [add_text]) — single-element lists
+    # where each element is a Rich Text with spans rather than a list of
+    # per-segment Text objects.  Changed regions are marked with a brighter
+    # background (bold) instead of a bright foreground colour.
+
+    def test_equal_spans_use_base_colour(self):
+        # Identical lines → no changed region → no bright-highlight spans.
+        del_segs, add_segs = _intra_diff("abc", "abc")
+        del_text, add_text = del_segs[0], add_segs[0]
+        assert del_text.plain == "abc"
+        assert add_text.plain == "abc"
+        # No span should carry the brighter highlight background.
+        del_bgs = {sp.style.bgcolor for sp in del_text._spans if sp.style.bgcolor}
+        add_bgs = {sp.style.bgcolor for sp in add_text._spans if sp.style.bgcolor}
+        from rich.color import Color
+        hl_del = Color.parse(_DIFF_BG_DEL_HL)
+        hl_add = Color.parse(_DIFF_BG_ADD_HL)
+        assert hl_del not in del_bgs
+        assert hl_add not in add_bgs
+
+    def test_changed_span_highlighted(self):
+        # "foo bar" → "foo baz": only the last char differs.
+        del_segs, add_segs = _intra_diff("foo bar", "foo baz")
+        del_text, add_text = del_segs[0], add_segs[0]
+        from rich.color import Color
+        hl_del = Color.parse(_DIFF_BG_DEL_HL)
+        hl_add = Color.parse(_DIFF_BG_ADD_HL)
+        del_bgs = {sp.style.bgcolor for sp in del_text._spans if sp.style.bgcolor}
+        add_bgs = {sp.style.bgcolor for sp in add_text._spans if sp.style.bgcolor}
+        assert hl_del in del_bgs, "expected bright del bg on changed span"
+        assert hl_add in add_bgs, "expected bright add bg on changed span"
+        # Changed spans must be bold.
+        del_bold = any(
+            sp.style.bold and sp.style.bgcolor == hl_del
+            for sp in del_text._spans
+        )
+        assert del_bold, "changed del span must be bold"
+
+    def test_delete_opcode_no_add_seg(self):
+        del_segs, add_segs = _intra_diff("abcXYZ", "abc")
+        assert "XYZ" in del_segs[0].plain
+        assert add_segs[0].plain == "abc"
+
+    def test_insert_opcode_no_del_seg(self):
+        del_segs, add_segs = _intra_diff("abc", "abcXYZ")
+        assert "XYZ" in add_segs[0].plain
+        assert del_segs[0].plain == "abc"
+
+
+# ---------------------------------------------------------------------------
+# _parse_diff_filename unit tests
+# ---------------------------------------------------------------------------
+
+class TestParseDiffFilename:
+    def test_strips_b_prefix(self):
+        assert _parse_diff_filename("b/src/foo.py") == "src/foo.py"
+
+    def test_strips_a_prefix(self):
+        assert _parse_diff_filename("a/src/foo.py") == "src/foo.py"
+
+    def test_bare_path(self):
+        assert _parse_diff_filename("path/bar.py") == "path/bar.py"
+
+    def test_devnull_falls_back_to_from(self):
+        assert _parse_diff_filename("/dev/null", "a/old.py") == "old.py"
+
+    def test_devnull_no_fallback_returns_question(self):
+        assert _parse_diff_filename("/dev/null") == "?"
+
+
+# ---------------------------------------------------------------------------
+# DiffRenderer rendering tests
+# ---------------------------------------------------------------------------
+
+_SIMPLE_DIFF = (
+    "--- a/foo.py\n"
+    "+++ b/foo.py\n"
+    "@@ -1,2 +1,2 @@\n"
+    "-foo bar\n"
+    "+foo baz\n"
+    " context\n"
+)
+
+_LOW_RATIO_DIFF = (
+    "--- a/foo.py\n"
+    "+++ b/foo.py\n"
+    "@@ -1 +1 @@\n"
+    "-aaaa\n"
+    "+zzzz\n"
+)
+
+
+class TestDiffRendererV2:
+    def test_intra_diff_skipped_below_ratio(self):
+        import re
+        from io import StringIO
+        from rich.console import Console
+        buf = StringIO()
+        Console(file=buf, force_terminal=True, highlight=False, width=220).print(
+            DiffRenderer()._style(_LOW_RATIO_DIFF.splitlines())
+        )
+        lines = buf.getvalue().splitlines()
+        del_line = next(l for l in lines if "aaaa" in re.sub(r"\x1b\[[0-9;]*m", "", l))
+        # bright_red bold is encoded as \x1b[1;91; — must not appear on a flat-colour line
+        assert "\x1b[1;91;" not in del_line
+
+    def test_pairing_per_run_not_per_hunk(self, monkeypatch):
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        # Use pairs with ratio > 0.5 so intra-diff triggers.
+        # "return foo_value" vs "return bar_value": share "return " + "_value" = 13 chars,
+        # total = 32, ratio = 26/32 ≈ 0.81.
+        diff = (
+            "--- a/f.py\n+++ b/f.py\n"
+            "@@ -1,3 +1,3 @@\n"
+            "-return foo_value\n"
+            "+return bar_value\n"
+            " context\n"
+            "-return foo_result\n"
+            "+return bar_result\n"
+        )
+        import re
+        from io import StringIO
+        from rich.console import Console
+        buf = StringIO()
+        Console(file=buf, force_terminal=True, highlight=False, width=220).print(
+            DiffRenderer()._style(diff.splitlines())
+        )
+        output = buf.getvalue()
+        # Both pairs should produce intra-highlighted changed chars.
+        # Changed regions now use a brighter background (bold) rather than a
+        # bright foreground colour, so check for the bright-del-bg ANSI code
+        # (_DIFF_BG_DEL_HL = "#b43030" → rgb(180,48,48)).
+        assert output.count("48;2;180;48;48") >= 2, "expected bright del bg in both del lines"
+        assert output.count("48;2;40;148;40") >= 2, "expected bright add bg in both add lines"
+
+    def test_alternating_run_flush(self):
+        # -A +B -C +D with no context between — should pair (-A,+B) and (-C,+D)
+        diff = (
+            "--- a/f.py\n+++ b/f.py\n"
+            "@@ -1,2 +1,2 @@\n"
+            "-alpha\n"
+            "+ALPHA\n"
+            "-beta\n"
+            "+BETA\n"
+        )
+        renderables = _renderables(diff)
+        all_plain = " ".join(r.plain for r in renderables)
+        assert "alpha" in all_plain
+        assert "ALPHA" in all_plain
+        assert "beta" in all_plain
+        assert "BETA" in all_plain
+
+    def test_unpaired_lines_flat_colour(self):
+        diff = (
+            "--- a/f.py\n+++ b/f.py\n"
+            "@@ -1,2 +1,1 @@\n"
+            "-first del\n"
+            "-second del\n"
+            "+one add\n"
+        )
+        import re
+        from io import StringIO
+        from rich.console import Console
+        buf = StringIO()
+        Console(file=buf, force_terminal=True, highlight=False, width=220).print(
+            DiffRenderer()._style(diff.splitlines())
+        )
+        output = buf.getvalue()
+        lines = output.splitlines()
+        second_del = next(
+            l for l in lines
+            if "second del" in re.sub(r"\x1b\[[0-9;]*m", "", l)
+        )
+        assert "\x1b[91m" not in second_del  # no bright_red on unpaired line
+
+    def test_summary_header_add_only(self):
+        diff = "--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n+new\n"
+        renderables = _renderables(diff)
+        plain = renderables[0].plain
+        assert "Added" in plain
+        assert "removed" not in plain
+
+    def test_summary_header_remove_only(self):
+        diff = "--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n-old\n"
+        plain = _renderables(diff)[0].plain
+        assert "Removed" in plain
+        assert "Added" not in plain
+
+    def test_summary_header_mixed(self):
+        diff = "--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n-old\n+new\n"
+        plain = _renderables(diff)[0].plain
+        assert "Added" in plain
+        assert "removed" in plain
+
+    def test_summary_header_plural(self):
+        diff = "--- a/f.py\n+++ b/f.py\n@@ -1 +2 @@\n+line1\n+line2\n"
+        plain = _renderables(diff)[0].plain
+        assert "Added 2 lines" in plain
+
+    def test_summary_header_singular(self):
+        diff = "--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n+line1\n"
+        plain = _renderables(diff)[0].plain
+        assert "Added 1 line" in plain
+        assert "lines" not in plain
+
+    def test_summary_header_contains_filename(self):
+        diff = "--- a/src/foo.py\n+++ b/src/foo.py\n@@ -1 +1 @@\n+x\n"
+        plain = _renderables(diff)[0].plain
+        assert "src/foo.py" in plain
+
+    def test_summary_header_strips_b_prefix(self):
+        diff = "--- a/path/bar.py\n+++ b/path/bar.py\n@@ -1 +1 @@\n+x\n"
+        plain = _renderables(diff)[0].plain
+        assert "path/bar.py" in plain
+        assert "b/path/bar.py" not in plain
+
+    def test_summary_header_bare_path(self):
+        diff = "--- path/bar.py\n+++ path/bar.py\n@@ -1 +1 @@\n+x\n"
+        plain = _renderables(diff)[0].plain
+        assert "path/bar.py" in plain
+
+    def test_summary_header_devnull_fallback(self):
+        diff = "--- a/old.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n"
+        plain = _renderables(diff)[0].plain
+        assert "old.py" in plain
+
+    def test_summary_header_keeps_distinct_relative_paths(self):
+        diff = (
+            "--- a/src/foo.py\n+++ b/src/foo.py\n@@ -1 +1 @@\n+x\n"
+            "--- a/tests/foo.py\n+++ b/tests/foo.py\n@@ -1 +1 @@\n+y\n"
+        )
+        header_plains = [r.plain for r in _renderables(diff) if "●" in r.plain]
+        assert any("src/foo.py" in p for p in header_plains)
+        assert any("tests/foo.py" in p for p in header_plains)
+
+    def test_multi_file_diff_two_headers(self):
+        diff = (
+            "--- a/one.py\n+++ b/one.py\n@@ -1 +1 @@\n+x\n"
+            "--- a/two.py\n+++ b/two.py\n@@ -1 +1 @@\n+y\n"
+        )
+        renderables = _renderables(diff)
+        header_plains = [r.plain for r in renderables if "●" in r.plain]
+        assert len(header_plains) == 2
+        assert any("one.py" in p for p in header_plains)
+        assert any("two.py" in p for p in header_plains)
+
+    def test_separator_width_matches_header(self):
+        diff = "--- a/foo.py\n+++ b/foo.py\n@@ -1 +1 @@\n+x\n"
+        renderables = _renderables(diff)
+        header = renderables[0]
+        separator = renderables[1]
+        assert len(separator.plain) == len(header.plain)
+
+
+# ---------------------------------------------------------------------------
+# DiffRenderer truncation tests
+# ---------------------------------------------------------------------------
+
+import re as _re
+_ANSI_RE = _re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _make_long_diff(n_lines: int) -> str:
+    """Generate a unified diff with n_lines changed lines."""
+    old = "\n".join(f"line {i}" for i in range(n_lines))
+    new = "\n".join(f"line {i} changed" for i in range(n_lines))
+    import difflib
+    return "".join(difflib.unified_diff(
+        old.splitlines(keepends=True),
+        new.splitlines(keepends=True),
+        fromfile="a/f.py", tofile="b/f.py",
+    ))
+
+
+class TestDiffRendererTruncation:
+    def setup_method(self):
+        self.dr = DiffRenderer()
+
+    def test_short_diff_not_truncated(self):
+        diff = "--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n-old\n+new\n"
+        lines = self.dr.to_lines(diff)
+        assert not any("omitted" in _ANSI_RE.sub("", l) for l in lines)
+        assert any("old" in _ANSI_RE.sub("", l) for l in lines)
+        assert any("new" in _ANSI_RE.sub("", l) for l in lines)
+
+    def test_long_diff_truncated(self):
+        diff = _make_long_diff(_DIFF_MAX_LINES + 10)
+        lines = self.dr.to_lines(diff)
+        plain_last = _ANSI_RE.sub("", lines[-1])
+        assert "omitted" in plain_last
+        assert not any(f"line {_DIFF_MAX_LINES + 1} changed" in _ANSI_RE.sub("", l) for l in lines)
+
+    def test_footer_singular(self):
+        # Render a diff fully, then re-render capped at total-1 → exactly 1 omitted
+        diff = "--- a/f.py\n+++ b/f.py\n@@ -1,3 +1,3 @@\n-a\n-b\n-c\n+a2\n+b2\n+c2\n"
+        full = self.dr.to_lines(diff, max_lines=0)
+        lines = self.dr.to_lines(diff, max_lines=len(full) - 1)
+        footer = _ANSI_RE.sub("", lines[-1])
+        assert "1 more line omitted" in footer
+        assert "lines" not in footer
+
+    def test_footer_plural(self):
+        diff = _make_long_diff(_DIFF_MAX_LINES + 5)
+        lines = self.dr.to_lines(diff)
+        footer = _ANSI_RE.sub("", lines[-1])
+        assert "more lines omitted" in footer
+
+    def test_max_lines_zero_disables_cap(self):
+        diff = _make_long_diff(_DIFF_MAX_LINES + 20)
+        lines = self.dr.to_lines(diff, max_lines=0)
+        assert not any("omitted" in _ANSI_RE.sub("", l) for l in lines)
+        assert len(lines) > _DIFF_MAX_LINES
+
+    def test_custom_max_lines_respected(self):
+        diff = _make_long_diff(20)
+        lines = self.dr.to_lines(diff, max_lines=10)
+        assert len(lines) == 11  # 10 content + footer
+        assert "omitted" in _ANSI_RE.sub("", lines[-1])

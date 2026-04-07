@@ -1250,6 +1250,16 @@ class HermesCLI:
         # Inline diff previews for write actions (display.inline_diffs in config.yaml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
 
+        # Syntax-highlighted code preview for execute_code (display.code_highlight in config.yaml)
+        self._code_highlight_enabled = CLI_CONFIG["display"].get("code_highlight", True)
+        from agent.display import set_code_highlight_active, set_diff_limits, set_preview_max_lines
+        set_code_highlight_active(self._code_highlight_enabled)
+        set_diff_limits(
+            max_lines=CLI_CONFIG["display"].get("diff_max_lines", 80),
+            max_files=CLI_CONFIG["display"].get("diff_max_files", 6),
+        )
+        set_preview_max_lines(CLI_CONFIG["display"].get("preview_max_lines", 40))
+
         # Streaming display state
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
         self._stream_started = False  # True once first delta arrives
@@ -1777,12 +1787,16 @@ class HermesCLI:
     # ── Streaming display ────────────────────────────────────────────────
 
     def _current_reasoning_callback(self):
-        """Return the active reasoning display callback for the current mode."""
-        if self.show_reasoning and self.streaming_enabled:
-            return self._stream_reasoning_delta
-        if self.verbose and not self.show_reasoning:
-            return self._on_reasoning
-        return None
+        """Return the active reasoning display callback for the current mode.
+
+        show_reasoning is the sole gate — verbose mode does not override it.
+        When show_reasoning is on: streaming path gets live token delivery
+        (_stream_reasoning_delta); non-streaming path gets the batch preview
+        (_on_reasoning / _flush_reasoning_preview → [thinking] lines).
+        """
+        if not self.show_reasoning:
+            return None
+        return self._stream_reasoning_delta if self.streaming_enabled else self._on_reasoning
 
     def _emit_reasoning_preview(self, reasoning_text: str) -> None:
         """Render a buffered reasoning preview as a single [thinking] block."""
