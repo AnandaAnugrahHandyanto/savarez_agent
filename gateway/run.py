@@ -4127,7 +4127,7 @@ class GatewayRunner:
                 from_profile="hermes",
                 to_profile=target,
                 message_type=MessageType.TASK_REQUEST,
-                payload={"task": message_text},
+                payload={"task": message_text, "user_talk": True},
             )
             bus.close()
 
