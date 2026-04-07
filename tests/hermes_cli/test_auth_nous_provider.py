@@ -3,11 +3,12 @@
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 
-from hermes_cli.auth import AuthError, get_provider_auth_state, resolve_nous_runtime_credentials
+from hermes_cli.auth import AuthError, get_nous_auth_status, get_provider_auth_state, resolve_nous_runtime_credentials
 
 
 def _setup_nous_auth(
@@ -154,3 +155,124 @@ def test_mint_retry_uses_latest_rotated_refresh_token(tmp_path, monkeypatch):
     assert creds["api_key"] == "agent-key"
     assert refresh_calls == ["refresh-old", "refresh-1"]
 
+
+# =============================================================================
+# get_nous_auth_status — credential pool path (issue #5807)
+# =============================================================================
+
+
+def _make_pool_entry(
+    *,
+    access_token: str = "access-tok",
+    refresh_token: str = "refresh-tok",
+    portal_base_url: str = "https://portal.example.com",
+    inference_base_url: str = "https://inference.example.com/v1",
+    expires_at: str = "2099-01-01T00:00:00+00:00",
+    agent_key_expires_at: str = "2099-01-01T00:00:00+00:00",
+    label: str = "test@example.com",
+):
+    """Return a minimal PooledCredential-like mock for nous."""
+    entry = MagicMock()
+    entry.access_token = access_token
+    entry.refresh_token = refresh_token
+    entry.portal_base_url = portal_base_url
+    entry.inference_base_url = inference_base_url
+    entry.expires_at = expires_at
+    entry.agent_key_expires_at = agent_key_expires_at
+    entry.label = label
+    return entry
+
+
+def _make_pool(entry=None, *, has_creds: bool = True):
+    pool = MagicMock()
+    pool.has_credentials.return_value = has_creds
+    pool.select.return_value = entry
+    return pool
+
+
+def test_get_nous_auth_status_pool_logged_in(tmp_path, monkeypatch):
+    """get_nous_auth_status returns logged_in=True when a valid pool entry exists."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    # Empty legacy state — pool should win
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    entry = _make_pool_entry()
+    fake_pool = _make_pool(entry)
+
+    with patch("agent.credential_pool.load_pool", return_value=fake_pool) as mock_load_pool:
+        status = get_nous_auth_status()
+
+    mock_load_pool.assert_called_once_with("nous")
+    assert status["logged_in"] is True
+    assert status["portal_base_url"] == "https://portal.example.com"
+    assert status["inference_base_url"] == "https://inference.example.com/v1"
+    assert status["access_expires_at"] == "2099-01-01T00:00:00+00:00"
+    assert status["agent_key_expires_at"] == "2099-01-01T00:00:00+00:00"
+    assert status["has_refresh_token"] is True
+    assert "pool:" in status["source"]
+
+
+def test_get_nous_auth_status_pool_empty_falls_back_to_legacy(tmp_path, monkeypatch):
+    """get_nous_auth_status falls back to legacy provider state when pool is empty."""
+    hermes_home = tmp_path / "hermes"
+    _setup_nous_auth(hermes_home, access_token="legacy-token", refresh_token="legacy-refresh")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    empty_pool = _make_pool(entry=None, has_creds=False)
+
+    with patch("agent.credential_pool.load_pool", return_value=empty_pool):
+        status = get_nous_auth_status()
+
+    assert status["logged_in"] is True
+    assert status["has_refresh_token"] is True
+    # source key is absent for legacy path
+    assert "source" not in status
+
+
+def test_get_nous_auth_status_pool_entry_no_access_token_falls_back(tmp_path, monkeypatch):
+    """get_nous_auth_status falls back when the pool entry has no access_token."""
+    hermes_home = tmp_path / "hermes"
+    _setup_nous_auth(hermes_home, access_token="legacy-token")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    entry = _make_pool_entry(access_token="")  # empty access_token
+    fake_pool = _make_pool(entry)
+
+    with patch("agent.credential_pool.load_pool", return_value=fake_pool):
+        status = get_nous_auth_status()
+
+    # Falls back to legacy which has access_token
+    assert status["logged_in"] is True
+    assert "source" not in status
+
+
+def test_get_nous_auth_status_not_logged_in_when_no_creds(tmp_path, monkeypatch):
+    """get_nous_auth_status returns logged_in=False when both pool and legacy are empty."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    empty_pool = _make_pool(entry=None, has_creds=False)
+
+    with patch("agent.credential_pool.load_pool", return_value=empty_pool):
+        status = get_nous_auth_status()
+
+    assert status["logged_in"] is False
+    assert status["portal_base_url"] is None
+
+
+def test_get_nous_auth_status_pool_exception_falls_back(tmp_path, monkeypatch):
+    """get_nous_auth_status silently falls back to legacy when load_pool raises."""
+    hermes_home = tmp_path / "hermes"
+    _setup_nous_auth(hermes_home, access_token="legacy-token")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    with patch("agent.credential_pool.load_pool", side_effect=RuntimeError("pool exploded")):
+        status = get_nous_auth_status()
+
+    # Falls back to legacy
+    assert status["logged_in"] is True
+    assert "source" not in status
