@@ -287,6 +287,92 @@ def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_mo
     assert "prompt_cache_key" not in kwargs
 
 
+def test_run_codex_stream_hydrates_empty_final_response_from_deltas(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    class _DeltaOnlyStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            return iter([
+                SimpleNamespace(type="response.created"),
+                SimpleNamespace(type="response.output_text.delta", delta="Hello"),
+                SimpleNamespace(type="response.output_text.delta", delta=" from streamed Codex"),
+                SimpleNamespace(type="response.completed"),
+            ])
+
+        def get_final_response(self):
+            return SimpleNamespace(output=[], output_text="", status="completed", model="gpt-5-codex")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _DeltaOnlyStream(),
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.output_text == "Hello from streamed Codex"
+    assert response.output[0].content[0].text == "Hello from streamed Codex"
+
+
+def test_run_codex_stream_hydrates_empty_tool_call_response_from_events(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    tool_call_started = SimpleNamespace(
+        type="function_call",
+        id="fc_1",
+        call_id="call_1",
+        name="terminal",
+        arguments="",
+        status="in_progress",
+    )
+    tool_call_done = SimpleNamespace(
+        type="function_call",
+        id="fc_1",
+        call_id="call_1",
+        name="terminal",
+        arguments="{}",
+        status="completed",
+    )
+
+    class _ToolOnlyStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            return iter([
+                SimpleNamespace(type="response.output_item.added", output_index=0, item=tool_call_started),
+                SimpleNamespace(type="response.function_call_arguments.delta", output_index=0, item_id="fc_1", delta="{}"),
+                SimpleNamespace(type="response.output_item.done", output_index=0, item=tool_call_done),
+                SimpleNamespace(type="response.completed"),
+            ])
+
+        def get_final_response(self):
+            return SimpleNamespace(output=[], output_text="", status="completed", model="gpt-5-codex")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _ToolOnlyStream(),
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.output[0].type == "function_call"
+    assert response.output[0].name == "terminal"
+    assert response.output[0].arguments == "{}"
+
+
 def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):
     agent = _build_agent(monkeypatch)
     calls = {"stream": 0}

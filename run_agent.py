@@ -669,6 +669,7 @@ class AIAgent:
         self._delegate_depth = 0        # 0 = top-level agent, incremented for children
         self._active_children = []      # Running child AIAgents (for interrupt propagation)
         self._active_children_lock = threading.Lock()
+        self._delegate_calls_this_turn = 0
         
         # Store OpenRouter provider preferences
         self.providers_allowed = providers_allowed
@@ -2933,32 +2934,43 @@ class AIAgent:
         return messages
 
     @staticmethod
-    def _cap_delegate_task_calls(tool_calls: list) -> list:
-        """Truncate excess delegate_task calls to MAX_CONCURRENT_CHILDREN.
+    def _cap_delegate_task_calls(tool_calls: list, max_delegate_calls: int = None) -> list:
+        """Truncate excess delegate_task calls while preserving non-delegate calls.
 
         The delegate_tool caps the task list inside a single call, but the
-        model can emit multiple separate delegate_task tool_calls in one
-        turn.  This truncates the excess, preserving all non-delegate calls.
+        model can still emit multiple separate delegate_task tool_calls in one
+        turn or across repeated turns. ``max_delegate_calls`` lets the caller
+        enforce a tighter per-turn budget while still honoring the hard safety
+        ceiling from tools.delegate_tool.MAX_CONCURRENT_CHILDREN.
 
         Returns the original list if no truncation was needed.
         """
         from tools.delegate_tool import MAX_CONCURRENT_CHILDREN
+
+        if max_delegate_calls is None:
+            allowed_delegate_calls = MAX_CONCURRENT_CHILDREN
+        else:
+            try:
+                allowed_delegate_calls = int(max_delegate_calls)
+            except (TypeError, ValueError):
+                allowed_delegate_calls = MAX_CONCURRENT_CHILDREN
+            allowed_delegate_calls = max(0, min(allowed_delegate_calls, MAX_CONCURRENT_CHILDREN))
+
         delegate_count = sum(1 for tc in tool_calls if tc.function.name == "delegate_task")
-        if delegate_count <= MAX_CONCURRENT_CHILDREN:
+        if delegate_count <= allowed_delegate_calls:
             return tool_calls
         kept_delegates = 0
         truncated = []
         for tc in tool_calls:
             if tc.function.name == "delegate_task":
-                if kept_delegates < MAX_CONCURRENT_CHILDREN:
+                if kept_delegates < allowed_delegate_calls:
                     truncated.append(tc)
                     kept_delegates += 1
             else:
                 truncated.append(tc)
         logger.warning(
-            "Truncated %d excess delegate_task call(s) to enforce "
-            "MAX_CONCURRENT_CHILDREN=%d limit",
-            delegate_count - MAX_CONCURRENT_CHILDREN, MAX_CONCURRENT_CHILDREN,
+            "Truncated %d excess delegate_task call(s) to enforce delegate limit=%d",
+            delegate_count - allowed_delegate_calls, allowed_delegate_calls,
         )
         return truncated
 
@@ -3859,6 +3871,56 @@ class AIAgent:
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
         self._close_openai_client(client, reason=reason, shared=False)
 
+    def _hydrate_codex_stream_response(
+        self,
+        response: Any,
+        streamed_text_parts: Optional[List[str]] = None,
+        streamed_output_items: Optional[Dict[int, Any]] = None,
+    ):
+        """Backfill empty streamed Responses finals from already-received stream events."""
+        if response is None:
+            return None
+
+        output = getattr(response, "output", None)
+        output_text = getattr(response, "output_text", None)
+        if isinstance(output, list) and output:
+            return response
+        if isinstance(output_text, str) and output_text.strip():
+            return response
+
+        hydrated_output: List[Any] = []
+        if isinstance(streamed_output_items, dict) and streamed_output_items:
+            for _, item in sorted(streamed_output_items.items(), key=lambda pair: pair[0]):
+                if item is not None:
+                    hydrated_output.append(item)
+
+        streamed_text = "".join(streamed_text_parts or []).strip()
+        if not hydrated_output and streamed_text:
+            hydrated_output = [
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text=streamed_text)],
+                )
+            ]
+
+        if not hydrated_output:
+            return response
+
+        logger.debug(
+            "Hydrating empty Codex stream final response from streamed events. %s",
+            self._client_log_context(),
+        )
+        return SimpleNamespace(
+            id=getattr(response, "id", None),
+            object=getattr(response, "object", "response"),
+            model=getattr(response, "model", None),
+            status=getattr(response, "status", "completed"),
+            usage=getattr(response, "usage", None),
+            error=getattr(response, "error", None),
+            output_text=streamed_text,
+            output=hydrated_output,
+        )
+
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Execute one streaming Responses API request and return the final response."""
         import httpx as _httpx
@@ -3869,16 +3931,25 @@ class AIAgent:
         first_delta_fired = False
         self._reasoning_deltas_fired = False
         for attempt in range(max_stream_retries + 1):
+            streamed_text_parts: List[str] = []
+            streamed_output_items: Dict[int, Any] = {}
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
                     for event in stream:
                         if self._interrupt_requested:
                             break
                         event_type = getattr(event, "type", "")
+                        output_index = getattr(event, "output_index", None)
+                        item = getattr(event, "item", None)
+                        if isinstance(output_index, int) and item is not None and (
+                            event_type == "response.output_item.added" or event_type == "response.output_item.done"
+                        ):
+                            streamed_output_items[output_index] = item
                         # Fire callbacks on text content deltas (suppress during tool calls)
                         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
                             delta_text = getattr(event, "delta", "")
                             if delta_text and not has_tool_calls:
+                                streamed_text_parts.append(delta_text)
                                 if not first_delta_fired:
                                     first_delta_fired = True
                                     if on_first_delta:
@@ -3895,7 +3966,12 @@ class AIAgent:
                             reasoning_text = getattr(event, "delta", "")
                             if reasoning_text:
                                 self._fire_reasoning_delta(reasoning_text)
-                    return stream.get_final_response()
+                    final_response = stream.get_final_response()
+                    return self._hydrate_codex_stream_response(
+                        final_response,
+                        streamed_text_parts,
+                        streamed_output_items,
+                    )
             except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
                 if attempt < max_stream_retries:
                     logger.debug(
@@ -6373,6 +6449,7 @@ class AIAgent:
                     self._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
             elif function_name == "delegate_task":
                 from tools.delegate_tool import delegate_task as _delegate_task
+                self._delegate_calls_this_turn = getattr(self, "_delegate_calls_this_turn", 0) + 1
                 tasks_arg = function_args.get("tasks")
                 if tasks_arg and isinstance(tasks_arg, list):
                     spinner_label = f"🔀 delegating {len(tasks_arg)} tasks"
@@ -6838,6 +6915,7 @@ class AIAgent:
         self._last_content_with_tools = None
         self._mute_post_response = False
         self._surrogate_sanitized = False
+        self._delegate_calls_this_turn = 0
 
         # Pre-turn connection health check: detect and clean up dead TCP
         # connections left over from provider outages or dropped streams.
@@ -8667,8 +8745,15 @@ class AIAgent:
                     self._invalid_json_retries = 0
 
                     # ── Post-call guardrails ──────────────────────────
+                    from tools.delegate_tool import get_delegation_limits
+                    delegation_limits = get_delegation_limits()
+                    remaining_delegate_calls = max(
+                        0,
+                        delegation_limits["max_tool_calls_per_turn"] - getattr(self, "_delegate_calls_this_turn", 0),
+                    )
                     assistant_message.tool_calls = self._cap_delegate_task_calls(
-                        assistant_message.tool_calls
+                        assistant_message.tool_calls,
+                        max_delegate_calls=remaining_delegate_calls,
                     )
                     assistant_message.tool_calls = self._deduplicate_tool_calls(
                         assistant_message.tool_calls

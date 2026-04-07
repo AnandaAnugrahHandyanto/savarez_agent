@@ -147,6 +147,12 @@ class TestCapDelegateTaskCalls:
     def test_empty_list_safe(self):
         assert AIAgent._cap_delegate_task_calls([]) == []
 
+    def test_custom_delegate_limit_is_respected(self):
+        tcs = [make_tc("delegate_task") for _ in range(MAX_CONCURRENT_CHILDREN)]
+        out = AIAgent._cap_delegate_task_calls(tcs, max_delegate_calls=1)
+        delegate_count = sum(1 for tc in out if tc.function.name == "delegate_task")
+        assert delegate_count == 1
+
     def test_original_list_not_mutated(self):
         tcs = [make_tc("delegate_task") for _ in range(MAX_CONCURRENT_CHILDREN + 2)]
         original_len = len(tcs)

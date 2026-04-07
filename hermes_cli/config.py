@@ -298,7 +298,13 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "max_simple_chars": 160,
         "max_simple_words": 28,
+        "max_newlines": 1,
+        "forbid_code_fences": True,
+        "forbid_urls": True,
         "cheap_model": {},
+        "expensive_model": {},
+        "complex_keywords": [],
+        "forbidden_patterns": [],
     },
     
     # Auxiliary model config — provider:model for each side task.
@@ -460,6 +466,8 @@ DEFAULT_CONFIG = {
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
+        "max_concurrent_children": 1,  # default conservative fanout; hard ceiling remains 3
+        "max_tool_calls_per_turn": 1,  # cap total delegate_task calls per user turn
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

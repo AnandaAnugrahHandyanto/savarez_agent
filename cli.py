@@ -2229,6 +2229,12 @@ class HermesCLI:
             },
         )
 
+    def _show_turn_route_notice(self, route_label: str = None) -> None:
+        """Print a visible notice when smart routing overrides the primary model."""
+        if not route_label:
+            return
+        _cprint(f"{_DIM}Routing override: {route_label}{_RST}")
+
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, route_label: str = None) -> bool:
         """
         Initialize the agent on first use.
@@ -6306,6 +6312,7 @@ class HermesCLI:
             return None
 
         turn_route = self._resolve_turn_agent_config(message)
+        self._show_turn_route_notice(turn_route["label"])
         if turn_route["signature"] != self._active_agent_route_signature:
             self.agent = None
 
@@ -8516,6 +8523,7 @@ def main(
             cli.tool_progress_mode = "off"
             if cli._ensure_runtime_credentials():
                 turn_route = cli._resolve_turn_agent_config(query)
+                cli._show_turn_route_notice(turn_route["label"])
                 if turn_route["signature"] != cli._active_agent_route_signature:
                     cli.agent = None
                 if cli._init_agent(

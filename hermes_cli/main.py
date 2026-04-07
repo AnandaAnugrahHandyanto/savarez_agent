@@ -1011,9 +1011,8 @@ def select_provider_and_model(args=None):
     ordered.append(("more", "More providers..."))
     ordered.append(("cancel", "Cancel"))
 
-    provider_idx = _prompt_provider_choice(
-        [label for _, label in ordered], default=default_idx,
-    )
+    globals()["_PROMPT_PROVIDER_DEFAULT"] = default_idx
+    provider_idx = _prompt_provider_choice([label for _, label in ordered])
     if provider_idx is None or ordered[provider_idx][0] == "cancel":
         print("No change.")
         return
@@ -1028,9 +1027,8 @@ def select_provider_and_model(args=None):
             ext_ordered.append(("remove-custom", "Remove a saved custom provider"))
         ext_ordered.append(("cancel", "Cancel"))
 
-        ext_idx = _prompt_provider_choice(
-            [label for _, label in ext_ordered], default=0,
-        )
+        globals()["_PROMPT_PROVIDER_DEFAULT"] = 0
+        ext_idx = _prompt_provider_choice([label for _, label in ext_ordered])
         if ext_idx is None or ext_ordered[ext_idx][0] == "cancel":
             print("No change.")
             return
@@ -1061,13 +1059,18 @@ def select_provider_and_model(args=None):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
-def _prompt_provider_choice(choices, *, default=0):
+_PROMPT_PROVIDER_DEFAULT = 0
+
+
+def _prompt_provider_choice(choices, default=None):
     """Show provider selection menu with curses arrow-key navigation.
 
     Falls back to a numbered list when curses is unavailable (e.g. piped
     stdin, non-TTY environments).  Returns the selected index, or None
     if the user cancels.
     """
+    if default is None:
+        default = globals().get("_PROMPT_PROVIDER_DEFAULT", 0)
     try:
         from hermes_cli.setup import _curses_prompt_choice
         idx = _curses_prompt_choice("Select provider:", choices, default)
@@ -1097,6 +1100,17 @@ def _prompt_provider_choice(choices, *, default=0):
         except (KeyboardInterrupt, EOFError):
             print()
             return None
+
+
+def _prompt_secret_input(prompt: str) -> str:
+    """Prompt for a secret value, falling back to input in non-TTY contexts."""
+    try:
+        import getpass
+        return getpass.getpass(prompt).strip()
+    except (KeyboardInterrupt, EOFError):
+        raise
+    except Exception:
+        return input(prompt).strip()
 
 
 def _model_flow_openrouter(config, current_model=""):
@@ -1334,8 +1348,9 @@ def _model_flow_custom(config):
 
     try:
         base_url = input(f"API base URL [{current_url or 'e.g. https://api.example.com/v1'}]: ").strip()
-        import getpass
-        api_key = getpass.getpass(f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: ").strip()
+        api_key = _prompt_secret_input(
+            f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: "
+        )
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return

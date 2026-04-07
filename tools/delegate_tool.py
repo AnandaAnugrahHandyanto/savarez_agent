@@ -34,8 +34,10 @@ DELEGATE_BLOCKED_TOOLS = frozenset([
     "execute_code",    # children should reason step-by-step, not write scripts
 ])
 
-MAX_CONCURRENT_CHILDREN = 3
+MAX_CONCURRENT_CHILDREN = 3  # hard ceiling even when config is higher
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
+DEFAULT_MAX_CONCURRENT_CHILDREN = 1
+DEFAULT_MAX_TOOL_CALLS_PER_TURN = 1
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 
@@ -43,6 +45,32 @@ DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 def check_delegate_requirements() -> bool:
     """Delegation has no external requirements -- always available."""
     return True
+
+
+def _coerce_delegation_limit(value: Any, *, default: int, maximum: int) -> int:
+    """Parse a delegation limit from config and clamp it to a safe range."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(1, min(parsed, maximum))
+
+
+def get_delegation_limits(cfg: Optional[dict] = None) -> Dict[str, int]:
+    """Return resolved delegation limits from config with safe defaults."""
+    resolved_cfg = cfg if isinstance(cfg, dict) else _load_config()
+    return {
+        "max_concurrent_children": _coerce_delegation_limit(
+            resolved_cfg.get("max_concurrent_children"),
+            default=DEFAULT_MAX_CONCURRENT_CHILDREN,
+            maximum=MAX_CONCURRENT_CHILDREN,
+        ),
+        "max_tool_calls_per_turn": _coerce_delegation_limit(
+            resolved_cfg.get("max_tool_calls_per_turn"),
+            default=DEFAULT_MAX_TOOL_CALLS_PER_TURN,
+            maximum=MAX_CONCURRENT_CHILDREN,
+        ),
+    }
 
 
 def _build_child_system_prompt(goal: str, context: Optional[str] = None) -> str:
@@ -476,6 +504,8 @@ def delegate_task(
 
     # Load config
     cfg = _load_config()
+    limits = get_delegation_limits(cfg)
+    max_children = limits["max_concurrent_children"]
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
 
@@ -491,7 +521,7 @@ def delegate_task(
 
     # Normalize to task list
     if tasks and isinstance(tasks, list):
-        task_list = tasks[:MAX_CONCURRENT_CHILDREN]
+        task_list = tasks[:max_children]
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
     else:
@@ -551,7 +581,7 @@ def delegate_task(
         completed_count = 0
         spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
 
-        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHILDREN) as executor:
+        with ThreadPoolExecutor(max_workers=max_children) as executor:
             futures = {}
             for i, t, child in children:
                 future = executor.submit(
@@ -751,7 +781,7 @@ DELEGATE_TASK_SCHEMA = {
         "never enter your context window.\n\n"
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
         "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
-        "2. Batch (parallel): provide 'tasks' array with up to 3 items. "
+        "2. Batch (parallel): provide 'tasks' array with up to 3 items. Hermes may reduce this to the configured concurrency limit (default: 1). Prefer single-task delegation unless parallel work is clearly necessary. "
         "All run concurrently and results are returned together.\n\n"
         "WHEN TO USE delegate_task:\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"

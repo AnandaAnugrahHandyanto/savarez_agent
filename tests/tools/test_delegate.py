@@ -23,6 +23,7 @@ from tools.delegate_tool import (
     MAX_DEPTH,
     check_delegate_requirements,
     delegate_task,
+    get_delegation_limits,
     _build_child_agent,
     _build_child_system_prompt,
     _strip_blocked_tools,
@@ -66,6 +67,11 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("toolsets", props)
         self.assertIn("max_iterations", props)
         self.assertEqual(props["tasks"]["maxItems"], 3)
+
+    def test_get_delegation_limits_defaults_to_single_child(self):
+        limits = get_delegation_limits({})
+        self.assertEqual(limits["max_concurrent_children"], 1)
+        self.assertEqual(limits["max_tool_calls_per_turn"], 1)
 
 
 class TestChildSystemPrompt(unittest.TestCase):
@@ -141,8 +147,9 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][0]["summary"], "Done!")
         mock_run.assert_called_once()
 
+    @patch("tools.delegate_tool._load_config", return_value={"max_concurrent_children": 2})
     @patch("tools.delegate_tool._run_single_child")
-    def test_batch_mode(self, mock_run):
+    def test_batch_mode(self, mock_run, _mock_cfg):
         mock_run.side_effect = [
             {"task_index": 0, "status": "completed", "summary": "Result A", "api_calls": 2, "duration_seconds": 3.0},
             {"task_index": 1, "status": "completed", "summary": "Result B", "api_calls": 4, "duration_seconds": 6.0},
@@ -167,8 +174,20 @@ class TestDelegateTask(unittest.TestCase):
         }
         parent = _make_mock_parent()
         tasks = [{"goal": f"Task {i}"} for i in range(5)]
-        result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
-        # Should only run 3 tasks (MAX_CONCURRENT_CHILDREN)
+        json.loads(delegate_task(tasks=tasks, parent_agent=parent))
+        # Default config should keep fanout conservative at 1.
+        self.assertEqual(mock_run.call_count, 1)
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_concurrent_children": 3})
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_respects_configured_concurrency_cap(self, mock_run, _mock_cfg):
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+        }
+        parent = _make_mock_parent()
+        tasks = [{"goal": f"Task {i}"} for i in range(5)]
+        json.loads(delegate_task(tasks=tasks, parent_agent=parent))
         self.assertEqual(mock_run.call_count, 3)
 
     @patch("tools.delegate_tool._run_single_child")
@@ -861,6 +880,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         """In batch mode, all children receive the resolved credentials."""
         mock_cfg.return_value = {
             "max_iterations": 45,
+            "max_concurrent_children": 2,
             "model": "meta-llama/llama-4-scout",
             "provider": "openrouter",
         }

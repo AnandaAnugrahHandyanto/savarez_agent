@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from utils import is_truthy_value
 
@@ -43,6 +43,40 @@ _COMPLEX_KEYWORDS = {
     "cron",
     "docker",
     "kubernetes",
+    "authentication",
+    "auth",
+    "security",
+    "secret",
+    "credential",
+    "migration",
+    "schema",
+    "database",
+    "api",
+    "token",
+    "integration",
+    "regression",
+    "vulnerability",
+    "restart",
+    "service",
+    "systemctl",
+    "journalctl",
+    "log",
+    "logs",
+    "incident",
+    "run",
+    "execute",
+    "check",
+    "test",
+    "health",
+    "healthcheck",
+    "doctor",
+    "fuehre",
+    "führe",
+    "teste",
+    "pruefe",
+    "prüfe",
+    "ausfuehren",
+    "ausführen",
 }
 
 _URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)
@@ -59,6 +93,101 @@ def _coerce_int(value: Any, default: int) -> int:
         return default
 
 
+def _normalize_word(word: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", word.strip().lower())
+
+
+def _coerce_keyword_set(value: Any) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, Sequence):
+        return set()
+    out: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        norm = _normalize_word(item)
+        if norm:
+            out.add(norm)
+    return out
+
+
+def _coerce_regexes(value: Any) -> list[re.Pattern[str]]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, Sequence):
+        return []
+    out: list[re.Pattern[str]] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        try:
+            out.append(re.compile(item, flags=re.IGNORECASE))
+        except re.error:
+            continue
+    return out
+
+
+def _tokenize_words(text: str) -> set[str]:
+    return {_normalize_word(token) for token in text.split() if _normalize_word(token)}
+
+
+def _coerce_route_definition(route: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(route, dict):
+        return None
+    provider = str(route.get("provider") or "").strip().lower()
+    model = str(route.get("model") or "").strip()
+    if not provider or not model:
+        return None
+    return {
+        "provider": provider,
+        "model": model,
+        "base_url": str(route.get("base_url") or "").strip() or None,
+        "api_key_env": str(route.get("api_key_env") or "").strip() or None,
+    }
+
+
+def _is_route_simple(user_message: str, routing_config: Optional[Dict[str, Any]]) -> bool:
+    cfg = routing_config or {}
+    if not _coerce_bool(cfg.get("enabled"), False):
+        return False
+
+    text = (user_message or "").strip()
+    if not text:
+        return False
+
+    max_chars = _coerce_int(cfg.get("max_simple_chars"), 160)
+    max_words = _coerce_int(cfg.get("max_simple_words"), 28)
+    max_newlines = _coerce_int(cfg.get("max_newlines"), 1)
+
+    if len(text) > max_chars:
+        return False
+    if len(text.split()) > max_words:
+        return False
+    if text.count("\n") > max_newlines:
+        return False
+    if _coerce_bool(cfg.get("forbid_code_fences"), True) and ("```" in text or "`" in text):
+        return False
+    if _coerce_bool(cfg.get("forbid_urls"), True) and _URL_RE.search(text):
+        return False
+
+    words = _tokenize_words(text.lower())
+    complex_keywords = set(_COMPLEX_KEYWORDS)
+    complex_keywords.update(_coerce_keyword_set(cfg.get("complex_keywords")))
+    if words & complex_keywords:
+        return False
+
+    for pattern in _coerce_regexes(cfg.get("forbidden_patterns")):
+        if pattern.search(text):
+            return False
+
+    return True
+
+
 def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Return the configured cheap-model route when a message looks simple.
 
@@ -69,41 +198,31 @@ def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[st
     if not _coerce_bool(cfg.get("enabled"), False):
         return None
 
-    cheap_model = cfg.get("cheap_model") or {}
-    if not isinstance(cheap_model, dict):
+    cheap_model = _coerce_route_definition(cfg.get("cheap_model"))
+    if not cheap_model:
         return None
-    provider = str(cheap_model.get("provider") or "").strip().lower()
-    model = str(cheap_model.get("model") or "").strip()
-    if not provider or not model:
-        return None
-
-    text = (user_message or "").strip()
-    if not text:
-        return None
-
-    max_chars = _coerce_int(cfg.get("max_simple_chars"), 160)
-    max_words = _coerce_int(cfg.get("max_simple_words"), 28)
-
-    if len(text) > max_chars:
-        return None
-    if len(text.split()) > max_words:
-        return None
-    if text.count("\n") > 1:
-        return None
-    if "```" in text or "`" in text:
-        return None
-    if _URL_RE.search(text):
-        return None
-
-    lowered = text.lower()
-    words = {token.strip(".,:;!?()[]{}\"'`") for token in lowered.split()}
-    if words & _COMPLEX_KEYWORDS:
+    if not _is_route_simple(user_message, cfg):
         return None
 
     route = dict(cheap_model)
-    route["provider"] = provider
-    route["model"] = model
     route["routing_reason"] = "simple_turn"
+    return route
+
+
+def choose_expensive_model_route(user_message: str, routing_config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return the configured strong-model override when a message looks complex."""
+    cfg = routing_config or {}
+    if not _coerce_bool(cfg.get("enabled"), False):
+        return None
+    if _is_route_simple(user_message, cfg):
+        return None
+
+    expensive_model = _coerce_route_definition(cfg.get("expensive_model"))
+    if not expensive_model:
+        return None
+
+    route = dict(expensive_model)
+    route["routing_reason"] = "complex_turn"
     return route
 
 
@@ -113,6 +232,8 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
     Returns a dict with model/runtime/signature/label fields.
     """
     route = choose_cheap_model_route(user_message, routing_config)
+    if not route:
+        route = choose_expensive_model_route(user_message, routing_config)
     if not route:
         return {
             "model": primary.get("model"),
@@ -172,6 +293,11 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
             ),
         }
 
+    primary_model = str(primary.get("model") or "unknown")
+    primary_provider = str(primary.get("provider") or "unknown")
+    routed_model = str(route.get("model") or "unknown")
+    routed_provider = str(runtime.get("provider") or "unknown")
+
     return {
         "model": route.get("model"),
         "runtime": {
@@ -182,7 +308,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
             "command": runtime.get("command"),
             "args": list(runtime.get("args") or []),
         },
-        "label": f"smart route → {route.get('model')} ({runtime.get('provider')})",
+        "label": f"smart route: {primary_model} ({primary_provider}) -> {routed_model} ({routed_provider})",
         "signature": (
             route.get("model"),
             runtime.get("provider"),

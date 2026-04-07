@@ -100,6 +100,7 @@ def find_gateway_pids(exclude_pids: set | None = None) -> list:
     """
     pids = []
     _exclude = exclude_pids or set()
+
     patterns = [
         "hermes_cli.main gateway",
         "hermes_cli/main.py gateway",

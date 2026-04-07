@@ -251,6 +251,18 @@ def test_cli_turn_routing_uses_cheap_model_when_simple(monkeypatch):
     assert result["label"] is not None
 
 
+def test_cli_route_notice_prints_label(monkeypatch):
+    cli = _import_cli()
+    shell = cli.HermesCLI(model="anthropic/claude-sonnet-4", compact=True, max_turns=1)
+    captured = []
+    monkeypatch.setattr(cli, "_cprint", lambda msg: captured.append(msg))
+
+    shell._show_turn_route_notice("smart route: anthropic/claude-sonnet-4 (openrouter) -> glm-5-air (zai)")
+
+    assert captured
+    assert "Routing override: smart route: anthropic/claude-sonnet-4 (openrouter) -> glm-5-air (zai)" in captured[0]
+
+
 def test_cli_prefers_config_provider_over_stale_env_override(monkeypatch):
     cli = _import_cli()
 
