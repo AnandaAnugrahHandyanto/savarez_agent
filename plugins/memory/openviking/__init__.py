@@ -10,8 +10,9 @@ lifecycle instead of read-only search endpoints.
 Config via environment variables (profile-scoped via each profile's .env):
   OPENVIKING_ENDPOINT  — Server URL (default: http://127.0.0.1:1933)
   OPENVIKING_API_KEY   — API key (required for authenticated servers)
-  OPENVIKING_ACCOUNT   — Tenant account (default: root)
-  OPENVIKING_USER      — Tenant user (default: default)
+  OPENVIKING_ACCOUNT   — Tenant account (default: default)
+  OPENVIKING_USER      — Tenant user (default: hermes)
+  OPENVIKING_AGENT     — Tenant agent (default: hermes)
 
 Capabilities:
   - Automatic memory extraction on session commit (6 categories)
@@ -79,11 +80,12 @@ class _VikingClient:
     """Thin HTTP client for the OpenViking REST API."""
 
     def __init__(self, endpoint: str, api_key: str = "",
-                 account: str = "", user: str = ""):
+                 account: str = "", user: str = "", agent: str = ""):
         self._endpoint = endpoint.rstrip("/")
         self._api_key = api_key
-        self._account = account or os.environ.get("OPENVIKING_ACCOUNT", "root")
-        self._user = user or os.environ.get("OPENVIKING_USER", "default")
+        self._account = account or os.environ.get("OPENVIKING_ACCOUNT", "default")
+        self._user = user or os.environ.get("OPENVIKING_USER", "hermes")
+        self._agent = agent or os.environ.get("OPENVIKING_AGENT", "hermes")
         self._httpx = _get_httpx()
         if self._httpx is None:
             raise ImportError("httpx is required for OpenViking: pip install httpx")
@@ -93,6 +95,7 @@ class _VikingClient:
             "Content-Type": "application/json",
             "X-OpenViking-Account": self._account,
             "X-OpenViking-User": self._user,
+            "X-OpenViking-Agent": self._agent,
         }
         if self._api_key:
             h["X-API-Key"] = self._api_key
