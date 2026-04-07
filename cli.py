@@ -63,7 +63,7 @@ from agent.usage_pricing import (
     format_duration_compact,
     format_token_count_compact,
 )
-from hermes_cli.banner import _format_context_length
+from hermes_cli.banner import _format_context_length, format_banner_version_label
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
@@ -1036,13 +1036,14 @@ COMPACT_BANNER = """
 
 def _build_compact_banner() -> str:
     """Build a compact banner that fits the current terminal width."""
-    w = min(shutil.get_terminal_size().columns - 2, 64)
+    version_line = format_banner_version_label()
+    w = min(shutil.get_terminal_size().columns - 2, 88)
     if w < 30:
-        return "\n[#FFBF00]⚕ NOUS HERMES[/] [dim #B8860B]- Nous Research[/]\n"
+        return f"\n[#FFBF00]⚕ NOUS HERMES[/] [dim #B8860B]- {version_line}[/]\n"
     inner = w - 2  # inside the box border
     bar = "═" * w
     line1 = "⚕ NOUS HERMES - AI Agent Framework"
-    line2 = "Messenger of the Digital Gods  ·  Nous Research"
+    line2 = version_line
     # Truncate and pad to fit
     line1 = line1[:inner - 2].ljust(inner - 2)
     line2 = line2[:inner - 2].ljust(inner - 2)
