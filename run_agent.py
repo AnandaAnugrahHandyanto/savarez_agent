@@ -3412,6 +3412,7 @@ class AIAgent:
             "model", "instructions", "input", "tools", "store",
             "reasoning", "include", "max_output_tokens", "temperature",
             "tool_choice", "parallel_tool_calls", "prompt_cache_key",
+            "truncation", "previous_response_id",
         }
         normalized: Dict[str, Any] = {
             "model": model,
@@ -3430,13 +3431,10 @@ class AIAgent:
         if isinstance(include, list):
             normalized["include"] = include
 
-        # Pass through max_output_tokens and temperature
-        max_output_tokens = api_kwargs.get("max_output_tokens")
-        if isinstance(max_output_tokens, (int, float)) and max_output_tokens > 0:
-            normalized["max_output_tokens"] = int(max_output_tokens)
-        temperature = api_kwargs.get("temperature")
-        if isinstance(temperature, (int, float)):
-            normalized["temperature"] = float(temperature)
+        # NOTE: max_output_tokens and temperature are NOT supported by the
+        # ChatGPT Codex backend (chatgpt.com/backend-api/codex).  Sending them
+        # causes HTTP 400 or silent empty responses.  Silently drop them here
+        # so callers (memory flush, subagents) don't need special-casing.
 
         # Pass through tool_choice, parallel_tool_calls, prompt_cache_key
         for passthrough_key in ("tool_choice", "parallel_tool_calls", "prompt_cache_key"):
@@ -3916,6 +3914,7 @@ class AIAgent:
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Execute one streaming Responses API request and return the final response."""
         import httpx as _httpx
+        from types import SimpleNamespace
 
         active_client = client or self._ensure_primary_openai_client(reason="codex_stream_direct")
         max_stream_retries = 1
@@ -3924,6 +3923,13 @@ class AIAgent:
         self._reasoning_deltas_fired = False
         for attempt in range(max_stream_retries + 1):
             try:
+                # Collect streamed content so we can reconstruct the response
+                # if get_final_response() returns empty output (SDK compat issue
+                # with Codex backend).
+                _collected_text = []
+                _collected_tool_calls = []
+                _collected_reasoning = []
+
                 with active_client.responses.stream(**api_kwargs) as stream:
                     for event in stream:
                         if self._interrupt_requested:
@@ -3932,24 +3938,90 @@ class AIAgent:
                         # Fire callbacks on text content deltas (suppress during tool calls)
                         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
                             delta_text = getattr(event, "delta", "")
-                            if delta_text and not has_tool_calls:
-                                if not first_delta_fired:
-                                    first_delta_fired = True
-                                    if on_first_delta:
-                                        try:
-                                            on_first_delta()
-                                        except Exception:
-                                            pass
-                                self._fire_stream_delta(delta_text)
+                            if delta_text:
+                                _collected_text.append(delta_text)
+                                if not has_tool_calls:
+                                    if not first_delta_fired:
+                                        first_delta_fired = True
+                                        if on_first_delta:
+                                            try:
+                                                on_first_delta()
+                                            except Exception:
+                                                pass
+                                    self._fire_stream_delta(delta_text)
                         # Track tool calls to suppress text streaming
                         elif "function_call" in event_type:
                             has_tool_calls = True
+                            # Collect function_call details from done events
+                            if event_type in ("response.function_call_arguments.done",):
+                                _collected_tool_calls.append(event)
+                            elif getattr(event, "name", None) and event_type == "response.output_item.added":
+                                _collected_tool_calls.append(event)
                         # Fire reasoning callbacks
                         elif "reasoning" in event_type and "delta" in event_type:
                             reasoning_text = getattr(event, "delta", "")
                             if reasoning_text:
                                 self._fire_reasoning_delta(reasoning_text)
-                    return stream.get_final_response()
+                                _collected_reasoning.append(reasoning_text)
+
+                    final_resp = stream.get_final_response()
+
+                    # If SDK returned valid output, use it directly
+                    final_output = getattr(final_resp, "output", None)
+                    if isinstance(final_output, list) and len(final_output) > 0:
+                        return final_resp
+
+                    # SDK returned empty output but we collected streamed content.
+                    # Build a synthetic response so the caller doesn't treat this
+                    # as a failure.
+                    if _collected_text or _collected_tool_calls:
+                        logger.info(
+                            "Codex stream: get_final_response().output was empty but "
+                            "streaming delivered content (%d text chunks, %d tool calls). "
+                            "Reconstructing response from deltas.",
+                            len(_collected_text), len(_collected_tool_calls),
+                        )
+                        synthetic_output = []
+
+                        # Reconstruct reasoning items
+                        if _collected_reasoning:
+                            synthetic_output.append(SimpleNamespace(
+                                type="reasoning",
+                                id=None,
+                                encrypted_content=None,
+                                summary=[SimpleNamespace(type="summary_text", text="".join(_collected_reasoning))],
+                            ))
+
+                        # Reconstruct message with collected text
+                        if _collected_text:
+                            full_text = "".join(_collected_text)
+                            synthetic_output.append(SimpleNamespace(
+                                type="message",
+                                role="assistant",
+                                status="completed",
+                                content=[SimpleNamespace(
+                                    type="output_text",
+                                    text=full_text,
+                                    annotations=[],
+                                )],
+                            ))
+
+                        # Reconstruct function calls
+                        for tc_event in _collected_tool_calls:
+                            synthetic_output.append(SimpleNamespace(
+                                type="function_call",
+                                id=getattr(tc_event, "item_id", None) or getattr(tc_event, "id", ""),
+                                call_id=getattr(tc_event, "call_id", "") or getattr(tc_event, "item_id", ""),
+                                name=getattr(tc_event, "name", ""),
+                                arguments=getattr(tc_event, "arguments", "{}"),
+                                status="completed",
+                            ))
+
+                        final_resp.output = synthetic_output
+                        return final_resp
+
+                    # Truly empty — no deltas received at all
+                    return final_resp
             except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
                 if attempt < max_stream_retries:
                     logger.debug(
