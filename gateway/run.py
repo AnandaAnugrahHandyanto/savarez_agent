@@ -6368,6 +6368,23 @@ class GatewayRunner:
             if not adapter:
                 return
 
+            # For platforms that don't support message editing (e.g.
+            # iMessage/BlueBubbles), send a single "Working on it…" instead
+            # of spamming a separate bubble per tool-use event.
+            from gateway.platforms.base import BasePlatformAdapter as _BaseAdapter
+            if type(adapter).edit_message is _BaseAdapter.edit_message:
+                await adapter.send(
+                    chat_id=source.chat_id,
+                    content="Working on it\u2026",
+                    metadata=_progress_metadata,
+                )
+                while not progress_queue.empty():
+                    try:
+                        progress_queue.get_nowait()
+                    except Exception:
+                        break
+                return
+
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message to edit
             can_edit = True          # False once an edit fails (platform doesn't support it)
