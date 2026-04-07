@@ -6,10 +6,9 @@ parent's enabled_toolsets, it can escalate privileges by requesting
 arbitrary toolsets.
 """
 
-from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
 
-from tools.delegate_tool import _strip_blocked_tools
+from tools.delegate_tool import _strip_blocked_tools, _infer_minimal_toolsets
 
 
 class TestToolsetIntersection:
@@ -39,8 +38,8 @@ class TestToolsetIntersection:
 
         assert sorted(scoped) == ["terminal", "web"]
 
-    def test_no_toolsets_requested_inherits_parent(self):
-        """When toolsets is None/empty, child inherits parent's set."""
+    def test_legacy_fallback_can_inherit_parent_toolsets(self):
+        """Compatibility fallback still allows inheriting the parent set."""
         parent_toolsets = ["terminal", "file", "web"]
         child = _strip_blocked_tools(parent_toolsets)
         assert "terminal" in child
@@ -64,3 +63,29 @@ class TestToolsetIntersection:
         scoped = [t for t in requested if t in parent_toolsets]
 
         assert scoped == []
+
+
+class TestAutoToolsetInference:
+    def test_infers_file_only_for_skill_comparison_task(self):
+        inferred = _infer_minimal_toolsets(
+            goal="Compare two skill files and confirm whether they are duplicates",
+            context="Read the two files and summarize differences",
+            parent_toolsets=["terminal", "file", "web"],
+        )
+        assert inferred == ["file"]
+
+    def test_infers_terminal_and_file_for_test_execution(self):
+        inferred = _infer_minimal_toolsets(
+            goal="Run pytest on the target module and fix the failing test",
+            context=None,
+            parent_toolsets=["terminal", "file", "web"],
+        )
+        assert inferred == ["terminal", "file"]
+
+    def test_ambiguous_goal_returns_none(self):
+        inferred = _infer_minimal_toolsets(
+            goal="Investigate this task and provide results",
+            context=None,
+            parent_toolsets=["terminal", "file", "web"],
+        )
+        assert inferred is None
