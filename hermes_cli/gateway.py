@@ -2118,8 +2118,9 @@ def _launchd_domain() -> str:
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
-    hermes_home = str(get_hermes_home().resolve())
-    log_dir = get_hermes_home() / "logs"
+    hermes_home_path = get_hermes_home().resolve()
+    hermes_home = str(hermes_home_path)
+    log_dir = hermes_home_path / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
     profile_arg = _profile_arg(hermes_home)
@@ -2144,21 +2145,37 @@ def generate_launchd_plist() -> str:
         dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
     )
 
-    # Build ProgramArguments array, including --profile when using a named profile
-    prog_args = [
-        f"<string>{python_path}</string>",
-        "<string>-m</string>",
-        "<string>hermes_cli.main</string>",
-    ]
-    if profile_arg:
-        for part in profile_arg.split():
-            prog_args.append(f"<string>{part}</string>")
-    prog_args.extend([
-        "<string>gateway</string>",
-        "<string>run</string>",
-        "<string>--replace</string>",
-    ])
-    prog_args_xml = "\n        ".join(prog_args)
+    bws_wrapper = hermes_home_path / "bin" / "hermes-bws-gateway.sh"
+    bws_map = hermes_home_path / "bws-secrets-map.env"
+    bws_project = hermes_home_path / "bws-project-id"
+
+    if bws_wrapper.exists() and bws_map.exists() and bws_project.exists():
+        program_arguments = f"""    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>{bws_wrapper}</string>
+        <string>run</string>
+        <string>--replace</string>
+    </array>"""
+    else:
+        prog_args = [
+            f"<string>{python_path}</string>",
+            "<string>-m</string>",
+            "<string>hermes_cli.main</string>",
+        ]
+        if profile_arg:
+            for part in profile_arg.split():
+                prog_args.append(f"<string>{part}</string>")
+        prog_args.extend([
+            "<string>gateway</string>",
+            "<string>run</string>",
+            "<string>--replace</string>",
+        ])
+        prog_args_xml = "\n        ".join(prog_args)
+        program_arguments = f"""    <key>ProgramArguments</key>
+    <array>
+        {prog_args_xml}
+    </array>"""
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -2167,14 +2184,11 @@ def generate_launchd_plist() -> str:
     <key>Label</key>
     <string>{label}</string>
 
-    <key>ProgramArguments</key>
-    <array>
-        {prog_args_xml}
-    </array>
-    
+{program_arguments}
+
     <key>WorkingDirectory</key>
     <string>{working_dir}</string>
-    
+
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
@@ -2272,21 +2286,28 @@ def launchd_uninstall():
     
     print("✓ Service uninstalled")
 
-def launchd_start():
+def _ensure_launchd_plist() -> tuple[Path, bool, bool]:
+    """Ensure the launchd plist exists and matches the current generated config."""
     plist_path = get_launchd_plist_path()
-    label = get_launchd_label()
-
-    # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
     if not plist_path.exists():
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
+        return plist_path, True, False
+    refreshed = refresh_launchd_plist_if_needed()
+    return plist_path, False, refreshed
+
+
+def launchd_start():
+    plist_path, created, _refreshed = _ensure_launchd_plist()
+    label = get_launchd_label()
+
+    if created:
         subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
         subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
         print("✓ Service started")
         return
 
-    refresh_launchd_plist_if_needed()
     try:
         subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
     except subprocess.CalledProcessError as e:
@@ -2357,11 +2378,26 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
 
 
 def launchd_restart():
+    plist_path, created, refreshed = _ensure_launchd_plist()
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
     drain_timeout = _get_restart_drain_timeout()
     from gateway.status import get_running_pid
 
+    if created:
+        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+        print("✓ Service restarted")
+        return
+
+    if refreshed:
+        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+        print("✓ Service restarted")
+        return
+
+    # Use kickstart -k so launchd performs an atomic kill+restart.
+    # A two-step stop/start from inside the gateway's own process tree
+    # would kill the shell before the start command is reached.
     try:
         pid = get_running_pid()
         if pid is not None and _request_gateway_self_restart(pid):
@@ -2383,7 +2419,6 @@ def launchd_restart():
             raise
         # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")
-        plist_path = get_launchd_plist_path()
         subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
         subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
         print("✓ Service restarted")
