@@ -174,6 +174,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "state": job.get("state", "scheduled" if job.get("enabled", True) else "paused"),
         "paused_at": job.get("paused_at"),
         "paused_reason": job.get("paused_reason"),
+        "complexity": job.get("complexity", "medium"),
     }
     if job.get("script"):
         result["script"] = job["script"]
@@ -196,6 +197,7 @@ def cronjob(
     base_url: Optional[str] = None,
     reason: Optional[str] = None,
     script: Optional[str] = None,
+    complexity: Optional[str] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -215,6 +217,19 @@ def cronjob(
                 if scan_error:
                     return json.dumps({"success": False, "error": scan_error}, indent=2)
 
+            # Validate complexity
+            valid_complexity = {"lightweight", "medium", "heavy"}
+            if complexity is not None:
+                complexity_lower = (complexity or "").strip().lower()
+                if complexity_lower not in valid_complexity:
+                    return json.dumps(
+                        {"success": False, "error": f"complexity must be one of {valid_complexity}, got: {complexity!r}"},
+                        indent=2,
+                    )
+                complexity = complexity_lower
+            else:
+                complexity = "medium"  # Default
+
             # Validate script path before storing
             if script:
                 script_error = _validate_cron_script_path(script)
@@ -233,6 +248,7 @@ def cronjob(
                 provider=_normalize_optional_job_value(provider),
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
                 script=_normalize_optional_job_value(script),
+                complexity=complexity,
             )
             return json.dumps(
                 {
@@ -335,6 +351,15 @@ def cronjob(
                 if job.get("state") != "paused":
                     updates["state"] = "scheduled"
                     updates["enabled"] = True
+            if complexity is not None:
+                complexity_lower = (complexity or "").strip().lower()
+                valid_complexity = {"lightweight", "medium", "heavy"}
+                if complexity_lower not in valid_complexity:
+                    return json.dumps(
+                        {"success": False, "error": f"complexity must be one of {valid_complexity}, got: {complexity!r}"},
+                        indent=2,
+                    )
+                updates["complexity"] = complexity_lower
             if not updates:
                 return json.dumps({"success": False, "error": "No updates provided."}, indent=2)
             updated = update_job(job_id, updates)
@@ -468,6 +493,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "script": {
                 "type": "string",
                 "description": "Optional path to a Python script that runs before each cron job execution. Its stdout is injected into the prompt as context. Use for data collection and change detection. Relative paths resolve under ~/.hermes/scripts/. On update, pass empty string to clear."
+            },
+            "complexity": {
+                "type": "string",
+                "description": "Optional prompt complexity classification: 'lightweight' (minimal identity, essential tools, capped iterations, ~2-3k tokens), 'medium' (minimal identity, all toolsets, full iterations, ~5-7k tokens), or 'heavy' (full SOUL.md + context files, all toolsets, ~10-15k tokens). Defaults to 'medium'."
             }
         },
         "required": ["action"]

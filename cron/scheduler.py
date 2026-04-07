@@ -593,6 +593,74 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             },
         )
 
+        # ── Complexity-based context optimization ─────────────────────────
+        # The job's complexity field (lightweight/medium/heavy) controls how
+        # much context the cron agent receives.  Each tier is genuinely
+        # different — not just a label.
+        #
+        # The three axes that differentiate tiers:
+        #   1. Identity/context  — SOUL.md + context files (AGENTS.md, etc.)
+        #   2. Toolset breadth   — which tools the agent can call
+        #   3. Iteration budget  — how many turns before stopping
+        #
+        # Tiers (each step adds one meaningful layer):
+        #   lightweight  — fetch-and-report, summaries, simple monitors.
+        #                  Minimal identity, essential tools only, capped
+        #                  iterations.  ~2-3k token system prompt.
+        #   medium       — default.  Minimal identity (SOUL.md is dead
+        #                  weight for autonomous tasks), all standard
+        #                  toolsets, full iteration budget.  ~5-7k tokens.
+        #   heavy        — complex analysis needing full cognitive framework.
+        #                  Full SOUL.md + context files, all toolsets,
+        #                  full iterations.  ~10-15k tokens.
+        # ─────────────────────────────────────────────────────────────────
+        complexity = (job.get("complexity") or "medium").strip().lower()
+
+        # Toolsets always disabled for cron jobs (regardless of complexity)
+        _CRON_ALWAYS_DISABLED = ["cronjob", "messaging", "clarify"]
+
+        if complexity == "lightweight":
+            # Strip everything that isn't directly needed for task execution.
+            # Skills content is still injected via _build_job_prompt() (user
+            # message), but the skills *catalog* and management tools are
+            # removed from the system prompt and tool list.
+            disabled_toolsets = _CRON_ALWAYS_DISABLED + [
+                "skills",           # no skill catalog/management in system prompt
+                "todo",             # no task planning overhead
+                "session_search",   # no cross-session recall
+                "delegation",       # no subagent spawning
+                "memory",           # no persistent memory tools (store already skipped)
+                "tts",              # no voice synthesis
+                "browser",          # no browser automation
+                "image_gen",        # no image generation
+                "moa",              # no mixture-of-agents
+            ]
+            skip_context_files = True   # skip SOUL.md, AGENTS.md, .cursorrules
+            max_iterations = min(max_iterations, 25)
+            logger.info(
+                "Job '%s': lightweight — minimal context, %d max iterations",
+                job_name, max_iterations,
+            )
+        elif complexity == "heavy":
+            # Full cognitive framework: SOUL.md personality/reasoning priming
+            # + project context files.  Use for tasks that genuinely benefit
+            # from the agent's full reasoning scaffolding (research synthesis,
+            # multi-step analysis, complex code generation).
+            disabled_toolsets = _CRON_ALWAYS_DISABLED
+            skip_context_files = False
+            logger.info(
+                "Job '%s': heavy — full SOUL.md + context, %d max iterations",
+                job_name, max_iterations,
+            )
+        else:
+            # medium (default): all toolsets but no personality/context bloat.
+            # SOUL.md is dead weight for autonomous cron tasks — the agent
+            # doesn't need cognitive priming, communication style, or
+            # relational stance to fetch data and produce a report.  The cron
+            # execution hint in the user message provides sufficient context.
+            disabled_toolsets = _CRON_ALWAYS_DISABLED
+            skip_context_files = True
+
         agent = AIAgent(
             model=turn_route["model"],
             api_key=turn_route["runtime"].get("api_key"),
@@ -608,8 +676,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_ignored=pr.get("ignore"),
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
-            disabled_toolsets=["cronjob", "messaging", "clarify"],
+            disabled_toolsets=disabled_toolsets,
             quiet_mode=True,
+            skip_context_files=skip_context_files,
             skip_memory=True,  # Cron system prompts would corrupt user representations
             platform="cron",
             session_id=_cron_session_id,

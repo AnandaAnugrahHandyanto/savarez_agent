@@ -862,3 +862,173 @@ class TestTickAdvanceBeforeRun:
         adv_mock.assert_called_once_with("test-advance")
         # advance must happen before run
         assert call_order == [("advance", "test-advance"), ("run", "test-advance")]
+
+
+class TestComplexityBasedContextOptimization:
+    """Verify that the job complexity field controls AIAgent construction.
+
+    lightweight → skip_context_files=True, extra toolsets disabled, capped iterations
+    medium     → skip_context_files=True, all toolsets, full iterations
+    heavy      → skip_context_files=False, all toolsets, full iterations
+    """
+
+    _ALWAYS_DISABLED = {"cronjob", "messaging", "clarify"}
+    _LIGHTWEIGHT_EXTRA_DISABLED = {
+        "skills", "todo", "session_search", "delegation",
+        "memory", "tts", "browser", "image_gen", "moa",
+    }
+
+    def _run_job_with_complexity(self, complexity, tmp_path, max_turns=90):
+        """Helper: run_job for a job with the given complexity, return AIAgent kwargs."""
+        job = {
+            "id": f"test-{complexity}",
+            "name": f"test {complexity}",
+            "prompt": "Summarize the latest messages.",
+            "complexity": complexity,
+        }
+        fake_db = MagicMock()
+
+        cfg = {"agent": {"max_turns": max_turns}}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("yaml.safe_load", return_value=cfg), \
+             patch("builtins.open", MagicMock()), \
+             patch("os.path.exists", return_value=True), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "done"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        return mock_agent_cls.call_args.kwargs
+
+    # ── lightweight ──────────────────────────────────────────────────
+
+    def test_lightweight_skips_context_files(self, tmp_path):
+        kwargs = self._run_job_with_complexity("lightweight", tmp_path)
+        assert kwargs["skip_context_files"] is True
+
+    def test_lightweight_disables_extra_toolsets(self, tmp_path):
+        kwargs = self._run_job_with_complexity("lightweight", tmp_path)
+        disabled = set(kwargs["disabled_toolsets"])
+        assert self._ALWAYS_DISABLED.issubset(disabled)
+        assert self._LIGHTWEIGHT_EXTRA_DISABLED.issubset(disabled)
+
+    def test_lightweight_caps_max_iterations(self, tmp_path):
+        kwargs = self._run_job_with_complexity("lightweight", tmp_path, max_turns=90)
+        assert kwargs["max_iterations"] <= 25
+
+    def test_lightweight_respects_lower_configured_max(self, tmp_path):
+        """If config sets max_turns=10, lightweight should use 10 (not inflate to 25)."""
+        kwargs = self._run_job_with_complexity("lightweight", tmp_path, max_turns=10)
+        assert kwargs["max_iterations"] == 10
+
+    # ── medium (default) ─────────────────────────────────────────────
+    # medium skips SOUL.md/context files (personality is dead weight for
+    # autonomous cron) but keeps all toolsets and full iterations.
+
+    def test_medium_skips_context_files(self, tmp_path):
+        """SOUL.md and context files are dead weight for autonomous cron tasks."""
+        kwargs = self._run_job_with_complexity("medium", tmp_path)
+        assert kwargs["skip_context_files"] is True
+
+    def test_medium_only_disables_cron_toolsets(self, tmp_path):
+        kwargs = self._run_job_with_complexity("medium", tmp_path)
+        disabled = set(kwargs["disabled_toolsets"])
+        assert disabled == self._ALWAYS_DISABLED
+
+    def test_medium_preserves_full_iterations(self, tmp_path):
+        kwargs = self._run_job_with_complexity("medium", tmp_path, max_turns=90)
+        assert kwargs["max_iterations"] == 90
+
+    # ── heavy ────────────────────────────────────────────────────────
+    # heavy is the only tier that loads SOUL.md + context files — for
+    # tasks that genuinely benefit from the full cognitive framework.
+
+    def test_heavy_includes_context_files(self, tmp_path):
+        """Heavy loads full SOUL.md + context files for complex reasoning tasks."""
+        kwargs = self._run_job_with_complexity("heavy", tmp_path)
+        assert kwargs["skip_context_files"] is False
+
+    def test_heavy_only_disables_cron_toolsets(self, tmp_path):
+        kwargs = self._run_job_with_complexity("heavy", tmp_path)
+        disabled = set(kwargs["disabled_toolsets"])
+        assert disabled == self._ALWAYS_DISABLED
+
+    def test_heavy_preserves_full_iterations(self, tmp_path):
+        kwargs = self._run_job_with_complexity("heavy", tmp_path, max_turns=90)
+        assert kwargs["max_iterations"] == 90
+
+    # ── tier differentiation ─────────────────────────────────────────
+
+    def test_each_tier_is_genuinely_different(self, tmp_path):
+        """No two tiers should produce identical AIAgent kwargs."""
+        lw = self._run_job_with_complexity("lightweight", tmp_path)
+        md = self._run_job_with_complexity("medium", tmp_path)
+        hv = self._run_job_with_complexity("heavy", tmp_path)
+
+        # lightweight vs medium: different toolsets + different iteration cap
+        assert set(lw["disabled_toolsets"]) != set(md["disabled_toolsets"])
+
+        # medium vs heavy: different skip_context_files
+        assert md["skip_context_files"] != hv["skip_context_files"]
+
+        # lightweight vs heavy: different on both axes
+        assert set(lw["disabled_toolsets"]) != set(hv["disabled_toolsets"])
+        assert lw["skip_context_files"] == True
+        assert hv["skip_context_files"] == False
+
+    # ── default fallback ─────────────────────────────────────────────
+
+    def test_missing_complexity_defaults_to_medium(self, tmp_path):
+        """A job with no complexity field should behave like medium."""
+        job = {
+            "id": "test-default",
+            "name": "test default",
+            "prompt": "Do the thing.",
+        }
+        fake_db = MagicMock()
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "done"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        disabled = set(kwargs["disabled_toolsets"])
+        assert disabled == self._ALWAYS_DISABLED
+        assert kwargs["skip_context_files"] is True
+
+    # ── skip_memory is always True (all tiers) ───────────────────────
+
+    def test_skip_memory_always_true(self, tmp_path):
+        for tier in ("lightweight", "medium", "heavy"):
+            kwargs = self._run_job_with_complexity(tier, tmp_path)
+            assert kwargs["skip_memory"] is True, f"skip_memory should be True for {tier}"

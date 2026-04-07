@@ -376,6 +376,7 @@ def create_job(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     script: Optional[str] = None,
+    complexity: Optional[str] = "medium",
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -395,6 +396,11 @@ def create_job(
         script: Optional path to a Python script whose stdout is injected into the
                 prompt each run.  The script runs before the agent turn, and its output
                 is prepended as context.  Useful for data collection / change detection.
+        complexity: Prompt complexity classification ("lightweight", "medium", "heavy").
+                   Controls how much context is loaded for the cron session.
+                   - lightweight: minimal identity, essential tools, capped iterations (~2-3k tokens)
+                   - medium: minimal identity, all toolsets, full iterations (~5-7k tokens)
+                   - heavy: full SOUL.md + context files, all toolsets, full iterations (~10-15k tokens)
 
     Returns:
         The created job dict
@@ -426,6 +432,12 @@ def create_job(
     normalized_script = str(script).strip() if isinstance(script, str) else None
     normalized_script = normalized_script or None
 
+    # Validate and normalize complexity
+    valid_complexities = {"lightweight", "medium", "heavy"}
+    normalized_complexity = (complexity or "medium").strip().lower()
+    if normalized_complexity not in valid_complexities:
+        normalized_complexity = "medium"  # Fallback to default
+
     label_source = (prompt or (normalized_skills[0] if normalized_skills else None)) or "cron job"
     job = {
         "id": job_id,
@@ -437,6 +449,7 @@ def create_job(
         "provider": normalized_provider,
         "base_url": normalized_base_url,
         "script": normalized_script,
+        "complexity": normalized_complexity,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {
