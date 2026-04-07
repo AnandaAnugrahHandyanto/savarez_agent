@@ -314,7 +314,7 @@ class IRCAdapter(BasePlatformAdapter):
                 await asyncio.sleep(5)
                 count += 1
                 if self._reader_task and self._reader_task.done():
-                    logger.warning("IRC: Reader task is DONE at %ds!", count * 5)
+                    logger.debug("IRC: Reader task is DONE at %ds", count * 5)
                 elif not self._closing:
                     logger.debug("IRC: Reader still running at %ds", count * 5)
 
@@ -467,6 +467,8 @@ class IRCAdapter(BasePlatformAdapter):
             if not line:
                 if not self._closing:
                     logger.warning("IRC: connection closed by server")
+                    self._set_fatal_error("connection_closed", "Server closed connection", retryable=True)
+                    await self._notify_fatal_error()
                 break
 
             try:
@@ -781,4 +783,11 @@ class IRCAdapter(BasePlatformAdapter):
         while not self._closing:
             await asyncio.sleep(60)
             if not self._closing:
-                self._send_line(f"PING :{self._server}")
+                try:
+                    self._send_line(f"PING :{self._server}")
+                    await self._writer.drain()  # Ensure it actually sent
+                except Exception as exc:
+                    logger.error("IRC: PING failed, connection is dead: %s", exc)
+                    self._set_fatal_error("ping_failed", f"PING failed: {exc}", retryable=True)
+                    await self._notify_fatal_error()
+                    return

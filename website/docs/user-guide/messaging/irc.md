@@ -105,6 +105,21 @@ Example
 
 The recipient sees the same result, but the messages are grouped as a single unit.
 
+## Debugging
+
+To enable debug logging for the IRC adapter, set the environment variable:
+
+```bash
+DEBUG=true
+```
+
+Or add it to your profile's `.env` file:
+```bash
+DEBUG=true
+```
+
+This will increase log verbosity and show detailed IRC protocol messages.
+
 ## Testing
 
 **Channel mention-only mode:**
