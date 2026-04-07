@@ -203,7 +203,7 @@ class HermesTokenStorage:
             return None
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:
-        _write_json(self._tokens_path(), tokens.model_dump(exclude_none=True))
+        _write_json(self._tokens_path(), tokens.model_dump(mode="json", exclude_none=True))
         logger.debug("OAuth tokens saved for %s", self._server_name)
 
     # -- client info -------------------------------------------------------
@@ -219,7 +219,7 @@ class HermesTokenStorage:
             return None
 
     async def set_client_info(self, client_info: "OAuthClientInformationFull") -> None:
-        _write_json(self._client_info_path(), client_info.model_dump(exclude_none=True))
+        _write_json(self._client_info_path(), client_info.model_dump(mode="json", exclude_none=True))
         logger.debug("OAuth client info saved for %s", self._server_name)
 
     # -- cleanup -----------------------------------------------------------
@@ -462,7 +462,7 @@ def build_oauth_auth(
             info_dict["scope"] = scope
 
         client_info = OAuthClientInformationFull.model_validate(info_dict)
-        _write_json(storage._client_info_path(), client_info.model_dump(exclude_none=True))
+        _write_json(storage._client_info_path(), client_info.model_dump(mode="json", exclude_none=True))
         logger.debug("Pre-registered client_id=%s for '%s'", client_id, server_name)
 
     # --- Base URL for discovery ---
