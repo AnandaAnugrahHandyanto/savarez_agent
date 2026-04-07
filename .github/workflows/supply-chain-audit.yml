@@ -1,3 +1,19 @@
+# Supply Chain Audit — scan PRs for obfuscation and payload patterns.
+#
+# Known limitations (out of scope for grep-based scanning):
+# - Steganographic payloads hidden in images, fonts, or binary data files
+# - Multi-file split payloads (piece A in file1.py + piece B in file2.py)
+# - Obfuscation via legitimate-looking variable names (semantic camouflage)
+# - RECORD/hash manipulation in pre-built wheel files
+# - npm postinstall / pip setup.py install_requires code execution
+#   beyond the filename check (would need to parse the script content)
+# - DNS/ICMP exfiltration (no network pattern to grep for)
+# - Typosquatted import names (e.g. 'import reqeusts' — needs a known-good list)
+# - Encrypted payloads with runtime key derivation (AES/RC4 with hardcoded key)
+#
+# These require deeper analysis (AST parsing, sandboxed execution, or
+# dependency auditing tools like pip-audit / socket.dev).
+
 name: Supply Chain Audit
 
 on:
@@ -14,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -49,17 +65,17 @@ jobs:
           "
           fi
 
-          # --- base64 + exec/eval combo (the litellm attack pattern) ---
-          B64_EXEC_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'base64\.(b64decode|decodebytes|urlsafe_b64decode)' | grep -iE 'exec\(|eval\(' | head -10 || true)
-          if [ -n "$B64_EXEC_HITS" ]; then
+          # --- ANY encoding/compression + exec/eval combo ---
+          ENCODE_EXEC_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'base64\.(b64decode|decodebytes|urlsafe_b64decode)|base64\.b(85|32|16)decode|base85|b85decode|b32decode|a85decode|codecs\.decode|bytes\.fromhex|binascii\.unhexlify|zlib\.decompress|gzip\.decompress|bz2\.decompress|lzma\.decompress' | grep -iE 'exec\(|eval\(|compile\(' | head -10 || true)
+          if [ -n "$ENCODE_EXEC_HITS" ]; then
             CRITICAL=true
             FINDINGS="${FINDINGS}
-          ### 🚨 CRITICAL: base64 decode + exec/eval combo
-          This is the exact pattern used in the [litellm supply chain attack](https://github.com/BerriAI/litellm/issues/24512) — base64-decoded strings passed to exec/eval to hide credential-stealing payloads.
+          ### 🚨 CRITICAL: encoded/compressed data + exec/eval combo
+          Decoded or decompressed data passed to exec/eval/compile is a strong indicator of obfuscated payload execution. This is the pattern used in the [litellm supply chain attack](https://github.com/BerriAI/litellm/issues/24512).
 
           **Matches:**
           \`\`\`
-          ${B64_EXEC_HITS}
+          ${ENCODE_EXEC_HITS}
           \`\`\`
           "
           fi
@@ -78,6 +94,80 @@ jobs:
           "
           fi
 
+          # --- base85/base32/base16/ascii85 encoding ---
+          B85_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'base64\.b(85|32|16)(decode|encode)|base64\.a85(decode|encode)|b85decode|b85encode|b32decode|b32encode|a85decode|a85encode' | head -10 || true)
+          if [ -n "$B85_HITS" ]; then
+            FINDINGS="${FINDINGS}
+          ### ⚠️ WARNING: base85/base32/base16 encoding detected
+          Less common encoding schemes (base85, Ascii85, base32) are sometimes used specifically to evade base64 scanners while still hiding payloads.
+
+          **Matches:**
+          \`\`\`
+          ${B85_HITS}
+          \`\`\`
+          "
+          fi
+
+          # --- hex decoding (bytes.fromhex, binascii, codecs) ---
+          HEX_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'bytes\.fromhex\(|binascii\.(unhexlify|a2b_hex)\(|codecs\.decode\(.*hex|\\x[0-9a-f]{2}\\x[0-9a-f]{2}\\x[0-9a-f]{2}' | grep -v '^\+\s*#' | head -10 || true)
+          if [ -n "$HEX_HITS" ]; then
+            FINDINGS="${FINDINGS}
+          ### ⚠️ WARNING: hex decoding or hex-escaped strings
+          Hex encoding can hide malicious strings from scanners. Long hex-escaped byte sequences (\`\\x41\\x42...\`) are especially suspicious outside of binary protocol code.
+
+          **Matches:**
+          \`\`\`
+          ${HEX_HITS}
+          \`\`\`
+          "
+          fi
+
+          # --- zlib/gzip/bz2/lzma decompression (payload hiding) ---
+          DECOMP_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'zlib\.decompress|gzip\.decompress|bz2\.decompress|lzma\.decompress|zlib\.decompressobj' | grep -v '^\+\s*#' | head -10 || true)
+          if [ -n "$DECOMP_HITS" ]; then
+            FINDINGS="${FINDINGS}
+          ### ⚠️ WARNING: compression/decompression usage
+          Decompression can reconstruct payloads that bypass string-matching scanners. Commonly chained with exec() or eval() to hide malicious code.
+
+          **Matches:**
+          \`\`\`
+          ${DECOMP_HITS}
+          \`\`\`
+          "
+          fi
+
+          # --- codecs.decode with rot13/unicode_escape/etc ---
+          CODEC_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'codecs\.(decode|encode)\(' | grep -v '^\+\s*#' | grep -v 'test_\|mock\|utf' | head -10 || true)
+          if [ -n "$CODEC_HITS" ]; then
+            FINDINGS="${FINDINGS}
+          ### ⚠️ WARNING: codecs.decode/encode usage
+          \`codecs.decode()\` supports rot13, unicode_escape, hex_codec and other transforms that can obfuscate strings. Verify the codec name and input source.
+
+          **Matches:**
+          \`\`\`
+          ${CODEC_HITS}
+          \`\`\`
+          "
+          fi
+
+          # --- Suspicious high-entropy strings (encoded blobs) ---
+          # Catch long strings of base64/base85/hex-like characters that may be
+          # embedded payloads.  Threshold: 200+ chars of [A-Za-z0-9+/=] or hex.
+          BLOB_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -oP "[\"\'][A-Za-z0-9+/=_\\-]{200,}[\"\']" | head -5 || true)
+          HEX_BLOB_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -oP "'\\\\x[0-9a-f]{2}(\\\\x[0-9a-f]{2}){49,}'" | head -5 || true)
+          ALL_BLOB_HITS="${BLOB_HITS}${HEX_BLOB_HITS}"
+          if [ -n "$ALL_BLOB_HITS" ]; then
+            FINDINGS="${FINDINGS}
+          ### ⚠️ WARNING: suspicious high-entropy string blob
+          Strings longer than 200 characters of base64/hex-like characters may be embedded encoded payloads. Legitimate uses include embedded images, certificates, or test fixtures — verify the content.
+
+          **Matches (first 5, truncated):**
+          \`\`\`
+          $(echo "$ALL_BLOB_HITS" | cut -c1-120)
+          \`\`\`
+          "
+          fi
+
           # --- exec/eval with string arguments ---
           EXEC_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -E '(exec|eval)\s*\(' | grep -v '^\+\s*#' | grep -v 'test_\|mock\|assert\|# ' | head -20 || true)
           if [ -n "$EXEC_HITS" ]; then
@@ -92,8 +182,22 @@ jobs:
           "
           fi
 
+          # --- chr()/join string construction (obfuscated string building) ---
+          CHR_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -E '(chr\([0-9]|""\s*\.join\s*\(\s*\[?\s*chr|join\(\s*chr\(|\\x[0-9a-f]{2}.*\\x[0-9a-f]{2}.*\\x[0-9a-f]{2}.*\\x[0-9a-f]{2})' | grep -v '^\+\s*#' | grep -v 'test_\|mock' | head -10 || true)
+          if [ -n "$CHR_HITS" ]; then
+            FINDINGS="${FINDINGS}
+          ### ⚠️ WARNING: chr() string construction or long hex escape sequences
+          Building strings character-by-character via \`chr()\` or \`''.join([chr(...)])\` is a classic obfuscation technique to hide URLs, commands, or file paths from scanners.
+
+          **Matches:**
+          \`\`\`
+          ${CHR_HITS}
+          \`\`\`
+          "
+          fi
+
           # --- subprocess with encoded/obfuscated commands ---
-          PROC_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -E 'subprocess\.(Popen|call|run)\s*\(' | grep -iE 'base64|decode|encode|\\x|chr\(' | head -10 || true)
+          PROC_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -E 'subprocess\.(Popen|call|run)\s*\(' | grep -iE 'base64|b85|b32|decode|encode|decompress|fromhex|unhexlify|\\x|chr\(' | head -10 || true)
           if [ -n "$PROC_HITS" ]; then
             CRITICAL=true
             FINDINGS="${FINDINGS}
@@ -107,12 +211,84 @@ jobs:
           "
           fi
 
+          # --- Dynamic imports (__import__, importlib) ---
+          DYNIMPORT_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE '__import__\s*\(|importlib\.(import_module|__import__)\(' | grep -v '^\+\s*#' | grep -v 'test_\|mock' | head -10 || true)
+          if [ -n "$DYNIMPORT_HITS" ]; then
+            FINDINGS="${FINDINGS}
+          ### ⚠️ WARNING: dynamic import (__import__ / importlib)
+          Dynamic imports hide which modules are loaded, making it harder to audit dependencies. Verify the import target is not user-controlled or decoded from an obfuscated source.
+
+          **Matches:**
+          \`\`\`
+          ${DYNIMPORT_HITS}
+          \`\`\`
+          "
+          fi
+
+          # --- os.system / os.popen (shell execution outside subprocess) ---
+          OSSYS_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'os\.(system|popen|popen2|popen3|popen4)\s*\(' | grep -v '^\+\s*#' | grep -v 'test_\|mock' | head -10 || true)
+          if [ -n "$OSSYS_HITS" ]; then
+            FINDINGS="${FINDINGS}
+          ### ⚠️ WARNING: os.system() or os.popen() shell execution
+          Direct shell execution via \`os.system()\` or \`os.popen()\` bypasses subprocess security controls and is harder to audit than explicit subprocess calls.
+
+          **Matches:**
+          \`\`\`
+          ${OSSYS_HITS}
+          \`\`\`
+          "
+          fi
+
+          # --- ctypes (FFI — can call arbitrary native code) ---
+          CTYPES_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'ctypes\.(cdll|windll|CDLL|WinDLL|LibraryLoader)|ctypes\.CFUNCTYPE|dlopen' | grep -v '^\+\s*#' | head -10 || true)
+          if [ -n "$CTYPES_HITS" ]; then
+            FINDINGS="${FINDINGS}
+          ### ⚠️ WARNING: ctypes / FFI usage
+          \`ctypes\` can load arbitrary shared libraries and call native functions, bypassing all Python-level sandboxing. Verify the library path is trusted.
+
+          **Matches:**
+          \`\`\`
+          ${CTYPES_HITS}
+          \`\`\`
+          "
+          fi
+
+          # --- getattr on builtins (exec/eval evasion) ---
+          GETATTR_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'getattr\s*\(\s*(__builtins__|builtins)' | head -10 || true)
+          if [ -n "$GETATTR_HITS" ]; then
+            CRITICAL=true
+            FINDINGS="${FINDINGS}
+          ### 🚨 CRITICAL: getattr() on builtins
+          \`getattr(__builtins__, 'exec')\` is a well-known technique to call exec/eval without writing those keywords directly — specifically designed to evade static scanners.
+
+          **Matches:**
+          \`\`\`
+          ${GETATTR_HITS}
+          \`\`\`
+          "
+          fi
+
+          # --- curl|bash / wget|sh pipe-to-shell ---
+          PIPESHELL_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'curl\s.*\|\s*(bash|sh|python|perl)|wget\s.*\|\s*(bash|sh|python|perl)|curl.*-o.*&&.*chmod|curl.*>.*\.sh' | head -10 || true)
+          if [ -n "$PIPESHELL_HITS" ]; then
+            CRITICAL=true
+            FINDINGS="${FINDINGS}
+          ### 🚨 CRITICAL: pipe-to-shell pattern (curl|bash, wget|sh)
+          Downloading and immediately executing remote code is the classic supply chain attack vector. This is how the litellm attacker's Trivy credentials were initially compromised.
+
+          **Matches:**
+          \`\`\`
+          ${PIPESHELL_HITS}
+          \`\`\`
+          "
+          fi
+
           # --- Network calls to non-standard domains ---
-          EXFIL_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'requests\.(post|put)\(|httpx\.(post|put)\(|urllib\.request\.urlopen' | grep -v '^\+\s*#' | grep -v 'test_\|mock\|assert' | head -10 || true)
+          EXFIL_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'requests\.(post|put)\(|httpx\.(post|put)\(|urllib\.request\.urlopen|socket\.connect\(|socket\.create_connection\(' | grep -v '^\+\s*#' | grep -v 'test_\|mock\|assert' | head -10 || true)
           if [ -n "$EXFIL_HITS" ]; then
             FINDINGS="${FINDINGS}
-          ### ⚠️ WARNING: Outbound network calls (POST/PUT)
-          Outbound POST/PUT requests in new code could be data exfiltration. Verify the destination URLs are legitimate.
+          ### ⚠️ WARNING: Outbound network calls (POST/PUT/socket)
+          Outbound POST/PUT requests or raw socket connections in new code could be data exfiltration. Verify the destination URLs are legitimate.
 
           **Matches (first 10):**
           \`\`\`
@@ -159,13 +335,43 @@ jobs:
             fi
             # Write findings to a file (multiline env vars are fragile)
             echo "$FINDINGS" > /tmp/findings.md
+
+            # Emit GitHub Actions annotations so findings appear inline on
+            # the PR checks tab with clear descriptions (not just "exit 1").
+            echo "$FINDINGS" | grep '### 🚨 CRITICAL' | sed 's/### 🚨 CRITICAL: //' | while read -r line; do
+              echo "::error title=Supply Chain Audit::CRITICAL: ${line}"
+            done
+            echo "$FINDINGS" | grep '### ⚠️ WARNING' | sed 's/### ⚠️ WARNING: //' | while read -r line; do
+              echo "::warning title=Supply Chain Audit::${line}"
+            done
           else
             echo "found=false" >> "$GITHUB_OUTPUT"
             echo "critical=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Write findings to job summary
+        if: steps.scan.outputs.found == 'true'
+        run: |
+          SEVERITY="⚠️ Supply Chain Risk Detected"
+          if [ "${{ steps.scan.outputs.critical }}" = "true" ]; then
+            SEVERITY="🚨 CRITICAL Supply Chain Risk Detected"
+          fi
+
+          # Always write to job summary (works for fork PRs too)
+          echo "## ${SEVERITY}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "This PR contains patterns commonly associated with supply chain attacks. This does **not** mean the PR is malicious — but these patterns require careful human review before merging." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/findings.md >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "---" >> "$GITHUB_STEP_SUMMARY"
+          echo "*Automated scan triggered by [supply-chain-audit](/.github/workflows/supply-chain-audit.yml). If this is a false positive, a maintainer can approve after manual review.*" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Post warning comment
         if: steps.scan.outputs.found == 'true'
+        # continue-on-error: fork PRs lack write access to post comments.
+        # Findings are always available in the job summary above.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -188,5 +394,5 @@ jobs:
       - name: Fail on critical findings
         if: steps.scan.outputs.critical == 'true'
         run: |
-          echo "::error::CRITICAL supply chain risk patterns detected in this PR. See the PR comment for details."
+          echo "::error::CRITICAL supply chain risk patterns detected in this PR. See the job summary for details."
           exit 1
