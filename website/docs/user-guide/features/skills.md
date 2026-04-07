@@ -207,7 +207,7 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 ### How it works
 
-- **Read-only**: External dirs are only scanned for skill discovery. When the agent creates or edits a skill, it always writes to `~/.hermes/skills/`.
+- **Read-only (copy-on-write)**: External dirs are treated as read-only. When the agent creates a new skill, it always writes to `~/.hermes/skills/`. When the agent **edits an existing external skill** (via `skill_edit`, `skill_patch`, `skill_write_file`, or `skill_remove_file`), Hermes first copies the whole skill directory into the profile-local `~/.hermes/skills/` and then applies the change to the copy. The external source is never mutated by the agent — the edited skill becomes a profile-local override that shadows the shared version by name. Deleting an external skill is rejected with a message pointing to `skills.disabled` (to hide it from the current profile) or direct filesystem removal (to unshare it from all profiles).
 - **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
 - **Non-existent paths are silently skipped**: If a configured directory doesn't exist, Hermes ignores it without errors. Useful for optional shared directories that may not be present on every machine.
@@ -229,6 +229,65 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 ```
 
 All four skills appear in your skill index. If you create a new skill called `my-custom-workflow` locally, it shadows the external version.
+
+## Sharing Specific Skills Across Profiles
+
+For skills you want to share across **some** (but not all) profiles, use the `skills.shared` shorthand. Place each shared skill under `~/.hermes/shared-skills/`:
+
+```text
+~/.hermes/shared-skills/
+├── team-runbook/
+│   └── SKILL.md
+└── company-style-guide/
+    └── SKILL.md
+```
+
+Then list the names in each profile's `config.yaml`:
+
+```yaml
+# Profile A — includes both
+skills:
+  shared:
+    - team-runbook
+    - company-style-guide
+```
+
+```yaml
+# Profile B — only style guide
+skills:
+  shared:
+    - company-style-guide
+```
+
+```yaml
+# Profile C — neither (no shared entry, no implicit inclusion)
+skills:
+  external_dirs: []
+```
+
+Each profile sees only the shared skills it explicitly opts into. Profiles with no `skills.shared` key see no shared skills at all — sharing is opt-in, not automatic.
+
+### How it relates to `external_dirs`
+
+Internally, `skills.shared: [team-runbook]` is equivalent to `skills.external_dirs: [~/.hermes/shared-skills/team-runbook]`. The `shared` key is just a shorthand that:
+
+- Establishes `~/.hermes/shared-skills/` as the canonical shared location, so users don't have to remember a path
+- Lets you list shared skills by **name** instead of repeating the full path each time
+- Validates names (no slashes, no `..`, no leading dot) to prevent path-traversal mistakes in config
+
+Use `skills.shared` for the common case ("share skills X and Y across these profiles"). Use `skills.external_dirs` when you need full paths, environment-variable substitution, or to share entire directories of skills from outside `~/.hermes/`.
+
+### Precedence
+
+The full skill search order is:
+
+1. **Profile-local** (`HERMES_HOME/skills/`) — highest precedence, read/write
+2. **`skills.shared`** entries from `~/.hermes/shared-skills/`
+3. **`skills.external_dirs`** entries
+
+Duplicates (same resolved path) are filtered: a skill listed in both `shared` and `external_dirs` only appears once. A profile-local skill with the same name as a shared one shadows it.
+
+Shared skills are read-only from the agent's perspective — `skill_edit`, `skill_patch`, `skill_write_file`, and `skill_remove_file` copy-on-write into the profile-local `skills/` directory before applying changes (see [External Skill Directories — How it works](#how-it-works)). The shared source is never mutated by the agent.
 
 ## Agent-Managed Skills (skill_manage tool)
 
@@ -270,10 +329,14 @@ hermes skills search react --source skills-sh     # Search the skills.sh directo
 hermes skills search https://mintlify.com/docs --source well-known
 hermes skills inspect openai/skills/k8s           # Preview before installing
 hermes skills install openai/skills/k8s           # Install with security scan
+hermes skills install openai/skills/k8s --shared  # Install to ~/.hermes/shared-skills/ (opt-in from other profiles)
+hermes skills install openai/skills/k8s --local   # Install to this profile only (default)
 hermes skills install official/security/1password
 hermes skills install skills-sh/vercel-labs/json-render/json-render-react --force
 hermes skills install well-known:https://mintlify.com/docs/.well-known/skills/mintlify
+hermes skills list                                 # List all skills with source and scope
 hermes skills list --source hub                   # List hub-installed skills
+hermes skills list --source shared                # List only shared-scope skills
 hermes skills check                               # Check installed hub skills for upstream updates
 hermes skills update                              # Reinstall hub skills with upstream changes when needed
 hermes skills audit                               # Re-scan all hub skills for security
@@ -282,6 +345,41 @@ hermes skills publish skills/my-skill --to github --repo owner/repo
 hermes skills snapshot export setup.json          # Export skill config
 hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 ```
+
+### Install scope: profile-local vs shared
+
+By default, `hermes skills install` copies the skill into the **active profile's** `~/.hermes/skills/` directory — it is visible only to that profile. If you want the skill available across multiple profiles on the same host, use `--shared`:
+
+```bash
+hermes skills install openai/skills/k8s --shared
+```
+
+This installs the skill to `~/.hermes/shared-skills/k8s/` and adds `k8s` to the current profile's `skills.shared` config. Other profiles can opt in by adding `k8s` to their own `skills.shared` list (see [Sharing Specific Skills Across Profiles](#sharing-specific-skills-across-profiles)).
+
+Without a flag, the install command prompts you interactively:
+
+```
+Install location
+  local   — installs into this profile's skills directory only.
+  shared  — installs into ~/.hermes/shared-skills/ so any profile
+            can opt in by adding the name to skills.shared in its config.
+
+Where should 'k8s' be installed?
+  [local/shared] (default: local):
+```
+
+Pass `--local` to suppress the prompt and default to profile-local, or `--yes` (`-y`) which also defaults to local.
+
+**Uninstalling shared skills**: `hermes skills uninstall <name>` detects which lockfile the skill is in and removes it from the correct location. For shared skills, it also removes the name from the current profile's `skills.shared` config. Other profiles that reference the skill will silently skip it on their next load (no error).
+
+**Scope column in `hermes skills list`**: The table now includes a **Scope** column:
+
+| Scope | Meaning |
+|-------|---------|
+| `profile` | Installed in this profile's `~/.hermes/skills/` via hub |
+| `shared` | Installed in `~/.hermes/shared-skills/` and opted in via `skills.shared` |
+| `builtin` | Bundled with Hermes (not hub-installed) |
+| `local` | Created manually or by the agent — not from the hub |
 
 ### Supported hub sources
 
