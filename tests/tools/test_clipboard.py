@@ -31,6 +31,11 @@ from hermes_cli.clipboard import (
     _wsl_has_image,
     _wayland_save,
     _wayland_has_image,
+    _windows_save,
+    _windows_has_image,
+    _find_powershell,
+    _get_ps_exe,
+    _PS_UNCHECKED,
     _convert_to_png,
 )
 
@@ -48,6 +53,14 @@ class TestSaveClipboardImage:
         with patch("hermes_cli.clipboard.sys") as mock_sys:
             mock_sys.platform = "darwin"
             with patch("hermes_cli.clipboard._macos_save", return_value=False) as m:
+                save_clipboard_image(dest)
+                m.assert_called_once_with(dest)
+
+    def test_dispatches_to_windows_on_win32(self, tmp_path):
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard.sys") as mock_sys:
+            mock_sys.platform = "win32"
+            with patch("hermes_cli.clipboard._windows_save", return_value=False) as m:
                 save_clipboard_image(dest)
                 m.assert_called_once_with(dest)
 
@@ -495,6 +508,174 @@ class TestLinuxSave:
                 with patch("hermes_cli.clipboard._xclip_save", return_value=True) as m:
                     assert _linux_save(dest) is True
                     m.assert_called_once_with(dest)
+
+
+# ── Native Windows (PowerShell) ─────────────────────────────────────────
+
+class TestFindPowershell:
+    def test_finds_powershell_first(self):
+        """Should prefer 'powershell' over 'pwsh'."""
+        calls = []
+        def fake_run(cmd, **kw):
+            calls.append(cmd[0])
+            return MagicMock(stdout="ok\n", returncode=0)
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
+            result = _find_powershell()
+        assert result == "powershell"
+        assert calls == ["powershell"]  # didn't even try pwsh
+
+    def test_falls_back_to_pwsh(self):
+        """If 'powershell' is not found, try 'pwsh'."""
+        def fake_run(cmd, **kw):
+            if cmd[0] == "powershell":
+                raise FileNotFoundError
+            return MagicMock(stdout="ok\n", returncode=0)
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
+            result = _find_powershell()
+        assert result == "pwsh"
+
+    def test_both_unavailable(self):
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=FileNotFoundError):
+            assert _find_powershell() is None
+
+    def test_powershell_bad_exit_code_tries_pwsh(self):
+        def fake_run(cmd, **kw):
+            if cmd[0] == "powershell":
+                return MagicMock(stdout="", returncode=1)
+            return MagicMock(stdout="ok\n", returncode=0)
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
+            assert _find_powershell() == "pwsh"
+
+    def test_powershell_no_ok_in_stdout_tries_pwsh(self):
+        def fake_run(cmd, **kw):
+            if cmd[0] == "powershell":
+                return MagicMock(stdout="error\n", returncode=0)
+            return MagicMock(stdout="ok\n", returncode=0)
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
+            assert _find_powershell() == "pwsh"
+
+
+class TestGetPsExe:
+    def setup_method(self):
+        import hermes_cli.clipboard as cb
+        cb._ps_exe = _PS_UNCHECKED
+
+    def test_cache_miss_calls_find(self):
+        with patch("hermes_cli.clipboard._find_powershell", return_value="pwsh") as mock_find:
+            result = _get_ps_exe()
+        assert result == "pwsh"
+        mock_find.assert_called_once()
+
+    def test_cache_hit_skips_find(self):
+        import hermes_cli.clipboard as cb
+        cb._ps_exe = "powershell"  # pre-cached
+        with patch("hermes_cli.clipboard._find_powershell") as mock_find:
+            result = _get_ps_exe()
+        assert result == "powershell"
+        mock_find.assert_not_called()
+
+    def test_cache_stores_none_when_not_found(self):
+        import hermes_cli.clipboard as cb
+        with patch("hermes_cli.clipboard._find_powershell", return_value=None) as mock_find:
+            result1 = _get_ps_exe()
+            result2 = _get_ps_exe()
+        assert result1 is None
+        assert result2 is None
+        mock_find.assert_called_once()  # only probed once
+
+
+class TestWindowsHasImage:
+    def setup_method(self):
+        import hermes_cli.clipboard as cb
+        cb._ps_exe = cb._PS_UNCHECKED  # reset cache
+
+    def test_clipboard_has_image(self):
+        with patch("hermes_cli.clipboard._get_ps_exe", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout="True\n", returncode=0)
+                assert _windows_has_image() is True
+
+    def test_clipboard_no_image(self):
+        with patch("hermes_cli.clipboard._get_ps_exe", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout="False\n", returncode=0)
+                assert _windows_has_image() is False
+
+    def test_no_powershell_available(self):
+        with patch("hermes_cli.clipboard._get_ps_exe", return_value=None):
+            assert _windows_has_image() is False
+
+    def test_powershell_error(self):
+        with patch("hermes_cli.clipboard._get_ps_exe", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout="", returncode=1)
+                assert _windows_has_image() is False
+
+    def test_subprocess_exception(self):
+        with patch("hermes_cli.clipboard._get_ps_exe", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run",
+                       side_effect=subprocess.TimeoutExpired("powershell", 5)):
+                assert _windows_has_image() is False
+
+
+class TestWindowsSave:
+    def setup_method(self):
+        import hermes_cli.clipboard as cb
+        cb._ps_exe = cb._PS_UNCHECKED  # reset cache
+
+    def test_successful_extraction(self, tmp_path):
+        dest = tmp_path / "out.png"
+        b64_png = base64.b64encode(FAKE_PNG).decode()
+        with patch("hermes_cli.clipboard._get_ps_exe", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout=b64_png + "\n", returncode=0)
+                assert _windows_save(dest) is True
+        assert dest.read_bytes() == FAKE_PNG
+
+    def test_no_image_returns_false(self, tmp_path):
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._get_ps_exe", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout="", returncode=1)
+                assert _windows_save(dest) is False
+        assert not dest.exists()
+
+    def test_empty_output(self, tmp_path):
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._get_ps_exe", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout="", returncode=0)
+                assert _windows_save(dest) is False
+
+    def test_no_powershell_returns_false(self, tmp_path):
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._get_ps_exe", return_value=None):
+            assert _windows_save(dest) is False
+
+    def test_invalid_base64(self, tmp_path):
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._get_ps_exe", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout="not-valid-base64!!!", returncode=0)
+                assert _windows_save(dest) is False
+
+    def test_timeout(self, tmp_path):
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._get_ps_exe", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run",
+                       side_effect=subprocess.TimeoutExpired("powershell", 15)):
+                assert _windows_save(dest) is False
+
+
+class TestHasClipboardImageWin32:
+    """Verify has_clipboard_image dispatches to _windows_has_image on win32."""
+
+    def test_dispatches_on_win32(self):
+        with patch("hermes_cli.clipboard.sys") as mock_sys:
+            mock_sys.platform = "win32"
+            with patch("hermes_cli.clipboard._windows_has_image", return_value=True) as m:
+                assert has_clipboard_image() is True
+                m.assert_called_once()
 
 
 # ── BMP conversion ──────────────────────────────────────────────────────
