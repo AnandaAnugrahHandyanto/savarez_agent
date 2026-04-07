@@ -24,6 +24,10 @@ from hermes_cli.nous_subscription import (
     apply_nous_managed_defaults,
     get_nous_subscription_features,
 )
+from toolsets import (
+    get_configurable_builtin_toolsets,
+    get_default_off_builtin_toolsets,
+)
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 logger = logging.getLogger(__name__)
@@ -79,34 +83,13 @@ def _prompt_yes_no(question: str, default: bool = True) -> bool:
 
 # ─── Toolset Registry ─────────────────────────────────────────────────────────
 
-# Toolsets shown in the configurator, grouped for display.
-# Each entry: (toolset_name, label, description)
-# These map to keys in toolsets.py TOOLSETS dict.
-CONFIGURABLE_TOOLSETS = [
-    ("web",             "🔍 Web Search & Scraping",    "web_search, web_extract"),
-    ("browser",         "🌐 Browser Automation",       "navigate, click, type, scroll"),
-    ("terminal",        "💻 Terminal & Processes",      "terminal, process"),
-    ("file",            "📁 File Operations",           "read, write, patch, search"),
-    ("code_execution",  "⚡ Code Execution",            "execute_code"),
-    ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
-    ("image_gen",       "🎨 Image Generation",          "image_generate"),
-    ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
-    ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
-    ("skills",          "📚 Skills",                    "list, view, manage"),
-    ("todo",            "📋 Task Planning",             "todo"),
-    ("memory",          "💾 Memory",                    "persistent memory across sessions"),
-    ("session_search",  "🔎 Session Search",            "search past conversations"),
-    ("clarify",         "❓ Clarifying Questions",      "clarify"),
-    ("delegation",      "👥 Task Delegation",           "delegate_task"),
-    ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
-    ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
-    ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
-]
+# Built-in toolsets shown in the configurator. The source of truth for these
+# entries lives in ``toolsets.py`` so new built-in toolsets only need to opt in
+# once to become configurable in the UI.
+CONFIGURABLE_TOOLSETS = get_configurable_builtin_toolsets()
 
-# Toolsets that are OFF by default for new installs.
-# They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
-# but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl"}
+# Built-in toolsets that are OFF by default for new installs.
+_DEFAULT_OFF_TOOLSETS = get_default_off_builtin_toolsets()
 
 
 def _get_effective_configurable_toolsets():
