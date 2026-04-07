@@ -7,7 +7,7 @@
 # Model — set via env var in docker-compose, not hardcoded here
 # =============================================================================
 model:
-  default: "MiniMax-Text-01"
+  default: "MiniMax-M2.7"
   provider: minimax
 
 # =============================================================================
