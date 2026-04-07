@@ -452,6 +452,7 @@ def create_job(
         "last_run_at": None,
         "last_status": None,
         "last_error": None,
+        "last_delivery_error": None,
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
@@ -574,7 +575,7 @@ def remove_job(job_id: str) -> bool:
     return False
 
 
-def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
+def mark_job_run(job_id: str, success: bool, error: Optional[str] = None, delivery_error: Optional[str] = None):
     """
     Mark a job as having been run.
     
@@ -586,8 +587,18 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
         if job["id"] == job_id:
             now = _hermes_now().isoformat()
             job["last_run_at"] = now
-            job["last_status"] = "ok" if success else "error"
-            job["last_error"] = error if not success else None
+            if success and delivery_error:
+                job["last_status"] = "delivery_failed"
+                job["last_error"] = None
+                job["last_delivery_error"] = delivery_error
+            elif success:
+                job["last_status"] = "ok"
+                job["last_error"] = None
+                job["last_delivery_error"] = None
+            else:
+                job["last_status"] = "error"
+                job["last_error"] = error
+                job["last_delivery_error"] = None
             
             # Increment completed count
             if job.get("repeat"):

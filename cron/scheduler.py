@@ -159,7 +159,7 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     }
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
+def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> dict:
     """
     Deliver job output to the configured target (origin chat, specific platform, etc.).
 
@@ -167,6 +167,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
     use the live adapter first — this supports E2EE rooms (e.g. Matrix) where
     the standalone HTTP path cannot encrypt.  Falls back to standalone send if
     the adapter path fails or is unavailable.
+
+    Returns:
+        {"success": True} on successful delivery
+        {"success": False, "error": "..."} on failure
+        {"success": True, "skipped": True} when no target resolved
     """
     target = _resolve_delivery_target(job)
     if not target:
@@ -176,7 +181,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
                 job["id"],
                 job.get("deliver", "local"),
             )
-        return
+        return {"success": True, "skipped": True}
 
     platform_name = target["platform"]
     chat_id = target["chat_id"]
@@ -203,18 +208,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
     platform = platform_map.get(platform_name.lower())
     if not platform:
         logger.warning("Job '%s': unknown platform '%s' for delivery", job["id"], platform_name)
-        return
+        return {"success": False, "error": f"Unknown platform '{platform_name}'"}
 
     try:
         config = load_gateway_config()
     except Exception as e:
         logger.error("Job '%s': failed to load gateway config for delivery: %s", job["id"], e)
-        return
+        return {"success": False, "error": str(e)}
 
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
         logger.warning("Job '%s': platform '%s' not configured/enabled", job["id"], platform_name)
-        return
+        return {"success": False, "error": f"Platform '{platform_name}' not configured/enabled"}
 
     # Optionally wrap the content with a header/footer so the user knows this
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
@@ -256,7 +261,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
                 )
             else:
                 logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
-                return
+                return {"success": True}
         except Exception as e:
             logger.warning(
                 "Job '%s': live adapter delivery to %s:%s failed (%s), falling back to standalone",
@@ -283,8 +288,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
 
     if result and result.get("error"):
         logger.error("Job '%s': delivery error: %s", job["id"], result["error"])
+        return {"success": False, "error": result["error"]}
     else:
         logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+        return {"success": True}
 
 
 _SCRIPT_TIMEOUT = 120  # seconds

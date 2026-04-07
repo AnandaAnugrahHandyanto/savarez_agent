@@ -339,6 +339,27 @@ class TestMarkJobRun:
         assert updated["last_status"] == "error"
         assert updated["last_error"] == "timeout"
 
+    def test_delivery_failed_status(self, tmp_cron_dir):
+        """When execution succeeds but delivery fails, status should be delivery_failed."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(job["id"], success=True, delivery_error="Telegram API error: 403")
+        updated = get_job(job["id"])
+        assert updated["last_status"] == "delivery_failed"
+        assert updated["last_delivery_error"] == "Telegram API error: 403"
+        assert updated["last_error"] is None
+
+    def test_delivery_error_cleared_on_success(self, tmp_cron_dir):
+        """Subsequent successful delivery should clear last_delivery_error."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(job["id"], success=True, delivery_error="Failed")
+        updated = get_job(job["id"])
+        assert updated["last_status"] == "delivery_failed"
+        assert updated["last_delivery_error"] == "Failed"
+        mark_job_run(job["id"], success=True)
+        updated = get_job(job["id"])
+        assert updated["last_status"] == "ok"
+        assert updated["last_delivery_error"] is None
+
 
 class TestAdvanceNextRun:
     """Tests for advance_next_run() — crash-safety for recurring jobs."""
