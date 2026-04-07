@@ -3945,6 +3945,10 @@ class AIAgent:
                     if isinstance(_out, list) and not _out:
                         if collected_output_items:
                             final_response.output = list(collected_output_items)
+                            if getattr(final_response, "status", None) == "completed":
+                                for item in final_response.output:
+                                    if getattr(item, "status", None) == "in_progress":
+                                        item.status = "completed"
                             logger.debug(
                                 "Codex stream: backfilled %d output items from stream events",
                                 len(collected_output_items),
@@ -4046,6 +4050,10 @@ class AIAgent:
                     if isinstance(_out, list) and not _out:
                         if collected_output_items:
                             terminal_response.output = list(collected_output_items)
+                            if getattr(terminal_response, "status", None) == "completed":
+                                for item in terminal_response.output:
+                                    if getattr(item, "status", None) == "in_progress":
+                                        item.status = "completed"
                             logger.debug(
                                 "Codex fallback stream: backfilled %d output items",
                                 len(collected_output_items),

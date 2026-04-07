@@ -374,6 +374,76 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert response.output[0].content[0].text == "streamed create ok"
 
 
+def test_run_codex_stream_backfilled_output_items_are_promoted_to_completed(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    recovered_item = SimpleNamespace(
+        type="message",
+        role="assistant",
+        status="in_progress",
+        content=[SimpleNamespace(type="output_text", text="Recovered final answer")],
+    )
+
+    class _BackfillResponsesStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            return iter([
+                SimpleNamespace(type="response.output_item.done", item=recovered_item),
+            ])
+
+        def get_final_response(self):
+            return SimpleNamespace(output=[], status="completed")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _BackfillResponsesStream()
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assistant_message, finish_reason = agent._normalize_codex_response(response)
+
+    assert response.output[0].status == "completed"
+    assert assistant_message.content == "Recovered final answer"
+    assert finish_reason == "stop"
+
+
+def test_run_codex_create_stream_fallback_backfilled_output_items_are_promoted_to_completed(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    create_stream = _FakeCreateStream([
+        SimpleNamespace(
+            type="response.output_item.done",
+            item=SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="in_progress",
+                content=[SimpleNamespace(type="output_text", text="Recovered fallback answer")],
+            ),
+        ),
+        SimpleNamespace(type="response.completed", response=SimpleNamespace(output=[], status="completed")),
+    ])
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **kwargs: create_stream
+        )
+    )
+
+    response = agent._run_codex_create_stream_fallback(_codex_request_kwargs())
+    assistant_message, finish_reason = agent._normalize_codex_response(response)
+
+    assert response.output[0].status == "completed"
+    assert assistant_message.content == "Recovered fallback answer"
+    assert finish_reason == "stop"
+    assert create_stream.closed is True
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))
