@@ -156,6 +156,7 @@ def _handle_send(args):
         "wecom": Platform.WECOM,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "linear": Platform.LINEAR,
     }
     platform = platform_map.get(platform_name)
     if not platform:
