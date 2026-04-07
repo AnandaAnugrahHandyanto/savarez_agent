@@ -1958,7 +1958,7 @@ def get_nous_auth_status() -> Dict[str, Any]:
         from agent.credential_pool import load_pool
         pool = load_pool("nous")
         if pool and pool.has_credentials():
-            entry = pool.select()
+            entry = pool.peek()
             if entry is not None:
                 token = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
                 if token:
