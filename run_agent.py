@@ -1159,6 +1159,19 @@ class AIAgent:
             except (TypeError, ValueError):
                 _config_context_length = None
 
+        # Check per-model context_length under model.models (set by /models list)
+        if _config_context_length is None and isinstance(_model_cfg, dict):
+            _models_section = _model_cfg.get("models", {})
+            if isinstance(_models_section, dict):
+                _per_model_cfg = _models_section.get(self.model, {})
+                if isinstance(_per_model_cfg, dict):
+                    _pm_ctx = _per_model_cfg.get("context_length")
+                    if _pm_ctx is not None:
+                        try:
+                            _config_context_length = int(_pm_ctx)
+                        except (TypeError, ValueError):
+                            pass
+
         # Check custom_providers per-model context_length
         if _config_context_length is None:
             _custom_providers = _agent_cfg.get("custom_providers")

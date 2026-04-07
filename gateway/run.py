@@ -403,6 +403,38 @@ def _platform_config_key(platform: "Platform") -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
+def _apply_channel_tool_restrictions(
+    enabled_toolsets: list,
+    user_config: dict,
+    platform_key: str,
+    source,
+) -> list:
+    """Remove denied tools for a specific channel, if configured."""
+    # Platforms in this blocklist have no channel/group concept — their chat_id
+    # is a sender address or system identifier, not a channel.
+    # MAINTENANCE: when adding a new Platform enum value, decide whether it
+    # belongs here.  Add it if it lacks channel semantics.
+    # Note: Platform.LOCAL maps to key "cli" via _platform_config_key, not "local".
+    if not source or platform_key in (
+        "cli", "homeassistant", "api_server", "webhook", "email", "sms",
+    ):
+        return enabled_toolsets
+    restrictions = user_config.get(platform_key, {}).get("channel_tool_restrictions", {})
+    if not restrictions:
+        return enabled_toolsets
+    # Check both the direct channel and parent channel (for threads)
+    channel_ids = [source.chat_id]
+    if getattr(source, "chat_id_alt", None):
+        channel_ids.append(source.chat_id_alt)
+    deny = set()
+    for cid in channel_ids:
+        deny |= set(restrictions.get(str(cid), {}).get("deny", []))
+    if not deny:
+        return enabled_toolsets
+    logging.getLogger("gateway.run").debug("Channel %s: denied toolsets %s", channel_ids, deny)
+    return [t for t in enabled_toolsets if t not in deny]
+
+
 def _load_gateway_config() -> dict:
     """Load and parse ~/.hermes/config.yaml, returning {} on any error."""
     try:
@@ -1890,20 +1922,45 @@ class GatewayRunner:
                 self._running_agents_ts.pop(_quick_key, None)
 
         if _quick_key in self._running_agents:
-            if event.get_command() == "status":
-                return await self._handle_status_command(event)
-
             # Resolve the command once for all early-intercept checks below.
             from hermes_cli.commands import resolve_command as _resolve_cmd_inner
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
+            _canonical_inner = _cmd_def_inner.name if _cmd_def_inner else _evt_cmd
+
+            # --- Read-only / info commands: bypass agent loop, no interrupt ---
+            # These are safe to answer while an agent is running because they
+            # don't change session state or send text to the agent.
+            if _canonical_inner == "status":
+                return await self._handle_status_command(event)
+            if _canonical_inner == "models":
+                return await self._handle_models_command(event)
+            if _canonical_inner == "model":
+                return await self._handle_model_command(event)
+            if _canonical_inner in ("usage", "insights"):
+                return await self._handle_usage_command(event)
+            if _canonical_inner == "profile":
+                return f"**Profile:** default (HERMES_HOME={get_hermes_home()})"
+            if _canonical_inner in ("help", "commands"):
+                if _canonical_inner == "help":
+                    return await self._handle_help_command(event)
+                return await self._handle_commands_command(event)
+            if _canonical_inner == "provider":
+                return await self._handle_provider_command(event)
+            if _canonical_inner == "reasoning":
+                args = event.get_command_args().strip()
+                if not args:
+                    from hermes_cli.config import DEFAULT_CONFIG
+                    reasoning = self._reasoning_config.get("effort", "") or DEFAULT_CONFIG.get("agent", {}).get("reasoning_effort", "medium")
+                    return f"Current reasoning effort: **{reasoning}**. Use `/reasoning <xhigh|high|medium|low|minimal|none>` to change."
+                return "Reasoning changed. (Subcommands while agent runs — may not take full effect until next message.)"
 
             # /stop must hard-kill the session when an agent is running.
             # A soft interrupt (agent.interrupt()) doesn't help when the agent
             # is truly hung — the executor thread is blocked and never checks
             # _interrupt_requested.  Force-clean _running_agents so the session
             # is unlocked and subsequent messages are processed normally.
-            if _cmd_def_inner and _cmd_def_inner.name == "stop":
+            if _canonical_inner == "stop":
                 running_agent = self._running_agents.get(_quick_key)
                 if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
                     running_agent.interrupt("Stop requested")
@@ -1924,7 +1981,7 @@ class GatewayRunner:
             # clear the adapter's pending queue so the stale "/reset" text
             # doesn't get re-processed as a user message after the
             # interrupt completes.
-            if _cmd_def_inner and _cmd_def_inner.name == "new":
+            if _canonical_inner == "new":
                 running_agent = self._running_agents.get(_quick_key)
                 if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
                     running_agent.interrupt("Session reset requested")
@@ -2140,6 +2197,12 @@ class GatewayRunner:
 
         if canonical == "voice":
             return await self._handle_voice_command(event)
+
+        if canonical == "model":
+            return await self._handle_model_command(event)
+        
+        if canonical == "models":
+            return await self._handle_models_command(event)
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
@@ -3335,28 +3398,168 @@ class GatewayRunner:
         return "\n".join(lines)
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
-        """Handle /status command."""
+        """Handle /status command — shows model, context, session, and runtime info."""
+        import yaml
+        from agent.model_metadata import get_model_context_length, estimate_messages_tokens_rough
+
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
-        
-        connected_platforms = [p.value for p in self.adapters.keys()]
-        
-        # Check if there's an active agent
         session_key = session_entry.session_key
-        is_running = session_key in self._running_agents
-        
+
+        # --- Model & provider ---
+        # Priority: cached agent's model > fallback tracker > config file
+        effective_model = None
+        effective_provider = None
+        try:
+            agent = self._running_agents.get(session_key)
+            if agent and hasattr(agent, 'model') and agent.model:
+                effective_model = agent.model
+                effective_provider = getattr(agent, 'provider', None)
+        except Exception:
+            pass
+
+        if not effective_model:
+            effective_model = self._effective_model or _resolve_gateway_model()
+            effective_provider = effective_provider or (self._effective_provider or None)
+
+        # Resolve provider name and base_url from config
+        config_path = _hermes_home / 'config.yaml'
+        current_provider = ""
+        status_base_url = ""
+        try:
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    current_provider = model_cfg.get("provider", "")
+                    status_base_url = model_cfg.get("base_url", "") or ""
+        except Exception:
+            pass
+
+        # Build model display: provider:model or just model
+        if effective_provider:
+            model_display = f"{effective_provider}/{effective_model}" if "/" not in effective_model else effective_model
+        elif current_provider and "/" not in effective_model:
+            model_display = f"{current_provider}/{effective_model}"
+        else:
+            model_display = effective_model or "unknown"
+
+        # Source label for the api key (openrouter:default, etc.)
+        key_label = "default"
+        if current_provider:
+            key_label = f"{current_provider}:default"
+
+        # --- Context window ---
+        context_length = get_model_context_length(effective_model, base_url=status_base_url)
+        # Estimate current context tokens from session history
+        try:
+            history = self.session_store.load_transcript(session_entry.session_id)
+            current_context_tokens = estimate_messages_tokens_rough(history) if history else 0
+        except Exception:
+            current_context_tokens = session_entry.total_tokens
+
+        if context_length > 0:
+            ctx_pct = (current_context_tokens / context_length) * 100
+            context_display = f"{current_context_tokens:,}/{context_length:,} ({ctx_pct:.0f}%)"
+        else:
+            context_display = f"{current_context_tokens:,}"
+
+        # --- Compaction count ---
+        compression_count = 0
+        running = session_key in self._running_agents
+        try:
+            if running:
+                agent = self._running_agents.get(session_key)
+                if agent and hasattr(agent, 'context_compressor') and agent.context_compressor:
+                    compression_count = getattr(agent.context_compressor, 'compression_count', 0)
+        except Exception:
+            pass
+
+        # --- Session timing ---
+        now = datetime.now()
+        delta = now - session_entry.updated_at
+        if delta.total_seconds() < 60:
+            time_ago = "just now"
+        elif delta.total_seconds() < 3600:
+            mins = int(delta.total_seconds() / 60)
+            time_ago = f"{mins}m ago"
+        elif delta.total_seconds() < 86400:
+            hrs = int(delta.total_seconds() / 3600)
+            time_ago = f"{hrs}h ago"
+        else:
+            days = int(delta.total_seconds() / 86400)
+            time_ago = f"{days}d ago"
+
+        # --- Runtime mode ---
+        reasoning_cfg = getattr(self, '_reasoning_config', {}) or {}
+        thinking_level = reasoning_cfg.get('effort', '') or reasoning_cfg.get('level', '') or ''
+        if not thinking_level:
+            # Try to read from config
+            try:
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        cfg = yaml.safe_load(f) or {}
+                    reasoning_section = cfg.get("reasoning", {})
+                    if isinstance(reasoning_section, dict):
+                        thinking_level = reasoning_section.get("effort", "") or reasoning_section.get("level", "") or ""
+            except Exception:
+                pass
+        if not thinking_level:
+            thinking_level = "default"
+
+        # --- Activation mode ---
+        activation_mode = ""
+        if hasattr(self, 'config') and self.config:
+            activation_mode = getattr(self.config, 'activation_mode', '') or ''
+        if not activation_mode:
+            try:
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        cfg = yaml.safe_load(f) or {}
+                    activation_mode = cfg.get("activation_mode", cfg.get("gateway", {}).get("activation_mode", ""))
+            except Exception:
+                pass
+        if not activation_mode:
+            activation_mode = "mention"
+
+        # --- Queue depth ---
+        pending = self._pending_messages.get(session_key, "")
+        queue_depth = 1 if pending else 0
+
+        # --- Connected platforms ---
+        connected_platforms = [p.value for p in self.adapters.keys()]
+
+        # --- Session key display ---
+        # Make it human-readable: platform:channel:user pattern
+        session_display = session_key
+        try:
+            # session_key format: f"{src_platform}:{src_chat_id}:{src_user_id}" or similar
+            parts = session_key.split(":")
+            if len(parts) >= 2:
+                # Shorten chat_id for readability
+                short_key = f"{parts[0]}:{parts[1][-8:]}"
+                if len(parts) >= 3:
+                    short_key += f":user_{parts[2][-8:]}"
+                session_display = short_key
+        except Exception:
+            pass
+
+        # --- Build the status display (OpenClaw-inspired) ---
         lines = [
-            "📊 **Hermes Gateway Status**",
+            f"🤖 Hermes Gateway Status",
             "",
-            f"**Session ID:** `{session_entry.session_id[:12]}...`",
-            f"**Created:** {session_entry.created_at.strftime('%Y-%m-%d %H:%M')}",
-            f"**Last Activity:** {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",
-            f"**Tokens:** {session_entry.total_tokens:,}",
-            f"**Agent Running:** {'Yes ⚡' if is_running else 'No'}",
-            "",
-            f"**Connected Platforms:** {', '.join(connected_platforms)}",
+            f"🧠 Model: {model_display} · 🔑 {key_label}",
+            f"📚 Context: {context_display} · 🧹 Compactions: {compression_count}",
+            f"🧵 Session: {session_display} • updated {time_ago}",
+            f"⚙️ Think: {thinking_level} · 🔊 voice: off",
+            f"👥 Activation: {activation_mode} · 🪢 Queue: depth {queue_depth}",
+            f"💰 Total tokens: {session_entry.total_tokens:,} · Agent: {'running ⚡' if running else 'idle'}",
         ]
-        
+
+        if len(connected_platforms) > 1:
+            lines.append(f"🔌 Platforms: {', '.join(connected_platforms)}")
+
         return "\n".join(lines)
     
     async def _handle_stop_command(self, event: MessageEvent) -> str:
@@ -3829,7 +4032,97 @@ class GatewayRunner:
         lines.append("Switch: `/model provider:model-name`")
         lines.append("Setup: `hermes setup`")
         return "\n".join(lines)
-    
+
+    async def _handle_models_command(self, event: MessageEvent) -> str:
+        """Handle /models command - list available models from config."""
+        import yaml
+
+        config_path = _hermes_home / "config.yaml"
+        models_dict: dict = {}
+        current_model = ""
+        try:
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    current_model = model_cfg.get("default") or model_cfg.get("model") or ""
+                    models_dict = model_cfg.get("models") or {}
+        except Exception:
+            pass
+
+        if not models_dict:
+            return "No models found in config. Add them under `model.models` in config.yaml."
+
+        # Group by provider prefix
+        grouped: dict[str, list[tuple[str, int | None]]] = {}
+        for model_id, model_cfg in models_dict.items():
+            ctx = None
+            if isinstance(model_cfg, dict):
+                ctx = model_cfg.get("context_length")
+            provider = model_id.split("/")[0] if "/" in model_id else "other"
+            grouped.setdefault(provider, []).append((model_id, ctx))
+
+        lines = [f"🧠 **Available models** (current: `{current_model}`):", ""]
+        for provider, entries in grouped.items():
+            lines.append(f"**{provider}/**")
+            for model_id, ctx in entries:
+                marker = " ← active" if model_id == current_model else ""
+                ctx_str = f"  _{ctx:,} ctx_" if ctx else ""
+                lines.append(f"  `{model_id}`{ctx_str}{marker}")
+            lines.append("")
+
+        lines.append("Switch: `/model <model-id>`")
+        return "\n".join(lines).rstrip()
+
+    async def _handle_model_command(self, event: MessageEvent) -> str:
+        """Handle /model command - change the active model."""
+        import yaml
+        from utils import atomic_yaml_write
+
+        args = event.get_command_args().strip()
+        if not args:
+            return "Usage: `/model <model-id>`\nExample: `/model xiaomi/mimo-v2-pro`"
+
+        new_model = args
+        config_path = _hermes_home / "config.yaml"
+
+        try:
+            # Load current config
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = yaml.safe_load(f) or {}
+            else:
+                config = {}
+
+            # Update the model in config
+            if "model" not in config or not isinstance(config["model"], dict):
+                config["model"] = {"default": new_model}
+            else:
+                config["model"]["default"] = new_model
+
+            # Save the updated config
+            atomic_yaml_write(config_path, config)
+            
+            # Evict cached agent for this session so next message uses new model
+            source = event.source
+            session_key = self._session_key_for_source(source)
+            self._evict_cached_agent(session_key)
+
+            # Update effective model so /status shows the correct value immediately.
+            # Without this, _effective_model (set during agent runs for fallback
+            # tracking) would override the new config value in _handle_status_command.
+            self._effective_model = new_model
+            model_cfg = config.get("model", {})
+            if isinstance(model_cfg, dict):
+                self._effective_provider = model_cfg.get("provider") or self._effective_provider
+
+            return f"✅ Model changed to `{new_model}`\nNext message will use the new model."
+
+        except Exception as e:
+            logger.error("Failed to update model in config: %s", e)
+            return f"❌ Failed to change model: {e}"
+
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
         import yaml
@@ -4520,6 +4813,7 @@ class GatewayRunner:
 
             from hermes_cli.tools_config import _get_platform_tools
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            enabled_toolsets = _apply_channel_tool_restrictions(enabled_toolsets, user_config, platform_key, source)
 
             pr = self._provider_routing
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
@@ -6202,6 +6496,7 @@ class GatewayRunner:
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        enabled_toolsets = _apply_channel_tool_restrictions(enabled_toolsets, user_config, platform_key, source)
 
         # Apply tool preview length config (0 = no limit)
         try:

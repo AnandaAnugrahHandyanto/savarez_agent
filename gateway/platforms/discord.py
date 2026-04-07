@@ -542,8 +542,17 @@ class DiscordAdapter(BasePlatformAdapter):
 
                 # Sync slash commands with Discord
                 try:
-                    synced = await adapter_self._client.tree.sync()
-                    logger.info("[%s] Synced %d slash command(s)", adapter_self.name, len(synced))
+                    # Sync globally first (cached up to 1 hour)
+                    synced_global = await adapter_self._client.tree.sync()
+                    logger.info("[%s] Synced %d global slash command(s)", adapter_self.name, len(synced_global))
+                    
+                    # Also sync to each guild for immediate updates
+                    for guild in adapter_self._client.guilds:
+                        try:
+                            synced_guild = await adapter_self._client.tree.sync(guild=guild)
+                            logger.info("[%s] Synced %d slash command(s) to guild %s", adapter_self.name, len(synced_guild), guild.name)
+                        except Exception as guild_e:
+                            logger.warning("[%s] Failed to sync to guild %s: %s", adapter_self.name, guild.name, guild_e, exc_info=True)
                 except Exception as e:  # pragma: no cover - defensive logging
                     logger.warning("[%s] Slash command sync failed: %s", adapter_self.name, e, exc_info=True)
                 adapter_self._ready_event.set()
@@ -579,13 +588,19 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Bot message filtering (DISCORD_ALLOW_BOTS):
                 #   "none"     — ignore all other bots (default)
                 #   "mentions" — accept bot messages only when they @mention us
+                #   "name"     — accept bot messages that @mention us OR mention our name
                 #   "all"      — accept all bot messages
                 if getattr(message.author, "bot", False):
                     allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
                     if allow_bots == "none":
                         return
-                    elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
+                    elif allow_bots in ("mentions", "name"):
+                        _bot_at_mentioned = self._client.user and self._client.user in message.mentions
+                        _bot_name_in_msg = False
+                        if allow_bots == "name" and self._client.user:
+                            _bn = self._client.user.display_name or self._client.user.name
+                            _bot_name_in_msg = _bn.lower() in message.content.lower()
+                        if not _bot_at_mentioned and not _bot_name_in_msg:
                             return
                     # "all" falls through to handle_message
 
@@ -639,6 +654,39 @@ class DiscordAdapter(BasePlatformAdapter):
                         else f"moved {before.channel.name} -> {after.channel.name}",
                         guild_id,
                     )
+
+            # Catch unhandled errors in slash/app commands so they don't
+            # silently show "This interaction failed" to the user.
+            async def _on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
+                if isinstance(error, discord.app_commands.CommandOnCooldown):
+                    await interaction.followup.send(
+                        f"Command on cooldown. Try again in {error.retry_after:.0f}s.", ephemeral=True
+                    )
+                elif isinstance(error, discord.app_commands.MissingPermissions):
+                    await interaction.followup.send(
+                        "You don't have permission to use this command.", ephemeral=True
+                    )
+                elif isinstance(error, discord.app_commands.BotMissingPermissions):
+                    await interaction.followup.send(
+                        "I don't have the required permissions to run this command.", ephemeral=True
+                    )
+                else:
+                    logger.error(
+                        '[discord] Unhandled app command error: %s', error, exc_info=True
+                    )
+                    try:
+                        if interaction.response.is_done():
+                            await interaction.followup.send(
+                                "An error occurred while running this command.", ephemeral=True
+                            )
+                        else:
+                            await interaction.response.send_message(
+                                "An error occurred while running this command.", ephemeral=True
+                            )
+                    except Exception:
+                        pass
+
+            self._client.tree.on_error = _on_app_command_error
 
             # Register slash commands
             self._register_slash_commands()
@@ -1655,6 +1703,85 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_update(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/update", "Update initiated~")
 
+        @tree.command(name="models", description="Show or change the active model via dropdown")
+        async def slash_models(interaction: discord.Interaction):
+            import yaml as _yaml
+            import os as _os
+
+            config_path = _os.path.join(
+                _os.getenv("HERMES_HOME", _os.path.expanduser("~/.hermes")),
+                "config.yaml",
+            )
+            models_dict: dict = {}
+            current_model = ""
+            try:
+                if _os.path.exists(config_path):
+                    with open(config_path, encoding="utf-8") as _f:
+                        _cfg = _yaml.safe_load(_f) or {}
+                    _model_cfg = _cfg.get("model", {})
+                    if isinstance(_model_cfg, dict):
+                        current_model = _model_cfg.get("default") or _model_cfg.get("model") or ""
+                        models_dict = _model_cfg.get("models") or {}
+            except Exception:
+                pass
+
+            # Fallback to known models if config has none
+            if not models_dict:
+                try:
+                    from hermes_cli.models import KNOWN_MODELS
+                    models_dict = {m: {} for m in KNOWN_MODELS}
+                except Exception:
+                    pass
+
+            if not models_dict:
+                await interaction.response.send_message(
+                    "No models found in config. Add them under `model.models` in config.yaml.",
+                    ephemeral=True,
+                )
+                return
+
+            options: list[discord.SelectOption] = []
+            for model_id, model_cfg in models_dict.items():
+                ctx = model_cfg.get("context_length", "") if isinstance(model_cfg, dict) else ""
+                label = model_id
+                if ctx:
+                    label += f" ({ctx:,})"
+                options.append(discord.SelectOption(
+                    label=label[:100],
+                    value=model_id,
+                    default=(model_id == current_model),
+                ))
+                if len(options) >= 25:
+                    break
+
+            _gateway_self = self
+
+            class _ModelSelect(discord.ui.Select):
+                def __init__(self) -> None:
+                    super().__init__(placeholder="Select a model...", options=options, min_values=1, max_values=1)
+
+                async def callback(self, select_interaction: discord.Interaction) -> None:
+                    selected = self.values[0]
+                    await select_interaction.response.defer(ephemeral=True)
+                    event = _gateway_self._build_slash_event(select_interaction, f"/model {selected}")
+                    await _gateway_self.handle_message(event)
+                    try:
+                        await select_interaction.edit_original_response(
+                            content=f"Switched to: `{selected}`",
+                            view=None,
+                        )
+                    except Exception:
+                        pass
+
+            view = discord.ui.View(timeout=120)
+            view.add_item(_ModelSelect())
+            active_label = f"`{current_model}`" if current_model else "unknown"
+            await interaction.response.send_message(
+                f"🧠 **Select a model** (current: {active_label}):",
+                view=view,
+                ephemeral=True,
+            )
+
         @tree.command(name="approve", description="Approve a pending dangerous command")
         @discord.app_commands.describe(scope="Optional: 'all', 'session', 'always', 'all session', 'all always'")
         async def slash_approve(interaction: discord.Interaction, scope: str = ""):
@@ -1838,6 +1965,7 @@ class DiscordAdapter(BasePlatformAdapter):
             user_id=str(interaction.user.id),
             user_name=interaction.user.display_name,
             thread_id=thread_id,
+            chat_id_alt=str(interaction.channel_id),  # Parent channel for tool restrictions
         )
 
         event = MessageEvent(
@@ -2214,8 +2342,18 @@ class DiscordAdapter(BasePlatformAdapter):
             # the bot has previously participated (auto-created or replied in).
             in_bot_thread = is_thread and thread_id in self._bot_participated_threads
 
+            # Check if the bot's name is mentioned by text (case-insensitive)
+            # Controlled by DISCORD_RESPOND_TO_NAME (default: false)
+            _respond_to_name = os.getenv(
+                "DISCORD_RESPOND_TO_NAME", "false"
+            ).lower() in ("true", "1", "yes")
+            _name_mentioned = False
+            if _respond_to_name and self._client.user:
+                _bot_name = self._client.user.display_name or self._client.user.name
+                _name_mentioned = _bot_name.lower() in message.content.lower()
+
             if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions:
+                if self._client.user not in message.mentions and not _name_mentioned:
                     return
 
             if self._client.user and self._client.user in message.mentions:
@@ -2234,6 +2372,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     is_thread = True
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
+                    parent_channel_id = str(message.channel.id)  # Parent for channel tool restrictions
                     self._track_thread(thread_id)
 
         # Determine message type
@@ -2287,6 +2426,7 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=message.author.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            chat_id_alt=parent_channel_id,
         )
 
         # Build media URLs -- download image attachments to local cache so the

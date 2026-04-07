@@ -1151,6 +1151,38 @@ class BasePlatformAdapter(ABC):
                     self._pending_messages[session_key] = event
                 return  # Don't interrupt now - will run after current task completes
 
+            # Special case: read-only slash commands (status, help, models, provider,
+            # usage, profile, commands) should bypass the queue and be sent straight
+            # through to the gateway handler, which has early-return intercepts for
+            # them. Otherwise they get stuck waiting for the active agent to finish.
+            if event.is_command():
+                _cmd = event.get_command()
+                if _cmd in ("status", "help", "models", "model", "provider",
+                            "usage", "insights", "profile", "commands"):
+                    logger.debug("[%s] Passthrough command /%s while session %s active", self.name, _cmd, session_key)
+                    # Let it through — spawn a task so it runs concurrently
+                    task = asyncio.create_task(self._process_message_background(event, session_key))
+                    try:
+                        self._background_tasks.add(task)
+                    except TypeError:
+                        return
+                    if hasattr(task, "add_done_callback"):
+                        task.add_done_callback(self._background_tasks.discard)
+                    return
+
+            # /stop must always be handled immediately — the gateway has a
+            # force-clean path that unlocks the session even with a hung agent.
+            if event.is_command() and event.get_command() == "stop":
+                logger.debug("[%s] Passthrough /stop while session %s active", self.name, session_key)
+                task = asyncio.create_task(self._process_message_background(event, session_key))
+                try:
+                    self._background_tasks.add(task)
+                except TypeError:
+                    return
+                if hasattr(task, "add_done_callback"):
+                    task.add_done_callback(self._background_tasks.discard)
+                return
+
             # Default behavior for non-photo follow-ups: interrupt the running agent
             logger.debug("[%s] New message while session %s is active — triggering interrupt", self.name, session_key)
             self._pending_messages[session_key] = event

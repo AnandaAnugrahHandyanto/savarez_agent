@@ -62,7 +62,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("compress", "Manually compress conversation context", "Session"),
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
-    CommandDef("stop", "Kill all running background processes", "Session"),
+    CommandDef("stop", "Stop the running agent and unlock the session", "Session"),
     CommandDef("approve", "Approve a pending dangerous command", "Session",
                gateway_only=True, args_hint="[session|always]"),
     CommandDef("deny", "Deny a pending dangerous command", "Session",
@@ -105,6 +105,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="[name]"),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
+    CommandDef("model", "Change the active model", "Configuration",
+               args_hint="<model-id>"),
+    CommandDef("models", "Show or change model via dropdown", "Configuration"),
 
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
