@@ -7,8 +7,8 @@
 # Model — set via env var in docker-compose, not hardcoded here
 # =============================================================================
 model:
-  default: "anthropic/claude-sonnet-4-6"
-  provider: auto
+  default: "MiniMax-Text-01"
+  provider: minimax
 
 # =============================================================================
 # Platform toolsets
