@@ -154,13 +154,15 @@ class HermesAgentExecutor(AgentExecutor):
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Handle a task: run Hermes and stream results back via EventQueue."""
         task_id = context.task_id
+        context_id = getattr(context, "context_id", None) or task_id
         user_message = _extract_text(context.message)
-        session_id = getattr(context, "context_id", None) or task_id
+        session_id = context_id
 
         if not user_message:
             await event_queue.enqueue_event(
                 TaskStatusUpdateEvent(
-                    id=task_id,
+                    taskId=task_id,
+                    contextId=context_id,
                     status=TaskStatus(state=TaskState.failed),
                     final=True,
                 )
@@ -170,7 +172,8 @@ class HermesAgentExecutor(AgentExecutor):
         # Emit working status
         await event_queue.enqueue_event(
             TaskStatusUpdateEvent(
-                id=task_id,
+                taskId=task_id,
+                contextId=context_id,
                 status=TaskStatus(state=TaskState.working),
                 final=False,
             )
@@ -203,7 +206,8 @@ class HermesAgentExecutor(AgentExecutor):
                     accumulated += token
                     await event_queue.enqueue_event(
                         TaskArtifactUpdateEvent(
-                            id=task_id,
+                            taskId=task_id,
+                            contextId=context_id,
                             artifact={"parts": [{"type": "text", "text": accumulated}]},
                             final=False,
                         )
@@ -218,7 +222,8 @@ class HermesAgentExecutor(AgentExecutor):
             # Non-streaming fallback: emit the full response as a single artifact
             await event_queue.enqueue_event(
                 TaskArtifactUpdateEvent(
-                    id=task_id,
+                    taskId=task_id,
+                    contextId=context_id,
                     artifact={"parts": [{"type": "text", "text": final_text}]},
                     final=True,
                 )
@@ -227,16 +232,19 @@ class HermesAgentExecutor(AgentExecutor):
         # Emit completion
         await event_queue.enqueue_event(
             TaskStatusUpdateEvent(
-                id=task_id,
+                taskId=task_id,
+                contextId=context_id,
                 status=TaskStatus(state=TaskState.completed),
                 final=True,
             )
         )
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
+        context_id = getattr(context, "context_id", None) or context.task_id
         await event_queue.enqueue_event(
             TaskStatusUpdateEvent(
-                id=context.task_id,
+                taskId=context.task_id,
+                contextId=context_id,
                 status=TaskStatus(state=TaskState.canceled),
                 final=True,
             )
