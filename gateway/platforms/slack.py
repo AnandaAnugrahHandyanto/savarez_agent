@@ -84,6 +84,15 @@ class SlackAdapter(BasePlatformAdapter):
         self._seen_messages: Dict[str, float] = {}
         self._SEEN_TTL = 300   # 5 minutes
         self._SEEN_MAX = 2000  # prune threshold
+        # Track timestamps of messages sent by the bot so we can respond
+        # to thread replies even without an explicit @mention.
+        self._bot_message_ts: set = set()
+        self._BOT_TS_MAX = 5000  # cap to avoid unbounded growth
+        # Track threads where the bot has been @mentioned — once mentioned,
+        # respond to ALL subsequent messages in that thread (no re-mention needed).
+        # Key: thread_ts, Value: True (just a set membership check)
+        self._mentioned_threads: set = set()
+        self._MENTIONED_THREADS_MAX = 5000  # cap to avoid unbounded growth
 
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
@@ -256,9 +265,21 @@ class SlackAdapter(BasePlatformAdapter):
 
                 last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
 
+            sent_ts = last_result.get("ts") if last_result else None
+            if sent_ts:
+                self._bot_message_ts.add(sent_ts)
+                # Also register the thread root so replies-to-my-replies work
+                if thread_ts:
+                    self._bot_message_ts.add(thread_ts)
+                if len(self._bot_message_ts) > self._BOT_TS_MAX:
+                    # Trim oldest half — sets are unordered so just clear excess
+                    excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
+                    for old_ts in list(self._bot_message_ts)[:excess]:
+                        self._bot_message_ts.discard(old_ts)
+
             return SendResult(
                 success=True,
-                message_id=last_result.get("ts") if last_result else None,
+                message_id=sent_ts,
                 raw_response=last_result,
             )
 
@@ -276,13 +297,10 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
         try:
-            # Convert standard markdown → Slack mrkdwn
-            formatted = self.format_message(content)
-
             await self._get_client(chat_id).chat_update(
                 channel=chat_id,
                 ts=message_id,
-                text=formatted,
+                text=content,
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging
@@ -693,6 +711,53 @@ class SlackAdapter(BasePlatformAdapter):
                 text = f"{caption}\n{text}"
             return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
 
+    async def _fetch_thread_context(self, channel_id: str, thread_ts: str, current_ts: str, team_id: str = "") -> str:
+        """Fetch thread history and format it as a context block.
+
+        Returns a string like:
+            [Thread context]
+            Alice: hey can you look at this
+            Bob: sure what's up
+            [End thread context]
+
+        Excludes the current message (current_ts) since that's already in text.
+        Returns empty string on failure or if thread has only one message.
+        """
+        try:
+            client = self._get_client(channel_id)
+            result = await client.conversations_replies(
+                channel=channel_id,
+                ts=thread_ts,
+                limit=50,  # fetch up to 50 messages; more than enough for context
+            )
+            messages = result.get("messages", [])
+            # Filter out the current message and bot messages, keep order
+            bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+            context_lines = []
+            for msg in messages:
+                if msg.get("ts") == current_ts:
+                    continue  # skip the triggering message itself
+                msg_text = msg.get("text", "").strip()
+                if not msg_text:
+                    continue
+                sender_id = msg.get("user", "")
+                # Label bot messages clearly
+                if msg.get("bot_id") or (bot_uid and sender_id == bot_uid):
+                    sender_name = "Hermes"
+                else:
+                    sender_name = await self._resolve_user_name(sender_id, chat_id=channel_id)
+                # Strip bot mentions from context messages too
+                if bot_uid:
+                    msg_text = msg_text.replace(f"<@{bot_uid}>", "@Hermes").strip()
+                context_lines.append(f"{sender_name}: {msg_text}")
+            if not context_lines:
+                return ""
+            joined = "\n".join(context_lines)
+            return f"[Thread context]\n{joined}\n[End thread context]\n\n"
+        except Exception as e:
+            logger.debug("[Slack] Failed to fetch thread context for %s/%s: %s", channel_id, thread_ts, e)
+            return ""
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Slack channel."""
         if not self._app:
@@ -766,30 +831,35 @@ class SlackAdapter(BasePlatformAdapter):
         else:
             thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
 
-        # In channels, only respond if bot is mentioned OR if this is a
-        # reply in a thread where the bot has an active session.
+        # In channels, respond if:
+        #   1. The bot is @mentioned in this message, OR
+        #   2. The message is a reply in a thread that the bot started/participated in, OR
+        #   3. The message is in a thread where the bot was previously @mentioned
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-        is_mentioned = bot_uid and f"<@{bot_uid}>" in text
-        
-        if not is_dm and bot_uid and not is_mentioned:
-            # Check if this is a thread reply (thread_ts exists and differs from ts)
-            event_thread_ts = event.get("thread_ts")
-            is_thread_reply = event_thread_ts and event_thread_ts != ts
-            
-            if is_thread_reply and self._has_active_session_for_thread(
-                channel_id=channel_id,
-                thread_ts=event_thread_ts,
-                user_id=user_id,
-            ):
-                # Allow thread replies without mention if there's an active session
-                pass
-            else:
-                # Not a thread reply or no active session - ignore
+        if not is_dm and bot_uid:
+            mentioned = f"<@{bot_uid}>" in text
+            reply_to_bot_thread = (
+                thread_ts is not None
+                and thread_ts != ts
+                and thread_ts in self._bot_message_ts
+            )
+            in_mentioned_thread = (
+                thread_ts is not None
+                and thread_ts in self._mentioned_threads
+            )
+            if not mentioned and not reply_to_bot_thread and not in_mentioned_thread:
                 return
-        
-        if is_mentioned:
-            # Strip the bot mention from the text
-            text = text.replace(f"<@{bot_uid}>", "").strip()
+            # Strip the bot mention from the text if present
+            if mentioned:
+                text = text.replace(f"<@{bot_uid}>", "").strip()
+                # Register this thread so all future messages in it auto-trigger
+                if thread_ts:
+                    self._mentioned_threads.add(thread_ts)
+                    if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
+                        # Prune oldest half (sets are unordered; just discard arbitrary half)
+                        to_remove = list(self._mentioned_threads)[:self._MENTIONED_THREADS_MAX // 2]
+                        for t in to_remove:
+                            self._mentioned_threads.discard(t)
 
         # Determine message type
         msg_type = MessageType.TEXT
@@ -882,6 +952,14 @@ class SlackAdapter(BasePlatformAdapter):
         # Resolve user display name (cached after first lookup)
         user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
 
+        # Fetch thread history and prepend as context (only when inside a thread)
+        if thread_ts and thread_ts != ts:
+            thread_context = await self._fetch_thread_context(
+                channel_id, thread_ts, ts, team_id=team_id
+            )
+            if thread_context:
+                text = thread_context + text
+
         # Build source
         source = self.build_source(
             chat_id=channel_id,
@@ -891,6 +969,7 @@ class SlackAdapter(BasePlatformAdapter):
             user_name=user_name,
             thread_id=thread_ts,
         )
+
 
         msg_event = MessageEvent(
             text=text,
@@ -952,68 +1031,6 @@ class SlackAdapter(BasePlatformAdapter):
         )
 
         await self.handle_message(event)
-
-    def _has_active_session_for_thread(
-        self,
-        channel_id: str,
-        thread_ts: str,
-        user_id: str,
-    ) -> bool:
-        """Check if there's an active session for a thread.
-        
-        Used to determine if thread replies without @mentions should be
-        processed (they should if there's an active session).
-        
-        Args:
-            channel_id: The Slack channel ID
-            thread_ts: The thread timestamp (parent message ts)
-            user_id: The user ID of the sender
-            
-        Returns:
-            True if there's an active session for this thread
-        """
-        session_store = getattr(self, "_session_store", None)
-        if not session_store:
-            return False
-        
-        try:
-            # Build a SessionSource for this thread
-            from gateway.session import SessionSource
-            from gateway.config import Platform
-            
-            source = SessionSource(
-                platform=Platform.SLACK,
-                chat_id=channel_id,
-                chat_type="group",
-                user_id=user_id,
-                thread_id=thread_ts,
-            )
-            
-            # Generate the session key using the same logic as SessionStore
-            # This mirrors the logic in build_session_key for group sessions
-            key_parts = ["agent:main", "slack", "group", channel_id, thread_ts]
-            
-            # Include user_id if group_sessions_per_user is enabled
-            # We check the session store config if available
-            group_sessions_per_user = getattr(
-                session_store, "config", {}
-            )
-            if hasattr(group_sessions_per_user, "group_sessions_per_user"):
-                group_sessions_per_user = group_sessions_per_user.group_sessions_per_user
-            else:
-                group_sessions_per_user = True  # Default
-            
-            if group_sessions_per_user and user_id:
-                key_parts.append(str(user_id))
-            
-            session_key = ":".join(key_parts)
-            
-            # Check if the session exists in the store
-            session_store._ensure_loaded()
-            return session_key in session_store._entries
-        except Exception:
-            # If anything goes wrong, default to False (require mention)
-            return False
 
     async def _download_slack_file(self, url: str, ext: str, audio: bool = False, team_id: str = "") -> str:
         """Download a Slack file using the bot token for auth, with retry."""
