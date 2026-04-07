@@ -31,9 +31,17 @@ from agent.memory_provider import MemoryProvider
 
 logger = logging.getLogger(__name__)
 
-# Circuit breaker: back off after this many consecutive failures
-_BREAKER_THRESHOLD = 5
-_BREAKER_COOLDOWN_SECS = 120
+# ---------------------------------------------------------------------------
+# Named constants (FIX 12)
+# ---------------------------------------------------------------------------
+
+_MAX_COLLECTION_SCAN: int = 10_000
+_MAX_TOP_K: int = 20
+_MAX_DIARY_LIMIT: int = 50
+_QUEUE_MAXSIZE: int = 500
+_CIRCUIT_BREAKER_THRESHOLD: int = 5
+_CIRCUIT_BREAKER_COOLDOWN: float = 120.0
+_WORKER_SHUTDOWN_TIMEOUT: float = 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +290,7 @@ class MemPalaceMemoryProvider(MemoryProvider):
         self._prefetch_lock = threading.Lock()
 
         # Background worker
-        self._work_queue: queue.Queue = queue.Queue(maxsize=500)
+        self._work_queue: queue.Queue = queue.Queue(maxsize=_QUEUE_MAXSIZE)
         self._worker_thread: threading.Thread | None = None
 
         # Circuit breaker
@@ -307,13 +315,11 @@ class MemPalaceMemoryProvider(MemoryProvider):
     # -- Availability --------------------------------------------------------
 
     def is_available(self) -> bool:
-        # FIX 2: silent check — no logging, add chromadb to imports checked
-        try:
-            import mempalace  # noqa: F401
-            import chromadb   # noqa: F401
-            return True
-        except ImportError:
-            return False
+        import importlib.util
+        return (
+            importlib.util.find_spec("mempalace") is not None
+            and importlib.util.find_spec("chromadb") is not None
+        )
 
     # -- Config schema -------------------------------------------------------
 
@@ -364,7 +370,7 @@ class MemPalaceMemoryProvider(MemoryProvider):
 
     def _is_breaker_open(self) -> bool:
         with self._breaker_lock:
-            if self._consecutive_failures < _BREAKER_THRESHOLD:
+            if self._consecutive_failures < _CIRCUIT_BREAKER_THRESHOLD:
                 return False
             if time.monotonic() >= self._breaker_open_until:
                 self._consecutive_failures = 0
@@ -378,13 +384,13 @@ class MemPalaceMemoryProvider(MemoryProvider):
     def _record_failure(self) -> None:
         with self._breaker_lock:
             self._consecutive_failures += 1
-            if self._consecutive_failures >= _BREAKER_THRESHOLD:
-                self._breaker_open_until = time.monotonic() + _BREAKER_COOLDOWN_SECS
+            if self._consecutive_failures >= _CIRCUIT_BREAKER_THRESHOLD:
+                self._breaker_open_until = time.monotonic() + _CIRCUIT_BREAKER_COOLDOWN
                 logger.warning(
                     "MemPalace circuit breaker tripped after %d consecutive failures. "
-                    "Pausing palace ops for %ds.",
+                    "Pausing palace ops for %.0fs.",
                     self._consecutive_failures,
-                    _BREAKER_COOLDOWN_SECS,
+                    _CIRCUIT_BREAKER_COOLDOWN,
                 )
 
     # -- Background worker ---------------------------------------------------
@@ -404,11 +410,11 @@ class MemPalaceMemoryProvider(MemoryProvider):
             if item is None:
                 self._work_queue.task_done()
                 break
-            fn, args = item
             try:
+                fn, args = item
                 fn(*args)
             except Exception as exc:
-                logger.warning("MemPalace worker error in %s: %s", fn.__name__, exc)
+                logger.warning("MemPalace worker error in %s: %s", getattr(fn, "__name__", repr(fn)), exc)
             finally:
                 self._work_queue.task_done()
 
@@ -425,10 +431,13 @@ class MemPalaceMemoryProvider(MemoryProvider):
     # -- Palace helpers ------------------------------------------------------
 
     def _get_collection(self):
-        """Return the cached mempalace_drawers ChromaDB collection."""
-        # FIX 3: return cached collection — PersistentClient created once in initialize()
-        with self._chroma_lock:
-            return self._chroma_collection
+        """Return the cached mempalace_drawers ChromaDB collection.
+
+        No lock needed: _chroma_collection is written exactly once in initialize()
+        before the worker thread starts. All subsequent reads are safe without locking.
+        _chroma_lock is reserved for any future mutable writes to this field.
+        """
+        return self._chroma_collection
 
     def _refresh_wakeup(self) -> None:
         """Regenerate and cache the L0+L1 wake-up text."""
@@ -438,7 +447,7 @@ class MemPalaceMemoryProvider(MemoryProvider):
                 palace_path=str(self._palace_path),
                 identity_path=str(self._mempalace_dir / "identity.txt"),
             )
-            text = stack.wake_up()
+            text = stack.wake_up() or ""
             with self._wakeup_lock:
                 self._wakeup_cache = text
             logger.info("MemPalace: wake-up cache refreshed (%d chars)", len(text))
@@ -489,13 +498,20 @@ class MemPalaceMemoryProvider(MemoryProvider):
         self._palace_path.mkdir(parents=True, exist_ok=True)
         self._mempalace_dir.mkdir(parents=True, exist_ok=True)
 
-        # FIX 3: Create ChromaDB client once during initialize — not on every call
-        import chromadb
-        self._chroma_client = chromadb.PersistentClient(path=str(self._palace_path))
+        # FIX 1: ChromaDB init wrapped in try/except — palace writes disabled gracefully on failure
         try:
-            self._chroma_collection = self._chroma_client.get_collection("mempalace_drawers")
-        except Exception:
-            self._chroma_collection = self._chroma_client.create_collection("mempalace_drawers")
+            import chromadb
+            self._chroma_client = chromadb.PersistentClient(path=str(self._palace_path))
+            self._chroma_collection = self._chroma_client.get_or_create_collection(
+                "mempalace_drawers"
+            )
+        except Exception as e:
+            logger.error(
+                "MemPalace: failed to initialize ChromaDB at %s: %s — palace writes disabled.",
+                self._palace_path, e,
+            )
+            self._chroma_client = None
+            self._chroma_collection = None
 
         # Load wing config if it exists — do not create it
         wing_config_path = self._mempalace_dir / "wing_config.json"
@@ -503,6 +519,12 @@ class MemPalaceMemoryProvider(MemoryProvider):
             try:
                 with open(wing_config_path) as f:
                     self._wing_config = json.load(f).get("wings", {})
+                if not isinstance(self._wing_config, dict):
+                    logger.warning(
+                        "MemPalace: wing_config 'wings' is not a dict — ignoring, "
+                        "run `mempalace init` to fix"
+                    )
+                    self._wing_config = {}
                 logger.info(
                     "MemPalace: loaded %d wings from wing_config.json",
                     len(self._wing_config),
@@ -601,7 +623,8 @@ class MemPalaceMemoryProvider(MemoryProvider):
                 lines = []
                 for h in relevant:
                     lines.append(
-                        f"[{h['wing']}/{h['room']}] {h['text'][:200].strip()}"
+                        f"[{h.get('wing','?')}/{h.get('room','?')}] "
+                        f"{h.get('text', h.get('content',''))[:200].strip()}"
                     )
                 with self._prefetch_lock:
                     self._prefetch_result = "\n".join(lines)
@@ -636,8 +659,8 @@ class MemPalaceMemoryProvider(MemoryProvider):
 
             content = f"Human: {user_content}\nAssistant: {assistant_content}"
 
-            # Stable ID for deduplication
-            drawer_hash = hashlib.md5(content[:300].encode("utf-8")).hexdigest()[:16]
+            # Stable ID for deduplication (SHA-256 over full content avoids false dedup)
+            drawer_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:24]
             drawer_id = f"drawer_{wing}_{room}_{drawer_hash}"
 
             col = self._get_collection()
@@ -689,7 +712,7 @@ class MemPalaceMemoryProvider(MemoryProvider):
     def _do_file_single(self, content: str, wing: str, hall: str, room: str) -> None:
         """File a single text entry to the palace collection (background helper)."""
         try:
-            drawer_hash = hashlib.md5(content[:300].encode("utf-8")).hexdigest()[:16]
+            drawer_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:24]
             drawer_id = f"drawer_{wing}_{room}_{drawer_hash}"
 
             col = self._get_collection()
@@ -864,9 +887,9 @@ class MemPalaceMemoryProvider(MemoryProvider):
 
         wing = args.get("wing") or None
         room = args.get("room") or None
-        top_k = min(int(args.get("top_k", 5)), 20)
 
         try:
+            top_k = min(int(args.get("top_k", 5)), _MAX_TOP_K)
             from mempalace.searcher import search_memories
             result = search_memories(
                 query=query,
@@ -903,7 +926,7 @@ class MemPalaceMemoryProvider(MemoryProvider):
             if col is None:
                 return json.dumps({"wings": {}, "total_drawers": 0})
 
-            results = col.get(include=["metadatas"], limit=10000)
+            results = col.get(include=["metadatas"], limit=_MAX_COLLECTION_SCAN)
             wings: Dict[str, int] = {}
             for meta in results.get("metadatas", []):
                 w = meta.get("wing", "unknown")
@@ -926,7 +949,7 @@ class MemPalaceMemoryProvider(MemoryProvider):
             if col is None:
                 return json.dumps({"rooms": {}, "wing": wing})
 
-            get_kwargs: Dict[str, Any] = {"include": ["metadatas"], "limit": 10000}
+            get_kwargs: Dict[str, Any] = {"include": ["metadatas"], "limit": _MAX_COLLECTION_SCAN}
             if wing:
                 get_kwargs["where"] = {"wing": wing}
 
@@ -1019,10 +1042,10 @@ class MemPalaceMemoryProvider(MemoryProvider):
             return json.dumps({"error": f"Diary write failed: {exc}"})
 
     def _tool_diary_read(self, args: Dict[str, Any]) -> str:
-        limit = min(int(args.get("limit", 10)), 50)
         tag_filter = args.get("tag") or None
 
         try:
+            limit = min(int(args.get("limit", 10)), _MAX_DIARY_LIMIT)
             if not self._diary_path.exists():
                 return json.dumps({"entries": [], "count": 0})
 
@@ -1055,12 +1078,13 @@ class MemPalaceMemoryProvider(MemoryProvider):
         """Flush queued operations and stop the worker thread."""
         if self._worker_thread and self._worker_thread.is_alive():
             self._work_queue.put(None)  # sentinel
-            self._worker_thread.join(timeout=10.0)
+            self._worker_thread.join(timeout=_WORKER_SHUTDOWN_TIMEOUT)
             if self._worker_thread.is_alive():
                 logger.warning(
-                    "MemPalace: worker thread did not finish within 10s — "
+                    "MemPalace: worker thread did not finish within %.0fs — "
                     "approximately %d queued items may not have been written to the palace.",
-                    self._work_queue.qsize()
+                    _WORKER_SHUTDOWN_TIMEOUT,
+                    self._work_queue.qsize(),
                 )
         logger.info("MemPalace: shutdown complete.")
 

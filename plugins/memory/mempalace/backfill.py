@@ -171,7 +171,6 @@ def backfill(
     # ------------------------------------------------------------------
     try:
         # Try the Hermes SessionDB class first (respects WAL mode etc.)
-        sys.path.insert(0, str(db_path.parent.parent))  # hermes-agent root
         from hermes_state import SessionDB
         db = SessionDB(db_path)
         use_session_db = True
