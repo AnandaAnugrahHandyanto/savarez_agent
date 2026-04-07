@@ -299,7 +299,22 @@ class MatrixAdapter(BasePlatformAdapter):
                 device_name="Hermes Agent",
             )
             if isinstance(resp, nio.LoginResponse):
-                logger.info("Matrix: logged in as %s", self._user_id)
+                # Apply credentials from the login response to the client.
+                # matrix-nio does not do this automatically — without it the
+                # client has no access_token or device_id for subsequent
+                # requests, causing sync to silently receive no new events.
+                if getattr(resp, "user_id", ""):
+                    self._user_id = resp.user_id
+                    client.user_id = resp.user_id
+                if getattr(resp, "device_id", ""):
+                    client.device_id = resp.device_id
+                if getattr(resp, "access_token", ""):
+                    client.access_token = resp.access_token
+                logger.info(
+                    "Matrix: logged in as %s (device %s)",
+                    self._user_id,
+                    getattr(resp, "device_id", "?"),
+                )
             else:
                 logger.error("Matrix: login failed — %s", getattr(resp, "message", resp))
                 await client.close()
