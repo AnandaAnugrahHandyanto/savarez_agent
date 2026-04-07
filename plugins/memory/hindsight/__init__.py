@@ -225,6 +225,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._bank_mission = ""
         self._bank_retain_mission: str | None = None
         self._retain_async = True
+        self._precompress_thread = None
 
     @property
     def name(self) -> str:
@@ -851,7 +852,7 @@ class HindsightMemoryProvider(MemoryProvider):
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: waiting for background threads")
         global _loop, _loop_thread
-        for t in (self._prefetch_thread, self._sync_thread):
+        for t in (self._prefetch_thread, self._sync_thread, self._precompress_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
         if self._client is not None:
@@ -876,6 +877,52 @@ class HindsightMemoryProvider(MemoryProvider):
                 _loop_thread.join(timeout=5.0)
             _loop = None
             _loop_thread = None
+
+    def on_pre_compress(self, messages: list[dict[str, Any]] | None = None, **kwargs) -> str:
+        """Extract and retain messages before context window compression discards them.
+
+        When Hermes compresses the context window to save tokens, the original
+        messages are summarised and the full text is lost. This hook fires just
+        before that happens, giving us a chance to persist the about-to-be-discarded
+        turns into the Hindsight knowledge graph so they remain searchable via
+        recall/reflect.
+
+        The retain call runs in a background thread so it never blocks the
+        compression pipeline.
+        """
+        if not messages or not self._bank_id:
+            return ""
+
+        parts: list[str] = []
+        for msg in messages[-10:]:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if isinstance(content, str) and content.strip() and role in ("user", "assistant"):
+                parts.append(f"{role}: {content[:500]}")
+        if not parts:
+            return ""
+        combined = "\n".join(parts)
+
+        def _flush() -> None:
+            try:
+                client = self._get_client()
+                _run_sync(client.aretain(
+                    bank_id=self._bank_id,
+                    content=f"[Pre-compression context]\n{combined}",
+                    context="pre_compress",
+                ))
+                logger.info(
+                    "Hindsight pre-compression flush: %d messages retained",
+                    len(parts),
+                )
+            except Exception as exc:
+                logger.warning("Hindsight pre-compression flush failed: %s", exc)
+
+        if self._precompress_thread and self._precompress_thread.is_alive():
+            self._precompress_thread.join(timeout=5.0)
+        self._precompress_thread = threading.Thread(target=_flush, daemon=True, name="hindsight-precompress")
+        self._precompress_thread.start()
+        return ""
 
 
 def register(ctx) -> None:
