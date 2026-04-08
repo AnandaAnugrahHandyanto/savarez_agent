@@ -46,8 +46,10 @@ import os
 import re
 import asyncio
 from typing import List, Dict, Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 import httpx
 from firecrawl import Firecrawl
+from agent.redact import redact_sensitive_text
 from agent.auxiliary_client import (
     async_call_llm,
     extract_content_or_reasoning,
@@ -79,6 +81,35 @@ def _load_web_config() -> dict:
         return load_config().get("web", {})
     except (ImportError, Exception):
         return {}
+
+
+def _log_safe_url(url: object) -> str:
+    """Return a redacted URL string safe to emit in logs.
+
+    Query strings, fragments, and embedded credentials frequently contain
+    signed tokens or API keys. Keep scheme/host/path for debugging, but never
+    log those secret-bearing components verbatim.
+    """
+    text = str(url)
+    try:
+        parts = urlsplit(text)
+    except Exception:
+        return redact_sensitive_text(text)
+
+    netloc = parts.hostname or ""
+    if parts.port:
+        netloc = f"{netloc}:{parts.port}"
+    if parts.username or parts.password:
+        netloc = f"[REDACTED]@{netloc}" if netloc else "[REDACTED]"
+
+    safe_url = urlunsplit((
+        parts.scheme,
+        netloc or parts.netloc,
+        parts.path,
+        "[REDACTED]" if parts.query else "",
+        "[REDACTED]" if parts.fragment else "",
+    ))
+    return redact_sensitive_text(safe_url)
 
 def _get_backend() -> str:
     """Determine which web backend to use.
@@ -1283,7 +1314,7 @@ async def web_extract_tool(
                         continue
 
                     try:
-                        logger.info("Scraping: %s", url)
+                        logger.info("Scraping: %s", _log_safe_url(url))
                         # Run synchronous Firecrawl scrape in a thread with a
                         # 60s timeout so a hung fetch doesn't block the session.
                         try:
@@ -1296,7 +1327,7 @@ async def web_extract_tool(
                                 timeout=60,
                             )
                         except asyncio.TimeoutError:
-                            logger.warning("Firecrawl scrape timed out for %s", url)
+                            logger.warning("Firecrawl scrape timed out for %s", _log_safe_url(url))
                             results.append({
                                 "url": url, "title": "", "content": "",
                                 "error": "Scrape timed out after 60s — page may be too large or unresponsive. Try browser_navigate instead.",
@@ -1345,7 +1376,7 @@ async def web_extract_tool(
                         })
 
                     except Exception as scrape_err:
-                        logger.debug("Scrape failed for %s: %s", url, scrape_err)
+                        logger.debug("Scrape failed for %s: %s", _log_safe_url(url), scrape_err)
                         results.append({
                             "url": url,
                             "title": "",
@@ -1428,12 +1459,12 @@ async def web_extract_tool(
                 if status == "processed":
                     debug_call_data["compression_metrics"].append(metrics)
                     debug_call_data["pages_processed_with_llm"] += 1
-                    logger.info("%s (processed)", url)
+                    logger.info("%s (processed)", _log_safe_url(url))
                 elif status == "too_short":
                     debug_call_data["compression_metrics"].append(metrics)
-                    logger.info("%s (no processing - content too short)", url)
+                    logger.info("%s (no processing - content too short)", _log_safe_url(url))
                 else:
-                    logger.warning("%s (no content to process)", url)
+                    logger.warning("%s (no content to process)", _log_safe_url(url))
         else:
             if use_llm_processing and not auxiliary_available:
                 logger.warning("LLM processing requested but no auxiliary model available, returning raw content")
@@ -1442,7 +1473,7 @@ async def web_extract_tool(
             for result in response.get('results', []):
                 url = result.get('url', 'Unknown URL')
                 content_length = len(result.get('raw_content', ''))
-                logger.info("%s (%d characters)", url, content_length)
+                logger.info("%s (%d characters)", _log_safe_url(url), content_length)
         
         # Trim output to minimal fields per entry: title, content, error
         trimmed_results = [
@@ -1562,7 +1593,7 @@ async def web_crawl_tool(
             if _is_int():
                 return tool_error("Interrupted", success=False)
 
-            logger.info("Tavily crawl: %s", url)
+            logger.info("Tavily crawl: %s", _log_safe_url(url))
             payload: Dict[str, Any] = {
                 "url": url,
                 "limit": 20,
@@ -1635,10 +1666,10 @@ async def web_crawl_tool(
         # Ensure URL has protocol
         if not url.startswith(('http://', 'https://')):
             url = f'https://{url}'
-            logger.info("Added https:// prefix to URL: %s", url)
+            logger.info("Added https:// prefix to URL: %s", _log_safe_url(url))
         
         instructions_text = f" with instructions: '{instructions}'" if instructions else ""
-        logger.info("Crawling %s%s", url, instructions_text)
+        logger.info("Crawling %s%s", _log_safe_url(url), instructions_text)
         
         # SSRF protection — block private/internal addresses
         if not is_safe_url(url):
@@ -1847,12 +1878,12 @@ async def web_crawl_tool(
                 if status == "processed":
                     debug_call_data["compression_metrics"].append(metrics)
                     debug_call_data["pages_processed_with_llm"] += 1
-                    logger.info("%s (processed)", page_url)
+                    logger.info("%s (processed)", _log_safe_url(page_url))
                 elif status == "too_short":
                     debug_call_data["compression_metrics"].append(metrics)
-                    logger.info("%s (no processing - content too short)", page_url)
+                    logger.info("%s (no processing - content too short)", _log_safe_url(page_url))
                 else:
-                    logger.warning("%s (no content to process)", page_url)
+                    logger.warning("%s (no content to process)", _log_safe_url(page_url))
         else:
             if use_llm_processing and not auxiliary_available:
                 logger.warning("LLM processing requested but no auxiliary model available, returning raw content")
@@ -1861,7 +1892,7 @@ async def web_crawl_tool(
             for result in response.get('results', []):
                 page_url = result.get('url', 'Unknown URL')
                 content_length = len(result.get('content', ''))
-                logger.info("%s (%d characters)", page_url, content_length)
+                logger.info("%s (%d characters)", _log_safe_url(page_url), content_length)
         
         # Trim output to minimal fields per entry: title, content, error
         trimmed_results = [
