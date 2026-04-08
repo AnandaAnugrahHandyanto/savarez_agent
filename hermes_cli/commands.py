@@ -680,16 +680,32 @@ class SlashCommandCompleter(Completer):
         if not word:
             return None
         # Only trigger path completion for path-like tokens
-        if word.startswith(("./", "../", "~/", "/")) or "/" in word:
+        if SlashCommandCompleter._looks_like_path_word(word):
             return word
         return None
+
+    @staticmethod
+    def _looks_like_path_word(word: str) -> bool:
+        """Return True when *word* looks like a Unix or Windows path."""
+        if not word:
+            return False
+        if word.startswith(("./", "../", "~/", "/", ".\\", "..\\", "~\\", "\\")):
+            return True
+        if "/" in word or "\\" in word:
+            return True
+        return len(word) >= 3 and word[1] == ":" and word[2] in ("/", "\\")
+
+    @staticmethod
+    def _ends_with_path_sep(path: str) -> bool:
+        """Return True when *path* ends with either supported path separator."""
+        return path.endswith(("/", "\\"))
 
     @staticmethod
     def _path_completions(word: str, limit: int = 30):
         """Yield Completion objects for file paths matching *word*."""
         expanded = os.path.expanduser(word)
         # Split into directory part and prefix to match inside it
-        if expanded.endswith("/"):
+        if SlashCommandCompleter._ends_with_path_sep(expanded):
             search_dir = expanded
             prefix = ""
         else:
@@ -782,7 +798,7 @@ class SlashCommandCompleter(Completer):
             if word.startswith(prefix):
                 path_part = word[len(prefix):] or "."
                 expanded = os.path.expanduser(path_part)
-                if expanded.endswith("/"):
+                if SlashCommandCompleter._ends_with_path_sep(expanded):
                     search_dir, match_prefix = expanded, ""
                 else:
                     search_dir = os.path.dirname(expanded) or "."
@@ -822,7 +838,7 @@ class SlashCommandCompleter(Completer):
             search_dir, match_prefix = ".", ""
         else:
             expanded = os.path.expanduser(query)
-            if expanded.endswith("/"):
+            if SlashCommandCompleter._ends_with_path_sep(expanded):
                 search_dir, match_prefix = expanded, ""
             else:
                 search_dir = os.path.dirname(expanded) or "."
