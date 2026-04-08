@@ -480,6 +480,7 @@ class GatewayRunner:
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
         self._show_reasoning = self._load_show_reasoning()
+        self._response_header = self._load_response_header()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
         self._smart_model_routing = self._load_smart_model_routing()
@@ -956,6 +957,44 @@ class GatewayRunner:
         except Exception:
             pass
         return False
+
+    @staticmethod
+    def _load_response_header() -> bool:
+        """Load response_header toggle from config.yaml display section.
+
+        When enabled, the gateway prepends a compact one-line header to
+        each assistant reply showing the resolved model and effective
+        reasoning/thinking level. Off by default. See issue #6232.
+        """
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return bool(cfg.get("display", {}).get("response_header", False))
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
+    def _format_response_header(model, reasoning_cfg) -> str:
+        """Build the compact one-line model/thinking header string.
+
+        Format: ``Model: <model> | Thinking: <level>``
+        - ``model`` falls back to ``unknown`` when not resolvable.
+        - ``reasoning_cfg`` is the dict returned by ``parse_reasoning_effort``:
+          ``None`` -> ``default``; ``{"enabled": False}`` -> ``none``;
+          ``{"enabled": True, "effort": <level>}`` -> ``<level>``.
+        """
+        model_str = (model or "unknown").strip() or "unknown"
+        if reasoning_cfg is None:
+            thinking = "default"
+        elif not reasoning_cfg.get("enabled", False):
+            thinking = "none"
+        else:
+            thinking = str(reasoning_cfg.get("effort") or "default")
+        return f"Model: {model_str} | Thinking: {thinking}"
 
     @staticmethod
     def _load_background_notifications_mode() -> str:
@@ -2976,6 +3015,17 @@ class GatewayRunner:
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
 
+            # Prepend compact model/thinking header when display.response_header is enabled (#6232)
+            if getattr(self, "_response_header", False) and response:
+                try:
+                    _header_line = self._format_response_header(
+                        agent_result.get("model"),
+                        getattr(self, "_reasoning_config", None),
+                    )
+                    response = f"{_header_line}\n\n{response}"
+                except Exception as _hdr_exc:
+                    logger.debug("response_header formatting failed: %s", _hdr_exc)
+
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
                 **hook_ctx,
@@ -4834,6 +4884,7 @@ class GatewayRunner:
         config_path = _hermes_home / "config.yaml"
         self._reasoning_config = self._load_reasoning_config()
         self._show_reasoning = self._load_show_reasoning()
+        self._response_header = self._load_response_header()
 
         def _save_config_key(key_path: str, value):
             """Save a dot-separated key to config.yaml."""
