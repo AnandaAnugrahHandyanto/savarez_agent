@@ -941,8 +941,26 @@ def execute_code(
             f.write(code)
 
         # --- Start UDS server ---
-        server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server_sock.bind(sock_path)
+        # Restrict the RPC socket to the owning user (0o600). This channel
+        # accepts JSON-RPC requests that execute the sandbox tool surface
+        # (terminal, file ops, web, etc.) with this process's privileges —
+        # on a shared system, default-permission sockets in /tmp let any
+        # local user connect and drive the tools. We set umask before
+        # bind() so the socket inode is created with the correct mode on
+        # filesystems that honour umask, then os.chmod() as defense in
+        # depth for filesystems (NFS, some network mounts) that ignore it.
+        _old_umask = os.umask(0o077)
+        try:
+            server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server_sock.bind(sock_path)
+        finally:
+            os.umask(_old_umask)
+        try:
+            os.chmod(sock_path, 0o600)
+        except OSError:
+            # Non-fatal: umask already applied the intended perms. Only
+            # hits exotic filesystems where chmod on a UDS is unsupported.
+            pass
         server_sock.listen(1)
 
         rpc_thread = threading.Thread(
