@@ -59,6 +59,12 @@ class TestExtractPathWord:
     def test_just_tilde_slash(self):
         assert SlashCommandCompleter._extract_path_word("~/") == "~/"
 
+    def test_windows_relative_path(self):
+        assert SlashCommandCompleter._extract_path_word(r"edit .\src\main.py") == r".\src\main.py"
+
+    def test_windows_absolute_path(self):
+        assert SlashCommandCompleter._extract_path_word(r"open C:\Users\Simba\notes.txt") == r"C:\Users\Simba\notes.txt"
+
 
 class TestPathCompletions:
     def test_lists_current_directory(self, tmp_path):
@@ -101,6 +107,8 @@ class TestPathCompletions:
 
     def test_home_expansion(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
+        if os.name == "nt":
+            monkeypatch.setenv("USERPROFILE", str(tmp_path))
         (tmp_path / "testfile.md").touch()
 
         completions = list(SlashCommandCompleter._path_completions("~/test"))
@@ -155,13 +163,29 @@ class TestIntegration:
         completions = list(completer.get_completions(doc, event))
         assert completions == []
 
-    def test_absolute_path_triggers_completion(self, completer):
-        doc = Document("check /etc/hos", cursor_position=14)
+    def test_absolute_path_triggers_completion(self, completer, tmp_path):
+        file_path = tmp_path / "hosts.txt"
+        file_path.touch()
+        typed = str(file_path.parent / "hos")
+        doc = Document(f"check {typed}", cursor_position=len(f"check {typed}"))
         event = MagicMock()
         completions = list(completer.get_completions(doc, event))
         names = _display_names(completions)
-        # /etc/hosts should exist on Linux
-        assert any("host" in n.lower() for n in names)
+        assert "hosts.txt" in names
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows path syntax")
+    def test_windows_relative_path_triggers_completion(self, completer, tmp_path):
+        (tmp_path / "test.py").touch()
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            doc = Document(r"edit .\te", cursor_position=len(r"edit .\te"))
+            event = MagicMock()
+            completions = list(completer.get_completions(doc, event))
+            names = _display_names(completions)
+            assert "test.py" in names
+        finally:
+            os.chdir(old_cwd)
 
 
 class TestFileSizeLabel:
