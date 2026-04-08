@@ -4,6 +4,7 @@ import builtins
 import importlib
 import logging
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -733,6 +734,67 @@ class TestFindGitRoot:
         # If result is not None, it must actually contain .git
         if result is not None:
             assert (result / ".git").exists()
+
+    def test_ignores_permission_error_while_scanning(self, monkeypatch, tmp_path):
+        restricted = tmp_path / "restricted"
+        restricted.mkdir()
+
+        original_exists = Path.exists
+
+        def guarded_exists(self):
+            if self == restricted / ".git":
+                raise PermissionError("denied")
+            return original_exists(self)
+
+        monkeypatch.setattr(Path, "exists", guarded_exists)
+
+        assert _find_git_root(restricted) is None
+
+
+class TestContextFilesPermissionHandling:
+    def test_build_context_files_prompt_ignores_inaccessible_paths(self, monkeypatch, tmp_path):
+        restricted = tmp_path / "restricted"
+        restricted.mkdir()
+
+        original_exists = Path.exists
+        original_is_file = Path.is_file
+        original_is_dir = Path.is_dir
+
+        blocked_paths = {
+            restricted / ".git",
+            restricted / ".hermes.md",
+            restricted / "HERMES.md",
+            restricted / "AGENTS.md",
+            restricted / "agents.md",
+            restricted / "CLAUDE.md",
+            restricted / "claude.md",
+            restricted / ".cursorrules",
+            restricted / ".cursor" / "rules",
+        }
+
+        def _should_block(path: Path) -> bool:
+            return path in blocked_paths
+
+        def guarded_exists(self):
+            if _should_block(self):
+                raise PermissionError("denied")
+            return original_exists(self)
+
+        def guarded_is_file(self):
+            if _should_block(self):
+                raise PermissionError("denied")
+            return original_is_file(self)
+
+        def guarded_is_dir(self):
+            if _should_block(self):
+                raise PermissionError("denied")
+            return original_is_dir(self)
+
+        monkeypatch.setattr(Path, "exists", guarded_exists)
+        monkeypatch.setattr(Path, "is_file", guarded_is_file)
+        monkeypatch.setattr(Path, "is_dir", guarded_is_dir)
+
+        assert build_context_files_prompt(cwd=str(restricted), skip_soul=True) == ""
 
 
 class TestStripYamlFrontmatter:

@@ -9,6 +9,7 @@ for Nous Subscribers only.
 
 Available tools:
 - web_search_tool: Search the web for information
+- brave_search_tool: Search the web with Brave Search directly
 - web_extract_tool: Extract content from specific web pages
 - web_crawl_tool: Crawl websites with specific instructions
 
@@ -119,6 +120,11 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("TAVILY_API_KEY")
     return False
 
+
+def check_brave_api_key() -> bool:
+    """Return True when Brave Search is configured."""
+    return _has_env("BRAVE_API_KEY")
+
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
 _firecrawl_client = None
@@ -189,6 +195,7 @@ def _web_requires_env() -> list[str]:
         "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "BRAVE_API_KEY",
     ]
     if managed_nous_tools_enabled():
         requires.extend(
@@ -359,6 +366,50 @@ def _normalize_tavily_documents(response: dict, fallback_url: str = "") -> List[
             "metadata": {"sourceURL": url_str},
         })
     return documents
+
+
+# ─── Brave Search Client ─────────────────────────────────────────────────────
+
+_BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
+
+
+def _brave_request(query: str, count: int = 5) -> dict:
+    """Send a web search request to Brave Search."""
+    api_key = os.getenv("BRAVE_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "BRAVE_API_KEY environment variable not set. "
+            "Get your API key at https://brave.com/search/api/"
+        )
+
+    response = httpx.get(
+        _BRAVE_SEARCH_URL,
+        headers={
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip",
+            "X-Subscription-Token": api_key,
+        },
+        params={
+            "q": query,
+            "count": max(1, min(count, 20)),
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def _normalize_brave_search_results(response: dict) -> dict:
+    """Normalize Brave Search results to the standard web search format."""
+    web_results = []
+    for i, result in enumerate(response.get("web", {}).get("results", [])):
+        web_results.append({
+            "title": result.get("title", ""),
+            "url": result.get("url", ""),
+            "description": result.get("description", ""),
+            "position": i + 1,
+        })
+    return {"success": True, "data": {"web": web_results}}
 
 
 def _to_plain_object(value: Any) -> Any:
@@ -1029,6 +1080,41 @@ async def _parallel_extract(urls: List[str]) -> List[Dict[str, Any]]:
         })
 
     return results
+
+
+def brave_search_tool(query: str, count: int = 5) -> str:
+    """Search the web using Brave Search directly."""
+    debug_call_data = {
+        "parameters": {
+            "query": query,
+            "count": count,
+        },
+        "error": None,
+        "results_count": 0,
+        "original_response_size": 0,
+        "final_response_size": 0,
+    }
+
+    try:
+        from tools.interrupt import is_interrupted
+        if is_interrupted():
+            return tool_error("Interrupted", success=False)
+
+        raw = _brave_request(query, count=count)
+        response_data = _normalize_brave_search_results(raw)
+        debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+        result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+        debug_call_data["final_response_size"] = len(result_json)
+        _debug.log_call("brave_search_tool", debug_call_data)
+        _debug.save()
+        return result_json
+    except Exception as e:
+        error_msg = f"Error searching Brave: {str(e)}"
+        logger.debug("%s", error_msg)
+        debug_call_data["error"] = error_msg
+        _debug.log_call("brave_search_tool", debug_call_data)
+        _debug.save()
+        return tool_error(error_msg)
 
 
 def web_search_tool(query: str, limit: int = 5) -> str:
@@ -2060,6 +2146,27 @@ WEB_SEARCH_SCHEMA = {
     }
 }
 
+BRAVE_SEARCH_SCHEMA = {
+    "name": "brave_search",
+    "description": "Search the web with Brave Search directly. Returns up to 10 relevant results with titles, URLs, and descriptions.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The search query to look up with Brave Search"
+            },
+            "count": {
+                "type": "integer",
+                "description": "Number of results to return (1-10, default 5)",
+                "minimum": 1,
+                "maximum": 10
+            }
+        },
+        "required": ["query"]
+    }
+}
+
 WEB_EXTRACT_SCHEMA = {
     "name": "web_extract",
     "description": "Extract content from web page URLs. Returns page content in markdown format. Also works with PDF URLs (arxiv papers, documents, etc.) — pass the PDF link directly and it converts to markdown text. Pages under 5000 chars return full markdown; larger pages are LLM-summarized and capped at ~5000 chars per page. Pages over 2M chars are refused. If a URL fails or times out, use the browser tool to access it instead.",
@@ -2085,6 +2192,18 @@ registry.register(
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),
     emoji="🔍",
+    max_result_size_chars=100_000,
+)
+registry.register(
+    name="brave_search",
+    toolset="web",
+    schema=BRAVE_SEARCH_SCHEMA,
+    handler=lambda args, **kw: brave_search_tool(
+        args.get("query", ""), count=max(1, min(int(args.get("count", 5) or 5), 10))
+    ),
+    check_fn=check_brave_api_key,
+    requires_env=["BRAVE_API_KEY"],
+    emoji="🦁",
     max_result_size_chars=100_000,
 )
 registry.register(

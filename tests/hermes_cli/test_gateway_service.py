@@ -7,6 +7,23 @@ from types import SimpleNamespace
 import hermes_cli.gateway as gateway_cli
 
 
+def test_profile_suffix_treats_default_dot_hermes_as_unsuffixed(monkeypatch):
+    monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: Path("/home/hermes/.hermes"))
+    assert gateway_cli._profile_suffix() == ""
+
+
+def test_profile_suffix_uses_profile_name_for_standard_profile_path(monkeypatch):
+    monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: Path("/home/hermes/.hermes/profiles/coder"))
+    assert gateway_cli._profile_suffix() == "coder"
+
+
+def test_profile_suffix_hashes_arbitrary_custom_dot_hermes_paths(monkeypatch):
+    monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: Path("/opt/custom/.hermes"))
+    suffix = gateway_cli._profile_suffix()
+    assert suffix
+    assert suffix != "coder"
+
+
 class TestSystemdServiceRefresh:
     def test_systemd_install_repairs_outdated_unit_without_force(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"

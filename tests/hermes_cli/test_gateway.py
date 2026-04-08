@@ -1,10 +1,39 @@
 """Tests for hermes_cli.gateway."""
 
+import os
 import signal
 from types import SimpleNamespace
 from unittest.mock import patch, call
 
 import hermes_cli.gateway as gateway
+
+
+def test_matches_running_gateway_command_filters_non_runtime_subcommands():
+    assert gateway._matches_running_gateway_command("/home/hermes/hermes-agent/venv/bin/hermes gateway") is True
+    assert gateway._matches_running_gateway_command(
+        "/home/hermes/hermes-agent/venv/bin/python -m hermes_cli.main gateway run --replace"
+    ) is True
+    assert gateway._matches_running_gateway_command("timeout 120 bash -lc source venv/bin/activate && hermes gateway status --deep") is False
+    assert gateway._matches_running_gateway_command("bash -lc hermes gateway restart") is False
+
+
+def test_find_gateway_pids_ignores_status_shell_wrappers(monkeypatch):
+    current_pid = os.getpid()
+    ps_output = "\n".join([
+        f"hermes   111  0.0  0.1  1234  567 ?        S    09:00   0:00 /home/hermes/hermes-agent/venv/bin/python -m hermes_cli.main gateway run --replace",
+        f"hermes   222  0.0  0.1  1234  567 ?        S    09:00   0:00 timeout 120 bash -lc source venv/bin/activate && hermes gateway status --deep",
+        f"hermes   {current_pid}  0.0  0.1  1234  567 ?        S    09:00   0:00 python current_test.py",
+        "",
+    ])
+
+    monkeypatch.setattr(gateway, "is_windows", lambda: False)
+    monkeypatch.setattr(
+        gateway.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=ps_output, returncode=0),
+    )
+
+    assert gateway.find_gateway_pids() == [111]
 
 
 class TestSystemdLingerStatus:

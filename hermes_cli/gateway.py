@@ -91,6 +91,39 @@ def _get_service_pids() -> set:
     return pids
 
 
+def _matches_running_gateway_command(command_line: str) -> bool:
+    """Return True when *command_line* looks like a real gateway runtime process.
+
+    Avoid matching helper commands like ``hermes gateway status`` or shell wrappers
+    that merely contain the substring ``hermes gateway``.
+    """
+    cmd = (command_line or "").strip().lower()
+    if not cmd:
+        return False
+
+    excluded_subcommands = (
+        " gateway status",
+        " gateway restart",
+        " gateway start",
+        " gateway stop",
+        " gateway install",
+        " gateway uninstall",
+        " gateway setup",
+        " gateway config",
+        " gateway help",
+    )
+    if any(token in cmd for token in excluded_subcommands):
+        return False
+
+    runner_patterns = (
+        "hermes_cli.main gateway",
+        "hermes_cli/main.py gateway",
+        "hermes gateway",
+        "gateway/run.py",
+    )
+    return any(pattern in cmd for pattern in runner_patterns)
+
+
 def find_gateway_pids(exclude_pids: set | None = None) -> list:
     """Find PIDs of running gateway processes.
 
@@ -100,12 +133,6 @@ def find_gateway_pids(exclude_pids: set | None = None) -> list:
     """
     pids = []
     _exclude = exclude_pids or set()
-    patterns = [
-        "hermes_cli.main gateway",
-        "hermes_cli/main.py gateway",
-        "hermes gateway",
-        "gateway/run.py",
-    ]
 
     try:
         if is_windows():
@@ -122,7 +149,7 @@ def find_gateway_pids(exclude_pids: set | None = None) -> list:
                     current_cmd = line[len("CommandLine="):]
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId="):]
-                    if any(p in current_cmd for p in patterns):
+                    if _matches_running_gateway_command(current_cmd):
                         try:
                             pid = int(pid_str)
                             if pid != os.getpid() and pid not in pids and pid not in _exclude:
@@ -141,17 +168,16 @@ def find_gateway_pids(exclude_pids: set | None = None) -> list:
                 # Skip grep and current process
                 if 'grep' in line or str(os.getpid()) in line:
                     continue
-                for pattern in patterns:
-                    if pattern in line:
-                        parts = line.split()
-                        if len(parts) > 1:
-                            try:
-                                pid = int(parts[1])
-                                if pid not in pids and pid not in _exclude:
-                                    pids.append(pid)
-                            except ValueError:
-                                continue
-                        break
+                if not _matches_running_gateway_command(line):
+                    continue
+                parts = line.split()
+                if len(parts) > 1:
+                    try:
+                        pid = int(parts[1])
+                        if pid not in pids and pid not in _exclude:
+                            pids.append(pid)
+                    except ValueError:
+                        continue
     except Exception:
         pass
 
@@ -240,29 +266,53 @@ _SERVICE_BASE = "hermes-gateway"
 SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 
 
+def _looks_like_user_home_hermes(path: Path) -> bool:
+    """Return True when *path* matches a standard per-user ``~/.hermes`` location."""
+    if path.name != ".hermes":
+        return False
+
+    parent = path.parent
+    try:
+        if parent == Path.home().resolve():
+            return True
+    except Exception:
+        pass
+
+    if str(parent) == "/root":
+        return True
+
+    if len(parent.parts) >= 2 and parent.parts[-2] in {"home", "Users"}:
+        return True
+
+    return False
+
+
 def _profile_suffix() -> str:
     """Derive a service-name suffix from the current HERMES_HOME.
 
-    Returns ``""`` for the default ``~/.hermes``, the profile name for
+    Returns ``""`` for the default user-home ``.hermes`` root, the profile name for
     ``~/.hermes/profiles/<name>``, or a short hash for any other custom
     HERMES_HOME path.
+
+    Important sudo/system-service case: when root installs a system service for
+    another user, ``Path.home()`` points at ``/root`` while ``HERMES_HOME`` may
+    correctly point at ``/home/<user>/.hermes``. We therefore classify based on
+    the HERMES_HOME path shape itself, not only the current UID's home.
     """
     import hashlib
     import re
-    from pathlib import Path as _Path
+
     home = get_hermes_home().resolve()
-    default = (_Path.home() / ".hermes").resolve()
-    if home == default:
+
+    if _looks_like_user_home_hermes(home):
         return ""
-    # Detect ~/.hermes/profiles/<name> pattern → use the profile name
-    profiles_root = (default / "profiles").resolve()
-    try:
-        rel = home.relative_to(profiles_root)
-        parts = rel.parts
-        if len(parts) == 1 and re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", parts[0]):
-            return parts[0]
-    except ValueError:
-        pass
+
+    parent = home.parent
+    if parent.name == "profiles" and _looks_like_user_home_hermes(parent.parent):
+        profile_name = home.name
+        if re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", profile_name):
+            return profile_name
+
     # Fallback: short hash for arbitrary HERMES_HOME paths
     return hashlib.sha256(str(home).encode()).hexdigest()[:8]
 
@@ -279,19 +329,17 @@ def _profile_arg(hermes_home: str | None = None) -> str:
             service definition for a different user (e.g. system service).
     """
     import re
-    from pathlib import Path as _Path
+
     home = Path(hermes_home or str(get_hermes_home())).resolve()
-    default = (_Path.home() / ".hermes").resolve()
-    if home == default:
+    if _looks_like_user_home_hermes(home):
         return ""
-    profiles_root = (default / "profiles").resolve()
-    try:
-        rel = home.relative_to(profiles_root)
-        parts = rel.parts
-        if len(parts) == 1 and re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", parts[0]):
-            return f"--profile {parts[0]}"
-    except ValueError:
-        pass
+
+    parent = home.parent
+    if parent.name == "profiles" and _looks_like_user_home_hermes(parent.parent):
+        profile_name = home.name
+        if re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", profile_name):
+            return f"--profile {profile_name}"
+
     return ""
 
 
