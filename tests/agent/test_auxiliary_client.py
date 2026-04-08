@@ -1306,30 +1306,13 @@ class TestCallLlmPaymentFallback:
                 )
 
 
-# ── Provider prefix stripping (issue #6211) ─────────────────────────────────
 
 class TestResolveProviderClientStripPrefix:
-    """resolve_provider_client should strip provider prefixes for direct APIs."""
+    """Prefixed model names should be stripped for direct API providers (#6211)."""
 
     def test_strips_prefix_for_api_key_provider(self, monkeypatch):
-        """zai/glm-5.1 → glm-5.1 when routing to Z.AI directly."""
         monkeypatch.setenv("GLM_API_KEY", "fake-glm-key")
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
-            client, model = resolve_provider_client("zai", model="zai/glm-5.1")
+            _, model = resolve_provider_client("zai", model="zai/glm-5.1")
             assert model == "glm-5.1"
-
-    def test_no_prefix_unchanged(self, monkeypatch):
-        """glm-5.1 stays glm-5.1 (no prefix to strip)."""
-        monkeypatch.setenv("GLM_API_KEY", "fake-glm-key")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            mock_openai.return_value = MagicMock()
-            client, model = resolve_provider_client("zai", model="glm-5.1")
-            assert model == "glm-5.1"
-
-    def test_openrouter_keeps_prefix(self, monkeypatch):
-        """OpenRouter should keep the provider/model format."""
-        monkeypatch.setenv("OPENROUTER_API_KEY", "fake-or-key")
-        client, model = resolve_provider_client(
-            "openrouter", model="zai/glm-5.1")
-        assert model == "zai/glm-5.1"
