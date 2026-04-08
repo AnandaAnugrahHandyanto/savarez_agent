@@ -52,7 +52,7 @@ if [ ! -f "$FB_DB" ]; then
         --database "$FB_DB" \
         --address  0.0.0.0 \
         --port     8080 \
-        --root     "$HERMES_HOME/files" \
+        --root     "$HERMES_HOME" \
         --log      "$HERMES_HOME/logs/filebrowser.log"
     filebrowser users add "$FB_USER" "$FB_PASS" \
         --perm.admin \
