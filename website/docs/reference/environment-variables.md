@@ -227,6 +227,15 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `WECOM_WEBSOCKET_URL` | Custom WebSocket URL (default: `wss://openws.work.weixin.qq.com`) |
 | `WECOM_ALLOWED_USERS` | Comma-separated WeCom user IDs allowed to message the bot |
 | `WECOM_HOME_CHANNEL` | WeCom chat ID for cron delivery and notifications |
+| `LINEAR_API_KEY` | Linear personal API key for posting comments ([get one here](https://linear.app/settings/account/security)) |
+| `LINEAR_WEBHOOK_SECRET` | HMAC signing secret for webhook verification (must match the secret in Linear's webhook config) |
+| `LINEAR_AGENT_USER_ID` | Linear user UUID for @mention detection. Find via `linear api '{ viewer { id } }'` |
+| `LINEAR_TEAM_IDS` | Comma-separated team keys to filter (e.g., `AI,ENG`). Empty = all teams |
+| `LINEAR_WEBHOOK_HOST` | Webhook server bind address (default: `0.0.0.0`) |
+| `LINEAR_WEBHOOK_PORT` | Webhook server port (default: `8645`) |
+| `LINEAR_ENFORCE_IP_ALLOWLIST` | Verify requests come from Linear's IPs (default: `true`) |
+| `LINEAR_HOME_CHANNEL` | Issue identifier for cron delivery (e.g., `AI-100`) |
+| `LINEAR_ALLOWED_USERS` | Comma-separated Linear user UUIDs (not typically needed — HMAC is the auth layer) |
 | `MATTERMOST_URL` | Mattermost server URL (e.g. `https://mm.example.com`) |
 | `MATTERMOST_TOKEN` | Bot token or personal access token for Mattermost |
 | `MATTERMOST_ALLOWED_USERS` | Comma-separated Mattermost user IDs allowed to message the bot |

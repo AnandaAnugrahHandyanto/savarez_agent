@@ -1588,6 +1588,33 @@ _PLATFORMS = [
              "help": "Chat ID for scheduled results and notifications."},
         ],
     },
+    {
+        "key": "linear",
+        "label": "Linear",
+        "emoji": "📐",
+        "token_var": "LINEAR_WEBHOOK_SECRET",
+        "setup_instructions": [
+            "1. Get a Linear API key from https://linear.app/settings/account/security",
+            "2. Set up a webhook in Linear: Settings → API → Webhooks",
+            "   - URL: https://your-server:8645/hooks/linear",
+            "   - Choose a signing secret and save it",
+            "   - Select event types: Issues, Comments",
+            "3. To be @mentioned, create a Linear user or use your own user ID",
+            "   (find it via `linear api '{ viewer { id name } }'`)",
+        ],
+        "vars": [
+            {"name": "LINEAR_API_KEY", "prompt": "Linear API Key", "password": True,
+             "help": "Personal API key from Linear Settings → Account → Security."},
+            {"name": "LINEAR_WEBHOOK_SECRET", "prompt": "Webhook Signing Secret", "password": True,
+             "help": "The HMAC secret you set when creating the Linear webhook."},
+            {"name": "LINEAR_AGENT_USER_ID", "prompt": "Agent Linear User ID (UUID, for @mention detection)", "password": False,
+             "help": "Linear user UUID that represents the agent. Find via: linear api '{ viewer { id } }'"},
+            {"name": "LINEAR_TEAM_IDS", "prompt": "Team keys to filter (comma-separated, e.g. AI,ENG — or empty for all)", "password": False,
+             "help": "Only process events from these teams. Leave empty for all teams."},
+            {"name": "LINEAR_HOME_CHANNEL", "prompt": "Home issue identifier (optional, e.g. AI-100, for cron delivery)", "password": False,
+             "help": "Issue identifier where cron job results will be posted as comments."},
+        ],
+    },
 ]
 
 

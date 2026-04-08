@@ -63,6 +63,7 @@ class Platform(Enum):
     WEBHOOK = "webhook"
     FEISHU = "feishu"
     WECOM = "wecom"
+    LINEAR = "linear"
 
 
 @dataclass
@@ -286,6 +287,9 @@ class GatewayConfig:
                 connected.append(platform)
             # WeCom uses extra dict for bot credentials
             elif platform == Platform.WECOM and config.extra.get("bot_id"):
+                connected.append(platform)
+            # Linear uses webhook secret + API key
+            elif platform == Platform.LINEAR and config.extra.get("webhook_secret"):
                 connected.append(platform)
         return connected
     
@@ -939,6 +943,33 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.WECOM,
                 chat_id=wecom_home,
                 name=os.getenv("WECOM_HOME_CHANNEL_NAME", "Home"),
+            )
+
+    # Linear (Project Management)
+    linear_webhook_secret = os.getenv("LINEAR_WEBHOOK_SECRET")
+    linear_api_key = os.getenv("LINEAR_API_KEY")
+    if linear_webhook_secret and linear_api_key:
+        if Platform.LINEAR not in config.platforms:
+            config.platforms[Platform.LINEAR] = PlatformConfig()
+        config.platforms[Platform.LINEAR].enabled = True
+        config.platforms[Platform.LINEAR].extra.update({
+            "webhook_secret": linear_webhook_secret,
+            "api_key": linear_api_key,
+        })
+        linear_agent_user_id = os.getenv("LINEAR_AGENT_USER_ID", "")
+        if linear_agent_user_id:
+            config.platforms[Platform.LINEAR].extra["agent_user_id"] = linear_agent_user_id
+        linear_team_ids = os.getenv("LINEAR_TEAM_IDS", "")
+        if linear_team_ids:
+            config.platforms[Platform.LINEAR].extra["team_ids"] = [
+                t.strip() for t in linear_team_ids.split(",") if t.strip()
+            ]
+        linear_home = os.getenv("LINEAR_HOME_CHANNEL")
+        if linear_home:
+            config.platforms[Platform.LINEAR].home_channel = HomeChannel(
+                platform=Platform.LINEAR,
+                chat_id=linear_home,
+                name=os.getenv("LINEAR_HOME_CHANNEL_NAME", "Home"),
             )
 
     # Session settings

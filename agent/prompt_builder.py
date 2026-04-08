@@ -349,6 +349,13 @@ PLATFORM_HINTS = {
         "only — no markdown, no formatting. SMS messages are limited to ~1600 "
         "characters, so be brief and direct."
     ),
+    "linear": (
+        "You are responding to a Linear issue comment. Use markdown formatting "
+        "(Linear supports it). Keep responses focused on the issue at hand. "
+        "You have access to the `linear` CLI tool for querying and managing issues. "
+        "When someone @mentions you on an issue, you see the comment and issue context. "
+        "Respond helpfully — you can look up related issues, update status, add labels, etc."
+    ),
 }
 
 CONTEXT_FILE_MAX_CHARS = 20_000

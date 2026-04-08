@@ -27,6 +27,7 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 | DingTalk | — | — | — | — | — | ✅ | ✅ |
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | WeCom | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| Linear | — | — | — | — | — | — | — |
 
 **Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
 
@@ -49,6 +50,7 @@ flowchart TB
             dt[DingTalk]
     fs[Feishu/Lark]
     wc[WeCom]
+    ln[Linear]
             api["API Server<br/>(OpenAI-compatible)"]
             wh[Webhooks]
         end
@@ -71,6 +73,7 @@ flowchart TB
     dt --> store
     api --> store
     wh --> store
+    ln --> store
     store --> agent
     cron --> store
 ```
@@ -352,6 +355,7 @@ Each platform has its own toolset:
 | DingTalk | `hermes-dingtalk` | Full tools including terminal |
 | Feishu/Lark | `hermes-feishu` | Full tools including terminal |
 | WeCom | `hermes-wecom` | Full tools including terminal |
+| Linear | `hermes-linear` | Full tools including terminal |
 | API Server | `hermes` (default) | Full tools including terminal |
 | Webhooks | `hermes-webhook` | Full tools including terminal |
 
@@ -370,5 +374,6 @@ Each platform has its own toolset:
 - [DingTalk Setup](dingtalk.md)
 - [Feishu/Lark Setup](feishu.md)
 - [WeCom Setup](wecom.md)
+- [Linear Setup](linear.md)
 - [Open WebUI + API Server](open-webui.md)
 - [Webhooks](webhooks.md)
