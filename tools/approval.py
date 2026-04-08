@@ -582,13 +582,13 @@ def check_dangerous_command(command: str, env_type: str,
 
     Args:
         command: The shell command to check.
-        env_type: Terminal backend type ('local', 'ssh', 'docker', etc.).
+        env_type: Terminal backend type ('local', 'ssh', 'docker', 'podman', etc.).
         approval_callback: Optional CLI callback for interactive prompts.
 
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
-    if env_type in ("docker", "singularity", "modal", "daytona"):
+    if env_type in ("docker", "podman", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
@@ -690,7 +690,7 @@ def check_all_command_guards(command: str, env_type: str,
     other was shown to the user.
     """
     # Skip containers for both checks
-    if env_type in ("docker", "singularity", "modal", "daytona"):
+    if env_type in ("docker", "podman", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
