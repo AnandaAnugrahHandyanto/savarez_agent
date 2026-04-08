@@ -28,3 +28,12 @@ def test_hermes_launcher_wrapper_clears_python_env_before_exec() -> None:
     assert 'unset PYTHONPATH' in text
     assert 'unset PYTHONHOME' in text
     assert 'exec "$HERMES_BIN" "\\$@"' in text
+
+
+def test_setup_path_prefers_project_env_entrypoint_when_present() -> None:
+    text = INSTALL_SH.read_text()
+
+    # `uv sync` creates .venv even when --no-venv skips explicit pre-creation,
+    # so setup_path must prefer the generated project entrypoint when it exists.
+    assert 'if [ -x "$INSTALL_DIR/.venv/bin/hermes" ]; then' in text
+    assert 'HERMES_BIN="$INSTALL_DIR/.venv/bin/hermes"' in text

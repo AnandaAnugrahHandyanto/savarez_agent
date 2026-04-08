@@ -66,12 +66,8 @@ If your skill is specialized, community-contributed, or niche, it's better suite
 git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 
-# Create venv with Python 3.11
-uv venv venv --python 3.11
-export VIRTUAL_ENV="$(pwd)/venv"
-
-# Install with all extras (messaging, cron, CLI menus, dev tools)
-uv pip install -e ".[all,dev]"
+# Sync the locked project environment
+uv sync --locked --extra all --extra dev
 
 # Optional: RL training submodule
 # git submodule update --init tinker-atropos && uv pip install -e "./tinker-atropos"
@@ -96,7 +92,7 @@ echo "OPENROUTER_API_KEY=***" >> ~/.hermes/.env
 ```bash
 # Symlink for global access
 mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
+ln -sf "$(pwd)/.venv/bin/hermes" ~/.local/bin/hermes
 
 # Verify
 hermes doctor
@@ -109,9 +105,9 @@ hermes chat -q "Hello"
 # Preferred — matches CI (hermetic env, 4 xdist workers); see AGENTS.md
 scripts/run_tests.sh
 
-# Alternative (activate the venv first). The wrapper is still recommended
+# Alternative for targeted local runs. The wrapper is still recommended
 # for parity with GitHub Actions before you open a PR:
-pytest tests/ -v
+uv run python -m pytest tests/ -v
 ```
 
 ---

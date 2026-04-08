@@ -16,6 +16,14 @@ from gateway.restart import (
 )
 
 
+def _skip_user_systemd_preflight(monkeypatch):
+    monkeypatch.setattr(
+        gateway_cli,
+        "_preflight_user_systemd",
+        lambda *args, **kwargs: None,
+    )
+
+
 class TestUserSystemdPrivateSocketPreflight:
     def test_preflight_accepts_private_socket_without_dbus_bus(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "_ensure_user_systemd_env", lambda: None)
@@ -64,6 +72,7 @@ class TestSystemdServiceRefresh:
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
 
+        _skip_user_systemd_preflight(monkeypatch)
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
 
@@ -87,6 +96,7 @@ class TestSystemdServiceRefresh:
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
 
+        _skip_user_systemd_preflight(monkeypatch)
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
 
@@ -623,6 +633,7 @@ class TestGatewaySystemServiceRouting:
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
 
+        _skip_user_systemd_preflight(monkeypatch)
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: calls.append(("refresh", system)))
@@ -668,6 +679,7 @@ class TestGatewaySystemServiceRouting:
     def test_systemd_restart_uses_systemd_main_pid_when_pid_file_is_missing(self, monkeypatch, capsys):
         calls = []
 
+        _skip_user_systemd_preflight(monkeypatch)
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
@@ -727,6 +739,7 @@ class TestGatewaySystemServiceRouting:
     def test_systemd_restart_reports_start_limit_hit(self, monkeypatch, capsys):
         calls = []
 
+        _skip_user_systemd_preflight(monkeypatch)
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
@@ -757,6 +770,7 @@ class TestGatewaySystemServiceRouting:
         assert "reset-failed" in out
 
     def test_systemd_restart_recovers_failed_planned_restart(self, monkeypatch, capsys):
+        _skip_user_systemd_preflight(monkeypatch)
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
@@ -1191,6 +1205,16 @@ class TestGeneratedUnitUsesDetectedVenv:
         assert f"{dot_venv}/bin" in unit
         # Must NOT contain a hardcoded /venv/ path
         assert "/venv/" not in unit or "/.venv/" in unit
+
+    def test_systemd_unit_defaults_to_dot_venv_when_no_env_detected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: None)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/usr/bin/python3")
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert f"VIRTUAL_ENV={tmp_path / '.venv'}" in unit
+        assert f"{tmp_path / '.venv' / 'bin'}" in unit
 
 
 class TestGeneratedUnitIncludesLocalBin:

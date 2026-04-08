@@ -8,9 +8,12 @@ Covers:
      input() call) and the stash is applied automatically
 """
 
+import importlib
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 from hermes_cli.main import cmd_update
 
@@ -47,6 +50,13 @@ def _make_run_side_effect(
     return side_effect
 
 
+@pytest.fixture(autouse=True)
+def _skip_dependency_sync(monkeypatch):
+    """These tests focus on prompt policy, not dependency syncing."""
+    cli_main = importlib.import_module("hermes_cli.main")
+    monkeypatch.setattr(cli_main, "_sync_project_dependencies_for_update", lambda: None)
+
+
 class TestUpdateYesConfigMigration:
     """--yes auto-answers the config-migration prompt and skips API-key prompts."""
 
@@ -74,7 +84,7 @@ class TestUpdateYesConfigMigration:
         args = SimpleNamespace(yes=True)
 
         with patch("builtins.input") as mock_input:
-            cmd_update(args)
+            importlib.import_module("hermes_cli.main").cmd_update(args)
             # Never prompted the user.
             mock_input.assert_not_called()
 
@@ -135,3 +145,40 @@ class TestUpdateYesConfigMigration:
 class TestUpdateYesStashRestore:
     """--yes auto-restores the pre-update autostash without prompting."""
 
+    @patch("hermes_cli.main._restore_stashed_changes")
+    @patch(
+        "hermes_cli.main._stash_local_changes_if_needed",
+        return_value="stash@{0}",
+    )
+    @patch("hermes_cli.config.check_config_version", return_value=(1, 1))
+    @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
+    @patch("hermes_cli.config.get_missing_env_vars", return_value=[])
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_yes_restores_stash_without_prompting(
+        self,
+        mock_run,
+        _mock_which,
+        _mock_missing_env,
+        _mock_missing_cfg,
+        _mock_version,
+        _mock_stash,
+        mock_restore,
+        capsys,
+    ):
+        # Not on main → cmd_update switches to main → autostash fires.
+        mock_run.side_effect = _make_run_side_effect(
+            branch="feature-branch", verify_ok=True, commit_count="1", dirty=True
+        )
+
+        args = SimpleNamespace(yes=True)
+
+        importlib.import_module("hermes_cli.main").cmd_update(args)
+
+        # _restore_stashed_changes was called, and called with prompt_user=False
+        # every time (so the user never sees "Restore local changes now?").
+        assert mock_restore.called
+        for call in mock_restore.call_args_list:
+            assert call.kwargs.get("prompt_user") is False, (
+                f"Expected prompt_user=False under --yes, got {call.kwargs}"
+            )

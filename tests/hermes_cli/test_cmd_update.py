@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
+import hermes_cli.main as cli_main
 from hermes_cli.main import cmd_update, PROJECT_ROOT
 
 
@@ -37,6 +38,12 @@ def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
 @pytest.fixture
 def mock_args():
     return SimpleNamespace()
+
+
+@pytest.fixture(autouse=True)
+def _skip_dependency_sync(monkeypatch):
+    """These tests focus on update branch routing, not dependency syncing."""
+    monkeypatch.setattr(cli_main, "_sync_project_dependencies_for_update", lambda: None)
 
 
 class TestCmdUpdateBranchFallback:
@@ -258,3 +265,43 @@ def test_is_termux_env_false_for_non_termux_prefix():
     from hermes_cli import main as hm
 
     assert hm._is_termux_env({"PREFIX": "/usr/local"}) is False
+
+
+def test_run_uv_sync_bootstraps_uv_on_termux(monkeypatch, tmp_path):
+    from hermes_cli import main as hm
+
+    installed = {"uv": False}
+    calls = []
+
+    def fake_which(name):
+        if name == "uv" and installed["uv"]:
+            return "/data/data/com.termux/files/usr/bin/uv"
+        return None
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd == [hm.sys.executable, "-m", "pip", "install", "uv"]:
+            installed["uv"] = True
+            return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+    monkeypatch.setenv("PYTHONPATH", "bad-path")
+    monkeypatch.setenv("PYTHONHOME", "bad-home")
+    monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(hm.shutil, "which", fake_which)
+    monkeypatch.setattr(hm.subprocess, "run", fake_run)
+
+    hm._run_uv_sync([], inexact=False, locked=True, env_dir=tmp_path / ".venv")
+
+    bootstrap_call = calls[0]
+    assert bootstrap_call[0] == [hm.sys.executable, "-m", "pip", "install", "uv"]
+    assert "PYTHONPATH" not in bootstrap_call[1]["env"]
+    assert "PYTHONHOME" not in bootstrap_call[1]["env"]
+    assert calls[-1][0] == [
+        "/data/data/com.termux/files/usr/bin/uv",
+        "sync",
+        "--locked",
+        "--quiet",
+    ]
+    assert calls[-1][1]["env"]["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / ".venv")
