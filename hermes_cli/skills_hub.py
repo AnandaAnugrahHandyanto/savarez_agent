@@ -507,6 +507,11 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
     lock = HubLockFile()
     hub_installed = {e["name"]: e for e in lock.list_installed()}
     builtin_names = set(_read_manifest())
+    builtin_dir_names = {
+        path.parent.name
+        for path in (Path(__file__).resolve().parent.parent / "skills").rglob("SKILL.md")
+        if not any(part in {".git", ".github", ".hub"} for part in path.parts)
+    }
 
     all_skills = _find_all_skills()
 
@@ -530,7 +535,7 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
             source_display = hub_entry.get("source", "hub")
             trust = hub_entry.get("trust_level", "community")
             hub_count += 1
-        elif name in builtin_names:
+        elif name in builtin_names or name in builtin_dir_names:
             source_type = "builtin"
             source_display = "builtin"
             trust = "builtin"

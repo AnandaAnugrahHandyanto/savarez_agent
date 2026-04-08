@@ -152,6 +152,37 @@ def test_do_list_filter_builtin(three_source_env):
     assert "local-skill" not in output
 
 
+def test_do_list_treats_bundled_directory_name_as_builtin(monkeypatch, hub_env):
+    import tools.skills_hub as hub
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+    import hermes_cli.skills_hub as cli_hub
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {"serving-llms-vllm": "abc123"})
+    monkeypatch.setattr(
+        skills_tool,
+        "_find_all_skills",
+        lambda: [{"name": "vllm", "category": "mlops", "description": "builtin alias"}],
+    )
+
+    fake_pkg_dir = hub_env.parent.parent / "fake_pkg"
+    repo_skills_dir = fake_pkg_dir.parent / "skills"
+    bundled_skill_dir = repo_skills_dir / "mlops" / "vllm"
+    bundled_skill_dir.mkdir(parents=True)
+    (bundled_skill_dir / "SKILL.md").write_text(
+        "---\nname: serving-llms-vllm\ndescription: Test skill\n---\n"
+    )
+    fake_pkg_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cli_hub, "__file__", str(fake_pkg_dir / "skills_hub.py"))
+
+    output = _capture()
+
+    assert "vllm" in output
+    assert "builtin" in output
+    assert "0 hub-installed, 1 builtin, 0 local" in output
+
+
 def test_do_check_reports_available_updates(monkeypatch):
     output = _capture_check(monkeypatch, [
         {"name": "hub-skill", "source": "skills.sh", "status": "update_available"},
