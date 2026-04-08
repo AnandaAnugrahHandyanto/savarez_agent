@@ -341,13 +341,17 @@ def iter_skills_files(
 # Cache directory mounts (documents, images, audio, screenshots)
 # ---------------------------------------------------------------------------
 
-# The four cache subdirectories that should be mirrored into remote backends.
+# The cache subdirectories that should be mirrored into remote backends.
 # Each tuple is (new_subpath, old_name) matching hermes_constants.get_hermes_dir().
 _CACHE_DIRS: list[tuple[str, str]] = [
     ("cache/documents", "document_cache"),
     ("cache/images", "image_cache"),
     ("cache/audio", "audio_cache"),
     ("cache/screenshots", "browser_screenshots"),
+    # Clipboard images saved by cli.py are written to ~/.hermes/images/ (not
+    # cache/images).  Without this mount, pasted screenshots are invisible to
+    # agents running inside the Docker sandbox.
+    ("images", "images"),
 ]
 
 
