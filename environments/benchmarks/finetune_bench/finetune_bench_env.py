@@ -138,6 +138,18 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
 
     async def setup(self):
         """Load prompt bank, custom cases, and configure docker sandbox mount."""
+        # Force non-interactive mode for any tool calls the agent loop makes
+        # during the rollout. The bench env is definitionally non-interactive
+        # — there's no user to enter a sudo password, click an approval
+        # button, or answer a clarify question. When the bench is launched
+        # from inside hermes, HERMES_INTERACTIVE is inherited from the
+        # parent, which causes the agent's terminal tool to pop a 45-second
+        # sudo password prompt that blocks the rollout. HERMES_YOLO_MODE
+        # bypasses the dangerous-command approval flow for the same reason.
+        os.environ.pop("HERMES_INTERACTIVE", None)
+        os.environ["HERMES_YOLO_MODE"] = "1"
+        os.environ.setdefault("SUDO_PASSWORD", "")  # ensures no prompt is shown
+
         # Pre-flight: confirm the configured LLM endpoint is reachable BEFORE
         # we start the rollout loop. Without this check, a dead llama-server
         # causes the bench to hang silently on its first request — the agent
