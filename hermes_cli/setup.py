@@ -105,8 +105,8 @@ _DEFAULT_PROVIDER_MODELS = {
     ],
     "zai": ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
     "kimi-coding": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
-    "minimax": ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
-    "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
+    "minimax": ["MiniMax-M1", "MiniMax-M1-40k", "MiniMax-M1-80k", "MiniMax-M1-128k", "MiniMax-M1-256k", "MiniMax-M2.5", "MiniMax-M2.7"],
+    "minimax-cn": ["MiniMax-M1", "MiniMax-M1-40k", "MiniMax-M1-80k", "MiniMax-M1-128k", "MiniMax-M1-256k", "MiniMax-M2.5", "MiniMax-M2.7"],
     "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
     "kilocode": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
     "opencode-zen": ["gpt-5.4", "gpt-5.3-codex", "claude-sonnet-4-6", "gemini-3-flash", "glm-5", "kimi-k2.5", "minimax-m2.7"],
@@ -421,10 +421,22 @@ def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int
                 curses.init_pair(1, curses.COLOR_GREEN, -1)
                 curses.init_pair(2, curses.COLOR_YELLOW, -1)
             cursor = default
+            scroll_offset = 0
 
             while True:
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
+
+                # Rows available for list items: rows 2..(max_y-2) inclusive.
+                visible = max(1, max_y - 3)
+
+                # Scroll the viewport so the cursor is always visible.
+                if cursor < scroll_offset:
+                    scroll_offset = cursor
+                elif cursor >= scroll_offset + visible:
+                    scroll_offset = cursor - visible + 1
+                scroll_offset = max(0, min(scroll_offset, max(0, len(choices) - visible)))
+
                 try:
                     stdscr.addnstr(
                         0,
@@ -436,12 +448,12 @@ def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int
                 except curses.error:
                     pass
 
-                for i, choice in enumerate(choices):
-                    y = i + 2
+                for row, i in enumerate(range(scroll_offset, min(scroll_offset + visible, len(choices)))):
+                    y = row + 2
                     if y >= max_y - 1:
                         break
                     arrow = "→" if i == cursor else " "
-                    line = f" {arrow}  {choice}"
+                    line = f" {arrow}  {choices[i]}"
                     attr = curses.A_NORMAL
                     if i == cursor:
                         attr = curses.A_BOLD
