@@ -40,6 +40,7 @@ class ChatRequest(BaseModel):
 class ConfigUpdate(BaseModel):
     model: Optional[str] = None
     provider: Optional[str] = None
+    base_url: Optional[str] = None
     theme: Optional[str] = None
     language: Optional[str] = None
 
@@ -81,9 +82,11 @@ async def read_root(request: Request):
 @app.get("/api/config")
 async def get_dashboard_config():
     config = load_config()
+    model_cfg = config.get("model", {})
     return {
-        "model": config.get("model", {}).get("default") if isinstance(config.get("model"), dict) else config.get("model"),
-        "provider": config.get("model", {}).get("provider") if isinstance(config.get("model"), dict) else "auto",
+        "model": model_cfg.get("default") if isinstance(model_cfg, dict) else model_cfg,
+        "provider": model_cfg.get("provider", "auto") if isinstance(model_cfg, dict) else "auto",
+        "base_url": model_cfg.get("base_url", "") if isinstance(model_cfg, dict) else "",
         "theme": config.get("display", {}).get("theme", "dark"),
         "language": config.get("display", {}).get("language", "en")
     }
@@ -92,13 +95,15 @@ async def get_dashboard_config():
 async def update_dashboard_config(update: ConfigUpdate):
     config = load_config()
 
-    if update.model or update.provider:
+    if update.model or update.provider or update.base_url:
         if not isinstance(config.get("model"), dict):
             config["model"] = {"default": config.get("model", "")}
         if update.model:
             config["model"]["default"] = update.model
         if update.provider:
             config["model"]["provider"] = update.provider
+        if update.base_url:
+            config["model"]["base_url"] = update.base_url
 
     if update.theme or update.language:
         if "display" not in config:
@@ -184,7 +189,7 @@ async def chat_stream(message: str, session_id: Optional[str] = None):
                     if delta:
                         q.put({'type': 'delta', 'content': delta})
 
-                result = agent.run_conversation(message, stream_delta_callback=inner_cb)
+                result = agent.run_conversation(message, stream_callback=inner_cb)
                 q.put({'type': 'done', 'response': result.get('final_response')})
             except Exception as e:
                 q.put({'type': 'error', 'message': str(e)})

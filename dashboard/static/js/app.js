@@ -23,6 +23,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const themeToggles = document.querySelectorAll('.theme-toggle');
     const langSelect = document.getElementById('lang-select');
     const modelInput = document.getElementById('model-input');
+    const providerInput = document.getElementById('provider-input');
+    const baseUrlInput = document.getElementById('base-url-input');
     const saveSettingsBtn = document.getElementById('save-settings');
     const newChatBtn = document.getElementById('new-chat-btn');
 
@@ -237,6 +239,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             currentModelDisplay.textContent = config.model || 'Default Model';
             modelInput.value = config.model || '';
+            providerInput.value = config.provider || 'auto';
+            baseUrlInput.value = config.base_url || '';
             langSelect.value = config.language || 'en';
 
             // Apply loaded config
@@ -252,6 +256,8 @@ document.addEventListener('DOMContentLoaded', () => {
     async function saveSettings() {
         const update = {
             model: modelInput.value,
+            provider: providerInput.value,
+            base_url: baseUrlInput.value,
             language: langSelect.value,
             theme: state.currentTheme
         };
