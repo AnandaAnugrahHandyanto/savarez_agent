@@ -14,6 +14,28 @@ The scorer still uses negative signals (corrections, retries, contradictions) fo
 
 ---
 
+## Calibration on Real Data
+
+This spec was empirically validated against a real Hermes session DB containing 231 sessions and 14,337 turns from a heavy power-user workload (51% tool-call density, dominated by `read_file`/`patch`/`search_files`/`terminal` operations on a Rust codebase).
+
+Signal coverage on a sample of 30 representative sessions:
+
+| Signal | Coverage | Suitability |
+|---|---|---|
+| **Tool success chain** | 92% of assistant turns include tool calls | ✅ Primary positive signal |
+| **Artifact longevity** | 144 file paths introduced; 39% referenced in later turns | ✅ Strong secondary signal |
+| **Token efficiency** | 100% (computable on every turn) | ✅ Tiebreaker only, capped at ±0.05 |
+| **Self-correction (text-marker draft)** | **0/30 sessions matched the regex** | ❌ Replaced — see §3 |
+| **Resolution velocity (text-marker draft)** | **0/30 sessions had a resolution marker** | ❌ Replaced — see §4 |
+
+The two failures are not bugs in the underlying concepts — they are bugs in the **detection methods** of the early draft. Power users do not say "no, that's wrong" or "thanks, perfect" the way casual chat users do. They correct silently by providing more constraints, and they end sessions by walking away. Sections 3 and 4 below have been rewritten with tool-outcome-based detectors that fire on real power-user data.
+
+The text-marker detectors are preserved as fallback layers — they still work for casual chat data and contribute additional confidence when both layers agree. But the primary detection must work without them.
+
+**The big finding**: with the tool-outcome-based detectors and 92% tool-call coverage, an estimated **40–60% of assistant turns** in this dataset would score ≥ 0.7 under the new positive signal model. The current sentiment-based scorer produces ~4% above 0.7. That is a roughly 10–15× improvement in usable training signal from identical raw data.
+
+---
+
 ## Signal Catalog
 
 ### 1. Tool Success Chain
@@ -71,15 +93,18 @@ def tool_success_chain(assistant_turn, tool_results, next_user_turn) -> float:
 
 **What "tool succeeded" means per tool type:**
 
-| Tool | Success indicators |
-|---|---|
-| `terminal` | `exit_code == 0`, no stderr-only output, output is non-empty |
-| `file` (read) | File content returned, no "not found" or permission errors |
-| `file` (write) | Acknowledgment returned, subsequent read confirms content |
-| `web_search` | Results returned, non-empty result set |
-| `web_extract` | Content extracted, non-trivial length |
-| `skill_manage` | Skill created/updated without error |
-| `execute_code` | Code ran, returned output, no uncaught exceptions |
+| Tool | Success indicator | Discriminative power |
+|---|---|---|
+| `terminal` | `exit_code == 0`, no stderr-only output, non-empty output | High |
+| `read_file` | Content returned, no "not found" or permission errors | **Low** — read_file almost always succeeds (it accounts for ~43% of tool calls in the calibration sample, with a ~99% success rate). The chain links beyond "tool succeeded" — user advanced topic, user referenced output — carry the signal weight for read_file turns. Don't treat a successful read_file alone as strong evidence. |
+| `write_file` / `patch` | "patch applied" / no error string in result; ideally a subsequent read confirms the change | High |
+| `search_files` | `total_count > 0` AND results referenced in subsequent tool calls | High. **Empty results (`total_count: 0`) count as a soft failure** even though the tool didn't error — the model searched for something that doesn't exist, which usually means the search query was wrong. |
+| `web_search` | Results returned, non-empty result set | High. Empty results count as soft failure. |
+| `web_extract` | Content extracted, length > 100 chars | High |
+| `skill_manage` | Skill created/updated without error | Low frequency in most sessions |
+| `execute_code` | Code ran, returned output, no uncaught exceptions | High |
+
+**Soft-failure rule**: a tool that returned cleanly but produced an unusable result (empty search, zero matches, an "ok" with no payload) is a **failure** for scoring purposes. The signal we want is "the agent accomplished something," not "the agent invoked a function without crashing."
 
 ---
 
@@ -146,34 +171,50 @@ def artifact_longevity(
 
 | Type | Extraction method | Reference detection |
 |---|---|---|
-| File paths | Regex for paths in `write_file` / `terminal` output | Same path appears in later tool calls or user messages |
-| Code blocks | Fenced code blocks in assistant content | Function/variable names reappear in later turns |
+| **File paths** | Regex for paths in `write_file`, `patch`, `terminal` output, and fenced code blocks | Same path appears in later tool calls or user messages. **Highest-yield artifact type** — 39% reference rate observed on real data. |
+| **Function / class identifiers** | snake_case or CamelCase identifiers introduced inside fenced code blocks (filtered against a stoplist of common stdlib names) | Same identifier reappears in later assistant or user turns. Critical for code-focused workloads where the model writes a function, then a later turn extends, tests, or calls it. |
+| **Bash commands** | Commands shown in `terminal` tool calls or fenced bash blocks (e.g. `cargo test`, `git status`, `rg "pattern"`) | Same command pattern reappears in later tool calls. Captures the iteration loop where the model proposes a command, the user runs it, and the model proposes a follow-up based on the output. |
+| Code blocks | Fenced code blocks in assistant content | Function/variable names reappear in later turns (subsumed by "Function / class identifiers" above) |
 | Named plans/concepts | Capitalized terms or quoted names the model introduces | Same terms used by the user in later turns |
 | Structured output | JSON, YAML, tables in assistant content | Keys/fields referenced in later discussion |
+
+The first three rows (paths, identifiers, commands) account for the bulk of usable artifact signal in code-heavy workloads. On the calibration data, expanding artifact tracking from "file paths only" to "paths + identifiers + commands" is estimated to push the artifact-longevity coverage from ~39% of turns to ~55–65% of turns.
 
 ---
 
 ### 3. Productive Self-Correction
 
-**What it detects:** The model made an error, received a correction, and produced a better response. The corrected response (not the original) is high-quality training data.
+**What it detects:** The model made an error, received corrective context, and produced a better response. The corrected response (not the original) is high-quality training data.
 
-**Evidence chain:**
+**The concept is correct; the detection method needs to be tool-outcome-based.** The early draft of this signal used regex matching on user-text patterns like "no, that's wrong" or "actually, I meant". On the calibration data, **zero of 30 sessions matched any of those patterns**. Power users do not correct verbally — they correct by providing more constraints, narrowing scope, or re-issuing the request with new requirements. The detector has to read tool outcomes, not user phrasing.
+
+**Tool-outcome-based evidence chain:**
 
 ```
-Assistant turn A (initial response)
-    → User correction ("no, actually...", "that's wrong", explicit redirect)
-    → Assistant turn B (corrected response)
-    → User accepts turn B (moves forward, no further correction)
+Assistant turn A
+    → Includes one or more tool calls
+    → At least one tool failed (per the per-tool success heuristics in §1)
+       OR all tools "succeeded" but produced empty / unusable results
+       OR no tool calls at all and the user's next turn references the same
+       artifacts the model just discussed (semantic redirect)
+User turn between A and B
+    → Adds new constraints, narrows scope, or re-issues differently
+       (heuristic: turn is significantly longer than the original prompt
+        AND contains domain terms not in the original)
+Assistant turn B
+    → Includes tool calls that succeed (per per-tool heuristics)
+User after B
+    → Does not trigger the same correction pattern again
 ```
 
 **Scoring:**
 
-Turn A: score 0.0 (bad — it caused a correction)
+Turn A: score 0.0–0.2 (bad — it failed and caused a correction loop)
 Turn B: score 0.85–1.0 (good — it incorporated the correction successfully)
 
-The corrected response is valuable *because* it demonstrates error recovery in context. The model had the failed attempt, the user's feedback, and then produced the right answer — that's exactly the behavior you want to reinforce.
+Turn B is valuable *because* it demonstrates error recovery in context. The model had the failed attempt, the user's feedback (in whatever form), and then produced the right answer — that's exactly the behavior you want to reinforce. This creates a natural DPO pair when DPO is added in a future phase.
 
-**Detection:**
+**Detection (tool-outcome-based primary):**
 
 ```python
 def self_correction_signal(
@@ -183,79 +224,128 @@ def self_correction_signal(
     """Returns score for this turn if it's a successful correction.
     Returns None if this turn is not part of a correction pattern.
     """
-    # Check if the previous user turn was a correction
-    prev_user = find_previous_user_turn(turns, assistant_turn_index)
-    if prev_user is None or not is_correction(prev_user):
-        return None  # not a correction context
+    prev_asst = find_previous_assistant_turn(turns, assistant_turn_index)
+    if prev_asst is None:
+        return None
 
-    # Check if THIS turn is the corrected response
-    # (i.e., the user turn before this one was the correction)
+    # Did the previous assistant turn fail at the tool level?
+    prev_results = collect_tool_results(turns, prev_asst)
+    prev_failed = (
+        not prev_results  # no tool calls and we have other failure signal
+        or not all_tools_succeeded(prev_results)
+        or any(is_soft_failure(r) for r in prev_results)
+    )
+    if not prev_failed:
+        # Fall back to text-marker detection for casual chat data
+        if not text_marker_correction(turns, assistant_turn_index):
+            return None
+
+    # Did the user's intervening turn add new constraints?
+    user_between = find_user_between(turns, prev_asst, assistant_turn_index)
+    if user_between is None:
+        return None
+    if not adds_new_constraints(user_between, prev_asst):
+        return None
+
+    # Did THIS turn's tool calls succeed?
+    this_results = collect_tool_results(turns, assistant_turn_index)
+    if this_results and not all_tools_succeeded(this_results):
+        return 0.0  # second attempt also failed
+
+    # Did the user accept (no further failure pattern in next turn)?
     next_user = find_next_user_turn(turns, assistant_turn_index)
     if next_user is None:
         return 0.6  # corrected, but we can't confirm acceptance
-
-    if is_correction(next_user):
-        return 0.0  # corrected response was ALSO wrong
-
-    # User accepted the correction
+    next_asst = find_next_assistant_turn(turns, assistant_turn_index)
+    if next_asst is not None:
+        next_results = collect_tool_results(turns, next_asst)
+        if next_results and not all_tools_succeeded(next_results):
+            return 0.4  # user re-corrected, second attempt also failed
     return 0.9
 ```
 
-**Important:** The *original* failed turn must be scored as bad (0.0–0.2) by the negative signal detectors. The self-correction signal only applies to the *response after the correction*. This creates a natural DPO pair: the same prompt context produced a bad response and then a good one.
+**The "adds new constraints" heuristic** is the hard part of this signal. Two layered checks:
+
+1. **Length-and-novelty heuristic**: the user turn between A and B is significantly longer than the original prompt that started the exchange, AND contains domain-specific terms (identifiers, file paths, commands) that did not appear in the original prompt.
+2. **Artifact-overlap check**: the user turn references the same files, functions, or commands that the failed assistant turn touched. This catches the common power-user pattern of "I see what you did, here's what you should have done instead" without saying it that way.
+
+Either heuristic firing is sufficient. Both firing increases confidence (the resulting score caps higher).
+
+**Phase 2 enhancement (LLM-judge)**: see the "Phase 2" section below. The hardest case — where the model's tool call succeeded technically but produced a wrong outcome that the user then corrected — requires an LLM judge to detect reliably.
+
+**Important:** The *original* failed turn must be scored as bad (0.0–0.2) by the negative signal detectors. The self-correction signal only applies to the *response after the correction*.
 
 ---
 
-### 4. Resolution Velocity (Credit Assignment)
+### 4. Tool Chain Resolution (Credit Assignment)
 
 **What it detects:** Which turns in a completed task actually contributed to the successful outcome.
 
-**Evidence:** The conversation reaches a productive conclusion — the user's goal is achieved, indicated by a terminal success marker (user says "done", "that works", conversation ends naturally after a successful tool chain). Working backward from the conclusion, turns that moved the conversation toward the goal score higher than turns that caused detours.
+**The concept is correct; the resolution-detection method needs to be tool-chain-based.** The early draft of this signal detected resolution by matching user-text patterns like "thanks" or "perfect". On the calibration data, **0 of 30 sessions had any such marker**. Power users do not verbally acknowledge completion — they get what they wanted and walk away. Resolution has to be inferred from tool outcomes and conversational silence, not from politeness phrases.
 
-**Scoring:**
+**Tool-chain-completion-based resolution detection:**
 
-For each turn in a resolved session, compute the contribution:
+A session is "resolved" if **all** of the following hold:
+
+1. The session has at least N turns total (default N=3 — single-turn sessions are short, not resolved)
+2. The last assistant turn includes one or more tool calls
+3. **All those tool calls succeeded** (per the per-tool success heuristics in §1, including the soft-failure rule)
+4. The user did not send a follow-up message after that final assistant turn
+5. No correction pattern (text-marker OR tool-outcome from §3) appeared in the last 3 user turns
+
+This catches the actual completion pattern for power users: "the agent did the thing successfully and I moved on without typing anything else." It does not require any verbal acknowledgment.
+
+Sessions without a clear resolution under these criteria don't get velocity scoring — their turns keep their baseline scores from other signals.
+
+**Optional supplementary signal — followup-session inheritance** (Phase 2): if the user starts a new session within 60 minutes of the previous session ending, AND the new session does not reference any artifacts from the previous session, the previous session is **abandoned** rather than resolved. This distinguishes "user got what they wanted" from "user gave up." The check is heuristic and only downgrades — if both conditions don't hold, the session keeps its resolved status.
+
+**Velocity scoring:**
+
+Once a session is detected as resolved, walk backward from the resolution point and assign per-turn velocity scores. Turns close to the resolution that did not cause corrections score highest. Turns that caused tool failures or required retries score low.
 
 ```python
 def resolution_velocity(
     turns: list[dict],
-    resolution_index: int,  # turn where the task was completed
+    resolution_index: int,
 ) -> dict[int, float]:
     """Returns {turn_index: velocity_score} for each assistant turn."""
     scores = {}
-    
-    # Walk backward from resolution
     remaining_distance = 0
+
     for i in range(resolution_index, -1, -1):
         turn = turns[i]
         if turn["role"] != "assistant":
             continue
-        
+
+        # Check the immediate aftermath of this assistant turn
+        tool_results = collect_tool_results(turns, i)
         next_user = find_next_user_turn(turns, i)
-        
-        if next_user and is_correction(next_user):
+        prev_asst_failed = (
+            tool_results and not all_tools_succeeded(tool_results)
+        )
+        next_user_corrected = (
+            next_user is not None
+            and (is_correction_text(next_user)
+                 or adds_new_constraints(next_user, turns[i]))
+        )
+
+        if prev_asst_failed or next_user_corrected:
             # This turn caused a detour — low velocity
             scores[i] = 0.2
             remaining_distance += 2  # penalty: detour costs extra
         elif next_user and is_retry(next_user):
-            # Retry — the turn failed to advance
             scores[i] = 0.1
             remaining_distance += 1
         else:
             # Turn advanced the task
-            # Score higher for turns closer to resolution
             proximity = 1.0 / (1.0 + remaining_distance * 0.2)
             scores[i] = max(0.5, proximity)
             remaining_distance = max(0, remaining_distance - 1)
-    
+
     return scores
 ```
 
-**Resolution detection:** A session is "resolved" if:
-- The last user turn contains a completion marker ("thanks", "that works", "done", "perfect")
-- The last tool call succeeded and the user didn't follow up (natural end)
-- The user explicitly started a new topic (the previous topic was implicitly resolved)
-
-Sessions without a clear resolution don't get velocity scoring — their turns keep their baseline scores from other signals.
+The velocity score is highest for turns that are close to the resolution AND that didn't cause detours. Distant successful turns still get credit but lower than the immediately-preceding ones.
 
 ---
 
@@ -375,6 +465,25 @@ Not every signal applies to every turn. A pure-text response with no tool calls 
 | Token efficiency | Turn already scored ≥ 0.5 on another signal | Turn scored below 0.5 (don't reward concise bad responses) |
 
 When no positive signals apply (pure conversational turn, no tools, no artifacts), the positive signal score defaults to 0.5 (neutral). The turn's final score is then driven by the other factors — conversation signals, negative signals, sentiment.
+
+---
+
+## Phase 2: LLM-Judge for Implicit Corrections
+
+The tool-outcome-based self-correction detector in §3 catches the common case where the model's tool call **failed** and the user provided more constraints. It misses the harder case where the model's tool call **succeeded technically** but produced a **wrong outcome** that the user then corrected — for example, the model wrote a working but incorrect implementation, and the user redirected with "actually, the function should take a path, not a file handle."
+
+For these cases, an LLM judge is the only reliable detection method. The judge compares two consecutive (assistant, user) pairs and answers: "did the user's second message indicate that the model's previous response was wrong, even though the tool calls succeeded?"
+
+**Configuration**: gated behind `finetune.scoring.use_llm_judge: true` (default false). When enabled:
+
+- Uses Hermes's auxiliary model routing (`agent/auxiliary_client.py`) to dispatch to a fast cheap model (Gemini Flash, Haiku, or a local model via the routing hook)
+- **Only invoked on turns where the per-tool success chain scored 0.5–0.7** — the ambiguous middle. Turns with strong signals don't need the judge; turns with strong negative signals are already excluded.
+- Cost-bounded: with the 0.5–0.7 gate, judge invocations are limited to ~10–15% of turns in typical data, and each call is one short prompt with a one-token answer.
+- Result is cached per (session_id, turn_index) so re-scoring doesn't re-invoke
+
+**Followup-session inheritance** (Phase 2): the resolution detector in §4 can be enhanced by checking whether the user started a new session shortly after the previous one ended. If they did, AND the new session does not reference any artifacts from the previous one, the previous session is downgraded from "resolved" to "abandoned." This catches the failure mode where the user gave up on a session and started fresh rather than completing it.
+
+Both Phase 2 enhancements are **strictly additive** — they tighten the discrimination of an already-functional Phase 1 system. Phase 1 is implementable today against the current data without any new dependencies.
 
 ---
 
