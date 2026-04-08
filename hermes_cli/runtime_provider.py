@@ -282,6 +282,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             continue
         result = {
             "name": name.strip(),
+            "provider_id": name_norm,
             "base_url": base_url.strip(),
             "api_key": str(entry.get("api_key", "") or "").strip(),
         }
@@ -310,8 +311,14 @@ def _resolve_named_custom_runtime(
     if not base_url:
         return None
 
+    provider_label = (
+        str(custom_provider.get("provider_id", "") or "").strip()
+        or _normalize_custom_provider_name(requested_provider or "")
+        or "custom"
+    )
+
     # Check if a credential pool exists for this custom endpoint
-    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"))
+    pool_result = _try_resolve_from_custom_pool(base_url, provider_label, custom_provider.get("api_mode"))
     if pool_result:
         return pool_result
 
@@ -324,7 +331,7 @@ def _resolve_named_custom_runtime(
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
     return {
-        "provider": "custom",
+        "provider": provider_label,
         "api_mode": custom_provider.get("api_mode")
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",

@@ -183,6 +183,40 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openai.com/api/pricing/",
         pricing_version="openai-pricing-2026-03-16",
     ),
+    # RightCode custom contract snapshot (user-provided pricing)
+    (
+        "rightcode",
+        "gpt-5.3-codex",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.75"),
+        output_cost_per_million=Decimal("14.00"),
+        cache_read_cost_per_million=Decimal("0.175"),
+        source="custom_contract",
+        source_url="https://www.right.codes/models",
+        pricing_version="rightcode-pricing-2026-04-08",
+    ),
+    (
+        "rightcode",
+        "gpt-5.4",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.50"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.25"),
+        source="custom_contract",
+        source_url="https://www.right.codes/models",
+        pricing_version="rightcode-pricing-2026-04-08",
+    ),
+    (
+        "rightcode",
+        "gpt-5.4-mini",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.75"),
+        output_cost_per_million=Decimal("4.50"),
+        cache_read_cost_per_million=Decimal("0.075"),
+        source="custom_contract",
+        source_url="https://www.right.codes/models",
+        pricing_version="rightcode-pricing-2026-04-08",
+    ),
     # Anthropic older models (pre-4.6 generation)
     (
         "anthropic",
