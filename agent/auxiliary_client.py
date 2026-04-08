@@ -1352,6 +1352,11 @@ def resolve_provider_client(
 
         default_model = _API_KEY_PROVIDER_AUX_MODELS.get(provider, "")
         final_model = model or default_model
+        # Strip provider prefix (e.g. "zai/glm-5.1" → "glm-5.1") for
+        # direct API providers that don't accept prefixed model names.
+        # See: https://github.com/NousResearch/hermes-agent/issues/6211
+        if final_model and "/" in final_model:
+            final_model = final_model.split("/", 1)[1]
 
         # Provider-specific headers
         headers = {}
