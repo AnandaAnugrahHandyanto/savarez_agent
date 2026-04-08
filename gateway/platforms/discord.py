@@ -58,6 +58,13 @@ from gateway.platforms.base import (
 from tools.url_safety import is_safe_url
 
 
+def _resolve_proxy_url() -> str | None:
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+        value = (os.environ.get(key) or "").strip()
+        if value:
+            return value
+    return None
+
 def _clean_discord_id(entry: str) -> str:
     """Strip common prefixes from a Discord user ID or username entry.
 
@@ -530,6 +537,7 @@ class DiscordAdapter(BasePlatformAdapter):
             self._client = commands.Bot(
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
+                proxy=_resolve_proxy_url(),
             )
             adapter_self = self  # capture for closure
 
