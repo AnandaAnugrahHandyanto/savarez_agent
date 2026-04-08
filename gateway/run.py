@@ -2433,7 +2433,28 @@ class GatewayRunner:
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
-        
+
+        # Long-lived Telegram DM sessions can accidentally carry forward a
+        # prior gateway-operations troubleshooting chain. If recent transcript
+        # history already contains gateway lifecycle commands, isolate the new
+        # inbound message into a fresh session instead of continuing the old
+        # transcript verbatim.
+        if self._should_isolate_gateway_ops_session(event, session_entry, history):
+            logger.warning(
+                "[Gateway] Isolating transcript for %s due to recent gateway lifecycle commands in session %s",
+                session_entry.session_key,
+                session_entry.session_id,
+            )
+            session_entry = self.session_store.get_or_create_session(
+                session_entry.source,
+                system_prompt=session_entry.system_prompt,
+                user_name=session_entry.user_name,
+                user_profile=session_entry.user_profile,
+                user_id=session_entry.user_id,
+                force_new=True,
+            )
+            history = []
+
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
         #
@@ -6240,6 +6261,37 @@ class GatewayRunner:
         if _lock:
             with _lock:
                 self._agent_cache.pop(session_key, None)
+
+    def _should_isolate_gateway_ops_session(
+        self,
+        event: MessageEvent,
+        session_entry: SessionEntry,
+        history: list[dict[str, Any]],
+    ) -> bool:
+        if not history:
+            return False
+        source = getattr(session_entry, "source", None)
+        if source is None:
+            return False
+        if getattr(source, "platform", None) != Platform.TELEGRAM:
+            return False
+        if getattr(source, "thread_id", None):
+            return False
+        dangerous_patterns = (
+            r"\bhermes\s+(?:--profile\s+\S+\s+)?gateway\s+(?:stop|restart|start)\b",
+            r"\bgateway\s+run\s+--replace\b",
+            r"stop all hermes gateways",
+        )
+        for message in history[-24:]:
+            content = message.get("content")
+            if isinstance(content, list):
+                text = " ".join(str(part.get("text") or part) for part in content)
+            else:
+                text = str(content or "")
+            text = text.lower()
+            if any(re.search(pattern, text) for pattern in dangerous_patterns):
+                return True
+        return False
 
     async def _run_agent(
         self,
