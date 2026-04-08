@@ -113,8 +113,15 @@ DEFAULT_CONTEXT_LENGTHS = {
     "llama": 131072,
     # Qwen
     "qwen": 131072,
-    # MiniMax
-    "minimax": 204800,
+    # MiniMax (lowercase — lookup lowercases model names at line 973)
+    "minimax-m1-256k": 1000000,
+    "minimax-m1-128k": 1000000,
+    "minimax-m1-80k": 1000000,
+    "minimax-m1-40k": 1000000,
+    "minimax-m1": 1000000,
+    "minimax-m2.5": 1048576,
+    "minimax-m2.7": 1048576,
+    "minimax": 1048576,
     # GLM
     "glm": 202752,
     # Kimi
@@ -127,7 +134,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek-ai/DeepSeek-V3.2": 65536,
     "moonshotai/Kimi-K2.5": 262144,
     "moonshotai/Kimi-K2-Thinking": 262144,
-    "MiniMaxAI/MiniMax-M2.5": 204800,
+    "minimaxai/minimax-m2.5": 1048576,
     "XiaomiMiMo/MiMo-V2-Flash": 32768,
     "mimo-v2-pro": 1048576,
     "mimo-v2-omni": 1048576,
@@ -155,6 +162,29 @@ _MAX_COMPLETION_KEYS = (
 
 # Local server hostnames / address patterns
 _LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+
+# MiniMax per-model max output tokens
+_MINIMAX_MAX_OUTPUT: Dict[str, int] = {
+    "MiniMax-M1-256k": 262144,
+    "MiniMax-M1-128k": 131072,
+    "MiniMax-M1-80k": 81920,
+    "MiniMax-M1-40k": 40960,
+    "MiniMax-M1": 81920,
+    "MiniMax-M2.5": 131072,
+    "MiniMax-M2.7": 131072,
+}
+
+
+def get_minimax_max_output(model: str) -> int:
+    """Return the max output tokens for a MiniMax model (prefix match).
+
+    Keys are ordered longest-first so more specific variants match before
+    the base ``MiniMax-M1`` prefix.  Falls back to 131072 for unknown models.
+    """
+    for key, value in _MINIMAX_MAX_OUTPUT.items():
+        if model.startswith(key):
+            return value
+    return 131072
 
 
 def _normalize_base_url(base_url: str) -> str:
