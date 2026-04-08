@@ -1037,17 +1037,20 @@ def _resolve_auto() -> Tuple[Optional[OpenAI], Optional[str]]:
     global auxiliary_is_nous
     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
 
-    # ── Step 1: non-aggregator main provider → use main model directly ──
+    # ── Step 1: non-aggregator main provider → use auxiliary model ──
+    # Use the provider's cheap/fast auxiliary model for side tasks instead
+    # of the expensive main model (e.g. glm-4.5-flash instead of glm-5).
     main_provider = _read_main_provider()
     main_model = _read_main_model()
     if (main_provider and main_model
             and main_provider not in _AGGREGATOR_PROVIDERS
             and main_provider not in ("auto", "custom", "")):
-        client, resolved = resolve_provider_client(main_provider, main_model)
+        aux_model = _API_KEY_PROVIDER_AUX_MODELS.get(main_provider, main_model)
+        client, resolved = resolve_provider_client(main_provider, aux_model)
         if client is not None:
             logger.info("Auxiliary auto-detect: using main provider %s (%s)",
-                        main_provider, resolved or main_model)
-            return client, resolved or main_model
+                        main_provider, resolved or aux_model)
+            return client, resolved or aux_model
 
     # ── Step 2: aggregator / fallback chain ──────────────────────────────
     tried = []
