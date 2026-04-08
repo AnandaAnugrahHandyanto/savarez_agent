@@ -563,6 +563,7 @@ class TestMatrixAccessTokenAuth:
         fake_client = MagicMock()
         fake_client.whoami = AsyncMock(return_value=FakeWhoamiResponse("@bot:example.org", "DEV123"))
         fake_client.sync = AsyncMock(return_value=FakeSyncResponse())
+        fake_client.receive_response = AsyncMock()
         fake_client.keys_upload = AsyncMock()
         fake_client.keys_query = AsyncMock()
         fake_client.keys_claim = AsyncMock()
@@ -769,6 +770,7 @@ class TestMatrixDeviceId:
         fake_client = MagicMock()
         fake_client.whoami = AsyncMock(return_value=FakeWhoamiResponse("@bot:example.org", "WHOAMI_DEV"))
         fake_client.sync = AsyncMock(return_value=FakeSyncResponse())
+        fake_client.receive_response = AsyncMock()
         fake_client.keys_upload = AsyncMock()
         fake_client.keys_query = AsyncMock()
         fake_client.keys_claim = AsyncMock()
@@ -880,6 +882,7 @@ class TestMatrixPasswordLoginDeviceId:
         fake_client = MagicMock()
         fake_client.login = AsyncMock(return_value=FakeLoginResponse())
         fake_client.sync = AsyncMock(return_value=FakeSyncResponse())
+        fake_client.receive_response = AsyncMock()
         fake_client.close = AsyncMock()
         fake_client.add_event_callback = MagicMock()
         fake_client.rooms = {}
@@ -952,6 +955,7 @@ class TestMatrixE2EEMaintenance:
 
         fake_client = MagicMock()
         fake_client.sync = AsyncMock(side_effect=_sync_once)
+        fake_client.receive_response = AsyncMock()
         fake_client.send_to_device_messages = AsyncMock(return_value=[])
         fake_client.keys_upload = AsyncMock()
         fake_client.keys_query = AsyncMock()
@@ -1445,6 +1449,7 @@ class TestMatrixEncryptedMedia:
         fake_client = MagicMock()
         fake_client.whoami = AsyncMock(return_value=FakeWhoamiResponse("@bot:example.org", "DEV123"))
         fake_client.sync = AsyncMock(return_value=FakeSyncResponse())
+        fake_client.receive_response = AsyncMock()
         fake_client.keys_upload = AsyncMock()
         fake_client.keys_query = AsyncMock()
         fake_client.keys_claim = AsyncMock()
@@ -2225,6 +2230,7 @@ class TestMatrixPasswordAuth:
         fake_client = MagicMock()
         fake_client.login = AsyncMock(return_value=FakeLoginResponse())
         fake_client.sync = AsyncMock(return_value=FakeSyncResponse())
+        fake_client.receive_response = AsyncMock()
         fake_client.close = AsyncMock()
         fake_client.add_event_callback = MagicMock()
         fake_client.rooms = {}

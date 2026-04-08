@@ -389,6 +389,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Do an initial sync to populate room state.
         resp = await client.sync(timeout=10000, full_state=True)
+        if hasattr(client, 'receive_response'):
+            await client.receive_response(resp)
         if isinstance(resp, nio.SyncResponse):
             self._joined_rooms = set(resp.rooms.join.keys())
             logger.info(
