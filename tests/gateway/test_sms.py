@@ -4,12 +4,27 @@ Covers config loading, format/truncate, echo prevention,
 requirements check, and toolset verification.
 """
 
+import base64
+import hashlib
+import hmac
 import os
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import Platform, PlatformConfig, HomeChannel
+
+
+def _twilio_signature(url: str, params: list[tuple[str, str]], auth_token: str) -> str:
+    payload = url + "".join(f"{name}{value}" for name, value in sorted(params, key=lambda item: item[0]))
+    digest = hmac.new(
+        auth_token.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha1,
+    ).digest()
+    return base64.b64encode(digest).decode("ascii")
 
 
 # ── Config loading ──────────────────────────────────────────────────
@@ -139,6 +154,105 @@ class TestSmsEchoPrevention:
             pc = PlatformConfig(enabled=True, api_key="tok")
             adapter = SmsAdapter(pc)
             assert adapter._from_number == "+15550001111"
+
+
+class TestSmsWebhookSecurity:
+    async def _make_client(self):
+        from gateway.platforms.sms import SmsAdapter
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "+15550001111",
+        }
+        patcher = patch.dict(os.environ, env, clear=False)
+        patcher.start()
+
+        adapter = SmsAdapter(PlatformConfig(enabled=True, api_key="tok"))
+        adapter.handle_message = AsyncMock()
+
+        app = web.Application()
+        app.router.add_post("/webhooks/twilio", adapter._handle_webhook)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        return patcher, adapter, client
+
+    @pytest.mark.asyncio
+    async def test_rejects_missing_signature(self):
+        patcher, adapter, client = await self._make_client()
+        try:
+            resp = await client.post(
+                "/webhooks/twilio",
+                data={
+                    "From": "+15551230000",
+                    "To": "+15550001111",
+                    "Body": "hello",
+                    "MessageSid": "SM123",
+                },
+            )
+            assert resp.status == 403
+            adapter.handle_message.assert_not_awaited()
+        finally:
+            await client.close()
+            patcher.stop()
+
+    @pytest.mark.asyncio
+    async def test_accepts_valid_twilio_signature(self):
+        patcher, adapter, client = await self._make_client()
+        try:
+            params = [
+                ("From", "+15551230000"),
+                ("To", "+15550001111"),
+                ("Body", "hello"),
+                ("MessageSid", "SM123"),
+            ]
+            signature = _twilio_signature(
+                str(client.make_url("/webhooks/twilio")),
+                params,
+                "tok",
+            )
+
+            resp = await client.post(
+                "/webhooks/twilio",
+                data=params,
+                headers={"X-Twilio-Signature": signature},
+            )
+            assert resp.status == 200
+            adapter.handle_message.assert_awaited_once()
+            event = adapter.handle_message.await_args.args[0]
+            assert event.text == "hello"
+            assert event.source.chat_id == "+15551230000"
+        finally:
+            await client.close()
+            patcher.stop()
+
+    @pytest.mark.asyncio
+    async def test_accepts_forwarded_public_url_signature(self):
+        patcher, adapter, client = await self._make_client()
+        try:
+            params = [
+                ("From", "+15551230000"),
+                ("To", "+15550001111"),
+                ("Body", "hello"),
+                ("MessageSid", "SM123"),
+            ]
+            public_url = "https://sms.example.com/webhooks/twilio"
+            signature = _twilio_signature(public_url, params, "tok")
+
+            resp = await client.post(
+                "/webhooks/twilio",
+                data=params,
+                headers={
+                    "X-Twilio-Signature": signature,
+                    "X-Forwarded-Proto": "https",
+                    "X-Forwarded-Host": "sms.example.com",
+                },
+            )
+            assert resp.status == 200
+            adapter.handle_message.assert_awaited_once()
+        finally:
+            await client.close()
+            patcher.stop()
 
 
 # ── Requirements check ─────────────────────────────────────────────

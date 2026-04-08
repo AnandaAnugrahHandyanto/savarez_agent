@@ -17,6 +17,8 @@ Gateway-specific env vars:
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import logging
 import os
 import re
@@ -39,6 +41,7 @@ DEFAULT_WEBHOOK_PORT = 8080
 
 # E.164 phone number pattern for redaction
 _PHONE_RE = re.compile(r"\+[1-9]\d{6,14}")
+_EMPTY_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
 
 
 def _redact_phone(phone: str) -> str:
@@ -48,6 +51,15 @@ def _redact_phone(phone: str) -> str:
     if len(phone) <= 8:
         return phone[:2] + "***" + phone[-2:] if len(phone) > 4 else "****"
     return phone[:5] + "***" + phone[-4:]
+
+
+def _empty_twiml_response(web, status: int = 200):
+    """Return an empty TwiML response with the requested status code."""
+    return web.Response(
+        text=_EMPTY_TWIML,
+        content_type="application/xml",
+        status=status,
+    )
 
 
 def check_sms_requirements() -> bool:
@@ -85,6 +97,109 @@ class SmsAdapter(BasePlatformAdapter):
         creds = f"{self._account_sid}:{self._auth_token}"
         encoded = base64.b64encode(creds.encode("ascii")).decode("ascii")
         return f"Basic {encoded}"
+
+    def _validation_urls(self, request) -> list[str]:
+        """Build candidate public URLs for Twilio signature validation."""
+        raw_path = getattr(request, "raw_path", None) or getattr(
+            request, "path_qs", ""
+        )
+
+        def _add_candidate(candidates: list[str], value: str) -> None:
+            value = (value or "").strip()
+            if not value:
+                return
+            parsed = urllib.parse.urlsplit(value)
+            if parsed.scheme and parsed.netloc:
+                netloc = parsed.netloc.rsplit("@", 1)[-1]
+                value = urllib.parse.urlunsplit(
+                    (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+                )
+            if value not in candidates:
+                candidates.append(value)
+
+        def _first_header(name: str) -> str:
+            raw = request.headers.get(name, "")
+            return raw.split(",", 1)[0].strip()
+
+        candidates: list[str] = []
+
+        forwarded_proto = ""
+        forwarded_host = ""
+        forwarded_header = request.headers.get("Forwarded", "")
+        if forwarded_header:
+            for item in forwarded_header.split(",", 1)[0].split(";"):
+                if "=" not in item:
+                    continue
+                key, value = item.split("=", 1)
+                value = value.strip().strip('"')
+                key = key.strip().lower()
+                if key == "proto" and value and not forwarded_proto:
+                    forwarded_proto = value
+                elif key == "host" and value and not forwarded_host:
+                    forwarded_host = value
+
+        host = (
+            forwarded_host
+            or _first_header("X-Original-Host")
+            or _first_header("X-Forwarded-Host")
+            or request.headers.get("Host", "").strip()
+            or getattr(request, "host", "")
+        )
+        forwarded_port = _first_header("X-Forwarded-Port")
+        host_candidates = [host] if host else []
+        if (
+            host
+            and forwarded_port
+            and ":" not in host.rsplit("@", 1)[-1]
+            and f"{host}:{forwarded_port}" not in host_candidates
+        ):
+            host_candidates.append(f"{host}:{forwarded_port}")
+
+        scheme = (
+            forwarded_proto
+            or _first_header("X-Forwarded-Proto")
+            or getattr(request, "scheme", "")
+        )
+        if scheme:
+            for host_value in host_candidates:
+                _add_candidate(candidates, f"{scheme}://{host_value}{raw_path}")
+
+        if host_candidates and not forwarded_proto:
+            # TLS is commonly terminated before aiohttp, so try both public schemes.
+            for host_value in host_candidates:
+                _add_candidate(candidates, f"https://{host_value}{raw_path}")
+                _add_candidate(candidates, f"http://{host_value}{raw_path}")
+
+        try:
+            _add_candidate(candidates, str(request.url))
+        except Exception:
+            pass
+
+        return candidates
+
+    def _validate_twilio_signature(
+        self, request, form_pairs: list[tuple[str, str]]
+    ) -> bool:
+        """Validate the inbound Twilio webhook signature."""
+        signature = (
+            request.headers.get("X-Twilio-Signature", "")
+            or request.headers.get("x-twilio-signature", "")
+        ).strip()
+        if not signature:
+            return False
+
+        sorted_pairs = sorted(form_pairs, key=lambda item: item[0])
+        for url in self._validation_urls(request):
+            payload = url + "".join(f"{name}{value}" for name, value in sorted_pairs)
+            digest = hmac.new(
+                self._auth_token.encode("utf-8"),
+                payload.encode("utf-8"),
+                hashlib.sha1,
+            ).digest()
+            expected = base64.b64encode(digest).decode("ascii")
+            if hmac.compare_digest(signature, expected):
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # Required abstract methods
@@ -212,15 +327,17 @@ class SmsAdapter(BasePlatformAdapter):
 
         try:
             raw = await request.read()
+            body_text = raw.decode("utf-8")
             # Twilio sends form-encoded data, not JSON
-            form = urllib.parse.parse_qs(raw.decode("utf-8"))
+            form_pairs = urllib.parse.parse_qsl(body_text, keep_blank_values=True)
+            form = urllib.parse.parse_qs(body_text, keep_blank_values=True)
         except Exception as e:
             logger.error("[sms] webhook parse error: %s", e)
-            return web.Response(
-                text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
-                content_type="application/xml",
-                status=400,
-            )
+            return _empty_twiml_response(web, status=400)
+
+        if not self._validate_twilio_signature(request, form_pairs):
+            logger.warning("[sms] rejected inbound webhook with invalid Twilio signature")
+            return _empty_twiml_response(web, status=403)
 
         # Extract fields (parse_qs returns lists)
         from_number = (form.get("From", [""]))[0].strip()
@@ -229,18 +346,12 @@ class SmsAdapter(BasePlatformAdapter):
         message_sid = (form.get("MessageSid", [""]))[0].strip()
 
         if not from_number or not text:
-            return web.Response(
-                text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
-                content_type="application/xml",
-            )
+            return _empty_twiml_response(web)
 
         # Ignore messages from our own number (echo prevention)
         if from_number == self._from_number:
             logger.debug("[sms] ignoring echo from own number %s", _redact_phone(from_number))
-            return web.Response(
-                text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
-                content_type="application/xml",
-            )
+            return _empty_twiml_response(web)
 
         logger.info(
             "[sms] inbound from %s -> %s: %s",
@@ -270,7 +381,4 @@ class SmsAdapter(BasePlatformAdapter):
         task.add_done_callback(self._background_tasks.discard)
 
         # Return empty TwiML — we send replies via the REST API, not inline TwiML
-        return web.Response(
-            text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
-            content_type="application/xml",
-        )
+        return _empty_twiml_response(web)
