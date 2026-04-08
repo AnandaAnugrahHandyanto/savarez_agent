@@ -51,8 +51,8 @@ def _ensure_ssl_certs() -> None:
         import certifi
         os.environ["SSL_CERT_FILE"] = certifi.where()
         return
-    except ImportError:
-        pass
+    except ImportError as _err:
+        logger.warning(f"Ignored ImportError: {_err}")
 
     # 3. Common distro / macOS locations
     for candidate in (
@@ -195,8 +195,8 @@ if _config_path.exists():
             _redact = _security_cfg.get("redact_secrets")
             if _redact is not None:
                 os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
-    except Exception:
-        pass  # Non-fatal; gateway can still run with .env values
+    except Exception as _err:
+        logger.warning(f"Ignored Exception: {_err}")
 
 # Validate config structure early — log warnings so gateway operators see problems
 try:
@@ -392,8 +392,8 @@ def _check_unavailable_skill(command_name: str) -> str | None:
                         f"The **{command_name}** skill is available but not installed.\n"
                         f"Install it with: `hermes skills install {install_path}`"
                     )
-    except Exception:
-        pass
+    except Exception as _err:
+        logger.warning(f"Ignored Exception: {_err}")
     return None
 
 
@@ -452,8 +452,8 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
 
         if importlib.util.find_spec("hermes_cli") is not None:
             return [sys.executable, "-m", "hermes_cli.main"]
-    except Exception:
-        pass
+    except Exception as _err:
+        logger.warning(f"Ignored Exception: {_err}")
 
     return None
 
@@ -543,8 +543,8 @@ class GatewayRunner:
         try:
             from tools.tirith_security import ensure_installed
             ensure_installed(log_failures=False)
-        except Exception:
-            pass  # Non-fatal — fail-open at scan time if unavailable
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
         
         # Initialize session database for session_search tool support
         self._session_db = None
@@ -698,8 +698,8 @@ class GatewayRunner:
                         content = fpath.read_text(encoding="utf-8").strip()
                         if content:
                             _current_memory += f"\n\n## Current {label}:\n{content}"
-            except Exception:
-                pass  # Non-fatal — flush still works, just without the guard
+            except Exception as _err:
+                logger.warning(f"Ignored Exception: {_err}")
 
             # Give the agent a real turn to think about what to save
             flush_prompt = (
@@ -769,8 +769,8 @@ class GatewayRunner:
                 session_key = self.session_store._generate_session_key(source)
                 if isinstance(session_key, str) and session_key:
                     return session_key
-            except Exception:
-                pass
+            except Exception as _err:
+                logger.warning(f"Ignored Exception: {_err}")
         config = getattr(self, "config", None)
         return build_session_key(
             source,
@@ -877,8 +877,8 @@ class GatewayRunner:
                     with open(cfg_path, encoding="utf-8") as _f:
                         cfg = _y.safe_load(_f) or {}
                     file_path = cfg.get("prefill_messages_file", "")
-            except Exception:
-                pass
+            except Exception as _err:
+                logger.warning(f"Ignored Exception: {_err}")
         if not file_path:
             return []
         path = Path(file_path).expanduser()
@@ -915,8 +915,8 @@ class GatewayRunner:
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
                 return (cfg.get("agent", {}).get("system_prompt", "") or "").strip()
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
         return ""
 
     @staticmethod
@@ -937,8 +937,8 @@ class GatewayRunner:
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
                 effort = str(cfg.get("agent", {}).get("reasoning_effort", "") or "").strip()
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
         if not effort:
             effort = os.getenv("HERMES_REASONING_EFFORT", "")
         result = parse_reasoning_effort(effort)
@@ -956,8 +956,8 @@ class GatewayRunner:
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
                 return bool(cfg.get("display", {}).get("show_reasoning", False))
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
         return False
 
     @staticmethod
@@ -983,8 +983,8 @@ class GatewayRunner:
                         mode = "off"
                     elif raw not in (None, ""):
                         mode = str(raw)
-            except Exception:
-                pass
+            except Exception as _err:
+                logger.warning(f"Ignored Exception: {_err}")
         mode = (mode or "all").strip().lower()
         valid = {"all", "result", "error", "off"}
         if mode not in valid:
@@ -1005,8 +1005,8 @@ class GatewayRunner:
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
                 return cfg.get("provider_routing", {}) or {}
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
         return {}
 
     @staticmethod
@@ -1026,8 +1026,8 @@ class GatewayRunner:
                 fb = cfg.get("fallback_providers") or cfg.get("fallback_model") or None
                 if fb:
                     return fb
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
         return None
 
     @staticmethod
@@ -1040,8 +1040,8 @@ class GatewayRunner:
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
                 return cfg.get("smart_model_routing", {}) or {}
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
         return {}
 
     async def start(self) -> bool:
@@ -1057,13 +1057,13 @@ class GatewayRunner:
             _profile = get_active_profile_name()
             if _profile and _profile != "default":
                 logger.info("Active profile: %s", _profile)
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
         try:
             from gateway.status import write_runtime_status
             write_runtime_status(gateway_state="starting", exit_reason=None)
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
         
         # Warn if no user allowlists are configured and open access is not opted in
         _any_allowlist = any(
@@ -1182,8 +1182,8 @@ class GatewayRunner:
                 try:
                     from gateway.status import write_runtime_status
                     write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
-                except Exception:
-                    pass
+                except Exception as _err:
+                    logger.warning(f"Ignored Exception: {_err}")
                 self._request_clean_exit(reason)
                 return True
             if enabled_platform_count > 0:
@@ -1192,8 +1192,8 @@ class GatewayRunner:
                 try:
                     from gateway.status import write_runtime_status
                     write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
-                except Exception:
-                    pass
+                except Exception as _err:
+                    logger.warning(f"Ignored Exception: {_err}")
                 return False
             logger.warning("No messaging platforms enabled.")
             logger.info("Gateway will continue running for cron job execution.")
@@ -1205,8 +1205,8 @@ class GatewayRunner:
         try:
             from gateway.status import write_runtime_status
             write_runtime_status(gateway_state="running", exit_reason=None)
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
         
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
@@ -1316,8 +1316,8 @@ class GatewayRunner:
                             try:
                                 if hasattr(cached_agent, 'shutdown_memory_provider'):
                                     cached_agent.shutdown_memory_provider()
-                            except Exception:
-                                pass
+                            except Exception as _err:
+                                logger.warning(f"Ignored Exception: {_err}")
                         # Mark as flushed and persist to disk so the flag
                         # survives gateway restarts.
                         with self.session_store._lock:
@@ -1438,8 +1438,8 @@ class GatewayRunner:
                         try:
                             from gateway.channel_directory import build_channel_directory
                             build_channel_directory(self.adapters)
-                        except Exception:
-                            pass
+                        except Exception as _err:
+                            logger.warning(f"Ignored Exception: {_err}")
                     else:
                         # Check if the failure is non-retryable
                         if adapter.has_fatal_error and not adapter.fatal_error_retryable:
@@ -1488,8 +1488,8 @@ class GatewayRunner:
             try:
                 if hasattr(agent, 'shutdown_memory_provider'):
                     agent.shutdown_memory_provider()
-            except Exception:
-                pass
+            except Exception as _err:
+                logger.warning(f"Ignored Exception: {_err}")
 
         for platform, adapter in list(self.adapters.items()):
             try:
@@ -1517,8 +1517,8 @@ class GatewayRunner:
         remove_pid_file()
         try:
             write_runtime_status(gateway_state="stopped", exit_reason=self._exit_reason)
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
         
         logger.info("Gateway stopped")
     
@@ -2335,8 +2335,8 @@ class GatewayRunner:
             with open(_config_path, encoding="utf-8") as _pf:
                 _pcfg = _pii_yaml.safe_load(_pf) or {}
             _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
@@ -2387,8 +2387,8 @@ class GatewayRunner:
                             session_info = self._format_session_info()
                             if session_info:
                                 notice = f"{notice}\n\n{session_info}"
-                        except Exception:
-                            pass
+                        except Exception as _err:
+                            logger.warning(f"Ignored Exception: {_err}")
                         await adapter.send(
                             source.chat_id, notice,
                             metadata=getattr(event, 'metadata', None),
@@ -2489,8 +2489,8 @@ class GatewayRunner:
                         if _raw_ctx is not None:
                             try:
                                 _hyg_config_context_length = int(_raw_ctx)
-                            except (TypeError, ValueError):
-                                pass
+                            except (TypeError, ValueError) as _err:
+                                logger.warning(f"Ignored Exception: {_err}")
                         # Read provider for accurate context detection
                         _hyg_provider = _model_cfg.get("provider") or None
                         _hyg_base_url = _model_cfg.get("base_url") or None
@@ -2511,8 +2511,8 @@ class GatewayRunner:
                         _hyg_provider = _hyg_provider or _hyg_runtime.get("provider")
                         _hyg_base_url = _hyg_base_url or _hyg_runtime.get("base_url")
                         _hyg_api_key = _hyg_runtime.get("api_key")
-                    except Exception:
-                        pass
+                    except Exception as _err:
+                        logger.warning(f"Ignored Exception: {_err}")
 
                 # Check custom_providers per-model context_length
                 # (same fallback as run_agent.py lines 1171-1189).
@@ -2534,10 +2534,10 @@ class GatewayRunner:
                                             if _cp_ctx is not None:
                                                 _hyg_config_context_length = int(_cp_ctx)
                                     break
-                    except (TypeError, ValueError):
-                        pass
-            except Exception:
-                pass
+                    except (TypeError, ValueError) as _err:
+                        logger.warning(f"Ignored Exception: {_err}")
+            except Exception as _err:
+                logger.warning(f"Ignored Exception: {_err}")
 
             if _hyg_compression_enabled:
                 _hyg_context_length = get_model_context_length(
@@ -2797,8 +2797,8 @@ class GatewayRunner:
                                 source.chat_id, _stt_msg,
                                 metadata=_stt_meta,
                             )
-                        except Exception:
-                            pass
+                        except Exception as _err:
+                            logger.warning(f"Ignored Exception: {_err}")
 
         # -----------------------------------------------------------------
         # Enrich document messages with context notes for the agent
@@ -2911,8 +2911,8 @@ class GatewayRunner:
                 _typing_adapter = self.adapters.get(source.platform)
                 if _typing_adapter and hasattr(_typing_adapter, "stop_typing"):
                     await _typing_adapter.stop_typing(source.chat_id)
-            except Exception:
-                pass
+            except Exception as _err:
+                logger.warning(f"Ignored Exception: {_err}")
 
             response = agent_result.get("final_response") or ""
             agent_messages = agent_result.get("messages", [])
@@ -3105,8 +3105,8 @@ class GatewayRunner:
                 _err_adapter = self.adapters.get(source.platform)
                 if _err_adapter and hasattr(_err_adapter, "stop_typing"):
                     await _err_adapter.stop_typing(source.chat_id)
-            except Exception:
-                pass
+            except Exception as _err:
+                logger.warning(f"Ignored Exception: {_err}")
             logger.exception("Agent error in session %s", session_key)
             error_type = type(e).__name__
             error_detail = str(e)[:300] if str(e) else "no details available"
@@ -3122,8 +3122,8 @@ class GatewayRunner:
                 try:
                     if _err_body is not None:
                         _err_json = _err_body.json().get("error", {})
-                except Exception:
-                    pass
+                except Exception as _err:
+                    logger.warning(f"Ignored Exception: {_err}")
                 if _err_json.get("type") == "usage_limit_reached":
                     _resets_in = _err_json.get("resets_in_seconds")
                     if _resets_in and _resets_in > 0:
@@ -3185,12 +3185,12 @@ class GatewayRunner:
                     if raw_ctx is not None:
                         try:
                             config_context_length = int(raw_ctx)
-                        except (TypeError, ValueError):
-                            pass
+                        except (TypeError, ValueError) as _err:
+                            logger.warning(f"Ignored Exception: {_err}")
                     provider = model_cfg.get("provider") or None
                     base_url = model_cfg.get("base_url") or None
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
 
         # Resolve runtime credentials for probing
         try:
@@ -3198,8 +3198,8 @@ class GatewayRunner:
             provider = provider or runtime.get("provider")
             base_url = base_url or runtime.get("base_url")
             api_key = runtime.get("api_key")
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
 
         context_length = get_model_context_length(
             model,
@@ -3422,8 +3422,8 @@ class GatewayRunner:
                     lines.append(f"`{cmd}` — {skill_cmds[cmd]['description']}")
                 if len(sorted_cmds) > 10:
                     lines.append(f"\n... and {len(sorted_cmds) - 10} more. Use `/commands` for the full paginated list.")
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
         return "\n".join(lines)
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
@@ -3450,8 +3450,8 @@ class GatewayRunner:
                 for cmd in sorted(skill_cmds):
                     desc = skill_cmds[cmd].get("description", "").strip() or "Skill command"
                     entries.append(f"`{cmd}` — {desc}")
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
 
         if not entries:
             return "No commands available."
@@ -3808,8 +3808,8 @@ class GatewayRunner:
                 model_cfg = cfg.get("model", {})
                 if isinstance(model_cfg, dict):
                     current_provider = model_cfg.get("provider", current_provider)
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
 
         current_provider = normalize_provider(current_provider)
         if current_provider == "auto":
@@ -4214,8 +4214,8 @@ class GatewayRunner:
             if channel:
                 safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
                 await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
 
         # Build a synthetic MessageEvent and feed through the normal pipeline
         # Use SimpleNamespace as raw_message so _get_guild_id() can extract
@@ -4339,8 +4339,8 @@ class GatewayRunner:
             for p in {audio_path, actual_path} - {None}:
                 try:
                     os.unlink(p)
-                except OSError:
-                    pass
+                except OSError as _err:
+                    logger.warning(f"Ignored OSError: {_err}")
 
     async def _deliver_media_from_response(
         self,
@@ -4433,8 +4433,8 @@ class GatewayRunner:
                 cp_cfg = _data.get("checkpoints", {})
                 if isinstance(cp_cfg, bool):
                     cp_cfg = {"enabled": cp_cfg}
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
 
         if not cp_cfg.get("enabled", False):
             return (
@@ -4605,8 +4605,8 @@ class GatewayRunner:
                             image_url=image_url,
                             caption=alt_text,
                         )
-                    except Exception:
-                        pass
+                    except Exception as _err:
+                        logger.warning(f"Ignored Exception: {_err}")
 
                 # Send media files
                 for media_path in (media_files or []):
@@ -4615,8 +4615,8 @@ class GatewayRunner:
                             chat_id=source.chat_id,
                             file_path=media_path,
                         )
-                    except Exception:
-                        pass
+                    except Exception as _err:
+                        logger.warning(f"Ignored Exception: {_err}")
             else:
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 await adapter.send(
@@ -4633,8 +4633,8 @@ class GatewayRunner:
                     content=f"❌ Background task {task_id} failed: {e}",
                     metadata=_thread_metadata,
                 )
-            except Exception:
-                pass
+            except Exception as _err:
+                logger.warning(f"Ignored Exception: {_err}")
 
     async def _handle_btw_command(self, event: MessageEvent) -> str:
         """Handle /btw <question> — ephemeral side question in the same chat."""
@@ -4776,14 +4776,14 @@ class GatewayRunner:
             for image_url, alt_text in (images or []):
                 try:
                     await adapter.send_image(chat_id=source.chat_id, image_url=image_url, caption=alt_text)
-                except Exception:
-                    pass
+                except Exception as _err:
+                    logger.warning(f"Ignored Exception: {_err}")
 
             for media_path in (media_files or []):
                 try:
                     await adapter.send_file(chat_id=source.chat_id, file_path=media_path)
-                except Exception:
-                    pass
+                except Exception as _err:
+                    logger.warning(f"Ignored Exception: {_err}")
 
         except Exception as e:
             logger.exception("/btw task %s failed", task_id)
@@ -4793,8 +4793,8 @@ class GatewayRunner:
                     content=f"❌ /btw failed: {e}",
                     metadata=_thread_meta,
                 )
-            except Exception:
-                pass
+            except Exception as _err:
+                logger.warning(f"Ignored Exception: {_err}")
 
     async def _handle_reasoning_command(self, event: MessageEvent) -> str:
         """Handle /reasoning command — manage reasoning effort and display toggle.
@@ -5039,8 +5039,8 @@ class GatewayRunner:
                     source=source.platform.value if source.platform else "unknown",
                     user_id=source.user_id,
                 )
-            except Exception:
-                pass  # Session might already exist, ignore errors
+            except Exception as _err:
+                logger.warning(f"Ignored Exception: {_err}")
 
         title_arg = event.get_command_args().strip()
         if title_arg:
@@ -5376,8 +5376,8 @@ class GatewayRunner:
                 self.session_store.append_to_transcript(
                     session_entry.session_id, reload_msg
                 )
-            except Exception:
-                pass  # Best-effort; don't fail the reload over a transcript write
+            except Exception as _err:
+                logger.warning(f"Ignored Exception: {_err}")
 
             return "\n".join(lines)
 
@@ -6278,8 +6278,8 @@ class GatewayRunner:
             from agent.display import set_tool_preview_max_len
             _tpl = user_config.get("display", {}).get("tool_preview_length", 0)
             set_tool_preview_max_len(int(_tpl) if _tpl else 0)
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.warning(f"Ignored Exception: {_err}")
 
         # Tool progress mode from config.yaml: "all", "new", "verbose", "off"
         # Falls back to env vars for backward compatibility.
@@ -6483,8 +6483,8 @@ class GatewayRunner:
                                 message_id=progress_msg_id,
                                 content=full_text,
                             )
-                        except Exception:
-                            pass
+                        except Exception as _err:
+                            logger.warning(f"Ignored Exception: {_err}")
                     return
                 except Exception as e:
                     logger.error("Progress message error: %s", e)
@@ -6576,8 +6576,8 @@ class GatewayRunner:
                 load_dotenv(_env_path, override=True, encoding="utf-8")
             except UnicodeDecodeError:
                 load_dotenv(_env_path, override=True, encoding="latin-1")
-            except Exception:
-                pass
+            except Exception as _err:
+                logger.warning(f"Ignored Exception: {_err}")
 
             model = _resolve_gateway_model(user_config)
 
@@ -6964,8 +6964,8 @@ class GatewayRunner:
                         final_response,
                         all_msgs,
                     )
-                except Exception:
-                    pass
+                except Exception as _err:
+                    logger.warning(f"Ignored Exception: {_err}")
 
             return {
                 "final_response": final_response,
@@ -7304,8 +7304,8 @@ class GatewayRunner:
                     stream_task.cancel()
                     try:
                         await stream_task
-                    except asyncio.CancelledError:
-                        pass
+                    except asyncio.CancelledError as _err:
+                        logger.warning(f"Ignored asyncio.CancelledError: {_err}")
             
             # Clean up tracking
             tracking_task.cancel()
@@ -7319,8 +7319,8 @@ class GatewayRunner:
                 if task:
                     try:
                         await task
-                    except asyncio.CancelledError:
-                        pass
+                    except asyncio.CancelledError as _err:
+                        logger.warning(f"Ignored asyncio.CancelledError: {_err}")
 
         # If streaming already delivered the response, mark it so the
         # caller's send() is skipped (avoiding duplicate messages).
@@ -7415,8 +7415,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             )
             try:
                 os.kill(existing_pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass  # Already gone
+            except ProcessLookupError as _err:
+                logger.warning(f"Ignored ProcessLookupError: {_err}")
             except PermissionError:
                 logger.error(
                     "Permission denied killing PID %d. Cannot replace.",
@@ -7439,8 +7439,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 try:
                     os.kill(existing_pid, signal.SIGKILL)
                     _time.sleep(0.5)
-                except (ProcessLookupError, PermissionError):
-                    pass
+                except (ProcessLookupError, PermissionError) as _err:
+                    logger.warning(f"Ignored Exception: {_err}")
             remove_pid_file()
             # Also release all scoped locks left by the old process.
             # Stopped (Ctrl+Z) processes don't release locks on exit,
@@ -7450,8 +7450,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 _released = release_all_scoped_locks()
                 if _released:
                     logger.info("Released %d stale scoped lock(s) from old gateway.", _released)
-            except Exception:
-                pass
+            except Exception as _err:
+                logger.warning(f"Ignored Exception: {_err}")
         else:
             hermes_home = str(get_hermes_home())
             logger.error(
@@ -7471,8 +7471,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     try:
         from tools.skills_sync import sync_skills
         sync_skills(quiet=True)
-    except Exception:
-        pass
+    except Exception as _err:
+        logger.warning(f"Ignored Exception: {_err}")
 
     # Centralized logging — agent.log (INFO+) and errors.log (WARNING+).
     # Idempotent, so repeated calls from AIAgent.__init__ won't duplicate.
@@ -7517,8 +7517,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, signal_handler)
-        except NotImplementedError:
-            pass
+        except NotImplementedError as _err:
+            logger.warning(f"Ignored NotImplementedError: {_err}")
     
     # Start the gateway
     success = await runner.start()
@@ -7563,8 +7563,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     try:
         from tools.mcp_tool import shutdown_mcp_servers
         shutdown_mcp_servers()
-    except Exception:
-        pass
+    except Exception as _err:
+        logger.warning(f"Ignored Exception: {_err}")
 
     return True
 
