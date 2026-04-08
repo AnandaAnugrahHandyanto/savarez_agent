@@ -653,6 +653,28 @@ def _path_is_within_root(path: Path, root: Path) -> bool:
         return False
 
 
+def _should_use_worktree(
+    explicit_worktree: bool = False,
+    shorthand_worktree: bool = False,
+    config_worktree: bool = False,
+    repo_root: Optional[str] = None,
+) -> bool:
+    """Decide whether this CLI invocation should run in a git worktree.
+
+    Explicit CLI flags keep their current strict behavior: if the user asked for
+    a worktree, we'll try to create one and fail fast outside git repos.
+
+    Config-driven worktree mode is softer: enable it automatically when the
+    current directory is inside a git repository, but do not block startup when
+    Hermes is launched from a non-git directory such as ``~``.
+    """
+    if explicit_worktree or shorthand_worktree:
+        return True
+    if not config_worktree:
+        return False
+    return bool(repo_root)
+
+
 def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
     """Create an isolated git worktree for this CLI session.
 
@@ -8479,14 +8501,19 @@ def main(
         # ── Git worktree isolation (#652) ──
         # Create an isolated worktree so this agent instance doesn't collide
         # with other agents working on the same repo.
-        use_worktree = worktree or w or CLI_CONFIG.get("worktree", False)
+        _repo = _git_repo_root()
+        use_worktree = _should_use_worktree(
+            explicit_worktree=worktree,
+            shorthand_worktree=w,
+            config_worktree=CLI_CONFIG.get("worktree", False),
+            repo_root=_repo,
+        )
         wt_info = None
         if use_worktree:
             # Prune stale worktrees from crashed/killed sessions
-            _repo = _git_repo_root()
             if _repo:
                 _prune_stale_worktrees(_repo)
-            wt_info = _setup_worktree()
+            wt_info = _setup_worktree(_repo)
             if wt_info:
                 _active_worktree = wt_info
                 os.environ["TERMINAL_CWD"] = wt_info["path"]

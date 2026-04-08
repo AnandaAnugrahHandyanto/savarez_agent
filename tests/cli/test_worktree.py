@@ -55,6 +55,21 @@ def _git_repo_root(cwd=None):
     return None
 
 
+def _should_use_worktree(
+    explicit_worktree=False,
+    shorthand_worktree=False,
+    config_worktree=False,
+    repo_root=None,
+):
+    """Mirror cli._should_use_worktree for focused unit tests."""
+    if explicit_worktree or shorthand_worktree:
+        return True
+    if not config_worktree:
+        return False
+    return bool(repo_root)
+
+
+
 def _setup_worktree(repo_root):
     """Test version of _setup_worktree — creates a worktree."""
     import uuid
@@ -548,39 +563,27 @@ class TestEdgeCases:
 
 
 class TestCLIFlagLogic:
-    """Test the flag/config OR logic from main()."""
+    """Test the flag/config worktree decision logic from main()."""
 
     def test_worktree_flag_triggers(self):
         """--worktree flag should trigger worktree creation."""
-        worktree = True
-        w = False
-        config_worktree = False
-        use_worktree = worktree or w or config_worktree
-        assert use_worktree
+        assert _should_use_worktree(explicit_worktree=True) is True
 
     def test_w_flag_triggers(self):
         """-w flag should trigger worktree creation."""
-        worktree = False
-        w = True
-        config_worktree = False
-        use_worktree = worktree or w or config_worktree
-        assert use_worktree
+        assert _should_use_worktree(shorthand_worktree=True) is True
 
-    def test_config_triggers(self):
-        """worktree: true in config should trigger worktree creation."""
-        worktree = False
-        w = False
-        config_worktree = True
-        use_worktree = worktree or w or config_worktree
-        assert use_worktree
+    def test_config_triggers_inside_git_repo(self, git_repo):
+        """worktree: true in config should trigger inside git repos."""
+        assert _should_use_worktree(config_worktree=True, repo_root=str(git_repo)) is True
+
+    def test_config_does_not_trigger_outside_git_repo(self):
+        """Config-driven worktrees should not block startup outside git repos."""
+        assert _should_use_worktree(config_worktree=True, repo_root="") is False
 
     def test_none_set_no_trigger(self):
         """No flags and no config should not trigger."""
-        worktree = False
-        w = False
-        config_worktree = False
-        use_worktree = worktree or w or config_worktree
-        assert not use_worktree
+        assert _should_use_worktree() is False
 
 
 class TestTerminalCWDIntegration:
