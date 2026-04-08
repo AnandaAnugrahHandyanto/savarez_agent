@@ -499,7 +499,7 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
 def do_list(source_filter: str = "all", console: Optional[Console] = None) -> None:
     """List installed skills, distinguishing hub, builtin, and local skills."""
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
-    from tools.skills_sync import _read_manifest
+    from tools.skills_sync import _get_bundled_dir, _read_manifest
     from tools.skills_tool import _find_all_skills
 
     c = console or _console
@@ -509,7 +509,7 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
     builtin_names = set(_read_manifest())
     builtin_dir_names = {
         path.parent.name
-        for path in (Path(__file__).resolve().parent.parent / "skills").rglob("SKILL.md")
+        for path in _get_bundled_dir().rglob("SKILL.md")
         if not any(part in {".git", ".github", ".hub"} for part in path.parts)
     }
 
