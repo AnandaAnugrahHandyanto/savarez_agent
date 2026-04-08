@@ -421,16 +421,28 @@ async def vision_analyze_tool(
             response = await async_call_llm(**call_kwargs)
             analysis = extract_content_or_reasoning(response)
 
+        # If both attempts returned empty content, fail loudly so callers
+        # cannot mistake an error for a successful analysis.
+        if not analysis:
+            logger.error("Vision LLM returned empty content after retry")
+            result = {
+                "success": False,
+                "error": "Vision LLM returned empty content after retry. The model may not support vision or the image could not be processed.",
+            }
+            debug_call_data["success"] = False
+            _debug.log_call("vision_analyze_tool", debug_call_data)
+            _debug.save()
+            return json.dumps(result, indent=2, ensure_ascii=False)
+
         analysis_length = len(analysis)
-        
+
         logger.info("Image analysis completed (%s characters)", analysis_length)
-        
-        # Prepare successful response
+
         result = {
             "success": True,
-            "analysis": analysis or "There was a problem with the request and the image could not be analyzed."
+            "analysis": analysis,
         }
-        
+
         debug_call_data["success"] = True
         debug_call_data["analysis_length"] = analysis_length
         
