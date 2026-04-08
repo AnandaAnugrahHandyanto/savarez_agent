@@ -170,6 +170,13 @@ class TestResolveProvider:
     def test_alias_moonshot(self):
         assert resolve_provider("moonshot") == "kimi-coding"
 
+    def test_alias_kimi_for_coding(self):
+        # HERMES_OVERLAYS keys Kimi as "kimi-for-coding" while
+        # PROVIDER_REGISTRY keys it as "kimi-coding". The Telegram
+        # /model picker passes the overlay slug through resolve_provider(),
+        # so this alias is required to bridge the two registries.
+        assert resolve_provider("kimi-for-coding") == "kimi-coding"
+
     def test_alias_minimax_underscore(self):
         assert resolve_provider("minimax_cn") == "minimax-cn"
 
