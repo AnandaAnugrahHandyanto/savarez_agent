@@ -9266,7 +9266,16 @@ class AIAgent:
         # injected skill content that bloats / breaks provider queries.
         if self._memory_manager and final_response and original_user_message:
             try:
-                self._memory_manager.sync_all(original_user_message, final_response)
+                # Extract this turn's messages: from the last user message onward
+                turn_msgs = None
+                for i in range(len(messages) - 1, -1, -1):
+                    if messages[i].get("role") == "user":
+                        turn_msgs = messages[i:]
+                        break
+                self._memory_manager.sync_all(
+                    original_user_message, final_response,
+                    turn_messages=turn_msgs,
+                )
                 self._memory_manager.queue_prefetch_all(original_user_message)
             except Exception:
                 pass
