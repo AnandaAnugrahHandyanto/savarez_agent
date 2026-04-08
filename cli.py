@@ -67,6 +67,10 @@ from hermes_cli.banner import _format_context_length
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
+# Add project root to path
+PROJECT_ROOT = Path(__file__).parent.resolve()
+sys.path.insert(0, str(PROJECT_ROOT))
+
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
@@ -1218,6 +1222,14 @@ class HermesCLI:
         self._smart_model_routing = CLI_CONFIG.get("smart_model_routing", {}) or {}
         self._active_agent_route_signature = None
 
+        # Proactively ensure Ollama is running if tandem mode is enabled
+        if self._smart_model_routing.get("tandem"):
+            try:
+                from agent.smart_model_routing import ensure_tandem_ollama
+                ensure_tandem_ollama(self._smart_model_routing)
+            except ImportError:
+                pass
+
         # Agent will be initialized on first use
         self.agent: Optional[AIAgent] = None
         self._app = None  # prompt_toolkit Application (set in run())
@@ -2048,6 +2060,19 @@ class HermesCLI:
         except AttributeError:
             pass  # Called on a mock/SimpleNamespace in tests
 
+        # Record routing decision for implicit signal collection
+        try:
+            if hasattr(self, "agent") and hasattr(self.agent, "_signal_collector"):
+                collector = self.agent._signal_collector
+                if collector:
+                    collector.on_routing_decision(
+                        routed_model=result.get("model") or "",
+                        routing_reason=result.get("label") or "primary",
+                        message_text=user_message[:500],
+                    )
+        except Exception:
+            pass
+
         return result
 
     def _log_routing_decision(self, user_message: str, route: dict) -> None:
@@ -2787,6 +2812,10 @@ class HermesCLI:
                 ChatConsole().print(
                     f"    [bold {_accent_hex()}]{cmd:<22}[/] [dim]-[/] {_escape(info['description'])}"
                 )
+
+        _cprint(f"\n  {_BOLD}Wiki Workflow{_RST}")
+        _cprint(f"  {_DIM}/wiki init -> /wiki ingest -> /wiki review -> /wiki map{_RST}")
+        _cprint(f"  {_DIM}Then file durable pages with /wiki file-query, /wiki compare, /wiki entity, or /wiki concept.{_RST}")
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
@@ -3694,6 +3723,112 @@ class HermesCLI:
         print(f"(._.) Unknown cron command: {subcommand}")
         print("  Available: list, add, edit, pause, resume, run, remove")
     
+    def _handle_notebook_command(self, cmd: str):
+        """Handle the /notebook command for research and study."""
+        from rich.table import Table
+        from agent.display import ChatConsole
+        
+        cc = ChatConsole()
+        parts = cmd.split()
+        subcommand = parts[1].lower() if len(parts) > 1 else None
+        
+        if not subcommand:
+            # Show the NotebookLM Dashboard
+            table = Table(box=rich_box.SIMPLE, show_header=False, padding=(0, 2))
+            table.add_row("[bold cyan]discover[/]", "Search arXiv & Web for high-quality sources")
+            table.add_row("[bold cyan]brief[/]", "Generate AI study guides & flashcards from sources")
+            table.add_row("[bold cyan]podcast[/]", "Create a 2-speaker 'Deep Dive' audio overview (.mp3)")
+            table.add_row("[bold cyan]map[/]", "Visualize connections in your Context Graph (Mermaid)")
+            table.add_row("[bold cyan]status[/]", "Check active research folder and source counts")
+            table.add_row("[bold cyan]mode[/]", "Toggle Strict Grounded RAG mode (Notebook Mode)")
+
+            panel = Panel(
+                table,
+                title="[bold blue]☤ Hermes NotebookLM Research Lab[/]",
+                subtitle="[dim]Usage: /notebook <command> [args][/]",
+                border_style="blue",
+                padding=(1, 2)
+            )
+            cc.print(panel)
+            return
+
+        if subcommand == "discover":
+            topic = " ".join(parts[2:])
+            if not topic:
+                cc.print("  [bold red]Usage: /notebook discover <topic>[/]")
+                return
+            cc.print(f"\n⚡ [bold yellow]Discovery initiated for:[/] {topic}")
+            msg = f"Use the source-discovery skill to find high-quality sources on '{topic}' and save them to my research folder."
+            if hasattr(self, "_pending_input"):
+                self._pending_input.put(msg)
+                
+        elif subcommand == "brief":
+            cc.print("\n🎙️ [bold yellow]Manually triggering Obsidian Studio Briefings...[/]")
+            import subprocess
+            try:
+                script_path = str(PROJECT_ROOT / "hermes-agent/cron/obsidian_ingest.py")
+                subprocess.run([sys.executable, script_path], check=True)
+                cc.print("✅ Briefing generation check complete. Check your Obsidian vault!")
+            except Exception as e:
+                cc.print(f"❌ Error triggering briefing: {e}")
+
+        elif subcommand == "podcast":
+            source = " ".join(parts[2:])
+            if not source:
+                cc.print("  [bold red]Usage: /notebook podcast <source_file_or_folder>[/]")
+                return
+            cc.print(f"\n🎧 [bold yellow]Generating Alex & Sam Podcast from:[/] {source}")
+            msg = f"Use the audio-podcast skill to generate a deep-dive podcast from '{source}'."
+            if hasattr(self, "_pending_input"):
+                self._pending_input.put(msg)
+
+        elif subcommand == "map":
+            topic = " ".join(parts[2:])
+            cc.print(f"\n🧠 [bold yellow]Mapping Context Graph for:[/] {topic or 'General Context'}")
+            msg = f"Use the mind-map skill to visualize my knowledge graph related to '{topic or 'current context'}'."
+            if hasattr(self, "_pending_input"):
+                self._pending_input.put(msg)
+
+        elif subcommand == "mode":
+            cc.print("\n🔐 [bold yellow]Activating Notebook Mode (Strict Grounded RAG)...[/]")
+            msg = "Activate notebook-mode. Remind me of the strict rules and ask for the source directory."
+            if hasattr(self, "_pending_input"):
+                self._pending_input.put(msg)
+
+        elif subcommand == "status":
+            from agent.wiki_paths import resolve_llm_wiki_path, resolve_obsidian_vault_path
+
+            vault = resolve_obsidian_vault_path()
+            wiki_path = resolve_llm_wiki_path()
+            vault_path = str(vault) if vault else "Not set"
+            cc.print(f"\n📊 [bold blue]Notebook Status[/]")
+            cc.print(f"  [bold]Vault Path:[/] {vault_path}")
+            cc.print(f"  [bold]Wiki Path:[/] {wiki_path}")
+            try:
+                res_dir = Path(os.path.expanduser(vault_path)) / "Hermes" / "Research"
+                if res_dir.exists():
+                    docs = list(res_dir.glob("*.md"))
+                    briefs = [d for d in docs if d.name.endswith("_Briefing.md")]
+                    sources = [d for d in docs if not d.name.endswith("_Briefing.md")]
+                    cc.print(f"  [bold]Research Sources:[/] {len(sources)}")
+                    cc.print(f"  [bold]Studio Briefings:[/] {len(briefs)}")
+                else:
+                    cc.print("  [dim]Research folder not found in vault.[/]")
+            except Exception:
+                cc.print("  [dim]Could not access research folder.[/]")
+        else:
+            cc.print(f"  [bold red]Unknown notebook subcommand:[/] {subcommand}")
+            cc.print("  Available: discover, brief, podcast, map, mode, status")
+
+    def _handle_wiki_command(self, cmd: str):
+        """Handle /wiki [init|status|lint|ingest|review|map|file-query|compare|entity|concept] [domain|source]."""
+        from agent.wiki_command import run_wiki_command
+
+        parts = cmd.split(maxsplit=2)
+        subcommand = parts[1].lower() if len(parts) > 1 else "status"
+        argument = parts[2] if len(parts) > 2 else ""
+        _cprint(run_wiki_command(subcommand, argument))
+
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from hermes_cli.skills_hub import handle_skills_slash
@@ -3929,6 +4064,10 @@ class HermesCLI:
             self.save_conversation()
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
+        elif canonical == "notebook":
+            self._handle_notebook_command(cmd_original)
+        elif canonical == "wiki":
+            self._handle_wiki_command(cmd_original)
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)

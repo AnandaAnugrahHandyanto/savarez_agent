@@ -169,11 +169,33 @@ def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[st
     return route
 
 
+def ensure_tandem_ollama(routing_config: Optional[Dict[str, Any]]) -> None:
+    """Proactively ensure Ollama is running if tandem mode is enabled.
+
+    Called during CLI startup to pre-warm the local server.
+    """
+    cfg = routing_config or {}
+    if not _coerce_bool(cfg.get("enabled"), False) or not _coerce_bool(cfg.get("tandem"), False):
+        return
+
+    cheap_model = cfg.get("cheap_model") or {}
+    provider = str(cheap_model.get("provider") or "").strip().lower()
+    if provider == "ollama":
+        from agent.model_metadata import ensure_ollama_running
+        base_url = str(cheap_model.get("base_url") or "http://localhost:11434").strip()
+        _routing_logger.info("Tandem mode: ensuring Ollama is running at %s", base_url)
+        ensure_ollama_running(base_url)
+
+
 def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any]], primary: Dict[str, Any]) -> Dict[str, Any]:
     """Resolve the effective model/runtime for one turn.
 
     Returns a dict with model/runtime/signature/label fields.
     """
+    # Proactively check tandem status if this is the first turn or config changed
+    if routing_config and _coerce_bool(routing_config.get("tandem"), False):
+        ensure_tandem_ollama(routing_config)
+
     route = choose_cheap_model_route(user_message, routing_config)
     if not route:
         return {

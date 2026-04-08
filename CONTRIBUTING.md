@@ -106,7 +106,14 @@ hermes chat -q "Hello"
 ### Run tests
 
 ```bash
+python scripts/test_preflight.py
 pytest tests/ -v
+```
+
+If the preflight fails, install the expected developer environment first:
+
+```bash
+uv pip install -e ".[all,dev]"
 ```
 
 ---

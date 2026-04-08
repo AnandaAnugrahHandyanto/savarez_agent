@@ -91,6 +91,8 @@ from agent.context_compressor import ContextCompressor
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.knowledge_manager import KnowledgeManager
+from agent.wiki_paths import resolve_obsidian_vault_path
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
@@ -938,7 +940,10 @@ class AIAgent:
         self._fallback_activated = False
         # Provider health tracking (agno-inspired dynamic failover)
         from agent.provider_health import ProviderHealthTracker
-        self._provider_health = ProviderHealthTracker()
+        self._provider_health = ProviderHealthTracker(
+            db=session_db,
+            session_id=session_id,
+        )
         # Legacy attribute kept for backward compat (tests, external callers)
         self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
         if self._fallback_chain and not self.quiet_mode:
@@ -1061,6 +1066,16 @@ class AIAgent:
                 self._session_state = self._session_db.get_session_state(self.session_id)
             except Exception:
                 pass  # Fresh session or missing column — start empty
+
+        # Implicit signal collector for ML feedback loop
+        self._signal_collector = None
+        if self._session_db:
+            try:
+                from agent.implicit_signal_collector import ImplicitSignalCollector
+                self._signal_collector = ImplicitSignalCollector(self._session_db)
+                self._signal_collector.set_session(self.session_id)
+            except Exception:
+                pass
         
         # Load config once for memory, skills, and compression sections
         try:
@@ -1218,16 +1233,31 @@ class AIAgent:
         self._graph_manager = None
         if not skip_memory:
             try:
-                graph_config = _loaded_config.get("context_graph", {})
+                graph_config = _agent_cfg.get("context_graph", {})
                 if graph_config.get("enabled", False):
                     from agent.graph_manager import GraphManager
                     self._graph_manager = GraphManager(
                         db_path=get_hermes_home() / "context-graph" / "kuzu_db",
-                        llm_config=_loaded_config,
+                        llm_config=_agent_cfg,
                     )
                     logger.info("Context graph enabled (Graphiti + Kuzu)")
             except Exception as e:
                 logger.warning("Context graph init failed: %s", e)
+
+        # Unified Knowledge Manager (SQLite + Obsidian mirroring)
+        self._knowledge_manager = None
+        if self._session_db:
+            try:
+                kn_config = _agent_cfg.get("knowledge", {})
+                vault = resolve_obsidian_vault_path(_agent_cfg)
+                self._knowledge_manager = KnowledgeManager(
+                    db=self._session_db,
+                    vault_path=str(vault) if vault else None,
+                    agent_prefix=kn_config.get("agent_prefix", "Hermes"),
+                    graph_manager=self._graph_manager
+                )
+            except Exception as e:
+                logger.warning("KnowledgeManager init failed: %s", e)
 
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10
@@ -5124,6 +5154,13 @@ class AIAgent:
                 except Exception:
                     pass  # Predictor unavailable — use configured effort
 
+            # Record reasoning effort for implicit signal collection
+            if self._signal_collector:
+                try:
+                    self._signal_collector.on_reasoning_effort_set(reasoning_effort)
+                except Exception:
+                    pass
+
             kwargs = {
                 "model": self.model,
                 "instructions": instructions,
@@ -5929,8 +5966,10 @@ class AIAgent:
                 tag=function_args.get("tag"),
                 limit=function_args.get("limit", 20),
                 session_db=self._session_db,
-                session_id=getattr(self, 'session_id', None),
-            )
+                session_id=self.session_id,
+                knowledge_manager=self._knowledge_manager,
+                )
+
         elif function_name == "clarify":
             from tools.clarify_tool import clarify_tool as _clarify_tool
             return _clarify_tool(
@@ -5990,6 +6029,13 @@ class AIAgent:
         parsed_calls = []  # list of (tool_call, function_name, function_args)
         for tool_call in tool_calls:
             function_name = tool_call.function.name
+
+            # Record tool usage for implicit signal collection
+            if self._signal_collector:
+                try:
+                    self._signal_collector.on_skill_used(function_name)
+                except Exception:
+                    pass
 
             # Reset nudge counters
             if function_name == "memory":
@@ -6190,6 +6236,13 @@ class AIAgent:
 
             function_name = tool_call.function.name
 
+            # Record tool usage for implicit signal collection
+            if self._signal_collector:
+                try:
+                    self._signal_collector.on_skill_used(function_name)
+                except Exception:
+                    pass
+
             # Reset nudge counters when the relevant tool is actually used
             if function_name == "memory":
                 self._turns_since_memory = 0
@@ -6368,8 +6421,10 @@ class AIAgent:
                     tag=function_args.get("tag"),
                     limit=function_args.get("limit", 20),
                     session_db=self._session_db,
-                    session_id=getattr(self, 'session_id', None),
-                )
+                    session_id=self.session_id,
+                    knowledge_manager=self._knowledge_manager,
+                    )
+
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('knowledge', function_args, tool_duration, result=function_result)}")
@@ -6962,7 +7017,14 @@ class AIAgent:
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx
-        
+
+        # Record user message for implicit signal collection
+        if self._signal_collector:
+            try:
+                self._signal_collector.on_user_message(user_message)
+            except Exception:
+                pass
+
         if not self.quiet_mode:
             self._safe_print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
         
@@ -9005,6 +9067,13 @@ class AIAgent:
                 )
             except Exception:
                 pass  # Background review is best-effort
+
+        # Finalize implicit signal collection for this session
+        if self._signal_collector:
+            try:
+                self._signal_collector.on_session_end()
+            except Exception:
+                pass
 
         # Plugin hook: on_session_end
         # Fired at the very end of every run_conversation call.

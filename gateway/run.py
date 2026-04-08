@@ -457,6 +457,9 @@ class GatewayRunner:
         import threading as _threading
         self._agent_cache: Dict[str, tuple] = {}
         self._agent_cache_lock = _threading.Lock()
+        _max_agents = int(os.getenv("HERMES_MAX_CONCURRENT_AGENTS", "10"))
+        self._agent_semaphore = _threading.Semaphore(_max_agents)
+        self._max_agent_cache_size = int(os.getenv("HERMES_MAX_AGENT_CACHE", "50"))
 
         # Track active fallback model/provider when primary is rate-limited.
         # Set after an agent run where fallback was activated; cleared when
@@ -1963,6 +1966,9 @@ class GatewayRunner:
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "wiki":
+            return await self._handle_wiki_command(event)
         
         if canonical == "stop":
             return await self._handle_stop_command(event)
@@ -3202,6 +3208,19 @@ class GatewayRunner:
         ]
         
         return "\n".join(lines)
+
+    async def _handle_wiki_command(self, event: MessageEvent) -> str:
+        """Handle /wiki [init|status|lint] [domain]."""
+        from agent.wiki_command import run_wiki_command_async
+
+        args = event.get_command_args().strip()
+        if not args:
+            return await run_wiki_command_async("status", "")
+
+        parts = args.split(maxsplit=1)
+        subcommand = parts[0]
+        argument = parts[1] if len(parts) > 1 else ""
+        return await run_wiki_command_async(subcommand, argument)
     
     async def _handle_stop_command(self, event: MessageEvent) -> str:
         """Handle /stop command - interrupt a running agent.
@@ -3239,6 +3258,9 @@ class GatewayRunner:
         lines = [
             "📖 **Hermes Commands**\n",
             *gateway_help_lines(),
+            "\n🗺️ **Wiki Quick Start**",
+            "`/wiki init` -> `/wiki ingest` -> `/wiki review` -> `/wiki map`",
+            "Then preserve durable knowledge with `/wiki file-query`, `/wiki compare`, `/wiki entity`, or `/wiki concept`.",
         ]
         try:
             from agent.skill_commands import get_skill_commands
@@ -5706,6 +5728,18 @@ class GatewayRunner:
                 logger.debug("status_callback error (%s): %s", event_type, _e)
 
         def run_sync():
+            # Limit concurrent agent executions to prevent OOM.
+            # Blocks until a slot is available (configurable via HERMES_MAX_CONCURRENT_AGENTS).
+            _sem = getattr(self, "_agent_semaphore", None)
+            if _sem and not _sem.acquire(timeout=120):
+                return "Server is at capacity. Please try again shortly."
+            try:
+                return _run_sync_inner()
+            finally:
+                if _sem:
+                    _sem.release()
+
+        def _run_sync_inner():
             # Pass session_key to process registry via env var so background
             # processes can be mapped back to this gateway session
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
@@ -5836,6 +5870,14 @@ class GatewayRunner:
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
                         _cache[session_key] = (agent, _sig)
+                        # LRU eviction: remove oldest entries when cache exceeds max size
+                        _max = getattr(self, "_max_agent_cache_size", 50)
+                        while len(_cache) > _max:
+                            oldest = next(iter(_cache))
+                            if oldest != session_key:
+                                _cache.pop(oldest, None)
+                            else:
+                                break
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
 
             # Per-message state — callbacks and reasoning config change every

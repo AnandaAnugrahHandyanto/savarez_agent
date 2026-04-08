@@ -403,12 +403,25 @@ context_graph:
   # FalkorDB settings (only if backend: "falkordb")
   # falkordb_url: "redis://localhost:6379"
 
-  # Obsidian vault sync (Phase 2 — not yet implemented)
-  # obsidian:
-  #   enabled: false
-  #   vault_path: "~/Documents/Obsidian Vault"
-  #   agent_prefix: "Hermes"
-  #   auto_sync: false
+# =============================================================================
+# Structured Personal Knowledge & Obsidian Integration
+# =============================================================================
+# If configured, every structured knowledge save (Person, Project, Decision, Note)
+# is mirrored to a Markdown file in your Obsidian vault. This provides a
+# browseable, compounding knowledge base that survives outside of Hermes.
+knowledge:
+  # Absolute path to your Obsidian vault.
+  # Default: "" (mirrors to ~/.hermes/knowledge/ instead)
+  vault_path: "~/Documents/Obsidian Vault"
+
+  # Subdirectory within the vault where Hermes stores its data.
+  agent_prefix: "Hermes"
+
+  # Automatically export recent context graph episodes to Obsidian.
+  sync_episodes: true
+
+  # Seconds between background sync/ingestion tasks.
+  sync_interval: 3600
 
 # LLM for context graph ingestion. Uses the auxiliary client system.
 # Search does NOT use LLM — it's pure graph traversal.

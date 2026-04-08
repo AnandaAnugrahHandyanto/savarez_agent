@@ -18,6 +18,7 @@ Requires:
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -241,6 +242,62 @@ else:
     security_headers_middleware = None  # type: ignore[assignment]
 
 
+class _RateLimiter:
+    """Simple per-IP sliding-window rate limiter."""
+
+    def __init__(self, max_requests: int = 60, window_seconds: int = 60):
+        self._max = max_requests
+        self._window = window_seconds
+        self._buckets: Dict[str, List[float]] = {}
+
+    def is_allowed(self, ip: str) -> bool:
+        now = time.time()
+        cutoff = now - self._window
+        bucket = self._buckets.get(ip)
+        if bucket is None:
+            self._buckets[ip] = [now]
+            return True
+        # Trim old entries
+        bucket[:] = [t for t in bucket if t > cutoff]
+        if len(bucket) >= self._max:
+            return False
+        bucket.append(now)
+        return True
+
+    def cleanup(self) -> None:
+        """Periodically remove stale IPs (call from a slow path)."""
+        now = time.time()
+        cutoff = now - self._window * 2
+        stale = [ip for ip, b in self._buckets.items() if not b or b[-1] < cutoff]
+        for ip in stale:
+            self._buckets.pop(ip, None)
+
+
+_rate_limiter = _RateLimiter(
+    max_requests=int(os.getenv("API_RATE_LIMIT_MAX", "60")),
+    window_seconds=int(os.getenv("API_RATE_LIMIT_WINDOW", "60")),
+)
+
+
+if AIOHTTP_AVAILABLE:
+    @web.middleware
+    async def rate_limit_middleware(request, handler):
+        """Per-IP rate limiting. Returns 429 when limit exceeded."""
+        # Skip health checks
+        if request.path in ("/health", "/v1/health"):
+            return await handler(request)
+        ip = request.remote or "unknown"
+        if not _rate_limiter.is_allowed(ip):
+            return web.json_response(
+                {"error": {"message": "Rate limit exceeded. Try again later.", "type": "rate_limit_error"}},
+                status=429,
+                headers={"Retry-After": str(_rate_limiter._window)},
+            )
+        return await handler(request)
+else:
+    rate_limit_middleware = None  # type: ignore[assignment]
+
+
 class _IdempotencyCache:
     """In-memory idempotency cache with TTL and basic LRU semantics."""
     def __init__(self, max_items: int = 1000, ttl_seconds: int = 300):
@@ -374,7 +431,7 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
-            if token == self._api_key:
+            if hmac.compare_digest(token, self._api_key):
                 return None  # Auth OK
 
         return web.json_response(
@@ -1284,6 +1341,100 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    async def _handle_macro_metrics(self, request: "web.Request") -> "web.Response":
+        """GET /api/macro-metrics — fetch latest macroeconomic metrics from predictions."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            if self._session_db is None:
+                from hermes_state import SessionDB
+                self._session_db = SessionDB()
+            
+            # Fetch all unresolved predictions
+            predictions = self._session_db.get_unresolved_predictions()
+            
+            # Filter for macro_metric type
+            macro_metrics = [
+                p for p in predictions 
+                if p.get("prediction_type") == "macro_metric"
+            ]
+            
+            # Group by subject and keep the latest for each
+            latest_metrics = {}
+            for m in sorted(macro_metrics, key=lambda x: x.get("predicted_at", 0)):
+                latest_metrics[m["subject"]] = {
+                    "value": m["predicted_value"],
+                    "timestamp": m["predicted_at"],
+                    "confidence": m["confidence"]
+                }
+            
+            return web.json_response({"metrics": latest_metrics})
+        except Exception as e:
+            logger.error("Error fetching macro metrics: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_macro_history(self, request: "web.Request") -> "web.Response":
+        """GET /api/macro-history — fetch historical time-series for a metric."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            metric_id = request.query.get("metric_id")
+            days = int(request.query.get("days", "30"))
+            if not metric_id:
+                return web.json_response({"error": "metric_id is required"}, status=400)
+                
+            if self._session_db is None:
+                from hermes_state import SessionDB
+                self._session_db = SessionDB()
+                
+            history = self._session_db.get_macro_history(metric_id, days=days)
+            return web.json_response({"history": history})
+        except Exception as e:
+            logger.error("Error fetching macro history: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_macro_correlation(self, request: "web.Request") -> "web.Response":
+        """GET /api/macro-correlation — calculate correlation between two metrics."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            metric_a = request.query.get("metric_a")
+            metric_b = request.query.get("metric_b")
+            days = int(request.query.get("days", "90"))
+            if not metric_a or not metric_b:
+                return web.json_response({"error": "metric_a and metric_b are required"}, status=400)
+                
+            from agent.macro_correlation_engine import MacroCorrelationEngine
+            engine = MacroCorrelationEngine(self._session_db)
+            result = engine.get_correlation(metric_a, metric_b, days=days)
+            return web.json_response(result)
+        except Exception as e:
+            logger.error("Error calculating macro correlation: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_macro_narrative(self, request: "web.Request") -> "web.Response":
+        """GET /api/macro-narrative — get truth-seeking insight for two metrics."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            metric_a = request.query.get("metric_a")
+            metric_b = request.query.get("metric_b")
+            days = int(request.query.get("days", "90"))
+            if not metric_a or not metric_b:
+                return web.json_response({"error": "metric_a and metric_b are required"}, status=400)
+                
+            from agent.macro_correlation_engine import MacroCorrelationEngine
+            engine = MacroCorrelationEngine(self._session_db)
+            result = engine.get_divergence_narrative(metric_a, metric_b, days=days)
+            return web.json_response(result)
+        except Exception as e:
+            logger.error("Error generating macro narrative: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
     # ------------------------------------------------------------------
     # Approval gate handlers
     # ------------------------------------------------------------------
@@ -1482,7 +1633,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return False
 
         try:
-            mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
+            mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware, rate_limit_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws)
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
@@ -1501,6 +1652,11 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+            # Macro metrics API
+            self._app.router.add_get("/api/macro-metrics", self._handle_macro_metrics)
+            self._app.router.add_get("/api/macro-history", self._handle_macro_history)
+            self._app.router.add_get("/api/macro-correlation", self._handle_macro_correlation)
+            self._app.router.add_get("/api/macro-narrative", self._handle_macro_narrative)
             # Approval gate
             self._app.router.add_post("/v1/approvals/{request_id}", self._handle_approval_response)
             self._app.router.add_get("/v1/approvals", self._handle_list_approvals)

@@ -64,3 +64,14 @@ New content here." >> "$VAULT/Existing Note.md"
 ## Wikilinks
 
 Obsidian links notes with `[[Note Name]]` syntax. When creating notes, use these to link related content.
+
+## Using with Hermes Wiki
+
+Hermes also has a persistent markdown wiki via the `kb` tool.
+
+- Set `LLM_WIKI_PATH` to a directory inside the same vault if you want the wiki and your notes to live together.
+- If `LLM_WIKI_PATH` is unset and `OBSIDIAN_VAULT_PATH` is configured, Hermes may default the wiki to `"$VAULT/Hermes/Wiki"`.
+- Prefer the `/wiki` workflow for the disciplined loop:
+  `/wiki init` -> `/wiki ingest` -> `/wiki review` -> `/wiki map` -> `/wiki file-query|compare|entity|concept` -> `/wiki lint`
+- Use the `llm-wiki` skill when you need the deeper operating model behind that workflow.
+- Use this Obsidian skill for ad hoc note browsing and editing around the wiki, not as a replacement for the structured wiki maintenance flow.

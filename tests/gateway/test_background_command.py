@@ -271,6 +271,8 @@ class TestBackgroundInHelp:
         event = _make_event(text="/help")
         result = await runner._handle_help_command(event)
         assert "/background" in result
+        assert "Wiki Quick Start" in result
+        assert "/wiki init" in result
 
     def test_background_is_known_command(self):
         """The /background command is in GATEWAY_KNOWN_COMMANDS."""

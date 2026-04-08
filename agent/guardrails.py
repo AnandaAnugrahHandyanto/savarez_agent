@@ -23,6 +23,7 @@ Usage:
 
 import logging
 import re
+import unicodedata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -91,7 +92,7 @@ def scan_content(content: str) -> Optional[str]:
     Drop-in replacement for _scan_memory_content, _scan_content in
     memory_tool, knowledge_tool, context_graph_tool, cronjob_tools.
     """
-    # Check invisible unicode
+    # Check invisible unicode (before normalization, since NFKC may strip some)
     for char in INVISIBLE_CHARS:
         if char in content:
             return (
@@ -99,9 +100,13 @@ def scan_content(content: str) -> Optional[str]:
                 f"U+{ord(char):04X} (possible injection)."
             )
 
-    # Check threat patterns
+    # Normalize to NFKC to defeat confusable-character bypass
+    # (e.g. Cyrillic "o" U+043E for Latin "o" in "ignore previous instructions")
+    normalized = unicodedata.normalize("NFKC", content)
+
+    # Check threat patterns against normalized content
     for pattern, pid in THREAT_PATTERNS:
-        if re.search(pattern, content, re.IGNORECASE):
+        if re.search(pattern, normalized, re.IGNORECASE):
             return (
                 f"Blocked: content matches threat pattern '{pid}'. "
                 f"Memory entries are injected into the system prompt and "

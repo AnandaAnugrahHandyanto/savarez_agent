@@ -1,9 +1,10 @@
 ---
 name: arxiv
 description: Search and retrieve academic papers from arXiv using their free REST API. No API key needed. Search by keyword, author, category, or ID. Combine with web_extract or the ocr-and-documents skill to read full paper content.
-version: 1.0.0
+version: 1.1.0
 author: Hermes Agent
 license: MIT
+dependencies: []
 metadata:
   hermes:
     tags: [Research, Arxiv, Papers, Academic, Science, API]
@@ -12,7 +13,14 @@ metadata:
 
 # arXiv Research
 
-Search and retrieve academic papers from arXiv via their free REST API. No API key, no dependencies — just curl.
+Search and retrieve academic papers from arXiv via their free REST API. No API key, no dependencies — just curl or Python.
+
+## Step 0: Context Discovery
+
+Before starting your research, clarify the user's objective:
+- **Depth:** Do they need a broad survey (10+ papers) or a deep dive into 1-2 specific papers?
+- **Recency:** Is "latest" critical, or are they looking for foundational/highly-cited papers?
+- **Format:** Do they need abstracts for screening, or full text for detailed analysis?
 
 ## Quick Reference
 
@@ -33,28 +41,30 @@ The API returns Atom XML. Parse with `grep`/`sed` or pipe through `python3` for 
 curl -s "https://export.arxiv.org/api/query?search_query=all:GRPO+reinforcement+learning&max_results=5"
 ```
 
-### Clean output (parse XML to readable format)
+### Clean output (Robust Parsing)
 
-```bash
-curl -s "https://export.arxiv.org/api/query?search_query=all:GRPO+reinforcement+learning&max_results=5&sortBy=submittedDate&sortOrder=descending" | python3 -c "
-import sys, xml.etree.ElementTree as ET
-ns = {'a': 'http://www.w3.org/2005/Atom'}
-root = ET.parse(sys.stdin).getroot()
-for i, entry in enumerate(root.findall('a:entry', ns)):
-    title = entry.find('a:title', ns).text.strip().replace('\n', ' ')
-    arxiv_id = entry.find('a:id', ns).text.strip().split('/abs/')[-1]
-    published = entry.find('a:published', ns).text[:10]
-    authors = ', '.join(a.find('a:name', ns).text for a in entry.findall('a:author', ns))
-    summary = entry.find('a:summary', ns).text.strip()[:200]
-    cats = ', '.join(c.get('term') for c in entry.findall('a:category', ns))
-    print(f'{i+1}. [{arxiv_id}] {title}')
-    print(f'   Authors: {authors}')
-    print(f'   Published: {published} | Categories: {cats}')
-    print(f'   Abstract: {summary}...')
-    print(f'   PDF: https://arxiv.org/pdf/{arxiv_id}')
+Use the built-in `agent.research_utils` for safe XML handling and rate-limiting.
+
+```python
+from agent.research_utils import safe_parse_arxiv
+from agent.rate_limit import rate_limit
+import urllib.request, urllib.parse
+
+@rate_limit(\"arxiv\", 0.33)  # Max 1 request per 3 seconds
+def fetch_arxiv(query, max_results=5):
+    url = f\"https://export.arxiv.org/api/query?search_query=all:{urllib.parse.quote(query)}&max_results={max_results}\"
+    with urllib.request.urlopen(url) as resp:
+        return safe_parse_arxiv(resp.read())
+
+papers = fetch_arxiv(\"GRPO reinforcement learning\")
+for p in papers:
+    print(f\"[{p['id']}] {p['title']}\")
+    print(f\"   Authors: {', '.join(p['authors'])}\")
+    print(f\"   Abstract: {p['summary'][:200]}...\")
     print()
-"
 ```
+
+### Clean output (Bash fallback)
 
 ## Search Query Syntax
 

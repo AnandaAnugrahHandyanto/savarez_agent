@@ -121,10 +121,39 @@ class ProviderHealthTracker:
         self,
         demotion_threshold: int = DEFAULT_DEMOTION_THRESHOLD,
         recovery_window: float = DEFAULT_RECOVERY_WINDOW,
+        db: Any = None,
+        session_id: str = None,
     ):
         self.demotion_threshold = demotion_threshold
         self.recovery_window = recovery_window
         self._metrics: Dict[str, ProviderMetrics] = {}
+        self._db = db
+        self._session_id = session_id
+
+        # Pre-populate learned recovery times from persisted history
+        if db:
+            try:
+                self._load_persisted_recovery_data(db)
+            except Exception:
+                pass  # Fresh DB or missing table — start empty
+
+    def _load_persisted_recovery_data(self, db: Any) -> None:
+        """Load historical recovery times from the database."""
+        # Get distinct providers with recovery data
+        try:
+            with db._lock:
+                rows = db._conn.execute(
+                    "SELECT DISTINCT provider FROM provider_health_log WHERE event_type = 'recovery'"
+                ).fetchall()
+            for row in rows:
+                provider = row[0]
+                recovery_times = db.get_provider_recovery_history(provider, limit=20)
+                if recovery_times:
+                    m = self._get_metrics(provider)
+                    m._recovery_times = list(recovery_times)
+                    logger.debug("Loaded %d recovery times for %s", len(recovery_times), provider)
+        except Exception:
+            pass
 
     def _get_metrics(self, provider: str) -> ProviderMetrics:
         if provider not in self._metrics:
@@ -157,6 +186,19 @@ class ProviderHealthTracker:
                 provider, recovery_seconds,
                 m.learned_recovery_window or recovery_seconds,
             )
+            # Persist recovery event
+            if self._db:
+                try:
+                    self._db.log_provider_health_event(
+                        provider=provider,
+                        event_type="recovery",
+                        latency_ms=latency_ms,
+                        health_score=m.health_score,
+                        recovery_time_seconds=recovery_seconds,
+                        session_id=self._session_id,
+                    )
+                except Exception:
+                    pass
 
     def record_failure(self, provider: str, error: str = "") -> None:
         """Record a failed API call."""

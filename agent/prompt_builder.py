@@ -180,12 +180,13 @@ CONTEXT_GRAPH_GUIDANCE = (
 )
 
 KB_WIKI_GUIDANCE = (
-    "You have a persistent knowledge base wiki at ~/hermes-kb/ accessible via the 'kb' tool. "
-    "The wiki is a compounding knowledge artifact — concepts and articles that grow richer "
-    "over time. Use 'kb search' to check for existing knowledge before researching topics "
-    "from scratch. When you synthesize valuable, non-obvious insights during a conversation, "
-    "use 'kb file' to write them back into the wiki as concepts or articles — this is how "
-    "knowledge compounds across sessions. Use 'kb list' to browse what's available."
+    "You have a persistent markdown wiki accessible via the 'kb' tool and the '/wiki' "
+    "workflow. It may live inside the user's Obsidian vault or at a standalone wiki path. "
+    "Prefer '/wiki init', '/wiki ingest', '/wiki review', and '/wiki map' as the main user-facing "
+    "workflow. Use '/wiki file-query', '/wiki compare', '/wiki entity', and '/wiki concept' "
+    "to save durable pages back into the wiki. Under the hood, use 'kb search' and 'kb list' "
+    "before re-researching a topic, 'kb file' when you need precise control over page contents, "
+    "and 'kb lint' to keep the wiki healthy over time."
 )
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = (

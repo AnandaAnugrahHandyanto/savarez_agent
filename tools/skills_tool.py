@@ -1227,7 +1227,12 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             capture_result,
             env_snapshot=env_snapshot,
         )
-        setup_needed = bool(remaining_missing_required_envs)
+
+        # Dependency check (Phase 1)
+        from agent.skill_utils import check_skill_dependencies
+        missing_dependencies = check_skill_dependencies(frontmatter, skill_dir)
+
+        setup_needed = bool(remaining_missing_required_envs) or bool(missing_dependencies)
 
         # Register available skill env vars so they pass through to sandboxed
         # execution environments (execute_code, terminal).  Only vars that are
@@ -1290,6 +1295,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             "required_commands": [],
             "missing_required_environment_variables": remaining_missing_required_envs,
             "missing_credential_files": missing_cred_files,
+            "missing_dependencies": missing_dependencies,
             "missing_required_commands": [],
             "setup_needed": setup_needed,
             "setup_skipped": capture_result["setup_skipped"],
@@ -1310,12 +1316,16 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 f"env ${env_name}" for env_name in remaining_missing_required_envs
             ] + [
                 f"file {path}" for path in missing_cred_files
+            ] + [
+                f"python package {pkg}" for pkg in missing_dependencies
             ]
             setup_note = _build_setup_note(
                 SkillReadinessStatus.SETUP_NEEDED,
                 missing_items,
                 setup_help,
             )
+            if missing_dependencies:
+                setup_note += f" To install missing packages, run: `pip install {' '.join(missing_dependencies)}`"
             if backend in _REMOTE_ENV_BACKENDS and setup_note:
                 setup_note = f"{setup_note} {backend.upper()}-backed skills need these requirements available inside the remote environment as well."
             if setup_note:

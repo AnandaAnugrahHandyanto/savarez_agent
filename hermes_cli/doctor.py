@@ -4,12 +4,19 @@ Doctor command for hermes CLI.
 Diagnoses issues with Hermes Agent setup.
 """
 
+import io
+import json
 import os
 import sys
 import subprocess
 import shutil
+from contextlib import nullcontext, redirect_stdout
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
+from hermes_cli.bootstrap_contract import build_bootstrap_summary, collect_provider_readiness
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_cli.dev_preflight import find_missing_test_modules, test_install_command
 from hermes_constants import display_hermes_home
 
 PROJECT_ROOT = get_project_root()
@@ -79,16 +86,65 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
     return updated_available, updated_unavailable
 
 
+@dataclass
+class _DoctorCollector:
+    emit: bool = True
+    sections: list[dict] = field(default_factory=list)
+    current_section: dict | None = None
+
+    def begin_section(self, title: str) -> None:
+        section = {"name": title, "checks": []}
+        self.sections.append(section)
+        self.current_section = section
+
+    def record(self, level: str, text: str, detail: str = "") -> None:
+        if self.current_section is None:
+            self.begin_section("General")
+        self.current_section["checks"].append({
+            "level": level,
+            "text": text,
+            "detail": detail,
+        })
+
+
+_DOCTOR_COLLECTOR: _DoctorCollector | None = None
+
+
+def begin_section(title: str) -> None:
+    if _DOCTOR_COLLECTOR is not None:
+        _DOCTOR_COLLECTOR.begin_section(title)
+        if not _DOCTOR_COLLECTOR.emit:
+            return
+    print()
+    print(color(f"◆ {title}", Colors.CYAN, Colors.BOLD))
+
+
 def check_ok(text: str, detail: str = ""):
+    if _DOCTOR_COLLECTOR is not None:
+        _DOCTOR_COLLECTOR.record("ok", text, detail)
+        if not _DOCTOR_COLLECTOR.emit:
+            return
     print(f"  {color('✓', Colors.GREEN)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
 
 def check_warn(text: str, detail: str = ""):
+    if _DOCTOR_COLLECTOR is not None:
+        _DOCTOR_COLLECTOR.record("warn", text, detail)
+        if not _DOCTOR_COLLECTOR.emit:
+            return
     print(f"  {color('⚠', Colors.YELLOW)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
 
 def check_fail(text: str, detail: str = ""):
+    if _DOCTOR_COLLECTOR is not None:
+        _DOCTOR_COLLECTOR.record("fail", text, detail)
+        if not _DOCTOR_COLLECTOR.emit:
+            return
     print(f"  {color('✗', Colors.RED)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
 
 def check_info(text: str):
+    if _DOCTOR_COLLECTOR is not None:
+        _DOCTOR_COLLECTOR.record("info", text, "")
+        if not _DOCTOR_COLLECTOR.emit:
+            return
     print(f"    {color('→', Colors.CYAN)} {text}")
 
 
@@ -111,8 +167,7 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
     if not unit_path.exists():
         return
 
-    print()
-    print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
+    begin_section("Gateway Service")
 
     linger_enabled, linger_detail = get_systemd_linger_status()
     if linger_enabled is True:
@@ -127,7 +182,11 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
 
 def run_doctor(args):
     """Run diagnostic checks."""
+    global _DOCTOR_COLLECTOR
+
     should_fix = getattr(args, 'fix', False)
+    json_mode = getattr(args, "json", False)
+    _DOCTOR_COLLECTOR = _DoctorCollector(emit=not json_mode)
 
     # Doctor runs from the interactive CLI, so CLI-gated tool availability
     # checks (like cronjob management) should see the same context as `hermes`.
@@ -137,16 +196,16 @@ def run_doctor(args):
     manual_issues = []  # issues that can't be auto-fixed
     fixed_count = 0
     
-    print()
-    print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
-    print(color("│                 🩺 Hermes Doctor                        │", Colors.CYAN))
-    print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+    if not json_mode:
+        print()
+        print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
+        print(color("│                 🩺 Hermes Doctor                        │", Colors.CYAN))
+        print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
     
     # =========================================================================
     # Check: Python version
     # =========================================================================
-    print()
-    print(color("◆ Python Environment", Colors.CYAN, Colors.BOLD))
+    begin_section("Python Environment")
     
     py_version = sys.version_info
     if py_version >= (3, 11):
@@ -170,8 +229,7 @@ def run_doctor(args):
     # =========================================================================
     # Check: Required packages
     # =========================================================================
-    print()
-    print(color("◆ Required Packages", Colors.CYAN, Colors.BOLD))
+    begin_section("Required Packages")
     
     required_packages = [
         ("openai", "OpenAI SDK"),
@@ -201,12 +259,26 @@ def run_doctor(args):
             check_ok(name, "(optional)")
         except ImportError:
             check_warn(name, "(optional, not installed)")
-    
+
+    # =========================================================================
+    # Check: Test environment
+    # =========================================================================
+    begin_section("Test Environment")
+
+    missing_test_modules = find_missing_test_modules()
+    if not missing_test_modules:
+        check_ok("Test dependencies", "(prompt_toolkit, pytest-asyncio, xdist)")
+    else:
+        for module_name, reason in missing_test_modules.items():
+            check_warn(module_name, f"({reason})")
+        install_cmd = test_install_command()
+        check_info(f"Install the dev environment: {install_cmd}")
+        issues.append(f"Install test dependencies: {install_cmd}")
+
     # =========================================================================
     # Check: Configuration files
     # =========================================================================
-    print()
-    print(color("◆ Configuration Files", Colors.CYAN, Colors.BOLD))
+    begin_section("Configuration Files")
     
     # Check ~/.hermes/.env (primary location for user config)
     env_path = HERMES_HOME / '.env'
@@ -261,19 +333,21 @@ def run_doctor(args):
     # =========================================================================
     # Check: Auth providers
     # =========================================================================
-    print()
-    print(color("◆ Auth Providers", Colors.CYAN, Colors.BOLD))
+    begin_section("Auth Providers")
 
     try:
         from hermes_cli.auth import get_nous_auth_status, get_codex_auth_status
 
-        nous_status = get_nous_auth_status()
+        quiet_auth = redirect_stdout(io.StringIO()) if json_mode else nullcontext()
+        with quiet_auth:
+            nous_status = get_nous_auth_status()
+            codex_status = get_codex_auth_status()
+
         if nous_status.get("logged_in"):
             check_ok("Nous Portal auth", "(logged in)")
         else:
             check_warn("Nous Portal auth", "(not logged in)")
 
-        codex_status = get_codex_auth_status()
         if codex_status.get("logged_in"):
             check_ok("OpenAI Codex auth", "(logged in)")
         else:
@@ -291,8 +365,7 @@ def run_doctor(args):
     # =========================================================================
     # Check: Directory structure
     # =========================================================================
-    print()
-    print(color("◆ Directory Structure", Colors.CYAN, Colors.BOLD))
+    begin_section("Directory Structure")
     
     hermes_home = HERMES_HOME
     if hermes_home.exists():
@@ -385,8 +458,7 @@ def run_doctor(args):
     # =========================================================================
     # Check: External tools
     # =========================================================================
-    print()
-    print(color("◆ External Tools", Colors.CYAN, Colors.BOLD))
+    begin_section("External Tools")
     
     # Git
     if shutil.which("git"):
@@ -512,115 +584,116 @@ def run_doctor(args):
     # =========================================================================
     # Check: API connectivity
     # =========================================================================
-    print()
-    print(color("◆ API Connectivity", Colors.CYAN, Colors.BOLD))
-    
-    openrouter_key = os.getenv("OPENROUTER_API_KEY")
-    if openrouter_key:
-        print("  Checking OpenRouter API...", end="", flush=True)
-        try:
-            import httpx
-            response = httpx.get(
-                OPENROUTER_MODELS_URL,
-                headers={"Authorization": f"Bearer {openrouter_key}"},
-                timeout=10
-            )
-            if response.status_code == 200:
-                print(f"\r  {color('✓', Colors.GREEN)} OpenRouter API                          ")
-            elif response.status_code == 401:
-                print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color('(invalid API key)', Colors.DIM)}                ")
-                issues.append("Check OPENROUTER_API_KEY in .env")
-            else:
-                print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color(f'(HTTP {response.status_code})', Colors.DIM)}                ")
-        except Exception as e:
-            print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color(f'({e})', Colors.DIM)}                ")
-            issues.append("Check network connectivity")
+    begin_section("API Connectivity")
+
+    if json_mode:
+        check_info("Live connectivity probes skipped in JSON mode")
     else:
-        check_warn("OpenRouter API", "(not configured)")
-    
-    anthropic_key = os.getenv("ANTHROPIC_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
-    if anthropic_key:
-        print("  Checking Anthropic API...", end="", flush=True)
-        try:
-            import httpx
-            from agent.anthropic_adapter import _is_oauth_token, _COMMON_BETAS, _OAUTH_ONLY_BETAS
-
-            headers = {"anthropic-version": "2023-06-01"}
-            if _is_oauth_token(anthropic_key):
-                headers["Authorization"] = f"Bearer {anthropic_key}"
-                headers["anthropic-beta"] = ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)
-            else:
-                headers["x-api-key"] = anthropic_key
-            response = httpx.get(
-                "https://api.anthropic.com/v1/models",
-                headers=headers,
-                timeout=10
-            )
-            if response.status_code == 200:
-                print(f"\r  {color('✓', Colors.GREEN)} Anthropic API                           ")
-            elif response.status_code == 401:
-                print(f"\r  {color('✗', Colors.RED)} Anthropic API {color('(invalid API key)', Colors.DIM)}                 ")
-            else:
-                msg = "(couldn't verify)"
-                print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(msg, Colors.DIM)}                 ")
-        except Exception as e:
-            print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(f'({e})', Colors.DIM)}                 ")
-
-    # -- API-key providers (Z.AI/GLM, Kimi, MiniMax, MiniMax-CN) --
-    # Tuple: (name, env_vars, default_url, base_env, supports_models_endpoint)
-    # If supports_models_endpoint is False, we skip the health check and just show "configured"
-    _apikey_providers = [
-        ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
-        ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
-        # MiniMax APIs don't support /models endpoint — https://github.com/NousResearch/hermes-agent/issues/811
-        ("MiniMax",          ("MINIMAX_API_KEY",),                            None,                                  "MINIMAX_BASE_URL", False),
-        ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         None,                                  "MINIMAX_CN_BASE_URL", False),
-        ("AI Gateway",       ("AI_GATEWAY_API_KEY",),                          "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
-        ("Kilo Code",        ("KILOCODE_API_KEY",),                            "https://api.kilo.ai/api/gateway/models",  "KILOCODE_BASE_URL", True),
-    ]
-    for _pname, _env_vars, _default_url, _base_env, _supports_health_check in _apikey_providers:
-        _key = ""
-        for _ev in _env_vars:
-            _key = os.getenv(_ev, "")
-            if _key:
-                break
-        if _key:
-            _label = _pname.ljust(20)
-            # Some providers (like MiniMax) don't support /models endpoint
-            if not _supports_health_check:
-                print(f"  {color('✓', Colors.GREEN)} {_label} {color('(key configured)', Colors.DIM)}")
-                continue
-            print(f"  Checking {_pname} API...", end="", flush=True)
+        openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        if openrouter_key:
+            print("  Checking OpenRouter API...", end="", flush=True)
             try:
                 import httpx
-                _base = os.getenv(_base_env, "")
-                # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com
-                if not _base and _key.startswith("sk-kimi-"):
-                    _base = "https://api.kimi.com/coding/v1"
-                _url = (_base.rstrip("/") + "/models") if _base else _default_url
-                _headers = {"Authorization": f"Bearer {_key}"}
-                if "api.kimi.com" in _url.lower():
-                    _headers["User-Agent"] = "KimiCLI/1.0"
-                _resp = httpx.get(
-                    _url,
-                    headers=_headers,
-                    timeout=10,
+                response = httpx.get(
+                    OPENROUTER_MODELS_URL,
+                    headers={"Authorization": f"Bearer {openrouter_key}"},
+                    timeout=10
                 )
-                if _resp.status_code == 200:
-                    print(f"\r  {color('✓', Colors.GREEN)} {_label}                          ")
-                elif _resp.status_code == 401:
-                    print(f"\r  {color('✗', Colors.RED)} {_label} {color('(invalid API key)', Colors.DIM)}           ")
-                    issues.append(f"Check {_env_vars[0]} in .env")
+                if response.status_code == 200:
+                    print(f"\r  {color('✓', Colors.GREEN)} OpenRouter API                          ")
+                elif response.status_code == 401:
+                    print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color('(invalid API key)', Colors.DIM)}                ")
+                    issues.append("Check OPENROUTER_API_KEY in .env")
                 else:
-                    print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'(HTTP {_resp.status_code})', Colors.DIM)}           ")
-            except Exception as _e:
-                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_e})', Colors.DIM)}           ")
+                    print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color(f'(HTTP {response.status_code})', Colors.DIM)}                ")
+            except Exception as e:
+                print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color(f'({e})', Colors.DIM)}                ")
+                issues.append("Check network connectivity")
+        else:
+            check_warn("OpenRouter API", "(not configured)")
+        
+        anthropic_key = os.getenv("ANTHROPIC_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
+        if anthropic_key:
+            print("  Checking Anthropic API...", end="", flush=True)
+            try:
+                import httpx
+                from agent.anthropic_adapter import _is_oauth_token, _COMMON_BETAS, _OAUTH_ONLY_BETAS
+
+                headers = {"anthropic-version": "2023-06-01"}
+                if _is_oauth_token(anthropic_key):
+                    headers["Authorization"] = f"Bearer {anthropic_key}"
+                    headers["anthropic-beta"] = ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)
+                else:
+                    headers["x-api-key"] = anthropic_key
+                response = httpx.get(
+                    "https://api.anthropic.com/v1/models",
+                    headers=headers,
+                    timeout=10
+                )
+                if response.status_code == 200:
+                    print(f"\r  {color('✓', Colors.GREEN)} Anthropic API                           ")
+                elif response.status_code == 401:
+                    print(f"\r  {color('✗', Colors.RED)} Anthropic API {color('(invalid API key)', Colors.DIM)}                 ")
+                else:
+                    msg = "(couldn't verify)"
+                    print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(msg, Colors.DIM)}                 ")
+            except Exception as e:
+                print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(f'({e})', Colors.DIM)}                 ")
+
+        # -- API-key providers (Z.AI/GLM, Kimi, MiniMax, MiniMax-CN) --
+        # Tuple: (name, env_vars, default_url, base_env, supports_models_endpoint)
+        # If supports_models_endpoint is False, we skip the health check and just show "configured"
+        _apikey_providers = [
+            ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
+            ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
+            # MiniMax APIs don't support /models endpoint — https://github.com/NousResearch/hermes-agent/issues/811
+            ("MiniMax",          ("MINIMAX_API_KEY",),                            None,                                  "MINIMAX_BASE_URL", False),
+            ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         None,                                  "MINIMAX_CN_BASE_URL", False),
+            ("AI Gateway",       ("AI_GATEWAY_API_KEY",),                          "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
+            ("Kilo Code",        ("KILOCODE_API_KEY",),                            "https://api.kilo.ai/api/gateway/models",  "KILOCODE_BASE_URL", True),
+        ]
+        for _pname, _env_vars, _default_url, _base_env, _supports_health_check in _apikey_providers:
+            _key = ""
+            for _ev in _env_vars:
+                _key = os.getenv(_ev, "")
+                if _key:
+                    break
+            if _key:
+                _label = _pname.ljust(20)
+                # Some providers (like MiniMax) don't support /models endpoint
+                if not _supports_health_check:
+                    print(f"  {color('✓', Colors.GREEN)} {_label} {color('(key configured)', Colors.DIM)}")
+                    continue
+                print(f"  Checking {_pname} API...", end="", flush=True)
+                try:
+                    import httpx
+                    _base = os.getenv(_base_env, "")
+                    # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com
+                    if not _base and _key.startswith("sk-kimi-"):
+                        _base = "https://api.kimi.com/coding/v1"
+                    _url = (_base.rstrip("/") + "/models") if _base else _default_url
+                    _headers = {"Authorization": f"Bearer {_key}"}
+                    if "api.kimi.com" in _url.lower():
+                        _headers["User-Agent"] = "KimiCLI/1.0"
+                    _resp = httpx.get(
+                        _url,
+                        headers=_headers,
+                        timeout=10,
+                    )
+                    if _resp.status_code == 200:
+                        print(f"\r  {color('✓', Colors.GREEN)} {_label}                          ")
+                    elif _resp.status_code == 401:
+                        print(f"\r  {color('✗', Colors.RED)} {_label} {color('(invalid API key)', Colors.DIM)}           ")
+                        issues.append(f"Check {_env_vars[0]} in .env")
+                    else:
+                        print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'(HTTP {_resp.status_code})', Colors.DIM)}           ")
+                except Exception as _e:
+                    print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_e})', Colors.DIM)}           ")
 
     # =========================================================================
     # Check: Submodules
     # =========================================================================
-    print()
-    print(color("◆ Submodules", Colors.CYAN, Colors.BOLD))
+    begin_section("Submodules")
     
     # tinker-atropos (RL training backend)
     tinker_dir = PROJECT_ROOT / "tinker-atropos"
@@ -640,8 +713,7 @@ def run_doctor(args):
     # =========================================================================
     # Check: Tool Availability
     # =========================================================================
-    print()
-    print(color("◆ Tool Availability", Colors.CYAN, Colors.BOLD))
+    begin_section("Tool Availability")
     
     try:
         # Add project root to path for imports
@@ -673,8 +745,7 @@ def run_doctor(args):
     # =========================================================================
     # Check: Skills Hub
     # =========================================================================
-    print()
-    print(color("◆ Skills Hub", Colors.CYAN, Colors.BOLD))
+    begin_section("Skills Hub")
 
     hub_dir = HERMES_HOME / "skills" / ".hub"
     if hub_dir.exists():
@@ -682,7 +753,6 @@ def run_doctor(args):
         lock_file = hub_dir / "lock.json"
         if lock_file.exists():
             try:
-                import json
                 lock_data = json.loads(lock_file.read_text())
                 count = len(lock_data.get("installed", {}))
                 check_ok(f"Lock file OK ({count} hub-installed skill(s))")
@@ -705,8 +775,7 @@ def run_doctor(args):
     # =========================================================================
     # Honcho memory
     # =========================================================================
-    print()
-    print(color("◆ Honcho Memory", Colors.CYAN, Colors.BOLD))
+    begin_section("Honcho Memory")
 
     try:
         from honcho_integration.client import HonchoClientConfig, resolve_config_path
@@ -746,8 +815,7 @@ def run_doctor(args):
 
         named_profiles = [p for p in list_profiles() if not p.is_default]
         if named_profiles:
-            print()
-            print(color("◆ Profiles", Colors.CYAN, Colors.BOLD))
+            begin_section("Profiles")
             check_ok(f"{len(named_profiles)} profile(s) found")
             wrapper_dir = _get_wrapper_dir()
             for p in named_profiles:
@@ -787,8 +855,40 @@ def run_doctor(args):
     # =========================================================================
     # Summary
     # =========================================================================
-    print()
     remaining_issues = issues + manual_issues
+
+    if json_mode:
+        config_path = HERMES_HOME / "config.yaml"
+        env_path = HERMES_HOME / ".env"
+        fallback_env = PROJECT_ROOT / ".env"
+        provider_readiness = collect_provider_readiness(quiet=True)
+        bootstrap = build_bootstrap_summary(
+            env_exists=env_path.exists() or fallback_env.exists(),
+            config_exists=config_path.exists() or (PROJECT_ROOT / "cli-config.yaml").exists(),
+            provider_ready=provider_readiness["configured"],
+            issues=remaining_issues,
+        )
+        payload = {
+            "schema_version": 1,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "fix_mode": should_fix,
+            "summary": {
+                "ok": not remaining_issues,
+                "issues_count": len(issues),
+                "manual_issues_count": len(manual_issues),
+                "remaining_issues_count": len(remaining_issues),
+                "fixed_count": fixed_count,
+            },
+            "issues": issues,
+            "manual_issues": manual_issues,
+            "sections": _DOCTOR_COLLECTOR.sections if _DOCTOR_COLLECTOR is not None else [],
+            "bootstrap": bootstrap,
+        }
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        _DOCTOR_COLLECTOR = None
+        return payload
+
+    print()
     if should_fix and fixed_count > 0:
         print(color("─" * 60, Colors.GREEN))
         print(color(f"  Fixed {fixed_count} issue(s).", Colors.GREEN, Colors.BOLD), end="")
@@ -813,5 +913,6 @@ def run_doctor(args):
     else:
         print(color("─" * 60, Colors.GREEN))
         print(color("  All checks passed! 🎉", Colors.GREEN, Colors.BOLD))
-    
+
     print()
+    _DOCTOR_COLLECTOR = None

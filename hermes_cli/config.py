@@ -210,6 +210,24 @@ DEFAULT_CONFIG = {
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
     },
+
+    "knowledge": {
+        # Path to your Obsidian vault.  If configured, structured knowledge
+        # (people, projects, decisions) and session episodes are mirrored
+        # to Markdown files for browseable visualization and long-term storage.
+        # Default: "~/Documents/Obsidian Vault"
+        "vault_path": "",
+        # Root path for the persistent markdown wiki used by the kb tool.
+        # If empty, Hermes uses LLM_WIKI_PATH, then an existing ~/hermes-kb,
+        # then falls back to <vault>/<agent_prefix>/Wiki when Obsidian is configured.
+        "wiki_path": "",
+        # Subdirectory within the vault where Hermes stores its data.
+        "agent_prefix": "Hermes",
+        # When True, automatically export recent session context graph
+        # episodes to Obsidian.
+        "sync_episodes": False,
+        "sync_interval": 3600,  # seconds
+    },
     
     "terminal": {
         "backend": "local",
@@ -521,7 +539,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 11,
+    "_config_version": 12,
 }
 
 # =============================================================================
@@ -537,6 +555,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
+    12: ["LLM_WIKI_PATH"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -1113,6 +1132,22 @@ OPTIONAL_ENV_VARS = {
         "url": None,
         "password": False,
         "category": "setting",
+    },
+    "OBSIDIAN_VAULT_PATH": {
+        "description": "Absolute path to your Obsidian vault for knowledge mirroring",
+        "prompt": "Obsidian vault path",
+        "url": "https://obsidian.md/",
+        "password": False,
+        "category": "personal",
+        "advanced": True,
+    },
+    "LLM_WIKI_PATH": {
+        "description": "Absolute path to your persistent markdown wiki for the kb tool",
+        "prompt": "LLM wiki path",
+        "url": "https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f",
+        "password": False,
+        "category": "personal",
+        "advanced": True,
     },
 }
 

@@ -14,29 +14,36 @@ from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
-# ── Extraction patterns ───────────────────────────────────────��─────
+# ── Extraction patterns ──────────────────────────────────────────────────
 
 _RISK_COLOR_RE = re.compile(
-    r"(INR/USD|Brent|Crude|US\s*10Y|India\s*VIX|FII\s*Flow|Geopolitical)"
+    r"(INR/USD|Brent|Crude|US\s*10Y|India\s*VIX|FII\s*Flow|Geopolitical|Forex\s*Reserves|Trade\s*Gap)"
     r"\s*[|:\-]?\s*"
     r"(🟢|🟡|🔴|GREEN|AMBER|RED)",
     re.IGNORECASE,
 )
 
 _DIRECTION_RE = re.compile(
-    r"(bullish|bearish|positive|negative|upside|downside)\s+"
-    r"(?:outlook|bias|pressure|sentiment|momentum|tone)"
+    r"(bullish|bearish|positive|negative|upside|downside|widening|narrowing|improving|deteriorating)\s+"
+    r"(?:outlook|bias|pressure|sentiment|momentum|tone|trend|gap)"
     r"(?:\s+(?:for|on|in)\s+)?"
-    r"(NIFTY|SENSEX|Bank\s*Nifty|market|\w+\s*sector)?",
+    r"(NIFTY|SENSEX|Bank\s*Nifty|market|\w+\s*sector|Trade|INR|Forex)?",
     re.IGNORECASE,
 )
 
 _FII_TREND_RE = re.compile(
     r"(?:sustained|continued|persistent|consecutive)\s+"
     r"(FII|DII)\s+"
-    r"(buying|selling|inflow|outflow)",
+    r"(buying|selling|inflow|outflow|net\s*positive|net\s*negative)",
     re.IGNORECASE,
 )
+
+_MACRO_VALUE_RE = re.compile(
+    r"(Repo\s*Rate|Reverse\s*Repo\s*Rate|MSF|Bank\s*Rate|CRR|SLR|Unemployment|Forex\s*Reserves|Trade\s*Balance|Oil\s*Imports)\s*[|:\-]?\s*"
+    r"([\d\.,]+%?|\$[\d\.,]+B|₹[\d\.,]+Cr)",
+    re.IGNORECASE,
+)
+
 
 _LEVEL_FORECAST_RE = re.compile(
     r"(NIFTY|SENSEX|Bank\s*Nifty)\s+"
@@ -131,6 +138,20 @@ def extract_predictions(
             "predicted_at": now,
             "resolution_target_at": next_close,
             "confidence": 0.4,
+        })
+
+    # 5. Macro value extractions
+    for match in _MACRO_VALUE_RE.finditer(text):
+        metric_name = match.group(1).strip()
+        value = match.group(2).strip()
+        predictions.append({
+            "job_id": job_id,
+            "prediction_type": "macro_metric",
+            "subject": metric_name,
+            "predicted_value": value,
+            "predicted_at": now,
+            "resolution_target_at": now + (86400 * 30),  # Typically monthly resolution
+            "confidence": 0.8,
         })
 
     if predictions:

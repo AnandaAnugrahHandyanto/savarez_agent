@@ -67,6 +67,7 @@ class TestLoadConfigDefaults:
             assert "max_turns" not in config
             assert "terminal" in config
             assert config["terminal"]["backend"] == "local"
+            assert "wiki_path" in config["knowledge"]
 
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -346,6 +347,24 @@ class TestOptionalEnvVarsRegistry:
         for vars_list in ENV_VARS_BY_VERSION.values():
             all_vars.extend(vars_list)
         assert "TAVILY_API_KEY" in all_vars
+
+    def test_llm_wiki_path_registered(self):
+        """LLM_WIKI_PATH is listed in OPTIONAL_ENV_VARS."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert "LLM_WIKI_PATH" in OPTIONAL_ENV_VARS
+
+    def test_llm_wiki_path_is_personal_category(self):
+        """LLM_WIKI_PATH is categorized as personal configuration."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert OPTIONAL_ENV_VARS["LLM_WIKI_PATH"]["category"] == "personal"
+
+    def test_llm_wiki_path_in_env_vars_by_version(self):
+        """LLM_WIKI_PATH is listed in ENV_VARS_BY_VERSION."""
+        from hermes_cli.config import ENV_VARS_BY_VERSION
+        all_vars = []
+        for vars_list in ENV_VARS_BY_VERSION.values():
+            all_vars.extend(vars_list)
+        assert "LLM_WIKI_PATH" in all_vars
 
 
 class TestAnthropicTokenMigration:

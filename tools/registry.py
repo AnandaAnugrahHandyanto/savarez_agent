@@ -16,6 +16,7 @@ Import chain (circular-import safe):
 
 import json
 import logging
+import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Set
 
@@ -27,40 +28,45 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class _TTLCache:
-    """Simple TTL cache with max-size eviction. Thread-safe enough for tool dispatch."""
+    """Simple TTL cache with max-size eviction. Thread-safe for concurrent gateway dispatch."""
 
     def __init__(self, max_size: int = 256):
         self._store: Dict[str, tuple] = {}  # key -> (value, expires_at)
         self._max_size = max_size
+        self._lock = threading.Lock()
 
     def get(self, key: str) -> Optional[str]:
-        entry = self._store.get(key)
-        if entry is None:
-            return None
-        value, expires_at = entry
-        if time.time() > expires_at:
-            del self._store[key]
-            return None
-        return value
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                return None
+            value, expires_at = entry
+            if time.time() > expires_at:
+                del self._store[key]
+                return None
+            return value
 
     def put(self, key: str, value: str, ttl: float) -> None:
-        # Evict expired entries if at capacity
-        if len(self._store) >= self._max_size:
-            now = time.time()
-            expired = [k for k, (_, exp) in self._store.items() if now > exp]
-            for k in expired:
-                del self._store[k]
-        # If still at capacity, drop oldest
-        if len(self._store) >= self._max_size:
-            oldest_key = next(iter(self._store))
-            del self._store[oldest_key]
-        self._store[key] = (value, time.time() + ttl)
+        with self._lock:
+            # Evict expired entries if at capacity
+            if len(self._store) >= self._max_size:
+                now = time.time()
+                expired = [k for k, (_, exp) in self._store.items() if now > exp]
+                for k in expired:
+                    del self._store[k]
+            # If still at capacity, drop oldest
+            if len(self._store) >= self._max_size:
+                oldest_key = next(iter(self._store))
+                del self._store[oldest_key]
+            self._store[key] = (value, time.time() + ttl)
 
     def invalidate(self, key: str) -> None:
-        self._store.pop(key, None)
+        with self._lock:
+            self._store.pop(key, None)
 
     def clear(self) -> None:
-        self._store.clear()
+        with self._lock:
+            self._store.clear()
 
 
 # Module-level cache shared across all tools

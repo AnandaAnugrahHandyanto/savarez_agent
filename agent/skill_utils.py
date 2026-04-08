@@ -324,3 +324,67 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
             matches.append(Path(root) / filename)
     for path in sorted(matches, key=lambda p: str(p.relative_to(skills_dir))):
         yield path
+
+
+# ── Dependency checking ──────────────────────────────────────────────────
+
+
+def is_package_installed(name: str) -> bool:
+    """Check if a Python package is installed using importlib.metadata."""
+    import importlib.metadata
+    import importlib.util
+
+    # Normalize name for metadata check (e.g., yfinance -> yfinance)
+    # importlib.metadata uses the distribution name (usually same as pip install name)
+    try:
+        importlib.metadata.version(name)
+        return True
+    except (importlib.metadata.PackageNotFoundError, ValueError):
+        # Fallback to find_spec for cases where metadata is missing (e.g., manual install)
+        # or different import name (e.g., scikit-learn -> sklearn)
+        normalized = name.replace("-", "_")
+        try:
+            return importlib.util.find_spec(normalized) is not None
+        except (ImportError, AttributeError, ValueError):
+            return False
+
+
+def check_skill_dependencies(frontmatter: Dict[str, Any], skill_dir: Optional[Path] = None) -> List[str]:
+    """Check if the skill's Python dependencies are installed.
+
+    Checks both the 'dependencies' list in frontmatter and the presence
+    of a 'requirements.txt' file in the skill directory.
+
+    Returns a list of missing package names.
+    """
+    dependencies = frontmatter.get("dependencies", [])
+    if not isinstance(dependencies, list):
+        dependencies = [dependencies]
+
+    # Ensure we don't modify the original list if it's from frontmatter
+    dependencies = list(dependencies)
+
+    # Also check requirements.txt if directory is provided
+    if skill_dir and (skill_dir / "requirements.txt").exists():
+        try:
+            reqs = (skill_dir / "requirements.txt").read_text(encoding="utf-8").splitlines()
+            for req in reqs:
+                req = req.strip()
+                if req and not req.startswith("#"):
+                    # Basic parsing: take the first part before ==, >, etc.
+                    pkg = re.split(r'[=<>~!]', req)[0].strip()
+                    if pkg and pkg not in dependencies:
+                        dependencies.append(pkg)
+        except Exception:
+            logger.debug("Could not read requirements.txt in %s", skill_dir)
+
+    missing = []
+    for dep in dependencies:
+        dep_str = str(dep).strip()
+        if not dep_str:
+            continue
+        if not is_package_installed(dep_str):
+            missing.append(dep_str)
+
+    return missing
+

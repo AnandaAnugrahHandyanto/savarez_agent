@@ -55,11 +55,25 @@ Format prices as percentages for readability:
 
 Example: `"Will X happen?" — 65.2% Yes ($1.2M volume)`
 
-## Parsing Double-Encoded Fields
+## Parsing Double-Encoded Fields (Robust)
 
-The Gamma API returns `outcomePrices`, `outcomes`, and `clobTokenIds` as JSON strings
-inside JSON responses (double-encoded). When processing with Python, parse them with
-`json.loads(market['outcomePrices'])` to get the actual array.
+Use the built-in `agent.research_utils` to safely handle double-encoded JSON fields.
+
+```python
+from agent.research_utils import safe_parse_polymarket
+import requests
+
+# Fetch market data from Gamma API
+market = requests.get(\"https://gamma-api.polymarket.com/markets/ID\").json()
+
+# Safely parse outcomePrices, clobTokenIds, and probabilities
+parsed_market = safe_parse_polymarket(market)
+
+print(f\"Question: {parsed_market['question']}\")
+print(f\"Probabilities: {' vs '.join(parsed_market['probabilities'])}\")
+```
+
+## Parsing Double-Encoded Fields (Manual)
 
 ## Rate Limits
 

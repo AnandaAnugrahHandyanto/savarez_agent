@@ -20,6 +20,11 @@ RUN pip install --no-cache-dir -e ".[all]" --break-system-packages && \
 WORKDIR /opt/hermes
 RUN chmod +x /opt/hermes/docker/entrypoint.sh
 
+# Run as non-root user for defense-in-depth
+RUN groupadd -r hermes && useradd -r -g hermes -d /opt/data -s /bin/bash hermes && \
+    mkdir -p /opt/data && chown -R hermes:hermes /opt/data /opt/hermes
+
 ENV HERMES_HOME=/opt/data
 VOLUME [ "/opt/data" ]
+USER hermes
 ENTRYPOINT [ "/opt/hermes/docker/entrypoint.sh" ]

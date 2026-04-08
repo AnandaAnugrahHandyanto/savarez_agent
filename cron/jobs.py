@@ -749,6 +749,7 @@ def save_job_output(job_id: str, output: str):
 _MARKET_SKILLS = {
     "india-market-research", "daily-market-briefing",
     "india-economy-monitor", "india-news-aggregator",
+    "india-macro-monitor",
 }
 
 

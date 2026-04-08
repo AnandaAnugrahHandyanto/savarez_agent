@@ -35,7 +35,7 @@ from agent.guardrails import scan_content as _scan_content
 _VALID_ENTITY_TYPES = {"note", "person", "project", "decision"}
 
 
-def knowledge_tool(
+async def knowledge_tool(
     action: str,
     content: str = None,
     name: str = None,
@@ -53,6 +53,7 @@ def knowledge_tool(
     limit: int = 20,
     session_db=None,
     session_id: str = None,
+    knowledge_manager=None,
 ) -> str:
     """Single entry point for the knowledge tool. Returns JSON string."""
     if session_db is None:
@@ -75,10 +76,17 @@ def knowledge_tool(
         threat = _scan_content(content)
         if threat:
             return json.dumps({"success": False, "error": threat})
-        note_id = session_db.save_knowledge_note(
-            content=content, tags=tag_list,
-            source="conversation", session_id=session_id,
-        )
+        
+        if knowledge_manager:
+            note_id = knowledge_manager.save_note(
+                content=content, tags=tag_list, session_id=session_id
+            )
+        else:
+            note_id = session_db.save_knowledge_note(
+                content=content, tags=tag_list,
+                source="conversation", session_id=session_id,
+            )
+            
         return json.dumps({
             "success": True, "action": "save_note",
             "id": note_id, "tags": tag_list,
@@ -93,10 +101,18 @@ def knowledge_tool(
                 threat = _scan_content(field)
                 if threat:
                     return json.dumps({"success": False, "error": threat})
-        person_id = session_db.save_knowledge_person(
-            name=name, role=role, organization=organization,
-            details=details, tags=tag_list,
-        )
+        
+        if knowledge_manager:
+            person_id = knowledge_manager.save_person(
+                name=name, role=role, organization=organization,
+                details=details, tags=tag_list
+            )
+        else:
+            person_id = session_db.save_knowledge_person(
+                name=name, role=role, organization=organization,
+                details=details, tags=tag_list,
+            )
+            
         return json.dumps({
             "success": True, "action": "save_person",
             "id": person_id, "name": name,
@@ -111,10 +127,18 @@ def knowledge_tool(
                 threat = _scan_content(field)
                 if threat:
                     return json.dumps({"success": False, "error": threat})
-        project_id = session_db.save_knowledge_project(
-            name=name, description=description,
-            status=status or "active", tags=tag_list,
-        )
+        
+        if knowledge_manager:
+            project_id = knowledge_manager.save_project(
+                name=name, description=description,
+                status=status or "active", tags=tag_list
+            )
+        else:
+            project_id = session_db.save_knowledge_project(
+                name=name, description=description,
+                status=status or "active", tags=tag_list,
+            )
+            
         return json.dumps({
             "success": True, "action": "save_project",
             "id": project_id, "name": name,
@@ -129,10 +153,18 @@ def knowledge_tool(
                 threat = _scan_content(field)
                 if threat:
                     return json.dumps({"success": False, "error": threat})
-        decision_id = session_db.save_knowledge_decision(
-            title=title, rationale=rationale,
-            status=status or "active", tags=tag_list,
-        )
+        
+        if knowledge_manager:
+            decision_id = knowledge_manager.save_decision(
+                title=title, rationale=rationale,
+                status=status or "active", tags=tag_list
+            )
+        else:
+            decision_id = session_db.save_knowledge_decision(
+                title=title, rationale=rationale,
+                status=status or "active", tags=tag_list,
+            )
+            
         return json.dumps({
             "success": True, "action": "save_decision",
             "id": decision_id, "title": title,
@@ -171,10 +203,37 @@ def knowledge_tool(
             "results": results,
         })
 
+    elif action == "ingest":
+        if not knowledge_manager:
+            return json.dumps({"success": False, "error": "Obsidian vault not configured."})
+        
+        from cron.obsidian_ingest import ObsidianIngest
+        ingestor = ObsidianIngest(
+            db=session_db,
+            vault_path=str(knowledge_manager.vault_path),
+            agent_prefix=knowledge_manager.agent_prefix
+        )
+        ingestor.ingest_all()
+        return json.dumps({
+            "success": True, "action": "ingest",
+            "message": "Obsidian vault scanned and ingested successfully."
+        })
+
+    elif action == "sync":
+        if not knowledge_manager:
+            return json.dumps({"success": False, "error": "Obsidian vault not configured."})
+        
+        created, skipped = await knowledge_manager.sync_episodes(limit=limit)
+        return json.dumps({
+            "success": True, "action": "sync",
+            "created": created, "skipped": skipped,
+            "message": f"Synced {created} episodes to Obsidian (skipped {skipped})."
+        })
+
     else:
         return json.dumps({
             "success": False,
-            "error": f"Unknown action '{action}'. Use: save_note, save_person, save_project, save_decision, search, list"
+            "error": f"Unknown action '{action}'. Use: save_note, save_person, save_project, save_decision, search, list, ingest, sync"
         })
 
 
@@ -190,34 +249,34 @@ def check_knowledge_requirements() -> bool:
 KNOWLEDGE_SCHEMA = {
     "name": "knowledge",
     "description": (
-        "Save and query structured personal knowledge that persists across sessions. "
-        "Stores four entity types — notes, people, projects, decisions — linked by tags.\n\n"
+        "Save and query structured personal knowledge. Mirrors all data to your "
+        "Obsidian vault if configured, creating a compounding knowledge base.\n\n"
         "WHEN TO USE (proactively, don't wait to be asked):\n"
         "- User mentions a person: save_person with their name, role, org\n"
-        "- User shares a meeting note or observation: save_note with tags for people/projects mentioned\n"
+        "- User shares a meeting note or observation: save_note with tags\n"
         "- User starts or mentions a project: save_project\n"
         "- User makes or describes a decision: save_decision with rationale\n"
         "- User asks 'what do I know about X': search with query or tag\n\n"
-        "TAGS are the key concept: they cross-link entities. A note tagged 'sarah,acme' "
-        "will appear when searching for tag='sarah' or tag='acme'. Always tag notes with "
-        "the names of people and projects mentioned.\n\n"
         "ACTIONS:\n"
         "- save_note: Save a note (requires content, optional tags)\n"
-        "- save_person: Save/update a person (requires name, optional role/organization/details/tags)\n"
-        "- save_project: Save/update a project (requires name, optional description/status/tags)\n"
-        "- save_decision: Record a decision (requires title, optional rationale/status/tags)\n"
+        "- save_person: Save/update a person (requires name)\n"
+        "- save_project: Save/update a project (requires name)\n"
+        "- save_decision: Record a decision (requires title, rationale)\n"
         "- search: Cross-table search by query text and/or tag\n"
-        "- list: List entities of a specific type\n\n"
-        "This is DIFFERENT from the memory tool: memory stores your agent observations and user "
-        "preferences. Knowledge stores facts about the user's world — people they know, projects "
-        "they work on, decisions they've made, meeting notes."
+        "- list: List entities of a specific type\n"
+        "- ingest: Manually trigger ingestion of your personal Obsidian notes into Hermes\n"
+        "- sync: Export recent agent episodes/learnings to Obsidian\n\n"
+        "This is DIFFERENT from the memory tool: memory is for agent instructions and "
+        "user preferences. Knowledge is for facts about the user's world. This is also "
+        "different from the 'kb' wiki tool: knowledge is the structured fact store, while "
+        "the wiki is for compiled markdown synthesis and durable research pages."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["save_note", "save_person", "save_project", "save_decision", "search", "list"],
+                "enum": ["save_note", "save_person", "save_project", "save_decision", "search", "list", "ingest", "sync"],
                 "description": "The action to perform."
             },
             "content": {
@@ -273,6 +332,11 @@ KNOWLEDGE_SCHEMA = {
                 "type": "string",
                 "description": "Filter by a single tag (for search/list)."
             },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of results to return (default 20, max 100).",
+                "default": 20
+            }
         },
         "required": ["action"],
     },
@@ -286,6 +350,7 @@ registry.register(
     name="knowledge",
     toolset="knowledge",
     schema=KNOWLEDGE_SCHEMA,
+    is_async=True,
     handler=lambda args, **kw: knowledge_tool(
         action=args.get("action", ""),
         content=args.get("content"),
@@ -304,6 +369,7 @@ registry.register(
         limit=args.get("limit", 20),
         session_db=kw.get("session_db"),
         session_id=kw.get("session_id"),
+        knowledge_manager=kw.get("knowledge_manager"),
     ),
     check_fn=check_knowledge_requirements,
     emoji="📚",

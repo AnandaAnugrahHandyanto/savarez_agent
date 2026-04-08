@@ -4153,6 +4153,11 @@ For more help on a command:
         action="store_true",
         help="Run deep checks (may take longer)"
     )
+    status_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a machine-readable JSON snapshot"
+    )
     status_parser.set_defaults(func=cmd_status)
     
     # =========================================================================
@@ -4255,6 +4260,11 @@ For more help on a command:
         "--fix",
         action="store_true",
         help="Attempt to fix issues automatically"
+    )
+    doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable diagnostics as JSON"
     )
     doctor_parser.set_defaults(func=cmd_doctor)
     
@@ -4981,6 +4991,44 @@ For more help on a command:
         help="Show version information"
     )
     version_parser.set_defaults(func=cmd_version)
+
+    # =========================================================================
+    # notebook command — NotebookLM Research Lab
+    # =========================================================================
+    notebook_parser = subparsers.add_parser(
+        "notebook",
+        help="NotebookLM Research Lab: discover, brief, podcast, map, status",
+        description=(
+            "Hermes NotebookLM Research Lab.\n\n"
+            "Manage your personal research pipeline: discover sources, generate briefings,\n"
+            "create AI podcasts, and visualize your knowledge graph."
+        ),
+    )
+    notebook_sub = notebook_parser.add_subparsers(dest="notebook_action")
+
+    notebook_sub.add_parser("discover", help="Search arXiv & Web for high-quality sources")
+    notebook_sub.add_parser("brief", help="Generate AI study guides & flashcards from sources")
+    notebook_sub.add_parser("podcast", help="Create a 2-speaker 'Deep Dive' audio overview (.mp3)")
+    notebook_sub.add_parser("map", help="Visualize connections in your Context Graph (Mermaid)")
+    notebook_sub.add_parser("status", help="Check active research folder and source counts")
+    notebook_sub.add_parser("mode", help="Toggle Strict Grounded RAG mode (Notebook Mode)")
+
+    def cmd_notebook(args):
+        # We redirect to the interactive chat with the command pre-filled
+        # so the user can see the beautiful TUI dashboard.
+        import shutil
+        hermes_bin = shutil.which("hermes")
+        cmd = ["notebook"]
+        if args.notebook_action:
+            cmd.append(args.notebook_action)
+        
+        # Exec into the chat with the command as initial input
+        if hermes_bin:
+            os.execvp(hermes_bin, ["hermes", "-q", f"/{' '.join(cmd)}"])
+        else:
+            os.execvp(sys.executable, [sys.executable, "-m", "hermes_cli.main", "-q", f"/{' '.join(cmd)}"])
+
+    notebook_parser.set_defaults(func=cmd_notebook)
     
     # =========================================================================
     # update command

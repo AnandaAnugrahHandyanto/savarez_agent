@@ -169,6 +169,7 @@ def _discover_tools():
         "tools.mac_help_tool",
         "tools.mac_workflow_tool",
         "tools.browser_autonomous_tool",
+        "tools.mac_native_tools",
     ]
     import importlib
     for mod_name in _modules:
@@ -400,7 +401,7 @@ def _action_log_worker():
         except _queue.Empty:
             continue
         except Exception:
-            pass  # never crash the worker
+            logger.warning("action_log_worker: failed to persist action", exc_info=True)
 
 
 def _ensure_action_log_thread():

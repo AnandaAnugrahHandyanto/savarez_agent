@@ -60,7 +60,7 @@ class TestCommandRegistry:
                         f"Alias '{alias}' of '{cmd.name}' shadows canonical '{target.name}'"
 
     def test_every_entry_has_valid_category(self):
-        valid_categories = {"Session", "Configuration", "Tools & Skills", "Info", "Exit"}
+        valid_categories = {"Session", "Configuration", "Tools & Skills", "Info", "Exit", "Research"}
         for cmd in COMMAND_REGISTRY:
             assert cmd.category in valid_categories, f"{cmd.name} has invalid category '{cmd.category}'"
 
@@ -91,6 +91,7 @@ class TestResolveCommand:
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
         assert resolve_command("/bg").name == "background"
+        assert resolve_command("/wiki").name == "wiki"
 
     def test_unknown_returns_none(self):
         assert resolve_command("nonexistent") is None
@@ -183,6 +184,13 @@ class TestGatewayHelpLines:
         bg_line = [l for l in lines if "/background" in l]
         assert len(bg_line) == 1
         assert "/bg" in bg_line[0]
+
+    def test_includes_wiki_quick_start_hint(self):
+        lines = gateway_help_lines()
+        joined = "\n".join(lines)
+        assert "/wiki [init|status|lint|ingest|review|map|file-query|compare|entity|concept]" in joined
+        assert "/wiki init" in joined
+        assert "/wiki map" in joined
 
 
 class TestTelegramBotCommands:
@@ -433,6 +441,19 @@ class TestSubcommands:
         assert "/cron" in SUBCOMMANDS
         assert "list" in SUBCOMMANDS["/cron"]
         assert "add" in SUBCOMMANDS["/cron"]
+
+    def test_wiki_has_subcommands(self):
+        assert "/wiki" in SUBCOMMANDS
+        assert "init" in SUBCOMMANDS["/wiki"]
+        assert "status" in SUBCOMMANDS["/wiki"]
+        assert "lint" in SUBCOMMANDS["/wiki"]
+        assert "ingest" in SUBCOMMANDS["/wiki"]
+        assert "review" in SUBCOMMANDS["/wiki"]
+        assert "map" in SUBCOMMANDS["/wiki"]
+        assert "file-query" in SUBCOMMANDS["/wiki"]
+        assert "compare" in SUBCOMMANDS["/wiki"]
+        assert "entity" in SUBCOMMANDS["/wiki"]
+        assert "concept" in SUBCOMMANDS["/wiki"]
 
     def test_commands_without_subcommands_not_in_dict(self):
         """Plain commands should not appear in SUBCOMMANDS."""

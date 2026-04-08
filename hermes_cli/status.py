@@ -4,14 +4,19 @@ Status command for hermes CLI.
 Shows the status of all Hermes Agent components.
 """
 
+import io
+import json
 import os
 import sys
 import subprocess
+from contextlib import redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from hermes_cli.auth import AuthError, resolve_provider
+from hermes_cli.bootstrap_contract import build_bootstrap_summary, collect_provider_readiness
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
 from hermes_cli.models import provider_label
@@ -79,10 +84,267 @@ def _effective_provider_label() -> str:
     return provider_label(effective)
 
 
+def _platform_config_snapshot(name: str, token_var: str, home_var: str | None) -> dict:
+    token = os.getenv(token_var, "")
+    configured = bool(token)
+    home_channel = os.getenv(home_var, "") if home_var else ""
+    return {
+        "name": name,
+        "configured": configured,
+        "home_channel": home_channel or None,
+    }
+
+
+def _gateway_service_snapshot() -> dict:
+    manager = "unsupported"
+    service_running = False
+    runtime_state = None
+    exit_reason = None
+    running_pid = None
+    platforms = {}
+
+    try:
+        from gateway.status import get_running_pid, read_runtime_status
+
+        running_pid = get_running_pid()
+        runtime = read_runtime_status() or {}
+        runtime_state = runtime.get("gateway_state")
+        exit_reason = runtime.get("exit_reason")
+        platforms = runtime.get("platforms") or {}
+    except Exception:
+        runtime = {}
+
+    if sys.platform.startswith("linux"):
+        manager = "systemd-user"
+        try:
+            from hermes_cli.gateway import get_service_name
+
+            result = subprocess.run(
+                ["systemctl", "--user", "is-active", get_service_name()],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            service_running = result.stdout.strip() == "active"
+        except Exception:
+            service_running = bool(running_pid)
+    elif sys.platform == "darwin":
+        manager = "launchd"
+        try:
+            from hermes_cli.gateway import get_launchd_label
+
+            result = subprocess.run(
+                ["launchctl", "list", get_launchd_label()],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            service_running = result.returncode == 0
+        except Exception:
+            service_running = bool(running_pid)
+
+    return {
+        "manager": manager,
+        "service_running": service_running,
+        "running_pid": running_pid,
+        "runtime_state": runtime_state,
+        "exit_reason": exit_reason,
+        "platforms": platforms,
+    }
+
+
+def _collect_status_snapshot(*, show_all: bool, deep: bool) -> dict:
+    try:
+        config = load_config()
+    except Exception:
+        config = {}
+
+    env_path = get_env_path()
+    hermes_home = get_hermes_home()
+    provider_readiness = collect_provider_readiness(config, quiet=True)
+
+    keys = {
+        "OpenRouter": "OPENROUTER_API_KEY",
+        "OpenAI": "OPENAI_API_KEY",
+        "Z.AI/GLM": "GLM_API_KEY",
+        "Kimi": "KIMI_API_KEY",
+        "MiniMax": "MINIMAX_API_KEY",
+        "MiniMax-CN": "MINIMAX_CN_API_KEY",
+        "Firecrawl": "FIRECRAWL_API_KEY",
+        "Tavily": "TAVILY_API_KEY",
+        "Browserbase": "BROWSERBASE_API_KEY",
+        "FAL": "FAL_KEY",
+        "Tinker": "TINKER_API_KEY",
+        "WandB": "WANDB_API_KEY",
+        "ElevenLabs": "ELEVENLABS_API_KEY",
+        "GitHub": "GITHUB_TOKEN",
+    }
+    api_keys = {}
+    for label, env_var in keys.items():
+        value = get_env_value(env_var) or ""
+        api_keys[label] = {
+            "configured": bool(value),
+            "value": value if show_all else redact_key(value),
+        }
+
+    anthropic_value = get_env_value("ANTHROPIC_TOKEN") or get_env_value("ANTHROPIC_API_KEY") or ""
+    api_keys["Anthropic"] = {
+        "configured": bool(anthropic_value),
+        "value": anthropic_value if show_all else redact_key(anthropic_value),
+    }
+
+    oauth = {
+        "nous_portal": {"logged_in": False},
+        "openai_codex": {"logged_in": False},
+    }
+    try:
+        from hermes_cli.auth import get_nous_auth_status, get_codex_auth_status
+
+        with redirect_stdout(io.StringIO()):
+            oauth["nous_portal"] = get_nous_auth_status() or {"logged_in": False}
+            oauth["openai_codex"] = get_codex_auth_status() or {"logged_in": False}
+    except Exception:
+        pass
+
+    terminal_env = os.getenv("TERMINAL_ENV", "")
+    if not terminal_env:
+        try:
+            terminal_env = config.get("terminal", {}).get("backend", "local")
+        except Exception:
+            terminal_env = "local"
+
+    platforms = {
+        "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"),
+        "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"),
+        "WhatsApp": ("WHATSAPP_ENABLED", None),
+        "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
+        "Slack": ("SLACK_BOT_TOKEN", None),
+        "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
+        "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
+        "DingTalk": ("DINGTALK_CLIENT_ID", None),
+        "Feishu": ("FEISHU_APP_ID", "FEISHU_HOME_CHANNEL"),
+        "WeCom": ("WECOM_BOT_ID", "WECOM_HOME_CHANNEL"),
+    }
+    messaging = [_platform_config_snapshot(name, token_var, home_var) for name, (token_var, home_var) in platforms.items()]
+
+    gateway = _gateway_service_snapshot()
+
+    jobs_total = 0
+    jobs_active = 0
+    jobs_file = hermes_home / "cron" / "jobs.json"
+    if jobs_file.exists():
+        try:
+            with open(jobs_file, encoding="utf-8") as f:
+                job_data = json.load(f)
+            jobs = job_data.get("jobs", [])
+            jobs_total = len(jobs)
+            jobs_active = len([job for job in jobs if job.get("enabled", True)])
+        except Exception:
+            pass
+
+    active_sessions = 0
+    sessions_file = hermes_home / "sessions" / "sessions.json"
+    if sessions_file.exists():
+        try:
+            with open(sessions_file, encoding="utf-8") as f:
+                active_sessions = len(json.load(f))
+        except Exception:
+            pass
+
+    deep_checks = {}
+    if deep:
+        openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
+        if openrouter_key:
+            try:
+                import httpx
+
+                response = httpx.get(
+                    OPENROUTER_MODELS_URL,
+                    headers={"Authorization": f"Bearer {openrouter_key}"},
+                    timeout=10,
+                )
+                deep_checks["openrouter"] = {
+                    "ok": response.status_code == 200,
+                    "status_code": response.status_code,
+                }
+            except Exception as exc:
+                deep_checks["openrouter"] = {
+                    "ok": False,
+                    "error": str(exc),
+                }
+        try:
+            import socket
+
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            result = sock.connect_ex(("127.0.0.1", 18789))
+            sock.close()
+            deep_checks["gateway_port_18789"] = {"in_use": result == 0}
+        except OSError:
+            pass
+
+    env_exists = env_path.exists()
+    config_exists = (hermes_home / "config.yaml").exists() or (PROJECT_ROOT / "cli-config.yaml").exists()
+    issues = []
+    if gateway.get("runtime_state") in {"startup_failed", "stopped"} and gateway.get("exit_reason"):
+        issues.append(gateway["exit_reason"])
+
+    bootstrap = build_bootstrap_summary(
+        env_exists=env_exists,
+        config_exists=config_exists,
+        provider_ready=provider_readiness["configured"],
+        gateway_configured=any(item["configured"] for item in messaging),
+        gateway_running=bool(gateway["service_running"] or gateway["running_pid"]),
+        issues=issues,
+    )
+
+    return {
+        "schema_version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "environment": {
+            "project_root": str(PROJECT_ROOT),
+            "hermes_home": str(hermes_home),
+            "python_version": sys.version.split()[0],
+            "env_file_exists": env_exists,
+            "config_file_exists": config_exists,
+        },
+        "model": {
+            "configured_model": _configured_model_label(config),
+            "effective_provider": _effective_provider_label(),
+        },
+        "providers": {
+            "readiness": provider_readiness,
+            "api_keys": api_keys,
+            "oauth": oauth,
+        },
+        "terminal": {
+            "backend": terminal_env,
+            "sudo_enabled": bool(os.getenv("SUDO_PASSWORD", "")),
+        },
+        "messaging": {"platforms": messaging},
+        "gateway": gateway,
+        "cron": {
+            "jobs_total": jobs_total,
+            "jobs_active": jobs_active,
+        },
+        "sessions": {
+            "active_count": active_sessions,
+        },
+        "deep_checks": deep_checks,
+        "bootstrap": bootstrap,
+    }
+
+
 def show_status(args):
     """Show status of all Hermes Agent components."""
     show_all = getattr(args, 'all', False)
     deep = getattr(args, 'deep', False)
+    json_mode = getattr(args, "json", False)
+
+    if json_mode:
+        snapshot = _collect_status_snapshot(show_all=show_all, deep=deep)
+        print(json.dumps(snapshot, indent=2, ensure_ascii=False))
+        return
     
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
@@ -351,7 +613,6 @@ def show_status(args):
     
     jobs_file = get_hermes_home() / "cron" / "jobs.json"
     if jobs_file.exists():
-        import json
         try:
             with open(jobs_file, encoding="utf-8") as f:
                 data = json.load(f)
@@ -371,7 +632,6 @@ def show_status(args):
     
     sessions_file = get_hermes_home() / "sessions" / "sessions.json"
     if sessions_file.exists():
-        import json
         try:
             with open(sessions_file, encoding="utf-8") as f:
                 data = json.load(f)

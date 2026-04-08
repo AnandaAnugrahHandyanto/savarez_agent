@@ -19,6 +19,11 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Snapshot YOLO mode at import time so runtime env mutations (e.g. from the
+# agent's own terminal tool running `export HERMES_YOLO_MODE=1`) cannot
+# disable safety checks mid-session.  Mirrors _REDACT_ENABLED in redact.py.
+_YOLO_MODE = bool(os.getenv("HERMES_YOLO_MODE"))
+
 # Per-thread/per-task gateway session identity (v0.7.0).
 # Gateway runs agent turns concurrently in executor threads, so reading a
 # process-global env var for session identity is racy. Keep env fallback for
@@ -535,9 +540,9 @@ Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
 
         answer = (response.choices[0].message.content or "").strip().upper()
 
-        if "APPROVE" in answer:
+        if answer == "APPROVE":
             return "approve"
-        elif "DENY" in answer:
+        elif answer == "DENY":
             return "deny"
         else:
             return "escalate"
@@ -566,7 +571,7 @@ def check_dangerous_command(command: str, env_type: str,
         return {"approved": True, "message": None}
 
     # --yolo: bypass all approval prompts
-    if os.getenv("HERMES_YOLO_MODE"):
+    if _YOLO_MODE:
         return {"approved": True, "message": None}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
@@ -668,7 +673,7 @@ def check_all_command_guards(command: str, env_type: str,
 
     # --yolo or approvals.mode=off: bypass all approval prompts
     approval_mode = _get_approval_mode()
-    if os.getenv("HERMES_YOLO_MODE") or approval_mode == "off":
+    if _YOLO_MODE or approval_mode == "off":
         return {"approved": True, "message": None}
 
     is_cli = os.getenv("HERMES_INTERACTIVE")

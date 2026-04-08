@@ -103,6 +103,14 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
 
+    # NotebookLM
+    CommandDef("notebook", "NotebookLM Research Lab: /notebook [discover|brief|podcast|map|status]", "Research",
+               args_hint="[subcommand]",
+               subcommands=("discover", "brief", "podcast", "map", "status")),
+    CommandDef("wiki", "Personal wiki workflow: init, ingest, review, map, and file durable pages", "Research",
+               args_hint="[init|status|lint|ingest|review|map|file-query|compare|entity|concept] [domain|source]",
+               subcommands=("init", "status", "lint", "ingest", "review", "map", "file-query", "compare", "entity", "concept")),
+
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
                args_hint="[list|disable|enable] [name...]", cli_only=True),
@@ -348,6 +356,8 @@ def gateway_help_lines() -> list[str]:
             alias_parts.append(f"`/{a}`")
         alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
         lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
+        if cmd.name == "wiki":
+            lines.append("  ↳ quick start: `/wiki init` -> `/wiki ingest` -> `/wiki review` -> `/wiki map`")
     return lines
 
 

@@ -32,7 +32,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 14
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -151,37 +151,45 @@ CREATE INDEX IF NOT EXISTS idx_predictions_type ON predictions(prediction_type, 
 
 CREATE TABLE IF NOT EXISTS knowledge_notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid TEXT,
     content TEXT NOT NULL,
     source TEXT,
     session_id TEXT,
+    file_path TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_people (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid TEXT,
     name TEXT NOT NULL,
     role TEXT,
     organization TEXT,
     details TEXT,
+    file_path TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_projects (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid TEXT,
     name TEXT NOT NULL,
     status TEXT DEFAULT 'active',
     description TEXT,
+    file_path TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid TEXT,
     title TEXT NOT NULL,
     rationale TEXT,
     status TEXT DEFAULT 'active',
+    file_path TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -200,6 +208,10 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_people_name ON knowledge_people(name);
 CREATE INDEX IF NOT EXISTS idx_knowledge_projects_status ON knowledge_projects(name, status);
 CREATE INDEX IF NOT EXISTS idx_knowledge_notes_created ON knowledge_notes(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_knowledge_decisions_status ON knowledge_decisions(status);
+CREATE INDEX IF NOT EXISTS idx_knowledge_notes_uuid ON knowledge_notes(uuid);
+CREATE INDEX IF NOT EXISTS idx_knowledge_people_uuid ON knowledge_people(uuid);
+CREATE INDEX IF NOT EXISTS idx_knowledge_projects_uuid ON knowledge_projects(uuid);
+CREATE INDEX IF NOT EXISTS idx_knowledge_decisions_uuid ON knowledge_decisions(uuid);
 
 CREATE TABLE IF NOT EXISTS implicit_signals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -215,6 +227,21 @@ CREATE TABLE IF NOT EXISTS implicit_signals (
 
 CREATE INDEX IF NOT EXISTS idx_implicit_signals_type ON implicit_signals(signal_type, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_implicit_signals_session ON implicit_signals(session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS provider_health_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    latency_ms REAL,
+    error TEXT,
+    health_score REAL,
+    consecutive_failures INTEGER,
+    recovery_time_seconds REAL,
+    session_id TEXT,
+    created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_provider_health_provider ON provider_health_log(provider, created_at DESC);
 """
 
 FTS_SQL = """
@@ -675,6 +702,65 @@ class SessionDB:
                         ON implicit_signals(session_id, created_at DESC);
                 """)
                 cursor.execute("UPDATE schema_version SET version = 12")
+
+            if current_version < 13:
+                # v13: provider_health_log — persists provider success/failure events
+                # so learned recovery windows survive restarts
+                cursor.executescript("""
+                    CREATE TABLE IF NOT EXISTS provider_health_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        provider TEXT NOT NULL,
+                        event_type TEXT NOT NULL,
+                        latency_ms REAL,
+                        error TEXT,
+                        health_score REAL,
+                        consecutive_failures INTEGER,
+                        recovery_time_seconds REAL,
+                        session_id TEXT,
+                        created_at REAL NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_provider_health_provider
+                        ON provider_health_log(provider, created_at DESC);
+                """)
+                cursor.execute("UPDATE schema_version SET version = 13")
+
+            if current_version < 14:
+                # v14: add uuid and file_path to knowledge tables
+                for table in ["knowledge_notes", "knowledge_people", "knowledge_projects", "knowledge_decisions"]:
+                    try:
+                        cursor.execute(f"ALTER TABLE {table} ADD COLUMN uuid TEXT")
+                    except sqlite3.OperationalError:
+                        pass
+                    try:
+                        cursor.execute(f"ALTER TABLE {table} ADD COLUMN file_path TEXT")
+                    except sqlite3.OperationalError:
+                        pass
+
+                # Add indexes for uuid
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_notes_uuid ON knowledge_notes(uuid)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_people_uuid ON knowledge_people(uuid)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_projects_uuid ON knowledge_projects(uuid)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_decisions_uuid ON knowledge_decisions(uuid)")
+
+                cursor.execute("UPDATE schema_version SET version = 14")
+            if current_version < 15:
+                # v15: add macro_metrics_history for time-series charting
+                cursor.executescript("""
+                    CREATE TABLE IF NOT EXISTS macro_metrics_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        metric_id TEXT NOT NULL,
+                        category TEXT,
+                        value REAL NOT NULL,
+                        unit TEXT,
+                        source TEXT,
+                        timestamp REAL NOT NULL,
+                        metadata TEXT,
+                        created_at REAL NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_macro_metric_time ON macro_metrics_history(metric_id, timestamp DESC);
+                    CREATE INDEX IF NOT EXISTS idx_macro_metric_category ON macro_metrics_history(category);
+                """)
+                cursor.execute("UPDATE schema_version SET version = 15")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -1624,6 +1710,65 @@ class SessionDB:
             return row[0] if row else 0
 
     # =========================================================================
+    # Provider Health Log (persists recovery data across restarts)
+    # =========================================================================
+
+    def log_provider_health_event(
+        self,
+        provider: str,
+        event_type: str,
+        latency_ms: float = None,
+        error: str = None,
+        health_score: float = None,
+        consecutive_failures: int = None,
+        recovery_time_seconds: float = None,
+        session_id: str = None,
+    ) -> None:
+        """Log a provider health event (success or failure)."""
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO provider_health_log
+                   (provider, event_type, latency_ms, error, health_score,
+                    consecutive_failures, recovery_time_seconds, session_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    provider,
+                    event_type,
+                    latency_ms,
+                    (error or "")[:500] or None,
+                    health_score,
+                    consecutive_failures,
+                    recovery_time_seconds,
+                    session_id,
+                    time.time(),
+                ),
+            )
+        try:
+            self._execute_write(_do)
+        except Exception:
+            pass  # Best-effort — never disrupt the agent
+
+    def get_provider_recovery_history(
+        self,
+        provider: str,
+        limit: int = 20,
+    ) -> List[float]:
+        """Get historical recovery times for a provider (seconds).
+
+        Returns a list of recovery_time_seconds values, most recent first.
+        Used to pre-populate ProviderHealthTracker._recovery_times on startup.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT recovery_time_seconds FROM provider_health_log
+                   WHERE provider = ? AND event_type = 'recovery'
+                   AND recovery_time_seconds IS NOT NULL
+                   ORDER BY created_at DESC LIMIT ?""",
+                (provider, limit),
+            ).fetchall()
+            return [row[0] for row in rows]
+
+    # =========================================================================
     # Action log (accountability log for side-effecting tool invocations)
     # =========================================================================
 
@@ -1879,6 +2024,90 @@ class SessionDB:
                 "window_days": window_days,
             }
 
+    # =========================================================================
+    # Macro Metrics History (Time-Series)
+    # =========================================================================
+
+    def log_macro_metric(
+        self,
+        metric_id: str,
+        value: float,
+        category: str = None,
+        unit: str = None,
+        source: str = None,
+        timestamp: float = None,
+        metadata: Dict[str, Any] = None,
+    ) -> int:
+        """Log a numeric macro metric for historical charting."""
+        result_holder = []
+        now = time.time()
+        meta_json = json.dumps(metadata) if metadata else None
+
+        def _do(conn):
+            cursor = conn.execute(
+                """INSERT INTO macro_metrics_history
+                   (metric_id, category, value, unit, source, timestamp, metadata, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    metric_id,
+                    category,
+                    value,
+                    unit,
+                    source,
+                    timestamp or now,
+                    meta_json,
+                    now,
+                ),
+            )
+            result_holder.append(cursor.lastrowid)
+
+        self._execute_write(_do)
+        return result_holder[0] if result_holder else 0
+
+    def get_macro_history(
+        self,
+        metric_id: str,
+        limit: int = 100,
+        days: int = None,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve historical time-series for a specific macro metric."""
+        with self._lock:
+            query = "SELECT * FROM macro_metrics_history WHERE metric_id = ?"
+            params: list = [metric_id]
+
+            if days:
+                cutoff = time.time() - (days * 86400)
+                query += " AND timestamp >= ?"
+                params.append(cutoff)
+
+            query += " ORDER BY timestamp DESC LIMIT ?"
+            params.append(limit)
+
+            rows = self._conn.execute(query, params).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_macro_latest(
+        self,
+        category: str = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Get the latest value for each metric, optionally filtered by category."""
+        with self._lock:
+            query = """
+                SELECT m1.* FROM macro_metrics_history m1
+                JOIN (
+                    SELECT metric_id, MAX(timestamp) as max_ts
+                    FROM macro_metrics_history
+                    GROUP BY metric_id
+                ) m2 ON m1.metric_id = m2.metric_id AND m1.timestamp = m2.max_ts
+            """
+            params = []
+            if category:
+                query += " WHERE m1.category = ?"
+                params.append(category)
+
+            rows = self._conn.execute(query, params).fetchall()
+            return {r["metric_id"]: dict(r) for r in rows}
+
     def search_messages(
         self,
         query: str,
@@ -2112,26 +2341,62 @@ class SessionDB:
     def save_knowledge_note(
         self, content: str, tags: List[str] = None,
         source: str = "conversation", session_id: str = None,
+        uuid: str = None, file_path: str = None,
     ) -> int:
-        """Save a knowledge note and attach tags. Returns the note ID."""
+        """Save or update a knowledge note and attach tags. Returns the note ID."""
         now = time.time()
 
         def _do(conn):
-            cursor = conn.execute(
-                "INSERT INTO knowledge_notes (content, source, session_id, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (content, source, session_id, now, now),
-            )
-            note_id = cursor.lastrowid
+            # Try to match by UUID first
+            row = None
+            if uuid:
+                row = conn.execute(
+                    "SELECT id FROM knowledge_notes WHERE uuid = ?", (uuid,)
+                ).fetchone()
+
+            if row:
+                note_id = row[0]
+                updates = ["content = ?", "updated_at = ?"]
+                params = [content, now]
+                if source:
+                    updates.append("source = ?")
+                    params.append(source)
+                if session_id:
+                    updates.append("session_id = ?")
+                    params.append(session_id)
+                if file_path:
+                    updates.append("file_path = ?")
+                    params.append(file_path)
+                
+                params.append(note_id)
+                conn.execute(
+                    f"UPDATE knowledge_notes SET {', '.join(updates)} WHERE id = ?",
+                    params,
+                )
+            else:
+                cursor = conn.execute(
+                    "INSERT INTO knowledge_notes (uuid, content, source, session_id, file_path, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (uuid, content, source, session_id, file_path, now, now),
+                )
+                note_id = cursor.lastrowid
+            
             if tags:
                 for tag in tags:
                     normalized = tag.strip().lower()
                     if normalized:
-                        conn.execute(
-                            "INSERT INTO knowledge_tags (entity_type, entity_id, tag, created_at) "
-                            "VALUES ('note', ?, ?, ?)",
-                            (note_id, normalized, now),
-                        )
+                        # Skip if tag already exists for this note
+                        existing = conn.execute(
+                            "SELECT 1 FROM knowledge_tags WHERE entity_type = 'note' "
+                            "AND entity_id = ? AND tag = ?",
+                            (note_id, normalized),
+                        ).fetchone()
+                        if not existing:
+                            conn.execute(
+                                "INSERT INTO knowledge_tags (entity_type, entity_id, tag, created_at) "
+                                "VALUES ('note', ?, ?, ?)",
+                                (note_id, normalized, now),
+                            )
             return note_id
 
         return self._execute_write(_do)
@@ -2139,21 +2404,32 @@ class SessionDB:
     def save_knowledge_person(
         self, name: str, role: str = None, organization: str = None,
         details: str = None, tags: List[str] = None,
+        uuid: str = None, file_path: str = None,
     ) -> int:
         """Save or update a person entry. Returns the person ID."""
         now = time.time()
 
         def _do(conn):
-            # Check if person already exists (case-insensitive name match)
-            cursor = conn.execute(
-                "SELECT id FROM knowledge_people WHERE LOWER(name) = LOWER(?)", (name,)
-            )
-            row = cursor.fetchone()
+            # Try to match by UUID first, then name
+            row = None
+            if uuid:
+                row = conn.execute(
+                    "SELECT id FROM knowledge_people WHERE uuid = ?", (uuid,)
+                ).fetchone()
+            
+            if not row:
+                row = conn.execute(
+                    "SELECT id FROM knowledge_people WHERE LOWER(name) = LOWER(?)", (name,)
+                ).fetchone()
+
             if row:
                 person_id = row[0]
                 # Update existing — only overwrite non-None fields
                 updates = []
                 params = []
+                if uuid is not None:
+                    updates.append("uuid = ?")
+                    params.append(uuid)
                 if role is not None:
                     updates.append("role = ?")
                     params.append(role)
@@ -2163,6 +2439,9 @@ class SessionDB:
                 if details is not None:
                     updates.append("details = ?")
                     params.append(details)
+                if file_path is not None:
+                    updates.append("file_path = ?")
+                    params.append(file_path)
                 updates.append("updated_at = ?")
                 params.append(now)
                 params.append(person_id)
@@ -2172,9 +2451,9 @@ class SessionDB:
                 )
             else:
                 cursor = conn.execute(
-                    "INSERT INTO knowledge_people (name, role, organization, details, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (name, role, organization, details, now, now),
+                    "INSERT INTO knowledge_people (uuid, name, role, organization, details, file_path, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (uuid, name, role, organization, details, file_path, now, now),
                 )
                 person_id = cursor.lastrowid
             # Add any new tags (skip duplicates)
@@ -2201,25 +2480,40 @@ class SessionDB:
     def save_knowledge_project(
         self, name: str, description: str = None,
         status: str = "active", tags: List[str] = None,
+        uuid: str = None, file_path: str = None,
     ) -> int:
         """Save or update a project entry. Returns the project ID."""
         now = time.time()
 
         def _do(conn):
-            cursor = conn.execute(
-                "SELECT id FROM knowledge_projects WHERE LOWER(name) = LOWER(?)", (name,)
-            )
-            row = cursor.fetchone()
+            # Try to match by UUID first, then name
+            row = None
+            if uuid:
+                row = conn.execute(
+                    "SELECT id FROM knowledge_projects WHERE uuid = ?", (uuid,)
+                ).fetchone()
+                
+            if not row:
+                row = conn.execute(
+                    "SELECT id FROM knowledge_projects WHERE LOWER(name) = LOWER(?)", (name,)
+                ).fetchone()
+
             if row:
                 project_id = row[0]
                 updates = []
                 params = []
+                if uuid is not None:
+                    updates.append("uuid = ?")
+                    params.append(uuid)
                 if description is not None:
                     updates.append("description = ?")
                     params.append(description)
                 if status is not None:
                     updates.append("status = ?")
                     params.append(status)
+                if file_path is not None:
+                    updates.append("file_path = ?")
+                    params.append(file_path)
                 updates.append("updated_at = ?")
                 params.append(now)
                 params.append(project_id)
@@ -2229,9 +2523,9 @@ class SessionDB:
                 )
             else:
                 cursor = conn.execute(
-                    "INSERT INTO knowledge_projects (name, status, description, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (name, status, description, now, now),
+                    "INSERT INTO knowledge_projects (uuid, name, status, description, file_path, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (uuid, name, status, description, file_path, now, now),
                 )
                 project_id = cursor.lastrowid
             if tags:
@@ -2257,21 +2551,68 @@ class SessionDB:
     def save_knowledge_decision(
         self, title: str, rationale: str = None,
         status: str = "active", tags: List[str] = None,
+        uuid: str = None, file_path: str = None,
     ) -> int:
-        """Save a decision. Returns the decision ID."""
+        """Save or update a decision. Returns the decision ID."""
         now = time.time()
 
         def _do(conn):
-            cursor = conn.execute(
-                "INSERT INTO knowledge_decisions (title, rationale, status, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (title, rationale, status, now, now),
-            )
-            decision_id = cursor.lastrowid
+            # Try to match by UUID first, then title
+            row = None
+            if uuid:
+                row = conn.execute(
+                    "SELECT id FROM knowledge_decisions WHERE uuid = ?", (uuid,)
+                ).fetchone()
+            
+            if not row:
+                row = conn.execute(
+                    "SELECT id FROM knowledge_decisions WHERE LOWER(title) = LOWER(?)", (title,)
+                ).fetchone()
+
+            if row:
+                decision_id = row[0]
+                updates = ["updated_at = ?"]
+                params = [now]
+                if uuid:
+                    updates.append("uuid = ?")
+                    params.append(uuid)
+                if title:
+                    updates.append("title = ?")
+                    params.append(title)
+                if rationale is not None:
+                    updates.append("rationale = ?")
+                    params.append(rationale)
+                if status:
+                    updates.append("status = ?")
+                    params.append(status)
+                if file_path:
+                    updates.append("file_path = ?")
+                    params.append(file_path)
+                
+                params.append(decision_id)
+                conn.execute(
+                    f"UPDATE knowledge_decisions SET {', '.join(updates)} WHERE id = ?",
+                    params,
+                )
+            else:
+                cursor = conn.execute(
+                    "INSERT INTO knowledge_decisions (uuid, title, rationale, status, file_path, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (uuid, title, rationale, status, file_path, now, now),
+                )
+                decision_id = cursor.lastrowid
+            
             if tags:
                 for tag in tags:
                     normalized = tag.strip().lower()
-                    if normalized:
+                    if not normalized:
+                        continue
+                    existing = conn.execute(
+                        "SELECT 1 FROM knowledge_tags WHERE entity_type = 'decision' "
+                        "AND entity_id = ? AND tag = ?",
+                        (decision_id, normalized),
+                    ).fetchone()
+                    if not existing:
                         conn.execute(
                             "INSERT INTO knowledge_tags (entity_type, entity_id, tag, created_at) "
                             "VALUES ('decision', ?, ?, ?)",
