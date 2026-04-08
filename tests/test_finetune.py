@@ -1255,3 +1255,94 @@ class TestRedeploy:
 
         result = redeploy(adapter_dir=adapter_dir)
         assert result is False  # snapshot detection should fail
+
+    def test_bench_passes_skips_smoke_baseline(self, tmp_hermes):
+        """bench_passes() should not pick a 2-case smoke test as a baseline
+        for a 243-case full bench. The case count must be within 10% of the
+        candidate's case count."""
+        from manage import bench_passes
+        import common
+        results = common.BENCH_DIR / "results"
+        results.mkdir(parents=True, exist_ok=True)
+
+        # Smoke test with 2 cases
+        smoke = results / "bench_20260101_000001.json"
+        common.save_json(smoke, {
+            "metrics": {"total_cases": 2, "tool_selection_accuracy": 1.0,
+                        "tool_execution_success": 0.0, "task_completion_rate": 0.0,
+                        "format_compliance": 1.0, "no_tool_accuracy": 1.0,
+                        "hallucination_rate": 0.0, "canary_pass_rate": 0.0},
+            "cases": [],
+        })
+
+        # Real prior baseline with 243 cases
+        import time
+        time.sleep(0.05)
+        real_baseline = results / "bench_20260101_000002.json"
+        common.save_json(real_baseline, {
+            "metrics": {"total_cases": 243, "tool_selection_accuracy": 0.80,
+                        "tool_execution_success": 0.90, "task_completion_rate": 0.62,
+                        "format_compliance": 1.0, "no_tool_accuracy": 0.97,
+                        "hallucination_rate": 0.0, "canary_pass_rate": 0.89},
+            "cases": [],
+        })
+
+        # Newer smoke test (most recent — would be picked by old logic)
+        time.sleep(0.05)
+        newer_smoke = results / "bench_20260101_000003.json"
+        common.save_json(newer_smoke, {
+            "metrics": {"total_cases": 5, "tool_selection_accuracy": 1.0,
+                        "tool_execution_success": 1.0, "task_completion_rate": 0.0,
+                        "format_compliance": 1.0, "no_tool_accuracy": 1.0,
+                        "hallucination_rate": 0.0, "canary_pass_rate": 0.0},
+            "cases": [],
+        })
+
+        # Candidate is a fresh 243-case run
+        time.sleep(0.05)
+        candidate = results / "bench_20260101_000004.json"
+        common.save_json(candidate, {
+            "metrics": {"total_cases": 243, "tool_selection_accuracy": 0.79,
+                        "tool_execution_success": 0.97, "task_completion_rate": 0.67,
+                        "format_compliance": 1.0, "no_tool_accuracy": 0.79,
+                        "hallucination_rate": 0.0, "canary_pass_rate": 0.71},
+            "cases": [],
+        })
+
+        passed, report = bench_passes(candidate)
+        # The report should reference the real 243-case baseline, not either smoke test
+        assert "bench_20260101_000002.json" in report
+        # Smoke tests should NOT appear as the baseline filename
+        assert "bench_20260101_000001.json" not in report
+        assert "bench_20260101_000003.json" not in report
+
+    def test_bench_passes_no_comparable_baseline(self, tmp_hermes):
+        """When no prior result has a similar case count, treat as new baseline."""
+        from manage import bench_passes
+        import common
+        results = common.BENCH_DIR / "results"
+        results.mkdir(parents=True, exist_ok=True)
+
+        # Only smoke tests exist
+        smoke = results / "bench_smoke.json"
+        common.save_json(smoke, {
+            "metrics": {"total_cases": 2, "tool_selection_accuracy": 1.0,
+                        "tool_execution_success": 0.0, "task_completion_rate": 0.0,
+                        "format_compliance": 1.0, "no_tool_accuracy": 1.0,
+                        "hallucination_rate": 0.0, "canary_pass_rate": 0.0},
+            "cases": [],
+        })
+
+        import time
+        time.sleep(0.05)
+        # Candidate is a 243-case run
+        candidate = results / "bench_full.json"
+        common.save_json(candidate, {
+            "metrics": {"total_cases": 243, "tool_selection_accuracy": 0.80},
+            "cases": [],
+        })
+
+        passed, report = bench_passes(candidate)
+        # No comparable baseline → pass with a "new baseline" message
+        assert passed is True
+        assert "new baseline" in report.lower()

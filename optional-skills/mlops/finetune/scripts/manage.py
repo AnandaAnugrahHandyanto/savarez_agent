@@ -623,24 +623,54 @@ def bench_passes(candidate_path: Path, baseline_path: Path = None) -> tuple:
     Compare a candidate bench result against a baseline.
 
     Returns (passed: bool, summary: str).
-    If baseline_path is None, uses the most recent prior result.
+    If baseline_path is None, picks the most recent prior result whose
+    total_cases matches the candidate's. This avoids comparing a 243-case
+    full bench against a 2-case smoke test, which produces nonsense
+    "regressions" on metrics that the smoke test simply didn't measure.
     """
     from eval import compare_metrics, verdict, format_report
 
     candidate_data = load_json(candidate_path)
     candidate_metrics = candidate_data.get("metrics", {})
+    candidate_cases = int(candidate_metrics.get("total_cases", 0))
 
     if baseline_path is None:
-        # Find the most recent baseline that's older than the candidate
-        candidates = sorted(
+        # Find prior result files, sort by mtime newest-first.
+        prior_files = sorted(
             (p for p in BENCH_RESULTS_DIR.glob("bench_*.json") if p != candidate_path),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
-        baseline_path = candidates[0] if candidates else None
+
+        # Filter to baselines whose total_cases matches the candidate's
+        # (within a 10% tolerance to allow for prompt-bank growth between
+        # runs). Smoke tests with 2 cases vs a 243-case full bench will
+        # never match — they get skipped.
+        def _comparable(p: Path) -> bool:
+            try:
+                m = load_json(p).get("metrics", {})
+                cases = int(m.get("total_cases", 0))
+            except Exception:
+                return False
+            if cases == 0 or candidate_cases == 0:
+                return False
+            ratio = cases / candidate_cases
+            return 0.9 <= ratio <= 1.1
+
+        comparable = [p for p in prior_files if _comparable(p)]
+        if comparable:
+            baseline_path = comparable[0]
+        elif prior_files:
+            # No comparable baseline exists — record this run as a new
+            # baseline rather than comparing against an incompatible one.
+            baseline_path = None
 
     if baseline_path is None:
-        return True, "No prior baseline — recording candidate as new baseline."
+        return True, (
+            f"No comparable baseline found "
+            f"(need a prior result with ~{candidate_cases} cases). "
+            f"Recording this run as the new baseline."
+        )
 
     baseline_data = load_json(baseline_path)
     baseline_metrics = baseline_data.get("metrics", {})
@@ -651,6 +681,12 @@ def bench_passes(candidate_path: Path, baseline_path: Path = None) -> tuple:
     report = format_report(
         candidate_metrics, baseline_metrics, comparison, checks,
         cluster_id="(pipeline)", version="(latest)",
+    )
+    # Annotate which baseline file was used so debugging is easier.
+    report = (
+        f"Baseline file: {baseline_path.name} "
+        f"(case count: {baseline_metrics.get('total_cases', '?')})\n"
+        + report
     )
     return passed, report
 
