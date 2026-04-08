@@ -16,22 +16,39 @@ Get Hermes Agent up and running in under two minutes with the one-line installer
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
-:::warning Windows
-Native Windows is **not supported**. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run Hermes Agent from there. The install command above works inside WSL2.
-:::
-
-### What the Installer Does
-
-The installer handles everything automatically — all dependencies (Python, Node.js, ripgrep, ffmpeg), the repo clone, virtual environment, global `hermes` command setup, and LLM provider configuration. By the end, you're ready to chat.
-
-### After Installation
-
-Reload your shell and start chatting:
+After installation, reload your shell and start chatting:
 
 ```bash
 source ~/.bashrc   # or: source ~/.zshrc
 hermes             # Start chatting!
 ```
+
+### Windows (native PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
+```
+
+:::info
+Run PowerShell as a normal user (no admin required). The script clones the repo, installs `uv`, provisions Python 3.11, creates a venv, installs all dependencies, adds `hermes` to your user PATH, and optionally launches the setup wizard.
+:::
+
+After the script finishes, **open a new terminal** so the PATH changes take effect, then:
+
+```powershell
+hermes setup   # configure API keys
+hermes         # start chatting!
+```
+
+:::tip WSL2 Alternative
+If you prefer a Linux environment on Windows, you can install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and use the Linux/macOS installer above instead.
+:::
+
+### What the Installer Does
+
+The installer handles everything automatically — all dependencies (Python, Node.js, ripgrep, ffmpeg on Linux/macOS), the repo clone, virtual environment, global `hermes` command setup, and LLM provider configuration. By the end, you're ready to chat.
+
+### After Installation
 
 To reconfigure individual settings later, use the dedicated commands:
 
@@ -68,6 +85,13 @@ If you use Nix (on NixOS, macOS, or Linux), there's a dedicated setup path with 
 ## Manual Installation
 
 If you prefer full control over the installation process, follow these steps.
+
+:::tip Platform-Specific Instructions
+Commands below are shown for Linux/macOS/WSL2. For **Windows PowerShell**, use:
+- `venv\Scripts\Activate.ps1` instead of `source venv/bin/activate`
+- PowerShell path syntax where needed
+- See the condensed Windows section at the bottom for a complete example
+:::
 
 ### Step 1: Clone the Repository
 
@@ -225,6 +249,8 @@ hermes chat -q "Hello! What tools do you have available?"
 
 For those who just want the commands:
 
+**Linux / macOS / WSL2**
+
 ```bash
 # Install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -253,6 +279,39 @@ mkdir -p ~/.local/bin
 ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
 
 # Verify
+hermes doctor
+hermes
+```
+
+**Windows (PowerShell)**
+
+```powershell
+# Install uv
+irm https://astral.sh/uv/install.ps1 | iex
+
+# Clone & enter
+git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
+cd hermes-agent
+
+# Create venv with Python 3.11
+uv venv venv --python 3.11
+$env:VIRTUAL_ENV = "$(Get-Location)\venv"
+
+# Install everything
+uv pip install -e ".[all]"
+uv pip install -e "./tinker-atropos"
+npm install  # optional, for browser tools and WhatsApp
+
+# Configure
+New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.hermes\cron","$env:USERPROFILE\.hermes\sessions","$env:USERPROFILE\.hermes\logs","$env:USERPROFILE\.hermes\memories","$env:USERPROFILE\.hermes\skills","$env:USERPROFILE\.hermes\pairing","$env:USERPROFILE\.hermes\hooks","$env:USERPROFILE\.hermes\image_cache","$env:USERPROFILE\.hermes\audio_cache","$env:USERPROFILE\.hermes\whatsapp\session"
+Copy-Item cli-config.yaml.example "$env:USERPROFILE\.hermes\config.yaml"
+New-Item -ItemType File -Force -Path "$env:USERPROFILE\.hermes\.env"
+
+# Add hermes to PATH (permanently via registry)
+$hermesPath = "$(Get-Location)\venv\Scripts"
+[Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";$hermesPath", "User")
+
+# Restart terminal, then verify
 hermes doctor
 hermes
 ```
