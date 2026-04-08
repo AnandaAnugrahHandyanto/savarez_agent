@@ -812,6 +812,15 @@ class AIAgent:
                     client_kwargs["default_headers"] = {
                         "User-Agent": "KimiCLI/1.3",
                     }
+                elif "portal.qwen.ai" in effective_base.lower():
+                    import platform
+                    _ua = f"QwenCode/0.14.1 ({platform.system().lower()}; {platform.machine()})"
+                    client_kwargs["default_headers"] = {
+                        "User-Agent": _ua,
+                        "X-DashScope-CacheControl": "enable",
+                        "X-DashScope-UserAgent": _ua,
+                        "X-DashScope-AuthType": "qwen-oauth",
+                    }
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -5282,6 +5291,40 @@ class AIAgent:
         base = (getattr(self, "base_url", "") or "").lower()
         return "dashscope" in base or "aliyuncs" in base or "opencode.ai/zen/go" in base
 
+    def _qwen_prepare_chat_messages(self, api_messages: list) -> list:
+        prepared = copy.deepcopy(api_messages)
+        if not prepared:
+            return prepared
+
+        for msg in prepared:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if isinstance(content, str):
+                msg["content"] = [{"type": "text", "text": content}]
+            elif isinstance(content, list):
+                normalized_parts = []
+                for part in content:
+                    if isinstance(part, dict):
+                        normalized_parts.append(dict(part))
+                if normalized_parts:
+                    msg["content"] = normalized_parts
+
+        system_index = next(
+            (idx for idx, msg in enumerate(prepared) if isinstance(msg, dict) and msg.get("role") == "system"),
+            None,
+        )
+        if system_index is not None:
+            content = prepared[system_index].get("content")
+            if isinstance(content, list) and content:
+                last_part = content[-1]
+                if isinstance(last_part, dict):
+                    updated = dict(last_part)
+                    updated["cache_control"] = {"type": "ephemeral"}
+                    content[-1] = updated
+
+        return prepared
+
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
         if self.api_mode == "anthropic_messages":
@@ -5358,6 +5401,8 @@ class AIAgent:
             return kwargs
 
         sanitized_messages = api_messages
+        if "portal.qwen.ai" in self._base_url_lower:
+            sanitized_messages = self._qwen_prepare_chat_messages(api_messages)
         needs_sanitization = False
         for msg in api_messages:
             if not isinstance(msg, dict):
@@ -5425,11 +5470,17 @@ class AIAgent:
             "messages": sanitized_messages,
             "timeout": float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
         }
+        if "portal.qwen.ai" in self._base_url_lower:
+            api_kwargs["metadata"] = {
+                "sessionId": self.session_id or "hermes",
+                "promptId": str(uuid.uuid4()),
+            }
         if self.tools:
             api_kwargs["tools"] = self.tools
 
         if self.max_tokens is not None:
-            api_kwargs.update(self._max_tokens_param(self.max_tokens))
+            if "portal.qwen.ai" not in self._base_url_lower:
+                api_kwargs.update(self._max_tokens_param(self.max_tokens))
         elif self._is_openrouter_url() and "claude" in (self.model or "").lower():
             # OpenRouter translates requests to Anthropic's Messages API,
             # which requires max_tokens as a mandatory field.  When we omit
@@ -5486,13 +5537,16 @@ class AIAgent:
             extra_body["tags"] = ["product=hermes-agent"]
 
         # Ollama num_ctx: override the 2048 default so the model actually
-        # uses the context window it was trained for.  Passed via the OpenAI
-        # SDK's extra_body → options.num_ctx, which Ollama's OpenAI-compat
+        # uses the context window it was trained for. Passed via the OpenAI
+        # SDK's extra_body -> options.num_ctx, which Ollama's OpenAI-compat
         # endpoint forwards to the runner as --ctx-size.
         if self._ollama_num_ctx:
             options = extra_body.get("options", {})
             options["num_ctx"] = self._ollama_num_ctx
             extra_body["options"] = options
+
+        if "portal.qwen.ai" in self._base_url_lower:
+            extra_body["vl_high_resolution_images"] = True
 
         if extra_body:
             api_kwargs["extra_body"] = extra_body

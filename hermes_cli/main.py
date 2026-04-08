@@ -918,6 +918,7 @@ def select_provider_and_model(args=None):
         "openrouter": "OpenRouter",
         "nous": "Nous Portal",
         "openai-codex": "OpenAI Codex",
+        "qwen-oauth": "Qwen OAuth",
         "copilot-acp": "GitHub Copilot ACP",
         "copilot": "GitHub Copilot",
         "anthropic": "Anthropic",
@@ -947,6 +948,7 @@ def select_provider_and_model(args=None):
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
         ("anthropic", "Anthropic (Claude models — API key or Claude Code)"),
         ("openai-codex", "OpenAI Codex"),
+        ("qwen-oauth", "Qwen OAuth (reuses local Qwen CLI login)"),
         ("copilot", "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
         ("huggingface", "Hugging Face Inference Providers (20+ open models)"),
     ]
@@ -1011,9 +1013,12 @@ def select_provider_and_model(args=None):
     ordered.append(("more", "More providers..."))
     ordered.append(("cancel", "Cancel"))
 
-    provider_idx = _prompt_provider_choice(
-        [label for _, label in ordered], default=default_idx,
-    )
+    try:
+        provider_idx = _prompt_provider_choice(
+            [label for _, label in ordered], default=default_idx,
+        )
+    except TypeError:
+        provider_idx = _prompt_provider_choice([label for _, label in ordered])
     if provider_idx is None or ordered[provider_idx][0] == "cancel":
         print("No change.")
         return
@@ -1028,9 +1033,12 @@ def select_provider_and_model(args=None):
             ext_ordered.append(("remove-custom", "Remove a saved custom provider"))
         ext_ordered.append(("cancel", "Cancel"))
 
-        ext_idx = _prompt_provider_choice(
-            [label for _, label in ext_ordered], default=0,
-        )
+        try:
+            ext_idx = _prompt_provider_choice(
+                [label for _, label in ext_ordered], default=0,
+            )
+        except TypeError:
+            ext_idx = _prompt_provider_choice([label for _, label in ext_ordered])
         if ext_idx is None or ext_ordered[ext_idx][0] == "cancel":
             print("No change.")
             return
@@ -1043,6 +1051,8 @@ def select_provider_and_model(args=None):
         _model_flow_nous(config, current_model, args=args)
     elif selected_provider == "openai-codex":
         _model_flow_openai_codex(config, current_model)
+    elif selected_provider == "qwen-oauth":
+        _model_flow_qwen_oauth(config, current_model)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
     elif selected_provider == "copilot":
@@ -1359,6 +1369,40 @@ def _model_flow_openai_codex(config, current_model=""):
 
 
 
+def _model_flow_qwen_oauth(config, current_model=""):
+    """Qwen OAuth provider: reuse local Qwen CLI login, then pick model."""
+    from hermes_cli.auth import (
+        get_qwen_auth_status,
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+        DEFAULT_QWEN_BASE_URL,
+    )
+
+    del config
+
+    status = get_qwen_auth_status()
+    if not status.get("logged_in"):
+        print("Not logged into Qwen CLI OAuth.")
+        print("Run: qwen auth qwen-oauth")
+        auth_file = status.get("auth_file")
+        if auth_file:
+            print(f"Expected credentials file: {auth_file}")
+        if status.get("error"):
+            print(f"Error: {status.get('error')}")
+        return
+
+    models = ["coder-model"]
+    selected = _prompt_model_selection(models, current_model=current_model or "coder-model")
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider("qwen-oauth", DEFAULT_QWEN_BASE_URL)
+        print(f"Default model set to: {selected} (via Qwen OAuth)")
+    else:
+        print("No change.")
+
+
+
 def _model_flow_custom(config):
     """Custom endpoint: collect URL, API key, and model name.
 
@@ -1381,7 +1425,10 @@ def _model_flow_custom(config):
     try:
         base_url = input(f"API base URL [{current_url or 'e.g. https://api.example.com/v1'}]: ").strip()
         import getpass
-        api_key = getpass.getpass(f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: ").strip()
+        try:
+            api_key = getpass.getpass(f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: ").strip()
+        except (EOFError, OSError):
+            api_key = input(f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: ").strip()
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return

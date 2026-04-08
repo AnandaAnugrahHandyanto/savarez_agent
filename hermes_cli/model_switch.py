@@ -789,7 +789,6 @@ def list_authenticated_providers(
         if overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         if overlay.auth_type in ("oauth_device_code", "oauth_external", "external_process"):
-            # These use auth stores, not env vars — check for auth.json entries
             try:
                 from hermes_cli.auth import _load_auth_store
                 store = _load_auth_store()
