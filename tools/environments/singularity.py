@@ -87,7 +87,18 @@ def _load_snapshots() -> Dict[str, str]:
 
 def _save_snapshots(data: Dict[str, str]) -> None:
     _SNAPSHOT_STORE.parent.mkdir(parents=True, exist_ok=True)
-    _SNAPSHOT_STORE.write_text(json.dumps(data, indent=2))
+    _tmp = _SNAPSHOT_STORE.with_suffix(".tmp")
+    with open(_tmp, "w") as f:
+        f.write(json.dumps(data, indent=2))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(str(_tmp), str(_SNAPSHOT_STORE))
+    try:
+        dir_fd = os.open(str(_SNAPSHOT_STORE.parent), os.O_RDONLY)
+        os.fsync(dir_fd)
+        os.close(dir_fd)
+    except OSError:
+        pass
 
 
 # -------------------------------------------------------------------------
