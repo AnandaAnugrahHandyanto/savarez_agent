@@ -103,6 +103,22 @@ DANGEROUS_PATTERNS = [
     (r'\b(cp|mv|install)\b.*\s/etc/', "copy/move file into /etc/"),
     (r'\bsed\s+-[^\s]*i.*\s/etc/', "in-place edit of system config"),
     (r'\bsed\s+--in-place\b.*\s/etc/', "in-place edit of system config (long flag)"),
+    # =========================================================================
+    # Exfiltration patterns — data leaving the local machine
+    # =========================================================================
+    # curl/wget with explicit file upload flags (-F, --form, --data-binary @file,
+    # -T, --upload-file).  These are almost never needed for legitimate agent
+    # work and are the primary vector for prompt-injection-driven exfil.
+    (r'\bcurl\b[^|;\n]*\s-(?:F|-form|-data-binary)(?:\s|=)\S*@', "curl file upload via form/data"),
+    (r'\bcurl\b[^|;\n]*\s-(?:T|-upload-file)\b', "curl file upload via -T/--upload-file"),
+    (r'\bwget\b[^|;\n]*\s--post-file\b', "wget file upload via --post-file"),
+    # scp/rsync to remote hosts — transferring local files outward
+    (r'\bscp\b[^|;\n]*\s\S+\s+\S+@', "scp file transfer to remote host"),
+    (r'\brsync\b[^|;\n]*\s-e\b[^|;\n]*\s\S+\s+\S+@', "rsync file transfer to remote host"),
+    # netcat/nc piping — sending data over raw sockets
+    (r'\b(?:nc|ncat|netcat)\b[^|;\n]*\s', "netcat data transmission"),
+    # ssh remote command with stdin pipe — ssh user@host 'cat > /tmp/...'
+    (r'\bssh\b[^|;\n]*\s\S+@[^|;\n]*\s.*<', "ssh remote command with local file input"),
 ]
 
 
