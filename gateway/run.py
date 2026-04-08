@@ -1800,7 +1800,7 @@ class GatewayRunner:
         # has been *idle* beyond the inactivity threshold (or when the agent
         # object has no activity tracker and wall-clock age is extreme).
         _raw_stale_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", 1800))
-        _stale_ts = self._running_agents_ts.get(_quick_key, 0)
+        _stale_ts = getattr(self, "_running_agents_ts", {}).get(_quick_key, 0)
         if _quick_key in self._running_agents and _stale_ts:
             _stale_age = time.time() - _stale_ts
             _stale_agent = self._running_agents.get(_quick_key)
