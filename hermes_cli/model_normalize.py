@@ -306,6 +306,11 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 
     provider = (target_provider or "").strip().lower()
 
+    # FIX: Safely convert legacy 'vendor:model' format to 'vendor/model',
+    # while preserving provider tags (like ':free') in strings that already use a slash.
+    if ":" in name and "/" not in name:
+        name = name.replace(":", "/", 1)
+
     # --- Aggregators: need vendor/model format ---
     if provider in _AGGREGATOR_PROVIDERS:
         return _prepend_vendor(name)
