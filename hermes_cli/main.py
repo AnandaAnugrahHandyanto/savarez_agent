@@ -932,6 +932,7 @@ def select_provider_and_model(args=None):
         "kilocode": "Kilo Code",
         "alibaba": "Alibaba Cloud (DashScope)",
         "huggingface": "Hugging Face",
+        "ollama-cloud": "Ollama Cloud",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active) if active else "none"
@@ -963,6 +964,7 @@ def select_provider_and_model(args=None):
         ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
         ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
+        ("ollama-cloud", "Ollama Cloud (cloud-hosted open models — OpenAI-compatible endpoint)"),
     ]
 
     # Add user-defined custom providers from config.yaml
@@ -1057,7 +1059,7 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
+    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "ollama-cloud"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
@@ -2261,34 +2263,43 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     #   1. models.dev registry (cached, filtered for agentic/tool-capable models)
     #   2. Curated static fallback list (offline insurance)
     #   3. Live /models endpoint probe (small providers without models.dev data)
-    curated = _PROVIDER_MODELS.get(provider_id, [])
-
-    # Try models.dev first — returns tool-capable models, filtered for noise
-    mdev_models: list = []
-    try:
-        from agent.models_dev import list_agentic_models
-        mdev_models = list_agentic_models(provider_id)
-    except Exception:
-        pass
-
-    if mdev_models:
-        model_list = mdev_models
-        print(f"  Found {len(model_list)} model(s) from models.dev registry")
-    elif curated and len(curated) >= 8:
-        # Curated list is substantial — use it directly, skip live probe
-        model_list = curated
-        print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
-    else:
+    #
+    # Ollama Cloud: dedicated merged discovery (live API + models.dev + disk cache)
+    if provider_id == "ollama-cloud":
+        from hermes_cli.models import fetch_ollama_cloud_models
         api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
-        live_models = fetch_api_models(api_key_for_probe, effective_base)
-        if live_models and len(live_models) >= len(curated):
-            model_list = live_models
-            print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
-        else:
+        model_list = fetch_ollama_cloud_models(api_key=api_key_for_probe, base_url=effective_base)
+        if model_list:
+            print(f"  Found {len(model_list)} model(s) from Ollama Cloud")
+    else:
+        curated = _PROVIDER_MODELS.get(provider_id, [])
+
+        # Try models.dev first — returns tool-capable models, filtered for noise
+        mdev_models: list = []
+        try:
+            from agent.models_dev import list_agentic_models
+            mdev_models = list_agentic_models(provider_id)
+        except Exception:
+            pass
+
+        if mdev_models:
+            model_list = mdev_models
+            print(f"  Found {len(model_list)} model(s) from models.dev registry")
+        elif curated and len(curated) >= 8:
+            # Curated list is substantial — use it directly, skip live probe
             model_list = curated
-            if model_list:
-                print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
-        # else: no defaults either, will fall through to raw input
+            print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
+        else:
+            api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
+            live_models = fetch_api_models(api_key_for_probe, effective_base)
+            if live_models and len(live_models) >= len(curated):
+                model_list = live_models
+                print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
+            else:
+                model_list = curated
+                if model_list:
+                    print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
+            # else: no defaults either, will fall through to raw input
 
     if provider_id in {"opencode-zen", "opencode-go"}:
         model_list = [normalize_opencode_model_id(provider_id, mid) for mid in model_list]
@@ -4240,7 +4251,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "ollama-cloud", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
         default=None,
         help="Inference provider (default: auto)"
     )

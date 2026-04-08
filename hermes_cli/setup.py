@@ -224,22 +224,40 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
         catalog = None
 
     # Try live /models endpoint
-    if is_copilot_catalog_provider and catalog:
+    if provider_id == "ollama-cloud":
+        # Ollama Cloud: merged live API + models.dev with disk cache
+        from hermes_cli.models import fetch_ollama_cloud_models
+        provider_models = fetch_ollama_cloud_models(api_key=api_key, base_url=base_url)
+        if provider_models:
+            print_info(f"Found {len(provider_models)} model(s) from Ollama Cloud")
+        else:
+            print_warning("Could not fetch Ollama Cloud models — type a model name manually.")
+    elif is_copilot_catalog_provider and catalog:
         live_models = [item.get("id", "") for item in catalog if item.get("id")]
+        if live_models:
+            provider_models = live_models
+            print_info(f"Found {len(provider_models)} model(s) from {pconfig.name} API")
+        else:
+            fallback_provider_id = "copilot" if provider_id == "copilot-acp" else provider_id
+            provider_models = _DEFAULT_PROVIDER_MODELS.get(fallback_provider_id, [])
+            if provider_models:
+                print_warning(
+                    f"Could not auto-detect models from {pconfig.name} API — showing defaults.\n"
+                    f"    Use \"Custom model\" if the model you expect isn\'t listed."
+                )
     else:
         live_models = fetch_api_models(api_key, base_url)
-
-    if live_models:
-        provider_models = live_models
-        print_info(f"Found {len(live_models)} model(s) from {pconfig.name} API")
-    else:
-        fallback_provider_id = "copilot" if provider_id == "copilot-acp" else provider_id
-        provider_models = _DEFAULT_PROVIDER_MODELS.get(fallback_provider_id, [])
-        if provider_models:
-            print_warning(
-                f"Could not auto-detect models from {pconfig.name} API — showing defaults.\n"
-                f"    Use \"Custom model\" if the model you expect isn't listed."
-            )
+        if live_models:
+            provider_models = live_models
+            print_info(f"Found {len(live_models)} model(s) from {pconfig.name} API")
+        else:
+            fallback_provider_id = "copilot" if provider_id == "copilot-acp" else provider_id
+            provider_models = _DEFAULT_PROVIDER_MODELS.get(fallback_provider_id, [])
+            if provider_models:
+                print_warning(
+                    f"Could not auto-detect models from {pconfig.name} API — showing defaults.\n"
+                    f"    Use \"Custom model\" if the model you expect isn't listed."
+                )
 
     if provider_id in {"opencode-zen", "opencode-go"}:
         provider_models = [normalize_opencode_model_id(provider_id, mid) for mid in provider_models]

@@ -121,6 +121,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="HF_BASE_URL",
     ),
+    "ollama-cloud": HermesOverlay(
+        transport="openai_chat",
+        base_url_env_var="OLLAMA_BASE_URL",
+    ),
 }
 
 
@@ -215,7 +219,7 @@ ALIASES: Dict[str, str] = {
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
     "lm_studio": "lmstudio",
-    "ollama": "ollama-cloud",
+    "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "vllm": "local",
     "llamacpp": "local",
     "llama.cpp": "local",
@@ -232,6 +236,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
     "local": "Local endpoint",
+    "ollama-cloud": "Ollama Cloud",
 }
 
 
@@ -367,6 +372,7 @@ LABELS: Dict[str, str] = {
     "huggingface": "Hugging Face",
     "local": "Local endpoint",
     "custom": "Custom endpoint",
+    "ollama-cloud": "Ollama Cloud",
     # Legacy Hermes IDs (point to same providers)
     "ai-gateway": "Vercel AI Gateway",
     "kilocode": "Kilo Gateway",

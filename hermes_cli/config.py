@@ -771,6 +771,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "OLLAMA_API_KEY": {
+        "description": "Ollama Cloud API key (ollama.com — cloud-hosted open models)",
+        "prompt": "Ollama Cloud API key",
+        "url": "https://ollama.com/settings",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "OLLAMA_BASE_URL": {
+        "description": "Ollama Cloud base URL override (default: https://ollama.com/v1)",
+        "prompt": "Ollama base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
 
     # ── Tool API keys ──
     "EXA_API_KEY": {
