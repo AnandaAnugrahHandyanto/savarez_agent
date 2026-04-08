@@ -4,6 +4,7 @@ import builtins
 import importlib
 import logging
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -670,6 +671,70 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "ESLint" in result
 
+    def test_skips_inaccessible_agents_md(self, tmp_path, monkeypatch):
+        target = tmp_path / "AGENTS.md"
+        target.write_text("blocked")
+
+        original_exists = Path.exists
+
+        def fake_exists(path):
+            if path == target:
+                raise PermissionError("denied")
+            return original_exists(path)
+
+        monkeypatch.setattr(Path, "exists", fake_exists)
+
+        result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+        assert "## AGENTS.md" not in result
+
+    def test_skips_inaccessible_claude_md(self, tmp_path, monkeypatch):
+        target = tmp_path / "CLAUDE.md"
+        target.write_text("blocked")
+
+        original_exists = Path.exists
+
+        def fake_exists(path):
+            if path == target:
+                raise PermissionError("denied")
+            return original_exists(path)
+
+        monkeypatch.setattr(Path, "exists", fake_exists)
+
+        result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+        assert "## CLAUDE.md" not in result
+
+    def test_skips_inaccessible_cursorrules(self, tmp_path, monkeypatch):
+        target = tmp_path / ".cursorrules"
+        target.write_text("blocked")
+
+        original_exists = Path.exists
+
+        def fake_exists(path):
+            if path == target:
+                raise PermissionError("denied")
+            return original_exists(path)
+
+        monkeypatch.setattr(Path, "exists", fake_exists)
+
+        result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+        assert "## .cursorrules" not in result
+
+    def test_skips_inaccessible_cursor_rules_dir(self, tmp_path, monkeypatch):
+        rules_dir = tmp_path / ".cursor" / "rules"
+        rules_dir.mkdir(parents=True)
+
+        original_exists = Path.exists
+
+        def fake_exists(path):
+            if path == rules_dir:
+                raise PermissionError("denied")
+            return original_exists(path)
+
+        monkeypatch.setattr(Path, "exists", fake_exists)
+
+        result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+        assert "## .cursor/rules/" not in result
+
 
 # =========================================================================
 # .hermes.md helper functions
@@ -680,6 +745,20 @@ class TestFindHermesMd:
     def test_finds_in_cwd(self, tmp_path):
         (tmp_path / ".hermes.md").write_text("rules")
         assert _find_hermes_md(tmp_path) == tmp_path / ".hermes.md"
+
+    def test_skips_inaccessible_candidate(self, tmp_path, monkeypatch):
+        target = tmp_path / ".hermes.md"
+
+        original_is_file = Path.is_file
+
+        def fake_is_file(path):
+            if path == target:
+                raise PermissionError("denied")
+            return original_is_file(path)
+
+        monkeypatch.setattr(Path, "is_file", fake_is_file)
+
+        assert _find_hermes_md(tmp_path) is None
 
     def test_finds_uppercase(self, tmp_path):
         (tmp_path / "HERMES.md").write_text("rules")
