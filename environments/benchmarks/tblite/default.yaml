@@ -16,7 +16,7 @@
 
 env:
   enabled_toolsets: ["terminal", "file"]
-  max_agent_turns: 60
+  max_agent_turns: 90
   max_token_length: 32000
   agent_temperature: 0.8
   terminal_backend: "modal"
