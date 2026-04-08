@@ -1054,11 +1054,22 @@ def convert_messages_to_anthropic(
                     tool_result_ids.add(block.get("tool_use_id"))
     for m in result:
         if m["role"] == "assistant" and isinstance(m["content"], list):
-            m["content"] = [
+            original_len = len(m["content"])
+            filtered = [
                 b
                 for b in m["content"]
                 if b.get("type") != "tool_use" or b.get("id") in tool_result_ids
             ]
+            # If any tool_use was stripped, the thinking block signature is no
+            # longer valid (it was signed over the full original content).
+            # Drop thinking/redacted_thinking blocks to avoid HTTP 400
+            # "Invalid signature in thinking block".
+            if len(filtered) != original_len:
+                filtered = [
+                    b for b in filtered
+                    if b.get("type") not in ("thinking", "redacted_thinking")
+                ]
+            m["content"] = filtered
             if not m["content"]:
                 m["content"] = [{"type": "text", "text": "(tool call removed)"}]
 
@@ -1102,7 +1113,15 @@ def convert_messages_to_anthropic(
                         curr_content = [{"type": "text", "text": curr_content}]
                     fixed[-1]["content"] = prev_content + curr_content
             else:
-                # Consecutive assistant messages — merge text content
+                # Consecutive assistant messages — merge text content.
+                # Drop thinking blocks from the *second* message: their
+                # signature was computed against a different turn boundary
+                # and becomes invalid once merged.
+                if isinstance(m["content"], list):
+                    m["content"] = [
+                        b for b in m["content"]
+                        if not (isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking"))
+                    ]
                 prev_blocks = fixed[-1]["content"]
                 curr_blocks = m["content"]
                 if isinstance(prev_blocks, list) and isinstance(curr_blocks, list):
