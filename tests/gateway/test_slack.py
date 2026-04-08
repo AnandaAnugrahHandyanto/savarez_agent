@@ -544,6 +544,33 @@ class TestMessageRouting:
         }
         await adapter._handle_slack_message(event)
         adapter.handle_message.assert_not_called()
+    @pytest.mark.asyncio
+    async def test_channel_message_without_mention_when_require_mention_false(self, adapter):
+        """Channel messages without mention should be processed when require_mention is false."""
+        adapter.config.extra["require_mention"] = False
+        event = {
+            "text": "just talking",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_channel_message_without_mention_when_require_mention_true(self, adapter):
+        """Channel messages without mention should be ignored when require_mention is true (default)."""
+        adapter.config.extra["require_mention"] = True
+        event = {
+            "text": "just talking",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

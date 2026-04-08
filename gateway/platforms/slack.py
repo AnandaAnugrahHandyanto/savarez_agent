@@ -809,12 +809,14 @@ class SlackAdapter(BasePlatformAdapter):
         #   2. The message is a reply in a thread the bot started/participated in, OR
         #   3. The message is in a thread where the bot was previously @mentioned, OR
         #   4. There's an existing session for this thread (survives restarts)
+        #   5. require_mention is set to false in config (respond to all messages)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         is_mentioned = bot_uid and f"<@{bot_uid}>" in text
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
+        require_mention = self.config.extra.get("require_mention", True)
 
-        if not is_dm and bot_uid and not is_mentioned:
+        if not is_dm and bot_uid and not is_mentioned and require_mention:
             reply_to_bot_thread = (
                 is_thread_reply and event_thread_ts in self._bot_message_ts
             )
