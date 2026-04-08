@@ -2,8 +2,10 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with three providers:
+Provides speech-to-text transcription with four providers:
 
+  - **local_parakeet** (recommended on Apple Silicon) — parakeet-mlx, ~2x faster
+    than whisper, excellent English accuracy. No API key needed.
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
   - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
@@ -55,6 +57,7 @@ def _safe_find_spec(module_name: str) -> bool:
         return module_name in globals() or module_name in os.sys.modules
 
 
+_HAS_PARAKEET_MLX = _safe_find_spec("parakeet_mlx")
 _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
 _HAS_OPENAI = _safe_find_spec("openai")
 
@@ -63,6 +66,7 @@ _HAS_OPENAI = _safe_find_spec("openai")
 # ---------------------------------------------------------------------------
 
 DEFAULT_PROVIDER = "local"
+DEFAULT_PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v2"
 DEFAULT_LOCAL_MODEL = "base"
 DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
@@ -189,6 +193,14 @@ def _get_provider(stt_config: dict) -> str:
     # --- Explicit provider: respect the user's choice ----------------------
 
     if explicit:
+        if provider == "local_parakeet":
+            if _HAS_PARAKEET_MLX:
+                return "local_parakeet"
+            logger.warning(
+                "STT provider 'local_parakeet' configured but parakeet-mlx not installed"
+            )
+            return "none"
+
         if provider == "local":
             if _HAS_FASTER_WHISPER:
                 return "local"
@@ -229,8 +241,10 @@ def _get_provider(stt_config: dict) -> str:
 
         return provider  # Unknown — let it fail downstream
 
-    # --- Auto-detect (no explicit provider): local > groq > openai ---------
+    # --- Auto-detect (no explicit provider): parakeet > local > groq > openai
 
+    if _HAS_PARAKEET_MLX:
+        return "local_parakeet"
     if _HAS_FASTER_WHISPER:
         return "local"
     if _has_local_command():
@@ -408,6 +422,44 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
         return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
 
 # ---------------------------------------------------------------------------
+# Provider: local_parakeet (parakeet-mlx — Apple Silicon, local, free)
+# ---------------------------------------------------------------------------
+
+_parakeet_model: Optional[object] = None
+_parakeet_model_name: Optional[str] = None
+
+
+def _transcribe_parakeet(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using parakeet-mlx (Apple Silicon, free, no API key needed)."""
+    global _parakeet_model, _parakeet_model_name
+
+    if not _HAS_PARAKEET_MLX:
+        return {"success": False, "transcript": "", "error": "parakeet-mlx not installed"}
+
+    try:
+        import parakeet_mlx
+
+        if _parakeet_model is None or _parakeet_model_name != model_name:
+            logger.info("Loading parakeet model '%s' (first load downloads the model)...", model_name)
+            _parakeet_model = parakeet_mlx.from_pretrained(model_name)
+            _parakeet_model_name = model_name
+
+        result = _parakeet_model.transcribe(file_path)
+        transcript = result.text.strip() if hasattr(result, "text") else str(result).strip()
+
+        logger.info(
+            "Transcribed %s via parakeet-mlx (%s, %d chars)",
+            Path(file_path).name, model_name, len(transcript),
+        )
+
+        return {"success": True, "transcript": transcript, "provider": "local_parakeet"}
+
+    except Exception as e:
+        logger.error("Parakeet transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Parakeet transcription failed: {e}"}
+
+
+# ---------------------------------------------------------------------------
 # Provider: groq (Whisper API — free tier)
 # ---------------------------------------------------------------------------
 
@@ -527,7 +579,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     Provider priority:
       1. User config (``stt.provider`` in config.yaml)
-      2. Auto-detect: local faster-whisper (free) > Groq (free tier) > OpenAI (paid)
+      2. Auto-detect: parakeet-mlx > local faster-whisper > Groq (free tier) > OpenAI (paid)
 
     Args:
         file_path: Absolute path to the audio file to transcribe.
@@ -555,6 +607,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         }
 
     provider = _get_provider(stt_config)
+
+    if provider == "local_parakeet":
+        parakeet_cfg = stt_config.get("parakeet", {})
+        model_name = model or parakeet_cfg.get("model", DEFAULT_PARAKEET_MODEL)
+        return _transcribe_parakeet(file_path, model_name)
 
     if provider == "local":
         local_cfg = stt_config.get("local", {})
