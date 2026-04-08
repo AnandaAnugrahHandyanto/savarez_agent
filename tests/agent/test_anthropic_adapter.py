@@ -743,7 +743,11 @@ class TestConvertMessages:
         assert tool_block["content"] == "result"
         assert tool_block["cache_control"] == {"type": "ephemeral"}
 
-    def test_preserved_thinking_blocks_are_rehydrated_before_tool_use(self):
+    def test_thinking_blocks_are_stripped_to_avoid_signature_errors(self):
+        # Thinking blocks are stripped unconditionally — Anthropic signs them
+        # against the full turn context and any upstream mutation (context
+        # compression, session reload, etc.) invalidates the signature.
+        # Trading reasoning continuity for reliability is the correct call.
         messages = [
             {
                 "role": "assistant",
@@ -765,10 +769,10 @@ class TestConvertMessages:
         _, result = convert_messages_to_anthropic(messages)
         assistant_blocks = next(msg for msg in result if msg["role"] == "assistant")["content"]
 
-        assert assistant_blocks[0]["type"] == "thinking"
-        assert assistant_blocks[0]["thinking"] == "Need to inspect the tool result first."
-        assert assistant_blocks[0]["signature"] == "sig_123"
-        assert assistant_blocks[1]["type"] == "tool_use"
+        # No thinking blocks should remain
+        assert not any(b.get("type") in ("thinking", "redacted_thinking") for b in assistant_blocks)
+        # tool_use should still be present
+        assert any(b.get("type") == "tool_use" for b in assistant_blocks)
 
     def test_converts_data_url_image_to_anthropic_image_block(self):
         messages = [

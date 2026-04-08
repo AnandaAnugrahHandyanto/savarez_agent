@@ -1093,25 +1093,19 @@ def convert_messages_to_anthropic(
             if not m["content"]:
                 m["content"] = [{"type": "text", "text": "(tool result removed)"}]
 
-    # Strip thinking blocks from all but the LAST assistant message.
+    # Strip ALL thinking/redacted_thinking blocks from every assistant message.
     #
     # Anthropic signs thinking blocks against the full turn context. Any
     # upstream mutation — context compression, history trimming, session
-    # reload, injected reminders, tool_use/tool_result stripping above —
-    # invalidates the signature and causes HTTP 400 "Invalid signature in
-    # thinking block" on replay.
+    # reload, injected reminders, serialization round-trips, prompt cache
+    # boundary shifts — invalidates the signature and causes HTTP 400
+    # "Invalid signature in thinking block" on replay.
     #
-    # The only case where thinking blocks MUST round-trip is when the final
-    # assistant turn contains tool_use blocks still awaiting tool_result.
-    # That's always the last assistant message in the list. Older thinking
-    # blocks serve no protocol purpose and are pure signature liability.
-    last_assistant_idx = -1
-    for i, m in enumerate(result):
-        if m["role"] == "assistant":
-            last_assistant_idx = i
-    for i, m in enumerate(result):
-        if i == last_assistant_idx:
-            continue
+    # Thinking blocks are OPTIONAL on replay. Omitting them loses extended
+    # reasoning continuity across tool_use turns, but the conversation still
+    # works correctly. Invalid signatures, on the other hand, are a hard
+    # failure. Trade reasoning continuity for reliability.
+    for m in result:
         if m["role"] != "assistant" or not isinstance(m["content"], list):
             continue
         stripped = [
