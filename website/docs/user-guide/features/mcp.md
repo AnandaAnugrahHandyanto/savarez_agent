@@ -94,6 +94,8 @@ Use HTTP servers when:
 Hermes includes a small local MCP server for Invoice Ninja in `integrations/invoice_ninja.py`.
 It uses the `X-API-TOKEN` header and supports both the hosted Invoice Ninja API and self-hosted instances.
 
+If `INVOICE_NINJA_API_TOKEN` is present in your environment (or `~/.hermes/.env`), Hermes auto-adds the Invoice Ninja MCP server. The explicit `mcp_servers.invoice_ninja` block below is still supported, but it is optional.
+
 ```yaml
 mcp_servers:
   invoice_ninja:

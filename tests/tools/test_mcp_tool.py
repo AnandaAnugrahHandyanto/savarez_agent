@@ -80,6 +80,24 @@ class TestLoadMCPConfig:
             result = _load_mcp_config()
             assert result == {}
 
+    def test_invoice_ninja_server_is_injected_from_env(self):
+        """If Invoice Ninja credentials are present, Hermes should auto-add the server."""
+        with patch.dict(
+            os.environ,
+            {
+                "INVOICE_NINJA_API_TOKEN": "test-token",
+                "INVOICE_NINJA_BASE_URL": "https://invoicing.co",
+            },
+            clear=False,
+        ), patch("hermes_cli.config.load_config", return_value={}):
+            from tools.mcp_tool import _load_mcp_config
+            result = _load_mcp_config()
+
+            assert "invoice_ninja" in result
+            assert result["invoice_ninja"]["command"] == "python"
+            assert result["invoice_ninja"]["args"] == ["-m", "integrations.invoice_ninja"]
+            assert result["invoice_ninja"]["env"]["INVOICE_NINJA_API_TOKEN"] == "test-token"
+
 
 # ---------------------------------------------------------------------------
 # Schema conversion

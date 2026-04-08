@@ -631,6 +631,9 @@ platform_toolsets:
 #       INVOICE_NINJA_API_TOKEN: "***"
 #       INVOICE_NINJA_BASE_URL: "https://invoicing.co"
 #
+# Note: if INVOICE_NINJA_API_TOKEN is already set in ~/.hermes/.env, Hermes
+# auto-adds this server and you do not need to keep this block in config.yaml.
+#
 # Sampling (server-initiated LLM requests) — enabled by default.
 # Per-server config under the 'sampling' key:
 #   analysis:

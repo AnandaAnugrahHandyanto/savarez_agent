@@ -1166,6 +1166,31 @@ def _interpolate_env_vars(value):
     return value
 
 
+def _build_invoice_ninja_server_config() -> Optional[dict]:
+    """Return a default Invoice Ninja MCP server config when credentials exist.
+
+    This lets Hermes auto-discover the local Invoice Ninja MCP server without
+    requiring the user to hand-author an ``mcp_servers.invoice_ninja`` block.
+    The server still reads the same environment variables; we only provide the
+    stdio command and pass through any present ``INVOICE_NINJA_*`` vars.
+    """
+    token = os.getenv("INVOICE_NINJA_API_TOKEN", "").strip()
+    if not token:
+        return None
+
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key.startswith("INVOICE_NINJA_") and value
+    }
+    env.setdefault("INVOICE_NINJA_BASE_URL", "https://invoicing.co")
+    return {
+        "command": "python",
+        "args": ["-m", "integrations.invoice_ninja"],
+        "env": env,
+    }
+
+
 def _load_mcp_config() -> Dict[str, dict]:
     """Read ``mcp_servers`` from the Hermes config file.
 
@@ -1178,17 +1203,24 @@ def _load_mcp_config() -> Dict[str, dict]:
     ``os.environ`` (which includes ``~/.hermes/.env`` loaded at startup).
     """
     try:
-        from hermes_cli.config import load_config
-        config = load_config()
-        servers = config.get("mcp_servers")
-        if not servers or not isinstance(servers, dict):
-            return {}
-        # Ensure .env vars are available for interpolation
+        # Ensure .env vars are available for interpolation before building the
+        # config and any built-in server presets.
         try:
             from hermes_cli.env_loader import load_hermes_dotenv
             load_hermes_dotenv()
         except Exception:
             pass
+
+        from hermes_cli.config import load_config
+        config = load_config()
+        servers = config.get("mcp_servers")
+        if not servers or not isinstance(servers, dict):
+            servers = {}
+
+        invoice_ninja = _build_invoice_ninja_server_config()
+        if invoice_ninja and "invoice_ninja" not in servers:
+            servers = {**servers, "invoice_ninja": invoice_ninja}
+
         return {name: _interpolate_env_vars(cfg) for name, cfg in servers.items()}
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
