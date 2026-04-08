@@ -121,6 +121,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="HF_BASE_URL",
     ),
+    "level5": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        base_url_env_var="LEVEL5_BASE_URL",
+    ),
 }
 
 
@@ -211,6 +216,11 @@ ALIASES: Dict[str, str] = {
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
 
+    # level5
+    "l5": "level5",
+    "level-5": "level5",
+    "level5-cloud": "level5",
+
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
@@ -232,6 +242,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
     "local": "Local endpoint",
+    "level5": "Level5 Cloud",
 }
 
 

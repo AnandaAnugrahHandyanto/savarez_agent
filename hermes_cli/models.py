@@ -256,6 +256,18 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2.5",
         "MiniMax-M2.5",
     ],
+    # Level5 Cloud — SOTA models funded via SOL or USDC on Solana.
+    "level5": [
+        "anthropic/claude-opus-4.6",
+        "anthropic/claude-sonnet-4.6",
+        "anthropic/claude-sonnet-4.5",
+        "anthropic/claude-haiku-4.5",
+        "openai/gpt-5.4",
+        "openai/gpt-5.4-mini",
+        "openai/gpt-5.3-codex",
+        "google/gemini-3-pro-preview",
+        "google/gemini-3-flash-preview",
+    ],
     # Curated HF model list — only agentic models that map to OpenRouter defaults.
     "huggingface": [
         "Qwen/Qwen3.5-397B-A17B",
@@ -484,6 +496,7 @@ _PROVIDER_LABELS = {
     "kilocode": "Kilo Code",
     "alibaba": "Alibaba Cloud (DashScope)",
     "huggingface": "Hugging Face",
+    "level5": "Level5 Cloud",
     "custom": "Custom endpoint",
 }
 
@@ -525,6 +538,9 @@ _PROVIDER_ALIASES = {
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
+    "l5": "level5",
+    "level-5": "level5",
+    "level5-cloud": "level5",
 }
 
 
@@ -768,7 +784,7 @@ def list_available_providers() -> list[dict[str, str]]:
         "gemini", "huggingface",
         "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "opencode-zen", "opencode-go",
-        "ai-gateway", "deepseek", "custom",
+        "ai-gateway", "deepseek", "level5", "custom",
     ]
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}

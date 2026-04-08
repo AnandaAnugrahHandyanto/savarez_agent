@@ -73,6 +73,9 @@ _PROVIDER_ALIASES = {
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
     "claude-code": "anthropic",
+    "l5": "level5",
+    "level-5": "level5",
+    "level5-cloud": "level5",
 }
 
 
@@ -106,6 +109,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
+    "level5": "anthropic/claude-haiku-4.5",
 }
 
 # OpenRouter app attribution headers

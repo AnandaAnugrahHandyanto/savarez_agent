@@ -233,6 +233,16 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("HF_TOKEN",),
         base_url_env_var="HF_BASE_URL",
     ),
+    "level5": ProviderConfig(
+        id="level5",
+        name="Level5 Cloud",
+        auth_type="api_key",
+        # No static default — the URL embeds the per-user API token:
+        # https://api.level5.cloud/proxy/{token}/v1
+        inference_base_url="",
+        api_key_env_vars=("LEVEL5_API_TOKEN",),
+        base_url_env_var="LEVEL5_BASE_URL",
+    ),
 }
 
 
@@ -258,6 +268,22 @@ def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) ->
     if api_key.startswith("sk-kimi-"):
         return KIMI_CODE_BASE_URL
     return default_url
+
+
+LEVEL5_API_BASE = "https://api.level5.cloud/proxy"
+
+
+def _resolve_level5_base_url(api_token: str, env_override: str) -> str:
+    """Construct Level5 base URL from the API token.
+
+    Level5 embeds the token in the URL path: /proxy/{token}/v1.
+    If LEVEL5_BASE_URL is set, that always wins.
+    """
+    if env_override:
+        return env_override
+    if api_token:
+        return f"{LEVEL5_API_BASE}/{api_token}/v1"
+    return ""
 
 
 def _gh_cli_candidates() -> list[str]:
@@ -2020,6 +2046,8 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
 
     if provider_id == "kimi-coding":
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif provider_id == "level5":
+        base_url = _resolve_level5_base_url(api_key, env_url)
     elif env_url:
         base_url = env_url
     else:
@@ -2106,6 +2134,8 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif provider_id == "level5":
+        base_url = _resolve_level5_base_url(api_key, env_url)
     elif env_url:
         base_url = env_url.rstrip("/")
     else:

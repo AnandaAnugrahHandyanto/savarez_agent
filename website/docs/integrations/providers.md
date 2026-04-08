@@ -204,6 +204,26 @@ You can append routing suffixes to model names: `:fastest` (default), `:cheapest
 
 The base URL can be overridden with `HF_BASE_URL`.
 
+### Level5 Cloud
+
+[Level5](https://level5.cloud) provides SOTA models funded via SOL or USDC on Solana. It supports OpenAI and Anthropic API formats, routing through OpenRouter, Anthropic, and OpenAI upstream.
+
+```bash
+export LEVEL5_API_TOKEN="your-api-token"
+```
+
+```yaml
+model:
+  provider: "level5"
+  default: "anthropic/claude-sonnet-4.6"
+```
+
+Level5 embeds the API token in the URL path (`/proxy/{token}/v1`) rather than using an Authorization header. When you set `LEVEL5_API_TOKEN`, Hermes auto-constructs the base URL. You can also set the full URL directly with `LEVEL5_BASE_URL`.
+
+Register at [level5.cloud](https://level5.cloud) to obtain an API token.
+
+Aliases: `l5`, `level-5`, `level5-cloud`.
+
 ## Custom & Self-Hosted LLM Providers
 
 Hermes Agent works with **any OpenAI-compatible API endpoint**. If a server implements `/v1/chat/completions`, you can point Hermes at it. This means you can use local models, GPU inference servers, multi-provider routers, or any third-party API.

@@ -45,13 +45,16 @@ class TestProviderRegistry:
         ("minimax-cn", "MiniMax (China)", "api_key"),
         ("ai-gateway", "AI Gateway", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
+        ("level5", "Level5 Cloud", "api_key"),
     ])
     def test_provider_registered(self, provider_id, name, auth_type):
         assert provider_id in PROVIDER_REGISTRY
         pconfig = PROVIDER_REGISTRY[provider_id]
         assert pconfig.name == name
         assert pconfig.auth_type == auth_type
-        assert pconfig.inference_base_url  # must have a default base URL
+        # Level5 has no static base URL (token embedded in URL path)
+        if provider_id != "level5":
+            assert pconfig.inference_base_url  # must have a default base URL
 
     def test_zai_env_vars(self):
         pconfig = PROVIDER_REGISTRY["zai"]
@@ -93,6 +96,12 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("HF_TOKEN",)
         assert pconfig.base_url_env_var == "HF_BASE_URL"
 
+    def test_level5_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["level5"]
+        assert pconfig.api_key_env_vars == ("LEVEL5_API_TOKEN",)
+        assert pconfig.base_url_env_var == "LEVEL5_BASE_URL"
+        assert pconfig.inference_base_url == ""  # No default — token in URL
+
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
@@ -127,6 +136,7 @@ PROVIDER_ENV_VARS = (
     "NOUS_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
     "OPENAI_BASE_URL", "HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH",
     "HERMES_COPILOT_ACP_ARGS", "COPILOT_ACP_BASE_URL",
+    "LEVEL5_API_TOKEN", "LEVEL5_BASE_URL",
 )
 
 
@@ -962,3 +972,68 @@ class TestHuggingFaceModels:
         from hermes_cli.models import _PROVIDER_LABELS
         assert "huggingface" in _PROVIDER_LABELS
         assert _PROVIDER_LABELS["huggingface"] == "Hugging Face"
+
+
+# =============================================================================
+# Level5 Cloud tests
+# =============================================================================
+
+class TestLevel5UrlResolution:
+    """Test Level5's token-in-URL base URL construction."""
+
+    def test_url_constructed_from_token(self):
+        from hermes_cli.auth import _resolve_level5_base_url
+        url = _resolve_level5_base_url("test-token-123", "")
+        assert url == "https://api.level5.cloud/proxy/test-token-123/v1"
+
+    def test_env_override_wins(self):
+        from hermes_cli.auth import _resolve_level5_base_url
+        url = _resolve_level5_base_url("test-token", "https://custom.endpoint/v1")
+        assert url == "https://custom.endpoint/v1"
+
+    def test_empty_token_returns_empty(self):
+        from hermes_cli.auth import _resolve_level5_base_url
+        url = _resolve_level5_base_url("", "")
+        assert url == ""
+
+
+class TestLevel5CredentialResolution:
+    """Test Level5 credential resolution via env vars."""
+
+    def test_token_resolves_to_base_url(self, monkeypatch):
+        monkeypatch.setenv("LEVEL5_API_TOKEN", "my-test-token")
+        creds = resolve_api_key_provider_credentials("level5")
+        assert creds["provider"] == "level5"
+        assert creds["api_key"] == "my-test-token"
+        assert creds["base_url"] == "https://api.level5.cloud/proxy/my-test-token/v1"
+
+    def test_base_url_env_overrides_construction(self, monkeypatch):
+        monkeypatch.setenv("LEVEL5_API_TOKEN", "my-token")
+        monkeypatch.setenv("LEVEL5_BASE_URL", "https://custom.level5/v1")
+        creds = resolve_api_key_provider_credentials("level5")
+        assert creds["base_url"] == "https://custom.level5/v1"
+
+    def test_no_token_returns_empty(self):
+        creds = resolve_api_key_provider_credentials("level5")
+        assert creds["api_key"] == ""
+        assert creds["base_url"] == ""
+
+    def test_provider_aliases(self):
+        from hermes_cli.models import _PROVIDER_ALIASES
+        assert _PROVIDER_ALIASES.get("l5") == "level5"
+        assert _PROVIDER_ALIASES.get("level-5") == "level5"
+        assert _PROVIDER_ALIASES.get("level5-cloud") == "level5"
+
+    def test_provider_label(self):
+        from hermes_cli.models import _PROVIDER_LABELS
+        assert "level5" in _PROVIDER_LABELS
+        assert _PROVIDER_LABELS["level5"] == "Level5 Cloud"
+
+    def test_model_catalog_exists(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "level5" in _PROVIDER_MODELS
+        models = _PROVIDER_MODELS["level5"]
+        assert len(models) > 0
+        # Level5 uses OpenRouter vendor/model format
+        for model in models:
+            assert "/" in model, f"Level5 model {model!r} missing vendor/ prefix"

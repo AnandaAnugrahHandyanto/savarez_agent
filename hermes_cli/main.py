@@ -963,6 +963,7 @@ def select_provider_and_model(args=None):
         ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
         ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
+        ("level5", "Level5 Cloud (SOTA models funded via SOL or USDC on Solana)"),
     ]
 
     # Add user-defined custom providers from config.yaml
@@ -1057,7 +1058,7 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
+    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "level5"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
@@ -2246,6 +2247,17 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     current_base = ""
     if base_url_env:
         current_base = get_env_value(base_url_env) or os.getenv(base_url_env, "")
+
+    # Level5: auto-construct base URL from token when not explicitly set
+    if provider_id == "level5" and not current_base:
+        from hermes_cli.auth import _resolve_level5_base_url
+        token = existing_key or (get_env_value(key_env) if key_env else "")
+        constructed = _resolve_level5_base_url(token, "")
+        if constructed and base_url_env:
+            save_env_value(base_url_env, constructed)
+            current_base = constructed
+            print(f"  Base URL auto-configured: {constructed}")
+
     effective_base = current_base or pconfig.inference_base_url
 
     try:
