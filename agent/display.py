@@ -1062,3 +1062,60 @@ def format_context_pressure_gateway(
         hint = "Auto-compaction is disabled — context may be truncated."
 
     return f"{icon} Context: {bar} {pct_int}% to compaction\n{hint}"
+
+
+def format_compaction_result(
+    before_tokens: int,
+    after_tokens: int,
+    context_length: int,
+    before_messages: int,
+    after_messages: int,
+) -> str:
+    """Build a formatted post-compaction summary for CLI display.
+
+    Shows before → after with a visual bar of current usage.
+    """
+    saved = before_tokens - after_tokens
+    saved_pct = int((saved / before_tokens) * 100) if before_tokens > 0 else 0
+    usage_pct = (after_tokens / context_length * 100) if context_length > 0 else 0
+    pct_int = min(int(usage_pct), 100)
+    filled = min(int(usage_pct / 100 * _BAR_WIDTH), _BAR_WIDTH)
+    bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
+
+    before_k = f"{before_tokens // 1000}k" if before_tokens >= 1000 else str(before_tokens)
+    after_k = f"{after_tokens // 1000}k" if after_tokens >= 1000 else str(after_tokens)
+
+    return (
+        f"  {_BOLD}{_CYAN}✓ context compacted{_ANSI_RESET}  "
+        f"{bar} {pct_int}% of window\n"
+        f"  {_DIM_ANSI}messages {before_messages} → {after_messages}  ·  "
+        f"tokens {before_k} → {after_k} (saved {saved_pct}%){_ANSI_RESET}"
+    )
+
+
+def format_compaction_result_gateway(
+    before_tokens: int,
+    after_tokens: int,
+    context_length: int,
+    before_messages: int,
+    after_messages: int,
+) -> str:
+    """Build a plain-text post-compaction summary for messaging platforms.
+
+    No ANSI — suitable for Telegram/Discord/etc.
+    """
+    saved = before_tokens - after_tokens
+    saved_pct = int((saved / before_tokens) * 100) if before_tokens > 0 else 0
+    usage_pct = (after_tokens / context_length * 100) if context_length > 0 else 0
+    pct_int = min(int(usage_pct), 100)
+    filled = min(int(usage_pct / 100 * _BAR_WIDTH), _BAR_WIDTH)
+    bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
+
+    before_k = f"{before_tokens // 1000}k" if before_tokens >= 1000 else str(before_tokens)
+    after_k = f"{after_tokens // 1000}k" if after_tokens >= 1000 else str(after_tokens)
+
+    return (
+        f"✅ Context compacted: {bar} {pct_int}%\n"
+        f"{before_k} → {after_k} tokens (saved {saved_pct}%)  ·  "
+        f"messages {before_messages} → {after_messages}"
+    )

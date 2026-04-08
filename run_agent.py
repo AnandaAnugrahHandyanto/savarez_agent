@@ -5836,9 +5836,12 @@ class AIAgent:
         """Compress conversation context and split the session in SQLite.
 
         Returns:
-            (compressed_messages, new_system_prompt) tuple
+            (compressed_messages, new_system_prompt, compression_stats) tuple
+            where compression_stats is a dict with before_tokens, after_tokens,
+            before_messages, after_messages (or None if compression didn't run).
         """
         _pre_msg_count = len(messages)
+        _before_tokens = approx_tokens or 0
         logger.info(
             "context compression started: session=%s messages=%d tokens=~%s model=%s",
             self.session_id or "none", _pre_msg_count,
@@ -5925,7 +5928,13 @@ class AIAgent:
             self.session_id or "none", _pre_msg_count, len(compressed),
             f"{_compressed_est:,}",
         )
-        return compressed, new_system_prompt
+        _stats = {
+            "before_tokens": _before_tokens,
+            "after_tokens": _compressed_est,
+            "before_messages": _pre_msg_count,
+            "after_messages": len(compressed),
+        }
+        return compressed, new_system_prompt, _stats
 
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls from the assistant message and append results to messages.
@@ -6646,6 +6655,45 @@ class AIAgent:
             except Exception:
                 logger.debug("status_callback error in context pressure", exc_info=True)
 
+    def _emit_compaction_result(
+        self,
+        before_tokens: int,
+        after_tokens: int,
+        before_messages: int,
+        after_messages: int,
+        compressor,
+    ) -> None:
+        """Notify the user after context compaction completes.
+
+        Shows before → after token counts with a progress bar.
+        Follows the same CLI/gateway split as _emit_context_pressure.
+        """
+        from agent.display import format_compaction_result, format_compaction_result_gateway
+
+        context_length = compressor.context_length
+        if self.platform in (None, "cli"):
+            line = format_compaction_result(
+                before_tokens=before_tokens,
+                after_tokens=after_tokens,
+                context_length=context_length,
+                before_messages=before_messages,
+                after_messages=after_messages,
+            )
+            self._safe_print(line)
+
+        if self.status_callback:
+            try:
+                msg = format_compaction_result_gateway(
+                    before_tokens=before_tokens,
+                    after_tokens=after_tokens,
+                    context_length=context_length,
+                    before_messages=before_messages,
+                    after_messages=after_messages,
+                )
+                self.status_callback("compaction_result", msg)
+            except Exception:
+                logger.debug("status_callback error in compaction result", exc_info=True)
+
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Request a summary when max iterations are reached. Returns the final response text."""
         print(f"⚠️  Reached maximum iterations ({self.max_iterations}). Requesting summary...")
@@ -7027,10 +7075,16 @@ class AIAgent:
                 # context windows (each pass summarises the middle N turns).
                 for _pass in range(3):
                     _orig_len = len(messages)
-                    messages, active_system_prompt = self._compress_context(
+                    messages, active_system_prompt, _stats = self._compress_context(
                         messages, system_message, approx_tokens=_preflight_tokens,
                         task_id=effective_task_id,
                     )
+                    if _stats and self.context_compressor.context_length > 0:
+                        self._emit_compaction_result(
+                            _stats["before_tokens"], _stats["after_tokens"],
+                            _stats["before_messages"], _stats["after_messages"],
+                            self.context_compressor,
+                        )
                     if len(messages) >= _orig_len:
                         break  # Cannot compress further
                     # Compression created a new session — clear the history
@@ -7998,7 +8052,7 @@ class AIAgent:
                         compression_attempts += 1
                         if compression_attempts <= max_compression_attempts:
                             original_len = len(messages)
-                            messages, active_system_prompt = self._compress_context(
+                            messages, active_system_prompt, _stats = self._compress_context(
                                 messages, system_message,
                                 approx_tokens=approx_tokens,
                                 task_id=effective_task_id,
@@ -8063,7 +8117,7 @@ class AIAgent:
                         self._emit_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
 
                         original_len = len(messages)
-                        messages, active_system_prompt = self._compress_context(
+                        messages, active_system_prompt, _stats = self._compress_context(
                             messages, system_message, approx_tokens=approx_tokens,
                             task_id=effective_task_id,
                         )
@@ -8191,7 +8245,7 @@ class AIAgent:
                         self._emit_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
 
                         original_len = len(messages)
-                        messages, active_system_prompt = self._compress_context(
+                        messages, active_system_prompt, _stats = self._compress_context(
                             messages, system_message, approx_tokens=approx_tokens,
                             task_id=effective_task_id,
                         )
@@ -8856,11 +8910,18 @@ class AIAgent:
                             self._emit_context_pressure(_compaction_progress, _compressor)
 
                     if self.compression_enabled and _compressor.should_compress(_real_tokens):
-                        messages, active_system_prompt = self._compress_context(
+                        messages, active_system_prompt, _stats = self._compress_context(
                             messages, system_message,
                             approx_tokens=self.context_compressor.last_prompt_tokens,
                             task_id=effective_task_id,
                         )
+                        # Show the user how much context was freed
+                        if _stats and _compressor.context_length > 0:
+                            self._emit_compaction_result(
+                                _stats["before_tokens"], _stats["after_tokens"],
+                                _stats["before_messages"], _stats["after_messages"],
+                                _compressor,
+                            )
                         # Compression created a new session — clear history so
                         # _flush_messages_to_session_db writes compressed messages
                         # to the new session (see preflight compression comment).

@@ -521,7 +521,7 @@ class TestSlashCommands:
             assert system_prompt == "system"
             assert approx_tokens == 40
             assert task_id == state.session_id
-            return [{"role": "user", "content": "summary"}], "new-system"
+            return [{"role": "user", "content": "summary"}], "new-system", {"before_tokens": 40, "after_tokens": 12, "before_messages": 4, "after_messages": 1}
 
         state.agent._compress_context = MagicMock(side_effect=_compress_context)
 

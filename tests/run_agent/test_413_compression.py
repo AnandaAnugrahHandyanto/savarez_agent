@@ -112,6 +112,7 @@ class TestHTTP413Compression:
             mock_compress.return_value = (
                 [{"role": "user", "content": "hello"}],
                 "compressed prompt",
+                {"before_tokens": 1000, "after_tokens": 200, "before_messages": 5, "after_messages": 1},
             )
             result = agent.run_conversation("hello", conversation_history=prefill)
 
@@ -139,6 +140,7 @@ class TestHTTP413Compression:
             mock_compress.return_value = (
                 [{"role": "user", "content": "hello"}],
                 "compressed",
+                {"before_tokens": 1000, "after_tokens": 200, "before_messages": 5, "after_messages": 1},
             )
             result = agent.run_conversation("hello", conversation_history=prefill)
 
@@ -166,6 +168,7 @@ class TestHTTP413Compression:
             mock_compress.return_value = (
                 [{"role": "user", "content": "hello"}],
                 "compressed",
+                {"before_tokens": 1000, "after_tokens": 200, "before_messages": 5, "after_messages": 1},
             )
             result = agent.run_conversation("hello", conversation_history=prefill)
 
@@ -202,6 +205,7 @@ class TestHTTP413Compression:
             mock_compress.return_value = (
                 [{"role": "user", "content": "hello"}],
                 "compressed prompt",
+                {"before_tokens": 1000, "after_tokens": 200, "before_messages": 5, "after_messages": 1},
             )
             result = agent.run_conversation("hello", conversation_history=prefill)
 
@@ -234,6 +238,7 @@ class TestHTTP413Compression:
             mock_compress.return_value = (
                 [{"role": "user", "content": "hello"}],
                 "compressed",
+                {"before_tokens": 1000, "after_tokens": 200, "before_messages": 5, "after_messages": 1},
             )
             result = agent.run_conversation("hello", conversation_history=prefill)
 
@@ -274,6 +279,7 @@ class TestHTTP413Compression:
             mock_compress.return_value = (
                 [{"role": "user", "content": "compressed summary"}],
                 "compressed prompt",
+                {"before_tokens": 1000, "after_tokens": 200, "before_messages": 5, "after_messages": 1},
             )
             result = agent.run_conversation("hello", conversation_history=prefill)
 
@@ -304,6 +310,7 @@ class TestHTTP413Compression:
             mock_compress.return_value = (
                 [{"role": "user", "content": "hello"}],
                 "same prompt",
+                {"before_tokens": 1000, "after_tokens": 200, "before_messages": 5, "after_messages": 1},
             )
             result = agent.run_conversation("hello")
 
@@ -346,6 +353,7 @@ class TestPreflightCompression:
                     {"role": "user", "content": "hello"},
                 ],
                 "new system prompt",
+                {"before_tokens": 1000, "after_tokens": 200, "before_messages": 5, "after_messages": 1},
             )
             result = agent.run_conversation("hello", conversation_history=big_history)
 
@@ -440,6 +448,7 @@ class TestToolResultPreflightCompression:
         ):
             mock_compress.return_value = (
                 [{"role": "user", "content": "hello"}], "compressed prompt",
+                {"before_tokens": 1000, "after_tokens": 200, "before_messages": 5, "after_messages": 1},
             )
             result = agent.run_conversation("hello")
 
@@ -468,6 +477,7 @@ class TestToolResultPreflightCompression:
         ):
             mock_compress.return_value = (
                 [{"role": "user", "content": "hello"}], "compressed",
+                {"before_tokens": 1000, "after_tokens": 200, "before_messages": 5, "after_messages": 1},
             )
             result = agent.run_conversation("hello", conversation_history=prefill)
 

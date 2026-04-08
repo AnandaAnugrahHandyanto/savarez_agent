@@ -1703,6 +1703,7 @@ class TestRunConversation:
             mock_compress.return_value = (
                 [{"role": "user", "content": "search something"}],
                 "compressed system prompt",
+                {"before_tokens": 1000, "after_tokens": 200, "before_messages": 5, "after_messages": 1},
             )
             result = agent.run_conversation("search something")
         mock_compress.assert_called_once()
@@ -1732,6 +1733,7 @@ class TestRunConversation:
             mock_compress.return_value = (
                 [{"role": "user", "content": "hello"}],
                 "compressed system prompt",
+                {"before_tokens": 1000, "after_tokens": 200, "before_messages": 5, "after_messages": 1},
             )
             result = agent.run_conversation("hello", conversation_history=prefill)
 

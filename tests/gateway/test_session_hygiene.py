@@ -313,7 +313,7 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
         def _compress_context(self, messages, *_args, **_kwargs):
             # Simulate real _compress_context: create a new session_id
             self.session_id = f"{self.session_id}_compressed"
-            return ([{"role": "assistant", "content": "compressed"}], None)
+            return ([{"role": "assistant", "content": "compressed"}], None, {"before_tokens": 1000, "after_tokens": 200, "before_messages": 5, "after_messages": 1})
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = FakeCompressAgent

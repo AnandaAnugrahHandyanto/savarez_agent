@@ -431,7 +431,7 @@ def test_prompt_too_long_triggers_compression(monkeypatch):
                 compressed = [messages[0]] + messages[2:]
             else:
                 compressed = messages
-            return compressed, system_message
+            return compressed, system_message, {"before_tokens": 1000, "after_tokens": 200, "before_messages": 5, "after_messages": 1}
 
         def run_conversation(self, user_message, conversation_history=None, task_id=None):
             calls = {"n": 0}

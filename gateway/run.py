@@ -2625,13 +2625,19 @@ class GatewayRunner:
                                 _hyg_agent._print_fn = lambda *a, **kw: None
 
                                 loop = asyncio.get_event_loop()
-                                _compressed, _ = await loop.run_in_executor(
+                                _compressed, _, _stats = await loop.run_in_executor(
                                     None,
                                     lambda: _hyg_agent._compress_context(
                                         _hyg_msgs, "",
                                         approx_tokens=_approx_tokens,
                                     ),
                                 )
+                                if _stats and _hyg_agent.context_compressor.context_length > 0:
+                                    _hyg_agent._emit_compaction_result(
+                                        _stats["before_tokens"], _stats["after_tokens"],
+                                        _stats["before_messages"], _stats["after_messages"],
+                                        _hyg_agent.context_compressor,
+                                    )
 
                                 # _compress_context ends the old session and creates
                                 # a new session_id.  Write compressed messages into
@@ -5012,7 +5018,7 @@ class GatewayRunner:
             tmp_agent._print_fn = lambda *a, **kw: None
 
             loop = asyncio.get_event_loop()
-            compressed, _ = await loop.run_in_executor(
+            compressed, _, _stats = await loop.run_in_executor(
                 None,
                 lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens)
             )
