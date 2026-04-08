@@ -54,6 +54,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import signal
 import subprocess
 import shutil
@@ -877,7 +878,7 @@ def _run_browser_command(
         # Local mode — launch a headless Chromium instance
         backend_args = ["--session", session_info["session_name"]]
 
-    cmd_parts = browser_cmd.split() + backend_args + [
+    cmd_parts = shlex.split(browser_cmd) + backend_args + [
         "--json",
         command
     ] + args

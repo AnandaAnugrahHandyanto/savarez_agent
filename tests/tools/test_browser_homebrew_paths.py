@@ -152,6 +152,50 @@ class TestFindAgentBrowser:
 class TestRunBrowserCommandPathConstruction:
     """Verify _run_browser_command() includes Homebrew node dirs in subprocess PATH."""
 
+    def test_handles_browser_paths_with_spaces(self, tmp_path):
+        """Quoted executable paths should survive command construction."""
+        captured_cmd = []
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+
+        def capture_popen(cmd, **kwargs):
+            captured_cmd[:] = cmd
+            return mock_proc
+
+        fake_session = {
+            "session_name": "test-session",
+            "session_id": "test-id",
+            "cdp_url": None,
+        }
+
+        fake_json = json.dumps({"success": True})
+        real_isdir = os.path.isdir
+
+        def selective_isdir(p):
+            if p.startswith(str(tmp_path)):
+                return True
+            return real_isdir(p)
+
+        browser_cmd = '"/Users/test/Library/Application Support/hermes/node_modules/.bin/agent-browser"'
+
+        with patch("tools.browser_tool._find_agent_browser", return_value=browser_cmd), \
+             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
+             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+             patch("os.path.isdir", side_effect=selective_isdir), \
+             patch("subprocess.Popen", side_effect=capture_popen), \
+             patch("os.open", return_value=99), \
+             patch("os.close"), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
+            with patch("builtins.open", mock_open(read_data=fake_json)):
+                _run_browser_command("test-task", "navigate", ["https://example.com"])
+
+        assert captured_cmd[0] == "/Users/test/Library/Application Support/hermes/node_modules/.bin/agent-browser"
+        assert captured_cmd[1:4] == ["--session", "test-session", "--json"]
+
     def test_subprocess_path_includes_homebrew_node_dirs(self, tmp_path):
         """When _discover_homebrew_node_dirs returns dirs, they should appear
         in the subprocess env PATH passed to Popen."""
