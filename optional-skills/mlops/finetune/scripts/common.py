@@ -133,6 +133,20 @@ def load_config() -> dict:
             "cli_keybindings": True,
             "gateway_reactions": True,
         },
+        # Auto-redeploy: convert the active adapter to GGUF and restart
+        # llama-server with it loaded after each promote. Off by default
+        # because it requires user-specific config (server command,
+        # converter path, etc.). See SKILL.md for the full setup.
+        "serving": {
+            "auto_redeploy": False,
+            "converter": "~/programs/llama.cpp/convert_lora_to_gguf.py",
+            "base_model_snapshot": "auto",  # "auto" = detect from HF cache
+            "server_command": "",            # empty = no auto-restart
+            "server_pid_file": "/tmp/hermes-llama-server.pid",
+            "server_log_path": "/tmp/hermes-llama-server.log",
+            "health_check_url": "http://localhost:8008/v1/models",
+            "health_check_timeout": 30,
+        },
     }
 
     config_path = HERMES_HOME / "config.yaml"

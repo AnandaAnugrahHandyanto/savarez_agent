@@ -128,7 +128,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills", args_hint="[subcommand]",
                subcommands=("status", "extract", "score", "cluster", "train",
                             "eval", "bench", "retro", "promote", "rollback",
-                            "route", "run", "cron")),
+                            "redeploy", "route", "run", "cron")),
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",

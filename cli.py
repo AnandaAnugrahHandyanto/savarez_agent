@@ -3936,10 +3936,11 @@ class HermesCLI:
         parts = shlex.split(cmd)
         if len(parts) < 2:
             _cprint("Usage: /finetune <subcommand> [args]")
-            _cprint("Subcommands: status, extract, score, cluster, train, eval, bench, retro, promote, rollback, route, run, cron, gc")
+            _cprint("Subcommands: status, extract, score, cluster, train, eval, bench, retro, promote, rollback, redeploy, route, run, cron, gc")
             _cprint("  /finetune run             — full pipeline, auto-promote (no gate)")
             _cprint("  /finetune run --with-bench — full pipeline, gate promote on bench, auto-rollback on regression")
             _cprint("  /finetune bench           — run benchmark against current active model")
+            _cprint("  /finetune redeploy        — convert active adapter to GGUF and restart llama-server")
             _cprint("  /finetune retro list      — show priority queue of unlabeled sessions")
             _cprint("  /finetune retro show <id> — show a session's full conversation")
             _cprint("  /finetune retro good <id> [turns] — label session/turns as good")
@@ -3955,6 +3956,7 @@ class HermesCLI:
             "bench":    ("manage.py", ["bench"]),
             "promote":  ("manage.py", ["promote"]),
             "rollback": ("manage.py", ["rollback"]),
+            "redeploy": ("manage.py", ["redeploy"]),
             "cron":     ("manage.py", ["cron"]),
             "gc":       ("manage.py", ["gc"]),
             "extract":  ("extract.py", []),

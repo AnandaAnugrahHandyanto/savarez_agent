@@ -12,8 +12,11 @@ Usage:
 import argparse
 import logging
 import os
+import shlex
+import signal
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -25,6 +28,309 @@ from common import (
 )
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+
+# ============================================================================
+# Auto-redeploy helpers (HF snapshot detection, GGUF conversion, llama-server
+# lifecycle). Used by the redeploy() orchestrator below.
+# ============================================================================
+
+def find_base_snapshot(base_model_id: str) -> Optional[Path]:
+    """
+    Locate the local HuggingFace snapshot directory for a model.
+
+    Given an HF repo ID like "kai-os/Carnice-9b", returns the most recently
+    modified snapshot directory under ~/.cache/huggingface/hub/, or None if
+    not found locally.
+    """
+    if not base_model_id or "/" not in base_model_id:
+        return None
+
+    org, name = base_model_id.split("/", 1)
+    cache_dir = Path("~/.cache/huggingface/hub").expanduser()
+    model_dir = cache_dir / f"models--{org}--{name}"
+    snapshots_dir = model_dir / "snapshots"
+    if not snapshots_dir.exists():
+        return None
+
+    snapshots = [p for p in snapshots_dir.iterdir() if p.is_dir()]
+    if not snapshots:
+        return None
+    return max(snapshots, key=lambda p: p.stat().st_mtime)
+
+
+def convert_adapter_to_gguf(
+    adapter_dir: Path,
+    base_snapshot: Path,
+    converter: Path,
+    force: bool = False,
+) -> Path:
+    """
+    Convert a PEFT safetensors adapter to GGUF LoRA format using
+    llama.cpp's convert_lora_to_gguf.py.
+
+    Returns the path to the converted GGUF. If the GGUF already exists
+    and force=False, returns the existing path without reconversion.
+
+    Raises RuntimeError if the conversion fails.
+    """
+    output = adapter_dir / "adapter.gguf"
+    if output.exists() and not force:
+        logger.info("GGUF already exists at %s, skipping conversion", output)
+        return output
+
+    if not converter.exists():
+        raise RuntimeError(f"Converter not found: {converter}")
+
+    if not base_snapshot.exists():
+        raise RuntimeError(f"Base snapshot not found: {base_snapshot}")
+
+    adapter_model_dir = adapter_dir / "adapter_model"
+    if not adapter_model_dir.exists():
+        raise RuntimeError(f"Adapter model dir not found: {adapter_model_dir}")
+
+    cmd = [
+        sys.executable, str(converter),
+        "--base", str(base_snapshot),
+        "--outfile", str(output),
+        str(adapter_model_dir),
+    ]
+    logger.info("Converting adapter to GGUF: %s", " ".join(cmd))
+
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=600,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"GGUF conversion failed (exit {result.returncode}):\n"
+            f"stdout: {result.stdout[-500:]}\n"
+            f"stderr: {result.stderr[-500:]}"
+        )
+    if not output.exists():
+        raise RuntimeError(f"Conversion succeeded but output missing: {output}")
+
+    logger.info("GGUF written to %s", output)
+    return output
+
+
+def stop_llama_server(pid_file: Optional[Path] = None) -> bool:
+    """
+    Stop a running llama-server. Tries the PID file first, then falls back
+    to pkill by process name. Returns True if a server was stopped (or if
+    no server was running, which is also a success — the desired end state).
+    """
+    stopped = False
+
+    if pid_file and pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, signal.SIGTERM)
+            time.sleep(2)
+            try:
+                os.kill(pid, 0)  # is it still alive?
+                logger.warning("PID %d did not exit on SIGTERM, sending SIGKILL", pid)
+                os.kill(pid, signal.SIGKILL)
+                time.sleep(1)
+            except ProcessLookupError:
+                pass  # already exited cleanly
+            stopped = True
+        except (ValueError, ProcessLookupError, PermissionError) as e:
+            logger.debug("PID-file stop failed: %s", e)
+        finally:
+            try:
+                pid_file.unlink()
+            except FileNotFoundError:
+                pass
+
+    # Fallback / belt-and-suspenders: pkill by process name. This catches
+    # the case where the user started llama-server outside our control,
+    # or where the PID file is stale.
+    try:
+        subprocess.run(
+            ["pkill", "-f", "llama-server"],
+            check=False, timeout=5, capture_output=True,
+        )
+        time.sleep(2)
+        stopped = True
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    return stopped
+
+
+def start_llama_server(
+    command_template: str,
+    lora_path: Path,
+    pid_file: Optional[Path] = None,
+    log_path: Optional[Path] = None,
+) -> int:
+    """
+    Start llama-server in the background with the LoRA loaded.
+
+    `command_template` is a multi-line string with `%LORA%` as a placeholder
+    for the LoRA path. If the template doesn't contain %LORA%, --lora is
+    appended automatically.
+
+    Returns the PID of the launched server. Writes the PID to pid_file
+    if provided, and stdout/stderr to log_path (default /tmp/hermes-llama-server.log).
+    """
+    template = command_template.strip()
+    if "%LORA%" in template:
+        cmd_str = template.replace("%LORA%", str(lora_path))
+    else:
+        cmd_str = f"{template} --lora {shlex.quote(str(lora_path))}"
+
+    # Collapse line continuations and split into argv
+    cmd_str = " ".join(cmd_str.split())
+    cmd = shlex.split(cmd_str)
+
+    log_path = log_path or Path("/tmp/hermes-llama-server.log")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Starting llama-server: %s", " ".join(cmd))
+    logger.info("Server log: %s", log_path)
+
+    log_handle = open(log_path, "ab")
+    proc = subprocess.Popen(
+        cmd,
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+
+    if pid_file:
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text(str(proc.pid))
+
+    return proc.pid
+
+
+def health_check_llama_server(url: str, timeout: int = 30) -> bool:
+    """
+    Poll the llama-server health endpoint until it responds or timeout.
+    Returns True if the server is reachable, False on timeout.
+    """
+    import urllib.request
+    import urllib.error
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                if 200 <= resp.status < 300:
+                    return True
+        except (urllib.error.URLError, urllib.error.HTTPError, ConnectionError, OSError):
+            pass
+        time.sleep(1)
+    return False
+
+
+def redeploy(adapter_dir: Optional[Path] = None) -> bool:
+    """
+    Convert the active (or specified) adapter to GGUF and restart
+    llama-server with it loaded.
+
+    Configurable via the `finetune.serving` config section. Returns True
+    if the new server is responsive at the configured health URL.
+
+    On any failure, prints diagnostic info but does NOT fall back —
+    this function is meant to be transparent. The caller (run_pipeline
+    --with-bench) handles the rollback decision based on the bench
+    result, not on the redeploy success alone.
+    """
+    config = load_config()
+    serving_cfg = config.get("serving", {})
+
+    # Resolve the adapter to deploy
+    if adapter_dir is None:
+        registry = AdapterRegistry()
+        active = None
+        for entry in registry.registry.get("adapters", []):
+            if entry.get("status") == "active":
+                active = entry
+                break
+        if active is None:
+            print("redeploy: no active adapter to deploy")
+            return False
+        adapter_dir = ADAPTERS_DIR / active["cluster_id"] / active["version"]
+        print(f"redeploy: deploying {active['cluster_id']} {active['version']}")
+    else:
+        adapter_dir = Path(adapter_dir).expanduser()
+
+    if not (adapter_dir / "adapter_model").exists():
+        print(f"redeploy: adapter_model dir missing under {adapter_dir}")
+        return False
+
+    # Step 1: Find HF snapshot for the base model
+    snapshot_setting = serving_cfg.get("base_model_snapshot", "auto")
+    if snapshot_setting == "auto":
+        training_cfg = config.get("training", {})
+        base_model_id = training_cfg.get("base_model", "")
+        snapshot = find_base_snapshot(base_model_id)
+        if snapshot is None:
+            print(f"redeploy: could not auto-detect HF snapshot for '{base_model_id}'")
+            print("         Set finetune.serving.base_model_snapshot explicitly,")
+            print("         or run training first so axolotl downloads the model.")
+            return False
+        print(f"redeploy: using base snapshot {snapshot}")
+    else:
+        snapshot = Path(snapshot_setting).expanduser()
+        if not snapshot.exists():
+            print(f"redeploy: configured snapshot does not exist: {snapshot}")
+            return False
+
+    # Step 2: Convert the adapter to GGUF
+    converter = Path(serving_cfg.get(
+        "converter", "~/programs/llama.cpp/convert_lora_to_gguf.py"
+    )).expanduser()
+
+    try:
+        gguf_path = convert_adapter_to_gguf(adapter_dir, snapshot, converter)
+    except RuntimeError as e:
+        print(f"redeploy: GGUF conversion failed: {e}")
+        return False
+    print(f"redeploy: GGUF ready at {gguf_path}")
+
+    # Step 3: Restart llama-server (only if a server_command is configured)
+    server_command = serving_cfg.get("server_command", "").strip()
+    if not server_command:
+        print("redeploy: no serving.server_command configured.")
+        print(f"          Adapter is at {gguf_path} — start llama-server manually with:")
+        print(f"          llama-server -m <base.gguf> --lora {gguf_path} ...")
+        return True  # GGUF is ready, server start was opt-out
+
+    pid_file = Path(serving_cfg.get(
+        "server_pid_file", "/tmp/hermes-llama-server.pid"
+    )).expanduser()
+    log_path = Path(serving_cfg.get(
+        "server_log_path", "/tmp/hermes-llama-server.log"
+    )).expanduser()
+
+    print("redeploy: stopping existing llama-server...")
+    stop_llama_server(pid_file)
+
+    print("redeploy: starting llama-server with new LoRA...")
+    try:
+        pid = start_llama_server(server_command, gguf_path, pid_file, log_path)
+    except (FileNotFoundError, OSError) as e:
+        print(f"redeploy: failed to start llama-server: {e}")
+        return False
+    print(f"redeploy: llama-server PID {pid}")
+
+    # Step 4: Health check
+    health_url = serving_cfg.get(
+        "health_check_url", "http://localhost:8008/v1/models"
+    )
+    health_timeout = int(serving_cfg.get("health_check_timeout", 30))
+
+    print(f"redeploy: waiting up to {health_timeout}s for {health_url}...")
+    if health_check_llama_server(health_url, health_timeout):
+        print(f"redeploy: ✓ server is responsive")
+        return True
+
+    print(f"redeploy: ✗ server did not respond within {health_timeout}s")
+    print(f"          check {log_path} for the failure reason")
+    return False
 
 
 class AdapterRegistry:
@@ -425,6 +731,18 @@ def run_pipeline(dry_run: bool = False, with_bench: bool = False):
         promoted.append((cid, version))
         print(f"  → Promoted {cid} {version}")
 
+    # Optional: auto-redeploy llama-server with the new adapter loaded.
+    # When enabled, the bench step below will measure the adapter that's
+    # actually being served, not the bare base model.
+    serving_cfg = load_config().get("serving", {})
+    if serving_cfg.get("auto_redeploy") and promoted:
+        print(f"\n[5b/{total_steps}] Redeploying llama-server with new adapter...")
+        cid, version = promoted[-1]  # last promoted adapter wins
+        deploy_dir = ADAPTERS_DIR / cid / version
+        if not redeploy(deploy_dir):
+            print("  ⚠ Redeploy failed. Adapter is promoted but not yet served.")
+            print("    The bench will measure the previously-served model.")
+
     if not with_bench:
         print("\nPipeline complete. Run '/finetune bench' to verify quality.")
         return
@@ -448,6 +766,11 @@ def run_pipeline(dry_run: bool = False, with_bench: bool = False):
                 print(f"    Rolled back {cid} (was {version})")
             else:
                 print(f"    Could not rollback {cid} — manual intervention required")
+        # If we redeployed and now need to roll back, redeploy the previous
+        # adapter so the served model matches the active registry entry.
+        if serving_cfg.get("auto_redeploy"):
+            print("    Redeploying previous adapter to match registry rollback...")
+            redeploy()  # picks up whatever's now active after rollback
         print("\nPipeline complete with regression. Investigate the bench report above.")
 
 
@@ -509,6 +832,19 @@ def main():
 
     sub.add_parser("bench", help="Run the finetune benchmark against the active model")
 
+    p_redeploy = sub.add_parser(
+        "redeploy",
+        help="Convert the active adapter to GGUF and restart llama-server with it loaded",
+    )
+    p_redeploy.add_argument(
+        "--cluster", default=None,
+        help="Cluster ID to deploy (default: the currently-active adapter from registry)",
+    )
+    p_redeploy.add_argument(
+        "--version", default=None,
+        help="Version to deploy (default: the active version for the cluster)",
+    )
+
     p_gc = sub.add_parser("gc", help="Garbage collect old versions")
     p_gc.add_argument("--keep", type=int, default=2, help="Versions to keep")
 
@@ -551,6 +887,23 @@ def main():
         else:
             print("Benchmark failed to run.")
             sys.exit(1)
+
+    elif args.command == "redeploy":
+        adapter_dir = None
+        if args.cluster and args.version:
+            adapter_dir = ADAPTERS_DIR / args.cluster / args.version
+        elif args.cluster:
+            # Use the active version of the requested cluster
+            registry = AdapterRegistry()
+            for entry in registry.registry.get("adapters", []):
+                if entry.get("cluster_id") == args.cluster and entry.get("status") == "active":
+                    adapter_dir = ADAPTERS_DIR / args.cluster / entry["version"]
+                    break
+            if adapter_dir is None:
+                print(f"No active adapter for cluster {args.cluster}")
+                sys.exit(1)
+        ok = redeploy(adapter_dir)
+        sys.exit(0 if ok else 1)
 
     elif args.command == "gc":
         registry = AdapterRegistry()

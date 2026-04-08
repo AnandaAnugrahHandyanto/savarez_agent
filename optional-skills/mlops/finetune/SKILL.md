@@ -55,6 +55,7 @@ Train QLoRA adapters from your own Hermes session history. The pipeline extracts
 | `/finetune retro stats` | **Show labeling progress** |
 | `/finetune promote [cluster] [version]` | Promote adapter to active |
 | `/finetune rollback [cluster]` | Roll back to previous version |
+| `/finetune redeploy` | **Convert active adapter to GGUF and restart llama-server with it loaded** |
 | `/finetune route "prompt"` | Test which adapter would route for a prompt |
 | `/finetune run` | **Full pipeline, no bench gate** — fast, auto-promotes |
 | `/finetune run --with-bench` | **Full pipeline + bench gate** — auto-rollback on regression |
@@ -181,6 +182,106 @@ This is useful for:
 - Investigating a regression flagged by Workflow B
 
 Results land in `~/.hermes/finetune/bench/results/bench_<timestamp>.json` and the most recent prior result is used as the comparison baseline automatically.
+
+## Auto-Redeploy (llama.cpp integration)
+
+By default, training a new adapter doesn't change what your llama-server is actually serving. The adapter lands in the registry and gets marked active, but llama.cpp keeps serving whatever GGUF it was started with. To actually use the trained adapter, you'd normally have to convert it to GGUF, stop llama-server, restart with `--lora`, and verify it came up. The pipeline can do all of that for you.
+
+### What it does
+
+When `auto_redeploy: true` is set, after `/finetune run` finishes promoting a new adapter, the pipeline runs an extra step:
+
+1. Looks up the active adapter from the registry
+2. Auto-detects the HuggingFace snapshot directory for the base model (from `~/.cache/huggingface/hub/`)
+3. Calls llama.cpp's `convert_lora_to_gguf.py` to produce a GGUF copy of the adapter
+4. Stops the running llama-server (via PID file or `pkill` fallback)
+5. Restarts llama-server with `--lora <path-to-gguf>` appended to the configured launch command
+6. Polls `/v1/models` until the new server is responsive (default 30s timeout)
+7. If the rest of the pipeline runs `/finetune run --with-bench`, the bench then measures the adapter that's *actually being served*
+
+### Configuration
+
+Add the following section to `~/.hermes/config.yaml`. **All of it is required if you want auto-redeploy on** — the defaults assume nothing about your specific setup:
+
+```yaml
+finetune:
+  serving:
+    auto_redeploy: true
+
+    # Path to llama.cpp's convert_lora_to_gguf.py script.
+    # Default points at ~/programs/llama.cpp/convert_lora_to_gguf.py.
+    converter: ~/programs/llama.cpp/convert_lora_to_gguf.py
+
+    # Where to find the HF safetensors snapshot of the base model.
+    # "auto" detects from ~/.cache/huggingface/hub/ based on the
+    # finetune.training.base_model HF repo ID. You can also pass an
+    # explicit path here.
+    base_model_snapshot: auto
+
+    # The exact command used to launch llama-server. Multi-line is fine.
+    # Use %LORA% as a placeholder for the LoRA path — it will be replaced
+    # at deploy time. If you don't include %LORA%, the pipeline appends
+    # --lora <path> automatically.
+    server_command: |
+      ~/programs/llama.cpp/build/bin/llama-server
+      -m ~/programs/carnice/Carnice-9b-Q8_0.gguf
+      -ngl 999 -c 32768 --host 0.0.0.0 --port 8008
+      --lora %LORA%
+
+    # Where the pipeline writes the launched server's PID. Used to stop
+    # the previous server cleanly between deploys.
+    server_pid_file: /tmp/hermes-llama-server.pid
+    server_log_path: /tmp/hermes-llama-server.log
+
+    # Health check after restart
+    health_check_url: http://localhost:8008/v1/models
+    health_check_timeout: 30
+```
+
+### Manual redeploy
+
+Even with `auto_redeploy: false`, you can run the redeploy step on demand:
+
+```
+/finetune redeploy
+```
+
+This deploys whatever's currently active in the registry. Useful when you want to push a manually-promoted adapter live, or when you've edited the LoRA outside the pipeline.
+
+You can also redeploy a specific cluster/version:
+
+```
+/finetune redeploy --cluster _general --version v3
+```
+
+### Prerequisites
+
+- **llama.cpp checkout with `convert_lora_to_gguf.py`** at the configured path. This script is in recent versions of llama.cpp.
+- **The HF safetensors must be in the local cache.** Axolotl downloads them automatically the first time you run `/finetune run`, so this is usually a no-op. If you want to pre-warm the cache, use `huggingface-cli download <repo>`.
+- **No other process holding the GPU** when llama-server restarts. The pipeline doesn't manage other GPU consumers.
+
+### What can go wrong
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `redeploy: could not auto-detect HF snapshot` | The base model isn't in the HF cache, or `base_model` is a local path instead of an HF repo ID | Run `huggingface-cli download <repo>` to populate the cache, or set `base_model_snapshot` explicitly |
+| `redeploy: GGUF conversion failed` | llama.cpp's converter doesn't support this base architecture, or the adapter is malformed | Check the converter's stderr in the error message; fall back to manual conversion to debug |
+| `redeploy: server did not respond within 30s` | The new llama-server failed to start (bad command, missing model, GPU OOM) | Check `/tmp/hermes-llama-server.log` for the actual failure |
+| llama-server starts but the new adapter isn't applied | The `server_command` template doesn't include `--lora %LORA%`, OR llama.cpp version doesn't support runtime LoRA loading | Add `--lora %LORA%` to the template and verify your llama.cpp build supports `--lora` |
+
+### Interaction with the bench gate
+
+When you run `/finetune run --with-bench` AND have `auto_redeploy: true`, the flow becomes:
+
+1. Train the adapter
+2. Promote it
+3. **Redeploy llama-server with the new adapter loaded**
+4. Run the bench (now actually measuring the new adapter)
+5. Compare to baseline; if regressed → rollback the adapter AND redeploy the previous adapter so the served model matches the registry
+
+This is the closed-loop "retrain and validate without human intervention" workflow. The cron-scheduled retraining mode (`/finetune cron weekly`) becomes truly hands-off when combined with `--with-bench` and `auto_redeploy: true`.
+
+---
 
 ## Retroactive Labeling
 

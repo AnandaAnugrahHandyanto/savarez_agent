@@ -591,6 +591,18 @@ DEFAULT_CONFIG = {
             "cli_keybindings": False,
             "gateway_reactions": False,
         },
+        # Auto-redeploy llama-server with newly trained adapters.
+        # Off by default — requires user-specific paths to be set first.
+        "serving": {
+            "auto_redeploy": False,
+            "converter": "~/programs/llama.cpp/convert_lora_to_gguf.py",
+            "base_model_snapshot": "auto",
+            "server_command": "",
+            "server_pid_file": "/tmp/hermes-llama-server.pid",
+            "server_log_path": "/tmp/hermes-llama-server.log",
+            "health_check_url": "http://localhost:8008/v1/models",
+            "health_check_timeout": 30,
+        },
     },
 
     # Config schema version - bump this when adding new required fields

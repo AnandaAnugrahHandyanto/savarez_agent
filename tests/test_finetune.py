@@ -1106,3 +1106,152 @@ class TestPositiveSignals:
         scored = scorer.score_session(session)
         assert scored["scoring"]["scoring_mode"] == "legacy"
         assert "composite_score" in scored["scoring"]
+
+
+# ============================================================================
+# Auto-redeploy tests (HF snapshot detection, conversion, server lifecycle)
+# ============================================================================
+
+class TestRedeploy:
+    def test_find_base_snapshot_returns_none_for_unknown(self, tmp_path, monkeypatch):
+        from manage import find_base_snapshot
+        # Empty cache → None
+        monkeypatch.setenv("HOME", str(tmp_path))
+        result = find_base_snapshot("nonexistent/repo")
+        assert result is None
+
+    def test_find_base_snapshot_locates_real_dir(self, tmp_path, monkeypatch):
+        from manage import find_base_snapshot
+        # Create a fake HF cache layout
+        cache = tmp_path / ".cache" / "huggingface" / "hub"
+        snap_dir = cache / "models--myorg--mymodel" / "snapshots" / "abc123"
+        snap_dir.mkdir(parents=True)
+        (snap_dir / "config.json").write_text("{}")
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        result = find_base_snapshot("myorg/mymodel")
+        assert result == snap_dir
+
+    def test_find_base_snapshot_picks_most_recent(self, tmp_path, monkeypatch):
+        import time
+        from manage import find_base_snapshot
+        cache = tmp_path / ".cache" / "huggingface" / "hub"
+        snap_root = cache / "models--myorg--mymodel" / "snapshots"
+        snap_root.mkdir(parents=True)
+
+        old = snap_root / "old_hash"
+        new = snap_root / "new_hash"
+        old.mkdir()
+        time.sleep(0.05)
+        new.mkdir()
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        result = find_base_snapshot("myorg/mymodel")
+        assert result == new
+
+    def test_find_base_snapshot_rejects_bad_id(self, tmp_path, monkeypatch):
+        from manage import find_base_snapshot
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert find_base_snapshot("") is None
+        assert find_base_snapshot("no_slash_in_this_id") is None
+
+    def test_convert_adapter_to_gguf_caches(self, tmp_path):
+        """If the GGUF already exists, convert returns it without re-running."""
+        from manage import convert_adapter_to_gguf
+        adapter_dir = tmp_path / "adapters" / "v1"
+        (adapter_dir / "adapter_model").mkdir(parents=True)
+        existing = adapter_dir / "adapter.gguf"
+        existing.write_bytes(b"fake gguf")
+
+        snapshot = tmp_path / "snapshot"
+        snapshot.mkdir()
+        converter = tmp_path / "converter.py"
+        converter.write_text("#!/usr/bin/env python")
+
+        result = convert_adapter_to_gguf(adapter_dir, snapshot, converter, force=False)
+        assert result == existing
+        # File contents are unchanged (we didn't actually run anything)
+        assert existing.read_bytes() == b"fake gguf"
+
+    def test_convert_adapter_to_gguf_missing_converter(self, tmp_path):
+        from manage import convert_adapter_to_gguf
+        adapter_dir = tmp_path / "adapters" / "v1"
+        (adapter_dir / "adapter_model").mkdir(parents=True)
+
+        snapshot = tmp_path / "snapshot"
+        snapshot.mkdir()
+
+        with pytest.raises(RuntimeError, match="Converter not found"):
+            convert_adapter_to_gguf(adapter_dir, snapshot, tmp_path / "missing.py")
+
+    def test_convert_adapter_to_gguf_missing_snapshot(self, tmp_path):
+        from manage import convert_adapter_to_gguf
+        adapter_dir = tmp_path / "adapters" / "v1"
+        (adapter_dir / "adapter_model").mkdir(parents=True)
+
+        converter = tmp_path / "converter.py"
+        converter.write_text("#!/usr/bin/env python")
+
+        with pytest.raises(RuntimeError, match="Base snapshot not found"):
+            convert_adapter_to_gguf(adapter_dir, tmp_path / "missing", converter)
+
+    def test_convert_adapter_to_gguf_missing_adapter_model(self, tmp_path):
+        from manage import convert_adapter_to_gguf
+        adapter_dir = tmp_path / "adapters" / "v1"
+        adapter_dir.mkdir(parents=True)
+        # Note: no adapter_model subdir
+
+        snapshot = tmp_path / "snapshot"
+        snapshot.mkdir()
+        converter = tmp_path / "converter.py"
+        converter.write_text("#!/usr/bin/env python")
+
+        with pytest.raises(RuntimeError, match="Adapter model dir not found"):
+            convert_adapter_to_gguf(adapter_dir, snapshot, converter)
+
+    def test_stop_llama_server_no_pid_file(self, tmp_path):
+        """Stopping when there's no PID file and no running server is a no-op."""
+        from manage import stop_llama_server
+        # This should not raise even though there's no llama-server to kill
+        result = stop_llama_server(pid_file=tmp_path / "nonexistent.pid")
+        assert result in (True, False)  # either is acceptable
+
+    def test_stop_llama_server_stale_pid(self, tmp_path):
+        """A stale PID file should be cleaned up without crashing."""
+        from manage import stop_llama_server
+        pid_file = tmp_path / "stale.pid"
+        pid_file.write_text("99999999")  # almost certainly not a real PID
+        stop_llama_server(pid_file=pid_file)
+        assert not pid_file.exists()  # cleaned up
+
+    def test_health_check_llama_server_failure(self):
+        """Health check on a non-existent server returns False quickly."""
+        from manage import health_check_llama_server
+        result = health_check_llama_server("http://localhost:1/nonexistent", timeout=2)
+        assert result is False
+
+    def test_redeploy_no_active_adapter(self, tmp_hermes):
+        """redeploy() with no active adapter and no explicit dir returns False."""
+        from manage import redeploy
+        result = redeploy()
+        assert result is False
+
+    def test_redeploy_missing_adapter_dir(self, tmp_hermes, tmp_path):
+        """redeploy() with an adapter_dir that lacks adapter_model returns False."""
+        from manage import redeploy
+        bogus = tmp_path / "bogus_adapter"
+        bogus.mkdir()
+        result = redeploy(adapter_dir=bogus)
+        assert result is False
+
+    def test_redeploy_no_snapshot_no_converter(self, tmp_hermes, tmp_path, monkeypatch):
+        """redeploy() with auto snapshot lookup but empty HF cache returns False."""
+        from manage import redeploy
+        # Set up an adapter dir
+        adapter_dir = tmp_path / "adapter_v1"
+        (adapter_dir / "adapter_model").mkdir(parents=True)
+        # Point HOME at an empty cache
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        result = redeploy(adapter_dir=adapter_dir)
+        assert result is False  # snapshot detection should fail
