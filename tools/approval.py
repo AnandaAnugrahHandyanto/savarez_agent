@@ -166,9 +166,20 @@ def detect_dangerous_command(command: str) -> tuple:
     # Dynamic self-PID guard: detect "kill <own-PID>" commands that would
     # terminate the gateway from within.  Static regex cannot catch this
     # because the PID is only known at runtime.  See hermes-agent#3397.
+    #
+    # Covers: kill PID, kill -9 PID, kill -TERM PID, kill -s TERM PID,
+    #         kill -s 15 PID, kill --signal TERM PID, kill -- PID
     own_pid = str(os.getpid())
-    kill_match = re.search(r"\bkill\s+(?:-\d+\s+)?" + re.escape(own_pid) + r"\b", command_lower)
-    if kill_match:
+    kill_pid_pattern = (
+        r"\bkill\s+"
+        r"(?:"
+            r"(?:--?\s*signal\s+\S+\s+)"   # kill --signal TERM / kill -s TERM
+            r"|(?:--\s+)"                    # kill -- (end of options)
+            r"|(?:-\S+\s+)"                 # kill -9 / kill -TERM / kill -s15
+        r")?"
+        + re.escape(own_pid) + r"\b"
+    )
+    if re.search(kill_pid_pattern, command_lower):
         desc = "kill own gateway process (self-termination, PID " + own_pid + ")"
         return (True, desc, desc)
 
