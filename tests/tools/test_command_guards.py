@@ -33,7 +33,12 @@ _TIRITH_PATCH = "tools.tirith_security.check_command_security"
 
 @pytest.fixture(autouse=True)
 def _clean_state():
-    """Clear approval state and relevant env vars between tests."""
+    """Clear approval state and relevant env vars between tests.
+
+    HERMES_EXEC_ASK inherited from the parent process can force gateway
+    approval paths even when testing CLI flows — must be explicitly
+    cleared before each test.
+    """
     key = os.getenv("HERMES_SESSION_KEY", "default")
     clear_session(key)
     approval_module._permanent_approved.clear()
