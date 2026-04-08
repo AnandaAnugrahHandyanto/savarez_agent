@@ -214,6 +214,12 @@ class HermesAgentLoop:
             # Inject extra_body for provider-specific params (e.g., OpenRouter
             # provider preferences like banned/preferred providers, transforms)
             if self.extra_body:
+                # Custom atropos extension: inhibit sending tools= to the server
+                # (Used to bypass buggy server-side tool parsing in vLLM 0.6.5)
+                if self.extra_body.get("atropos_inhibit_tools"):
+                    chat_kwargs.pop("tools", None)
+                    chat_kwargs["tool_choice"] = "none"
+                
                 chat_kwargs["extra_body"] = self.extra_body
 
             # Make the API call -- standard OpenAI spec
@@ -246,6 +252,7 @@ class HermesAgentLoop:
                 )
 
             assistant_msg = response.choices[0].message
+            logger.info("\n--- [TURN %d] Assistant Response ---\n%s\n----------------------------------", turn + 1, assistant_msg.content)
 
             # Extract reasoning content from the response (all provider formats)
             reasoning = _extract_reasoning_from_message(assistant_msg)
@@ -261,27 +268,28 @@ class HermesAgentLoop:
                 not assistant_msg.tool_calls
                 and assistant_msg.content
                 and self.tool_schemas
-                and "<tool_call>" in (assistant_msg.content or "")
+                and ("<tool_code>" in assistant_msg.content or "<tool_call>" in assistant_msg.content)
             ):
                 try:
-                    from environments.tool_call_parsers import get_parser
-                    fallback_parser = get_parser("hermes")
-                    parsed_content, parsed_calls = fallback_parser.parse(
+                    from model_tools import parse_tool_calls_from_text
+                    
+                    parsed_calls_dicts, parsed_content = parse_tool_calls_from_text(
                         assistant_msg.content
                     )
-                    if parsed_calls:
-                        assistant_msg.tool_calls = parsed_calls
+                    if parsed_calls_dicts:
+                        assistant_msg.tool_calls = parsed_calls_dicts
                         if parsed_content is not None:
                             assistant_msg.content = parsed_content
                         logger.debug(
                             "Fallback parser extracted %d tool calls from raw content",
-                            len(parsed_calls),
+                            len(parsed_calls_dicts),
                         )
-                except Exception:
+                except Exception as e:
+                    logger.error("Fallback parser error: %s", e)
                     pass  # Fall through to no tool calls
 
             if assistant_msg.tool_calls:
-                # Normalize tool calls to dicts — they may come as objects
+                # Normalize tool calls to dicts - they may come as objects
                 # (OpenAI API) or dicts (vLLM ToolCallTranslator).
                 def _tc_to_dict(tc):
                     if isinstance(tc, dict):

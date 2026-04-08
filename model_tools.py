@@ -24,6 +24,8 @@ import json
 import asyncio
 import logging
 import threading
+import uuid
+import re
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import registry
@@ -63,7 +65,7 @@ def _get_worker_loop():
     gets its own long-lived loop stored in thread-local storage.  This
     prevents the "Event loop is closed" errors that occurred when
     asyncio.run() was used per-call: asyncio.run() creates a loop, runs
-    the coroutine, then *closes* the loop — but cached httpx/AsyncOpenAI
+    the coroutine, then *closes* the loop - but cached httpx/AsyncOpenAI
     clients remain bound to that now-dead loop and raise RuntimeError
     during garbage collection or subsequent use.
 
@@ -106,7 +108,7 @@ def _run_async(coro):
         loop = None
 
     if loop and loop.is_running():
-        # Inside an async context (gateway, RL env) — run in a fresh thread.
+        # Inside an async context (gateway, RL env) - run in a fresh thread.
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, coro)
@@ -116,7 +118,7 @@ def _run_async(coro):
     # delegate_task), use a per-thread persistent loop.  This avoids
     # contention with the main thread's shared loop while keeping cached
     # httpx/AsyncOpenAI clients bound to a live loop for the thread's
-    # lifetime — preventing "Event loop is closed" on GC cleanup.
+    # lifetime - preventing "Event loop is closed" on GC cleanup.
     if threading.current_thread() is not threading.main_thread():
         worker_loop = _get_worker_loop()
         return worker_loop.run_until_complete(coro)
@@ -258,15 +260,15 @@ def get_tool_definitions(
                 resolved = resolve_toolset(toolset_name)
                 tools_to_include.update(resolved)
                 if not quiet_mode:
-                    print(f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
+                    logger.info("Enabled toolset '%s': %s", toolset_name, ', '.join(resolved) if resolved else 'no tools')
             elif toolset_name in _LEGACY_TOOLSET_MAP:
                 legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
                 tools_to_include.update(legacy_tools)
                 if not quiet_mode:
-                    print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+                    logger.info("Enabled legacy toolset '%s': %s", toolset_name, ', '.join(legacy_tools))
             else:
                 if not quiet_mode:
-                    print(f"⚠️  Unknown toolset: {toolset_name}")
+                    logger.warning("Unknown toolset: %s", toolset_name)
 
     elif disabled_toolsets:
         from toolsets import get_all_toolsets
@@ -278,23 +280,23 @@ def get_tool_definitions(
                 resolved = resolve_toolset(toolset_name)
                 tools_to_include.difference_update(resolved)
                 if not quiet_mode:
-                    print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
+                    logger.info("Disabled toolset '%s': %s", toolset_name, ', '.join(resolved) if resolved else 'no tools')
             elif toolset_name in _LEGACY_TOOLSET_MAP:
                 legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
                 tools_to_include.difference_update(legacy_tools)
                 if not quiet_mode:
-                    print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+                    logger.info("Disabled legacy toolset '%s': %s", toolset_name, ', '.join(legacy_tools))
             else:
                 if not quiet_mode:
-                    print(f"⚠️  Unknown toolset: {toolset_name}")
+                    logger.warning("Unknown toolset: %s", toolset_name)
     else:
         from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
     # Plugin-registered tools are now resolved through the normal toolset
-    # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
-    # all check the tool registry for plugin-provided toolsets.  No bypass
+    # path - validate_toolset() / resolve_toolset() / get_all_toolsets()
+    # all check the tool registry for plugin-provided toolsets. No bypass
     # needed; plugins respect enabled_toolsets / disabled_toolsets like any
     # other toolset.
 
@@ -303,7 +305,7 @@ def get_tool_definitions(
 
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references
-    # other tools by name — otherwise the model sees tools mentioned in
+    # other tools by name - otherwise the model sees tools mentioned in
     # descriptions that don't actually exist, and hallucinates calls to them.
     available_tool_names = {t["function"]["name"] for t in filtered_tools}
 
@@ -343,9 +345,9 @@ def get_tool_definitions(
     if not quiet_mode:
         if filtered_tools:
             tool_names = [t["function"]["name"] for t in filtered_tools]
-            print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(tool_names)}")
+            logger.info("Final tool selection (%d tools): %s", len(filtered_tools), ', '.join(tool_names))
         else:
-            print("🛠️  No tools selected (all filtered out or unavailable)")
+            logger.info("No tools selected (all filtered out or unavailable)")
 
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
@@ -575,3 +577,102 @@ def check_toolset_requirements() -> Dict[str, bool]:
 def check_tool_availability(quiet: bool = False) -> Tuple[List[str], List[dict]]:
     """Return (available_toolsets, unavailable_info)."""
     return registry.check_tool_availability(quiet=quiet)
+
+
+# =============================================================================
+# Fallback Tool Parsing (for Universal Tool Strategy) 
+# =============================================================================
+
+def parse_tool_calls_from_text(text: str) -> Tuple[List[Any], Optional[str]]:
+    """
+    Extract tool calls from raw assistant text using multiple fallback patterns.
+    Returns (list_of_tool_calls, cleaned_content).
+    """
+    import re
+    import ast
+    import json
+    import uuid
+
+    tool_calls = []
+    cleaned_text = text
+
+    # --- Pattern 1: <tool_code>...</tool_code> or <tool_call>...</tool_call> ---
+    # These can contain comments and multiple function calls.
+    tag_pattern = re.compile(r"<(tool_code|tool_call)>(.*?)</\1>", re.DOTALL)
+    for tag_match in tag_pattern.finditer(text):
+        full_tag_text = tag_match.group(0)
+        inner_content = tag_match.group(2)
+        
+        # Remove from cleaned text
+        cleaned_text = cleaned_text.replace(full_tag_text, "")
+
+        # Find all function_name(args) patterns inside the tag
+        # We look for something that looks like a function call
+        fn_pattern = re.compile(r"(\w+)\((.*?)\)", re.DOTALL)
+        for fn_match in fn_pattern.finditer(inner_content):
+            name = fn_match.group(1)
+            args_str = fn_match.group(2)
+
+            # Try to parse arguments
+            args = {}
+            if args_str.strip():
+                try:
+                    # Attempt safe AST evaluation of keyword arguments
+                    # We wrap it in a stub to use the AST parser's call handling
+                    tree = ast.parse(f"stub({args_str})")
+                    call_node = tree.body[0].value
+                    args = {kw.arg: ast.literal_eval(kw.value) for kw in call_node.keywords}
+                except Exception:
+                    # Fallback: simple key="value" or key='value' regex
+                    arg_pairs = re.findall(r'(\w+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^,\s\)]+))', args_str)
+                    for k, v1, v2, v3 in arg_pairs:
+                        val = v1 or v2 or v3
+                        # Try to convert to int/float if possible
+                        if val.lower() == "true": val = True
+                        elif val.lower() == "false": val = False
+                        elif val.isdigit(): val = int(val)
+                        args[k] = val
+
+            tool_calls.append({
+                "id": f"call_{uuid.uuid4().hex[:8]}",
+                "name": name,
+                "arguments": json.dumps(args)
+            })
+
+    # --- Pattern 2: Tool-Name-as-Tag Hallucinations (e.g. <read_file path="...">) ---
+    # Common tools the model often hallucinates tags for
+    known_tools = r"(read_file|write_file|patch|terminal|execute_code|ls|search_files)"
+    xml_tool_pattern = re.compile(rf"<{known_tools}\s+(.*?)/*>", re.DOTALL)
+    
+    for xml_match in xml_tool_pattern.finditer(cleaned_text):
+        name = xml_match.group(1)
+        attr_str = xml_match.group(2)
+        
+        # Check if there's a closing tag like </read_file> nearby
+        closing_tag = f"</{name}>"
+        full_match_text = xml_match.group(0)
+        
+        if closing_tag in cleaned_text:
+            # Multi-line XML: <read_file path="..."> [content] </read_file>
+            # We'll just take the attributes for now as they usually contain the path
+            end_pos = cleaned_text.find(closing_tag) + len(closing_tag)
+            # This is complex to replace correctly, so we just remove the start tag for now
+            cleaned_text = cleaned_text.replace(full_match_text, "")
+            cleaned_text = cleaned_text.replace(closing_tag, "")
+        else:
+            # Single-line XML: <read_file path="..."/>
+            cleaned_text = cleaned_text.replace(full_match_text, "")
+
+        # Parse attributes (path="/foo", original="bar", etc.)
+        args = {}
+        attr_pairs = re.findall(r'(\w+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^,\s\>]+))', attr_str)
+        for k, v1, v2, v3 in attr_pairs:
+            args[k] = v1 or v2 or v3
+
+        tool_calls.append({
+            "id": f"call_{uuid.uuid4().hex[:8]}",
+            "name": name,
+            "arguments": json.dumps(args)
+        })
+
+    return tool_calls, cleaned_text
