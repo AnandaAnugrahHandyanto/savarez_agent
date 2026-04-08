@@ -5017,6 +5017,17 @@ class GatewayRunner:
                 lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens)
             )
 
+            new_count = len(compressed)
+            new_tokens = estimate_messages_tokens_rough(compressed)
+
+            # Detect no-op: compressor returned the input unchanged
+            if new_count == original_count and compressed == msgs:
+                return (
+                    f"Nothing to compress yet — only {original_count} compressible messages "
+                    f"(user/assistant with content). The compressor needs more history before "
+                    f"it can summarize older turns."
+                )
+
             # _compress_context already calls end_session() on the old session
             # (preserving its full transcript in SQLite) and creates a new
             # session_id for the continuation.  Write the compressed messages
@@ -5031,13 +5042,16 @@ class GatewayRunner:
             self.session_store.update_session(
                 session_entry.session_key, last_prompt_tokens=0
             )
-            new_count = len(compressed)
-            new_tokens = estimate_messages_tokens_rough(compressed)
 
-            return (
-                f"🗜️ Compressed: {original_count} → {new_count} messages\n"
-                f"~{approx_tokens:,} → ~{new_tokens:,} tokens"
-            )
+            result = f"🗜️ Compressed: {original_count} → {new_count} messages\n"
+            result += f"~{approx_tokens:,} → ~{new_tokens:,} tokens (rough transcript estimate)"
+            if new_tokens > approx_tokens and new_count < original_count:
+                result += (
+                    "\nNote: token estimate increased because the compaction summary "
+                    "is denser than the removed turns. Actual request pressure is lower."
+                )
+
+            return result
         except Exception as e:
             logger.warning("Manual compress failed: %s", e)
             return f"Compression failed: {e}"
