@@ -430,6 +430,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
+        self._stopping = False  # True when intentionally disconnecting (avoid reconnect)
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
@@ -608,6 +609,33 @@ class DiscordAdapter(BasePlatformAdapter):
                 await self._handle_message(message)
 
             @self._client.event
+            async def on_disconnect():
+                """Handle Discord disconnect - notify gateway to trigger reconnection.
+
+                Only triggers reconnection if the disconnect was unexpected
+                (i.e., not initiated by calling disconnect()).
+                """
+                logger.warning("[%s] Disconnected from Discord gateway", adapter_self.name)
+
+                # Only treat as fatal error if this was an unexpected disconnect
+                # (_stopping=False means it wasn't user-initiated)
+                if not adapter_self._stopping and adapter_self.is_connected:
+                    adapter_self._set_fatal_error(
+                        'discord_disconnected',
+                        'Discord gateway connection closed unexpectedly',
+                        retryable=True
+                    )
+                    await adapter_self._notify_fatal_error()
+
+                adapter_self._mark_disconnected()
+
+            @self._client.event
+            async def on_resumed():
+                """Handle Discord session resume (after reconnect)."""
+                logger.info("[%s] Discord session resumed", adapter_self.name)
+                adapter_self._mark_connected()
+
+            @self._client.event
             async def on_voice_state_update(member, before, after):
                 """Track voice channel join/leave events."""
                 # Only track channels where the bot is connected
@@ -675,6 +703,9 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
+        # Mark as intentionally stopping to avoid triggering reconnection
+        self._stopping = True
+
         # Clean up all active voice connections before closing the client
         for guild_id in list(self._voice_clients.keys()):
             try:
@@ -1942,6 +1973,83 @@ class DiscordAdapter(BasePlatformAdapter):
                 }
 
     # ------------------------------------------------------------------
+    # Contextual Thread (Explore) - Smart research thread creation
+    # ------------------------------------------------------------------
+
+    async def _handle_explore_message(
+        self,
+        message: 'DiscordMessage',
+        topic: str,
+        hint: str = "",
+    ) -> None:
+        """Handle @Hermes /explore <topic> command from regular message."""
+        # Generate enriched prompt
+        builder = _ContextualPromptBuilder()
+        enriched_prompt = builder.generate_prompt(topic, hint)
+        thread_name = builder.build_thread_name(topic)
+
+        # Send seed message to channel
+        try:
+            seed_content = f"🧵 正在创建研究 Thread: **{topic}**"
+            seed_msg = await message.channel.send(seed_content)
+        except Exception as e:
+            logger.error("[%s] Failed to send seed message: %s", self.name, e)
+            await message.channel.send(f"❌ 无法创建 Thread: {e}")
+            return
+
+        # Create thread from seed message (fallback method)
+        try:
+            thread = await seed_msg.create_thread(
+                name=thread_name,
+                auto_archive_duration=1440,
+                reason=f"Research thread for {topic}",
+            )
+        except Exception as e:
+            logger.error("[%s] Failed to create thread: %s", self.name, e)
+            await message.channel.send(f"❌ 创建 Thread 失败: {e}")
+            return
+
+        thread_id = str(thread.id)
+
+        # Send enriched prompt to the thread
+        try:
+            await thread.send(enriched_prompt)
+        except Exception as e:
+            logger.error("[%s] Failed to send enriched prompt: %s", self.name, e)
+            await message.channel.send(f"⚠️ Thread 已创建但发送提示词失败")
+            return
+
+        # Track thread participation
+        self._track_thread(thread_id)
+
+        # Build and dispatch message event for AI processing
+        from gateway.message import MessageEvent, MessageType
+        
+        guild_name = ""
+        if hasattr(message.channel, "guild") and message.channel.guild:
+            guild_name = message.channel.guild.name
+        
+        chat_name = f"{guild_name} / {thread_name}" if guild_name else thread_name
+        
+        source = self.build_source(
+            chat_id=thread_id,
+            chat_name=chat_name,
+            chat_type="thread",
+            user_id=str(message.author.id),
+            user_name=message.author.display_name,
+            thread_id=thread_id,
+        )
+
+        event = MessageEvent(
+            text=enriched_prompt,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=message,
+        )
+        
+        await self.handle_message(event)
+
+    # ------------------------------------------------------------------
     # Auto-thread helpers
     # ------------------------------------------------------------------
 
@@ -2221,6 +2329,21 @@ class DiscordAdapter(BasePlatformAdapter):
             if self._client.user and self._client.user in message.mentions:
                 message.content = message.content.replace(f"<@{self._client.user.id}>", "").strip()
                 message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
+
+        # Check for /explore command in @mention messages
+        # Format: @Hermes /explore <topic> [hint]
+        # Note: This check happens AFTER mention removal, so message.content starts with "/explore"
+        if message.content.startswith("/explore"):
+            parts = message.content[len("/explore"):].strip().split("//", 1)
+            explore_topic = parts[0].strip()
+            explore_hint = parts[1].strip() if len(parts) > 1 else ""
+            if explore_topic:
+                logger.info("[%s] /explore command detected: topic='%s', hint='%s'", 
+                           self.name, explore_topic, explore_hint)
+                # Don't process this as a regular message
+                return await self._handle_explore_message(
+                    message, explore_topic, explore_hint
+                )
 
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
