@@ -69,7 +69,7 @@ SUPPORTED_POOL_STRATEGIES = {
 # Cooldown before retrying an exhausted credential.
 # 429 (rate-limited) cools down faster since quotas reset frequently.
 # 402 (billing/quota) and other codes use a longer default.
-EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
+EXHAUSTED_TTL_429_SECONDS = 60               # 60 seconds (was 1h — too aggressive for concurrency-limit 429s)
 EXHAUSTED_TTL_DEFAULT_SECONDS = 24 * 60 * 60 # 24 hours
 
 # Pool key prefix for custom OpenAI-compatible endpoints.
