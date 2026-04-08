@@ -147,7 +147,7 @@ Each messaging platform has an adapter in `gateway/platforms/`:
 
 ```text
 gateway/platforms/
-├── base.py              # BaseAdapter — shared logic for all platforms
+├── base.py              # BasePlatformAdapter — shared logic for all platforms
 ├── telegram.py          # Telegram Bot API (long polling or webhook)
 ├── discord.py           # Discord bot via discord.py
 ├── slack.py             # Slack Socket Mode
@@ -167,8 +167,8 @@ gateway/platforms/
 
 Adapters implement a common interface:
 - `connect()` / `disconnect()` — lifecycle management
-- `send_message()` — outbound message delivery
-- `on_message()` — inbound message normalization → `MessageEvent`
+- `send()` — outbound message delivery
+- `handle_message(event)` — inbound `MessageEvent` dispatch into the gateway runner
 
 ### Token Locks
 
@@ -180,7 +180,7 @@ Outgoing deliveries (`gateway/delivery.py`) handle:
 
 - **Direct reply** — send response back to the originating chat
 - **Home channel delivery** — route cron job outputs and background results to a configured home channel
-- **Explicit target delivery** — `send_message` tool specifying `telegram:-1001234567890`
+- **Explicit target delivery** — via the `send_message` tool (or delivery helpers) specifying `telegram:-1001234567890`
 - **Cross-platform delivery** — deliver to a different platform than the originating message
 
 Cron job deliveries are NOT mirrored into gateway session history — they live in their own cron session only. This is a deliberate design choice to avoid message alternation violations.

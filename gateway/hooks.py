@@ -66,6 +66,21 @@ class HookRegistry:
         except Exception as e:
             print(f"[hooks] Could not load built-in boot-md hook: {e}", flush=True)
 
+        try:
+            from gateway.builtin_hooks.learning_events import handle as learning_events_handle
+
+            learning_events = ["agent:end", "session:end", "command:*"]
+            for event in learning_events:
+                self._handlers.setdefault(event, []).append(learning_events_handle)
+            self._loaded_hooks.append({
+                "name": "learning-events",
+                "description": "Capture compact learning events for adaptive analysis",
+                "events": learning_events,
+                "path": "(builtin)",
+            })
+        except Exception as e:
+            print(f"[hooks] Could not load built-in learning-events hook: {e}", flush=True)
+
     def discover_and_load(self) -> None:
         """
         Scan the hooks directory for hook directories and load their handlers.

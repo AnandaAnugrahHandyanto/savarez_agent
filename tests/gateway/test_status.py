@@ -62,6 +62,27 @@ class TestGatewayPidState:
 
         assert status.get_running_pid() == os.getpid()
 
+    def test_read_process_cmdline_uses_ps_fallback_when_proc_missing(self, monkeypatch):
+        class _Result:
+            stdout = "python -m hermes_cli.main gateway run"
+
+        monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError()))
+        monkeypatch.setattr(status.subprocess, "run", lambda *a, **k: _Result())
+
+        cmdline = status._read_process_cmdline(os.getpid())
+        assert "gateway" in cmdline
+
+    def test_get_process_start_time_uses_ps_fallback_when_proc_missing(self, monkeypatch):
+        class _Result:
+            stdout = "Mon Jan 01 12:34:56 2024\n"
+
+        monkeypatch.setattr(status.Path, "read_text", lambda self: (_ for _ in ()).throw(FileNotFoundError()))
+        monkeypatch.setattr(status.subprocess, "run", lambda *a, **k: _Result())
+
+        start = status._get_process_start_time(os.getpid())
+        assert isinstance(start, int)
+        assert start > 0
+
 
 class TestGatewayRuntimeStatus:
     def test_write_runtime_status_overwrites_stale_pid_on_restart(self, tmp_path, monkeypatch):
@@ -155,3 +176,18 @@ class TestScopedLocks:
 
         status.release_scoped_lock("telegram-bot-token", "secret")
         assert not lock_path.exists()
+
+    def test_release_all_scoped_locks_owner_filtered(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_dir = tmp_path / "locks"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+
+        mine = lock_dir / "telegram-a.lock"
+        other = lock_dir / "discord-b.lock"
+        mine.write_text(json.dumps({"pid": 123, "start_time": 111, "kind": "hermes-gateway"}))
+        other.write_text(json.dumps({"pid": 999, "start_time": 222, "kind": "hermes-gateway"}))
+
+        removed = status.release_all_scoped_locks(owner_pid=123, owner_start_time=111)
+        assert removed == 1
+        assert not mine.exists()
+        assert other.exists()

@@ -124,7 +124,7 @@ class TestEmit:
                       "    results.append(event_type)\n")
 
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path):
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
             reg.discover_and_load()
 
         # Inject our results list into the handler's module globals
@@ -151,7 +151,7 @@ class TestEmit:
         )
 
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path):
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
             reg.discover_and_load()
 
         handler_fn = reg._handlers["agent:end"][0]
@@ -170,7 +170,7 @@ class TestEmit:
                       "    results.append(event_type)\n")
 
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path):
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
             reg.discover_and_load()
 
         handler_fn = reg._handlers["command:*"][0]
@@ -194,7 +194,7 @@ class TestEmit:
                       "    raise ValueError('boom')\n")
 
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path):
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
             reg.discover_and_load()
 
         assert len(reg._handlers.get("agent:start", [])) == 1
@@ -212,7 +212,7 @@ class TestEmit:
                       "    captured.append(context)\n")
 
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path):
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
             reg.discover_and_load()
 
         handler_fn = reg._handlers["agent:start"][0]

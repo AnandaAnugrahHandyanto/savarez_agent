@@ -4391,7 +4391,11 @@ For more help on a command:
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
     gateway_status.add_argument("--deep", action="store_true", help="Deep status check")
     gateway_status.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
-    
+
+    # gateway dump
+    gateway_dump = gateway_subparsers.add_parser("dump", help="Dump full gateway observability state")
+    gateway_dump.add_argument("--json", action="store_true", default=True, help="Emit JSON payload")
+
     # gateway install
     gateway_install = gateway_subparsers.add_parser("install", help="Install gateway as service")
     gateway_install.add_argument("--force", action="store_true", help="Force reinstall")

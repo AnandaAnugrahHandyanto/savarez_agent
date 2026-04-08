@@ -5,12 +5,15 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 """
 
 import asyncio
+import json
 import os
 import shutil
 import signal
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
@@ -1624,6 +1627,71 @@ def _runtime_health_lines() -> list[str]:
     return lines
 
 
+def _runtime_observability_payload() -> dict[str, Any]:
+    """Build a machine-readable gateway observability payload."""
+    from gateway.status import read_runtime_status
+
+    payload = read_runtime_status() or {}
+    pids = find_gateway_pids()
+    payload.setdefault("gateway_running", bool(pids))
+    payload.setdefault("gateway_pids", pids)
+    payload.setdefault("collected_at", datetime.now().isoformat())
+
+    platforms = payload.get("platforms", {}) or {}
+    connected = sorted(
+        name for name, pdata in platforms.items()
+        if isinstance(pdata, dict) and pdata.get("state") == "connected"
+    )
+
+    observability = payload.setdefault("observability", {})
+    observability.setdefault("gateway", {
+        "adapters_connected": connected,
+        "reconnect_queue": [],
+        "session_store": {
+            "total": None,
+            "active": None,
+            "expired_unflushed": None,
+        },
+        "status_update": {
+            "running_agents": None,
+            "pending_approvals": None,
+            "voice_mode_chats": None,
+        },
+        "adaptive_policy": {
+            "agent_timeout_s": None,
+            "reconnect_max_attempts": None,
+            "reconnect_backoff_cap_s": None,
+            "history_hygiene_threshold": None,
+        },
+    })
+    observability.setdefault("cron_ticker", {
+        "running": None,
+        "interval_s": None,
+        "tick_count": None,
+        "last_tick_ok": None,
+        "last_tick_at": None,
+        "last_error": None,
+    })
+
+    return payload
+
+
+def gateway_dump(json_output: bool = True) -> int:
+    """Print a full observability dump for gateway runtime diagnostics."""
+    try:
+        payload = _runtime_observability_payload()
+    except Exception as exc:
+        print_error(f"Failed to read gateway runtime status: {exc}")
+        return 1
+
+    if json_output:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print_info("Gateway observability dump")
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
 def _setup_standard_platform(platform: dict):
     """Interactive setup for Telegram, Discord, or Slack."""
     emoji = platform["emoji"]
@@ -2200,7 +2268,7 @@ def gateway_command(args):
     elif subcmd == "status":
         deep = getattr(args, 'deep', False)
         system = getattr(args, 'system', False)
-        
+
         # Check for service first
         if is_linux() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
             systemd_status(deep, system=system)
@@ -2235,3 +2303,9 @@ def gateway_command(args):
                 print("  hermes gateway          # Run in foreground")
                 print("  hermes gateway install  # Install as user service")
                 print("  sudo hermes gateway install --system  # Install as boot-time system service")
+
+    elif subcmd == "dump":
+        json_output = getattr(args, "json", False)
+        rc = gateway_dump(json_output=json_output)
+        if rc != 0:
+            sys.exit(rc)

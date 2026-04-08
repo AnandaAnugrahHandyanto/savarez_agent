@@ -147,8 +147,9 @@ User input → HermesCLI.process_input()
 ### Gateway Message
 
 ```text
-Platform event → Adapter.on_message() → MessageEvent
-  → GatewayRunner._handle_message()
+Platform event → adapter callback builds MessageEvent
+  → BasePlatformAdapter.handle_message(event)
+    → GatewayRunner._handle_message()
     → authorize user
     → resolve session key
     → create AIAgent with session history

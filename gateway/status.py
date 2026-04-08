@@ -14,6 +14,7 @@ concurrently under distinct configurations).
 import hashlib
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,12 +59,33 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
 
 
 def _get_process_start_time(pid: int) -> Optional[int]:
-    """Return the kernel start time for a process when available."""
+    """Return process start time fingerprint when available.
+
+    Linux: /proc/<pid>/stat field 22 (clock ticks).
+    macOS/other: best-effort fallback to wall-clock seconds from `ps lstart`.
+    """
     stat_path = Path(f"/proc/{pid}/stat")
     try:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
         return int(stat_path.read_text().split()[21])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
+        pass
+
+    # macOS fallback (no /proc): parse `ps -o lstart=`.
+    try:
+        out = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        text = (out.stdout or "").strip()
+        if not text:
+            return None
+        dt = datetime.strptime(text, "%a %b %d %H:%M:%S %Y")
+        return int(dt.replace(tzinfo=timezone.utc).timestamp())
+    except Exception:
         return None
 
 
@@ -73,11 +95,24 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     try:
         raw = cmdline_path.read_bytes()
     except (FileNotFoundError, PermissionError, OSError):
-        return None
+        raw = b""
 
-    if not raw:
+    if raw:
+        return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+
+    # macOS fallback (no /proc): `ps -o command=`.
+    try:
+        out = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        text = (out.stdout or "").strip()
+        return text or None
+    except Exception:
         return None
-    return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
 
 
 def _looks_like_gateway_process(pid: int) -> bool:
@@ -226,6 +261,32 @@ def read_runtime_status() -> Optional[dict[str, Any]]:
     return _read_json_file(_get_runtime_status_path())
 
 
+def update_runtime_observability(section: str, values: dict[str, Any]) -> None:
+    """Merge observability data into the runtime status payload.
+
+    The payload is stored under: payload["observability"][section].
+    """
+    if not section or not isinstance(values, dict):
+        return
+
+    path = _get_runtime_status_path()
+    payload = _read_json_file(path) or _build_runtime_status_record()
+    payload.setdefault("kind", _GATEWAY_KIND)
+    payload.setdefault("platforms", {})
+    payload.setdefault("observability", {})
+
+    section_payload = payload["observability"].get(section)
+    if not isinstance(section_payload, dict):
+        section_payload = {}
+
+    section_payload.update(values)
+    section_payload["updated_at"] = _utc_now_iso()
+    payload["observability"][section] = section_payload
+    payload["updated_at"] = _utc_now_iso()
+
+    _write_json_file(path, payload)
+
+
 def remove_pid_file() -> None:
     """Remove the gateway PID file if it exists."""
     try:
@@ -330,22 +391,39 @@ def release_scoped_lock(scope: str, identity: str) -> None:
         pass
 
 
-def release_all_scoped_locks() -> int:
-    """Remove all scoped lock files in the lock directory.
+def release_all_scoped_locks(
+    *,
+    owner_pid: Optional[int] = None,
+    owner_start_time: Optional[int] = None,
+) -> int:
+    """Remove scoped lock files owned by a specific process (or all if unspecified).
 
-    Called during --replace to clean up stale locks left by stopped/killed
-    gateway processes that did not release their locks gracefully.
-    Returns the number of lock files removed.
+    Called during --replace to clean up stale locks left by the process being
+    replaced. When owner_pid/owner_start_time are provided, only matching lock
+    files are removed to avoid disrupting other active Hermes profiles.
     """
     lock_dir = _get_lock_dir()
     removed = 0
-    if lock_dir.exists():
-        for lock_file in lock_dir.glob("*.lock"):
-            try:
-                lock_file.unlink(missing_ok=True)
-                removed += 1
-            except OSError:
-                pass
+    if not lock_dir.exists():
+        return 0
+
+    for lock_file in lock_dir.glob("*.lock"):
+        try:
+            if owner_pid is not None:
+                payload = _read_json_file(lock_file) or {}
+                try:
+                    pid = int(payload.get("pid"))
+                except (TypeError, ValueError):
+                    pid = None
+                if pid != owner_pid:
+                    continue
+                if owner_start_time is not None and payload.get("start_time") != owner_start_time:
+                    continue
+
+            lock_file.unlink(missing_ok=True)
+            removed += 1
+        except OSError:
+            pass
     return removed
 
 
