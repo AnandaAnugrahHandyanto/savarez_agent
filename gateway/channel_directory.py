@@ -73,6 +73,8 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
                 platforms["discord"] = _build_discord(adapter)
             elif platform == Platform.SLACK:
                 platforms["slack"] = _build_slack(adapter)
+            elif platform == Platform.MATRIX:
+                platforms["matrix"] = _build_matrix(adapter)
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
@@ -137,6 +139,35 @@ def _build_slack(adapter) -> List[Dict[str, str]]:
 
     # Fallback to session data
     return _build_from_sessions("slack")
+
+
+def _build_matrix(adapter) -> List[Dict[str, str]]:
+    """Enumerate joined Matrix rooms from the nio client."""
+    channels: List[Dict[str, str]] = []
+    client = getattr(adapter, "_client", None)
+    if not client:
+        return _build_from_sessions("matrix")
+    try:
+        rooms = getattr(client, "rooms", {}) or {}
+        for room_id, room in rooms.items():
+            alias = getattr(room, "canonical_alias", None) or ""
+            # Prefer alias localpart (e.g. "ws-researcher" from "#ws-researcher:localhost")
+            # so resolve_channel_name's lstrip("#")+lower path matches caller queries
+            # like "#ws-researcher".
+            if alias:
+                name = alias.lstrip("#").split(":", 1)[0]
+            else:
+                name = getattr(room, "display_name", None) or room_id
+            channels.append({
+                "id": room_id,
+                "name": name,
+                "alias": alias,
+                "type": "room",
+            })
+    except Exception as e:
+        logger.debug("Matrix channel enumeration failed: %s", e)
+    channels.extend(_build_from_sessions("matrix"))
+    return channels
 
 
 def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
