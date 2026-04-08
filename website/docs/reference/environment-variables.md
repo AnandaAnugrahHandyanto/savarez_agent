@@ -223,6 +223,16 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `WECOM_WEBSOCKET_URL` | Custom WebSocket URL (default: `wss://openws.work.weixin.qq.com`) |
 | `WECOM_ALLOWED_USERS` | Comma-separated WeCom user IDs allowed to message the bot |
 | `WECOM_HOME_CHANNEL` | WeCom chat ID for cron delivery and notifications |
+| `WECHAT_BOT_TOKEN` | WeChat iLink bot token (from `wechat_login.py`) |
+| `WECHAT_API_BASE_URL` | WeChat iLink API base URL (default: `https://ilinkai.weixin.qq.com`) |
+| `WECHAT_CDN_BASE_URL` | WeChat CDN base URL (default: `https://novac2c.cdn.weixin.qq.com/c2c`) |
+| `WECHAT_ACCOUNT_ID` | WeChat account ID (wxid) for self-message filtering |
+| `WECHAT_ILINK_APP_ID` | iLink app identifier (default: `bot`) |
+| `WECHAT_ILINK_CLIENT_VERSION` | iLink client version string (default: adapter version) |
+| `WECHAT_ALLOWED_USERS` | Comma-separated WeChat user IDs allowed to message the bot |
+| `WECHAT_ALLOW_ALL_USERS` | Set to `true` to allow all users (default: `false`) |
+| `WECHAT_HOME_CHANNEL` | WeChat chat ID for cron delivery and notifications |
+| `WECHAT_HOME_CHANNEL_NAME` | Display name for the home channel |
 | `MATTERMOST_URL` | Mattermost server URL (e.g. `https://mm.example.com`) |
 | `MATTERMOST_TOKEN` | Bot token or personal access token for Mattermost |
 | `MATTERMOST_ALLOWED_USERS` | Comma-separated Mattermost user IDs allowed to message the bot |
