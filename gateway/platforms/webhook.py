@@ -105,6 +105,20 @@ class WebhookAdapter(BasePlatformAdapter):
             config.extra.get("max_body_bytes", 1_048_576)
         )  # 1MB
 
+    def _consume_rate_limit(self, route_name: str, now: float) -> bool:
+        """Record an accepted delivery and report whether the route is limited.
+
+        Rate limiting happens only after authentication and duplicate detection.
+        That prevents unauthenticated floods and provider retries from burning
+        the quota for legitimate deliveries.
+        """
+        window = self._rate_counts.setdefault(route_name, [])
+        window[:] = [t for t in window if now - t < 60]
+        if len(window) >= self._rate_limit:
+            return True
+        window.append(now)
+        return False
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -285,16 +299,6 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"error": "Payload too large"}, status=413
             )
 
-        # ── Rate limiting ────────────────────────────────────────
-        now = time.time()
-        window = self._rate_counts.setdefault(route_name, [])
-        window[:] = [t for t in window if now - t < 60]
-        if len(window) >= self._rate_limit:
-            return web.json_response(
-                {"error": "Rate limit exceeded"}, status=429
-            )
-        window.append(now)
-
         # Read body
         try:
             raw_body = await request.read()
@@ -406,6 +410,13 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "duplicate", "delivery_id": delivery_id},
                 status=200,
             )
+
+        # ── Rate limiting ────────────────────────────────────────
+        if self._consume_rate_limit(route_name, now):
+            return web.json_response(
+                {"error": "Rate limit exceeded"}, status=429
+            )
+
         self._seen_deliveries[delivery_id] = now
 
         # Use delivery_id in session key so concurrent webhooks on the

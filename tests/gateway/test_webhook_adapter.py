@@ -492,6 +492,69 @@ class TestRateLimiting:
             )
             assert resp.status == 202  # allowed again
 
+    @pytest.mark.asyncio
+    async def test_invalid_signature_does_not_consume_rate_limit(self):
+        """Unauthenticated requests must not exhaust the route budget."""
+        secret = "signed-route-secret"
+        routes = {"signed": {"secret": secret, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes, rate_limit=1)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            body = json.dumps({"n": 1}).encode("utf-8")
+
+            invalid = await cli.post(
+                "/webhooks/signed",
+                data=body,
+                headers={"X-Hub-Signature-256": "sha256=deadbeef"},
+            )
+            assert invalid.status == 401
+            assert adapter._rate_counts.get("signed", []) == []
+
+            valid = await cli.post(
+                "/webhooks/signed",
+                data=body,
+                headers={
+                    "X-Hub-Signature-256": _github_signature(body, secret),
+                    "X-GitHub-Delivery": "signed-1",
+                    "Content-Type": "application/json",
+                },
+            )
+            assert valid.status == 202
+
+    @pytest.mark.asyncio
+    async def test_duplicate_delivery_does_not_consume_rate_limit(self):
+        """Provider retries should not burn quota for new deliveries."""
+        routes = {"limited": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes, rate_limit=2)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/webhooks/limited",
+                json={"n": 1},
+                headers={"X-GitHub-Delivery": "dup-1"},
+            )
+            assert first.status == 202
+
+            duplicate = await cli.post(
+                "/webhooks/limited",
+                json={"n": 1},
+                headers={"X-GitHub-Delivery": "dup-1"},
+            )
+            assert duplicate.status == 200
+            data = await duplicate.json()
+            assert data["status"] == "duplicate"
+
+            fresh = await cli.post(
+                "/webhooks/limited",
+                json={"n": 2},
+                headers={"X-GitHub-Delivery": "dup-2"},
+            )
+            assert fresh.status == 202
+
 
 # ===================================================================
 # Body size limit
