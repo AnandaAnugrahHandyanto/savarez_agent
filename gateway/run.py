@@ -6336,6 +6336,14 @@ class GatewayRunner:
             if event_type not in ("tool.started",):
                 return
 
+            # Suppress internal memory tool lifecycle from user-facing gateway
+            # progress output. The memory tool's args (content/old_text) were
+            # leaking into Telegram messages with raw +/-/~ operation markers
+            # (see issue #6316). Memory writes should be silent on messaging
+            # platforms; CLI progress is unaffected.
+            if tool_name == "memory":
+                return
+
             # "new" mode: only report when tool changes
             if progress_mode == "new" and tool_name == last_tool[0]:
                 return
