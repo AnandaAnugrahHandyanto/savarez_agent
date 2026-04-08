@@ -800,7 +800,7 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Use live API for openai-codex; curated list for others
+        # Use live API where possible; curated list as fallback
         if pid == "openai-codex":
             try:
                 from hermes_cli.codex_models import get_codex_model_ids
@@ -810,6 +810,26 @@ def list_authenticated_providers(
                 _token = (_pool[0].get("access_token") if isinstance(_pool, list) and _pool else
                           _pool.get("access_token") if isinstance(_pool, dict) else None)
                 model_ids = get_codex_model_ids(access_token=_token)
+            except Exception:
+                model_ids = curated.get(pid, [])
+        elif pid == "zai":
+            try:
+                import httpx as _httpx
+                _zai_key = next(
+                    (os.environ.get(ev) for ev in overlay.extra_env_vars if os.environ.get(ev)),
+                    None,
+                )
+                if _zai_key:
+                    _base = os.environ.get(overlay.base_url_env_var or "", "") or "https://api.z.ai/api/coding/paas/v4"
+                    _r = _httpx.get(f"{_base}/models", headers={"Authorization": f"Bearer {_zai_key}"}, timeout=5)
+                    if _r.status_code == 200:
+                        _data = _r.json()
+                        _items = _data.get("data", _data) if isinstance(_data, dict) else _data
+                        model_ids = [m.get("id") if isinstance(m, dict) else m for m in _items if m]
+                    else:
+                        model_ids = curated.get(pid, [])
+                else:
+                    model_ids = curated.get(pid, [])
             except Exception:
                 model_ids = curated.get(pid, [])
         else:
