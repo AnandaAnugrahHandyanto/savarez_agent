@@ -361,3 +361,93 @@ class TestStatusBarWidthSource:
         mock_get_app.assert_not_called()
         mock_shutil.assert_not_called()
         assert len(text) > 0
+
+
+class TestCodexRateLimits:
+    """Tests for Codex rate-limit display in the status bar."""
+
+    def test_snapshot_includes_codex_limits_when_present(self):
+        cli_obj = _make_cli()
+        agent = cli_obj.agent = SimpleNamespace(
+            model=cli_obj.model,
+            provider="openai-codex",
+            session_input_tokens=100,
+            session_output_tokens=50,
+            session_cache_read_tokens=0,
+            session_cache_write_tokens=0,
+            session_prompt_tokens=100,
+            session_completion_tokens=50,
+            session_total_tokens=150,
+            session_api_calls=3,
+            context_compressor=SimpleNamespace(
+                last_prompt_tokens=5000,
+                context_length=100000,
+                compression_count=0,
+            ),
+            _codex_rate_limits={
+                "remaining_requests": 42,
+                "limit_requests": 100,
+                "reset_requests": 3600,
+                "resets_at": 9999999999.0,
+                "fetched_at": 0.0,
+            },
+        )
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["codex_rate_limits"] is not None
+        assert snapshot["codex_rate_limits"]["remaining_requests"] == 42
+        assert snapshot["codex_remaining_pct"] == 42  # 42/100 * 100
+
+    def test_snapshot_has_no_codex_limits_when_absent(self):
+        cli_obj = _make_cli()
+        agent = cli_obj.agent = SimpleNamespace(
+            model=cli_obj.model,
+            provider="anthropic",
+            session_input_tokens=100,
+            session_output_tokens=50,
+            session_cache_read_tokens=0,
+            session_cache_write_tokens=0,
+            session_prompt_tokens=100,
+            session_completion_tokens=50,
+            session_total_tokens=150,
+            session_api_calls=3,
+            context_compressor=SimpleNamespace(
+                last_prompt_tokens=5000,
+                context_length=100000,
+                compression_count=0,
+            ),
+            _codex_rate_limits={},
+        )
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["codex_rate_limits"] is None
+        assert snapshot["codex_remaining_pct"] is None
+
+    def test_status_bar_shows_codex_reqs_on_wide_terminal(self):
+        cli_obj = _make_cli()
+        cli_obj.agent = SimpleNamespace(
+            model=cli_obj.model,
+            provider="openai-codex",
+            session_input_tokens=100,
+            session_output_tokens=50,
+            session_cache_read_tokens=0,
+            session_cache_write_tokens=0,
+            session_prompt_tokens=100,
+            session_completion_tokens=50,
+            session_total_tokens=150,
+            session_api_calls=3,
+            context_compressor=SimpleNamespace(
+                last_prompt_tokens=5000,
+                context_length=100000,
+                compression_count=0,
+            ),
+            _codex_rate_limits={
+                "remaining_requests": 42,
+                "limit_requests": 100,
+                "resets_at": 9999999999.0,
+                "fetched_at": 0.0,
+            },
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+        assert "42 reqs" in text

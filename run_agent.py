@@ -66,18 +66,15 @@ from model_tools import (
     handle_function_call,
     check_toolset_requirements,
 )
-from tools.terminal_tool import cleanup_vm, get_active_env
-from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
+from tools.terminal_tool import cleanup_vm
 from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool import cleanup_browser
 
 
 from hermes_constants import OPENROUTER_BASE_URL
-from hermes_cli.fast_mode import normalize_service_tier, responses_api_service_tier
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import build_memory_context_block
-from agent.retry_utils import jittered_backoff
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
@@ -413,6 +410,63 @@ def _strip_budget_warnings_from_history(messages: list) -> None:
 # Large tool result handler — save oversized output to temp file
 # =========================================================================
 
+# Threshold at which tool results are saved to a file instead of kept inline.
+# 100K chars ≈ 25K tokens — generous for any reasonable output but prevents
+# catastrophic context explosions.
+_LARGE_RESULT_CHARS = 100_000
+
+# How many characters of the original result to include as an inline preview
+# so the model has immediate context about what the tool returned.
+_LARGE_RESULT_PREVIEW_CHARS = 1_500
+
+
+def _save_oversized_tool_result(function_name: str, function_result: str) -> str:
+    """Replace oversized tool results with a file reference + preview.
+
+    When a tool returns more than ``_LARGE_RESULT_CHARS`` characters, the full
+    content is written to a temporary file under ``HERMES_HOME/cache/tool_responses/``
+    and the result sent to the model is replaced with:
+      • a brief head preview  (first ``_LARGE_RESULT_PREVIEW_CHARS`` chars)
+      • the file path so the model can use ``read_file`` / ``search_files``
+
+    Falls back to destructive truncation if the file write fails.
+    """
+    original_len = len(function_result)
+    if original_len <= _LARGE_RESULT_CHARS:
+        return function_result
+
+    # Build the target directory
+    try:
+        response_dir = os.path.join(get_hermes_home(), "cache", "tool_responses")
+        os.makedirs(response_dir, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        # Sanitize tool name for use in filename
+        safe_name = re.sub(r"[^\w\-]", "_", function_name)[:40]
+        filename = f"{safe_name}_{timestamp}.txt"
+        filepath = os.path.join(response_dir, filename)
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(function_result)
+
+        preview = function_result[:_LARGE_RESULT_PREVIEW_CHARS]
+        return (
+            f"{preview}\n\n"
+            f"[Large tool response: {original_len:,} characters total — "
+            f"only the first {_LARGE_RESULT_PREVIEW_CHARS:,} shown above. "
+            f"Full output saved to: {filepath}\n"
+            f"Use read_file or search_files on that path to access the rest.]"
+        )
+    except Exception as exc:
+        # Fall back to destructive truncation if file write fails
+        logger.warning("Failed to save large tool result to file: %s", exc)
+        return (
+            function_result[:_LARGE_RESULT_CHARS]
+            + f"\n\n[Truncated: tool response was {original_len:,} chars, "
+            f"exceeding the {_LARGE_RESULT_CHARS:,} char limit. "
+            f"File save failed: {exc}]"
+        )
+
 
 class AIAgent:
     """
@@ -470,9 +524,7 @@ class AIAgent:
         tool_gen_callback: callable = None,
         status_callback: callable = None,
         max_tokens: int = None,
-        service_tier: str = None,
         reasoning_config: Dict[str, Any] = None,
-        extra_body_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
         user_id: str = None,
@@ -518,8 +570,6 @@ class AIAgent:
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
             reasoning_config (Dict): OpenRouter reasoning configuration override (e.g. {"effort": "none"} to disable thinking).
                 If None, defaults to {"enabled": True, "effort": "medium"} for OpenRouter. Set to disable/customize reasoning.
-            extra_body_config (Dict): Extra OpenAI-compatible request fields to merge into `extra_body` for each call.
-                Useful for local routes that need flags like chat_template_kwargs.enable_thinking=false.
             prefill_messages (List[Dict]): Messages to prepend to conversation history as prefilled context.
                 Useful for injecting a few-shot example or priming the model's response style.
                 Example: [{"role": "user", "content": "Hi!"}, {"role": "assistant", "content": "Hello!"}]
@@ -543,7 +593,6 @@ class AIAgent:
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
         self._user_id = user_id  # Platform user identifier (gateway sessions)
-        self.service_tier = normalize_service_tier(service_tier)
         # Pluggable print function — CLI replaces this with _cprint so that
         # raw ANSI status lines are routed through prompt_toolkit's renderer
         # instead of going directly to stdout where patch_stdout's StdoutProxy
@@ -606,8 +655,7 @@ class AIAgent:
         self.stream_delta_callback = stream_delta_callback
         self.status_callback = status_callback
         self.tool_gen_callback = tool_gen_callback
-        self._last_reported_tool = None  # Track for "new tool" mode
-        self._credential_pool_401_refresh_attempted_ids = set()
+
         
         # Tool execution state — allows _vprint during tool execution
         # even when stream consumers are registered (no tokens streaming then)
@@ -638,7 +686,6 @@ class AIAgent:
         # Model response configuration
         self.max_tokens = max_tokens  # None = use model default
         self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
-        self.extra_body_config = copy.deepcopy(extra_body_config or {})
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         
         # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
@@ -1169,7 +1216,14 @@ class AIAgent:
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
-        
+
+        # ── Codex rate-limit tracking ──
+        # Cached rate-limit info from the Codex API.  Polled at most once per
+        # minute so we don't burn quota on status checks alone.
+        self._codex_rate_limits: Dict[str, Any] = {}
+        self._codex_rate_limits_ts: float = 0.0
+        self._codex_rate_limits_interval: float = 60.0  # seconds
+
         # ── Ollama num_ctx injection ──
         # Ollama defaults to 2048 context regardless of the model's capabilities.
         # When running against an Ollama server, detect the model's max context
@@ -1496,84 +1550,6 @@ class AIAgent:
         if self._is_direct_openai_url():
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
-
-    def _api_max_retries(self) -> int:
-        """Return the configured outer API retry budget for a conversation turn."""
-        raw_value = os.getenv("HERMES_API_MAX_RETRIES", "20")
-        try:
-            parsed = int(raw_value)
-        except (TypeError, ValueError):
-            logger.warning(
-                "Invalid HERMES_API_MAX_RETRIES=%r; falling back to 20",
-                raw_value,
-            )
-            return 20
-        return max(1, parsed)
-
-    def _infer_api_error_status_code(self, api_error: Exception) -> Optional[int]:
-        """Best-effort HTTP-style status classification for SDK/runtime errors."""
-        for candidate in (
-            getattr(api_error, "status_code", None),
-            getattr(getattr(api_error, "response", None), "status_code", None),
-        ):
-            if isinstance(candidate, int):
-                return candidate
-
-        fragments: list[str] = []
-        for value in (
-            str(api_error),
-            getattr(api_error, "body", None),
-            getattr(getattr(api_error, "response", None), "text", None),
-        ):
-            if not value:
-                continue
-            if isinstance(value, dict):
-                try:
-                    fragments.append(json.dumps(value, ensure_ascii=False, sort_keys=True))
-                except Exception:
-                    fragments.append(str(value))
-            else:
-                fragments.append(str(value))
-
-        haystack = " ".join(fragments).lower()
-        if not haystack:
-            return None
-
-        if any(marker in haystack for marker in (
-            "error code: 401",
-            "http 401",
-            "status code: 401",
-        )):
-            return 401
-        if any(marker in haystack for marker in (
-            "error code: 402",
-            "http 402",
-            "status code: 402",
-            "payment required",
-            "insufficient credits",
-            "credits exhausted",
-            "out of credits",
-        )):
-            return 402
-        if any(marker in haystack for marker in (
-            "error code: 429",
-            "http 429",
-            "status code: 429",
-            "rate limit",
-            "rate_limit",
-            "too many requests",
-            "usage limit",
-            "quota",
-        )):
-            return 429
-        if any(marker in haystack for marker in (
-            "unauthorized",
-            "invalid api key",
-            "invalid_api_key",
-            "authentication failed",
-        )):
-            return 401
-        return None
 
     def _has_content_after_think_block(self, content: str) -> bool:
         """
@@ -3335,7 +3311,6 @@ class AIAgent:
             "model", "instructions", "input", "tools", "store",
             "reasoning", "include", "max_output_tokens", "temperature",
             "tool_choice", "parallel_tool_calls", "prompt_cache_key",
-            "service_tier",
         }
         normalized: Dict[str, Any] = {
             "model": model,
@@ -3367,12 +3342,6 @@ class AIAgent:
             val = api_kwargs.get(passthrough_key)
             if val is not None:
                 normalized[passthrough_key] = val
-
-        service_tier = api_kwargs.get("service_tier")
-        if service_tier is not None:
-            if not isinstance(service_tier, str) or service_tier not in {"priority", "flex"}:
-                raise ValueError("Codex Responses 'service_tier' must be 'priority' or 'flex' when set.")
-            normalized["service_tier"] = service_tier
 
         if allow_stream:
             stream = api_kwargs.get("stream")
@@ -4087,6 +4056,96 @@ class AIAgent:
 
         return True
 
+    def _refresh_codex_rate_limits(self) -> Dict[str, Any]:
+        """Fetch current Codex rate-limit info from response headers.
+
+        Makes a minimal HEAD request to the Codex API to read rate-limit
+        headers (remaining requests, reset time, etc.).  Results are cached
+        for ``_codex_rate_limits_interval`` seconds (default 60 s) so we
+        don't burn quota on status polling alone.
+
+        Returns the cached dict.  Keys (when available):
+            remaining_requests, limit_requests, reset_requests,
+            remaining_tokens, limit_tokens, reset_tokens,
+            fetched_at, resets_at (epoch seconds).
+        """
+        import time as _time
+
+        now = _time.time()
+        if (now - self._codex_rate_limits_ts) < self._codex_rate_limits_interval:
+            return self._codex_rate_limits
+
+        if self.api_mode != "codex_responses" or self.provider != "openai-codex":
+            return self._codex_rate_limits
+
+        base_url = (self.base_url or "").rstrip("/")
+        if not base_url:
+            return self._codex_rate_limits
+
+        try:
+            from hermes_cli.auth import resolve_codex_runtime_credentials
+
+            creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
+            access_token = creds.get("api_key", "")
+            if not access_token:
+                return self._codex_rate_limits
+        except Exception:
+            return self._codex_rate_limits
+
+        limits: Dict[str, Any] = {}
+        try:
+            import httpx as _httpx
+
+            # HEAD is cheapest — no body, no quota cost on most endpoints.
+            # Fall back to GET if the backend rejects HEAD.
+            resp = None
+            try:
+                resp = _httpx.head(
+                    f"{base_url}/responses",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    timeout=10,
+                )
+            except Exception:
+                pass
+
+            if resp is None or resp.status_code == 405:
+                resp = _httpx.get(
+                    f"{base_url}/models",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    timeout=10,
+                )
+
+            headers = resp.headers
+            for hdr, key in (
+                ("x-ratelimit-remaining-requests", "remaining_requests"),
+                ("x-ratelimit-limit-requests", "limit_requests"),
+                ("x-ratelimit-reset-requests", "reset_requests"),
+                ("x-ratelimit-remaining-tokens", "remaining_tokens"),
+                ("x-ratelimit-limit-tokens", "limit_tokens"),
+                ("x-ratelimit-reset-tokens", "reset_tokens"),
+            ):
+                val = headers.get(hdr) or headers.get(hdr.title())
+                if val is not None:
+                    try:
+                        limits[key] = int(val)
+                    except (TypeError, ValueError):
+                        try:
+                            limits[key] = float(val)
+                        except (TypeError, ValueError):
+                            limits[key] = val
+
+            # Parse reset time into epoch if it's a relative seconds value
+            if "reset_requests" in limits and isinstance(limits["reset_requests"], (int, float)):
+                limits["resets_at"] = _time.time() + limits["reset_requests"]
+
+            limits["fetched_at"] = now
+        except Exception as exc:
+            logger.debug("Codex rate-limit fetch failed: %s", exc)
+
+        self._codex_rate_limits = limits
+        self._codex_rate_limits_ts = now
+        return limits
+
     def _try_refresh_nous_client_credentials(self, *, force: bool = True) -> bool:
         if self.api_mode != "chat_completions" or self.provider != "nous":
             return False
@@ -4222,18 +4281,8 @@ class AIAgent:
         if pool is None or status_code is None:
             return False, has_retried_429
 
-        pool_provider = getattr(pool, "provider", "")
-
-        def _rotate_with_optional_error_context(code: int):
-            try:
-                return pool.mark_exhausted_and_rotate(status_code=code, error_context=error_context)
-            except TypeError as exc:
-                if "error_context" not in str(exc):
-                    raise
-                return pool.mark_exhausted_and_rotate(status_code=code)
-
         if status_code == 402:
-            next_entry = _rotate_with_optional_error_context(402)
+            next_entry = pool.mark_exhausted_and_rotate(status_code=402, error_context=error_context)
             if next_entry is not None:
                 logger.info(f"Credential 402 (billing) — rotated to pool entry {getattr(next_entry, 'id', '?')}")
                 self._swap_credential(next_entry)
@@ -4241,20 +4290,9 @@ class AIAgent:
             return False, has_retried_429
 
         if status_code == 429:
-            if pool_provider == "openai-codex":
-                next_entry = pool.mark_exhausted_and_rotate(status_code=429)
-                if next_entry is not None:
-                    self._emit_status("🔁 Codex profile hit a limit — switching accounts...")
-                    logger.info(
-                        "Codex credential 429/quota — rotated immediately to pool entry %s",
-                        getattr(next_entry, "id", "?"),
-                    )
-                    self._swap_credential(next_entry)
-                    return True, False
-                return False, False
             if not has_retried_429:
                 return False, True
-            next_entry = _rotate_with_optional_error_context(429)
+            next_entry = pool.mark_exhausted_and_rotate(status_code=429, error_context=error_context)
             if next_entry is not None:
                 logger.info(f"Credential 429 (rate limit) — rotated to pool entry {getattr(next_entry, 'id', '?')}")
                 self._swap_credential(next_entry)
@@ -4262,49 +4300,8 @@ class AIAgent:
             return False, True
 
         if status_code == 401:
-            current_entry_getter = getattr(pool, "current", None)
-            current_entry = current_entry_getter() if callable(current_entry_getter) else None
-            current_id = getattr(current_entry, "id", None)
-            refreshed_401_ids = getattr(self, "_credential_pool_401_refresh_attempted_ids", None)
-            if not isinstance(refreshed_401_ids, set):
-                refreshed_401_ids = set()
-                self._credential_pool_401_refresh_attempted_ids = refreshed_401_ids
-
-            if current_id and current_id in refreshed_401_ids:
-                if pool_provider == "openai-codex":
-                    self._emit_status("🔁 Codex auth still failing after refresh — switching accounts...")
-                elif pool_provider == "anthropic":
-                    self._emit_status("🔁 Anthropic auth still failing after refresh — switching credentials...")
-                elif pool_provider == "nous":
-                    self._emit_status("🔁 Nous auth still failing after refresh — switching credentials...")
-                else:
-                    self._emit_status("🔁 Provider auth still failing after refresh — switching credentials...")
-
-                next_entry = pool.mark_exhausted_and_rotate(status_code=401)
-                if next_entry is not None:
-                    logger.info(
-                        "Credential 401 persisted after refresh — rotated from pool entry %s to %s",
-                        current_id or "?",
-                        getattr(next_entry, "id", "?"),
-                    )
-                    refreshed_401_ids.discard(current_id)
-                    self._swap_credential(next_entry)
-                    return True, False
-                return False, has_retried_429
-
-            if pool_provider == "openai-codex":
-                self._emit_status("🔐 Refreshing Codex auth after 401...")
-            elif pool_provider == "anthropic":
-                self._emit_status("🔐 Refreshing Anthropic credentials after 401...")
-            elif pool_provider == "nous":
-                self._emit_status("🔐 Refreshing Nous credentials after 401...")
-            else:
-                self._emit_status("🔐 Refreshing provider credentials after 401...")
             refreshed = pool.try_refresh_current()
             if refreshed is not None:
-                refreshed_id = getattr(refreshed, "id", None) or current_id
-                if refreshed_id:
-                    refreshed_401_ids.add(refreshed_id)
                 logger.info(f"Credential 401 — refreshed pool entry {getattr(refreshed, 'id', '?')}")
                 self._swap_credential(refreshed)
                 return True, has_retried_429
@@ -4313,8 +4310,6 @@ class AIAgent:
             next_entry = pool.mark_exhausted_and_rotate(status_code=401, error_context=error_context)
             if next_entry is not None:
                 logger.info(f"Credential 401 (refresh failed) — rotated to pool entry {getattr(next_entry, 'id', '?')}")
-                if current_id:
-                    refreshed_401_ids.discard(current_id)
                 self._swap_credential(next_entry)
                 return True, False
 
@@ -5439,15 +5434,6 @@ class AIAgent:
             if not is_github_responses:
                 kwargs["prompt_cache_key"] = self.session_id
 
-            api_service_tier = responses_api_service_tier(self.service_tier)
-            if api_service_tier and not is_github_responses:
-                base_url_lower = (self.base_url or "").lower()
-                if (
-                    self._is_direct_openai_url(self.base_url)
-                    or "chatgpt.com/backend-api/codex" in base_url_lower
-                ):
-                    kwargs["service_tier"] = api_service_tier
-
             if reasoning_enabled:
                 if is_github_responses:
                     # Copilot's Responses route advertises reasoning-effort support,
@@ -5555,7 +5541,7 @@ class AIAgent:
             except Exception:
                 pass  # fail open — let OpenRouter pick its default
 
-        extra_body = copy.deepcopy(self.extra_body_config or {})
+        extra_body = {}
 
         _is_openrouter = self._is_openrouter_url()
         _is_github_models = (
@@ -6372,29 +6358,21 @@ class AIAgent:
                 except Exception as cb_err:
                     logging.debug(f"Tool complete callback error: {cb_err}")
 
-            function_result = maybe_persist_tool_result(
-                content=function_result,
-                tool_name=name,
-                tool_use_id=tc.id,
-                env=get_active_env(effective_task_id),
-            )
+            # Save oversized results to file instead of destructive truncation
+            function_result = _save_oversized_tool_result(name, function_result)
 
+            # Discover subdirectory context files from tool arguments
             subdir_hints = self._subdirectory_hints.check_tool_call(name, args)
             if subdir_hints:
                 function_result += subdir_hints
 
+            # Append tool result message in order
             tool_msg = {
                 "role": "tool",
                 "content": function_result,
                 "tool_call_id": tc.id,
             }
             messages.append(tool_msg)
-
-        # ── Per-turn aggregate budget enforcement ─────────────────────────
-        num_tools = len(parsed_calls)
-        if num_tools > 0:
-            turn_tool_msgs = messages[-num_tools:]
-            enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id))
 
         # ── Budget pressure injection ────────────────────────────────────
         budget_warning = self._get_budget_warning(api_call_count)
@@ -6680,12 +6658,8 @@ class AIAgent:
                 except Exception as cb_err:
                     logging.debug(f"Tool complete callback error: {cb_err}")
 
-            function_result = maybe_persist_tool_result(
-                content=function_result,
-                tool_name=function_name,
-                tool_use_id=tool_call.id,
-                env=get_active_env(effective_task_id),
-            )
+            # Save oversized results to file instead of destructive truncation
+            function_result = _save_oversized_tool_result(function_name, function_result)
 
             # Discover subdirectory context files from tool arguments
             subdir_hints = self._subdirectory_hints.check_tool_call(function_name, function_args)
@@ -6722,11 +6696,6 @@ class AIAgent:
 
             if self.tool_delay > 0 and i < len(assistant_message.tool_calls):
                 time.sleep(self.tool_delay)
-
-        # ── Per-turn aggregate budget enforcement ─────────────────────────
-        num_tools_seq = len(assistant_message.tool_calls)
-        if num_tools_seq > 0:
-            enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id))
 
         # ── Budget pressure injection ─────────────────────────────────
         # After all tool calls in this turn are processed, check if we're
@@ -7448,15 +7417,13 @@ class AIAgent:
             
             api_start_time = time.time()
             retry_count = 0
-            max_retries = self._api_max_retries()
+            max_retries = 3
             primary_recovery_attempted = False
             max_compression_attempts = 3
-            codex_auth_retry_attempted = False
-            anthropic_auth_retry_attempted = False
-            nous_auth_retry_attempted = False
-            thinking_sig_retry_attempted = False
+            codex_auth_retry_attempted=False
+            anthropic_auth_retry_attempted=False
+            nous_auth_retry_attempted=False
             has_retried_429 = False
-            self._credential_pool_401_refresh_attempted_ids.clear()
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
 
@@ -7540,7 +7507,11 @@ class AIAgent:
                     
                     if not self.quiet_mode:
                         self._vprint(f"{self.log_prefix}⏱️  API call completed in {api_duration:.2f}s")
-                    
+
+                    # Refresh cached Codex rate-limit info (no-op when cache is fresh)
+                    if self.api_mode == "codex_responses":
+                        self._refresh_codex_rate_limits()
+
                     if self.verbose_logging:
                         # Log response with provider info if available
                         resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'
@@ -7671,8 +7642,7 @@ class AIAgent:
                             }
                         
                         # Longer backoff for rate limiting (likely cause of None choices)
-                        # Jittered exponential: 5s base, 120s cap + random jitter
-                        wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
+                        wait_time = min(5 * (2 ** (retry_count - 1)), 120)  # 5s, 10s, 20s, 40s, 80s, 120s
                         self._vprint(f"{self.log_prefix}⏳ Retrying in {wait_time}s (extended backoff for possible rate limit)...", force=True)
                         logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                         
@@ -7992,7 +7962,7 @@ class AIAgent:
                         # Surrogates weren't in messages — might be in system
                         # prompt or prefill.  Fall through to normal error path.
 
-                    status_code = self._infer_api_error_status_code(api_error)
+                    status_code = getattr(api_error, "status_code", None)
                     error_context = self._extract_api_error_context(api_error)
                     recovered_with_pool, has_retried_429 = self._recover_with_credential_pool(
                         status_code=status_code,
@@ -8001,37 +7971,9 @@ class AIAgent:
                     )
                     if recovered_with_pool:
                         continue
-                    pool = self._credential_pool
-                    pool_provider = getattr(pool, "provider", "")
-                    if (
-                        pool is not None
-                        and pool_provider == "openai-codex"
-                        and status_code in {402, 429}
-                        and not pool.has_available()
-                    ):
-                        _final_summary = self._summarize_api_error(api_error)
-                        self._emit_status("⚠️ All Codex profiles are exhausted — trying fallback...")
-                        if self._try_activate_fallback():
-                            retry_count = 0
-                            continue
-                        self._vprint(
-                            f"{self.log_prefix}❌ All Codex profiles are exhausted. Giving up without backoff.",
-                            force=True,
-                        )
-                        self._vprint(f"{self.log_prefix}   💀 Final error: {_final_summary}", force=True)
-                        self._persist_session(messages, conversation_history)
-                        return {
-                            "final_response": f"All Codex profiles are exhausted: {_final_summary}",
-                            "messages": messages,
-                            "api_calls": api_call_count,
-                            "completed": False,
-                            "failed": True,
-                            "error": _final_summary,
-                        }
                     if (
                         self.api_mode == "codex_responses"
                         and self.provider == "openai-codex"
-                        and self._credential_pool is None
                         and status_code == 401
                         and not codex_auth_retry_attempted
                     ):
@@ -8042,7 +7984,6 @@ class AIAgent:
                     if (
                         self.api_mode == "chat_completions"
                         and self.provider == "nous"
-                        and self._credential_pool is None
                         and status_code == 401
                         and not nous_auth_retry_attempted
                     ):
@@ -8052,7 +7993,6 @@ class AIAgent:
                             continue
                     if (
                         self.api_mode == "anthropic_messages"
-                        and self._credential_pool is None
                         and status_code == 401
                         and hasattr(self, '_anthropic_api_key')
                         and not anthropic_auth_retry_attempted
@@ -8075,38 +8015,8 @@ class AIAgent:
                         print(f"{self.log_prefix}     • Check ANTHROPIC_API_KEY in {_dhh}/.env for API keys or legacy token values")
                         print(f"{self.log_prefix}     • For API keys: verify at https://console.anthropic.com/settings/keys")
                         print(f"{self.log_prefix}     • For Claude Code: run 'claude /login' to refresh, then retry")
-                        print(f"{self.log_prefix}     • Legacy cleanup: hermes config set ANTHROPIC_TOKEN \"\"")
-                        print(f"{self.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_API_KEY \"\"")
-
-                    # ── Thinking block signature recovery ─────────────────
-                    # Anthropic signs thinking blocks against the full turn
-                    # content.  Any upstream mutation (context compression,
-                    # session truncation, message merging) invalidates the
-                    # signature → HTTP 400.  Recovery: strip reasoning_details
-                    # from all messages so the next retry sends no thinking
-                    # blocks at all.  One-shot — don't retry infinitely.
-                    if (
-                        self.api_mode == "anthropic_messages"
-                        and status_code == 400
-                        and not thinking_sig_retry_attempted
-                    ):
-                        _err_msg_lower = str(api_error).lower()
-                        if "signature" in _err_msg_lower and "thinking" in _err_msg_lower:
-                            thinking_sig_retry_attempted = True
-                            for _m in messages:
-                                if isinstance(_m, dict):
-                                    _m.pop("reasoning_details", None)
-                            self._vprint(
-                                f"{self.log_prefix}⚠️  Thinking block signature invalid — "
-                                f"stripped all thinking blocks, retrying...",
-                                force=True,
-                            )
-                            logging.warning(
-                                "%sThinking block signature recovery: stripped "
-                                "reasoning_details from %d messages",
-                                self.log_prefix, len(messages),
-                            )
-                            continue
+                        print(f"{self.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_TOKEN \"\"")
+                        print(f"{self.log_prefix}     • Legacy cleanup: hermes config set ANTHROPIC_API_KEY \"\"")
 
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
@@ -8154,7 +8064,7 @@ class AIAgent:
                     # Check for 413 payload-too-large BEFORE generic 4xx handler.
                     # A 413 is a payload-size error — the correct response is to
                     # compress history and retry, not abort immediately.
-                    status_code = self._infer_api_error_status_code(api_error)
+                    status_code = getattr(api_error, "status_code", None)
 
                     # ── Anthropic Sonnet long-context tier gate ───────────
                     # Anthropic returns HTTP 429 "Extra usage is required for
@@ -8589,7 +8499,7 @@ class AIAgent:
                                     _retry_after = min(int(_ra_raw), 120)  # Cap at 2 minutes
                                 except (TypeError, ValueError):
                                     pass
-                    wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+                    wait_time = _retry_after if _retry_after else min(2 ** retry_count, 60)
                     if is_rate_limited:
                         self._emit_status(f"⏱️ Rate limit reached. Waiting {wait_time}s before retry (attempt {retry_count + 1}/{max_retries})...")
                     else:
