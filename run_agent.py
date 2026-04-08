@@ -2969,10 +2969,6 @@ class AIAgent:
 
     def _normalize_codex_response(self, response: Any) -> tuple[Any, str]:
         """Normalize a Responses API object to an assistant_message-like object."""
-        output = getattr(response, "output", None)
-        if not isinstance(output, list) or not output:
-            raise RuntimeError("Responses API returned no output items")
-
         response_status = getattr(response, "status", None)
         if isinstance(response_status, str):
             response_status = response_status.strip().lower()
@@ -2986,6 +2982,12 @@ class AIAgent:
             else:
                 error_msg = str(error_obj) if error_obj else f"Responses API returned status '{response_status}'"
             raise RuntimeError(error_msg)
+
+        output = getattr(response, "output", None)
+        if output is None:
+            output = []
+        elif not isinstance(output, list):
+            raise RuntimeError("Responses API returned non-list output")
 
         content_parts: List[str] = []
         reasoning_parts: List[str] = []
@@ -3112,6 +3114,11 @@ class AIAgent:
             # 3 retries then fails — treat it as incomplete instead so the Codex
             # continuation path handles it correctly.
             finish_reason = "incomplete"
+        elif not output and not final_text:
+            if response_status in {"queued", "in_progress", "incomplete"}:
+                finish_reason = "incomplete"
+            else:
+                raise RuntimeError("Responses API returned no output items")
         else:
             finish_reason = "stop"
         return assistant_message, finish_reason
@@ -3236,10 +3243,14 @@ class AIAgent:
 
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Execute one streaming Responses API request and return the final response."""
+        import httpx as _httpx
+
         active_client = client or self._ensure_primary_openai_client(reason="codex_stream_direct")
         max_stream_retries = 1
         has_tool_calls = False
         first_delta_fired = False
+        self._reasoning_deltas_fired = False
+        streamed_text_parts = []
         for attempt in range(max_stream_retries + 1):
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
@@ -3251,6 +3262,7 @@ class AIAgent:
                         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
                             delta_text = getattr(event, "delta", "")
                             if delta_text and not has_tool_calls:
+                                streamed_text_parts.append(delta_text)
                                 if not first_delta_fired:
                                     first_delta_fired = True
                                     if on_first_delta:
@@ -3267,7 +3279,48 @@ class AIAgent:
                             reasoning_text = getattr(event, "delta", "")
                             if reasoning_text:
                                 self._fire_reasoning_delta(reasoning_text)
-                    return stream.get_final_response()
+                    final_response = stream.get_final_response()
+                    final_output = getattr(final_response, "output", None) if final_response is not None else None
+                    final_output_text = getattr(final_response, "output_text", None) if final_response is not None else None
+                    if (
+                        final_response is not None
+                        and isinstance(final_output, list)
+                        and len(final_output) == 0
+                        and isinstance(final_output_text, str)
+                        and not final_output_text.strip()
+                        and streamed_text_parts
+                    ):
+                        # ChatGPT-backed Codex can emit valid text deltas during the
+                        # stream, then finalize with an empty response object
+                        # (status=completed, output=[], output_text=""). Preserve the
+                        # streamed text so the turn does not fail as malformed.
+                        return SimpleNamespace(
+                            id=getattr(final_response, "id", None),
+                            status=getattr(final_response, "status", None),
+                            model=getattr(final_response, "model", None),
+                            output=[],
+                            output_text="".join(streamed_text_parts),
+                            incomplete_details=getattr(final_response, "incomplete_details", None),
+                            error=getattr(final_response, "error", None),
+                            usage=getattr(final_response, "usage", None),
+                        )
+                    return final_response
+            except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
+                if attempt < max_stream_retries:
+                    logger.debug(
+                        "Codex Responses stream transport failed (attempt %s/%s); retrying. %s error=%s",
+                        attempt + 1,
+                        max_stream_retries + 1,
+                        self._client_log_context(),
+                        exc,
+                    )
+                    continue
+                logger.debug(
+                    "Codex Responses stream transport failed; falling back to create(stream=True). %s error=%s",
+                    self._client_log_context(),
+                    exc,
+                )
+                return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
             except RuntimeError as exc:
                 err_text = str(exc)
                 missing_completed = "response.completed" in err_text
@@ -5907,13 +5960,24 @@ class AIAgent:
                     error_details = []
                     if self.api_mode == "codex_responses":
                         output_items = getattr(response, "output", None) if response is not None else None
+                        response_status = getattr(response, "status", None) if response is not None else None
+                        if isinstance(response_status, str):
+                            response_status = response_status.strip().lower()
+                        else:
+                            response_status = None
+                        output_text = getattr(response, "output_text", None) if response is not None else None
+                        has_output_text = isinstance(output_text, str) and bool(output_text.strip())
                         if response is None:
                             response_invalid = True
                             error_details.append("response is None")
+                        elif output_items is None:
+                            if not has_output_text and response_status not in {"queued", "in_progress", "incomplete", "failed", "cancelled"}:
+                                response_invalid = True
+                                error_details.append("response.output is missing")
                         elif not isinstance(output_items, list):
                             response_invalid = True
                             error_details.append("response.output is not a list")
-                        elif len(output_items) == 0:
+                        elif len(output_items) == 0 and not has_output_text and response_status not in {"queued", "in_progress", "incomplete", "failed", "cancelled"}:
                             response_invalid = True
                             error_details.append("response.output is empty")
                     elif self.api_mode == "anthropic_messages":

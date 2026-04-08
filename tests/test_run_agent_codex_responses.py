@@ -899,6 +899,57 @@ def test_normalize_codex_response_reasoning_with_content_is_stop(monkeypatch):
     assert "Here is the answer" in assistant_message.content
 
 
+def test_normalize_codex_response_accepts_output_text_without_output_items(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    response = SimpleNamespace(
+        output=[],
+        output_text="Rendered via output_text fallback.",
+        usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+        status="completed",
+        model="gpt-5-codex",
+    )
+
+    assistant_message, finish_reason = agent._normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "Rendered via output_text fallback."
+
+
+def test_normalize_codex_response_marks_empty_incomplete_as_incomplete(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    response = SimpleNamespace(
+        output=[],
+        usage=SimpleNamespace(input_tokens=5, output_tokens=0, total_tokens=5),
+        status="incomplete",
+        model="gpt-5-codex",
+    )
+
+    assistant_message, finish_reason = agent._normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.content == ""
+
+
+def test_run_conversation_codex_accepts_output_text_only_response(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: SimpleNamespace(
+            output=[],
+            output_text="Hello from output_text only.",
+            usage=SimpleNamespace(input_tokens=5, output_tokens=4, total_tokens=9),
+            status="completed",
+            model="gpt-5-codex",
+        ),
+    )
+
+    result = agent.run_conversation("say hello")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Hello from output_text only."
+
+
 def test_run_conversation_codex_continues_after_reasoning_only_response(monkeypatch):
     """End-to-end: reasoning-only → final message should succeed, not hit retry loop."""
     agent = _build_agent(monkeypatch)
