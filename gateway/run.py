@@ -24,7 +24,6 @@ import signal
 import tempfile
 import threading
 import time
-import uuid
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
@@ -378,7 +377,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
                     )
 
         # Check optional skills (shipped with repo but not installed)
-        from hermes_constants import get_hermes_home, get_optional_skills_dir
+        from hermes_constants import get_optional_skills_dir
         repo_root = Path(__file__).resolve().parent.parent
         optional_dir = get_optional_skills_dir(repo_root / "optional-skills")
         if optional_dir.exists():
@@ -1988,10 +1987,7 @@ class GatewayRunner:
                             existing.media_urls.extend(event.media_urls)
                             existing.media_types.extend(event.media_types)
                             if event.text:
-                                if not existing.text:
-                                    existing.text = event.text
-                                elif event.text not in existing.text:
-                                    existing.text = f"{existing.text}\n\n{event.text}".strip()
+                                existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
                         else:
                             adapter._pending_messages[_quick_key] = event
                     else:
@@ -2822,7 +2818,7 @@ class GatewayRunner:
                         guessed, _ = _mimetypes.guess_type(path)
                         if guessed:
                             mtype = guessed
-                if not (mtype.startswith("application/") or mtype.startswith("text/")):
+                if not mtype.startswith(("application/", "text/")):
                     continue
                 # Extract display filename by stripping the doc_{uuid12}_ prefix
                 import os as _os
@@ -3346,25 +3342,36 @@ class GatewayRunner:
         """Handle /status command."""
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
-        
+
         connected_platforms = [p.value for p in self.adapters.keys()]
-        
+
         # Check if there's an active agent
         session_key = session_entry.session_key
         is_running = session_key in self._running_agents
-        
+
+        title = None
+        if self._session_db:
+            try:
+                title = self._session_db.get_session_title(session_entry.session_id)
+            except Exception:
+                title = None
+
         lines = [
             "📊 **Hermes Gateway Status**",
             "",
-            f"**Session ID:** `{session_entry.session_id[:12]}...`",
+            f"**Session ID:** `{session_entry.session_id}`",
+        ]
+        if title:
+            lines.append(f"**Title:** {title}")
+        lines.extend([
             f"**Created:** {session_entry.created_at.strftime('%Y-%m-%d %H:%M')}",
             f"**Last Activity:** {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",
             f"**Tokens:** {session_entry.total_tokens:,}",
             f"**Agent Running:** {'Yes ⚡' if is_running else 'No'}",
             "",
             f"**Connected Platforms:** {', '.join(connected_platforms)}",
-        ]
-        
+        ])
+
         return "\n".join(lines)
     
     async def _handle_stop_command(self, event: MessageEvent) -> str:
@@ -3909,7 +3916,7 @@ class GatewayRunner:
 
             return f"🎭 Personality set to **{args}**\n_(takes effect on next message)_"
 
-        available = "`none`, " + ", ".join(f"`{n}`" for n in personalities.keys())
+        available = "`none`, " + ", ".join(f"`{n}`" for n in personalities)
         return f"Unknown personality: `{args}`\n\nAvailable: {available}"
     
     async def _handle_retry_command(self, event: MessageEvent) -> str:
@@ -4552,6 +4559,7 @@ class GatewayRunner:
                     provider_data_collection=pr.get("data_collection"),
                     session_id=task_id,
                     platform=platform_key,
+                    user_id=source.user_id,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
@@ -4913,8 +4921,8 @@ class GatewayRunner:
         cycle = ["off", "new", "all", "verbose"]
         descriptions = {
             "off": "⚙️ Tool progress: **OFF** — no tool activity shown.",
-            "new": "⚙️ Tool progress: **NEW** — shown when tool changes (short previews).",
-            "all": "⚙️ Tool progress: **ALL** — every tool call shown (short previews).",
+            "new": "⚙️ Tool progress: **NEW** — shown when tool changes (preview length: `display.tool_preview_length`, default 40).",
+            "all": "⚙️ Tool progress: **ALL** — every tool call shown (preview length: `display.tool_preview_length`, default 40).",
             "verbose": "⚙️ Tool progress: **VERBOSE** — every tool call with full arguments.",
         }
 
@@ -5321,9 +5329,6 @@ class GatewayRunner:
                 old_servers = set(_servers.keys())
 
             # Read new config before shutting down, so we know what will be added/removed
-            new_config = _load_mcp_config()
-            new_server_names = set(new_config.keys())
-
             # Shutdown existing connections
             await loop.run_in_executor(None, shutdown_mcp_servers)
 
@@ -5411,7 +5416,6 @@ class GatewayRunner:
 
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
-            pending_approval_count,
         )
 
         if not has_blocking_approval(session_key):
@@ -5438,6 +5442,11 @@ class GatewayRunner:
         count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
         if not count:
             return "No pending command to approve."
+
+        # Resume typing indicator — agent is about to continue processing.
+        _adapter = self.adapters.get(source.platform)
+        if _adapter:
+            _adapter.resume_typing_for_chat(source.chat_id)
 
         count_msg = f" ({count} commands)" if count > 1 else ""
         logger.info("User approved %d dangerous command(s) via /approve%s", count, scope_msg)
@@ -5470,6 +5479,11 @@ class GatewayRunner:
         count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all)
         if not count:
             return "No pending command to deny."
+
+        # Resume typing indicator — agent continues (with BLOCKED result).
+        _adapter = self.adapters.get(source.platform)
+        if _adapter:
+            _adapter.resume_typing_for_chat(source.chat_id)
 
         count_msg = f" ({count} commands)" if count > 1 else ""
         logger.info("User denied %d dangerous command(s) via /deny", count)
@@ -6030,6 +6044,11 @@ class GatewayRunner:
 
         if enriched_parts:
             prefix = "\n\n".join(enriched_parts)
+            # Strip the empty-content placeholder from the Discord adapter
+            # when we successfully transcribed the audio — it's redundant.
+            _placeholder = "(The user sent a message with no text content)"
+            if user_text and user_text.strip() == _placeholder:
+                return prefix
             if user_text:
                 return f"{prefix}\n\n{user_text}"
             return prefix
@@ -6321,10 +6340,15 @@ class GatewayRunner:
                 progress_queue.put(msg)
                 return
             
-            # "all" / "new" modes: short preview, always truncated (40 chars)
+            # "all" / "new" modes: short preview, respects tool_preview_length
+            # config (defaults to 40 chars when unset to keep gateway messages
+            # compact — unlike CLI spinners, these persist as permanent messages).
             if preview:
-                if len(preview) > 40:
-                    preview = preview[:37] + "..."
+                from agent.display import get_tool_preview_max_len
+                _pl = get_tool_preview_max_len()
+                _cap = _pl if _pl > 0 else 40
+                if len(preview) > _cap:
+                    preview = preview[:_cap - 3] + "..."
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
@@ -6640,6 +6664,7 @@ class GatewayRunner:
                     provider_data_collection=pr.get("data_collection"),
                     session_id=session_id,
                     platform=platform_key,
+                    user_id=source.user_id,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
@@ -6764,6 +6789,15 @@ class GatewayRunner:
                 UX.  Otherwise fall back to a plain text message with
                 ``/approve`` instructions.
                 """
+                # Pause the typing indicator while the agent waits for
+                # user approval.  Critical for Slack's Assistant API where
+                # assistant_threads_setStatus disables the compose box — the
+                # user literally cannot type /approve while "is thinking..."
+                # is active.  The approval message send auto-clears the Slack
+                # status; pausing prevents _keep_typing from re-setting it.
+                # Typing resumes in _handle_approve_command/_handle_deny_command.
+                _status_adapter.pause_typing_for_chat(_status_chat_id)
+
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
 

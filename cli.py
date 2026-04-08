@@ -63,14 +63,14 @@ from agent.usage_pricing import (
     format_duration_compact,
     format_token_count_compact,
 )
-from hermes_cli.banner import _format_context_length
+from hermes_cli.banner import _format_context_length, format_banner_version_label
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-from hermes_constants import get_hermes_home, display_hermes_home, OPENROUTER_BASE_URL
+from hermes_constants import get_hermes_home, display_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
 
 _hermes_home = get_hermes_home()
@@ -1036,21 +1036,44 @@ COMPACT_BANNER = """
 
 def _build_compact_banner() -> str:
     """Build a compact banner that fits the current terminal width."""
-    w = min(shutil.get_terminal_size().columns - 2, 64)
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        _skin = get_active_skin()
+    except Exception:
+        _skin = None
+
+    skin_name = getattr(_skin, "name", "default") if _skin else "default"
+    border_color = _skin.get_color("banner_border", "#FFD700") if _skin else "#FFD700"
+    title_color = _skin.get_color("banner_title", "#FFBF00") if _skin else "#FFBF00"
+    dim_color = _skin.get_color("banner_dim", "#B8860B") if _skin else "#B8860B"
+
+    if skin_name == "default":
+        line1 = "⚕ NOUS HERMES - AI Agent Framework"
+        tiny_line = "⚕ NOUS HERMES"
+    else:
+        agent_name = _skin.get_branding("agent_name", "Hermes Agent") if _skin else "Hermes Agent"
+        line1 = f"{agent_name} - AI Agent Framework"
+        tiny_line = agent_name
+
+    version_line = format_banner_version_label()
+
+    w = min(shutil.get_terminal_size().columns - 2, 88)
     if w < 30:
-        return "\n[#FFBF00]⚕ NOUS HERMES[/] [dim #B8860B]- Nous Research[/]\n"
+        return f"\n[{title_color}]{tiny_line}[/] [dim {dim_color}]- Nous Research[/]\n"
+
     inner = w - 2  # inside the box border
     bar = "═" * w
-    line1 = "⚕ NOUS HERMES - AI Agent Framework"
-    line2 = "Messenger of the Digital Gods  ·  Nous Research"
+    content_width = inner - 2
+
     # Truncate and pad to fit
-    line1 = line1[:inner - 2].ljust(inner - 2)
-    line2 = line2[:inner - 2].ljust(inner - 2)
+    line1 = line1[:content_width].ljust(content_width)
+    line2 = version_line[:content_width].ljust(content_width)
+
     return (
-        f"\n[bold #FFD700]╔{bar}╗[/]\n"
-        f"[bold #FFD700]║[/] [#FFBF00]{line1}[/] [bold #FFD700]║[/]\n"
-        f"[bold #FFD700]║[/] [dim #B8860B]{line2}[/] [bold #FFD700]║[/]\n"
-        f"[bold #FFD700]╚{bar}╝[/]\n"
+        f"\n[bold {border_color}]╔{bar}╗[/]\n"
+        f"[bold {border_color}]║[/] [{title_color}]{line1}[/] [bold {border_color}]║[/]\n"
+        f"[bold {border_color}]║[/] [dim {dim_color}]{line2}[/] [bold {border_color}]║[/]\n"
+        f"[bold {border_color}]╚{bar}╝[/]\n"
     )
 
 
@@ -2163,7 +2186,7 @@ class HermesCLI:
             )
         except Exception as exc:
             message = format_runtime_provider_error(exc)
-            self.console.print(f"[bold red]{message}[/]")
+            ChatConsole().print(f"[bold red]{message}[/]")
             return False
 
         api_key = runtime.get("api_key")
@@ -2378,7 +2401,7 @@ class HermesCLI:
                     self._pending_title = None
             return True
         except Exception as e:
-            self.console.print(f"[bold red]Failed to initialize agent: {e}[/]")
+            ChatConsole().print(f"[bold red]Failed to initialize agent: {e}[/]")
             return False
     
     def show_banner(self):
@@ -3536,13 +3559,6 @@ class HermesCLI:
         _cprint(f"  Original session: {parent_session_id}")
         _cprint(f"  Branch session:   {new_session_id}")
 
-    def reset_conversation(self):
-        """Reset the conversation by starting a new session."""
-        # Shut down memory provider before resetting — actual session boundary
-        if hasattr(self, 'agent') and self.agent:
-            self.agent.shutdown_memory_provider(self.conversation_history)
-        self.new_session()
-    
     def save_conversation(self):
         """Save the current conversation to a file."""
         if not self.conversation_history:
@@ -4246,7 +4262,6 @@ class HermesCLI:
         
         try:
             config = load_gateway_config()
-            connected = config.get_connected_platforms()
             
             print("  Messaging Platform Configuration:")
             print("  " + "-" * 55)
@@ -4538,13 +4553,13 @@ class HermesCLI:
                             if output:
                                 self.console.print(_rich_text_from_ansi(output))
                             else:
-                                self.console.print("[dim]Command returned no output[/]")
+                                ChatConsole().print("[dim]Command returned no output[/]")
                         except subprocess.TimeoutExpired:
-                            self.console.print("[bold red]Quick command timed out (30s)[/]")
+                            ChatConsole().print("[bold red]Quick command timed out (30s)[/]")
                         except Exception as e:
-                            self.console.print(f"[bold red]Quick command error: {e}[/]")
+                            ChatConsole().print(f"[bold red]Quick command error: {e}[/]")
                     else:
-                        self.console.print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
+                        ChatConsole().print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
                 elif qcmd.get("type") == "alias":
                     target = qcmd.get("target", "").strip()
                     if target:
@@ -4553,9 +4568,9 @@ class HermesCLI:
                         aliased_command = f"{target} {user_args}".strip()
                         return self.process_command(aliased_command)
                     else:
-                        self.console.print(f"[bold red]Quick command '{base_cmd}' has no target defined[/]")
+                        ChatConsole().print(f"[bold red]Quick command '{base_cmd}' has no target defined[/]")
                 else:
-                    self.console.print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
+                    ChatConsole().print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
             # Check for plugin-registered slash commands
             elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():
                 from hermes_cli.plugins import get_plugin_command_handler
@@ -4580,7 +4595,7 @@ class HermesCLI:
                     if hasattr(self, '_pending_input'):
                         self._pending_input.put(msg)
                 else:
-                    self.console.print(f"[bold red]Failed to load skill for {base_cmd}[/]")
+                    ChatConsole().print(f"[bold red]Failed to load skill for {base_cmd}[/]")
             else:
                 # Prefix matching: if input uniquely identifies one command, execute it.
                 # Matches against both built-in COMMANDS and installed skill commands so
@@ -4641,14 +4656,14 @@ class HermesCLI:
         )
 
         if not msg:
-            self.console.print("[bold red]Failed to load the bundled /plan skill[/]")
+            ChatConsole().print("[bold red]Failed to load the bundled /plan skill[/]")
             return
 
         _cprint(f"  📝 Plan mode queued via skill. Markdown plan target: {plan_path}")
         if hasattr(self, '_pending_input'):
             self._pending_input.put(msg)
         else:
-            self.console.print("[bold red]Plan mode unavailable: input queue not initialized[/]")
+            ChatConsole().print("[bold red]Plan mode unavailable: input queue not initialized[/]")
     
     def _handle_background_command(self, cmd: str):
         """Handle /background <prompt> — run a prompt in a separate background session.
@@ -6008,7 +6023,7 @@ class HermesCLI:
 
         timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
         response_queue = queue.Queue()
-        is_open_ended = not choices or len(choices) == 0
+        is_open_ended = not choices
 
         self._clarify_state = {
             "question": question,
@@ -6290,14 +6305,6 @@ class HermesCLI:
                 self._app.current_buffer.reset()
             except Exception:
                 pass
-
-    def _clear_current_input(self) -> None:
-        if getattr(self, "_app", None):
-            try:
-                self._app.current_buffer.text = ""
-            except Exception:
-                pass
-
 
     def chat(self, message, images: list = None) -> Optional[str]:
         """
@@ -7839,7 +7846,6 @@ class HermesCLI:
             title = '🔐 Sudo Password Required'
             body = 'Enter password below (hidden), or press Enter to skip'
             box_width = _panel_box_width(title, [body])
-            inner = max(0, box_width - 2)
             lines = []
             lines.append(('class:sudo-border', '╭─ '))
             lines.append(('class:sudo-title', title))
