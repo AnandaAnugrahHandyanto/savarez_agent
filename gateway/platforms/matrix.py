@@ -806,6 +806,11 @@ class MatrixAdapter(BasePlatformAdapter):
                     await asyncio.sleep(5)
                     continue
 
+                # Trigger registered event callbacks by processing the sync response.
+                # matrix-nio's sync() only fetches data over HTTP — receive_response()
+                # is required to actually dispatch events to registered callbacks.
+                if isinstance(resp, nio.SyncResponse) and hasattr(self._client, 'receive_response'):
+                    await self._client.receive_response(resp)
                 await self._run_e2ee_maintenance()
             except asyncio.CancelledError:
                 return
@@ -981,7 +986,10 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Startup grace: ignore old messages from initial sync.
         event_ts = getattr(event, "server_timestamp", 0) / 1000.0
-        if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
+        # Drop messages that predate startup by more than the grace window.
+        # Use a clock-skew tolerance of 60s to handle server/client time drift.
+        _clock_skew_tolerance = 60.0
+        if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS - _clock_skew_tolerance:
             return
 
         # Handle undecryptable MegolmEvents: request the missing session key
@@ -1120,7 +1128,10 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Startup grace.
         event_ts = getattr(event, "server_timestamp", 0) / 1000.0
-        if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
+        # Drop messages that predate startup by more than the grace window.
+        # Use a clock-skew tolerance of 60s to handle server/client time drift.
+        _clock_skew_tolerance = 60.0
+        if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS - _clock_skew_tolerance:
             return
 
         body = getattr(event, "body", "") or ""

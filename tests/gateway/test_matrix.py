@@ -959,6 +959,7 @@ class TestMatrixE2EEMaintenance:
             return_value={"@alice:example.org": ["DEVICE1"]}
         )
         fake_client.keys_claim = AsyncMock()
+        fake_client.receive_response = AsyncMock()
         fake_client.olm = object()
         fake_client.should_upload_keys = True
         fake_client.should_query_keys = True
@@ -968,6 +969,7 @@ class TestMatrixE2EEMaintenance:
 
         fake_nio = MagicMock()
         fake_nio.SyncError = FakeSyncError
+        fake_nio.SyncResponse = type('SyncResponse', (), {})
 
         with patch.dict("sys.modules", {"nio": fake_nio}):
             await adapter._sync_loop()
