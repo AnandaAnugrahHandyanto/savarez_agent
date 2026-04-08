@@ -263,6 +263,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "XiaomiMiMo/MiMo-V2-Flash",
         "moonshotai/Kimi-K2-Thinking",
     ],
+    "chutes": [
+        "chutes/DeepSeek-V3.2-TEE",
+        "chutes/Qwen3-32B-TEE",
+        "chutes/Kimi-K2.5-TEE",
+    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -480,6 +485,7 @@ _PROVIDER_LABELS = {
     "kilocode": "Kilo Code",
     "alibaba": "Alibaba Cloud (DashScope)",
     "huggingface": "Hugging Face",
+    "chutes": "Chutes AI",
     "custom": "Custom endpoint",
 }
 
@@ -518,6 +524,7 @@ _PROVIDER_ALIASES = {
     "aliyun": "alibaba",
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
+    "chutes-ai": "chutes",
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
