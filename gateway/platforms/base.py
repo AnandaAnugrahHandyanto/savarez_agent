@@ -1219,6 +1219,8 @@ class BasePlatformAdapter(ABC):
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        if _thread_metadata and getattr(event, "reply_to_message_id", None):
+            _thread_metadata["reply_to_message_id"] = event.reply_to_message_id
         typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id, metadata=_thread_metadata))
         
         try:
@@ -1432,6 +1434,8 @@ class BasePlatformAdapter(ABC):
                 error_type = type(e).__name__
                 error_detail = str(e)[:300] if str(e) else "no details available"
                 _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                if _thread_metadata and getattr(event, "reply_to_message_id", None):
+                    _thread_metadata["reply_to_message_id"] = event.reply_to_message_id
                 await self.send(
                     chat_id=event.source.chat_id,
                     content=(
