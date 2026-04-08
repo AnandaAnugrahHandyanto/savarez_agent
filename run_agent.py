@@ -828,12 +828,7 @@ class AIAgent:
             except Exception as e:
                 raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
         
-        # Strip provider prefix from model name for direct (non-OpenRouter)
-        # providers.  Config uses "zai/glm-5.1" for provider routing, but
-        # native APIs only accept bare model IDs like "glm-5.1".
-        # OpenRouter is the only provider that natively accepts the
-        # "provider/model" format, so we keep the prefix there.
-        # See: https://github.com/NousResearch/hermes-agent/issues/6211
+        # Strip provider prefix (e.g. "zai/glm-5.1" → "glm-5.1") for non-OpenRouter APIs (#6211)
         if "/" in self.model and not self._is_openrouter_url():
             self.model = self.model.split("/", 1)[1]
 
