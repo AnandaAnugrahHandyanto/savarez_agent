@@ -1546,6 +1546,30 @@ _PLATFORMS = [
              "help": "Chat ID for scheduled results and notifications."},
         ],
     },
+    {
+        "key": "wechat",
+        "label": "WeChat",
+        "emoji": "💬",
+        "token_var": "WECHAT_BOT_TOKEN",
+        "setup_instructions": [
+            "1. Run the WeChat QR login flow to get a bot token from the iLink Bot API",
+            "2. Scan the QR code in personal WeChat and complete the login confirmation",
+            "3. Copy the returned token and account ID into Hermes",
+            "4. Message the bot account from WeChat to establish a context token before sending outbound replies",
+            "5. Restrict access with WECHAT_ALLOWED_USERS for production use",
+        ],
+        "vars": [
+            {"name": "WECHAT_BOT_TOKEN", "prompt": "Bot token", "password": True,
+             "help": "Bearer token returned by the WeChat QR login flow."},
+            {"name": "WECHAT_ACCOUNT_ID", "prompt": "Account ID", "password": False,
+             "help": "The bot account ID returned by the WeChat login flow."},
+            {"name": "WECHAT_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
+             "is_allowlist": True,
+             "help": "Restrict which WeChat users can interact with the bot."},
+            {"name": "WECHAT_HOME_CHANNEL", "prompt": "Home user ID (optional, for cron/notifications)", "password": False,
+             "help": "WeChat user ID for scheduled results and notifications."},
+        ],
+    },
 ]
 
 

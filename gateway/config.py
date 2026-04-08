@@ -63,6 +63,7 @@ class Platform(Enum):
     WEBHOOK = "webhook"
     FEISHU = "feishu"
     WECOM = "wecom"
+    WECHAT = "wechat"
 
 
 @dataclass
@@ -286,6 +287,9 @@ class GatewayConfig:
                 connected.append(platform)
             # WeCom uses extra dict for bot credentials
             elif platform == Platform.WECOM and config.extra.get("bot_id"):
+                connected.append(platform)
+            # WeChat uses bot token from QR login
+            elif platform == Platform.WECHAT and (config.token or config.extra.get("bot_token")):
                 connected.append(platform)
         return connected
     
@@ -925,6 +929,36 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.WECOM,
                 chat_id=wecom_home,
                 name=os.getenv("WECOM_HOME_CHANNEL_NAME", "Home"),
+            )
+
+    # WeChat (Personal WeChat via iLink Bot API)
+    wechat_token = os.getenv("WECHAT_BOT_TOKEN")
+    if wechat_token:
+        if Platform.WECHAT not in config.platforms:
+            config.platforms[Platform.WECHAT] = PlatformConfig()
+        config.platforms[Platform.WECHAT].enabled = True
+        config.platforms[Platform.WECHAT].token = wechat_token
+        wechat_base_url = os.getenv("WECHAT_API_BASE_URL", "")
+        if wechat_base_url:
+            config.platforms[Platform.WECHAT].extra["base_url"] = wechat_base_url
+        wechat_cdn_url = os.getenv("WECHAT_CDN_BASE_URL", "")
+        if wechat_cdn_url:
+            config.platforms[Platform.WECHAT].extra["cdn_base_url"] = wechat_cdn_url
+        wechat_account = os.getenv("WECHAT_ACCOUNT_ID", "")
+        if wechat_account:
+            config.platforms[Platform.WECHAT].extra["account_id"] = wechat_account
+        wechat_app_id = os.getenv("WECHAT_ILINK_APP_ID", "")
+        if wechat_app_id:
+            config.platforms[Platform.WECHAT].extra["ilink_app_id"] = wechat_app_id
+        wechat_client_ver = os.getenv("WECHAT_ILINK_CLIENT_VERSION", "")
+        if wechat_client_ver:
+            config.platforms[Platform.WECHAT].extra["ilink_client_version"] = wechat_client_ver
+        wechat_home = os.getenv("WECHAT_HOME_CHANNEL")
+        if wechat_home:
+            config.platforms[Platform.WECHAT].home_channel = HomeChannel(
+                platform=Platform.WECHAT,
+                chat_id=wechat_home,
+                name=os.getenv("WECHAT_HOME_CHANNEL_NAME", "Home"),
             )
 
     # Session settings

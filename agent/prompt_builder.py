@@ -301,6 +301,15 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "wechat": (
+        "You are on a text messaging communication platform, WeChat. "
+        "Please do not use markdown as it does not render. "
+        "You can send media files natively: to deliver a file to the user, "
+        "include MEDIA:/absolute/path/to/file in your response. Images "
+        "(.png, .jpg, .webp) appear as photos, videos (.mp4, .mov) play inline, "
+        "and other files arrive as downloadable documents. Voice attachments may "
+        "be delivered as downloadable audio files rather than native voice bubbles."
+    ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "
         "suitable for email. Use plain text formatting (no markdown). "
