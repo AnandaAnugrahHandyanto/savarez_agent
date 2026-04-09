@@ -1425,6 +1425,7 @@ def get_async_text_auxiliary_client(task: str = ""):
 _VISION_AUTO_PROVIDER_ORDER = (
     "openrouter",
     "nous",
+    "openai-codex",
 )
 
 
@@ -1470,8 +1471,8 @@ def _preferred_main_vision_provider() -> Optional[str]:
 def get_available_vision_backends() -> List[str]:
     """Return the currently available vision backends in auto-selection order.
 
-    Order: active provider → OpenRouter → Nous → stop.  This is the single
-    source of truth for setup, tool gating, and runtime auto-routing of
+    Order: active provider → OpenRouter → Nous → Codex → stop.  This is the
+    single source of truth for setup, tool gating, and runtime auto-routing of
     vision tasks.
     """
     available: List[str] = []
