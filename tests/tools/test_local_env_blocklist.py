@@ -314,8 +314,23 @@ class TestSanePathIncludesHomebrew:
     def test_make_run_env_does_not_duplicate_on_full_path(self):
         """When PATH already has /usr/bin, _make_run_env should not append."""
         from tools.environments.local import _make_run_env
-        full_env = {"PATH": "/usr/bin:/bin"}
+        full_path = os.pathsep.join(("/usr/bin", "/bin"))
+        full_env = {"PATH": full_path}
         with patch.dict(os.environ, full_env, clear=True):
             result = _make_run_env({})
         # Should keep existing PATH unchanged
-        assert result["PATH"] == "/usr/bin:/bin"
+        assert result["PATH"] == full_path
+
+    def test_make_run_env_preserves_windows_path_separator(self):
+        """Windows-style PATH entries should stay intact when _SANE_PATH is appended."""
+        from tools.environments import local
+
+        windows_path = r"C:\Windows\System32;C:\Program Files\Git\cmd"
+        with patch.object(local.os, "pathsep", ";"), \
+             patch.dict(local.os.environ, {"PATH": windows_path}, clear=True):
+            result = local._make_run_env({})
+
+        parts = result["PATH"].split(";")
+        assert r"C:\Windows\System32" in parts
+        assert r"C:\Program Files\Git\cmd" in parts
+        assert "/usr/bin" in parts
