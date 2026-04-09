@@ -338,9 +338,11 @@ def load_jobs() -> List[Dict[str, Any]]:
                     save_jobs(jobs)
                     logger.warning("Auto-repaired jobs.json (had invalid control characters)")
                 return jobs
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to parse jobs.json (returning empty schedule): %s", exc)
             return []
-    except IOError:
+    except IOError as exc:
+        logger.debug("jobs.json not found or unreadable: %s", exc)
         return []
 
 
