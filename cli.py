@@ -513,6 +513,12 @@ from tools.browser_tool import _emergency_cleanup_all_sessions as _cleanup_all_b
 # Guard to prevent cleanup from running multiple times on exit
 _cleanup_done = False
 
+# Reference to the active AIAgent so atexit cleanup can fire session-boundary
+# hooks with the correct session_id.  Set by run_conversation() at startup;
+# read by _run_cleanup() at exit.  Tests may set this directly.
+_active_agent_ref: Any = None
+
+
 def _run_cleanup():
     """Run resource cleanup exactly once."""
     global _cleanup_done
@@ -540,11 +546,16 @@ def _run_cleanup():
         shutdown_cached_clients()
     except Exception:
         pass
-    # NOTE: upstream bdc72ec3 also fires `on_session_finalize` from here
-    # via a global `_active_agent_ref`, but our fork never imported the
-    # prerequisite that defines that ref.  The session-boundary hooks
-    # still fire from HermesCLI.new_session() and HermesCLI._notify_session_boundary(),
-    # which is the path that matters for `/new`, `/reset`, and clean exit.
+    # Fire on_session_finalize plugin hook (session boundary at exit).
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "on_session_finalize",
+            session_id=_active_agent_ref.session_id if _active_agent_ref else None,
+            platform="cli",
+        )
+    except Exception:
+        pass
 
 
 # =============================================================================
@@ -2214,6 +2225,10 @@ class HermesCLI:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
+            # Publish active agent reference so atexit cleanup can fire
+            # session-boundary plugin hooks with the correct session_id.
+            global _active_agent_ref
+            _active_agent_ref = self.agent
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),
