@@ -2536,7 +2536,9 @@ def _prompt_model_selection(
     _DIM = "\033[2m"
     _RESET = "\033[0m"
 
-    # Try arrow-key menu first, fall back to number input
+    # Try arrow-key menu first, fall back to number input if the terminal
+    # cannot be probed cleanly (for example, an unknown TERM causing tput to
+    # fail inside simple_term_menu).
     try:
         from simple_term_menu import TerminalMenu
 
@@ -2581,7 +2583,7 @@ def _prompt_model_selection(
             custom = input("Enter model name: ").strip()
             return custom if custom else None
         return None
-    except (ImportError, NotImplementedError):
+    except (ImportError, NotImplementedError, OSError, subprocess.CalledProcessError):
         pass
 
     # Fallback: numbered list
