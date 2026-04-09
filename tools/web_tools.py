@@ -986,9 +986,9 @@ def _exa_crawl(url: str, limit: int = 20) -> List[Dict[str, Any]]:
             "metadata": {"sourceURL": page_url, "title": title},
         })
         for subpage in result.subpages or []:
-            sub_content = subpage.text or ""
-            sub_url = subpage.url or ""
-            sub_title = subpage.title or ""
+            sub_content = subpage.get("text", "") if isinstance(subpage, dict) else (subpage.text or "")
+            sub_url = subpage.get("url", "") if isinstance(subpage, dict) else (subpage.url or "")
+            sub_title = subpage.get("title", "") if isinstance(subpage, dict) else (subpage.title or "")
             results.append({
                 "url": sub_url,
                 "title": sub_title,
@@ -1669,7 +1669,7 @@ async def web_crawl_tool(
             _debug.save()
             return cleaned_result
 
-        # Exa supports crawl via search_and_contents scoped to the target domain
+        # Exa supports crawl via get_contents with subpages
         if backend == "exa":
             if not url.startswith(('http://', 'https://')):
                 url = f'https://{url}'
