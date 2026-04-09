@@ -1122,6 +1122,15 @@ class AIAgent:
         except Exception:
             pass
 
+        _loop_cfg = _agent_cfg.get("tool_loop_detection", {})
+        if isinstance(_loop_cfg, dict) and _loop_cfg:
+            self._tool_loop_detector.warning_threshold = int(_loop_cfg.get("warning_threshold", 3))
+            self._tool_loop_detector.critical_threshold = int(_loop_cfg.get("critical_threshold", 5))
+            self._tool_loop_detector.window_size = int(_loop_cfg.get("window_size", 30))
+            self._tool_loop_detector._history = type(self._tool_loop_detector._history)(
+                maxlen=self._tool_loop_detector.window_size
+            )
+
         # Tool-use enforcement config: "auto" (default — matches hardcoded
         # model list), true (always), false (never), or list of substrings.
         _agent_section = _agent_cfg.get("agent", {})
