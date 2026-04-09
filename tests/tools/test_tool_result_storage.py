@@ -14,6 +14,7 @@ from tools.tool_result_storage import (
     PERSISTED_OUTPUT_TAG,
     PERSISTED_OUTPUT_CLOSING_TAG,
     STORAGE_DIR,
+    _remote_result_path,
     _build_persisted_message,
     _heredoc_marker,
     _write_to_sandbox,
@@ -76,6 +77,18 @@ class TestHeredocMarker:
         assert marker != HEREDOC_MARKER
         assert marker.startswith("HERMES_PERSIST_")
         assert marker not in content
+
+
+class TestRemoteResultPath:
+    def test_safe_tool_use_id_keeps_stable_filename(self):
+        assert _remote_result_path("tc_456") == f"{STORAGE_DIR}/tc_456.txt"
+
+    def test_unsafe_tool_use_id_is_sanitized(self):
+        path = _remote_result_path("../../escape; touch /tmp/pwned")
+        assert path.startswith(f"{STORAGE_DIR}/")
+        assert ".." not in path
+        assert ";" not in path
+        assert "touch /tmp/pwned" not in path
 
 
 # ── _write_to_sandbox ─────────────────────────────────────────────────
@@ -354,6 +367,29 @@ class TestMaybePersistToolResult:
         )
         # Any non-empty content with threshold=0 should be persisted
         assert PERSISTED_OUTPUT_TAG in result
+
+    def test_unsafe_tool_use_id_does_not_reach_shell_command(self):
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        content = "x" * 60_000
+        tool_use_id = "../../escape; touch /tmp/pwned"
+
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id=tool_use_id,
+            env=env,
+            threshold=30_000,
+        )
+
+        shell_line = env.execute.call_args[0][0].splitlines()[0]
+        safe_path = _remote_result_path(tool_use_id)
+
+        assert PERSISTED_OUTPUT_TAG in result
+        assert f"Full output saved to: {safe_path}" in result
+        assert tool_use_id not in shell_line
+        assert "touch /tmp/pwned" not in shell_line
+        assert safe_path in shell_line
 
 
 # ── enforce_turn_budget ───────────────────────────────────────────────

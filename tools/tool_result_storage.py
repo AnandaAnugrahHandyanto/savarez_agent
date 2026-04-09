@@ -9,9 +9,10 @@ Defense against context-window overflow operates at three levels:
 2. **Per-result persistence** (maybe_persist_tool_result): After a tool
    returns, if its output exceeds the tool's registered threshold
    (registry.get_max_result_size), the full output is written INTO THE
-   SANDBOX at /tmp/hermes-results/{tool_use_id}.txt via env.execute().
-   The in-context content is replaced with a preview + file path reference.
-   The model can read_file to access the full output on any backend.
+   SANDBOX under /tmp/hermes-results/ using a deterministic sanitized
+   filename derived from the tool_use_id. The in-context content is
+   replaced with a preview + file path reference. The model can read_file
+   to access the full output on any backend.
 
 3. **Per-turn aggregate budget** (enforce_turn_budget): After all tool
    results in a single assistant turn are collected, if the total exceeds
@@ -20,7 +21,11 @@ Defense against context-window overflow operates at three levels:
    where many medium-sized results combine to overflow context.
 """
 
+import hashlib
 import logging
+import posixpath
+import re
+import shlex
 import uuid
 
 from tools.budget_config import (
@@ -35,6 +40,8 @@ PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = "/tmp/hermes-results"
 HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
+_SAFE_TOOL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_UNSAFE_TOOL_ID_CHARS_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) -> tuple[str, bool]:
@@ -55,11 +62,31 @@ def _heredoc_marker(content: str) -> str:
     return f"HERMES_PERSIST_{uuid.uuid4().hex[:8]}"
 
 
+def _safe_tool_result_basename(tool_use_id: str) -> str:
+    """Return a deterministic shell-safe basename for persisted tool output."""
+    raw = str(tool_use_id or "").strip()
+    if raw and raw not in {".", ".."} and _SAFE_TOOL_ID_RE.fullmatch(raw):
+        return raw
+
+    digest_source = raw or "result"
+    digest = hashlib.sha256(
+        digest_source.encode("utf-8", errors="replace")
+    ).hexdigest()[:12]
+    slug = _UNSAFE_TOOL_ID_CHARS_RE.sub("_", raw).strip("._-") if raw else ""
+    slug = (slug or "result")[:48]
+    return f"{slug}_{digest}"
+
+
+def _remote_result_path(tool_use_id: str) -> str:
+    """Build the sandbox path for a persisted tool result."""
+    return posixpath.join(STORAGE_DIR, f"{_safe_tool_result_basename(tool_use_id)}.txt")
+
+
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     """Write content into the sandbox via env.execute(). Returns True on success."""
     marker = _heredoc_marker(content)
     cmd = (
-        f"mkdir -p {STORAGE_DIR} && cat > {remote_path} << '{marker}'\n"
+        f"mkdir -p {shlex.quote(STORAGE_DIR)} && cat > {shlex.quote(remote_path)} << '{marker}'\n"
         f"{content}\n"
         f"{marker}"
     )
@@ -125,7 +152,7 @@ def maybe_persist_tool_result(
     if len(content) <= effective_threshold:
         return content
 
-    remote_path = f"{STORAGE_DIR}/{tool_use_id}.txt"
+    remote_path = _remote_result_path(tool_use_id)
     preview, has_more = generate_preview(content, max_chars=config.preview_size)
 
     if env is not None:
