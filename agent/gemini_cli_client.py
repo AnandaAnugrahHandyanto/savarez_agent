@@ -8,6 +8,7 @@ shape Hermes expects from an OpenAI chat-completions client.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shlex
 import subprocess
@@ -16,10 +17,33 @@ from types import SimpleNamespace
 from typing import Any
 
 from agent.copilot_acp_client import _extract_tool_calls_from_text, _format_messages_as_prompt
+from hermes_constants import get_hermes_home
+
+logger = logging.getLogger(__name__)
 
 GEMINI_CLI_MARKER_BASE_URL = "cli://gemini"
 _GEMINI_OUTPUT_FORMAT = "json"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
+
+
+def _select_gemini_cli_cwd() -> str:
+    override = os.getenv("HERMES_GEMINI_CLI_CWD", "").strip()
+    if override:
+        return str(Path(override).expanduser().resolve())
+
+    current = Path.cwd().resolve()
+    home = Path.home().resolve()
+    if current == home:
+        sandbox_dir = (get_hermes_home() / "tmp" / "gemini-cli-workspace").resolve()
+        sandbox_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(
+            "Gemini CLI cwd fallback activated: avoiding home directory %s, using %s",
+            current,
+            sandbox_dir,
+        )
+        return str(sandbox_dir)
+
+    return str(current)
 
 
 class _GeminiCLIChatCompletions:
@@ -60,7 +84,7 @@ class GeminiCLIClient:
         else:
             raw_args = os.getenv("HERMES_GEMINI_CLI_ARGS", "").strip()
             self._args = shlex.split(raw_args) if raw_args else []
-        self._cwd = str(Path(os.getcwd()).resolve())
+        self._cwd = _select_gemini_cli_cwd()
         self.chat = _GeminiCLIChatNamespace(self)
         self.is_closed = False
 
