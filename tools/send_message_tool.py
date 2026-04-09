@@ -374,11 +374,14 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # Platforms that support media: Telegram, Feishu
     _media_supported_platforms = {Platform.TELEGRAM, Platform.FEISHU}
 
+    # Derive supported platform names from the set for dynamic, accurate error messages
+    _supported_platform_names = ", ".join(p.value.capitalize() for p in sorted(_media_supported_platforms, key=lambda p: p.value))
+
     if media_files and not message.strip():
         if platform not in _media_supported_platforms:
             return {
                 "error": (
-                    f"send_message MEDIA delivery is currently only supported for telegram; "
+                    f"send_message MEDIA delivery is currently only supported for {_supported_platform_names.lower()}; "
                     f"target {platform.value} had only media attachments"
                 )
             }
@@ -386,7 +389,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and platform not in _media_supported_platforms:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram"
+            f"native send_message media delivery is currently only supported for {_supported_platform_names.lower()}"
         )
 
     last_result = None
