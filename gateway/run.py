@@ -4582,6 +4582,7 @@ class GatewayRunner:
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
             def run_sync():
+                _mt = user_config.get("model", {}).get("max_tokens")
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
@@ -4601,6 +4602,7 @@ class GatewayRunner:
                     user_id=source.user_id,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    max_tokens=int(_mt) if _mt else None,
                 )
 
                 return agent.run_conversation(
@@ -4757,6 +4759,7 @@ class GatewayRunner:
             )
 
             def run_sync():
+                _mt = user_config.get("model", {}).get("max_tokens")
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
@@ -4775,6 +4778,7 @@ class GatewayRunner:
                     platform=platform_key,
                     session_db=None,
                     fallback_model=self._fallback_model,
+                    max_tokens=int(_mt) if _mt else None,
                     skip_memory=True,
                     skip_context_files=True,
                     persist_session=False,
@@ -6715,6 +6719,7 @@ class GatewayRunner:
 
             if agent is None:
                 # Config changed or first message — create fresh agent
+                _mt = user_config.get("model", {}).get("max_tokens")
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
@@ -6736,6 +6741,7 @@ class GatewayRunner:
                     user_id=source.user_id,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    max_tokens=int(_mt) if _mt else None,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
