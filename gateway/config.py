@@ -537,8 +537,8 @@ def load_gateway_config() -> GatewayConfig:
                 if plat == Platform.DISCORD:
                     if "shared_auto_skills" in platform_cfg:
                         bridged["shared_auto_skills"] = platform_cfg["shared_auto_skills"]
-                    if "forum_skill_bindings" in platform_cfg:
-                        bridged["forum_skill_bindings"] = platform_cfg["forum_skill_bindings"]
+                    if "channel_skill_bindings" in platform_cfg:
+                        bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
                 if not bridged:
                     continue
                 plat_data = platforms_data.setdefault(plat.value, {})

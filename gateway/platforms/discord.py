@@ -2174,7 +2174,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _resolve_auto_skills_for_channel(self, channel: Any) -> Optional[list[str]]:
         """Resolve ordered auto-loaded skills for a Discord channel or forum thread."""
-        bindings = self.config.extra.get("forum_skill_bindings", []) or []
+        bindings = self.config.extra.get("channel_skill_bindings", []) or []
         shared_global = self._normalize_skill_names(self.config.extra.get("shared_auto_skills", []))
         if not bindings:
             return shared_global or None

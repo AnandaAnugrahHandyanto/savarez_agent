@@ -231,7 +231,7 @@ class TestLoadGatewayConfig:
             "discord:\n"
             "  shared_auto_skills:\n"
             "    - neomesh-core\n"
-            "  forum_skill_bindings:\n"
+            "  channel_skill_bindings:\n"
             "    - channel_id: '123'\n"
             "      skills:\n"
             "        - backend\n",
@@ -243,7 +243,7 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.platforms[Platform.DISCORD].extra["shared_auto_skills"] == ["neomesh-core"]
-        assert config.platforms[Platform.DISCORD].extra["forum_skill_bindings"] == [
+        assert config.platforms[Platform.DISCORD].extra["channel_skill_bindings"] == [
             {"channel_id": "123", "skills": ["backend"]}
         ]
 

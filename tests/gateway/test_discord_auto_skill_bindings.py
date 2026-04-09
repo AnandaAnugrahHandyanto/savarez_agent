@@ -72,7 +72,7 @@ def adapter(monkeypatch):
         token="fake-token",
         extra={
             "shared_auto_skills": ["neomesh-core"],
-            "forum_skill_bindings": [
+            "channel_skill_bindings": [
                 {"channel_id": "200", "skill": "backend"},
                 {"channel_id": "300", "skills": ["qa", "release-gate"]},
             ],
@@ -107,7 +107,7 @@ def test_resolve_auto_skills_dedupes_and_preserves_order(monkeypatch):
         token="fake-token",
         extra={
             "shared_auto_skills": ["neomesh-core", "backend"],
-            "forum_skill_bindings": [
+            "channel_skill_bindings": [
                 {
                     "channel_id": "500",
                     "shared_skills": ["backend", "release-principles"],
@@ -133,7 +133,7 @@ def test_resolve_auto_skills_supports_binding_specific_shared_skills(monkeypatch
         enabled=True,
         token="fake-token",
         extra={
-            "forum_skill_bindings": [
+            "channel_skill_bindings": [
                 {
                     "channel_id": "400",
                     "shared_skills": ["neomesh-core"],
