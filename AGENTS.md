@@ -2,6 +2,28 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+## Standing Instructions
+
+### Post-Update / Post-Fix Behavior
+After every update or fix, **determine the right category first, then search it**:
+
+1. **Figure out which category is relevant:**
+   - **Memory** → durable facts about environment, user preferences, tool quirks
+   - **Skill** → reusable procedures for recurring task types
+   - **Agent / AGENTS.md** → standing operational directives governing my behavior
+   - **SOUL** → identity, purpose, values (rare — use sparingly)
+
+2. **Search the relevant category:**
+   - `session_search` for Memory
+   - `skills_list` / `skill_view` for Skills
+   - Read AGENTS.md / SOUL.md directly for Agent / SOUL
+
+3. **If found → update. If not found → create in that category.**
+
+---
+
+
+
 ## Development Environment
 
 ```bash
