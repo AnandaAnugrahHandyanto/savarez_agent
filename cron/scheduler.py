@@ -615,6 +615,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Provider routing
         pr = _cfg.get("provider_routing", {})
         smart_routing = _cfg.get("smart_model_routing", {}) or {}
+        fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
 
         from hermes_cli.runtime_provider import (
             resolve_runtime_provider,
@@ -661,6 +662,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_ignored=pr.get("ignore"),
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
+            fallback_model=fallback_model,
             disabled_toolsets=["cronjob", "messaging", "clarify"],
             quiet_mode=True,
             skip_memory=True,  # Cron system prompts would corrupt user representations
