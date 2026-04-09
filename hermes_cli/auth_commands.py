@@ -1226,28 +1226,7 @@ def _interactive_add() -> None:
         raise SystemExit(f"Unknown provider: {provider}")
 
     # For OAuth-capable providers, ask which type
-    token_mode = None
-    if provider == "chatgpt-web":
-        print(f"\n{provider} supports API keys/access tokens, OAuth login, session tokens, and local browser bootstrap.")
-        print("  1. API key / access token")
-        print("  2. OAuth login (authenticate via browser/device code)")
-        print("  3. Session token (paste __Secure-next-auth.session-token)")
-        print("  4. Local browser bootstrap (Termux, Windows, or WSL)")
-        try:
-            type_choice = input("Type [1/2/3/4]: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            return
-        if type_choice == "2":
-            auth_type = "oauth"
-        elif type_choice == "3":
-            auth_type = "api_key"
-            token_mode = "session_token"
-        elif type_choice == "4":
-            auth_type = "browser"
-        else:
-            auth_type = "api_key"
-            token_mode = "access_token"
-    elif provider in _OAUTH_CAPABLE_PROVIDERS:
+    if provider in _OAUTH_CAPABLE_PROVIDERS or provider == "chatgpt-web":
         print(f"\n{provider} supports both API keys and OAuth login.")
         print("  1. API key (paste a key from the provider dashboard)")
         print("  2. OAuth login (authenticate via browser)")
