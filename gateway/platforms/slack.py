@@ -195,6 +195,13 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_assistant_thread_context_changed(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
 
+            # Catch-all no-op for events Hermes doesn't consume (e.g.
+            # reaction_added). Prevents slack_bolt from emitting WARNING + 404
+            # for every unhandled event the Slack app is subscribed to.
+            @self._app.event(re.compile(r".*"))
+            async def _ignore_unhandled_event(event, logger):
+                logger.debug("[Slack] ignoring unhandled event: %s", event.get("type"))
+
             # Register slash command handler
             @self._app.command("/hermes")
             async def handle_hermes_command(ack, command):
