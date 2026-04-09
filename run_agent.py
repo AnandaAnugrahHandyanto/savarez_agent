@@ -69,14 +69,25 @@ from model_tools import (
 from tools.terminal_tool import cleanup_vm, get_active_env, is_persistent_env
 from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
 from tools.interrupt import set_interrupt as _set_interrupt
+from agent.tool_runtime import (
+    envelope_to_legacy_content,
+    normalize_tool_failure,
+    normalize_tool_result,
+)
 from tools.browser_tool import cleanup_browser
 
 
 from hermes_constants import OPENROUTER_BASE_URL
 
 # Agent internals extracted to agent/ package for modularity
-from agent.memory_manager import build_memory_context_block
 from agent.retry_utils import jittered_backoff
+from agent.turn_assembly import (
+    apply_turn_assembly_to_user_message,
+    assemble_turn_context,
+    compose_effective_system_prompt,
+    inject_prefill_messages,
+)
+from agent.context_references import preprocess_context_references
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
@@ -6280,17 +6291,28 @@ class AIAgent:
             """Worker function executed in a thread."""
             start = time.time()
             try:
-                result = self._invoke_tool(function_name, function_args, effective_task_id, tool_call.id)
+                raw_result = self._invoke_tool(function_name, function_args, effective_task_id, tool_call.id)
+                duration = time.time() - start
+                envelope = normalize_tool_result(
+                    function_name,
+                    raw_result,
+                    duration_seconds=duration,
+                )
             except Exception as tool_error:
-                result = f"Error executing tool '{function_name}': {tool_error}"
+                duration = time.time() - start
+                envelope = normalize_tool_failure(
+                    function_name,
+                    tool_error,
+                    duration_seconds=duration,
+                )
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
-            duration = time.time() - start
-            is_error, _ = _detect_tool_failure(function_name, result)
+            result = envelope_to_legacy_content(envelope)
+            is_error = not envelope.ok
             if is_error:
                 logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
-            results[index] = (function_name, function_args, result, duration, is_error)
+            results[index] = (function_name, function_args, envelope, duration, is_error)
 
         # Start spinner for CLI mode (skip when TUI handles tool progress)
         spinner = None
@@ -6324,7 +6346,8 @@ class AIAgent:
                 function_result = f"Error executing tool '{name}': thread did not return a result"
                 tool_duration = 0.0
             else:
-                function_name, function_args, function_result, tool_duration, is_error = r
+                function_name, function_args, envelope, tool_duration, is_error = r
+                function_result = envelope_to_legacy_content(envelope)
 
                 if is_error:
                     result_preview = function_result[:200] if len(function_result) > 200 else function_result
@@ -6638,13 +6661,19 @@ class AIAgent:
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
 
+            envelope = normalize_tool_result(
+                function_name,
+                function_result,
+                duration_seconds=tool_duration,
+            )
+            function_result = envelope_to_legacy_content(envelope)
             result_preview = function_result if self.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result
             )
 
             # Log tool errors to the persistent error log so [error] tags
             # in the UI always have a corresponding detailed entry on disk.
-            _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+            _is_error_result = not envelope.ok
             if _is_error_result:
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
             else:
@@ -7266,6 +7295,34 @@ class AIAgent:
             except Exception:
                 pass
 
+        _reference_result = None
+        if isinstance(user_message, str) and "@" in user_message:
+            try:
+                from agent.model_metadata import get_model_context_length
+
+                _ctx_len = get_model_context_length(
+                    self.model,
+                    base_url=self.base_url or "",
+                    api_key=self.api_key or "",
+                    provider=self.provider,
+                )
+                _reference_result = preprocess_context_references(
+                    user_message,
+                    cwd=os.getcwd(),
+                    context_length=_ctx_len,
+                )
+            except Exception as exc:
+                logger.warning("context reference preprocessing failed: %s", exc)
+                _reference_result = None
+
+        _turn_assembly = assemble_turn_context(
+            user_message,
+            _ext_prefetch_cache,
+            _plugin_user_context,
+            reference_result=_reference_result,
+            platform=self.platform,
+        )
+
         while api_call_count < self.max_iterations and self.iteration_budget.remaining > 0:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
             self._checkpoint_mgr.new_turn()
@@ -7333,17 +7390,7 @@ class AIAgent:
                 # API-call-time only — the original message in `messages` is
                 # never mutated, so nothing leaks into session persistence.
                 if idx == current_turn_user_idx and msg.get("role") == "user":
-                    _injections = []
-                    if _ext_prefetch_cache:
-                        _fenced = build_memory_context_block(_ext_prefetch_cache)
-                        if _fenced:
-                            _injections.append(_fenced)
-                    if _plugin_user_context:
-                        _injections.append(_plugin_user_context)
-                    if _injections:
-                        _base = api_msg.get("content", "")
-                        if isinstance(_base, str):
-                            api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+                    api_msg = apply_turn_assembly_to_user_message(api_msg, _turn_assembly)
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved
@@ -7376,9 +7423,10 @@ class AIAgent:
             # Ephemeral additions are API-call-time only (not persisted to session DB).
             # External recall context is injected into the user message, not the system
             # prompt, so the stable cache prefix remains unchanged.
-            effective_system = active_system_prompt or ""
-            if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            effective_system = compose_effective_system_prompt(
+                active_system_prompt or "",
+                self.ephemeral_system_prompt,
+            )
             # NOTE: Plugin context from pre_llm_call hooks is injected into the
             # user message (see injection block above), NOT the system prompt.
             # This is intentional — system prompt modifications break the prompt
@@ -7389,9 +7437,11 @@ class AIAgent:
             # Inject ephemeral prefill messages right after the system prompt
             # but before conversation history. Same API-call-time-only pattern.
             if self.prefill_messages:
-                sys_offset = 1 if effective_system else 0
-                for idx, pfm in enumerate(self.prefill_messages):
-                    api_messages.insert(sys_offset + idx, pfm.copy())
+                api_messages = inject_prefill_messages(
+                    api_messages,
+                    self.prefill_messages,
+                    effective_system,
+                )
 
             # Apply Anthropic prompt caching for Claude models via OpenRouter.
             # Auto-detected: if model name contains "claude" and base_url is OpenRouter,

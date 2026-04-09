@@ -19,6 +19,7 @@ import pytest
 import run_agent
 from run_agent import AIAgent
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from tools.tool_result_storage import PERSISTED_OUTPUT_TAG
 
 
 # ---------------------------------------------------------------------------
@@ -1259,9 +1260,29 @@ class TestConcurrentToolExecution:
 
         assert len(messages) == 2
         # First tool should have error
-        assert "Error" in messages[0]["content"] or "boom" in messages[0]["content"]
+        assert messages[0]["content"] == "Error executing tool 'web_search': boom"
         # Second tool should succeed
         assert "success" in messages[1]["content"]
+
+    def test_concurrent_normalizes_json_failure_but_keeps_legacy_content(self, agent):
+        tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        tc2 = _mock_tool_call(name="read_file", arguments='{"path":"x.py"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+
+        with patch(
+            "run_agent.handle_function_call",
+            side_effect=['{"success": false, "error": "backend unavailable"}', '{"ok": true}'],
+        ):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert messages[0] == {
+            "role": "tool",
+            "content": '{"success": false, "error": "backend unavailable"}',
+            "tool_call_id": "c1",
+        }
+        assert messages[1]["tool_call_id"] == "c2"
+        assert messages[1]["content"] == '{"ok": true}'
 
     def test_concurrent_interrupt_before_start(self, agent):
         """If interrupt is requested before concurrent execution, all tools are skipped."""
@@ -1323,6 +1344,35 @@ class TestConcurrentToolExecution:
 
         assert starts == [("c1", "web_search", {"query": "hello"})]
         assert completes == [("c1", "web_search", {"query": "hello"}, '{"success": true}')]
+
+    def test_sequential_normalizes_failure_and_persists_legacy_string(self, agent):
+        tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        with patch("run_agent.handle_function_call", return_value='{"success": false, "error": "denied"}'):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert messages == [{
+            "role": "tool",
+            "content": '{"success": false, "error": "denied"}',
+            "tool_call_id": "c1",
+        }]
+
+    def test_sequential_success_still_persists_large_results(self, agent, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes").mkdir()
+        tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        big_result = "x" * 150_000
+
+        with patch("run_agent.handle_function_call", return_value=big_result):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert len(messages) == 1
+        assert len(messages[0]["content"]) < len(big_result)
+        assert ("Truncated" in messages[0]["content"] or PERSISTED_OUTPUT_TAG in messages[0]["content"])
 
     def test_concurrent_tool_callbacks_fire_for_each_tool(self, agent):
         tc1 = _mock_tool_call(name="web_search", arguments='{"query":"one"}', call_id="c1")
