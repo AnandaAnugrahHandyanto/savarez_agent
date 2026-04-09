@@ -10,13 +10,24 @@ Shares credentials with the optional telephony skill — same env vars:
 
 Gateway-specific env vars:
   - SMS_WEBHOOK_PORT     (default 8080)
+  - SMS_WEBHOOK_URL      (public URL of this webhook, e.g. https://example.com/webhooks/twilio;
+                          REQUIRED for Twilio signature validation)
   - SMS_ALLOWED_USERS    (comma-separated E.164 phone numbers)
   - SMS_ALLOW_ALL_USERS  (true/false)
   - SMS_HOME_CHANNEL     (phone number for cron delivery)
+
+Security:
+  - Inbound webhooks are validated via X-Twilio-Signature (HMAC-SHA1).
+    SMS_WEBHOOK_URL must be set to the public-facing URL so the signature
+    can be recomputed.  When unset, ALL inbound webhooks are REJECTED
+    (fail-closed).
+  - See PR description for vulnerability disclosure credits.
 """
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import logging
 import os
 import re
@@ -77,6 +88,7 @@ class SmsAdapter(BasePlatformAdapter):
         self._webhook_port: int = int(
             os.getenv("SMS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
         )
+        self._webhook_url: str = os.getenv("SMS_WEBHOOK_URL", "")
         self._runner = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
 
@@ -85,6 +97,82 @@ class SmsAdapter(BasePlatformAdapter):
         creds = f"{self._account_sid}:{self._auth_token}"
         encoded = base64.b64encode(creds.encode("ascii")).decode("ascii")
         return f"Basic {encoded}"
+
+    # ------------------------------------------------------------------
+    # Twilio signature validation
+    # ------------------------------------------------------------------
+
+    def _compute_twilio_signature(self, url: str, params: Dict[str, str]) -> str:
+        """Compute the expected X-Twilio-Signature for a request.
+
+        Algorithm (per Twilio docs):
+          1. Start with the full webhook URL
+          2. Sort POST params alphabetically by key
+          3. Append each key+value to the URL string
+          4. HMAC-SHA1 with the auth token
+          5. Base64-encode the digest
+        """
+        s = url
+        for key in sorted(params.keys()):
+            s += key + params[key]
+        mac = hmac.new(
+            self._auth_token.encode("utf-8"),
+            s.encode("utf-8"),
+            hashlib.sha1,
+        )
+        return base64.b64encode(mac.digest()).decode("utf-8")
+
+    def _validate_twilio_signature(
+        self, request: "aiohttp.web.Request", params: Dict[str, str]
+    ) -> bool:
+        """Validate the X-Twilio-Signature header using timing-safe comparison.
+
+        Returns False (reject) when:
+          - SMS_WEBHOOK_URL is not configured (fail-closed)
+          - The header is missing
+          - The signature does not match
+        """
+        if not self._webhook_url:
+            logger.error(
+                "[sms] SMS_WEBHOOK_URL not set — cannot validate Twilio signatures; "
+                "rejecting request (fail-closed)"
+            )
+            return False
+
+        signature = request.headers.get("X-Twilio-Signature", "")
+        if not signature:
+            logger.warning("[sms] Webhook rejected: missing X-Twilio-Signature header")
+            return False
+
+        url = self._webhook_url.rstrip("/")
+
+        expected = self._compute_twilio_signature(url, params)
+        if hmac.compare_digest(expected, signature):
+            return True
+
+        # Twilio may generate signatures with or without the port — try both.
+        parsed = urllib.parse.urlparse(url)
+        if parsed.port:
+            url_no_port = urllib.parse.urlunparse(
+                (parsed.scheme, parsed.hostname, parsed.path,
+                 parsed.params, parsed.query, parsed.fragment)
+            )
+            expected_no_port = self._compute_twilio_signature(url_no_port, params)
+            if hmac.compare_digest(expected_no_port, signature):
+                return True
+        else:
+            default_port = "443" if parsed.scheme == "https" else "80"
+            host_with_port = f"{parsed.hostname}:{default_port}"
+            url_with_port = urllib.parse.urlunparse(
+                (parsed.scheme, host_with_port, parsed.path,
+                 parsed.params, parsed.query, parsed.fragment)
+            )
+            expected_with_port = self._compute_twilio_signature(url_with_port, params)
+            if hmac.compare_digest(expected_with_port, signature):
+                return True
+
+        logger.warning("[sms] Webhook rejected: invalid X-Twilio-Signature")
+        return False
 
     # ------------------------------------------------------------------
     # Required abstract methods
@@ -97,6 +185,13 @@ class SmsAdapter(BasePlatformAdapter):
         if not self._from_number:
             logger.error("[sms] TWILIO_PHONE_NUMBER not set — cannot send replies")
             return False
+
+        if not self._webhook_url:
+            logger.warning(
+                "[sms] SMS_WEBHOOK_URL not set — inbound webhooks will be REJECTED. "
+                "Set SMS_WEBHOOK_URL to your public webhook endpoint "
+                "(e.g. https://example.com/webhooks/twilio) to enable inbound SMS."
+            )
 
         app = web.Application()
         app.router.add_post("/webhooks/twilio", self._handle_webhook)
@@ -220,6 +315,18 @@ class SmsAdapter(BasePlatformAdapter):
                 text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
                 content_type="application/xml",
                 status=400,
+            )
+
+        # Flatten parse_qs lists → single values for signature computation.
+        flat_params: Dict[str, str] = {
+            k: v[0] for k, v in form.items() if v
+        }
+
+        if not self._validate_twilio_signature(request, flat_params):
+            return web.Response(
+                text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                content_type="application/xml",
+                status=403,
             )
 
         # Extract fields (parse_qs returns lists)
