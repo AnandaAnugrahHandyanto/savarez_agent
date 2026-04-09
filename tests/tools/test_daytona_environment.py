@@ -184,6 +184,51 @@ class TestPersistence:
         env._mock_client.list.assert_not_called()
         env._mock_client.create.assert_called_once()
 
+    def test_syncing_skill_files_uploads_without_nameerror(
+        self, daytona_sdk, monkeypatch, tmp_path
+    ):
+        skill_file = tmp_path / "skills" / "demo" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text("name: demo\n", encoding="utf-8")
+
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+        monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", lambda: [])
+        monkeypatch.setattr(
+            "tools.credential_files.iter_skills_files",
+            lambda **kw: [
+                {
+                    "host_path": str(skill_file),
+                    "container_path": f"{kw['container_base']}/skills/demo/SKILL.md",
+                }
+            ],
+        )
+
+        sandbox = _make_sandbox()
+        sandbox.process.exec.side_effect = [
+            _make_exec_response(result="/home/daytona"),
+            _make_exec_response(result=""),
+        ]
+        sandbox.fs.upload_file = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.get.side_effect = daytona_sdk.DaytonaError("not found")
+        mock_client.list.return_value = SimpleNamespace(items=[])
+        mock_client.create.return_value = sandbox
+        daytona_sdk.Daytona = MagicMock(return_value=mock_client)
+
+        from tools.environments.daytona import DaytonaEnvironment
+
+        env = DaytonaEnvironment(image="test-image:latest", persistent_filesystem=True)
+
+        sandbox.fs.upload_file.assert_called_once_with(
+            str(skill_file),
+            "/home/daytona/.hermes/skills/demo/SKILL.md",
+        )
+        assert env._synced_files["/home/daytona/.hermes/skills/demo/SKILL.md"] == (
+            skill_file.stat().st_mtime,
+            skill_file.stat().st_size,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Cleanup
