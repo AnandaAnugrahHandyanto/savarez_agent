@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
 """
-ARGUS - Agent Resource Guardian & Unified Supervisor
-The Hundred-Eyed Watchman - monitors all agent sessions, detects entropy, takes corrective actions.
-Runs as background daemon on Mac Mini via launchd.
-
-Uses Hermes internals directly (same pattern as hermes_cli/cron.py):
-  - cron.jobs for cron management (data layer)
-  - hermes_state.SessionDB for session discovery
-  - hermes_cli.config for configuration
-  - hermes_cli.env_loader for credential loading
+ARGUS — Agent Resource Guardian & Unified Supervisor
+The Hundred-Eyed Watchman. Monitors all agent sessions, detects entropy,
+takes corrective actions. Background daemon on Mac Mini via launchd.
 """
 
 import os
@@ -26,20 +20,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any, Union
 
-# === PATH RESOLUTION (contributor guide: use get_hermes_home(), never hardcode) ===
-# Add hermes-agent to path for direct module imports
+# === PATH RESOLUTION ===
+# Add hermes-agent to path for module imports
 _HERMES_AGENT = os.path.expanduser('~/.hermes/hermes-agent')
 if os.path.isdir(_HERMES_AGENT) and _HERMES_AGENT not in sys.path:
     sys.path.insert(0, _HERMES_AGENT)
 
-# Hermes home (~/.hermes) — for internal state, holographic DB, session store
 try:
     from hermes_constants import get_hermes_home
     _HERMES_HOME = get_hermes_home()
 except ImportError:
     _HERMES_HOME = Path(os.path.expanduser('~/.hermes'))
 
-# ARGUS home (~/hermes) — for scripts, data, logs, bin
 _ARGUS_HOME = Path(os.path.expanduser('~/hermes'))
 
 def _hermes_path(*parts: str) -> Path:
@@ -50,8 +42,8 @@ def _argus_path(*parts: str) -> Path:
     """Build a path under ARGUS_HOME (~/hermes)."""
     return _ARGUS_HOME.joinpath(*parts)
 
-# Cron data layer — imported directly by hermes_cli/cron.py L43
-# Fallback to subprocess if hermes internals unavailable (e.g., wrong Python version)
+# === INTERNALS ===
+# Direct module imports when available, subprocess fallback otherwise.
 _HERMES_INTERNALS_AVAILABLE = False
 try:
     from cron.jobs import pause_job, resume_job, trigger_job, list_jobs, get_job, update_job
@@ -60,28 +52,23 @@ try:
     from hermes_cli.env_loader import load_hermes_dotenv
     _HERMES_INTERNALS_AVAILABLE = True
 except (ImportError, TypeError) as _e:
-    # TypeError catches Python 3.9 union type syntax errors in hermes internals
     import logging as _logging
-    _logging.getLogger('argus').warning(f"Hermes internals unavailable ({_e}), falling back to subprocess")
+    _logging.getLogger('argus').warning("Internals unavailable (%s), using subprocess fallback", _e)
 
-    # Stub functions — subprocess fallback for Python <3.10 or missing hermes-agent
+    # Subprocess fallbacks
     def pause_job(job_id, reason=None):
-        """Fallback: pause cron job via CLI subprocess."""
         r = subprocess.run(['hermes', 'cron', 'pause', str(job_id)], capture_output=True, text=True, timeout=10)
         return {'id': job_id, 'enabled': False} if r.returncode == 0 else None
 
     def resume_job(job_id):
-        """Fallback: resume cron job via CLI subprocess."""
         r = subprocess.run(['hermes', 'cron', 'resume', str(job_id)], capture_output=True, text=True, timeout=10)
         return {'id': job_id, 'enabled': True} if r.returncode == 0 else None
 
     def trigger_job(job_id):
-        """Fallback: trigger cron job via CLI subprocess."""
         r = subprocess.run(['hermes', 'cron', 'run', str(job_id)], capture_output=True, text=True, timeout=10)
         return {'id': job_id} if r.returncode == 0 else None
 
     def list_jobs(include_disabled=False):
-        """Fallback: list cron jobs via CLI subprocess."""
         r = subprocess.run(['hermes', 'cron', 'list', '--all'], capture_output=True, text=True, timeout=15)
         if r.returncode == 0:
             try:
@@ -91,29 +78,19 @@ except (ImportError, TypeError) as _e:
         return []
 
     def get_job(job_id):
-        """Fallback: get cron job details via CLI subprocess."""
         for j in list_jobs(include_disabled=True):
             if j.get('id') == job_id:
                 return j
         return None
 
     def update_job(job_id, updates):
-        """Fallback: update cron job — not available via CLI."""
         return None
 
     class SessionDB:
-        """Fallback: stub SessionDB when hermes internals unavailable."""
-
-        def __init__(self, path):
-            pass
-
-        def list_sessions_rich(self, **kw):
-            """Fallback: return empty list when hermes internals unavailable."""
-            return []
-
-        def close(self):
-            """Fallback: no-op when hermes internals unavailable."""
-            pass
+        """Stub when hermes internals unavailable."""
+        def __init__(self, path): pass
+        def list_sessions_rich(self, **kw): return []
+        def close(self): pass
 
     DEFAULT_DB_PATH = str(_hermes_path('state.db'))
 
@@ -124,7 +101,7 @@ except (ImportError, TypeError) as _e:
         """Fallback: load hermes .env — no-op when hermes internals unavailable."""
         pass
 
-# WAL monitor for real-time tool call detection
+# WAL monitor
 from wal_monitor import ToolCallMonitor
 
 # Corrective prompt templates by entropy type
@@ -175,8 +152,7 @@ CORRECTIVE_PROMPTS = {
     ),
 }
 
-# === CONFIGURATION (loaded from hermes config.yaml under 'argus' key) ===
-# Defaults — overridden by config.yaml argus: section
+# === CONFIGURATION ===
 _DEFAULT_ARGUS_CONFIG = {
     'db_path': str(_argus_path('data', 'watcher', 'argus.db')),
     'log_dir': str(_argus_path('logs', 'argus')),
@@ -200,18 +176,18 @@ def _load_argus_config() -> Dict:
 CONFIG = _load_argus_config()
 
 
-# === PID FILE MANAGEMENT (same pattern as gateway/status.py) ===
+# === PID FILE ===
 _ARGUS_PID_PATH = _argus_path('data', 'watcher', 'argus.pid')
 _ARGUS_KIND = 'argus-watcher'
 
 
 def _get_argus_pid_path() -> Path:
-    """Return the path to the ARGUS PID file."""
+    """Path to the ARGUS PID file."""
     return _ARGUS_PID_PATH
 
 
 def _build_argus_pid_record() -> dict:
-    """Build PID record — same structure as gateway/status._build_pid_record."""
+    """Build PID record for argus.pid."""
     return {
         'pid': os.getpid(),
         'kind': _ARGUS_KIND,
@@ -221,14 +197,14 @@ def _build_argus_pid_record() -> dict:
 
 
 def write_argus_pid_file() -> None:
-    """Write ARGUS PID file — same pattern as gateway/status.write_pid_file."""
+    """Write ARGUS PID file."""
     path = _get_argus_pid_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_build_argus_pid_record()))
 
 
 def remove_argus_pid_file() -> None:
-    """Remove ARGUS PID file — same pattern as gateway/status.remove_pid_file."""
+    """Remove ARGUS PID file."""
     try:
         _get_argus_pid_path().unlink(missing_ok=True)
     except Exception:
@@ -236,7 +212,7 @@ def remove_argus_pid_file() -> None:
 
 
 def _read_argus_pid_record() -> Optional[dict]:
-    """Read ARGUS PID file — same pattern as gateway/status._read_pid_record."""
+    """Read ARGUS PID file, return dict or None."""
     path = _get_argus_pid_path()
     if not path.exists():
         return None
@@ -253,8 +229,7 @@ def _read_argus_pid_record() -> Optional[dict]:
 
 
 def get_argus_running_pid() -> Optional[int]:
-    """Return PID of running ARGUS instance, or None.
-    Same pattern as gateway/status.get_running_pid."""
+    """Return PID of running ARGUS instance, or None."""
     record = _read_argus_pid_record()
     if not record:
         remove_argus_pid_file()
@@ -279,18 +254,18 @@ def is_argus_running() -> bool:
     return get_argus_running_pid() is not None
 
 
-# === LAUNCHD INTEGRATION (same pattern as hermes_cli/gateway.py) ===
+# === LAUNCHD ===
 _ARGUS_LAUNCHD_LABEL = 'com.hermes.argus'
 _ARGUS_SCRIPT = str(_argus_path('scripts', 'watcher', 'argus.py'))
 
 
 def get_argus_launchd_label() -> str:
-    """Return the launchd service label — same pattern as gateway/get_launchd_label."""
+    """Return the launchd service label."""
     return _ARGUS_LAUNCHD_LABEL
 
 
 def get_argus_launchd_plist_path() -> Path:
-    """Return the launchd plist path — same pattern as gateway/get_launchd_plist_path."""
+    """Return the launchd plist path."""
     return _hermes_home_plist_dir() / f'{_ARGUS_LAUNCHD_LABEL}.plist'
 
 def _hermes_home_plist_dir() -> Path:
@@ -299,11 +274,7 @@ def _hermes_home_plist_dir() -> Path:
 
 
 def generate_argus_launchd_plist() -> str:
-    """Generate launchd plist XML — same pattern as gateway/generate_launchd_plist.
-
-    Builds full PATH (hermes pattern: venv + homebrew + user tools),
-    sets HERMES_HOME, RunAtLoad, KeepAlive, log rotation.
-    """
+    """Generate launchd plist XML with full PATH, HERMES_HOME, KeepAlive."""
     import shutil as _shutil
 
     label = get_argus_launchd_label()
@@ -311,11 +282,11 @@ def generate_argus_launchd_plist() -> str:
     log_dir = str(_argus_path('logs', 'argus'))
     hermes_home = str(_HERMES_HOME)
 
-    # Build PATH (same pattern as gateway — detect venv + user tools)
+    # Build PATH
     venv_bin = str(_hermes_path('hermes-agent', 'venv', 'bin'))
     priority_dirs = [venv_bin] if os.path.isdir(venv_bin) else []
 
-    # Detect hermes binary location
+    
     hermes_bin = _shutil.which('hermes')
     if hermes_bin:
         hermes_dir = str(Path(hermes_bin).resolve().parent)
@@ -375,7 +346,7 @@ def generate_argus_launchd_plist() -> str:
 
 
 def argus_launchd_install() -> bool:
-    """Install ARGUS as launchd service — same pattern as gateway/launchd_install."""
+    """Install ARGUS as launchd service."""
     plist_path = get_argus_launchd_plist_path()
 
     # Write plist
@@ -431,7 +402,7 @@ def argus_launchd_status() -> dict:
     }
 
 
-# === LOGGING (hermes-native RotatingFileHandler pattern) ===
+# === LOGGING ===
 os.makedirs(CONFIG['log_dir'], exist_ok=True)
 
 _LOG_MAX_BYTES = CONFIG.get('log_max_size_mb', 5) * 1024 * 1024  # 5MB default
@@ -440,7 +411,7 @@ _LOG_BACKUP_COUNT = CONFIG.get('log_backup_count', 3)
 logger = logging.getLogger('argus')
 logger.setLevel(logging.INFO)
 
-# RotatingFileHandler — same pattern as hermes_logging._add_rotating_handler
+
 _rotating_handler = logging.handlers.RotatingFileHandler(
     str(Path(CONFIG['log_dir']) / 'argus.log'),
     maxBytes=_LOG_MAX_BYTES,
@@ -449,7 +420,7 @@ _rotating_handler = logging.handlers.RotatingFileHandler(
 _rotating_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 logger.addHandler(_rotating_handler)
 
-# StreamHandler for stderr (same as hermes)
+
 _stream_handler = logging.StreamHandler()
 _stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 logger.addHandler(_stream_handler)
@@ -461,9 +432,9 @@ class Argus:
         self.cursor = None
         self.running = False
 
-        # WAL monitor for real-time tool call detection
+        # WAL monitor
         self.wal_monitor = ToolCallMonitor(
-            poll_interval=CONFIG.get('poll_interval', 30) / 10,  # 10x faster than main poll
+            poll_interval=CONFIG.get('poll_interval', 30) / 10,
             repeat_threshold=CONFIG.get('entropy_threshold', 3),
         )
 
@@ -539,13 +510,13 @@ class Argus:
         """Discover all active agent sessions."""
         sessions = []
         
-        # 1. Discover cron jobs
+        # 1. Cron jobs
         sessions.extend(self._discover_cron_sessions())
         
-        # 2. Discover delegate_task sessions
+        # 2. Delegate tasks
         sessions.extend(self._discover_delegate_sessions())
         
-        # 3. Discover manual sessions (main hermes agent)
+        # 3. Manual sessions
         sessions.extend(self._discover_manual_sessions())
         
         return sessions
@@ -708,8 +679,7 @@ class Argus:
         This ensures the tool_calls table has data even when the WAL monitor
         isn't running (e.g., hermes internals unavailable).
         """
-        # Extract the real hermes session_id from our prefixed ID
-        # e.g., "cron_ec1a5e9f4c12" -> "ec1a5e9f4c12", "manual_abc123" -> "abc123"
+        # Strip type prefix: cron_ec1a5e9f4c12 -> ec1a5e9f4c12
         parts = session_id.split('_', 1)
         if len(parts) == 2:
             real_session_id = parts[1]
@@ -741,7 +711,7 @@ class Argus:
         except (ValueError, TypeError):
             last_ingested_float = 0.0
         
-        # Build tool_call_id -> result map from tool-role messages
+        # Match tool results to calls
         tool_results: Dict[str, str] = {}
         for msg in messages:
             if msg.get('role') == 'tool':
@@ -1472,7 +1442,7 @@ class Argus:
             return
 
         try:
-            # Pause — same as hermes_cli/cron.py
+            
             result = pause_job(job_id, reason='ARGUS restart: entropy detected')
             if result:
                 logger.info("Paused cron job %s", job_id)
@@ -1703,7 +1673,7 @@ class Argus:
             full_message += f"Reason: {message}\n"
             full_message += f"Time: {datetime.now().isoformat()}"
 
-            # Load credentials via hermes env_loader (sops-aware)
+            
             try:
                 load_hermes_dotenv()
             except Exception:
@@ -1760,7 +1730,7 @@ class Argus:
         # Start WAL monitor for real-time tool call detection
         self.wal_monitor.start()
 
-        # Write PID file (same pattern as gateway/status.write_pid_file)
+        
         write_argus_pid_file()
         logger.info("ARGUS PID file written: %s", _get_argus_pid_path())
 

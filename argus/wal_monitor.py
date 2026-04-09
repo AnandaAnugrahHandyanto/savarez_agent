@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from collections import Counter
 
-# === PATH RESOLUTION (contributor guide: use get_hermes_home(), never hardcode) ===
+# === PATH RESOLUTION ===
 _HERMES_AGENT = os.path.expanduser('~/.hermes/hermes-agent')
 if os.path.isdir(_HERMES_AGENT) and _HERMES_AGENT not in sys.path:
     sys.path.insert(0, _HERMES_AGENT)
@@ -87,7 +87,7 @@ class ToolCallMonitor:
         self.repeat_threshold = repeat_threshold
         self.loop_pattern_length = loop_pattern_length
 
-        # State (same pattern as EventBridge)
+        # State
         self._queue: List[ToolCallEvent] = []
         self._cursor = 0
         self._lock = threading.Lock()
@@ -153,7 +153,7 @@ class ToolCallMonitor:
                     }
             return summary
 
-    # === Internal (same pattern as EventBridge._poll_loop / _poll_once) ===
+    
 
     def _poll_loop(self):
         """Background loop: poll state.db for new tool calls."""
