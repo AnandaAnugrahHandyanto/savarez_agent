@@ -13,7 +13,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-AGATHOS_SCRIPT="$SCRIPT_DIR/../argus.py"
+AGATHOS_SCRIPT="$SCRIPT_DIR/../agathos.py"
 LOG_DIR="$HOME/hermes/logs/agathos"
 
 # Virtual Environment Detection
@@ -98,6 +98,38 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Locate agathos package for cross-environment compatibility
+locate_agathos_root() {
+    # Priority 1: Dev environment (same dir as this script)
+    local dev_root="$(dirname "$SCRIPT_DIR")"
+    if [ -f "$dev_root/agathos.py" ] && [ -f "$dev_root/__init__.py" ]; then
+        echo "$dev_root"
+        return 0
+    fi
+    
+    # Priority 2: Parent of script dir (if bin/ is inside agathos/)
+    local parent_dev="$(dirname "$dev_root")"
+    if [ -f "$parent_dev/agathos/agathos.py" ]; then
+        echo "$parent_dev"
+        return 0
+    fi
+    
+    # Priority 3: Production hermes-agent path
+    local prod_root="$HOME/.hermes/hermes-agent/agathos"
+    if [ -f "$prod_root/agathos.py" ] && [ -f "$prod_root/__init__.py" ]; then
+        echo "$prod_root"
+        return 0
+    fi
+    
+    # Priority 4: HERMES_AGENT env var
+    if [ -n "$HERMES_AGENT" ] && [ -f "$HERMES_AGENT/agathos/agathos.py" ]; then
+        echo "$HERMES_AGENT/agathos"
+        return 0
+    fi
+    
+    return 1
+}
+
 is_running() {
     "$AGATHOS_PYTHON" -c "
 import sys, os, json
@@ -122,7 +154,44 @@ start_argus() {
         return 0
     fi
 
-    nohup "$AGATHOS_PYTHON" "$AGATHOS_SCRIPT" >> "$LOG_DIR/argus.nohup.log" 2>&1 &
+    # Locate agathos package root
+    local agathos_root
+    agathos_root=$(locate_agathos_root) || {
+        log_error "Cannot locate agathos package. Checked:"
+        log_error "  - $SCRIPT_DIR/../ (dev)"
+        log_error "  - ~/.hermes/hermes-agent/agathos (production)"
+        log_error "  - \$HERMES_AGENT/agathos (env override)"
+        return 1
+    }
+    
+    log_info "Located agathos at: $agathos_root"
+    
+    # Export for Python subprocess access
+    export AGATHOS_ROOT="$agathos_root"
+    export AGATHOS_BIN_DIR="$SCRIPT_DIR"
+    
+    # Run as module with proper path setup for relative imports
+    # This handles both dev (agathos as package) and production installs
+    nohup "$AGATHOS_PYTHON" -c "
+import sys, os
+# Add agathos parent to path for package imports
+agathos_root = os.environ.get('AGATHOS_ROOT', '')
+if agathos_root and os.path.isdir(agathos_root):
+    parent_dir = os.path.dirname(agathos_root)
+    if parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
+    os.chdir(parent_dir)
+# Import and run
+try:
+    from agathos.agathos import main
+    main()
+except ImportError as e:
+    # Fallback: try direct import from agathos_root
+    sys.path.insert(0, agathos_root)
+    import agathos
+    from agathos.agathos import main
+    main()
+" >> "$LOG_DIR/argus.nohup.log" 2>&1 &
     local pid=$!
 
     local attempts=0
@@ -290,8 +359,8 @@ install_argus() {
     "$AGATHOS_PYTHON" -c "
 import sys
 sys.path.insert(0, '$SCRIPT_DIR/../scripts/watcher')
-from argus import argus_launchd_install
-success = argus_launchd_install()
+from agathos import agathos_launchd_install
+success = agathos_launchd_install()
 sys.exit(0 if success else 1)
 "
     if [ $? -eq 0 ]; then
@@ -310,8 +379,8 @@ uninstall_argus() {
     "$AGATHOS_PYTHON" -c "
 import sys
 sys.path.insert(0, '$SCRIPT_DIR/../scripts/watcher')
-from argus import argus_launchd_uninstall
-argus_launchd_uninstall()
+from agathos import agathos_launchd_uninstall
+agathos_launchd_uninstall()
 " 2>/dev/null
 
     log_success "ARGUS uninstalled"

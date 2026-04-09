@@ -212,6 +212,7 @@ CONFIG = _load_agathos_config()
 
 # === DAEMON MANAGEMENT ===
 from .daemon_mgmt import (
+    _get_agathos_pid_path,
     write_agathos_pid_file,
     remove_agathos_pid_file,
     get_agathos_running_pid,
@@ -1124,7 +1125,7 @@ class Agathos:
 
 def main():
     """Main entry point."""
-    argus = Argus()
+    daemon = Agathos()
 
     # Handle signals
     def _signal_handler(signum, frame):
@@ -1136,7 +1137,7 @@ def main():
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
-    # Run Argus
+    # Run Agathos
     try:
         daemon.run()
     except Exception as e:

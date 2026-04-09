@@ -10,6 +10,7 @@ from .actions import (
 )
 from .agathos import Agathos
 from .daemon_mgmt import (
+    _get_agathos_pid_path,
     _is_wsl,
     agathos_launchd_install,
     agathos_launchd_status,
@@ -101,6 +102,7 @@ __all__ = [
     # Subprocess utilities
     "safe_subprocess",
     # Daemon management
+    "_get_agathos_pid_path",
     "write_agathos_pid_file",
     "remove_agathos_pid_file",
     "get_agathos_running_pid",
