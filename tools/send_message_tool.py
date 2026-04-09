@@ -100,6 +100,7 @@ def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
+    media_files_from_args = args.get("media_files", [])
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
@@ -168,7 +169,21 @@ def _handle_send(args):
 
     from gateway.platforms.base import BasePlatformAdapter
 
-    media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+    # Extract MEDIA: tags from message AND use media_files from args
+    media_files_from_message, cleaned_message = BasePlatformAdapter.extract_media(message)
+    
+    # Combine media files from both args and message tags
+    # args media_files may be simple strings, convert to (path, is_voice) format
+    args_media_formatted = []
+    for f in media_files_from_args:
+        if isinstance(f, str):
+            args_media_formatted.append((f, False))
+        elif isinstance(f, tuple):
+            args_media_formatted.append(f)
+    
+    all_media_files = args_media_formatted + media_files_from_message
+    media_files = all_media_files
+    
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
