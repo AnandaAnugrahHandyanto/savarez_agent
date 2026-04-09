@@ -1255,6 +1255,13 @@ _COPILOT_MODEL_ALIASES = {
     "anthropic/claude-sonnet-4.6": "claude-sonnet-4.6",
     "anthropic/claude-sonnet-4.5": "claude-sonnet-4.5",
     "anthropic/claude-haiku-4.5": "claude-haiku-4.5",
+    # Dash-notation aliases: config.yaml defaults use dashes (claude-sonnet-4-6)
+    # but Copilot's API requires dots (claude-sonnet-4.6). Map them so users
+    # setting provider: copilot with the default model name get a clean 200.
+    "claude-opus-4-6": "claude-opus-4.6",
+    "claude-sonnet-4-6": "claude-sonnet-4.6",
+    "claude-sonnet-4-5": "claude-sonnet-4.5",
+    "claude-haiku-4-5": "claude-haiku-4.5",
 }
 
 
