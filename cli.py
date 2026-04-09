@@ -386,12 +386,26 @@ def load_cli_config() -> Dict[str, Any]:
     
     # Handle special cwd values: "." or "auto" means use current working directory.
     # Only resolve to the host's CWD for the local backend where the host
-    # filesystem is directly accessible.  For ALL remote/container backends
-    # (ssh, docker, modal, singularity), the host path doesn't exist on the
-    # target -- remove the key so terminal_tool.py uses its per-backend default.
+    # filesystem is directly accessible.
+    #
+    # Special case: Docker can explicitly opt into mounting the host cwd into
+    # /workspace. When that flag is enabled, preserve the host cwd so
+    # terminal_tool.py can remap it to /workspace and bind-mount the real repo.
+    #
+    # For all other remote/container backends (ssh, modal, singularity,
+    # daytona, docker without the explicit mount flag), the host path doesn't
+    # exist on the target -- remove the key so terminal_tool.py uses its
+    # per-backend default.
     if terminal_config.get("cwd") in (".", "auto", "cwd"):
         effective_backend = terminal_config.get("env_type", "local")
         if effective_backend == "local":
+            terminal_config["cwd"] = os.getcwd()
+            defaults["terminal"]["cwd"] = terminal_config["cwd"]
+        elif (
+            effective_backend == "docker"
+            and str(terminal_config.get("docker_mount_cwd_to_workspace", "false")).lower()
+            in ("true", "1", "yes")
+        ):
             terminal_config["cwd"] = os.getcwd()
             defaults["terminal"]["cwd"] = terminal_config["cwd"]
         else:

@@ -11,6 +11,7 @@ Covers the bugs discovered while setting up TBLite evaluation:
 
 import os
 import sys
+import threading
 from pathlib import Path
 import pytest
 
@@ -153,6 +154,91 @@ class TestCwdHandling:
         assert captured["cwd"] == "/workspace"
         assert captured["host_cwd"] == "/home/user/project"
         assert captured["auto_mount_cwd"] is True
+
+
+class TestDockerCwdMountPropagation:
+    """Verify higher-level tools forward the Docker cwd mount flag."""
+
+    def _reset_terminal_tool_state(self, monkeypatch):
+        monkeypatch.setattr(_tt_mod, "_active_environments", {})
+        monkeypatch.setattr(_tt_mod, "_last_activity", {})
+        monkeypatch.setattr(_tt_mod, "_creation_locks", {})
+        monkeypatch.setattr(_tt_mod, "_creation_locks_lock", threading.Lock())
+        monkeypatch.setattr(_tt_mod, "_env_lock", threading.Lock())
+        monkeypatch.setattr(_tt_mod, "_task_env_overrides", {})
+        monkeypatch.setattr(_tt_mod, "_start_cleanup_thread", lambda: None)
+
+    def test_file_tools_forward_docker_cwd_mount(self, monkeypatch):
+        from tools import file_tools as ft_mod
+
+        self._reset_terminal_tool_state(monkeypatch)
+        monkeypatch.setattr(ft_mod, "_file_ops_cache", {})
+
+        captured = {}
+        sentinel_env = object()
+        sentinel_ops = object()
+
+        monkeypatch.setattr(_tt_mod, "_get_env_config", lambda: {
+            "env_type": "docker",
+            "docker_image": "python:3.11",
+            "cwd": "/workspace",
+            "timeout": 60,
+            "container_cpu": 1,
+            "container_memory": 5120,
+            "container_disk": 51200,
+            "container_persistent": True,
+            "docker_volumes": [],
+            "docker_mount_cwd_to_workspace": True,
+            "host_cwd": "/Users/test/repo",
+        })
+
+        def _fake_create_environment(**kwargs):
+            captured.update(kwargs)
+            return sentinel_env
+
+        monkeypatch.setattr(_tt_mod, "_create_environment", _fake_create_environment)
+        monkeypatch.setattr(ft_mod, "ShellFileOperations", lambda env: sentinel_ops)
+
+        file_ops = ft_mod._get_file_ops("docker-cwd-file")
+
+        assert file_ops is sentinel_ops
+        assert captured["host_cwd"] == "/Users/test/repo"
+        assert captured["container_config"]["docker_mount_cwd_to_workspace"] is True
+
+    def test_execute_code_forwards_docker_cwd_mount(self, monkeypatch):
+        from tools import code_execution_tool as ce_mod
+
+        self._reset_terminal_tool_state(monkeypatch)
+
+        captured = {}
+        sentinel_env = object()
+
+        monkeypatch.setattr(_tt_mod, "_get_env_config", lambda: {
+            "env_type": "docker",
+            "docker_image": "python:3.11",
+            "cwd": "/workspace",
+            "timeout": 60,
+            "container_cpu": 1,
+            "container_memory": 5120,
+            "container_disk": 51200,
+            "container_persistent": True,
+            "docker_volumes": [],
+            "docker_mount_cwd_to_workspace": True,
+            "host_cwd": "/Users/test/repo",
+        })
+
+        def _fake_create_environment(**kwargs):
+            captured.update(kwargs)
+            return sentinel_env
+
+        monkeypatch.setattr(_tt_mod, "_create_environment", _fake_create_environment)
+
+        env, env_type = ce_mod._get_or_create_env("docker-cwd-code")
+
+        assert env is sentinel_env
+        assert env_type == "docker"
+        assert captured["host_cwd"] == "/Users/test/repo"
+        assert captured["container_config"]["docker_mount_cwd_to_workspace"] is True
 
     def test_ssh_preserves_home_paths(self, monkeypatch):
         """SSH backend should NOT replace /home/ paths (they're valid remotely)."""
