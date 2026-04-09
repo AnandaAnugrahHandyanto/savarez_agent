@@ -6,7 +6,7 @@ def teardown_function():
     set_tool_preview_max_len(0)
 
 
-def test_all_mode_does_not_truncate_when_tool_preview_length_is_zero():
+def test_all_mode_keeps_compact_default_when_tool_preview_length_is_zero():
     set_tool_preview_max_len(0)
     preview = (
         'python -m pytest tests/gateway/test_verbose_command.py::'
@@ -20,8 +20,8 @@ def test_all_mode_does_not_truncate_when_tool_preview_length_is_zero():
         progress_mode='all',
     )
 
-    assert preview in msg
-    assert '...' not in msg
+    assert '...' in msg
+    assert preview not in msg
 
 
 def test_verbose_mode_does_not_truncate_args_when_tool_preview_length_is_zero():

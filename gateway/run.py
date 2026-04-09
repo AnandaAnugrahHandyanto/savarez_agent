@@ -243,10 +243,15 @@ def _build_tool_progress_message(
     args: dict | None = None,
     progress_mode: str = "all",
 ) -> str:
-    """Render one gateway tool-progress line honoring display.tool_preview_length."""
+    """Render one gateway tool-progress line honoring display.tool_preview_length.
+
+    Gateway defaults differ by mode:
+    - verbose: 0 means unlimited
+    - all/new: 0 keeps the historical compact 40-char preview
+    """
     from agent.display import get_tool_emoji, get_tool_preview_max_len
 
-    emoji = get_tool_emoji(tool_name, default="⚙️")
+    emoji = get_tool_emoji(tool_name, default="💻" if tool_name == "terminal" else "⚙️")
     preview_cap = get_tool_preview_max_len()
 
     if progress_mode == "verbose":
@@ -258,8 +263,9 @@ def _build_tool_progress_message(
             return f"{emoji} {tool_name}: \"{preview}\""
         return f"{emoji} {tool_name}..."
 
+    short_preview_cap = preview_cap if preview_cap > 0 else 40
     if preview:
-        preview = _truncate_tool_progress_text(preview, preview_cap)
+        preview = _truncate_tool_progress_text(preview, short_preview_cap)
         return f"{emoji} {tool_name}: \"{preview}\""
 
     return f"{emoji} {tool_name}..."
