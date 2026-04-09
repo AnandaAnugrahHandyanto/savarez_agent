@@ -25,7 +25,7 @@ import subprocess
 
 _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
-from typing import Dict, Optional, Any
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from hermes_constants import get_hermes_dir
 
@@ -79,6 +79,9 @@ from gateway.platforms.base import (
     cache_image_from_url,
     cache_audio_from_url,
 )
+
+if TYPE_CHECKING:
+    import aiohttp
 
 
 def check_whatsapp_requirements() -> bool:

@@ -14,11 +14,15 @@ import sys
 import uuid
 from datetime import datetime
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, SendResult
 from gateway.session import SessionEntry, SessionSource, build_session_key
+
+if TYPE_CHECKING:
+    from gateway.run import GatewayRunner
 
 
 #Ensure telegram module is available (mock it if not installed)

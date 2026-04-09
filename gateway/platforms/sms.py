@@ -21,7 +21,7 @@ import logging
 import os
 import re
 import urllib.parse
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -30,6 +30,9 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+
+if TYPE_CHECKING:
+    import aiohttp
 
 logger = logging.getLogger(__name__)
 

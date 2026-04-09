@@ -266,8 +266,9 @@ class VoiceReceiver:
         encrypted = bytes(payload_with_nonce[:-4])
 
         try:
-            import nacl.secret  # noqa: delayed import – only in voice path
-            box = nacl.secret.Aead(self._secret_key)
+            import nacl.secret as nacl_secret
+
+            box = nacl_secret.Aead(self._secret_key)
             decrypted = box.decrypt(encrypted, header, bytes(nonce))
         except Exception as e:
             if self._packet_debug_count <= 10:
