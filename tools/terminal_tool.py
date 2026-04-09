@@ -304,7 +304,19 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
             del os.environ["HERMES_SPINNER_PAUSE"]
 
 
-def _transform_sudo_command(command: str) -> tuple[str, str | None]:
+def _safe_command_preview(command: Any, limit: int = 200) -> str:
+    """Return a log-safe preview for possibly-invalid command values."""
+    if command is None:
+        return "<None>"
+    if isinstance(command, str):
+        return command[:limit]
+    try:
+        return repr(command)[:limit]
+    except Exception:
+        return f"<{type(command).__name__}>"
+
+
+def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None]:
     """
     Transform sudo commands to use -S flag if SUDO_PASSWORD is available.
 
@@ -342,6 +354,9 @@ def _transform_sudo_command(command: str) -> tuple[str, str | None]:
     import re
 
     # Check if command even contains sudo
+    if command is None:
+        return None, None
+
     if not re.search(r'\bsudo\b', command):
         return command, None  # No sudo in command, nothing to do
 
@@ -790,6 +805,30 @@ def _stop_cleanup_thread():
             pass
 
 
+def get_active_env(task_id: str):
+    """Return the active BaseEnvironment for *task_id*, or None."""
+    with _env_lock:
+        return _active_environments.get(task_id)
+
+
+def is_persistent_env(task_id: str) -> bool:
+    """Return True if the active environment for task_id is configured for
+    cross-turn persistence (``persistent_filesystem=True``).
+
+    Used by the agent loop to skip per-turn teardown for backends whose whole
+    point is to survive between turns (docker with ``container_persistent``,
+    daytona, modal, etc.). Non-persistent backends (e.g. Morph) still get torn
+    down at end-of-turn to prevent leakage. The idle reaper
+    (``_cleanup_inactive_envs``) handles persistent envs once they exceed
+    ``terminal.lifetime_seconds``.
+    """
+    env = get_active_env(task_id)
+    if env is None:
+        return False
+    return bool(getattr(env, "_persistent", False))
+
+
+
 def get_active_environments_info() -> Dict[str, Any]:
     """Get information about currently active environments."""
     info = {
@@ -943,6 +982,18 @@ def terminal_tool(
     global _active_environments, _last_activity
 
     try:
+        if not isinstance(command, str):
+            logger.warning(
+                "Rejected invalid terminal command value: %s",
+                type(command).__name__,
+            )
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": f"Invalid command: expected string, got {type(command).__name__}",
+                "status": "error",
+            }, ensure_ascii=False)
+
         # Get configuration
         config = _get_env_config()
         env_type = config["env_type"]
@@ -1060,6 +1111,7 @@ def terminal_tool(
 
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
+        approval_note = None
         if not force:
             approval = _check_all_guards(command, env_type)
             if not approval["approved"]:
@@ -1086,6 +1138,13 @@ def terminal_tool(
                     "error": approval.get("message", fallback_msg),
                     "status": "blocked"
                 }, ensure_ascii=False)
+            # Track whether approval was explicitly granted by the user
+            if approval.get("user_approved"):
+                desc = approval.get("description", "flagged as dangerous")
+                approval_note = f"Command required approval ({desc}) and was approved by the user."
+            elif approval.get("smart_approved"):
+                desc = approval.get("description", "flagged as dangerous")
+                approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
 
         # Prepare command for execution
         if background:
@@ -1122,6 +1181,8 @@ def terminal_tool(
                     "exit_code": 0,
                     "error": None,
                 }
+                if approval_note:
+                    result_data["approval"] = approval_note
 
                 # Transparent timeout clamping note
                 max_timeout = effective_timeout
@@ -1216,12 +1277,12 @@ def terminal_tool(
                         retry_count += 1
                         wait_time = 2 ** retry_count
                         logger.warning("Execution error, retrying in %ds (attempt %d/%d) - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
-                                       wait_time, retry_count, max_retries, command[:200], type(e).__name__, e, effective_task_id, env_type)
+                                       wait_time, retry_count, max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
                         time.sleep(wait_time)
                         continue
                     
                     logger.error("Execution failed after %d retries - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
-                                 max_retries, command[:200], type(e).__name__, e, effective_task_id, env_type)
+                                 max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
                     return json.dumps({
                         "output": "",
                         "exit_code": -1,
@@ -1259,11 +1320,14 @@ def terminal_tool(
             from agent.redact import redact_sensitive_text
             output = redact_sensitive_text(output.strip()) if output else ""
 
-            return json.dumps({
+            result_dict = {
                 "output": output,
                 "exit_code": returncode,
                 "error": None
-            }, ensure_ascii=False)
+            }
+            if approval_note:
+                result_dict["approval"] = approval_note
+            return json.dumps(result_dict, ensure_ascii=False)
 
     except Exception as e:
         import traceback
