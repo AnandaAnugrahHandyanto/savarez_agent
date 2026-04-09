@@ -4,8 +4,11 @@ Tests _evict_stale_tools behavior without instantiating a full AIAgent
 by constructing a minimal object with the required attributes.
 """
 
-import json
+import logging
 import types
+
+
+logger = logging.getLogger(__name__)
 
 
 def _make_schema(name, desc=""):
@@ -19,6 +22,32 @@ def _make_schema(name, desc=""):
     }
 
 
+def _evict_stale_tools(self):
+    """Mirrors the real _evict_stale_tools logic from run_agent.AIAgent."""
+    if not self._tool_search_active or not self._loaded_tools:
+        return []
+
+    cutoff = self._api_call_count - getattr(self, "_tool_evict_after", 10)
+    stale = [
+        name for name, last_used in self._loaded_tools.items()
+        if last_used < cutoff and name not in self._pinned_tool_names
+    ]
+    if not stale:
+        return []
+
+    stale_set = set(stale)
+    self.tools = [t for t in self.tools if t.get("function", {}).get("name") not in stale_set]
+    self.valid_tool_names -= stale_set
+    for name in stale:
+        del self._loaded_tools[name]
+
+    logger.info(
+        "Tool eviction: removed %d stale tool(s): %s",
+        len(stale), ", ".join(sorted(stale)),
+    )
+    return stale
+
+
 def _make_agent_stub(
     tools: list[dict],
     loaded_tools: dict[str, int],
@@ -28,14 +57,6 @@ def _make_agent_stub(
     active: bool = True,
 ):
     """Build a minimal object with the attributes _evict_stale_tools needs."""
-    # Import the real method from run_agent so we test the actual code
-    import ast
-    import textwrap
-    from pathlib import Path
-
-    source = Path(__file__).resolve().parent.parent / "run_agent.py"
-    tree = ast.parse(source.read_text())
-
     stub = types.SimpleNamespace(
         _tool_search_active=active,
         _loaded_tools=dict(loaded_tools),
@@ -46,39 +67,7 @@ def _make_agent_stub(
         valid_tool_names={t["function"]["name"] for t in tools},
         quiet_mode=True,
     )
-
-    # Bind the real _evict_stale_tools method to our stub
-    exec_ns: dict = {}
-    # Extract just the method source and make it a standalone function
-    func_source = textwrap.dedent("""\
-    def _evict_stale_tools(self):
-        import logging
-        logger = logging.getLogger(__name__)
-        if not self._tool_search_active or not self._loaded_tools:
-            return []
-
-        cutoff = self._api_call_count - getattr(self, "_tool_evict_after", 10)
-        stale = [
-            name for name, last_used in self._loaded_tools.items()
-            if last_used < cutoff and name not in self._pinned_tool_names
-        ]
-        if not stale:
-            return []
-
-        stale_set = set(stale)
-        self.tools = [t for t in self.tools if t.get("function", {}).get("name") not in stale_set]
-        self.valid_tool_names -= stale_set
-        for name in stale:
-            del self._loaded_tools[name]
-
-        logger.info(
-            "Tool eviction: removed %d stale tool(s): %s",
-            len(stale), ", ".join(sorted(stale)),
-        )
-        return stale
-    """)
-    exec(func_source, exec_ns)
-    stub._evict_stale_tools = types.MethodType(exec_ns["_evict_stale_tools"], stub)
+    stub._evict_stale_tools = types.MethodType(_evict_stale_tools, stub)
     return stub
 
 
