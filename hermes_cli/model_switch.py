@@ -772,6 +772,9 @@ def list_authenticated_providers(
 
         # Use curated list, falling back to models.dev if no curated list
         model_ids = curated.get(hermes_id, [])
+        if not model_ids:
+            model_ids = list_provider_models(hermes_id) or list_provider_models(mdev_id) or []
+            
         total = len(model_ids)
         top = model_ids[:max_models]
 
@@ -811,8 +814,11 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Use curated list
+        # Use curated list, falling back to models.dev catalog
         model_ids = curated.get(pid, [])
+        if not model_ids:
+            model_ids = list_provider_models(pid) or []
+            
         total = len(model_ids)
         top = model_ids[:max_models]
 
