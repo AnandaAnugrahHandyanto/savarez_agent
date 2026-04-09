@@ -458,6 +458,8 @@ class Argus:
         """Initialize database connection."""
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
+        # WAL mode allows concurrent readers + single writer
+        self.conn.execute("PRAGMA journal_mode=WAL")
         self.cursor = self.conn.cursor()
         logger.info("Database connected: %s", self.db_path)
     
@@ -470,6 +472,28 @@ class Argus:
             self.conn.executescript(schema)
             self.conn.commit()
             logger.info("Database schema loaded")
+        
+        # Migrate existing tables — add columns that may not exist
+        self._migrate_schema()
+    
+    def _migrate_schema(self):
+        """Add columns to existing tables that were added after initial schema."""
+        migrations = [
+            ("tool_calls", "success", "BOOLEAN"),
+            ("tool_calls", "error_message", "TEXT"),
+        ]
+        
+        for table, column, col_type in migrations:
+            try:
+                self.cursor.execute("PRAGMA table_info(%s)" % table)
+                existing = {row[1] for row in self.cursor.fetchall()}
+                if column not in existing:
+                    self.cursor.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, col_type))
+                    logger.info("Migrated: added %s.%s %s", table, column, col_type)
+            except sqlite3.Error:
+                pass
+        
+        self.conn.commit()
     
     def _get_cron_env(self) -> Dict[str, str]:
         """Build a full environment dict for subprocess calls in sandboxed contexts."""
@@ -682,10 +706,9 @@ class Argus:
         
         Also detects tool errors using the same heuristic as
         agent.display._detect_tool_failure and populates success/error_message.
-        
-        This ensures the tool_calls table has data even when the WAL monitor
-        isn't running (e.g., hermes internals unavailable).
         """
+        if not _HERMES_INTERNALS_AVAILABLE:
+            return
         # Strip type prefix: cron_ec1a5e9f4c12 -> ec1a5e9f4c12
         parts = session_id.split('_', 1)
         if len(parts) == 2:
@@ -1095,8 +1118,13 @@ class Argus:
         if iterations_used == 0:
             return detections
 
-        # Get max budget from config (default 90 for parent agents)
-        max_budget = CONFIG.get('max_iterations', 90)
+        # Max budget — subagents use delegation.max_iterations (default 50)
+        self.cursor.execute('SELECT session_type FROM sessions WHERE session_id = ?', (session_id,))
+        row = self.cursor.fetchone()
+        is_delegate = row and row['session_type'] == 'delegate_task'
+        max_budget = CONFIG.get('max_iterations', 50 if is_delegate else 90)
+        if max_budget <= 0:
+            return detections
 
         # Compute session age from first message timestamp
         timestamps = []
@@ -1418,7 +1446,10 @@ class Argus:
         
         # Get session info
         self.cursor.execute('SELECT * FROM sessions WHERE session_id = ?', (session_id,))
-        session = dict(self.cursor.fetchone())
+        row = self.cursor.fetchone()
+        if not row:
+            return None
+        session = dict(row)
         
         # Check for critical entropy
         critical_entropy = [d for d in entropy_detections if d['severity'] == 'critical']
@@ -1518,7 +1549,11 @@ class Argus:
         """Restart a session with tighter constraints."""
         # Get session info
         self.cursor.execute('SELECT * FROM sessions WHERE session_id = ?', (session_id,))
-        session = dict(self.cursor.fetchone())
+        row = self.cursor.fetchone()
+        if not row:
+            logger.warning("Session %s not found for restart", session_id)
+            return
+        session = dict(row)
 
         # Increment restart count
         self.cursor.execute('''
@@ -1629,7 +1664,11 @@ class Argus:
         """Kill a session based on its type."""
         # Get session info
         self.cursor.execute('SELECT * FROM sessions WHERE session_id = ?', (session_id,))
-        session = dict(self.cursor.fetchone())
+        row = self.cursor.fetchone()
+        if not row:
+            logger.warning("Session %s not found for kill", session_id)
+            return
+        session = dict(row)
 
         session_type = session['session_type']
 
@@ -1707,7 +1746,11 @@ class Argus:
         """Inject a corrective prompt into a session based on its type."""
         # Get session info
         self.cursor.execute('SELECT * FROM sessions WHERE session_id = ?', (session_id,))
-        session = dict(self.cursor.fetchone())
+        row = self.cursor.fetchone()
+        if not row:
+            logger.warning("Session %s not found for prompt injection", session_id)
+            return
+        session = dict(row)
 
         session_type = session['session_type']
 
@@ -1772,37 +1815,44 @@ class Argus:
         logger.info("Stored corrective prompt for manual session %s", session['session_id'])
     
     def _send_notification(self, session_id: str, notification_type: str, message: str):
-        """Send notification via Telegram bot API. Uses hermes env_loader for credentials."""
+        """Send notification via Telegram bot API."""
         delivered = False
         delivery_error = None
-        full_message = ""
 
         try:
-            # Get session info for context
+            # Always build message for DB recording
             self.cursor.execute('SELECT * FROM sessions WHERE session_id = ?', (session_id,))
-            session = dict(self.cursor.fetchone())
+            row = self.cursor.fetchone()
+            session = dict(row) if row else {'session_type': 'unknown', 'task_description': 'Unknown'}
 
-            # Format message
-            full_message = f"Agent Watcher Alert\n\n"
-            full_message += f"Session: {session_id}\n"
-            full_message += f"Type: {session['session_type']}\n"
-            full_message += f"Task: {session.get('task_description', 'Unknown')}\n"
-            full_message += f"Action: {notification_type.upper()}\n"
-            full_message += f"Reason: {message}\n"
-            full_message += f"Time: {datetime.now().isoformat()}"
+            full_message = (
+                "Agent Watcher Alert\n\n"
+                "Session: %s\n"
+                "Type: %s\n"
+                "Task: %s\n"
+                "Action: %s\n"
+                "Reason: %s\n"
+                "Time: %s" % (
+                    session_id,
+                    session.get('session_type', 'unknown'),
+                    session.get('task_description', 'Unknown'),
+                    notification_type.upper(),
+                    message,
+                    datetime.now().isoformat(),
+                )
+            )
 
-            
+            # Try to send via Telegram
             try:
                 load_hermes_dotenv()
             except Exception:
-                pass  # Fallback to env vars already set
+                pass
 
             bot_token = os.environ.get('TELEGRAM_BOT_TOKEN')
             chat_id = os.environ.get('TELEGRAM_CHAT_ID')
 
             if bot_token and chat_id:
-                # Send via Telegram Bot API
-                url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                url = "https://api.telegram.org/bot%s/sendMessage" % bot_token
                 payload = json.dumps({
                     'chat_id': chat_id,
                     'text': full_message,
@@ -1810,8 +1860,7 @@ class Argus:
                 }).encode('utf-8')
 
                 req = urllib.request.Request(
-                    url,
-                    data=payload,
+                    url, data=payload,
                     headers={'Content-Type': 'application/json'}
                 )
 
@@ -1861,24 +1910,17 @@ class Argus:
                 sessions = self.discover_sessions()
 
                 for session in sessions:
-                    # Register session if not already registered
-                    self.register_session(session)
-                    
-                    # Collect metrics
-                    self.collect_metrics(session['session_id'])
-                    
-                    # Detect entropy
-                    entropy_detections = self.detect_entropy(session['session_id'])
-                    
-                    # Check prime directive
-                    directive_checks = self.check_prime_directive(session['session_id'])
-                    
-                    # Make decision
-                    decision = self.make_decision(session['session_id'], entropy_detections, directive_checks)
-                    
-                    # Execute action if needed
-                    if decision:
-                        self.execute_action(session['session_id'], decision)
+                    try:
+                        sid = session['session_id']
+                        self.register_session(session)
+                        self.collect_metrics(sid)
+                        entropy_detections = self.detect_entropy(sid)
+                        directive_checks = self.check_prime_directive(sid)
+                        decision = self.make_decision(sid, entropy_detections, directive_checks)
+                        if decision:
+                            self.execute_action(sid, decision)
+                    except Exception as e:
+                        logger.error("Error processing session %s: %s", session.get('session_id'), e)
                 
                 # Sleep before next poll
                 time.sleep(CONFIG['poll_interval'])

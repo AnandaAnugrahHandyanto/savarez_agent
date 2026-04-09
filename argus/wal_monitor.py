@@ -157,16 +157,39 @@ class ToolCallMonitor:
 
     def _poll_loop(self):
         """Background loop: poll state.db for new tool calls."""
-        db = SessionDB(DEFAULT_DB_PATH)
+        db = None
+        consecutive_errors = 0
 
         while self._running:
             try:
+                # Reconnect if needed
+                if db is None:
+                    db = SessionDB(DEFAULT_DB_PATH)
+                    consecutive_errors = 0
+                
                 self._poll_once(db)
+                consecutive_errors = 0
             except Exception as e:
-                logger.debug("ToolCallMonitor poll error: %s", e)
+                consecutive_errors += 1
+                logger.warning("ToolCallMonitor poll error (%d): %s", consecutive_errors, e)
+                # Close and reconnect on repeated errors
+                if db is not None:
+                    try:
+                        db.close()
+                    except Exception:
+                        pass
+                    db = None
+                # Back off on persistent errors
+                if consecutive_errors > 3:
+                    time.sleep(self.poll_interval * 3)
+            
             time.sleep(self.poll_interval)
 
-        db.close()
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
 
     def _poll_once(self, db):
         """Check for new tool calls across all sessions.
