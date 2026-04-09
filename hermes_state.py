@@ -191,8 +191,12 @@ class SessionDB:
                             pass
                         raise
                 # Success — periodic best-effort checkpoint.
-                self._write_count += 1
-                if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
+                # Increment inside the lock to avoid races when multiple
+                # threads call _execute_write concurrently.
+                with self._lock:
+                    self._write_count += 1
+                    needs_ckpt = self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0
+                if needs_ckpt:
                     self._try_wal_checkpoint()
                 return result
             except sqlite3.OperationalError as exc:
