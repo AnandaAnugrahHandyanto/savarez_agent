@@ -11,6 +11,7 @@ from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
     _is_oauth_token,
     _refresh_oauth_token,
+    _to_plain_data,
     _write_claude_code_credentials,
     build_anthropic_client,
     build_anthropic_kwargs,
@@ -742,6 +743,33 @@ class TestConvertMessages:
         assert tool_block["content"] == "result"
         assert tool_block["cache_control"] == {"type": "ephemeral"}
 
+    def test_preserved_thinking_blocks_are_rehydrated_before_tool_use(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "test_tool", "arguments": "{}"}},
+                ],
+                "reasoning_details": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Need to inspect the tool result first.",
+                        "signature": "sig_123",
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "tool output"},
+        ]
+
+        _, result = convert_messages_to_anthropic(messages)
+        assistant_blocks = next(msg for msg in result if msg["role"] == "assistant")["content"]
+
+        assert assistant_blocks[0]["type"] == "thinking"
+        assert assistant_blocks[0]["thinking"] == "Need to inspect the tool result first."
+        assert assistant_blocks[0]["signature"] == "sig_123"
+        assert assistant_blocks[1]["type"] == "tool_use"
+
     def test_converts_data_url_image_to_anthropic_image_block(self):
         messages = [
             {
@@ -1080,6 +1108,59 @@ class TestGetAnthropicMaxOutput:
 
 
 # ---------------------------------------------------------------------------
+# _to_plain_data hardening
+# ---------------------------------------------------------------------------
+
+
+class TestToPlainData:
+    def test_simple_dict(self):
+        assert _to_plain_data({"a": 1, "b": [2, 3]}) == {"a": 1, "b": [2, 3]}
+
+    def test_pydantic_like_model_dump(self):
+        class FakeModel:
+            def model_dump(self):
+                return {"type": "thinking", "thinking": "hello"}
+
+        result = _to_plain_data(FakeModel())
+        assert result == {"type": "thinking", "thinking": "hello"}
+
+    def test_circular_reference_does_not_recurse_forever(self):
+        """Circular dict reference should be stringified, not infinite-loop."""
+        d: dict = {"key": "value"}
+        d["self"] = d  # circular
+        result = _to_plain_data(d)
+        assert isinstance(result, dict)
+        assert result["key"] == "value"
+        assert isinstance(result["self"], str)
+
+    def test_shared_sibling_objects_are_not_falsely_detected_as_cycles(self):
+        """Two siblings referencing the same dict must both be converted."""
+        shared = {"type": "thinking", "thinking": "reason"}
+        parent = {"a": shared, "b": shared}
+        result = _to_plain_data(parent)
+        assert isinstance(result["a"], dict)
+        assert isinstance(result["b"], dict)
+        assert result["a"] == {"type": "thinking", "thinking": "reason"}
+
+    def test_deep_nesting_is_capped(self):
+        deep = "leaf"
+        for _ in range(25):
+            deep = {"nested": deep}
+        result = _to_plain_data(deep)
+        assert isinstance(result, dict)
+
+    def test_plain_values_pass_through(self):
+        assert _to_plain_data("hello") == "hello"
+        assert _to_plain_data(42) == 42
+        assert _to_plain_data(None) is None
+
+    def test_object_with_dunder_dict(self):
+        obj = SimpleNamespace(type="thinking", thinking="reason", signature="sig")
+        result = _to_plain_data(obj)
+        assert result == {"type": "thinking", "thinking": "reason", "signature": "sig"}
+
+
+# ---------------------------------------------------------------------------
 # Response normalization
 # ---------------------------------------------------------------------------
 
@@ -1126,6 +1207,20 @@ class TestNormalizeResponse:
         msg, reason = normalize_anthropic_response(self._make_response(blocks))
         assert msg.content == "The answer is 42."
         assert msg.reasoning == "Let me reason about this..."
+        assert msg.reasoning_details == [{"type": "thinking", "thinking": "Let me reason about this..."}]
+
+    def test_thinking_response_preserves_signature(self):
+        blocks = [
+            SimpleNamespace(
+                type="thinking",
+                thinking="Let me reason about this...",
+                signature="opaque_signature",
+                redacted=False,
+            ),
+        ]
+        msg, _ = normalize_anthropic_response(self._make_response(blocks))
+        assert msg.reasoning_details[0]["signature"] == "opaque_signature"
+        assert msg.reasoning_details[0]["thinking"] == "Let me reason about this..."
 
     def test_stop_reason_mapping(self):
         block = SimpleNamespace(type="text", text="x")
@@ -1179,6 +1274,258 @@ class TestRoleAlternation:
         _, result = convert_messages_to_anthropic(messages)
         assert len(result) == 3
         assert [m["role"] for m in result] == ["user", "assistant", "user"]
+
+
+# ---------------------------------------------------------------------------
+# Thinking block signature management
+# ---------------------------------------------------------------------------
+
+
+class TestThinkingBlockSignatureManagement:
+    """Tests for the thinking block handling strategy:
+    strip from old turns, preserve latest signed, downgrade unsigned."""
+
+    def test_thinking_stripped_from_non_last_assistant(self):
+        """Thinking blocks are removed from all assistant messages except the last."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "tool1", "arguments": "{}"}},
+                ],
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Old reasoning.", "signature": "sig_old"},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result 1"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_2", "function": {"name": "tool2", "arguments": "{}"}},
+                ],
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Latest reasoning.", "signature": "sig_new"},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_2", "content": "result 2"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+
+        # Find both assistant messages
+        assistants = [m for m in result if m["role"] == "assistant"]
+        assert len(assistants) == 2
+
+        # First (non-last) assistant: no thinking blocks
+        first_types = [b.get("type") for b in assistants[0]["content"]]
+        assert "thinking" not in first_types
+        assert "redacted_thinking" not in first_types
+        assert "tool_use" in first_types  # tool_use should survive
+
+        # Last assistant: thinking block preserved with signature
+        last_blocks = assistants[1]["content"]
+        thinking_blocks = [b for b in last_blocks if b.get("type") == "thinking"]
+        assert len(thinking_blocks) == 1
+        assert thinking_blocks[0]["thinking"] == "Latest reasoning."
+        assert thinking_blocks[0]["signature"] == "sig_new"
+
+    def test_signed_thinking_preserved_on_last_turn(self):
+        """A signed thinking block on the last assistant message is kept."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "The answer is 42.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Deep thought.", "signature": "sig_valid"},
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        blocks = result[0]["content"]
+        thinking = [b for b in blocks if b.get("type") == "thinking"]
+        assert len(thinking) == 1
+        assert thinking[0]["signature"] == "sig_valid"
+
+    def test_unsigned_thinking_downgraded_to_text_on_last_turn(self):
+        """Unsigned thinking blocks on the last turn become text blocks."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Response text.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Unsigned reasoning."},
+                    # No 'signature' field
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        blocks = result[0]["content"]
+
+        # No thinking blocks should remain
+        assert not any(b.get("type") == "thinking" for b in blocks)
+        # The reasoning text should be preserved as a text block
+        text_contents = [b.get("text", "") for b in blocks if b.get("type") == "text"]
+        assert "Unsigned reasoning." in text_contents
+
+    def test_redacted_thinking_with_data_preserved(self):
+        """Redacted thinking with 'data' field is kept on last turn."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Response.",
+                "reasoning_details": [
+                    {"type": "redacted_thinking", "data": "opaque_signature_data"},
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        blocks = result[0]["content"]
+        redacted = [b for b in blocks if b.get("type") == "redacted_thinking"]
+        assert len(redacted) == 1
+        assert redacted[0]["data"] == "opaque_signature_data"
+
+    def test_redacted_thinking_without_data_dropped(self):
+        """Redacted thinking without 'data' is dropped — can't be validated."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Response.",
+                "reasoning_details": [
+                    {"type": "redacted_thinking"},
+                    # No 'data' field
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        blocks = result[0]["content"]
+        assert not any(b.get("type") == "redacted_thinking" for b in blocks)
+
+    def test_cache_control_stripped_from_thinking_blocks(self):
+        """cache_control markers are removed from thinking/redacted_thinking blocks."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "t", "arguments": "{}"}},
+                ],
+                "reasoning_details": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Reasoning.",
+                        "signature": "sig_1",
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assistant = next(m for m in result if m["role"] == "assistant")
+        for block in assistant["content"]:
+            if block.get("type") in ("thinking", "redacted_thinking"):
+                assert "cache_control" not in block
+
+    def test_thinking_stripped_from_merged_consecutive_assistants(self):
+        """When consecutive assistants are merged, second one's thinking is dropped."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "First response.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "First thought.", "signature": "sig_1"},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "Second response.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Second thought.", "signature": "sig_2"},
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+
+        # Should be merged into one assistant message
+        assistants = [m for m in result if m["role"] == "assistant"]
+        assert len(assistants) == 1
+
+        # Only the first thinking block should remain (signed, on the last/only assistant)
+        blocks = assistants[0]["content"]
+        thinking = [b for b in blocks if b.get("type") == "thinking"]
+        assert len(thinking) == 1
+        assert thinking[0]["thinking"] == "First thought."
+
+    def test_empty_content_after_strip_gets_placeholder(self):
+        """If stripping thinking leaves an empty message, a placeholder is added."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Only thinking, no text."},
+                    # Unsigned — will be downgraded, but content was empty string
+                ],
+            },
+            {"role": "user", "content": "Next message."},
+            {"role": "assistant", "content": "Final."},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        # First assistant is non-last, so thinking is stripped completely.
+        # The original content was empty and thinking was unsigned → placeholder
+        first_assistant = result[0]
+        assert first_assistant["role"] == "assistant"
+        assert len(first_assistant["content"]) >= 1
+
+    def test_multi_turn_conversation_preserves_only_last(self):
+        """Full multi-turn conversation: only last assistant keeps thinking."""
+        messages = [
+            {"role": "user", "content": "Question 1"},
+            {
+                "role": "assistant",
+                "content": "Answer 1",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Thought 1", "signature": "sig_1"},
+                ],
+            },
+            {"role": "user", "content": "Question 2"},
+            {
+                "role": "assistant",
+                "content": "Answer 2",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Thought 2", "signature": "sig_2"},
+                ],
+            },
+            {"role": "user", "content": "Question 3"},
+            {
+                "role": "assistant",
+                "content": "Answer 3",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Thought 3", "signature": "sig_3"},
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+
+        assistants = [m for m in result if m["role"] == "assistant"]
+        assert len(assistants) == 3
+
+        # First two: no thinking blocks
+        for a in assistants[:2]:
+            assert not any(
+                b.get("type") in ("thinking", "redacted_thinking")
+                for b in a["content"]
+                if isinstance(b, dict)
+            )
+
+        # Last one: thinking preserved
+        last_thinking = [
+            b for b in assistants[2]["content"]
+            if isinstance(b, dict) and b.get("type") == "thinking"
+        ]
+        assert len(last_thinking) == 1
+        assert last_thinking[0]["signature"] == "sig_3"
 
 
 # ---------------------------------------------------------------------------

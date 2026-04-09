@@ -86,6 +86,7 @@ from agent.model_metadata import (
     estimate_tokens_rough, estimate_messages_tokens_rough, estimate_request_tokens_rough,
     get_next_probe_tier, parse_context_limit_from_error,
     save_context_length,
+    is_local_endpoint,
 )
 from agent.context_compressor import ContextCompressor
 from agent.prompt_caching import apply_anthropic_cache_control
@@ -1695,7 +1696,12 @@ class AIAgent:
             for detail in assistant_message.reasoning_details:
                 if isinstance(detail, dict):
                     # Extract summary from reasoning detail object
-                    summary = detail.get('summary') or detail.get('content') or detail.get('text')
+                    summary = (
+                        detail.get('summary')
+                        or detail.get('thinking')
+                        or detail.get('content')
+                        or detail.get('text')
+                    )
                     if summary and summary not in reasoning_parts:
                         reasoning_parts.append(summary)
 
@@ -7457,6 +7463,7 @@ class AIAgent:
             codex_auth_retry_attempted = False
             anthropic_auth_retry_attempted = False
             nous_auth_retry_attempted = False
+            thinking_sig_retry_attempted = False
             has_retried_429 = False
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
@@ -7994,8 +8001,38 @@ class AIAgent:
                         print(f"{self.log_prefix}     • Check ANTHROPIC_API_KEY in {_dhh}/.env for API keys or legacy token values")
                         print(f"{self.log_prefix}     • For API keys: verify at https://console.anthropic.com/settings/keys")
                         print(f"{self.log_prefix}     • For Claude Code: run 'claude /login' to refresh, then retry")
-                        print(f"{self.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_TOKEN \"\"")
-                        print(f"{self.log_prefix}     • Legacy cleanup: hermes config set ANTHROPIC_API_KEY \"\"")
+                        print(f"{self.log_prefix}     • Legacy cleanup: hermes config set ANTHROPIC_TOKEN \"\"")
+                        print(f"{self.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_API_KEY \"\"")
+
+                    # ── Thinking block signature recovery ─────────────────
+                    # Anthropic signs thinking blocks against the full turn
+                    # content.  Any upstream mutation (context compression,
+                    # session truncation, message merging) invalidates the
+                    # signature → HTTP 400.  Recovery: strip reasoning_details
+                    # from all messages so the next retry sends no thinking
+                    # blocks at all.  One-shot — don't retry infinitely.
+                    if (
+                        self.api_mode == "anthropic_messages"
+                        and status_code == 400
+                        and not thinking_sig_retry_attempted
+                    ):
+                        _err_msg_lower = str(api_error).lower()
+                        if "signature" in _err_msg_lower and "thinking" in _err_msg_lower:
+                            thinking_sig_retry_attempted = True
+                            for _m in messages:
+                                if isinstance(_m, dict):
+                                    _m.pop("reasoning_details", None)
+                            self._vprint(
+                                f"{self.log_prefix}⚠️  Thinking block signature invalid — "
+                                f"stripped all thinking blocks, retrying...",
+                                force=True,
+                            )
+                            logging.warning(
+                                "%sThinking block signature recovery: stripped "
+                                "reasoning_details from %d messages",
+                                self.log_prefix, len(messages),
+                            )
+                            continue
 
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
