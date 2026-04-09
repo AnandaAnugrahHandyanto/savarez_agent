@@ -624,6 +624,90 @@ class TestChatCompletionsEndpoint:
             data = await resp.json()
             assert "Provider failed" in data["error"]["message"]
 
+    # ------------------------------------------------------------------
+    # X-Hermes-Council header plumbing
+    #
+    # These tests prove that the council override header is parsed and
+    # forwarded through _handle_chat_completions → _run_agent so a future
+    # refactor that drops the header read silently breaks the feature.
+    # See reference_per_request_aiagent_kwarg_checklist.md for the full
+    # wiring map.
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_council_header_on_forwards_true(self, adapter):
+        """X-Hermes-Council: on must reach _run_agent as council_enabled=True."""
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "research Apple"}],
+                    },
+                    headers={"X-Hermes-Council": "on"},
+                )
+
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["council_enabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_council_header_off_forwards_false(self, adapter):
+        """X-Hermes-Council: off must reach _run_agent as council_enabled=False."""
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "research Apple"}],
+                    },
+                    headers={"X-Hermes-Council": "off"},
+                )
+
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["council_enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_council_header_absent_forwards_none(self, adapter):
+        """Missing X-Hermes-Council yields council_enabled=None (defer to config).
+
+        The `is None` assertion (not `is False`) is deliberate — it proves
+        that _parse_council_header("") returns None rather than coercing to
+        False, which would silently disable the council for any client that
+        forgets the header even when config.council.enabled is true.
+        """
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "research Apple"}],
+                    },
+                )
+
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["council_enabled"] is None
+
 
 # ---------------------------------------------------------------------------
 # /v1/responses endpoint
@@ -874,6 +958,75 @@ class TestResponsesEndpoint:
                 json={"model": "hermes-agent", "input": 42},
             )
             assert resp.status == 400
+
+    # ------------------------------------------------------------------
+    # X-Hermes-Council header plumbing (Responses API surface)
+    #
+    # The council port wired X-Hermes-Council into BOTH _handle_responses
+    # and _handle_chat_completions so Open WebUI/LobeChat/etc. clients
+    # that use the Responses API format get the same override mechanism
+    # as OpenAI-compatible clients. Easy to miss the second handler on a
+    # future refactor — these tests lock it down.
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_responses_council_header_on_forwards_true(self, adapter):
+        """X-Hermes-Council: on reaches _run_agent through /v1/responses."""
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "research Tesla"},
+                    headers={"X-Hermes-Council": "on"},
+                )
+
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["council_enabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_responses_council_header_off_forwards_false(self, adapter):
+        """X-Hermes-Council: off reaches _run_agent through /v1/responses."""
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "research Tesla"},
+                    headers={"X-Hermes-Council": "off"},
+                )
+
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["council_enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_responses_council_header_absent_forwards_none(self, adapter):
+        """Missing X-Hermes-Council on /v1/responses yields council_enabled=None."""
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "research Tesla"},
+                )
+
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["council_enabled"] is None
 
 
 # ---------------------------------------------------------------------------
