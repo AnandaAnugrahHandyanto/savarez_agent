@@ -171,6 +171,9 @@ class MatrixAdapter(BasePlatformAdapter):
         self._reactions_enabled: bool = os.getenv(
             "MATRIX_REACTIONS", "true"
         ).lower() not in ("false", "0", "no")
+        # Tracks the reaction event_id for in-progress (eyes) reactions.
+        # Key: (room_id, message_event_id) → reaction_event_id (for the eyes reaction).
+        self._pending_reactions: dict[tuple[str, str], str] = {}
 
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
@@ -1350,12 +1353,14 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _send_reaction(
         self, room_id: str, event_id: str, emoji: str,
-    ) -> bool:
-        """Send an emoji reaction to a message in a room."""
+    ) -> Optional[str]:
+        """Send an emoji reaction to a message in a room.
+        Returns the reaction event_id on success, None on failure.
+        """
         import nio
 
         if not self._client:
-            return False
+            return None
         content = {
             "m.relates_to": {
                 "rel_type": "m.annotation",
@@ -1370,12 +1375,12 @@ class MatrixAdapter(BasePlatformAdapter):
             )
             if isinstance(resp, nio.RoomSendResponse):
                 logger.debug("Matrix: sent reaction %s to %s", emoji, event_id)
-                return True
+                return resp.event_id
             logger.debug("Matrix: reaction send failed: %s", resp)
-            return False
+            return None
         except Exception as exc:
             logger.debug("Matrix: reaction send error: %s", exc)
-            return False
+            return None
 
     async def _redact_reaction(
         self, room_id: str, reaction_event_id: str, reason: str = "",
@@ -1390,7 +1395,9 @@ class MatrixAdapter(BasePlatformAdapter):
         msg_id = event.message_id
         room_id = event.source.chat_id
         if msg_id and room_id:
-            await self._send_reaction(room_id, msg_id, "\U0001f440")
+            reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
+            if reaction_event_id:
+                self._pending_reactions[(room_id, msg_id)] = reaction_event_id
 
     async def on_processing_complete(
         self, event: MessageEvent, success: bool,
@@ -1402,9 +1409,12 @@ class MatrixAdapter(BasePlatformAdapter):
         room_id = event.source.chat_id
         if not msg_id or not room_id:
             return
-        # Note: Matrix doesn't support removing a specific reaction easily
-        # without tracking the reaction event_id. We send the new reaction;
-        # the eyes stays (acceptable UX — both are visible).
+        # Remove the eyes reaction first, if we tracked its event_id.
+        reaction_key = (room_id, msg_id)
+        if reaction_key in self._pending_reactions:
+            eyes_event_id = self._pending_reactions.pop(reaction_key)
+            await self._redact_reaction(room_id, eyes_event_id)
+        # Now send the completion reaction.
         await self._send_reaction(
             room_id, msg_id, "\u2705" if success else "\u274c",
         )
