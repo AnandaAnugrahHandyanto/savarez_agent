@@ -5912,12 +5912,23 @@ class GatewayRunner:
         os.environ["HERMES_SESSION_CHAT_ID"] = context.source.chat_id
         if context.source.chat_name:
             os.environ["HERMES_SESSION_CHAT_NAME"] = context.source.chat_name
+        if context.source.user_id:
+            os.environ["HERMES_SESSION_USER_ID"] = str(context.source.user_id)
+        if context.source.user_name:
+            os.environ["HERMES_SESSION_USER_NAME"] = context.source.user_name
         if context.source.thread_id:
             os.environ["HERMES_SESSION_THREAD_ID"] = str(context.source.thread_id)
     
     def _clear_session_env(self) -> None:
         """Clear session environment variables."""
-        for var in ["HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID"]:
+        for var in [
+            "HERMES_SESSION_PLATFORM",
+            "HERMES_SESSION_CHAT_ID",
+            "HERMES_SESSION_CHAT_NAME",
+            "HERMES_SESSION_USER_ID",
+            "HERMES_SESSION_USER_NAME",
+            "HERMES_SESSION_THREAD_ID",
+        ]:
             if var in os.environ:
                 del os.environ[var]
     
@@ -6097,6 +6108,8 @@ class GatewayRunner:
         session_key = watcher.get("session_key", "")
         platform_name = watcher.get("platform", "")
         chat_id = watcher.get("chat_id", "")
+        user_id = watcher.get("user_id", "")
+        user_name = watcher.get("user_name", "")
         thread_id = watcher.get("thread_id", "")
         agent_notify = watcher.get("notify_on_complete", False)
         notify_mode = self._load_background_notifications_mode()
@@ -6152,6 +6165,8 @@ class GatewayRunner:
                             _source = SessionSource(
                                 platform=_platform_enum,
                                 chat_id=chat_id,
+                                user_id=user_id or None,
+                                user_name=user_name or None,
                                 thread_id=thread_id or None,
                             )
                             synth_event = MessageEvent(

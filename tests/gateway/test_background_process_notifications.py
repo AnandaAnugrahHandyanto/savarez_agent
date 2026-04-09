@@ -45,17 +45,20 @@ def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     runner = GatewayRunner(GatewayConfig())
-    adapter = SimpleNamespace(send=AsyncMock())
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
     runner.adapters[Platform.TELEGRAM] = adapter
     return runner
 
 
-def _watcher_dict(session_id="proc_test", thread_id=""):
+def _watcher_dict(session_id="proc_test", thread_id="", user_id="user-123", user_name="alice", notify_on_complete=False):
     d = {
         "session_id": session_id,
         "check_interval": 0,
         "platform": "telegram",
         "chat_id": "123",
+        "user_id": user_id,
+        "user_name": user_name,
+        "notify_on_complete": notify_on_complete,
     }
     if thread_id:
         d["thread_id"] = thread_id
@@ -243,3 +246,27 @@ async def test_no_thread_id_sends_no_metadata(monkeypatch, tmp_path):
     assert adapter.send.await_count == 1
     _, kwargs = adapter.send.call_args
     assert kwargs["metadata"] is None
+
+
+@pytest.mark.asyncio
+async def test_agent_notify_injects_source_with_user_identity(monkeypatch, tmp_path):
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0, command="sleep 1")]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(_watcher_dict(thread_id="42", user_id="user-123", user_name="alice", session_id="proc_test", notify_on_complete=True))
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.user_id == "user-123"
+    assert event.source.user_name == "alice"
+    assert event.source.thread_id == "42"
+    assert event.text.startswith("[SYSTEM: Background process proc_test completed")

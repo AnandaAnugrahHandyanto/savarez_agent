@@ -207,6 +207,8 @@ class TestCheckpointNotify:
             "session_key": "sk1",
             "watcher_platform": "telegram",
             "watcher_chat_id": "123",
+            "watcher_user_id": "u123",
+            "watcher_user_name": "alice",
             "watcher_thread_id": "42",
             "watcher_interval": 5,
             "notify_on_complete": True,
@@ -216,6 +218,8 @@ class TestCheckpointNotify:
             assert recovered == 1
             assert len(registry.pending_watchers) == 1
             assert registry.pending_watchers[0]["notify_on_complete"] is True
+            assert registry.pending_watchers[0]["user_id"] == "u123"
+            assert registry.pending_watchers[0]["user_name"] == "alice"
 
     def test_recover_defaults_false(self, registry, tmp_path):
         """Old checkpoint entries without the field default to False."""
@@ -255,6 +259,35 @@ class TestTerminalSchema:
             )
             _, kwargs = mock_tt.call_args
             assert kwargs["notify_on_complete"] is True
+
+    def test_gateway_notify_watcher_captures_user_identity(self, monkeypatch):
+        from tools.terminal_tool import terminal_tool
+        from tools.process_registry import process_registry
+
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "123")
+        monkeypatch.setenv("HERMES_SESSION_USER_ID", "u123")
+        monkeypatch.setenv("HERMES_SESSION_USER_NAME", "alice")
+        monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "42")
+
+        process_registry.pending_watchers.clear()
+
+        result = json.loads(
+            terminal_tool(
+                "python -c 'print(1)'",
+                background=True,
+                notify_on_complete=True,
+                timeout=30,
+                workdir="/tmp",
+            )
+        )
+
+        watcher = next(w for w in process_registry.pending_watchers if w["session_id"] == result["session_id"])
+        assert watcher["platform"] == "telegram"
+        assert watcher["chat_id"] == "123"
+        assert watcher["user_id"] == "u123"
+        assert watcher["user_name"] == "alice"
+        assert watcher["thread_id"] == "42"
 
 
 # =========================================================================
