@@ -23,7 +23,6 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
-import fcntl
 import json
 import logging
 import os
@@ -33,6 +32,16 @@ from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 
 logger = logging.getLogger(__name__)
 
@@ -140,17 +149,31 @@ class MemoryStore:
         """Acquire an exclusive file lock for read-modify-write safety.
 
         Uses a separate .lock file so the memory file itself can still be
-        atomically replaced via os.replace().
+        atomically replaced via os.replace(). Supports Unix via ``fcntl`` and
+        Windows via ``msvcrt``.
         """
         lock_path = path.with_suffix(path.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = open(lock_path, "w")
+        fd = open(lock_path, "a+")
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            elif msvcrt is not None:
+                fd.seek(0)
+                fd.write("0")
+                fd.flush()
+                fd.seek(0)
+                msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            fd.close()
+            try:
+                if fcntl is not None:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                elif msvcrt is not None:
+                    fd.seek(0)
+                    msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+            finally:
+                fd.close()
 
     @staticmethod
     def _path_for(target: str) -> Path:

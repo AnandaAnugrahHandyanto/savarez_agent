@@ -1,8 +1,12 @@
 """Tests for tools/memory_tool.py — MemoryStore, security scanning, and tool dispatcher."""
 
 import json
-import pytest
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
 
 from tools.memory_tool import (
     MemoryStore,
@@ -209,6 +213,51 @@ class TestMemoryStorePersistence:
         store = MemoryStore()
         store.load_from_disk()
         assert len(store.memory_entries) == 2
+
+
+class TestMemoryStoreFileLock:
+    def test_uses_fcntl_when_available(self, monkeypatch, tmp_path):
+        flock = Mock()
+        fake_fcntl = SimpleNamespace(flock=flock, LOCK_EX=11, LOCK_UN=22)
+        monkeypatch.setattr("tools.memory_tool.fcntl", fake_fcntl)
+        monkeypatch.setattr("tools.memory_tool.msvcrt", None)
+
+        with MemoryStore._file_lock(tmp_path / "MEMORY.md"):
+            pass
+
+        assert flock.call_count == 2
+        assert flock.call_args_list[0].args[1] == fake_fcntl.LOCK_EX
+        assert flock.call_args_list[1].args[1] == fake_fcntl.LOCK_UN
+
+    def test_uses_msvcrt_when_fcntl_unavailable(self, monkeypatch, tmp_path):
+        locking = Mock()
+        fake_msvcrt = SimpleNamespace(locking=locking, LK_LOCK=1, LK_UNLCK=2)
+        monkeypatch.setattr("tools.memory_tool.fcntl", None)
+        monkeypatch.setattr("tools.memory_tool.msvcrt", fake_msvcrt)
+
+        with MemoryStore._file_lock(tmp_path / "MEMORY.md"):
+            pass
+
+        assert locking.call_count == 2
+        assert locking.call_args_list[0].args[1:] == (fake_msvcrt.LK_LOCK, 1)
+        assert locking.call_args_list[1].args[1:] == (fake_msvcrt.LK_UNLCK, 1)
+
+    def test_add_works_with_windows_locking(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("tools.memory_tool.MEMORY_DIR", tmp_path)
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+
+        @contextmanager
+        def fake_lock(_path):
+            yield
+
+        monkeypatch.setattr(MemoryStore, "_file_lock", staticmethod(fake_lock))
+
+        store = MemoryStore()
+        store.load_from_disk()
+        result = store.add("memory", "windows-safe entry")
+
+        assert result["success"] is True
+        assert (tmp_path / "MEMORY.md").read_text().strip() == "windows-safe entry"
 
 
 class TestMemoryStoreSnapshot:
