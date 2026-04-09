@@ -97,6 +97,7 @@ def _normalize_aux_provider(provider: Optional[str], *, for_vision: bool = False
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "gemini": "gemini-3-flash-preview",
+    "gemini-cli": "gemini-3-flash-preview",
     "zai": "glm-4.5-flash",
     "kimi-coding": "kimi-k2-turbo-preview",
     "minimax": "MiniMax-M2.7",
@@ -1379,6 +1380,41 @@ def resolve_provider_client(
         logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
+
+    elif pconfig.auth_type == "external_process":
+        try:
+            from hermes_cli.auth import resolve_external_process_provider_credentials
+        except ImportError:
+            logger.debug("resolve_external_process_provider_credentials unavailable for %s", provider)
+            return None, None
+
+        creds = resolve_external_process_provider_credentials(provider)
+        final_model = model or _API_KEY_PROVIDER_AUX_MODELS.get(provider, "") or _read_main_model() or "gemini-2.5-pro"
+        if async_mode:
+            logger.warning("resolve_provider_client: external-process provider %s does not support async auxiliary clients", provider)
+            return None, None
+        if provider == "gemini-cli":
+            from agent.gemini_cli_client import GeminiCLIClient
+
+            client = GeminiCLIClient(
+                api_key=str(creds.get("api_key", "")).strip(),
+                base_url=str(creds.get("base_url", "")).strip(),
+                command=creds.get("command", ""),
+                args=list(creds.get("args") or []),
+            )
+            return client, final_model
+        if provider == "copilot-acp":
+            from agent.copilot_acp_client import CopilotACPClient
+
+            client = CopilotACPClient(
+                api_key=str(creds.get("api_key", "")).strip(),
+                base_url=str(creds.get("base_url", "")).strip(),
+                command=creds.get("command", ""),
+                args=list(creds.get("args") or []),
+            )
+            return client, final_model
+        logger.warning("resolve_provider_client: external-process provider %s not directly supported", provider)
+        return None, None
 
     elif pconfig.auth_type in ("oauth_device_code", "oauth_external"):
         # OAuth providers — route through their specific try functions

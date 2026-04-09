@@ -136,6 +136,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
+    "gemini-cli": ProviderConfig(
+        id="gemini-cli",
+        name="Gemini CLI",
+        auth_type="external_process",
+        inference_base_url="cli://gemini",
+        base_url_env_var="GEMINI_CLI_BASE_URL",
+    ),
     "gemini": ProviderConfig(
         id="gemini",
         name="Google AI Studio",
@@ -819,6 +826,7 @@ def resolve_provider(
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
+        "google-gemini-cli": "gemini-cli", "gemini-oauth": "gemini-cli", "gemini-cli": "gemini-cli",
         "kimi": "kimi-coding", "moonshot": "kimi-coding",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
@@ -2222,27 +2230,24 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    command = _resolve_external_process_command(provider_id)
+    args = _resolve_external_process_args(provider_id)
     base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
     if not base_url:
         base_url = pconfig.inference_base_url
 
     resolved_command = shutil.which(command) if command else None
+    marker_prefix = _external_process_marker_prefix(provider_id)
+    is_remote_marker = bool(marker_prefix and base_url.startswith(marker_prefix))
     return {
-        "configured": bool(resolved_command or base_url.startswith("acp+tcp://")),
+        "configured": bool(resolved_command or is_remote_marker),
         "provider": provider_id,
         "name": pconfig.name,
         "command": command,
         "args": args,
         "resolved_command": resolved_command,
         "base_url": base_url,
-        "logged_in": bool(resolved_command or base_url.startswith("acp+tcp://")),
+        "logged_in": bool(resolved_command or is_remote_marker),
     }
 
 
@@ -2255,7 +2260,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_codex_auth_status()
     if target == "qwen-oauth":
         return get_qwen_auth_status()
-    if target == "copilot-acp":
+    pconfig = PROVIDER_REGISTRY.get(target)
+    if pconfig and pconfig.auth_type == "external_process":
         return get_external_process_provider_status(target)
     # API-key providers
     pconfig = PROVIDER_REGISTRY.get(target)
@@ -2316,25 +2322,22 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     if not base_url:
         base_url = pconfig.inference_base_url
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    command = _resolve_external_process_command(provider_id)
+    args = _resolve_external_process_args(provider_id)
     resolved_command = shutil.which(command) if command else None
-    if not resolved_command and not base_url.startswith("acp+tcp://"):
+    marker_prefix = _external_process_marker_prefix(provider_id)
+    is_remote_marker = bool(marker_prefix and base_url.startswith(marker_prefix))
+    if not resolved_command and not is_remote_marker:
+        error_code = "missing_copilot_cli" if provider_id == "copilot-acp" else f"missing_{provider_id.replace('-', '_')}_cli"
         raise AuthError(
-            f"Could not find the Copilot CLI command '{command}'. "
-            "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
+            _external_process_missing_command_error(provider_id, command),
             provider=provider_id,
-            code="missing_copilot_cli",
+            code=error_code,
         )
 
     return {
         "provider": provider_id,
-        "api_key": "copilot-acp",
+        "api_key": _external_process_placeholder_api_key(provider_id),
         "base_url": base_url.rstrip("/"),
         "command": resolved_command or command,
         "args": args,
@@ -2345,6 +2348,69 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
 # =============================================================================
 # External credential detection
 # =============================================================================
+
+_EXTERNAL_PROCESS_PROVIDER_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "copilot-acp": {
+        "command_envs": ("HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH"),
+        "default_command": "copilot",
+        "args_env": "HERMES_COPILOT_ACP_ARGS",
+        "default_args": ["--acp", "--stdio"],
+        "marker_prefix": "acp+tcp://",
+        "placeholder_api_key": "copilot-acp",
+        "missing_command_error": (
+            "Could not find the Copilot CLI command '{command}'. "
+            "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH."
+        ),
+    },
+    "gemini-cli": {
+        "command_envs": ("HERMES_GEMINI_CLI_COMMAND", "GEMINI_CLI_PATH"),
+        "default_command": "gemini",
+        "args_env": "HERMES_GEMINI_CLI_ARGS",
+        "default_args": [],
+        "marker_prefix": "",
+        "placeholder_api_key": "gemini-cli",
+        "missing_command_error": (
+            "Could not find the Gemini CLI command '{command}'. "
+            "Install Gemini CLI or set HERMES_GEMINI_CLI_COMMAND/GEMINI_CLI_PATH."
+        ),
+    },
+}
+
+
+def _external_process_config(provider_id: str) -> Dict[str, Any]:
+    return dict(_EXTERNAL_PROCESS_PROVIDER_DEFAULTS.get(provider_id, {}))
+
+
+def _resolve_external_process_command(provider_id: str) -> str:
+    config = _external_process_config(provider_id)
+    for env_var in config.get("command_envs", ()):
+        value = os.getenv(env_var, "").strip()
+        if value:
+            return value
+    return str(config.get("default_command") or "").strip()
+
+
+def _resolve_external_process_args(provider_id: str) -> List[str]:
+    config = _external_process_config(provider_id)
+    raw_args = os.getenv(str(config.get("args_env") or ""), "").strip() if config.get("args_env") else ""
+    if raw_args:
+        return shlex.split(raw_args)
+    return list(config.get("default_args") or [])
+
+
+def _external_process_marker_prefix(provider_id: str) -> str:
+    return str(_external_process_config(provider_id).get("marker_prefix") or "")
+
+
+def _external_process_placeholder_api_key(provider_id: str) -> str:
+    fallback = provider_id or "process"
+    return str(_external_process_config(provider_id).get("placeholder_api_key") or fallback)
+
+
+def _external_process_missing_command_error(provider_id: str, command: str) -> str:
+    template = str(_external_process_config(provider_id).get("missing_command_error") or "Could not find the configured external-process command '{command}'.")
+    return template.format(command=command)
+
 
 def detect_external_credentials() -> List[Dict[str, Any]]:
     """Scan for credentials from other CLI tools that Hermes can reuse.

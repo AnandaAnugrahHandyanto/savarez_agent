@@ -920,6 +920,7 @@ def select_provider_and_model(args=None):
         "openai-codex": "OpenAI Codex",
         "qwen-oauth": "Qwen OAuth",
         "copilot-acp": "GitHub Copilot ACP",
+        "gemini-cli": "Gemini CLI",
         "copilot": "GitHub Copilot",
         "anthropic": "Anthropic",
         "gemini": "Google AI Studio",
@@ -955,6 +956,7 @@ def select_provider_and_model(args=None):
 
     extended_providers = [
         ("copilot-acp", "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
+        ("gemini-cli", "Gemini CLI (reuses local Google OAuth login via `gemini`)"),
         ("gemini", "Google AI Studio (Gemini models — OpenAI-compatible endpoint)"),
         ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
@@ -1049,6 +1051,8 @@ def select_provider_and_model(args=None):
         _model_flow_qwen_oauth(config, current_model)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
+    elif selected_provider == "gemini-cli":
+        _model_flow_gemini_cli(config, current_model)
     elif selected_provider == "copilot":
         _model_flow_copilot(config, current_model)
     elif selected_provider == "custom":
@@ -2158,6 +2162,64 @@ def _model_flow_copilot_acp(config, current_model=""):
     deactivate_provider()
 
     print(f"Default model set to: {selected} (via {pconfig.name})")
+
+
+def _model_flow_gemini_cli(config, current_model=""):
+    """Gemini CLI flow using the local Gemini CLI OAuth login."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+        get_external_process_provider_status,
+        resolve_external_process_provider_credentials,
+    )
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    del config
+
+    provider_id = "gemini-cli"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+    status = get_external_process_provider_status(provider_id)
+    resolved_command = status.get("resolved_command") or status.get("command") or "gemini"
+    effective_base = status.get("base_url") or pconfig.inference_base_url
+
+    print("  Gemini CLI reuses your local Google OAuth login from the `gemini` command.")
+    print("  Hermes runs Gemini CLI in headless mode and keeps Hermes tool-calling in charge.")
+    print(f"  Command: {resolved_command}")
+    print(f"  Backend marker: {effective_base}")
+    print()
+
+    try:
+        creds = resolve_external_process_provider_credentials(provider_id)
+    except Exception as exc:
+        print(f"  ⚠ {exc}")
+        print("  Run `gemini` once and choose 'Sign in with Google', or set HERMES_GEMINI_CLI_COMMAND/GEMINI_CLI_PATH.")
+        return
+
+    effective_base = creds.get("base_url") or effective_base
+    model_list = list(_PROVIDER_MODELS.get("gemini-cli") or _PROVIDER_MODELS.get("gemini") or [])
+    selected = _prompt_model_selection(model_list, current_model=current_model or (model_list[0] if model_list else "gemini-2.5-pro"))
+
+    if not selected:
+        print("No change.")
+        return
+
+    _save_model_choice(selected)
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    model["base_url"] = effective_base
+    model["api_mode"] = "chat_completions"
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Default model set to: {selected} (via {pconfig.name})")
+
 
 
 def _model_flow_kimi(config, current_model=""):
@@ -4304,7 +4366,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "gemini-cli", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
         default=None,
         help="Inference provider (default: auto)"
     )

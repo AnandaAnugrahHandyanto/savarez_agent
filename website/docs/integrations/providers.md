@@ -18,6 +18,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
 | **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
+| **Gemini CLI** | `hermes model` (reuses local `gemini` Google OAuth login via headless CLI calls) |
 | **Anthropic** | `hermes model` (Claude Pro/Max via Claude Code auth, Anthropic API key, or manual setup-token) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
@@ -120,6 +121,19 @@ hermes chat --provider copilot-acp --model copilot-acp
 # Requires the GitHub Copilot CLI in PATH and an existing `copilot login` session
 ```
 
+**`gemini-cli` — Gemini CLI via local Google OAuth**. Reuses the local Gemini CLI login instead of an API key:
+
+```bash
+# First authenticate once in the Gemini CLI
+gemini
+# Choose “Sign in with Google” in the Gemini CLI UI
+
+# Then use Hermes through the local Gemini CLI backend
+hermes chat --provider gemini-cli --model gemini-2.5-pro
+```
+
+Hermes runs `gemini -p ... --output-format json` under the hood, keeps Hermes tool-calling in charge, and preserves the existing `gemini` provider for direct Google AI Studio API-key usage.
+
 **Permanent config:**
 ```yaml
 model:
@@ -127,11 +141,22 @@ model:
   default: "gpt-5.4"
 ```
 
+To persist Gemini CLI instead:
+```yaml
+model:
+  provider: "gemini-cli"
+  default: "gemini-2.5-pro"
+```
+
 | Environment variable | Description |
 |---------------------|-------------|
 | `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API (first priority) |
 | `HERMES_COPILOT_ACP_COMMAND` | Override the Copilot CLI binary path (default: `copilot`) |
 | `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio`) |
+| `HERMES_GEMINI_CLI_COMMAND` | Override the Gemini CLI binary path (default: `gemini`) |
+| `GEMINI_CLI_PATH` | Alias for `HERMES_GEMINI_CLI_COMMAND` |
+| `HERMES_GEMINI_CLI_ARGS` | Extra Gemini CLI args appended to headless invocations |
+| `GEMINI_CLI_BASE_URL` | Override the Gemini CLI backend marker (default: `cli://gemini`) |
 
 ### First-Class Chinese AI Providers
 

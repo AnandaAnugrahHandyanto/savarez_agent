@@ -37,6 +37,7 @@ class TestProviderRegistry:
 
     @pytest.mark.parametrize("provider_id,name,auth_type", [
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
+        ("gemini-cli", "Gemini CLI", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
@@ -96,6 +97,7 @@ class TestProviderRegistry:
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
+        assert PROVIDER_REGISTRY["gemini-cli"].inference_base_url == "cli://gemini"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
@@ -124,9 +126,10 @@ PROVIDER_ENV_VARS = (
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
-    "NOUS_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
+    "NOUS_API_KEY", "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN",
     "OPENAI_BASE_URL", "HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH",
     "HERMES_COPILOT_ACP_ARGS", "COPILOT_ACP_BASE_URL",
+    "HERMES_GEMINI_CLI_COMMAND", "GEMINI_CLI_PATH", "HERMES_GEMINI_CLI_ARGS", "GEMINI_CLI_BASE_URL",
 )
 
 
@@ -205,6 +208,10 @@ class TestResolveProvider:
     def test_alias_github_copilot_acp(self):
         assert resolve_provider("github-copilot-acp") == "copilot-acp"
         assert resolve_provider("copilot-acp-agent") == "copilot-acp"
+
+    def test_alias_gemini_cli(self):
+        assert resolve_provider("google-gemini-cli") == "gemini-cli"
+        assert resolve_provider("gemini-oauth") == "gemini-cli"
 
     def test_explicit_huggingface(self):
         assert resolve_provider("huggingface") == "huggingface"
@@ -337,6 +344,19 @@ class TestApiKeyProviderStatus:
         assert status["configured"] is True
         assert status["provider"] == "copilot-acp"
 
+    def test_gemini_cli_status_detects_local_cli(self, monkeypatch):
+        monkeypatch.setenv("HERMES_GEMINI_CLI_ARGS", "--sandbox --debug")
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+
+        status = get_external_process_provider_status("gemini-cli")
+
+        assert status["configured"] is True
+        assert status["logged_in"] is True
+        assert status["command"] == "gemini"
+        assert status["resolved_command"] == "/usr/local/bin/gemini"
+        assert status["args"] == ["--sandbox", "--debug"]
+        assert status["base_url"] == "cli://gemini"
+
     def test_non_api_key_provider(self):
         status = get_api_key_provider_status("nous")
         assert status["configured"] is False
@@ -410,6 +430,19 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["base_url"] == "acp://copilot"
         assert creds["command"] == "/usr/local/bin/copilot"
         assert creds["args"] == ["--acp", "--stdio"]
+        assert creds["source"] == "process"
+
+    def test_resolve_gemini_cli_with_local_cli(self, monkeypatch):
+        monkeypatch.setenv("HERMES_GEMINI_CLI_ARGS", "--sandbox")
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+
+        creds = resolve_external_process_provider_credentials("gemini-cli")
+
+        assert creds["provider"] == "gemini-cli"
+        assert creds["api_key"] == "gemini-cli"
+        assert creds["base_url"] == "cli://gemini"
+        assert creds["command"] == "/usr/local/bin/gemini"
+        assert creds["args"] == ["--sandbox"]
         assert creds["source"] == "process"
 
     def test_resolve_kimi_with_key(self, monkeypatch):
@@ -588,6 +621,21 @@ class TestRuntimeProviderResolution:
         assert result["command"] == "/usr/local/bin/copilot"
         assert result["args"] == ["--acp", "--stdio", "--debug"]
 
+    def test_runtime_gemini_cli_uses_process_runtime(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+        monkeypatch.setenv("HERMES_GEMINI_CLI_ARGS", "--sandbox")
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="gemini-cli")
+
+        assert result["provider"] == "gemini-cli"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "gemini-cli"
+        assert result["base_url"] == "cli://gemini"
+        assert result["command"] == "/usr/local/bin/gemini"
+        assert result["args"] == ["--sandbox"]
+
 
 # =============================================================================
 # _has_any_provider_configured tests
@@ -633,9 +681,13 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         # Clear all provider env vars so earlier checks don't short-circuit
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+        for var in (
+            "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN", "OPENAI_BASE_URL", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+            "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN",
+        ):
             monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda provider_id=None: {"logged_in": False})
         # Simulate valid Claude Code credentials
         monkeypatch.setattr(
             "agent.anthropic_adapter.read_claude_code_credentials",
@@ -662,8 +714,11 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         # Clear all provider env vars
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+        for var in (
+            "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN", "OPENAI_BASE_URL", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+            "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN",
+        ):
             monkeypatch.delenv(var, raising=False)
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is True
@@ -681,8 +736,11 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+        for var in (
+            "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN", "OPENAI_BASE_URL", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+            "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN",
+        ):
             monkeypatch.delenv(var, raising=False)
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is True
@@ -700,8 +758,11 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+        for var in (
+            "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN", "OPENAI_BASE_URL", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+            "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN",
+        ):
             monkeypatch.delenv(var, raising=False)
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is True
@@ -719,9 +780,13 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+        for var in (
+            "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN", "OPENAI_BASE_URL", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+            "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN",
+        ):
             monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda provider_id=None: {"logged_in": False})
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is False
 
@@ -738,8 +803,11 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         # Clear all provider env vars
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+        for var in (
+            "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN", "OPENAI_BASE_URL", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+            "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN",
+        ):
             monkeypatch.delenv(var, raising=False)
         # Simulate valid Claude Code credentials
         monkeypatch.setattr(
