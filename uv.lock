@@ -1687,6 +1687,9 @@ all = [
     { name = "sounddevice" },
     { name = "swe-rex", extra = ["modal"] },
 ]
+api-server = [
+    { name = "aiohttp" },
+]
 cli = [
     { name = "simple-term-menu" },
 ]
@@ -1759,6 +1762,7 @@ yc-bench = [
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = ">=0.8.1,<1.0" },
+    { name = "aiohttp", marker = "extra == 'api-server'", specifier = ">=3.13.3,<4" },
     { name = "aiohttp", marker = "extra == 'homeassistant'", specifier = ">=3.9.0,<4" },
     { name = "aiohttp", marker = "extra == 'messaging'", specifier = ">=3.13.3,<4" },
     { name = "aiohttp", marker = "extra == 'sms'", specifier = ">=3.9.0,<4" },
@@ -1776,6 +1780,7 @@ requires-dist = [
     { name = "fire", specifier = ">=0.7.1,<1" },
     { name = "firecrawl-py", specifier = ">=4.16.0,<5" },
     { name = "hermes-agent", extras = ["acp"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["api-server"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["cli"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["cron"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["daytona"], marker = "extra == 'all'" },
@@ -1826,7 +1831,7 @@ requires-dist = [
     { name = "wandb", marker = "extra == 'rl'", specifier = ">=0.15.0,<1" },
     { name = "yc-bench", marker = "python_full_version >= '3.12' and extra == 'yc-bench'", git = "https://github.com/collinear-ai/yc-bench.git" },
 ]
-provides-extras = ["modal", "daytona", "dev", "messaging", "cron", "slack", "matrix", "cli", "tts-premium", "voice", "pty", "honcho", "mcp", "homeassistant", "sms", "acp", "dingtalk", "rl", "yc-bench", "all"]
+provides-extras = ["modal", "daytona", "dev", "api-server", "messaging", "cron", "slack", "matrix", "cli", "tts-premium", "voice", "pty", "honcho", "mcp", "homeassistant", "sms", "acp", "dingtalk", "rl", "yc-bench", "all"]
 
 [[package]]
 name = "hf-transfer"
