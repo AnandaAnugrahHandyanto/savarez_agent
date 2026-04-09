@@ -56,12 +56,40 @@ class BrowserUseProvider(CloudBrowserProvider):
         session_data = response.json()
         session_name = f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
 
-        logger.info("Created Browser Use session %s", session_name)
+        # The API returns an HTTPS discovery endpoint in ``cdpUrl``, not a
+        # ``wss://`` URL.  agent-browser's CDP client (cdp_use) expects the
+        # concrete websocket URL, so resolve it via the standard
+        # ``/json/version`` endpoint before returning.
+        https_cdp_url = session_data["cdpUrl"]
+        try:
+            discovery = requests.get(
+                f"{https_cdp_url}/json/version",
+                timeout=10,
+            )
+            discovery.raise_for_status()
+            ws_url = discovery.json()["webSocketDebuggerUrl"]
+        except Exception as exc:
+            # Best effort cleanup — don't leak the session on failure.
+            try:
+                self.close_session(session_data["id"])
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"Failed to resolve Browser Use CDP websocket URL from "
+                f"{https_cdp_url}: {exc}"
+            ) from exc
+
+        logger.info(
+            "Created Browser Use session %s (cost=%s, ws=%s)",
+            session_name,
+            session_data.get("browserCost", "?"),
+            ws_url,
+        )
 
         return {
             "session_name": session_name,
             "bb_session_id": session_data["id"],
-            "cdp_url": session_data["cdpUrl"],
+            "cdp_url": ws_url,
             "features": {"browser_use": True},
         }
 
