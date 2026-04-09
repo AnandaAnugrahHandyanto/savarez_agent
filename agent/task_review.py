@@ -9,8 +9,13 @@ routing of classified memory-write candidates to the built-in memory store.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
@@ -297,3 +302,117 @@ def apply_memory_writeback(
             )
 
     return written
+
+
+# ---------------------------------------------------------------------------
+# Recall artifact — bounded JSON written at task-completion, read at session
+# start.  Replace-on-write, never appended.
+# ---------------------------------------------------------------------------
+
+#: Maximum number of items per list field in the recall artifact.
+_RECALL_LIST_CAP = 5
+
+#: Current schema version for forward-compatibility checks.
+RECALL_ARTIFACT_VERSION = 1
+
+#: Filename (relative to HERMES_HOME/memories/).
+RECALL_ARTIFACT_FILENAME = "recall_artifact.json"
+
+_RECALL_FENCE_TAG_RE = re.compile(r'</?\s*memory-context\s*>', re.IGNORECASE)
+
+
+def _sanitize_recall_text(text: str) -> str:
+    """Strip any accidental memory-context fence tags from artifact content."""
+    return _RECALL_FENCE_TAG_RE.sub('', (text or '').strip())
+
+
+def _truncate_list(items: List[str], cap: int = _RECALL_LIST_CAP) -> List[str]:
+    """Return at most *cap* items, each truncated to 200 chars and sanitized."""
+    out = []
+    for item in items[:cap]:
+        clean = _sanitize_recall_text(item)
+        if clean:
+            out.append(clean[:200])
+    return out
+
+
+def generate_recall_artifact(
+    task_payload: Dict[str, Any],
+    review: TaskReviewResult,
+) -> Dict[str, Any]:
+    """Produce a bounded recall artifact dict from completed-task data.
+
+    Conservative: only extracts information already present in the payload
+    and review result.  No LLM calls.
+
+    Returns a dict ready for JSON serialization.
+    """
+    # User changes: extract from memory-write candidates categorized as user_facts.
+    user_changes = [
+        c.content for c in review.memory_write_candidates
+        if c.category == "user_facts" and c.content
+    ]
+
+    # Environment changes: extract environment_facts candidates.
+    env_changes = [
+        c.content for c in review.memory_write_candidates
+        if c.category == "environment_facts" and c.content
+    ]
+
+    # Workflow learned: extract workflow_facts candidates.
+    workflow_learned = [
+        c.content for c in review.memory_write_candidates
+        if c.category == "workflow_facts" and c.content
+    ]
+
+    # Session summary: compact one-liner from the payload.
+    tools = task_payload.get("tools_used") or []
+    model = task_payload.get("model") or ""
+    completed = task_payload.get("completed", False)
+    status = "completed" if completed else "incomplete"
+    tool_summary = f"tools: {', '.join(tools[:5])}" if tools else "no tools"
+    session_summary = _sanitize_recall_text(
+        f"{status} | {tool_summary} | model: {model}"
+    )
+
+    return {
+        "version": RECALL_ARTIFACT_VERSION,
+        "user_changes": _truncate_list(user_changes),
+        "environment_changes": _truncate_list(env_changes),
+        "workflow_learned": _truncate_list(workflow_learned),
+        "session_summary": session_summary[:500],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def write_recall_artifact(
+    artifact: Dict[str, Any],
+    memories_dir: Path,
+) -> bool:
+    """Atomically write the recall artifact to disk (replace-on-write).
+
+    Args:
+        artifact: Dict produced by :func:`generate_recall_artifact`.
+        memories_dir: The ``{HERMES_HOME}/memories/`` directory.
+
+    Returns:
+        True on success, False on any error.
+    """
+    try:
+        memories_dir.mkdir(parents=True, exist_ok=True)
+        target = memories_dir / RECALL_ARTIFACT_FILENAME
+        data = json.dumps(artifact, indent=2, ensure_ascii=False)
+        # Bound check: refuse to write if serialized size exceeds ~4KB.
+        if len(data.encode("utf-8")) > 4096:
+            logger.warning(
+                "Recall artifact exceeds 4KB (%d bytes), skipping write",
+                len(data.encode("utf-8")),
+            )
+            return False
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        tmp.write_text(data, encoding="utf-8")
+        os.replace(tmp, target)
+        return True
+    except Exception:
+        logger.debug("Failed to write recall artifact", exc_info=True)
+        return False

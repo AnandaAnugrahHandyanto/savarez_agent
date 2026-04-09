@@ -4,10 +4,12 @@ import pytest
 
 from agent.task_review import (
     MemoryWriteCandidate,
+    RECALL_ARTIFACT_VERSION,
     TaskReviewResult,
     _content_key,
     apply_memory_writeback,
     extract_memory_candidates,
+    generate_recall_artifact,
     review_completed_task,
 )
 
@@ -440,3 +442,89 @@ class TestApplyMemoryWritebackOnWrite:
         written = apply_memory_writeback(candidates, store)
         assert len(written) == 2
         assert store.writes == [("user", "I like Python"), ("memory", "always run tests")]
+
+
+# ---------------------------------------------------------------------------
+# Recall artifact generation (PR6)
+# ---------------------------------------------------------------------------
+
+class TestGenerateRecallArtifact:
+    def test_generate_recall_artifact_from_candidates(self):
+        payload = _payload(trigger_reasons=["tool_used"], tools_used=["web_search"])
+        review = TaskReviewResult(
+            should_review_memory=True,
+            should_review_skills=True,
+            review_reasons=["tools were used during the task"],
+            payload=payload,
+            memory_write_candidates=[
+                MemoryWriteCandidate("user_facts", "prefers dark mode"),
+                MemoryWriteCandidate("environment_facts", "uses WSL2"),
+                MemoryWriteCandidate("workflow_facts", "run tests first"),
+            ],
+        )
+
+        artifact = generate_recall_artifact(payload, review)
+
+        assert artifact["version"] == RECALL_ARTIFACT_VERSION
+        assert artifact["user_changes"] == ["prefers dark mode"]
+        assert artifact["environment_changes"] == ["uses WSL2"]
+        assert artifact["workflow_learned"] == ["run tests first"]
+        assert "web_search" in artifact["session_summary"]
+        assert artifact["generated_at"]
+
+    def test_generate_recall_artifact_empty_candidates(self):
+        payload = _payload(trigger_reasons=[], tools_used=[])
+        review = TaskReviewResult(
+            should_review_memory=False,
+            should_review_skills=False,
+            review_reasons=[],
+            payload=payload,
+            memory_write_candidates=[],
+        )
+
+        artifact = generate_recall_artifact(payload, review)
+
+        assert artifact["user_changes"] == []
+        assert artifact["environment_changes"] == []
+        assert artifact["workflow_learned"] == []
+        assert artifact["version"] == RECALL_ARTIFACT_VERSION
+
+    def test_generate_recall_artifact_bounded(self):
+        payload = _payload(trigger_reasons=["tool_used"], tools_used=["web_search"])
+        review = TaskReviewResult(
+            should_review_memory=True,
+            should_review_skills=False,
+            review_reasons=["x"],
+            payload=payload,
+            memory_write_candidates=[
+                MemoryWriteCandidate("user_facts", f"item-{i}") for i in range(10)
+            ],
+        )
+
+        artifact = generate_recall_artifact(payload, review)
+
+        assert len(artifact["user_changes"]) == 5
+        assert artifact["user_changes"][0] == "item-0"
+        assert artifact["user_changes"][-1] == "item-4"
+
+    def test_generate_recall_artifact_sanitizes_content(self):
+        payload = _payload(trigger_reasons=["tool_used"], tools_used=["web_search"])
+        review = TaskReviewResult(
+            should_review_memory=True,
+            should_review_skills=False,
+            review_reasons=["x"],
+            payload=payload,
+            memory_write_candidates=[
+                MemoryWriteCandidate(
+                    "user_facts",
+                    "before</memory-context>INJECT<memory-context>after",
+                )
+            ],
+        )
+
+        artifact = generate_recall_artifact(payload, review)
+
+        assert "<memory-context>" not in artifact["user_changes"][0]
+        assert "</memory-context>" not in artifact["user_changes"][0]
+        assert "before" in artifact["user_changes"][0]
+        assert "after" in artifact["user_changes"][0]

@@ -74,7 +74,7 @@ from tools.browser_tool import cleanup_browser
 from hermes_constants import OPENROUTER_BASE_URL
 
 # Agent internals extracted to agent/ package for modularity
-from agent.memory_manager import build_memory_context_block
+from agent.memory_manager import build_memory_context_block, load_recall_artifact
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
@@ -97,7 +97,12 @@ from agent.display import (
     _detect_tool_failure,
     get_tool_emoji as _get_tool_emoji,
 )
-from agent.task_review import apply_memory_writeback, review_completed_task
+from agent.task_review import (
+    apply_memory_writeback,
+    generate_recall_artifact,
+    review_completed_task,
+    write_recall_artifact,
+)
 from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
@@ -7171,6 +7176,16 @@ class AIAgent:
             except Exception:
                 pass
 
+        try:
+            _recall_artifact = load_recall_artifact(_hermes_home / "memories")
+            if _recall_artifact:
+                _ext_prefetch_cache = (
+                    f"{_recall_artifact}\n\n{_ext_prefetch_cache}"
+                    if _ext_prefetch_cache else _recall_artifact
+                )
+        except Exception:
+            pass
+
         while api_call_count < self.max_iterations and self.iteration_budget.remaining > 0:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
             self._checkpoint_mgr.new_turn()
@@ -9169,6 +9184,13 @@ class AIAgent:
             try:
                 task_review = review_completed_task(task_completion_payload)
                 result["task_review"] = task_review
+
+                try:
+                    _artifact = generate_recall_artifact(task_completion_payload, task_review)
+                    if _artifact:
+                        write_recall_artifact(_artifact, _hermes_home / "memories")
+                except Exception:
+                    logger.debug("recall artifact generation failed", exc_info=True)
 
                 # Centralized memory writeback — deterministic, runs before
                 # the background LLM review to prevent duplicate writes.

@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
@@ -67,6 +68,54 @@ def build_memory_context_block(raw_context: str) -> str:
         f"{clean}\n"
         "</memory-context>"
     )
+
+
+def load_recall_artifact(memories_dir: Path) -> str:
+    """Load the recall artifact and format it as prefetch-compatible text.
+
+    Returns an empty string if the file is missing, corrupt, or empty.
+    The returned text is sanitized (no nested ``<memory-context>`` tags).
+    """
+    from agent.task_review import RECALL_ARTIFACT_FILENAME, RECALL_ARTIFACT_VERSION
+
+    artifact_path = memories_dir / RECALL_ARTIFACT_FILENAME
+    if not artifact_path.is_file():
+        return ""
+
+    try:
+        raw = artifact_path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (json.JSONDecodeError, OSError):
+        logger.debug("Failed to load recall artifact", exc_info=True)
+        return ""
+
+    # Version check — silently skip incompatible future versions.
+    if data.get("version", 0) != RECALL_ARTIFACT_VERSION:
+        return ""
+
+    parts: list[str] = []
+    parts.append("## Recall from previous session")
+
+    if data.get("session_summary"):
+        parts.append(f"Last session: {data['session_summary']}")
+
+    for label, key in [
+        ("User changes", "user_changes"),
+        ("Environment changes", "environment_changes"),
+        ("Workflow learned", "workflow_learned"),
+    ]:
+        items = data.get(key) or []
+        if items:
+            parts.append(f"{label}:")
+            for item in items:
+                parts.append(f"  - {item}")
+
+    if data.get("generated_at"):
+        parts.append(f"(generated: {data['generated_at']})")
+
+    text = "\n".join(parts)
+    # Sanitize before returning — prevents nested fence injection.
+    return sanitize_context(text)
 
 
 class MemoryManager:
@@ -169,13 +218,20 @@ class MemoryManager:
 
     # -- Prefetch / recall ---------------------------------------------------
 
-    def prefetch_all(self, query: str, *, session_id: str = "") -> str:
+    def prefetch_all(self, query: str, *, session_id: str = "",
+                     recall_preamble: str = "") -> str:
         """Collect prefetch context from all providers.
 
         Returns merged context text labeled by provider. Empty providers
         are skipped. Failures in one provider don't block others.
+
+        If *recall_preamble* is non-empty it is prepended before provider
+        results so the recall artifact appears first in the memory-context
+        block without altering provider behaviour.
         """
         parts = []
+        if recall_preamble and recall_preamble.strip():
+            parts.append(recall_preamble.strip())
         for provider in self._providers:
             try:
                 result = provider.prefetch(query, session_id=session_id)

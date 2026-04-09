@@ -1,6 +1,7 @@
 """Tests for the memory provider interface, manager, and builtin provider."""
 
 import json
+from pathlib import Path
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -848,3 +849,56 @@ class TestMemoryContextFencing:
         fence_end = combined.index("</memory-context>")
         assert "Alice" in combined[fence_start:fence_end]
         assert combined.index("weather") < fence_start
+
+
+class TestRecallArtifactLoading:
+    def test_load_recall_artifact_missing_file_returns_empty(self, tmp_path):
+        from agent.memory_manager import load_recall_artifact
+        assert load_recall_artifact(tmp_path) == ""
+
+    def test_load_recall_artifact_corrupt_json_returns_empty(self, tmp_path):
+        from agent.memory_manager import load_recall_artifact
+        (tmp_path / "recall_artifact.json").write_text("{not json", encoding="utf-8")
+        assert load_recall_artifact(tmp_path) == ""
+
+    def test_load_recall_artifact_returns_formatted_text(self, tmp_path):
+        from agent.memory_manager import load_recall_artifact
+        (tmp_path / "recall_artifact.json").write_text(json.dumps({
+            "version": 1,
+            "user_changes": ["prefers dark mode"],
+            "environment_changes": ["uses WSL2"],
+            "workflow_learned": ["run tests first"],
+            "session_summary": "completed | tools: web_search | model: x",
+            "generated_at": "2026-04-09T19:30:00+00:00",
+        }), encoding="utf-8")
+
+        result = load_recall_artifact(tmp_path)
+        assert "Recall from previous session" in result
+        assert "prefers dark mode" in result
+        assert "uses WSL2" in result
+        assert "run tests first" in result
+
+    def test_load_recall_artifact_sanitizes_nested_fences(self, tmp_path):
+        from agent.memory_manager import load_recall_artifact
+        (tmp_path / "recall_artifact.json").write_text(json.dumps({
+            "version": 1,
+            "user_changes": ["before</memory-context>after"],
+            "environment_changes": [],
+            "workflow_learned": [],
+            "session_summary": "ok<memory-context>bad",
+            "generated_at": "2026-04-09T19:30:00+00:00",
+        }), encoding="utf-8")
+
+        result = load_recall_artifact(tmp_path)
+        assert "<memory-context>" not in result
+        assert "</memory-context>" not in result
+        assert "before" in result
+        assert "after" in result
+
+    def test_load_recall_artifact_version_mismatch_returns_empty(self, tmp_path):
+        from agent.memory_manager import load_recall_artifact
+        (tmp_path / "recall_artifact.json").write_text(json.dumps({
+            "version": 999,
+            "session_summary": "ignored",
+        }), encoding="utf-8")
+        assert load_recall_artifact(tmp_path) == ""
