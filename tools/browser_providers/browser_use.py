@@ -2,8 +2,9 @@
 
 import logging
 import os
+import time
 import uuid
-from typing import Dict
+from typing import Callable, Dict, TypeVar
 
 import requests
 
@@ -12,6 +13,27 @@ from tools.browser_providers.base import CloudBrowserProvider
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://api.browser-use.com/api/v2"
+
+_T = TypeVar("_T")
+
+
+def _retry(fn: Callable[[], _T], max_attempts: int = 3, delay: float = 1.0) -> _T:
+    """Retry a callable with exponential backoff — house-style helper.
+
+    Mirrors ``tools/code_execution_tool.retry`` so this provider file stays
+    self-contained (no cross-tool import). Used for transient failures like
+    brief network blips while resolving the Browser Use CDP discovery URL.
+    """
+    last_err: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except Exception as exc:
+            last_err = exc
+            if attempt < max_attempts - 1:
+                time.sleep(delay * (2 ** attempt))
+    assert last_err is not None
+    raise last_err
 
 
 class BrowserUseProvider(CloudBrowserProvider):
@@ -59,14 +81,20 @@ class BrowserUseProvider(CloudBrowserProvider):
         # The API returns an HTTPS discovery endpoint in ``cdpUrl``, not a
         # ``wss://`` URL.  agent-browser's CDP client (cdp_use) expects the
         # concrete websocket URL, so resolve it via the standard
-        # ``/json/version`` endpoint before returning.
+        # ``/json/version`` endpoint before returning.  Wrap the discovery
+        # GET in ``_retry`` so a transient network blip does not kill the
+        # whole session creation — we'd just leak the paid session.
         https_cdp_url = session_data["cdpUrl"]
+
+        def _fetch_discovery() -> requests.Response:
+            resp = requests.get(f"{https_cdp_url}/json/version", timeout=10)
+            # raise inside the closure so 5xx also triggers retry, not just
+            # connection-level failures.
+            resp.raise_for_status()
+            return resp
+
         try:
-            discovery = requests.get(
-                f"{https_cdp_url}/json/version",
-                timeout=10,
-            )
-            discovery.raise_for_status()
+            discovery = _retry(_fetch_discovery, max_attempts=3, delay=1.0)
             ws_url = discovery.json()["webSocketDebuggerUrl"]
         except Exception as exc:
             # Best effort cleanup — don't leak the session on failure.

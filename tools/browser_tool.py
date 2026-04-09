@@ -515,7 +515,7 @@ atexit.register(_stop_browser_cleanup_thread)
 BROWSER_TOOL_SCHEMAS = [
     {
         "name": "browser_navigate",
-        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). Use browser tools when you need to interact with a page (click, fill forms, dynamic content).",
+        "description": "Anti-detect browser navigation via cloud provider (Browser Use Cloud / Browserbase). Each call consumes a paid cloud session (~$0.06), so use it only when cloud stealth is actually needed. USE ONLY FOR: bot-protected sites (Cloudflare / Akamai / PerimeterX / DataDome challenges), authenticated dashboards, financial data sources (screener.in, moneycontrol, bse.india.com, nseindia.com, broker sites), news sites that block scrapers, and geo-gated content. DO NOT USE FOR: github, wikipedia, readthedocs, MDN, pypi, npmjs, docs.*, stackoverflow, or any public documentation / code hosting / open-API site — use mcp_playwright_browser_navigate instead (local, free, faster). DO NOT USE FOR: localhost / 127.0.0.1 / private IPs (blocked by SSRF anyway). For read-only info retrieval with zero interaction, prefer web_search or web_extract. Must be called before other browser_* tools if you do decide to use this path.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1205,21 +1205,25 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         title_lower = title.lower()
         
         if any(pattern in title_lower for pattern in blocked_patterns):
+            _provider_obj = _get_cloud_provider()
+            _provider_display = _provider_obj.provider_name() if _provider_obj else "cloud browser"
             response["bot_detection_warning"] = (
                 f"Page title '{title}' suggests bot detection. The site may have blocked this request. "
                 "Options: 1) Try adding delays between actions, 2) Access different pages first, "
-                "3) Enable advanced stealth (BROWSERBASE_ADVANCED_STEALTH=true, requires Scale plan), "
+                f"3) Upgrade your {_provider_display} plan for stronger stealth / residential proxies, "
                 "4) Some sites have very aggressive bot detection that may be unavoidable."
             )
-        
+
         # Include feature info on first navigation so model knows what's active
         if is_first_nav and "features" in session_info:
             features = session_info["features"]
             active_features = [k for k, v in features.items() if v]
             if not features.get("proxies"):
+                _provider_obj = _get_cloud_provider()
+                _provider_display = _provider_obj.provider_name() if _provider_obj else "cloud browser"
                 response["stealth_warning"] = (
                     "Running WITHOUT residential proxies. Bot detection may be more aggressive. "
-                    "Consider upgrading Browserbase plan for proxy support."
+                    f"Consider upgrading your {_provider_display} plan for proxy support."
                 )
             response["stealth_features"] = active_features
         

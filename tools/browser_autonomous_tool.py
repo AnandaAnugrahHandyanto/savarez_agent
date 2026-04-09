@@ -268,14 +268,16 @@ async def _browser_use_agent_handler(args: dict, **kwargs) -> str:
 BROWSER_USE_AGENT_SCHEMA = {
     "name": "browser_use_agent",
     "description": (
-        "Autonomous browser agent that completes a goal by planning and "
-        "executing browsing steps (navigate, click, type, scroll) on its own. "
-        "Use this for complex multi-step web tasks like 'find the pricing on "
-        "example.com', 'fill out a form', or 'research topic X across multiple "
-        "sites'. Unlike the step-by-step browser_* tools, you give it a goal "
-        "and it figures out the clicks. Costs more tokens but handles complex "
-        "workflows autonomously. For simple single-page reads, prefer "
-        "web_search or web_extract instead."
+        "Autonomous browser agent that plans and executes browsing steps "
+        "(navigate, click, type, scroll) on its own. Use ONLY for open-ended "
+        "exploratory tasks where the workflow cannot be pre-planned — e.g. "
+        "'research topic X across multiple sites' or 'find the cheapest flight "
+        "across three airline sites'. For any well-defined workflow (known URL, "
+        "known steps), PREFER the step-by-step tools: browser_navigate + "
+        "browser_snapshot + browser_click + browser_type — they are cheaper, "
+        "faster, give you visibility into each step, and route through the "
+        "configured cloud provider (if any) for anti-detect stealth. For "
+        "simple single-page reads, prefer web_search or web_extract."
     ),
     "parameters": {
         "type": "object",

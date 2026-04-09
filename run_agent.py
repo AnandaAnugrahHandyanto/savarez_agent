@@ -79,7 +79,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE, CONTEXT_GRAPH_GUIDANCE, KB_WIKI_GUIDANCE,
-    COUNCIL_DIRECTIVE,
+    COUNCIL_DIRECTIVE, BROWSER_ROUTING_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -2791,6 +2791,18 @@ class AIAgent:
             and getattr(self, "_council_enabled", False)
         ):
             tool_guidance.append(COUNCIL_DIRECTIVE)
+        # Browser routing guidance — only when the native browser_navigate tool
+        # is loaded AND a cloud browser provider is actually configured.  Without
+        # a cloud provider the routing advice is noise (there's nothing special
+        # about picking browser_navigate over the MCP alternatives).
+        if "browser_navigate" in self.valid_tool_names:
+            try:
+                from tools.browser_tool import _get_cloud_provider
+                if _get_cloud_provider() is not None:
+                    tool_guidance.append(BROWSER_ROUTING_GUIDANCE)
+            except Exception:
+                # Never fail prompt assembly on an optional guidance block.
+                pass
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 

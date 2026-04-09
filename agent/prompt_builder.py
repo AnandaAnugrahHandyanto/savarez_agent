@@ -210,6 +210,36 @@ COUNCIL_DIRECTIVE = (
     "small-talk)."
 )
 
+# Browser routing guidance — injected when a cloud browser provider is active
+# AND the native browser_navigate tool is loaded.  Steers the LLM toward the
+# cloud path for bot-protected / authenticated / financial targets and toward
+# local Playwright MCP for simple public lookups.  Matches the description
+# rules inside tools/browser_tool.py::browser_navigate so all three layers
+# (system prompt, tool description, tool docstring) tell the LLM the same thing.
+BROWSER_ROUTING_GUIDANCE = (
+    "# Browser tool routing (IMPORTANT — affects cost and performance)\n"
+    "A paid cloud browser provider is configured. Each `browser_navigate` call "
+    "costs a real cloud session (~$0.06). Route deliberately:\n"
+    "- USE `browser_navigate` (cloud, anti-detect) ONLY FOR: sites that fight bots "
+    "(Cloudflare / Akamai / PerimeterX / DataDome challenges), authenticated "
+    "dashboards, financial data sites (screener.in, moneycontrol, bseindia.com, "
+    "nseindia.com, broker portals), news sites that block scrapers, geo-gated content.\n"
+    "- USE `mcp_playwright_browser_navigate` (local, free, faster) FOR EVERYTHING ELSE, "
+    "especially: github.com, wikipedia.org, readthedocs.io, MDN, pypi.org, npmjs.com, "
+    "stackoverflow.com, any `docs.*` subdomain, public API endpoints, and any simple "
+    "lookup on an open site. Most sites do NOT need cloud stealth — default to local.\n"
+    "- NEVER use `browser_navigate` (cloud) for localhost / 127.0.0.1 / private IPs — "
+    "cloud SSRF protection blocks them. Use `mcp_playwright_browser_navigate`.\n"
+    "- For open-ended exploratory research across multiple sites, `browser_use_agent` "
+    "is acceptable. For well-defined workflows with known URLs, prefer step-by-step "
+    "browser_navigate OR mcp_playwright_browser_navigate (per the rules above).\n"
+    "- Within a single URL / workflow, STICK TO ONE FAMILY: if you pick "
+    "`browser_navigate`, follow up with `browser_snapshot` / `browser_click` / "
+    "`browser_type` / `browser_scroll`. If you pick `mcp_playwright_browser_navigate`, "
+    "follow up with `mcp_playwright_browser_snapshot` etc. Do not mix families on "
+    "the same session — the snapshot/click tools operate on different underlying browsers."
+)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "
