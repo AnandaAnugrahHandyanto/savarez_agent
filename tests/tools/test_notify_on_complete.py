@@ -120,6 +120,25 @@ class TestCompletionQueue:
         assert completion["exit_code"] == 1
         assert "FAILED" in completion["output"]
 
+    def test_move_to_finished_redacts_command_and_output(self, registry):
+        s = _make_session(
+            command="git fetch https://super-secret-token@github.com/acme/repo.git",
+            notify_on_complete=True,
+            output="fatal: could not read Password for 'https://alice:hunter2@github.com/acme/repo.git'",
+            exit_code=1,
+        )
+        s.exited = True
+        s.exit_code = 1
+        registry._running[s.id] = s
+        with patch.object(registry, "_write_checkpoint"):
+            registry._move_to_finished(s)
+
+        completion = registry.completion_queue.get_nowait()
+        assert "super-secret-token" not in completion["command"]
+        assert "hunter2" not in completion["output"]
+        assert "https://***@github.com/acme/repo.git" in completion["command"]
+        assert "https://alice:***@github.com/acme/repo.git" in completion["output"]
+
     def test_output_truncated_to_2000(self, registry):
         """Long output is truncated to last 2000 chars."""
         long_output = "x" * 5000

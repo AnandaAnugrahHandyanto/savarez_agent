@@ -262,6 +262,41 @@ class TestMessageStorage:
         assert conv[0]["codex_reasoning_items"] == codex_items
         assert conv[0]["codex_reasoning_items"][0]["encrypted_content"] == "enc_blob_123"
 
+    def test_get_messages_as_conversation_redacts_sensitive_urls(self, db):
+        db.create_session(session_id="s1", source="cli")
+        tool_calls = [
+            {
+                "id": "call_1",
+                "function": {
+                    "name": "terminal",
+                    "arguments": '{"command": "git remote set-url origin https://super-secret-token@github.com/acme/repo.git"}',
+                },
+            }
+        ]
+        reasoning_details = [
+            {
+                "type": "reasoning.summary",
+                "summary": "Check https://alice:hunter2@github.com/acme/repo.git",
+            }
+        ]
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="Use https://alice:hunter2@github.com/acme/repo.git",
+            tool_calls=tool_calls,
+            reasoning="Fetch from https://build-secret-token@github.com/acme/repo.git",
+            reasoning_details=reasoning_details,
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        assistant = conv[0]
+        assert "hunter2" not in assistant["content"]
+        assert "https://alice:***@github.com/acme/repo.git" in assistant["content"]
+        assert "super-secret-token" not in assistant["tool_calls"][0]["function"]["arguments"]
+        assert "https://***@github.com/acme/repo.git" in assistant["tool_calls"][0]["function"]["arguments"]
+        assert "build-secret-token" not in assistant["reasoning"]
+        assert "hunter2" not in assistant["reasoning_details"][0]["summary"]
+
 
 # =========================================================================
 # FTS5 search

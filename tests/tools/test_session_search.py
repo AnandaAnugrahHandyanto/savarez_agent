@@ -111,6 +111,14 @@ class TestFormatConversation:
         result = _format_conversation([])
         assert result == ""
 
+    def test_redacts_sensitive_urls(self):
+        msgs = [
+            {"role": "assistant", "content": "Use https://alice:hunter2@github.com/acme/repo.git"},
+        ]
+        result = _format_conversation(msgs)
+        assert "hunter2" not in result
+        assert "https://alice:***@github.com/acme/repo.git" in result
+
 
 # =========================================================================
 # _truncate_around_matches
