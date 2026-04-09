@@ -3718,6 +3718,7 @@ class GatewayRunner:
             current_api_key=current_api_key,
             is_global=persist_global,
             explicit_provider=explicit_provider,
+            user_providers=user_provs,
         )
 
         if not result.success:
