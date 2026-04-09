@@ -433,6 +433,43 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     return ""
 
 
+def _resolve_per_topic_model_override(
+    config: dict, source
+) -> "tuple[str | None, str | None]":
+    """Return (model, provider) override for the current chat/topic, or (None, None).
+
+    Reads from ``telegram.groups.<chat_id>.topics.<thread_id>`` in config.yaml,
+    allowing operators to pin a specific model/provider to a forum topic without
+    changing the gateway-wide default.
+
+    Example config::
+
+        telegram:
+          groups:
+            '-1001234567890':
+              topics:
+                '42':
+                  agent_id: main
+                  model: google/gemini-2.5-flash
+                  provider: openrouter
+    """
+    if not source or not getattr(source, "chat_id", None) or not getattr(source, "thread_id", None):
+        return None, None
+    tg_groups = config.get("telegram", {}).get("groups", {})
+    if not isinstance(tg_groups, dict):
+        return None, None
+    chat_cfg = tg_groups.get(str(source.chat_id), {})
+    if not isinstance(chat_cfg, dict):
+        return None, None
+    topics = chat_cfg.get("topics", {})
+    if not isinstance(topics, dict):
+        return None, None
+    topic_cfg = topics.get(str(source.thread_id), {})
+    if not isinstance(topic_cfg, dict):
+        return None, None
+    return topic_cfg.get("model") or None, topic_cfg.get("provider") or None
+
+
 def _resolve_hermes_bin() -> Optional[list[str]]:
     """Resolve the Hermes update command as argv parts.
 
@@ -2405,7 +2442,7 @@ class GatewayRunner:
                             f"Adjust reset timing in config.yaml under session_reset."
                         )
                         try:
-                            session_info = self._format_session_info()
+                            session_info = self._format_session_info(source)
                             if session_info:
                                 notice = f"{notice}\n\n{session_info}"
                         except Exception:
@@ -3179,7 +3216,7 @@ class GatewayRunner:
             # Clear session env
             self._clear_session_env()
     
-    def _format_session_info(self) -> str:
+    def _format_session_info(self, source=None) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
@@ -3188,6 +3225,7 @@ class GatewayRunner:
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
+        data = {}
         model = _resolve_gateway_model()
         config_context_length = None
         provider = None
@@ -3213,9 +3251,23 @@ class GatewayRunner:
         except Exception:
             pass
 
+        # Match the main gateway path: /new should reflect per-topic overrides
+        # instead of always echoing the global default model/provider.
+        try:
+            _ov_model, _ov_provider = _resolve_per_topic_model_override(data, source)
+            if _ov_model:
+                model = _ov_model
+            if _ov_provider:
+                provider = _ov_provider
+        except Exception:
+            pass
+
         # Resolve runtime credentials for probing
         try:
             runtime = _resolve_runtime_agent_kwargs()
+            if provider:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                runtime = resolve_runtime_provider(requested=provider)
             provider = provider or runtime.get("provider")
             base_url = base_url or runtime.get("base_url")
             api_key = runtime.get("api_key")
@@ -3323,7 +3375,7 @@ class GatewayRunner:
 
         # Resolve session config info to surface to the user
         try:
-            session_info = self._format_session_info()
+            session_info = self._format_session_info(source)
         except Exception:
             session_info = ""
 
@@ -6650,6 +6702,19 @@ class GatewayRunner:
 
             model = _resolve_gateway_model(user_config)
 
+            # Per-topic model/provider override (telegram.groups config)
+            _ov_model, _ov_provider = _resolve_per_topic_model_override(user_config, source)
+            if _ov_model:
+                model = _ov_model
+                logger.info(
+                    "Per-topic model override applied: platform=%s chat_id=%s thread_id=%s model=%s provider=%s",
+                    getattr(source, "platform", "?"),
+                    getattr(source, "chat_id", "?"),
+                    getattr(source, "thread_id", "?"),
+                    model,
+                    _ov_provider or "default",
+                )
+
             try:
                 runtime_kwargs = _resolve_runtime_agent_kwargs()
             except Exception as exc:
@@ -6659,6 +6724,26 @@ class GatewayRunner:
                     "api_calls": 0,
                     "tools": [],
                 }
+
+            # Apply per-topic provider override after runtime resolution
+            if _ov_provider:
+                try:
+                    from hermes_cli.runtime_provider import resolve_runtime_provider
+                    _ov_rt = resolve_runtime_provider(requested=_ov_provider)
+                    runtime_kwargs = {
+                        "api_key": _ov_rt.get("api_key"),
+                        "base_url": _ov_rt.get("base_url"),
+                        "provider": _ov_rt.get("provider"),
+                        "api_mode": _ov_rt.get("api_mode"),
+                        "command": _ov_rt.get("command"),
+                        "args": list(_ov_rt.get("args") or []),
+                        "credential_pool": _ov_rt.get("credential_pool"),
+                    }
+                except Exception:
+                    logger.warning(
+                        "Per-topic provider override '%s' failed to resolve — falling back to default",
+                        _ov_provider,
+                    )
 
             pr = self._provider_routing
             reasoning_config = self._load_reasoning_config()
