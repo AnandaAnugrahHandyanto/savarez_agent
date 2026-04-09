@@ -41,6 +41,15 @@ def _make_timeout_error() -> httpx.TimeoutException:
 class TestCacheImageFromUrl:
     """Tests for gateway.platforms.base.cache_image_from_url"""
 
+    @pytest.fixture(autouse=True)
+    def _mock_safe_url(self):
+        # Force is_safe_url to True so these tests don't depend on the
+        # local DNS resolver. Some proxy configurations (e.g. Clash/Mihomo
+        # fake-ip mode) rewrite example.com to a private 198.18.x.x IP,
+        # which would otherwise trip the SSRF guard and fail every test.
+        with patch("tools.url_safety.is_safe_url", return_value=True):
+            yield
+
     def test_success_on_first_attempt(self, tmp_path, monkeypatch):
         """A clean 200 response caches the image and returns a path."""
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
@@ -177,6 +186,12 @@ class TestCacheImageFromUrl:
 
 class TestCacheAudioFromUrl:
     """Tests for gateway.platforms.base.cache_audio_from_url"""
+
+    @pytest.fixture(autouse=True)
+    def _mock_safe_url(self):
+        # See TestCacheImageFromUrl._mock_safe_url for rationale.
+        with patch("tools.url_safety.is_safe_url", return_value=True):
+            yield
 
     def test_success_on_first_attempt(self, tmp_path, monkeypatch):
         """A clean 200 response caches the audio and returns a path."""
@@ -721,3 +736,98 @@ class TestMattermostSendUrlAsFile:
         # No sleep — fell back on first attempt
         mock_sleep.assert_not_called()
         assert adapter._session.get.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# trusted_source SSRF bypass — for platform-SDK-supplied URLs
+# (See: fix for Discord attachments under DNS-rewriting proxies / fake-ip)
+# ---------------------------------------------------------------------------
+
+class TestTrustedSourceBypass:
+    """Tests for trusted_source=True bypassing SSRF checks.
+
+    Platform SDKs (discord.py, telegram, etc.) hand us pre-authenticated
+    attachment URLs. Users behind DNS-rewriting proxies (Clash/Mihomo
+    fake-ip mode) see these URLs resolve to private 198.18.x.x addresses,
+    which trips the SSRF guard with a false positive. Trusted callers can
+    opt out via ``trusted_source=True``.
+    """
+
+    def _build_mock_client(self, content: bytes = b"\xff\xd8\xff data"):
+        fake_response = MagicMock()
+        fake_response.content = content
+        fake_response.raise_for_status = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=fake_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        return mock_client
+
+    def test_image_blocked_by_default_when_unsafe(self, tmp_path, monkeypatch):
+        """Without trusted_source, an unsafe URL raises ValueError."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+
+        async def run():
+            with patch("tools.url_safety.is_safe_url", return_value=False):
+                from gateway.platforms.base import cache_image_from_url
+                return await cache_image_from_url(
+                    "https://cdn.discordapp.com/attachments/x/y.png", ext=".png"
+                )
+
+        with pytest.raises(ValueError, match="SSRF"):
+            asyncio.run(run())
+
+    def test_image_trusted_source_bypasses_ssrf(self, tmp_path, monkeypatch):
+        """trusted_source=True skips the SSRF check entirely."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        mock_client = self._build_mock_client()
+
+        async def run():
+            # is_safe_url would return False, but it must NOT be called.
+            with patch("httpx.AsyncClient", return_value=mock_client), \
+                 patch("tools.url_safety.is_safe_url",
+                       side_effect=AssertionError("must not be called")):
+                from gateway.platforms.base import cache_image_from_url
+                return await cache_image_from_url(
+                    "https://cdn.discordapp.com/attachments/x/y.png",
+                    ext=".png",
+                    trusted_source=True,
+                )
+
+        path = asyncio.run(run())
+        assert path.endswith(".png")
+        mock_client.get.assert_called_once()
+
+    def test_audio_blocked_by_default_when_unsafe(self, tmp_path, monkeypatch):
+        """Audio variant: SSRF guard fires when trusted_source is omitted."""
+        monkeypatch.setattr("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "aud")
+
+        async def run():
+            with patch("tools.url_safety.is_safe_url", return_value=False):
+                from gateway.platforms.base import cache_audio_from_url
+                return await cache_audio_from_url(
+                    "https://cdn.discordapp.com/attachments/x/y.ogg", ext=".ogg"
+                )
+
+        with pytest.raises(ValueError, match="SSRF"):
+            asyncio.run(run())
+
+    def test_audio_trusted_source_bypasses_ssrf(self, tmp_path, monkeypatch):
+        """Audio variant: trusted_source=True allows the download."""
+        monkeypatch.setattr("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "aud")
+        mock_client = self._build_mock_client(content=b"OggS audio data")
+
+        async def run():
+            with patch("httpx.AsyncClient", return_value=mock_client), \
+                 patch("tools.url_safety.is_safe_url",
+                       side_effect=AssertionError("must not be called")):
+                from gateway.platforms.base import cache_audio_from_url
+                return await cache_audio_from_url(
+                    "https://cdn.discordapp.com/attachments/x/y.ogg",
+                    ext=".ogg",
+                    trusted_source=True,
+                )
+
+        path = asyncio.run(run())
+        assert path.endswith(".ogg")
+        mock_client.get.assert_called_once()

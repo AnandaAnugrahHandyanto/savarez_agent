@@ -2322,7 +2322,15 @@ class DiscordAdapter(BasePlatformAdapter):
                     ext = "." + content_type.split("/")[-1].split(";")[0]
                     if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
                         ext = ".jpg"
-                    cached_path = await cache_image_from_url(att.url, ext=ext)
+                    # trusted_source=True: att.url comes directly from the
+                    # discord.py SDK and is authenticated by Discord. Skipping
+                    # the SSRF check is necessary for users behind proxies that
+                    # use DNS rewriting (e.g. Clash/Mihomo fake-ip mode), which
+                    # would otherwise resolve cdn.discordapp.com to a private
+                    # 198.18.x.x address and trigger a false positive.
+                    cached_path = await cache_image_from_url(
+                        att.url, ext=ext, trusted_source=True,
+                    )
                     media_urls.append(cached_path)
                     media_types.append(content_type)
                     print(f"[Discord] Cached user image: {cached_path}", flush=True)
@@ -2336,7 +2344,9 @@ class DiscordAdapter(BasePlatformAdapter):
                     ext = "." + content_type.split("/")[-1].split(";")[0]
                     if ext not in (".ogg", ".mp3", ".wav", ".webm", ".m4a"):
                         ext = ".ogg"
-                    cached_path = await cache_audio_from_url(att.url, ext=ext)
+                    cached_path = await cache_audio_from_url(
+                        att.url, ext=ext, trusted_source=True,
+                    )
                     media_urls.append(cached_path)
                     media_types.append(content_type)
                     print(f"[Discord] Cached user audio: {cached_path}", flush=True)

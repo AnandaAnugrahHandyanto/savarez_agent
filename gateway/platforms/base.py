@@ -110,7 +110,12 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     return str(filepath)
 
 
-async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
+async def cache_image_from_url(
+    url: str,
+    ext: str = ".jpg",
+    retries: int = 2,
+    trusted_source: bool = False,
+) -> str:
     """
     Download an image from a URL and save it to the local cache.
 
@@ -121,16 +126,25 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
         url: The HTTP/HTTPS URL to download from.
         ext: File extension including the dot (e.g. ".jpg", ".png").
         retries: Number of retry attempts on transient failures.
+        trusted_source: If True, skip SSRF safety checks. Use ONLY for URLs
+            obtained directly from a messaging platform's SDK (e.g.
+            ``discord.Attachment.url``, ``telegram.PhotoSize.file_path``)
+            where the URL has already been authenticated by the platform.
+            DNS-rewriting proxies (Clash/Mihomo fake-ip mode) make IP-based
+            SSRF checks unreliable for legitimate platform CDNs, so trusted
+            callers MUST opt out explicitly.
 
     Returns:
         Absolute path to the cached image file as a string.
 
     Raises:
-        ValueError: If the URL targets a private/internal network (SSRF protection).
+        ValueError: If the URL targets a private/internal network (SSRF
+            protection) and ``trusted_source`` is False.
     """
-    from tools.url_safety import is_safe_url
-    if not is_safe_url(url):
-        raise ValueError(f"Blocked unsafe URL (SSRF protection): {_safe_url_for_log(url)}")
+    if not trusted_source:
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(url):
+            raise ValueError(f"Blocked unsafe URL (SSRF protection): {_safe_url_for_log(url)}")
 
     import asyncio
     import httpx
@@ -225,7 +239,12 @@ def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
     return str(filepath)
 
 
-async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) -> str:
+async def cache_audio_from_url(
+    url: str,
+    ext: str = ".ogg",
+    retries: int = 2,
+    trusted_source: bool = False,
+) -> str:
     """
     Download an audio file from a URL and save it to the local cache.
 
@@ -236,16 +255,22 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
         url: The HTTP/HTTPS URL to download from.
         ext: File extension including the dot (e.g. ".ogg", ".mp3").
         retries: Number of retry attempts on transient failures.
+        trusted_source: If True, skip SSRF safety checks. Use ONLY for URLs
+            obtained directly from a messaging platform's SDK where the URL
+            has already been authenticated by the platform. See
+            ``cache_image_from_url`` for the rationale.
 
     Returns:
         Absolute path to the cached audio file as a string.
 
     Raises:
-        ValueError: If the URL targets a private/internal network (SSRF protection).
+        ValueError: If the URL targets a private/internal network (SSRF
+            protection) and ``trusted_source`` is False.
     """
-    from tools.url_safety import is_safe_url
-    if not is_safe_url(url):
-        raise ValueError(f"Blocked unsafe URL (SSRF protection): {_safe_url_for_log(url)}")
+    if not trusted_source:
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(url):
+            raise ValueError(f"Blocked unsafe URL (SSRF protection): {_safe_url_for_log(url)}")
 
     import asyncio
     import httpx
