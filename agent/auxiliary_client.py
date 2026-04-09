@@ -511,7 +511,8 @@ class _AnthropicCompletionsAdapter:
             anthropic_kwargs["temperature"] = temperature
 
         response = self._client.messages.create(**anthropic_kwargs)
-        assistant_message, finish_reason = normalize_anthropic_response(response)
+        assistant_message, finish_reason = normalize_anthropic_response(
+            response, strip_tool_prefix=self._is_oauth)
 
         usage = None
         if hasattr(response, "usage") and response.usage:
