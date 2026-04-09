@@ -236,7 +236,53 @@ Look up customer ACME Corp and summarize recent invoice activity.
 
 This is the sort of place where a strict whitelist is far better than an exclude list.
 
-### Pattern 4: documentation / knowledge servers
+### Pattern 4: Exa web search and content retrieval
+
+```yaml
+mcp_servers:
+  exa:
+    command: "npx"
+    args: ["-y", "exa-mcp-server"]
+    env:
+      EXA_API_KEY: "***"
+```
+
+This gives Hermes three tools:
+
+| Tool | Description |
+|------|-------------|
+| `web_search_exa` | Web search with category filtering (company, research paper, news, etc.) |
+| `web_search_advanced_exa` | Advanced search with domain, date, text filters, summaries, and highlights |
+| `web_fetch_exa` | Fetch full page content from a URL |
+
+`web_search_exa` and `web_fetch_exa` are enabled by default. To also enable advanced search:
+
+```yaml
+mcp_servers:
+  exa:
+    command: "npx"
+    args: ["-y", "exa-mcp-server"]
+    env:
+      EXA_API_KEY: "***"
+    tools:
+      include: [web_search_exa, web_search_advanced_exa, web_fetch_exa]
+```
+
+Good prompts:
+
+```text
+Search for recent research papers about transformer architectures and summarize the key findings.
+```
+
+```text
+Find companies working on autonomous vehicles and extract their homepages.
+```
+
+```text
+Fetch the full content of https://example.com/blog/post and summarize it.
+```
+
+### Pattern 5: documentation / knowledge servers
 
 Some MCP servers expose prompts or resources that are more like shared knowledge assets than direct actions.
 
