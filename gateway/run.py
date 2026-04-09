@@ -217,6 +217,53 @@ try:
 except Exception:
     pass
 
+
+def _truncate_tool_progress_text(text: str, max_len: int) -> str:
+    """Truncate tool progress text when a positive preview cap is configured.
+
+    ``display.tool_preview_length = 0`` means unlimited and must not add ellipses.
+    """
+    if not text:
+        return text
+    try:
+        max_len = int(max_len)
+    except Exception:
+        return text
+    if max_len <= 0 or len(text) <= max_len:
+        return text
+    if max_len <= 3:
+        return text[:max_len]
+    return text[: max_len - 3] + "..."
+
+
+def _build_tool_progress_message(
+    tool_name: str,
+    *,
+    preview: str | None = None,
+    args: dict | None = None,
+    progress_mode: str = "all",
+) -> str:
+    """Render one gateway tool-progress line honoring display.tool_preview_length."""
+    from agent.display import get_tool_emoji, get_tool_preview_max_len
+
+    emoji = get_tool_emoji(tool_name, default="⚙️")
+    preview_cap = get_tool_preview_max_len()
+
+    if progress_mode == "verbose":
+        if args:
+            args_str = json.dumps(args, ensure_ascii=False, default=str)
+            args_str = _truncate_tool_progress_text(args_str, preview_cap)
+            return f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+        if preview:
+            return f"{emoji} {tool_name}: \"{preview}\""
+        return f"{emoji} {tool_name}..."
+
+    if preview:
+        preview = _truncate_tool_progress_text(preview, preview_cap)
+        return f"{emoji} {tool_name}: \"{preview}\""
+
+    return f"{emoji} {tool_name}..."
+
 # Validate config structure early — log warnings so gateway operators see problems
 try:
     from hermes_cli.config import print_config_warnings
@@ -7494,43 +7541,15 @@ class GatewayRunner:
                 return
             last_tool[0] = tool_name
             
-            # Build progress message with primary argument preview
-            from agent.display import get_tool_emoji
-            emoji = get_tool_emoji(tool_name, default="⚙️")
-            
-            # Verbose mode: show detailed arguments, respects tool_preview_length
-            if progress_mode == "verbose":
-                if args:
-                    from agent.display import get_tool_preview_max_len
-                    _pl = get_tool_preview_max_len()
-                    import json as _json
-                    args_str = _json.dumps(args, ensure_ascii=False, default=str)
-                    # When tool_preview_length is 0 (default), don't truncate
-                    # in verbose mode — the user explicitly asked for full
-                    # detail.  Platform message-length limits handle the rest.
-                    if _pl > 0 and len(args_str) > _pl:
-                        args_str = args_str[:_pl - 3] + "..."
-                    msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
-                elif preview:
-                    msg = f"{emoji} {tool_name}: \"{preview}\""
-                else:
-                    msg = f"{emoji} {tool_name}..."
-                progress_queue.put(msg)
-                return
-            
-            # "all" / "new" modes: short preview, respects tool_preview_length
-            # config (defaults to 40 chars when unset to keep gateway messages
-            # compact — unlike CLI spinners, these persist as permanent messages).
-            if preview:
-                from agent.display import get_tool_preview_max_len
-                _pl = get_tool_preview_max_len()
-                _cap = _pl if _pl > 0 else 40
-                if len(preview) > _cap:
-                    preview = preview[:_cap - 3] + "..."
-                msg = f"{emoji} {tool_name}: \"{preview}\""
-            else:
-                msg = f"{emoji} {tool_name}..."
-            
+            # Build progress message with primary argument preview.
+            # Respect display.tool_preview_length exactly: 0 means unlimited.
+            msg = _build_tool_progress_message(
+                tool_name,
+                preview=preview,
+                args=args,
+                progress_mode=progress_mode,
+            )
+
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
             # code (same boilerplate imports → identical previews).
