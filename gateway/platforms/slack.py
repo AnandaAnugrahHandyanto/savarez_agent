@@ -389,7 +389,13 @@ class SlackAdapter(BasePlatformAdapter):
         # only thread messages that are already part of an existing thread.
         if not self.config.extra.get("reply_in_thread", True):
             existing_thread = (metadata or {}).get("thread_id") or (metadata or {}).get("thread_ts")
-            return existing_thread or None
+            # Only reply in-thread when the message actually originated in an
+            # existing thread.  Top-level channel messages set thread_id to the
+            # message's own ts (a truthy fallback from event handling), but
+            # reply_to_message_id is None — use that to distinguish.
+            if existing_thread and (metadata or {}).get("reply_to_message_id"):
+                return existing_thread
+            return None
 
         if metadata:
             if metadata.get("thread_id"):

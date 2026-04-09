@@ -66,7 +66,8 @@ SUPPORTED_POOL_STRATEGIES = {
 # Cooldown before retrying an exhausted credential.
 # 429 (rate-limited) cools down faster since quotas reset frequently.
 # 402 (billing/quota) and other codes use a longer default.
-EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
+EXHAUSTED_TTL_429_BASE_SECONDS = 60          # base cooldown for 429 (was 1h — too aggressive for concurrency-limit 429s)
+EXHAUSTED_TTL_429_JITTER_SECONDS = 30        # random jitter [0, 30s] to stagger credential re-eligibility
 EXHAUSTED_TTL_DEFAULT_SECONDS = 24 * 60 * 60 # 24 hours
 
 # Pool key prefix for custom OpenAI-compatible endpoints.
@@ -184,10 +185,14 @@ def _is_manual_source(source: str) -> bool:
     return normalized == SOURCE_MANUAL or normalized.startswith(f"{SOURCE_MANUAL}:")
 
 
-def _exhausted_ttl(error_code: Optional[int]) -> int:
-    """Return cooldown seconds based on the HTTP status that caused exhaustion."""
+def _exhausted_ttl(error_code: Optional[int]) -> float:
+    """Return cooldown seconds based on the HTTP status that caused exhaustion.
+
+    For 429s, adds random jitter so credentials in the same pool don't all
+    become eligible at the same instant (prevents synchronized retry storms).
+    """
     if error_code == 429:
-        return EXHAUSTED_TTL_429_SECONDS
+        return EXHAUSTED_TTL_429_BASE_SECONDS + random.uniform(0, EXHAUSTED_TTL_429_JITTER_SECONDS)
     return EXHAUSTED_TTL_DEFAULT_SECONDS
 
 
