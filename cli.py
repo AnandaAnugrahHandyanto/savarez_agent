@@ -1409,6 +1409,77 @@ class HermesCLI:
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
+    # ── Cross-session queue persistence ────────────────────────────────────────
+
+    def _resolve_queues_save_path(self):
+        """Return per-session JSON path for queue persistence, or None."""
+        if self.session_id and getattr(self, "_session_db", None):
+            from hermes_constants import get_hermes_home
+            return get_hermes_home() / "sessions" / self.session_id / "queues.json"
+        return None
+
+    def _load_queues_from_disk(self) -> None:
+        """Restore stash and queues from queues.json (if it exists)."""
+        try:
+            path = self._resolve_queues_save_path()
+            if path and path.is_file():
+                import json as _json
+                data = _json.loads(path.read_text(encoding="utf-8"))
+                self._followup_queue = data.get("followup_queue", [])
+                self._cancelled_followups = set(data.get("cancelled_followups", []))
+                self._steering_queue = data.get("steering_queue", [])
+                self._cancelled_steerings = set(data.get("cancelled_steerings", []))
+                self._stash_list = data.get("stash_list", [])
+                for item in self._stash_list:
+                    item["images"] = [Path(p) for p in item.get("images", [])]
+        except Exception:
+            pass
+
+    def _save_queues_to_disk(self) -> None:
+        """Serialise stash and queues to per-session queues.json (best-effort)."""
+        try:
+            path = self._resolve_queues_save_path()
+            if not path:
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            import json as _json
+
+            def _ser(payload):
+                if isinstance(payload, (tuple, list)) and len(payload) >= 1:
+                    imgs = payload[1] if len(payload) > 1 else []
+                    return (payload[0], [str(i) for i in imgs]) if imgs else payload[0]
+                return payload
+
+            data = {
+                "followup_queue": [
+                    {**it, "payload": _ser(it.get("payload"))} for it in self._followup_queue
+                ],
+                "cancelled_followups": list(self._cancelled_followups),
+                "steering_queue": [
+                    {**it, "payload": _ser(it.get("payload"))} for it in self._steering_queue
+                ],
+                "cancelled_steerings": list(self._cancelled_steerings),
+                "stash_list": [
+                    {**it, "images": [str(p) for p in it.get("images", [])]} for it in self._stash_list
+                ],
+            }
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(_json.dumps(data), encoding="utf-8")
+            tmp.replace(path)
+        except Exception:
+            pass
+
+    def _clear_queues_from_disk(self) -> None:
+        """Remove queues.json on clean exit."""
+        try:
+            path = self._resolve_queues_save_path()
+            if path and path.is_file():
+                path.unlink()
+        except Exception:
+            pass
+
+    # ───────────────────────────────────────────────────────────────────────────
+
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
         import time as _time
@@ -1654,6 +1725,67 @@ class HermesCLI:
             return frags
         except Exception:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]
+
+    @staticmethod
+    def _fmt_stash_age(stashed_at: float) -> str:
+        """Return human-readable age string for a stash entry."""
+        import time as _t
+        secs = int(_t.monotonic() - stashed_at)
+        if secs < 10:
+            return "just now"
+        if secs < 90:
+            return f"{secs}s ago"
+        mins = secs // 60
+        if mins < 60:
+            return f"{mins} min ago"
+        return f"{mins // 60}h ago"
+
+    def _render_stash_panel(self, stash_list: list, cursor: int, width: int) -> list:
+        """Return prompt_toolkit formatted_text fragments for the stash panel box."""
+        W = min(width - 4, 80)
+
+        HDR_PREFIX = "╭─ 📌 Stash ("
+        n = len(stash_list)
+        title_mid = f"{n} item{'s' if n != 1 else ''}) "
+        HDR_SUFFIX = " Ctrl+S ─╮"
+        FTR_PREFIX = "╰"
+        FTR_SUFFIX = " ↑↓ Enter=restore  D=delete  Esc ─╯"
+
+        # Header dashes fill between title and suffix
+        # HDR_PREFIX includes emoji (📌 = 2 wide) — measure in display cols
+        hdr_fixed = 2 + len(HDR_PREFIX) - 2 + len(title_mid) + len(HDR_SUFFIX)
+        # 📌 is 2 wide, "╭─ " already counted title chars fine since we
+        # just need to fit in W columns
+        hdr_prefix_str = f"{HDR_PREFIX}{title_mid}"
+        hdr_dashes = max(0, W - len(hdr_prefix_str) - len(HDR_SUFFIX))
+        ftr_dashes = max(0, W - len(FTR_PREFIX) - len(FTR_SUFFIX))
+
+        # Row inner width: W minus 2 border chars '│' on each side
+        INNER = W - 2
+
+        frags: list = []
+
+        def line(text: str, style: str = "") -> None:
+            frags.append((style, text + "\n"))
+
+        line(f"{hdr_prefix_str}{'─' * hdr_dashes}{HDR_SUFFIX}", "class:subagent-border")
+
+        for i, item in enumerate(stash_list):
+            age = self._fmt_stash_age(item["stashed_at"])
+            # Row: " ► [N] {age:<10} {preview} "
+            prefix = f" {'►' if i == cursor else ' '} [{i+1}] {age:<10} "
+            avail = max(0, INNER - len(prefix) - 1)
+            preview = item["preview"][:avail].ljust(avail)
+            row = f"│{prefix}{preview} │"
+            if i == cursor:
+                frags.append(("class:subagent-selected", row + "\n"))
+            else:
+                frags.append(("class:subagent-border", "│"))
+                frags.append(("class:subagent-sub", f"{prefix}{preview} "))
+                frags.append(("class:subagent-border", "│\n"))
+
+        line(f"{FTR_PREFIX}{'─' * ftr_dashes}{FTR_SUFFIX}", "class:subagent-border")
+        return frags
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Normalize provider-specific model IDs and routing."""
@@ -4715,6 +4847,8 @@ class HermesCLI:
                     _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
+        elif canonical == "stash":
+            self._handle_stash_command(cmd_original)
         elif canonical == "voice":
             self._handle_voice_command(cmd_original)
         else:
@@ -5135,6 +5269,7 @@ class HermesCLI:
         Chrome's security policy blocks CDP on the real default profile,
         so a dedicated directory is required for persistent logins.
         """
+        import shutil
         import subprocess as _sp
         candidates = HermesCLI._chrome_candidates(system)
         if not candidates:
@@ -8774,6 +8909,60 @@ class HermesCLI:
                 )
             )
         )
+        # Inject the subagent panel widget just before the status bar.
+        # Done here (not via _get_extra_tui_widgets) so the extension hook
+        # stays clean for subclass use.
+        try:
+            from hermes_cli.subagent_panel import render_panel as _render_panel
+            from prompt_toolkit.application import get_app as _get_app
+            _cli_ref = self
+            _panel_filter = Condition(
+                lambda: _cli_ref._subagent_panel_open and bool(_cli_ref._subagent_panel)
+            )
+            _panel_widget = ConditionalContainer(
+                content=Window(
+                    content=FormattedTextControl(
+                        lambda: _render_panel(
+                            sorted(_cli_ref._subagent_panel.values(), key=lambda r: r.index),
+                            _cli_ref._subagent_panel_cursor,
+                            _get_app().output.get_size().columns,
+                        )
+                    ),
+                    dont_extend_height=True,
+                ),
+                filter=_panel_filter,
+            )
+            status_idx = _layout_children.index(status_bar)
+            _layout_children.insert(status_idx, _panel_widget)
+        except Exception:
+            pass
+
+        # Inject the stash panel widget just before the status bar (above subagent panel).
+        try:
+            from prompt_toolkit.application import get_app as _get_stash_app
+            _stash_cli_ref = self
+            _stash_filter = Condition(
+                lambda: _stash_cli_ref._stash_panel_open and bool(_stash_cli_ref._stash_list)
+            )
+            _stash_widget = ConditionalContainer(
+                content=Window(
+                    content=FormattedTextControl(
+                        lambda: _stash_cli_ref._render_stash_panel(
+                            _stash_cli_ref._stash_list,
+                            _stash_cli_ref._stash_panel_cursor,
+                            _get_stash_app().output.get_size().columns,
+                        )
+                    ),
+                    dont_extend_height=True,
+                ),
+                filter=_stash_filter,
+            )
+            _stash_status_idx = _layout_children.index(status_bar)
+            _layout_children.insert(_stash_status_idx, _stash_widget)
+        except Exception:
+            pass
+
+        layout = Layout(HSplit(_layout_children))
         
         # Style for the application
         self._tui_style_base = {

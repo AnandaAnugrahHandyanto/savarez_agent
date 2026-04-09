@@ -117,6 +117,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("normal", "fast", "status", "on", "off")),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
                cli_only=True, args_hint="[name]"),
+    CommandDef("stash", "Manage stashed input — push, pop, browse, or toggle auto-restore", "Configuration", cli_only=True, aliases=("s",)),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
 
