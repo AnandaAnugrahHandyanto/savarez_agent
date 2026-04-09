@@ -513,6 +513,12 @@ from tools.browser_tool import _emergency_cleanup_all_sessions as _cleanup_all_b
 # Guard to prevent cleanup from running multiple times on exit
 _cleanup_done = False
 
+# Reference to the active AIAgent so atexit cleanup can fire session-boundary
+# hooks with the correct session_id.  Set by run_conversation() at startup;
+# read by _run_cleanup() at exit.  Tests may set this directly.
+_active_agent_ref: Any = None
+
+
 def _run_cleanup():
     """Run resource cleanup exactly once."""
     global _cleanup_done
@@ -538,6 +544,16 @@ def _run_cleanup():
     try:
         from agent.auxiliary_client import shutdown_cached_clients
         shutdown_cached_clients()
+    except Exception:
+        pass
+    # Fire on_session_finalize plugin hook (session boundary at exit).
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "on_session_finalize",
+            session_id=_active_agent_ref.session_id if _active_agent_ref else None,
+            platform="cli",
+        )
     except Exception:
         pass
 
@@ -2209,6 +2225,10 @@ class HermesCLI:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
+            # Publish active agent reference so atexit cleanup can fire
+            # session-boundary plugin hooks with the correct session_id.
+            global _active_agent_ref
+            _active_agent_ref = self.agent
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),
@@ -3084,6 +3104,22 @@ class HermesCLI:
         flush_tool_summary()
         print()
     
+    def _notify_session_boundary(self, event_type: str) -> None:
+        """Fire a session-boundary plugin hook (on_session_finalize or on_session_reset).
+
+        Non-blocking — errors are caught and logged.  Safe to call from any
+        lifecycle point (shutdown, /new, /reset).
+        """
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                event_type,
+                session_id=self.agent.session_id if self.agent else None,
+                platform=getattr(self, "platform", None) or "cli",
+            )
+        except Exception:
+            pass
+
     def new_session(self, silent=False):
         """Start a fresh session with a new session ID and cleared agent state."""
         if self.agent and self.conversation_history:
@@ -3091,6 +3127,10 @@ class HermesCLI:
                 self.agent.flush_memories(self.conversation_history)
             except (Exception, KeyboardInterrupt):
                 pass
+            self._notify_session_boundary("on_session_finalize")
+        elif self.agent:
+            # First session or empty history — still finalize the old session
+            self._notify_session_boundary("on_session_finalize")
 
         old_session_id = self.session_id
         if self._session_db and old_session_id:
@@ -3135,6 +3175,7 @@ class HermesCLI:
                     )
                 except Exception:
                     pass
+            self._notify_session_boundary("on_session_reset")
 
         if not silent:
             print("(^_^)v New session started!")

@@ -1465,6 +1465,20 @@ class GatewayRunner:
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key[:20])
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
+            # Fire plugin on_session_finalize hook before memory shutdown
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook("on_session_finalize",
+                             session_id=getattr(agent, 'session_id', None),
+                             platform="gateway")
+            except Exception:
+                pass
+            # Shut down memory provider at actual session boundary
+            try:
+                if hasattr(agent, 'shutdown_memory_provider'):
+                    agent.shutdown_memory_provider()
+            except Exception:
+                pass
 
         for platform, adapter in list(self.adapters.items()):
             try:
@@ -3174,6 +3188,19 @@ class GatewayRunner:
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
 
+        # Fire plugin on_session_finalize hook (session boundary)
+        # NOTE: upstream ab21fbfd also clears `self._session_model_overrides`
+        # here, but our fork doesn't have the /model overhaul that defines
+        # that attribute (Cluster C skipped — we use a simpler implementation).
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _old_sid = old_entry.session_id if old_entry else None
+            _invoke_hook("on_session_finalize", session_id=_old_sid,
+                         platform=source.platform.value if source.platform else "")
+        except Exception:
+            pass
+
+
         # Emit session:end hook (session is ending)
         await self.hooks.emit("session:end", {
             "platform": source.platform.value if source.platform else "",
@@ -3187,7 +3214,7 @@ class GatewayRunner:
             "user_id": source.user_id,
             "session_key": session_key,
         })
-        
+
         # Resolve session config info to surface to the user
         try:
             session_info = self._format_session_info()
@@ -3198,8 +3225,17 @@ class GatewayRunner:
             header = "✨ Session reset! Starting fresh."
         else:
             # No existing session, just create one
-            self.session_store.get_or_create_session(source, force_new=True)
+            new_entry = self.session_store.get_or_create_session(source, force_new=True)
             header = "✨ New session started!"
+
+        # Fire plugin on_session_reset hook (new session guaranteed to exist)
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _new_sid = new_entry.session_id if new_entry else None
+            _invoke_hook("on_session_reset", session_id=_new_sid,
+                         platform=source.platform.value if source.platform else "")
+        except Exception:
+            pass
 
         if session_info:
             return f"{header}\n\n{session_info}"
