@@ -40,8 +40,6 @@ web:
 
 If `web.backend` is not set, the backend is auto-detected from whichever API key is available. Self-hosted Firecrawl is also supported via `FIRECRAWL_API_URL`.
 
-**Exa:** [Exa](https://exa.ai) is a search engine built for AI. Set `EXA_API_KEY` in `~/.hermes/.env` to enable. Supports category filtering (`company`, `research paper`, `news`, `tweet`, `personal site`, `pdf`) and domain/date filters.
-
 ## Browser Automation
 
 Hermes includes full browser automation with multiple backend options for navigating websites, filling forms, and extracting information:
