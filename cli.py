@@ -2439,7 +2439,8 @@ class HermesCLI:
             },
         )
 
-        if not self.service_tier:
+        service_tier = getattr(self, "service_tier", None)
+        if not service_tier:
             route["request_overrides"] = None
             return route
 
@@ -3183,7 +3184,7 @@ class HermesCLI:
         except Exception:
             return False
         agent = getattr(self, "agent", None)
-        model = getattr(agent, "model", None) or self.model
+        model = getattr(agent, "model", None) or getattr(self, "model", None)
         return model_supports_fast_mode(model)
 
     def _command_available(self, slash_command: str) -> bool:
