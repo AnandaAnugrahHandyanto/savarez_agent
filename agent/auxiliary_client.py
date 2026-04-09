@@ -885,7 +885,8 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
     custom_base, custom_key = _resolve_custom_runtime()
     if not custom_base or not custom_key:
         return None, None
-    model = _read_main_model() or "gpt-4o-mini"
+    from hermes_cli.model_switch import get_current_session_model
+    model = get_current_session_model() or _read_main_model() or "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s)", model)
     return OpenAI(api_key=custom_key, base_url=custom_base), model
 
