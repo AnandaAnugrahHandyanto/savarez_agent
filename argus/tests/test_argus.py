@@ -204,6 +204,134 @@ class TestArgus(unittest.TestCase):
             self.assertEqual(detection['entropy_type'], 'no_file_changes')
             self.assertEqual(detection['severity'], 'critical')
     
+    def test_error_cascade_detection(self):
+        """Test error cascade detection (3+ consecutive tool failures)."""
+        session_id = 'test_session_cascade'
+        
+        # Register session
+        self.argus.register_session({
+            'session_id': session_id,
+            'session_type': 'cron',
+            'task_description': 'Test session'
+        })
+        
+        # Insert tool calls: 2 success, then 3 errors (cascade), then 1 success
+        from datetime import timezone
+        utc_now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        tool_sequence = [
+            ('read_file', True, None),
+            ('terminal', True, None),
+            ('write_file', False, 'FileNotFoundError: /missing.txt'),
+            ('patch', False, 'old_string not found'),
+            ('terminal', False, 'exit 1'),
+            ('read_file', True, None),
+        ]
+        for i, (tool, success, error) in enumerate(tool_sequence):
+            self.argus.cursor.execute('''
+                INSERT INTO tool_calls (session_id, tool_name, success, error_message, timestamp)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (session_id, tool, success, error, utc_now))
+        
+        self.argus.conn.commit()
+        
+        # Detect error cascade
+        detections = self.argus._detect_error_cascade(session_id)
+        
+        # Should detect the 3 consecutive errors (write_file, patch, terminal)
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]['entropy_type'], 'error_cascade')
+        self.assertEqual(detections[0]['severity'], 'warning')
+        details = json.loads(detections[0]['details'])
+        self.assertEqual(details['consecutive_errors'], 3)
+        self.assertEqual(details['tools'], ['write_file', 'patch', 'terminal'])
+    
+    def test_error_cascade_critical_at_five(self):
+        """Test error cascade severity escalates to critical at 5+ errors."""
+        session_id = 'test_session_cascade_critical'
+        
+        self.argus.register_session({
+            'session_id': session_id,
+            'session_type': 'delegate_task',
+            'task_description': 'Test session'
+        })
+        
+        from datetime import timezone
+        utc_now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 5 consecutive errors
+        for i in range(5):
+            self.argus.cursor.execute('''
+                INSERT INTO tool_calls (session_id, tool_name, success, error_message, timestamp)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (session_id, 'terminal', False, 'exit 1', utc_now))
+        
+        self.argus.conn.commit()
+        
+        detections = self.argus._detect_error_cascade(session_id)
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]['severity'], 'critical')
+    
+    def test_error_cascade_no_false_positive(self):
+        """Test that mixed success/error calls don't trigger cascade."""
+        session_id = 'test_session_no_cascade'
+        
+        self.argus.register_session({
+            'session_id': session_id,
+            'session_type': 'manual',
+            'task_description': 'Test session'
+        })
+        
+        from datetime import timezone
+        utc_now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Interleaved errors and successes — no cascade
+        for i in range(6):
+            success = (i % 2 == 0)
+            self.argus.cursor.execute('''
+                INSERT INTO tool_calls (session_id, tool_name, success, error_message, timestamp)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (session_id, 'terminal', success, None if success else 'exit 1', utc_now))
+        
+        self.argus.conn.commit()
+        
+        detections = self.argus._detect_error_cascade(session_id)
+        self.assertEqual(len(detections), 0)
+    
+    def test_detect_tool_error_heuristic(self):
+        """Test _detect_tool_error matches agent.display._detect_tool_failure behavior."""
+        # Terminal: exit code 0 = success
+        is_err, _ = self.argus._detect_tool_error('terminal', '{"exit_code": 0, "output": "ok"}')
+        self.assertFalse(is_err)
+        
+        # Terminal: exit code 1 = error
+        is_err, detail = self.argus._detect_tool_error('terminal', '{"exit_code": 1, "output": "fail"}')
+        self.assertTrue(is_err)
+        self.assertIn('exit 1', detail)
+        
+        # Terminal: non-JSON = success (parse failure isn't an error)
+        is_err, _ = self.argus._detect_tool_error('terminal', 'raw output text')
+        self.assertFalse(is_err)
+        
+        # Generic: "error" in JSON
+        is_err, _ = self.argus._detect_tool_error('read_file', '{"error": "file not found"}')
+        self.assertTrue(is_err)
+        
+        # Generic: starts with "Error"
+        is_err, _ = self.argus._detect_tool_error('write_file', 'Error: permission denied')
+        self.assertTrue(is_err)
+        
+        # Generic: normal result
+        is_err, _ = self.argus._detect_tool_error('read_file', 'file contents here')
+        self.assertFalse(is_err)
+        
+        # Memory: full
+        is_err, _ = self.argus._detect_tool_error('memory', '{"success": false, "error": "exceed the limit"}')
+        self.assertTrue(is_err)
+        
+        # Empty/None
+        is_err, _ = self.argus._detect_tool_error('terminal', '')
+        self.assertFalse(is_err)
+
     def test_decision_restart_on_critical_entropy(self):
         """Test decision to restart on critical entropy."""
         session_id = 'test_session_6'

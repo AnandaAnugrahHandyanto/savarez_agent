@@ -153,6 +153,13 @@ CORRECTIVE_PROMPTS = {
         "Read the file first, verify what you're writing is actually different. "
         "If using patch, check that old_string matches exactly."
     ),
+    'error_cascade': (
+        "ENTROPY CORRECTION: ARGUS detected a cascade of tool failures. "
+        "Multiple consecutive tool calls have returned errors. "
+        "STOP. Read the error messages carefully. The environment or arguments may be wrong. "
+        "Check file paths, command syntax, and prerequisites before retrying. "
+        "If a tool keeps failing, try a different approach or use a different tool."
+    ),
     'quality_gate': (
         "QUALITY CORRECTION: Your output quality is below the 0.92 threshold. "
         "Provide mechanistic explanations, not surface descriptions. "
@@ -695,6 +702,9 @@ class Argus:
     def _populate_tool_calls_from_session(self, session_id: str) -> None:
         """Read tool calls from state.db and insert into argus.db.tool_calls.
         
+        Also detects tool errors using the same heuristic as
+        agent.display._detect_tool_failure and populates success/error_message.
+        
         This ensures the tool_calls table has data even when the WAL monitor
         isn't running (e.g., hermes internals unavailable).
         """
@@ -731,7 +741,15 @@ class Argus:
         except (ValueError, TypeError):
             last_ingested_float = 0.0
         
-        # Extract tool calls from assistant messages
+        # Build tool_call_id -> result map from tool-role messages
+        tool_results: Dict[str, str] = {}
+        for msg in messages:
+            if msg.get('role') == 'tool':
+                tc_id = msg.get('tool_call_id', '')
+                if tc_id:
+                    tool_results[tc_id] = str(msg.get('content', ''))
+        
+        # Extract tool calls from assistant messages, detect errors
         inserts = []
         for msg in messages:
             if msg.get('role') != 'assistant':
@@ -758,19 +776,70 @@ class Argus:
                     args = tc.get('function', {}).get('arguments') or tc.get('arguments', '')
                     if isinstance(args, dict):
                         args = json.dumps(args)
-                    if name:
-                        inserts.append((session_id, name, str(args), str(ts), True))
+                    if not name:
+                        continue
+                    
+                    # Match tool result and detect errors
+                    tc_id = tc.get('id', '')
+                    result_content = tool_results.get(tc_id, '')
+                    is_error, error_msg = self._detect_tool_error(name, result_content)
+                    
+                    inserts.append((
+                        session_id, name, str(args), str(ts),
+                        not is_error,  # success = not error
+                        error_msg,
+                    ))
             except (json.JSONDecodeError, TypeError):
                 continue
         
-        # Batch insert
+        # Batch insert with success/error_message columns
         if inserts:
             self.cursor.executemany('''
                 INSERT OR IGNORE INTO tool_calls
-                (session_id, tool_name, tool_args, timestamp, file_changed)
-                VALUES (?, ?, ?, ?, ?)
+                (session_id, tool_name, tool_args, timestamp, success, error_message)
+                VALUES (?, ?, ?, ?, ?, ?)
             ''', inserts)
-            logger.debug("Ingested %d tool calls for session %s", len(inserts), session_id)
+            error_count = sum(1 for i in inserts if not i[4])
+            logger.debug(
+                "Ingested %d tool calls for session %s (%d errors)",
+                len(inserts), session_id, error_count
+            )
+
+    @staticmethod
+    def _detect_tool_error(tool_name: str, result: str) -> Tuple[bool, str]:
+        """Detect tool failures using same heuristic as agent.display._detect_tool_failure.
+        
+        Returns (is_error, error_detail).  Empty string for error_detail on success.
+        """
+        if not result:
+            return False, ""
+        
+        # Terminal: check exit_code in JSON result
+        if tool_name == "terminal":
+            try:
+                data = json.loads(result)
+                exit_code = data.get("exit_code")
+                if exit_code is not None and exit_code != 0:
+                    return True, "exit %s" % exit_code
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+            return False, ""
+        
+        # Memory: check for capacity errors
+        if tool_name == "memory":
+            try:
+                data = json.loads(result)
+                if data.get("success") is False and "exceed the limit" in data.get("error", ""):
+                    return True, "memory full"
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+        
+        # Generic: check first 500 chars for error indicators
+        lower = result[:500].lower()
+        if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
+            return True, "error detected"
+        
+        return False, ""
 
     def _fetch_quality_from_holographic(self, session_id: str) -> Optional[float]:
         """Fetch quality score from holographic_memory.db for a session."""
@@ -806,20 +875,19 @@ class Argus:
         detections = []
         
         # 1. Check for repeat tool calls
-        repeat_detections = self._detect_repeat_tool_calls(session_id)
-        detections.extend(repeat_detections)
+        detections.extend(self._detect_repeat_tool_calls(session_id))
         
         # 2. Check for repeat terminal commands
-        command_detections = self._detect_repeat_commands(session_id)
-        detections.extend(command_detections)
+        detections.extend(self._detect_repeat_commands(session_id))
         
         # 3. Check for stuck loops (same sequence of tool calls)
-        loop_detections = self._detect_stuck_loops(session_id)
-        detections.extend(loop_detections)
+        detections.extend(self._detect_stuck_loops(session_id))
         
         # 4. Check for no file changes despite write operations
-        no_change_detections = self._detect_no_file_changes(session_id)
-        detections.extend(no_change_detections)
+        detections.extend(self._detect_no_file_changes(session_id))
+        
+        # 5. Check for error cascades (consecutive tool failures)
+        detections.extend(self._detect_error_cascade(session_id))
         
         return detections
     
@@ -951,6 +1019,73 @@ class Argus:
         
         return detections
     
+    def _detect_error_cascade(self, session_id: str) -> List[Dict]:
+        """Detect cascading tool failures (3+ consecutive errors).
+        
+        Uses the success/error_message columns populated by _populate_tool_calls_from_session.
+        Same threshold pattern as repeat_tool_calls: warning at 3, critical at 5.
+        """
+        detections = []
+        
+        try:
+            # Get recent tool calls ordered chronologically
+            self.cursor.execute('''
+                SELECT tool_name, success, error_message, timestamp
+                FROM tool_calls
+                WHERE session_id = ?
+                ORDER BY timestamp ASC
+                LIMIT 20
+            ''', (session_id,))
+            
+            rows = self.cursor.fetchall()
+            if len(rows) < 3:
+                return detections
+            
+            # Scan for longest consecutive error run
+            max_run = 0
+            current_run = 0
+            run_tools = []
+            current_run_tools = []
+            
+            for row in rows:
+                is_error = (row['success'] == 0) or (
+                    row['success'] is None and bool(row['error_message'])
+                )
+                if is_error:
+                    current_run += 1
+                    current_run_tools.append(row['tool_name'])
+                else:
+                    if current_run > max_run:
+                        max_run = current_run
+                        run_tools = list(current_run_tools)
+                    current_run = 0
+                    current_run_tools = []
+            
+            # Check final run
+            if current_run > max_run:
+                max_run = current_run
+                run_tools = list(current_run_tools)
+            
+            if max_run >= 3:
+                severity = 'warning' if max_run < 5 else 'critical'
+                detections.append({
+                    'entropy_type': 'error_cascade',
+                    'severity': severity,
+                    'details': json.dumps({
+                        'consecutive_errors': max_run,
+                        'tools': run_tools[:5],
+                    })
+                })
+                logger.warning(
+                    "Error cascade detected in session %s: %d consecutive failures",
+                    session_id[:15], max_run
+                )
+        
+        except Exception as e:
+            logger.error("Error detecting error cascade: %s", e, exc_info=True)
+        
+        return detections
+
     def check_prime_directive(self, session_id: str) -> List[Dict]:
         """Check if session is following prime directive."""
         checks = []
