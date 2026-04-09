@@ -580,6 +580,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
                         "id": str(msg.get("id", "")),
                         "role": role,
                         "content": content[:2000],
+                        "truncated": len(content) > 2000,
                         "timestamp": msg.get("timestamp", ""),
                     })
 

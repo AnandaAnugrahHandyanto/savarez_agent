@@ -6866,11 +6866,11 @@ class AIAgent:
             "Please provide a final response summarizing what you've found and accomplished so far, "
             "without calling any more tools."
         )
-        messages.append({"role": "user", "content": summary_request})
-
         try:
             # Build API messages, stripping internal-only fields
             # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
+            # Work on a local copy — do NOT append the synthetic user prompt to the
+            # shared messages list so it doesn't pollute the session transcript.
             _needs_sanitize = self._should_sanitize_tool_calls()
             api_messages = []
             for msg in messages:
@@ -6890,6 +6890,9 @@ class AIAgent:
                 sys_offset = 1 if effective_system else 0
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
+
+            # Append the synthetic summary request only to the local api_messages copy
+            api_messages.append({"role": "user", "content": summary_request})
 
             summary_extra_body = {}
             _is_nous = "nousresearch" in self._base_url_lower
