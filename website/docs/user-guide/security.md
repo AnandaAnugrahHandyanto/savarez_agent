@@ -112,6 +112,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `cp`/`mv`/`install` to `/etc/` | Copy/move file into system config |
 | `sed -i` / `sed --in-place` on `/etc/` | In-place edit of system config |
 | `pkill`/`killall` hermes/gateway | Self-termination prevention |
+| `systemctl ... restart hermes-gateway` / `hermes gateway restart` | Self-interruption prevention in remote messaging sessions — restarting the live gateway drops the active control path |
 | `gateway run` with `&`/`disown`/`nohup`/`setsid` | Prevents starting gateway outside service manager |
 
 :::info
@@ -145,7 +146,7 @@ On messaging platforms, the agent sends the dangerous command details to the cha
 - Reply **yes**, **y**, **approve**, **ok**, or **go** to approve
 - Reply **no**, **n**, **deny**, or **cancel** to deny
 
-The `HERMES_EXEC_ASK=1` environment variable is automatically set when running the gateway.
+The `HERMES_EXEC_ASK=1` environment variable is automatically set when running the gateway. In messaging sessions, Hermes also blocks self-interrupting gateway restart commands behind dangerous-command approval because restarting the live gateway from the same chat severs the active control path.
 
 ### Permanent Allowlist
 
@@ -155,7 +156,8 @@ Commands approved with "always" are saved to `~/.hermes/config.yaml`:
 # Permanently allowed dangerous command patterns
 command_allowlist:
   - rm
-  - systemctl
+  # Avoid broad patterns like `systemctl` in messaging-heavy setups; they can bypass
+  # protections that prevent Hermes from restarting its own live gateway session.
 ```
 
 These patterns are loaded at startup and silently approved in all future sessions.

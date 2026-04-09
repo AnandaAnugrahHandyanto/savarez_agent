@@ -1568,6 +1568,11 @@ class HermesCLI:
         self._voice_recording = False
         self._voice_processing = False
         self._voice_continuous = False
+        self._voice_hold_listener = None
+        self._voice_hold_mode_active = False
+        self._voice_hold_key_pressed = False
+        self._voice_hold_started_recording = False
+        self._voice_hold_press_ts = 0.0
         self._voice_tts_done = threading.Event()
         self._voice_tts_done.set()
 
@@ -5711,6 +5716,205 @@ class HermesCLI:
     # Voice mode methods
     # ====================================================================
 
+    def _voice_hold_to_talk_enabled(self) -> bool:
+        """Return True when hold-to-talk is enabled for spacebar in config."""
+        try:
+            from hermes_cli.config import load_config
+            voice_cfg = load_config().get("voice", {})
+        except Exception:
+            return False
+        return bool(voice_cfg.get("hold_to_talk", False)) and str(voice_cfg.get("record_key", "")).strip().lower() == "space"
+
+    def _voice_insert_text_at_cursor(self, text: str) -> None:
+        """Insert text into the current input buffer from any thread."""
+        if not text:
+            return
+        app = getattr(self, "_app", None)
+        if app is None:
+            return
+
+        def _insert():
+            try:
+                buf = app.current_buffer
+                if buf is not None:
+                    buf.insert_text(text)
+                    app.invalidate()
+            except Exception:
+                pass
+
+        loop = getattr(app, "loop", None)
+        if loop is not None and hasattr(loop, "call_soon_threadsafe"):
+            try:
+                loop.call_soon_threadsafe(_insert)
+                return
+            except Exception:
+                pass
+        _insert()
+
+    def _voice_delete_space_before_cursor(self) -> None:
+        """Delete one space immediately before the cursor from any thread."""
+        app = getattr(self, "_app", None)
+        if app is None:
+            return
+
+        def _delete():
+            try:
+                buf = app.current_buffer
+                if buf is None:
+                    return
+                pos = getattr(buf, "cursor_position", 0)
+                text = getattr(buf, "text", "")
+                if pos <= 0 or pos > len(text):
+                    return
+                if text[pos - 1] != " ":
+                    return
+                buf.delete_before_cursor(count=1)
+                app.invalidate()
+            except Exception:
+                pass
+
+        loop = getattr(app, "loop", None)
+        if loop is not None and hasattr(loop, "call_soon_threadsafe"):
+            try:
+                loop.call_soon_threadsafe(_delete)
+                return
+            except Exception:
+                pass
+        _delete()
+
+    def _voice_start_hold_listener(self) -> None:
+        """Start global spacebar press/release listener for hold-to-talk mode."""
+        if self._voice_hold_listener is not None:
+            self._voice_hold_mode_active = True
+            return
+        if not self._voice_hold_to_talk_enabled():
+            self._voice_hold_mode_active = False
+            return
+        try:
+            if sys.platform.startswith("linux"):
+                session_type = os.environ.get("XDG_SESSION_TYPE", "").strip().lower()
+                if session_type == "x11" and not os.environ.get("WAYLAND_DISPLAY"):
+                    os.environ.setdefault("PYNPUT_BACKEND", "xorg")
+            from pynput import keyboard as pynput_keyboard
+        except Exception:
+            self._voice_hold_mode_active = False
+            _cprint(f"{_DIM}Hold-to-talk requested but pynput is unavailable. Falling back to toggle mode.{_RST}")
+            return
+
+        self._voice_hold_key_pressed = False
+        self._voice_hold_started_recording = False
+        self._voice_hold_press_ts = 0.0
+        warmup_seconds = 0.18
+
+        def _on_press(key):
+            try:
+                if key != pynput_keyboard.Key.space:
+                    return
+            except Exception:
+                return
+
+            if not self._voice_mode:
+                return
+
+            press_ts = time.monotonic()
+            with self._voice_lock:
+                if self._voice_hold_key_pressed:
+                    return
+                self._voice_hold_key_pressed = True
+                self._voice_hold_started_recording = False
+                self._voice_hold_press_ts = press_ts
+
+            def _maybe_start_recording(this_press_ts: float):
+                time.sleep(warmup_seconds)
+                with self._voice_lock:
+                    if not self._voice_hold_key_pressed:
+                        return
+                    if self._voice_hold_press_ts != this_press_ts:
+                        return
+                    if self._voice_recording or self._voice_processing:
+                        return
+                    if self._agent_running or self._clarify_state or self._sudo_state or self._approval_state:
+                        return
+                    self._voice_continuous = False
+                    self._voice_hold_started_recording = True
+
+                if not self._voice_tts_done.is_set():
+                    try:
+                        from tools.voice_mode import stop_playback
+                        stop_playback()
+                        self._voice_tts_done.set()
+                    except Exception:
+                        pass
+
+                # Let prompt_toolkit insert a literal space immediately so the
+                # key still feels normal. If this press turns into hold-to-talk,
+                # remove that provisional space before starting recording.
+                self._voice_delete_space_before_cursor()
+
+                def _start_recording():
+                    try:
+                        self._voice_start_recording()
+                        self._invalidate()
+                    except Exception as e:
+                        _cprint(f"\n{_DIM}Voice recording failed: {e}{_RST}")
+
+                threading.Thread(target=_start_recording, daemon=True).start()
+
+            threading.Thread(target=_maybe_start_recording, args=(press_ts,), daemon=True).start()
+
+        def _on_release(key):
+            try:
+                if key != pynput_keyboard.Key.space:
+                    return
+            except Exception:
+                return
+
+            should_stop = False
+            should_insert_space = False
+            with self._voice_lock:
+                was_pressed = self._voice_hold_key_pressed
+                started_recording = self._voice_hold_started_recording
+                self._voice_hold_key_pressed = False
+                self._voice_hold_started_recording = False
+                self._voice_hold_press_ts = 0.0
+                if was_pressed and started_recording and self._voice_recording:
+                    self._voice_continuous = False
+                    should_stop = True
+                elif was_pressed and not started_recording and self._voice_mode:
+                    should_insert_space = True
+
+            if should_insert_space:
+                self._voice_insert_text_at_cursor(" ")
+
+            if should_stop:
+                threading.Thread(target=self._voice_stop_and_transcribe, daemon=True).start()
+                self._invalidate()
+
+        try:
+            listener = pynput_keyboard.Listener(on_press=_on_press, on_release=_on_release)
+            listener.daemon = True
+            listener.start()
+            self._voice_hold_listener = listener
+            self._voice_hold_mode_active = True
+        except Exception as e:
+            self._voice_hold_listener = None
+            self._voice_hold_mode_active = False
+            _cprint(f"{_DIM}Failed to start hold-to-talk listener ({e}). Falling back to toggle mode.{_RST}")
+
+    def _voice_stop_hold_listener(self) -> None:
+        """Stop hold-to-talk listener when voice mode is disabled."""
+        listener = self._voice_hold_listener
+        self._voice_hold_listener = None
+        self._voice_hold_mode_active = False
+        self._voice_hold_key_pressed = False
+        self._voice_hold_started_recording = False
+        self._voice_hold_press_ts = 0.0
+        if listener is not None:
+            try:
+                listener.stop()
+            except Exception:
+                pass
+
     def _voice_start_recording(self):
         """Start capturing audio from the microphone."""
         if getattr(self, '_should_exit', False):
@@ -5839,7 +6043,10 @@ class HermesCLI:
 
             if result.get("success") and result.get("transcript", "").strip():
                 transcript = result["transcript"].strip()
-                self._pending_input.put(transcript)
+                if self._voice_hold_mode_active:
+                    self._voice_insert_text_at_cursor(transcript)
+                else:
+                    self._pending_input.put(transcript)
                 submitted = True
             elif result.get("success"):
                 _cprint(f"{_DIM}No speech detected.{_RST}")
@@ -6005,6 +6212,8 @@ class HermesCLI:
         # system prompt change) to avoid invalidating the prompt cache.  See
         # _voice_message_prefix property and its usage in _process_message().
 
+        self._voice_start_hold_listener()
+
         tts_status = " (TTS enabled)" if self._voice_tts else ""
         try:
             from hermes_cli.config import load_config
@@ -6014,7 +6223,10 @@ class HermesCLI:
             _ptt_key = "c-b"
         _ptt_display = _ptt_key.replace("c-", "Ctrl+").upper()
         _cprint(f"\n{_GOLD}Voice mode enabled{tts_status}{_RST}")
-        _cprint(f"  {_DIM}{_ptt_display} to start/stop recording{_RST}")
+        if self._voice_hold_mode_active:
+            _cprint(f"  {_DIM}Hold {_ptt_display} to record, release to transcribe{_RST}")
+        else:
+            _cprint(f"  {_DIM}{_ptt_display} to start/stop recording{_RST}")
         _cprint(f"  {_DIM}/voice tts  to toggle speech output{_RST}")
         _cprint(f"  {_DIM}/voice off  to disable voice mode{_RST}")
 
@@ -6047,6 +6259,7 @@ class HermesCLI:
         except Exception:
             pass
         self._voice_tts_done.set()
+        self._voice_stop_hold_listener()
 
         _cprint(f"\n{_DIM}Voice mode disabled.{_RST}")
 
@@ -7147,6 +7360,11 @@ class HermesCLI:
         self._voice_recording = False   # Whether currently recording
         self._voice_processing = False  # Whether STT is in progress
         self._voice_continuous = False  # Whether to auto-restart after agent responds
+        self._voice_hold_listener = None
+        self._voice_hold_mode_active = False
+        self._voice_hold_key_pressed = False
+        self._voice_hold_started_recording = False
+        self._voice_hold_press_ts = 0.0
         self._voice_tts_done = threading.Event()  # Signals TTS playback finished
         self._voice_tts_done.set()  # Initially "done" (no TTS pending)
 
@@ -7487,7 +7705,18 @@ class HermesCLI:
             Any blocking call here (locks, sd.wait, disk I/O) freezes the
             entire UI.  All heavy work is dispatched to daemon threads.
             """
+            if _voice_key == "space" and not cli_ref._voice_mode:
+                event.current_buffer.insert_text(" ")
+                return
             if not cli_ref._voice_mode:
+                return
+            # For spacebar hold-to-talk, still let the local buffer receive a normal
+            # literal space immediately. If the press becomes a hold, the listener
+            # removes that provisional space before recording starts. This keeps
+            # typing usable even when voice mode is enabled.
+            if cli_ref._voice_hold_mode_active:
+                if _voice_key == "space":
+                    event.current_buffer.insert_text(" ")
                 return
             # Always allow STOPPING a recording (even when agent is running)
             if cli_ref._voice_recording:

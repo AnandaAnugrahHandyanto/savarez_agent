@@ -102,6 +102,10 @@ hermes gateway status       # Check default service status
 hermes gateway status --system         # Linux only: inspect the system service explicitly
 ```
 
+:::warning
+When you are controlling Hermes through Telegram or another messaging platform, restart the gateway from an out-of-band shell or service manager — not from the active chat session. Restarting the live gateway from the same remote conversation drops the control path mid-task.
+:::
+
 ## Chat Commands (Inside Messaging)
 
 | Command | Description |

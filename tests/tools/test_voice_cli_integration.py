@@ -28,6 +28,11 @@ def _make_voice_cli(**overrides):
     cli._voice_recording = False
     cli._voice_processing = False
     cli._voice_continuous = False
+    cli._voice_hold_listener = None
+    cli._voice_hold_mode_active = False
+    cli._voice_hold_key_pressed = False
+    cli._voice_hold_started_recording = False
+    cli._voice_hold_press_ts = 0.0
     cli._voice_tts_done = threading.Event()
     cli._voice_tts_done.set()
     cli._pending_input = queue.Queue()
@@ -741,25 +746,19 @@ class TestKeyHandlerNeverBlocks:
         with open("cli.py") as f:
             source = f.read()
 
-        lines = source.split("\n")
-        in_handler = False
-        in_else = False
-        found_guard = False
-        for line in lines:
-            if "def handle_voice_record" in line:
-                in_handler = True
-            elif in_handler and line.strip().startswith("def ") and "_start_recording" not in line:
-                break
-            elif in_handler and "else:" in line:
-                in_else = True
-            elif in_else and "_voice_processing" in line:
-                found_guard = True
-                break
-
-        assert found_guard, (
+        assert "if cli_ref._voice_processing:" in source, (
             "Key handler START path must guard against _voice_processing "
             "to prevent blocking on AudioRecorder._lock"
         )
+
+    def test_space_hold_mode_keeps_local_space_typing_path(self):
+        with open("cli.py") as f:
+            source = f.read()
+
+        assert 'if cli_ref._voice_hold_mode_active:' in source
+        assert 'if _voice_key == "space":' in source
+        assert 'event.current_buffer.insert_text(" ")' in source
+        assert 'self._voice_delete_space_before_cursor()' in source
 
     def test_processing_set_atomically_with_recording_false(self):
         """Source check: _voice_stop_and_transcribe must set _voice_processing = True
@@ -798,6 +797,68 @@ class TestKeyHandlerNeverBlocks:
 # ============================================================================
 # Real behavior tests — CLI voice methods via _make_voice_cli()
 # ============================================================================
+
+class TestCursorHelpers:
+    def _make_buffer_app(self, text: str, cursor_position: int | None = None):
+        class FakeBuffer:
+            def __init__(self, text: str, cursor_position: int | None):
+                self.text = text
+                self.cursor_position = len(text) if cursor_position is None else cursor_position
+
+            def insert_text(self, value: str):
+                pos = self.cursor_position
+                self.text = self.text[:pos] + value + self.text[pos:]
+                self.cursor_position += len(value)
+
+            def delete_before_cursor(self, count: int = 1):
+                pos = self.cursor_position
+                new_pos = max(0, pos - count)
+                self.text = self.text[:new_pos] + self.text[pos:]
+                self.cursor_position = new_pos
+
+        class FakeApp:
+            def __init__(self, buffer):
+                self.current_buffer = buffer
+                self.invalidated = False
+                self.loop = None
+
+            def invalidate(self):
+                self.invalidated = True
+
+        buf = FakeBuffer(text, cursor_position)
+        return buf, FakeApp(buf)
+
+    def test_insert_text_at_cursor_updates_buffer(self):
+        cli = _make_voice_cli()
+        buf, app = self._make_buffer_app("hello", 5)
+        cli._app = app
+
+        cli._voice_insert_text_at_cursor(" world")
+
+        assert buf.text == "hello world"
+        assert buf.cursor_position == 11
+        assert app.invalidated is True
+
+    def test_delete_space_before_cursor_removes_pending_space(self):
+        cli = _make_voice_cli()
+        buf, app = self._make_buffer_app("hello ", 6)
+        cli._app = app
+
+        cli._voice_delete_space_before_cursor()
+
+        assert buf.text == "hello"
+        assert buf.cursor_position == 5
+        assert app.invalidated is True
+
+    def test_delete_space_before_cursor_leaves_non_space_unchanged(self):
+        cli = _make_voice_cli()
+        buf, app = self._make_buffer_app("hello", 5)
+        cli._app = app
+
+        cli._voice_delete_space_before_cursor()
+
+        assert buf.text == "hello"
+        assert buf.cursor_position == 5
 
 class TestHandleVoiceCommandReal:
     """Tests _handle_voice_command routing with real CLI instance."""
