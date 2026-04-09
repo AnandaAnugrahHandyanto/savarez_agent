@@ -244,6 +244,8 @@ def test_new_session_runs_local_clerk_checkpoint_and_arms_recovery_context(tmp_p
     restore_cmd = mock_run.call_args_list[1].args[0]
     assert checkpoint_cmd[1] == "pass"
     assert "--local-only" in checkpoint_cmd
+    assert "--handoff-only" in checkpoint_cmd
+    assert "--apply-chain" in checkpoint_cmd
     assert "--read-first" in checkpoint_cmd
     assert restore_cmd == [checkpoint_cmd[0], "restore", "--reason", "reset", "--json"]
     assert "Recovered shell state from Clerk after /reset" in (cli._pending_recovery_context or "")

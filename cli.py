@@ -3486,6 +3486,8 @@ class HermesCLI:
                 "--read-first",
                 str(_hermes_home / "SOUL.md"),
                 "--local-only",
+                "--handoff-only",
+                "--apply-chain",
             ]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
             payload = {
