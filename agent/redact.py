@@ -86,10 +86,18 @@ _PRIVATE_KEY_RE = re.compile(
     r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----"
 )
 
-# Database connection strings: protocol://user:PASSWORD@host
-# Catches postgres, mysql, mongodb, redis, amqp URLs and redacts the password
-_DB_CONNSTR_RE = re.compile(
-    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:]+:)([^@]+)(@)",
+# URL-embedded credentials: protocol://user:PASSWORD@host
+# Catches database and service URLs with user:password auth and redacts the password.
+# Covers postgres, mysql, mongodb, redis, amqp, https, http, git, ssh, ftp protocols.
+_URL_CRED_RE = re.compile(
+    r"((?:https?|git|ssh|ftp|ftps|sftp|postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:]+:)([^@]+)(@)",
+    re.IGNORECASE,
+)
+
+# Bare token/password in URL: protocol://TOKEN@host (no user:password, just a token)
+# Requires credential to be 8+ chars to avoid false positives on short usernames.
+_URL_BARE_TOKEN_RE = re.compile(
+    r"((?:https?|git|ssh|ftp|ftps|sftp)://)([^\s:@]{8,})(@[^\s]+)",
     re.IGNORECASE,
 )
 
@@ -125,6 +133,16 @@ def redact_sensitive_text(text: str) -> str:
     if not _REDACT_ENABLED:
         return text
 
+    # URL-embedded credentials (user:password@host) -- must run before prefix patterns
+    # so that tokens inside URLs are redacted holistically
+    text = _URL_CRED_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
+
+    # URL bare tokens (token@host)
+    def _redact_url_bare_token(m):
+        scheme, token, host_part = m.group(1), m.group(2), m.group(3)
+        return f"{scheme}{_mask_token(token)}{host_part}"
+    text = _URL_BARE_TOKEN_RE.sub(_redact_url_bare_token, text)
+
     # Known prefixes (sk-, ghp_, etc.)
     text = _PREFIX_RE.sub(lambda m: _mask_token(m.group(1)), text)
 
@@ -155,9 +173,6 @@ def redact_sensitive_text(text: str) -> str:
 
     # Private key blocks
     text = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
-
-    # Database connection string passwords
-    text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
 
     # E.164 phone numbers (Signal, WhatsApp)
     def _redact_phone(m):
