@@ -304,7 +304,19 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
             del os.environ["HERMES_SPINNER_PAUSE"]
 
 
-def _transform_sudo_command(command: str) -> tuple[str, str | None]:
+def _safe_command_preview(command: Any, limit: int = 200) -> str:
+    """Return a log-safe preview for possibly-invalid command values."""
+    if command is None:
+        return "<None>"
+    if isinstance(command, str):
+        return command[:limit]
+    try:
+        return repr(command)[:limit]
+    except Exception:
+        return f"<{type(command).__name__}>"
+
+
+def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None]:
     """
     Transform sudo commands to use -S flag if SUDO_PASSWORD is available.
 
@@ -342,6 +354,9 @@ def _transform_sudo_command(command: str) -> tuple[str, str | None]:
     import re
 
     # Check if command even contains sudo
+    if command is None:
+        return None, None
+
     if not re.search(r'\bsudo\b', command):
         return command, None  # No sudo in command, nothing to do
 
@@ -943,6 +958,18 @@ def terminal_tool(
     global _active_environments, _last_activity
 
     try:
+        if not isinstance(command, str):
+            logger.warning(
+                "Rejected invalid terminal command value: %s",
+                type(command).__name__,
+            )
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": f"Invalid command: expected string, got {type(command).__name__}",
+                "status": "error",
+            }, ensure_ascii=False)
+
         # Get configuration
         config = _get_env_config()
         env_type = config["env_type"]
@@ -1226,12 +1253,12 @@ def terminal_tool(
                         retry_count += 1
                         wait_time = 2 ** retry_count
                         logger.warning("Execution error, retrying in %ds (attempt %d/%d) - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
-                                       wait_time, retry_count, max_retries, command[:200], type(e).__name__, e, effective_task_id, env_type)
+                                       wait_time, retry_count, max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
                         time.sleep(wait_time)
                         continue
                     
                     logger.error("Execution failed after %d retries - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
-                                 max_retries, command[:200], type(e).__name__, e, effective_task_id, env_type)
+                                 max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
                     return json.dumps({
                         "output": "",
                         "exit_code": -1,
