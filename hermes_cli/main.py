@@ -5358,6 +5358,22 @@ For more help on a command:
     )
     completion_parser.set_defaults(func=cmd_completion)
 
+    # Hierarchy management
+    hierarchy_parser = subparsers.add_parser(
+        "hierarchy",
+        help="Multi-agent org chart, IPC bus, and scoped memory",
+    )
+    hierarchy_sub = hierarchy_parser.add_subparsers(dest="hierarchy_command")
+    hierarchy_sub.add_parser("show-org-chart", help="Print the org chart")
+    hierarchy_sub.add_parser("list-profiles", help="List registered profiles")
+    hierarchy_sub.add_parser("ipc-stats", help="Show message bus stats")
+    hierarchy_sub.add_parser("sync-profiles", help="Sync Hermes profiles into hierarchy")
+    hierarchy_gw = hierarchy_sub.add_parser("gateway", help="Start a profile gateway")
+    hierarchy_gw.add_argument("gateway_action", choices=["start", "stop"])
+    hierarchy_gw.add_argument("gateway_profile", help="Profile name")
+    hierarchy_sub.add_parser("ui", help="Start hierarchy dashboard")
+    hierarchy_parser.set_defaults(func=lambda args: __import__("hermes_cli.hierarchy", fromlist=["cmd_hierarchy"]).cmd_hierarchy(args))
+
     # =========================================================================
     # Parse and execute
     # =========================================================================

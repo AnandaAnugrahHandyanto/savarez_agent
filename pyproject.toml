@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-agent"
-version = "0.7.0"
+version = "0.8.0"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -72,6 +72,7 @@ rl = [
   "wandb>=0.15.0,<1",
 ]
 yc-bench = ["yc-bench @ git+https://github.com/collinear-ai/yc-bench.git ; python_version >= '3.12'"]
+hierarchy-ui = ["flask>=3.0,<4", "websockets>=12.0,<13"]
 all = [
   "hermes-agent[modal]",
   "hermes-agent[daytona]",
@@ -100,12 +101,17 @@ all = [
 hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
+hermes-hierarchy-gateway = "hierarchy.scripts.hierarchy_gateway:main"
 
 [tool.setuptools]
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_constants", "hermes_state", "hermes_time", "rl_cli", "utils"]
 
 [tool.setuptools.packages.find]
-include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "cron", "acp_adapter", "plugins", "plugins.*"]
+include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "hierarchy", "hierarchy.*"]
+
+[tool.setuptools.package-data]
+"hierarchy.ui" = ["static/**/*"]
+"hierarchy.templates" = ["roles/**/*", "PLAYBOOK.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
