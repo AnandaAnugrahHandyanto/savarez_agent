@@ -558,6 +558,183 @@ class TestSwitchModelDirectAliasOverride:
 
 
 # ---------------------------------------------------------------------------
+# switch_model: user-defined providers from config.yaml providers:
+# ---------------------------------------------------------------------------
+
+class TestSwitchModelUserProviders:
+    """switch_model should resolve named providers from config.yaml providers:."""
+
+    @staticmethod
+    def _accept(*args, **kwargs):
+        return {"accepted": True, "persist": True, "recognized": True, "message": None}
+
+    def test_switch_model_uses_user_provider_inline_credentials(self, monkeypatch):
+        """Inline api/base_url + api_key from providers: should override the current runtime."""
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setattr("hermes_cli.models.validate_requested_model", self._accept)
+
+        result = ms.switch_model(
+            "claude-sonnet-4-5",
+            "openrouter",
+            "old-model",
+            current_base_url="https://old.example/v1",
+            current_api_key="old-key",
+            explicit_provider="work",
+            user_providers={
+                "work": {
+                    "name": "Work Anthropic Proxy",
+                    "api": "https://work.example/anthropic",
+                    "api_key": "work-key",
+                    "transport": "anthropic_messages",
+                }
+            },
+        )
+
+        assert result.success
+        assert result.target_provider == "work"
+        assert result.base_url == "https://work.example/anthropic"
+        assert result.api_key == "work-key"
+        assert result.api_mode == "anthropic_messages"
+
+    def test_switch_model_uses_user_provider_key_env(self, monkeypatch):
+        """key_env should be resolved instead of silently reusing the previous provider key."""
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setenv("WORK_PROXY_KEY", "env-work-key")
+        monkeypatch.setattr("hermes_cli.models.validate_requested_model", self._accept)
+
+        result = ms.switch_model(
+            "gpt-4.1-mini",
+            "openrouter",
+            "old-model",
+            current_base_url="https://old.example/v1",
+            current_api_key="old-key",
+            explicit_provider="work-proxy",
+            user_providers={
+                "work-proxy": {
+                    "api": "https://proxy.example/v1",
+                    "key_env": "WORK_PROXY_KEY",
+                }
+            },
+        )
+
+        assert result.success
+        assert result.base_url == "https://proxy.example/v1"
+        assert result.api_key == "env-work-key"
+
+    def test_switch_model_errors_when_user_provider_key_env_missing(self, monkeypatch):
+        """Missing key_env should fail clearly instead of inheriting the old provider key."""
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.delenv("MISSING_WORK_KEY", raising=False)
+        monkeypatch.setattr("hermes_cli.models.validate_requested_model", self._accept)
+
+        result = ms.switch_model(
+            "gpt-4.1-mini",
+            "openrouter",
+            "old-model",
+            current_base_url="https://old.example/v1",
+            current_api_key="old-key",
+            explicit_provider="work-proxy",
+            user_providers={
+                "work-proxy": {
+                    "api": "https://proxy.example/v1",
+                    "key_env": "MISSING_WORK_KEY",
+                }
+            },
+        )
+
+        assert not result.success
+        assert "MISSING_WORK_KEY" in result.error_message
+        assert "api key" in result.error_message.lower()
+
+    def test_switch_model_errors_when_user_provider_has_no_base_url(self, monkeypatch):
+        """User-defined providers must not inherit the previous provider's base_url."""
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setattr("hermes_cli.models.validate_requested_model", self._accept)
+
+        result = ms.switch_model(
+            "gpt-4.1-mini",
+            "openrouter",
+            "old-model",
+            current_base_url="https://old.example/v1",
+            current_api_key="old-key",
+            explicit_provider="broken",
+            user_providers={
+                "broken": {
+                    "api_key": "new-key",
+                }
+            },
+        )
+
+        assert not result.success
+        assert "base url" in result.error_message.lower() or "base_url" in result.error_message.lower()
+
+    def test_switch_model_unknown_user_provider_transport_falls_back_to_detection(self, monkeypatch):
+        """Unknown transport values should fall back to determine_api_mode heuristics."""
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setattr("hermes_cli.models.validate_requested_model", self._accept)
+        monkeypatch.setattr(ms, "determine_api_mode", lambda provider, base_url: "anthropic_messages")
+
+        result = ms.switch_model(
+            "claude-sonnet-4-5",
+            "openrouter",
+            "old-model",
+            current_base_url="https://old.example/v1",
+            current_api_key="old-key",
+            explicit_provider="work",
+            user_providers={
+                "work": {
+                    "api": "https://work.example/anthropic",
+                    "api_key": "work-key",
+                    "transport": "typo-transport",
+                }
+            },
+        )
+
+        assert result.success
+        assert result.api_mode == "anthropic_messages"
+
+
+# ---------------------------------------------------------------------------
+# list_authenticated_providers: user-defined models ordering
+# ---------------------------------------------------------------------------
+
+class TestListAuthenticatedProvidersUserProviders:
+    """User-defined provider entries should keep default_model first without duplicates."""
+
+    def test_list_authenticated_providers_moves_default_model_to_front(self, monkeypatch):
+        import hermes_cli.model_switch as ms
+        import hermes_cli.providers as providers_mod
+        import agent.models_dev as models_dev
+
+        monkeypatch.setattr(models_dev, "fetch_models_dev", lambda: {})
+        monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+        monkeypatch.setattr(models_dev, "PROVIDER_TO_MODELS_DEV", {})
+
+        providers = ms.list_authenticated_providers(
+            current_provider="",
+            user_providers={
+                "edge": {
+                    "name": "Edge GPU",
+                    "api": "https://edge.example/v1",
+                    "default_model": "model-b",
+                    "models": ["model-a", "model-b", "model-c", "model-b"],
+                }
+            },
+            max_models=10,
+        )
+
+        assert len(providers) == 1
+        assert providers[0]["slug"] == "edge"
+        assert providers[0]["models"] == ["model-b", "model-a", "model-c"]
+        assert providers[0]["total_models"] == 3
+
+
+# ---------------------------------------------------------------------------
 # CLI state update: requested_provider persistence
 # ---------------------------------------------------------------------------
 

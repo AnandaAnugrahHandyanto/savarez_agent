@@ -21,6 +21,7 @@ OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import List, NamedTuple, Optional
 
@@ -598,12 +599,56 @@ def switch_model(
     # which only knows about built-in providers and custom_providers list.
     _user_ep = (user_providers or {}).get(target_provider) if user_providers else None
     if _user_ep and isinstance(_user_ep, dict):
-        base_url = _user_ep.get("api", "") or _user_ep.get("url", "") or _user_ep.get("base_url", "") or base_url
-        api_key = _user_ep.get("api_key", "") or api_key
-        _transport = _user_ep.get("transport", "")
+        user_base_url = (
+            _user_ep.get("api", "")
+            or _user_ep.get("url", "")
+            or _user_ep.get("base_url", "")
+        )
+        if not user_base_url:
+            return ModelSwitchResult(
+                success=False,
+                target_provider=target_provider,
+                provider_label=provider_label,
+                is_global=is_global,
+                error_message=(
+                    f"User-defined provider '{provider_label}' is missing required "
+                    f"'api'/'url'/'base_url' configuration."
+                ),
+            )
+
+        user_api_key = str(_user_ep.get("api_key", "") or "").strip()
+        if not user_api_key:
+            key_env = str(_user_ep.get("key_env", "") or "").strip()
+            if key_env:
+                user_api_key = os.getenv(key_env, "").strip()
+                if not user_api_key:
+                    return ModelSwitchResult(
+                        success=False,
+                        target_provider=target_provider,
+                        provider_label=provider_label,
+                        is_global=is_global,
+                        error_message=(
+                            f"User-defined provider '{provider_label}' is missing an API key. "
+                            f"Set the environment variable '{key_env}' or add 'api_key' under "
+                            f"config.yaml providers:{target_provider}."
+                        ),
+                    )
+            else:
+                user_api_key = "no-key-required"
+
+        base_url = user_base_url
+        api_key = user_api_key
+        _transport = str(_user_ep.get("transport", "") or "").strip().lower()
         if _transport:
             from hermes_cli.providers import TRANSPORT_TO_API_MODE
-            api_mode = TRANSPORT_TO_API_MODE.get(_transport, "chat_completions")
+            api_mode = TRANSPORT_TO_API_MODE.get(_transport, "")
+            if not api_mode:
+                logger.warning(
+                    "Unknown transport '%s' for user-defined provider '%s'; falling back to determine_api_mode()",
+                    _transport,
+                    target_provider,
+                )
+                api_mode = determine_api_mode(target_provider, base_url)
         else:
             api_mode = determine_api_mode(target_provider, base_url)
     elif provider_changed or explicit_provider:
@@ -844,8 +889,18 @@ def list_authenticated_providers(
                 models_list = [str(m) for m in ep_models if m]
             elif isinstance(ep_models, dict) and ep_models:
                 models_list = list(ep_models.keys())
-            if default_model and default_model not in models_list:
+            if default_model:
+                models_list = [m for m in models_list if m != default_model]
                 models_list.insert(0, default_model)
+            elif models_list:
+                deduped = []
+                seen_models = set()
+                for model_name in models_list:
+                    if model_name in seen_models:
+                        continue
+                    seen_models.add(model_name)
+                    deduped.append(model_name)
+                models_list = deduped
             results.append({
                 "slug": ep_name,
                 "name": display_name,
