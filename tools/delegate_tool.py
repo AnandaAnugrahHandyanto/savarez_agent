@@ -1,3 +1,10 @@
+import sys
+from rich.live import Live
+from rich.table import Table
+from rich.panel import Panel
+from rich.text import Text
+from rich.console import Group
+import os
 #!/usr/bin/env python3
 """
 Delegate Tool -- Subagent Architecture
@@ -136,28 +143,32 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
     _BATCH_SIZE = 5
     _batch: List[str] = []
 
-    def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
-        # event_type is one of: "tool.started", "tool.completed",
-        # "reasoning.available", "_thinking", "subagent_progress"
+    ui_state = getattr(parent_agent, '_delegate_ui_state', None)
 
-        # "_thinking" / reasoning events
+    def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
+        # Update rich UI state if active
+        if ui_state and ui_state.active:
+            if event_type == "tool.started":
+                ui_state.tasks[task_index]["current_tool"] = tool_name
+                ui_state.tasks[task_index]["api_calls"] += 1
+            elif event_type in ("_thinking", "reasoning.available"):
+                ui_state.tasks[task_index]["current_tool"] = "thinking..."
+
+        # Original legacy callback logic
         if event_type in ("_thinking", "reasoning.available"):
             text = preview or tool_name or ""
-            if spinner:
+            if spinner and not (ui_state and ui_state.active):
                 short = (text[:55] + "...") if len(text) > 55 else text
                 try:
                     spinner.print_above(f" {prefix}├─ 💭 \"{short}\"")
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
-            # Don't relay thinking to gateway (too noisy for chat)
             return
 
-        # tool.completed — no display needed here (spinner shows on started)
         if event_type == "tool.completed":
             return
 
-        # tool.started — display and batch for parent relay
-        if spinner:
+        if spinner and not (ui_state and ui_state.active):
             short = (preview[:35] + "...") if preview and len(preview) > 35 else (preview or "")
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name or "")
@@ -507,6 +518,66 @@ def _run_single_child(
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 
+class DelegateUIState:
+    def __init__(self, task_labels):
+        self.tasks = []
+        for label in task_labels:
+            self.tasks.append({
+                "label": label,
+                "status": "pending",
+                "start": None,
+                "end": None,
+                "api_calls": 0,
+                "current_tool": None
+            })
+        self.start_time = time.time()
+        self.active = hasattr(sys.stdout, "isatty") and sys.stdout.isatty() and not os.getenv("HERMES_SPINNER_PAUSE")
+
+    def render(self):
+        table = Table(box=None, expand=True, padding=(0, 2))
+        table.add_column("Task", style="bold yellow", width=35)
+        table.add_column("Status", width=15)
+        table.add_column("Time", justify="right", width=8)
+        table.add_column("Calls", justify="right", width=8)
+        table.add_column("Current Tool", width=25)
+
+        now = time.time()
+        spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        spin_char = spinner_frames[int(now * 10) % len(spinner_frames)]
+
+        for i, s in enumerate(self.tasks):
+            status_text = ""
+            elapsed = ""
+            current_tool = s["current_tool"] or "-"
+            if s["status"] == "pending":
+                status_text = Text("Waiting...", style="dim")
+            elif s["status"] == "running":
+                status_text = Text(f"{spin_char} Running...", style="cyan")
+                elapsed = f"{now - s['start']:.1f}s"
+            elif s["status"] == "done":
+                status_text = Text("✓ Complete", style="green")
+                elapsed = f"{s['end'] - s['start']:.1f}s"
+                current_tool = "Done"
+            elif s["status"] == "error":
+                status_text = Text("✗ Failed", style="red")
+                elapsed = f"{s['end'] - s['start']:.1f}s"
+                current_tool = "Failed"
+
+            calls = str(s['api_calls']) if s['api_calls'] > 0 else "-"
+            label_short = (s['label'][:32] + "...") if len(s['label']) > 35 else s['label']
+            table.add_row(f"[{i+1}] {label_short}", status_text, elapsed, calls, current_tool)
+
+        total_time = now - self.start_time
+        completed = sum(1 for s in self.tasks if s["status"] in ("done", "error"))
+        panel = Panel(
+            table,
+            title=f"[bold yellow]🔀 Subagent Delegation ({completed}/{len(self.tasks)})[/bold yellow]",
+            subtitle=f"[dim]Total Time: {total_time:.1f}s[/dim]",
+            border_style="yellow",
+            expand=False
+        )
+        return panel
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -615,16 +686,56 @@ def delegate_task(
         # Batch -- run in parallel with per-task progress lines
         completed_count = 0
         spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
+        ui_state = DelegateUIState(task_labels)
+
+        # We attach the UI state temporarily so child callbacks can update it
+        if parent_agent:
+            setattr(parent_agent, '_delegate_ui_state', ui_state)
+
+        def ui_renderer():
+            if not ui_state.active:
+                return
+            was_paused = os.getenv("HERMES_SPINNER_PAUSE")
+            os.environ["HERMES_SPINNER_PAUSE"] = "1"
+            sys.stdout.write("\r\033[K")
+            sys.stdout.flush()
+
+            try:
+                with Live(ui_state.render(), refresh_per_second=10) as live:
+                    while completed_count < n_tasks:
+                        live.update(ui_state.render())
+                        time.sleep(0.1)
+                    live.update(ui_state.render())
+            finally:
+                if was_paused is None:
+                    if "HERMES_SPINNER_PAUSE" in os.environ:
+                        del os.environ["HERMES_SPINNER_PAUSE"]
+                else:
+                    os.environ["HERMES_SPINNER_PAUSE"] = was_paused
+
+        import threading
+        ui_thread = None
+        if ui_state.active:
+            ui_thread = threading.Thread(target=ui_renderer, daemon=True)
+            ui_thread.start()
+
+        def _child_wrapper(i, goal, child, parent):
+            ui_state.tasks[i]["start"] = time.time()
+            ui_state.tasks[i]["status"] = "running"
+            res = _run_single_child(i, goal, child, parent)
+            ui_state.tasks[i]["status"] = "done" if res.get("status") == "completed" else "error"
+            ui_state.tasks[i]["end"] = time.time()
+            return res
 
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHILDREN) as executor:
             futures = {}
             for i, t, child in children:
                 future = executor.submit(
-                    _run_single_child,
-                    task_index=i,
-                    goal=t["goal"],
-                    child=child,
-                    parent_agent=parent_agent,
+                    _child_wrapper,
+                    i,
+                    t["goal"],
+                    child,
+                    parent_agent,
                 )
                 futures[future] = i
 
@@ -633,6 +744,8 @@ def delegate_task(
                     entry = future.result()
                 except Exception as exc:
                     idx = futures[future]
+                    ui_state.tasks[idx]["status"] = "error"
+                    ui_state.tasks[idx]["end"] = time.time()
                     entry = {
                         "task_index": idx,
                         "status": "error",
@@ -644,28 +757,35 @@ def delegate_task(
                 results.append(entry)
                 completed_count += 1
 
-                # Print per-task completion line above the spinner
-                idx = entry["task_index"]
-                label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
-                dur = entry.get("duration_seconds", 0)
-                status = entry.get("status", "?")
-                icon = "✓" if status == "completed" else "✗"
-                remaining = n_tasks - completed_count
-                completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
-                if spinner_ref:
-                    try:
-                        spinner_ref.print_above(completion_line)
-                    except Exception:
+                if not ui_state.active:
+                    # Original legacy completion line logic
+                    idx = entry["task_index"]
+                    label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
+                    dur = entry.get("duration_seconds", 0)
+                    status = entry.get("status", "?")
+                    icon = "✓" if status == "completed" else "✗"
+                    remaining = n_tasks - completed_count
+                    completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
+                    if spinner_ref:
+                        try:
+                            spinner_ref.print_above(completion_line)
+                        except Exception:
+                            print(f"  {completion_line}")
+                    else:
                         print(f"  {completion_line}")
-                else:
-                    print(f"  {completion_line}")
 
-                # Update spinner text to show remaining count
-                if spinner_ref and remaining > 0:
-                    try:
-                        spinner_ref.update_text(f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining")
-                    except Exception as e:
-                        logger.debug("Spinner update_text failed: %s", e)
+                    # Update spinner text to show remaining count
+                    if spinner_ref and remaining > 0:
+                        try:
+                            spinner_ref.update_text(f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining")
+                        except Exception as e:
+                            logger.debug("Spinner update_text failed: %s", e)
+
+        if ui_thread:
+            ui_thread.join()
+
+        if parent_agent and hasattr(parent_agent, '_delegate_ui_state'):
+            delattr(parent_agent, '_delegate_ui_state')
 
         # Sort by task_index so results match input order
         results.sort(key=lambda r: r["task_index"])
