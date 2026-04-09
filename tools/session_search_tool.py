@@ -253,12 +253,14 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             try:
                 sid = current_session_id
                 visited = set()
+                root_sid = current_session_id
                 while sid and sid not in visited:
                     visited.add(sid)
+                    root_sid = sid
                     s = db.get_session(sid)
                     parent = s.get("parent_session_id") if s else None
                     sid = parent if parent else None
-                current_root = max(visited, key=len) if visited else current_session_id
+                current_root = root_sid
             except Exception:
                 current_root = current_session_id
 
@@ -390,7 +392,9 @@ def session_search(
             if resolved_sid not in seen_sessions:
                 result = dict(result)
                 result["session_id"] = resolved_sid
+                result["match_session_id"] = raw_sid
                 seen_sessions[resolved_sid] = result
+
             if len(seen_sessions) >= limit:
                 break
 
@@ -398,7 +402,12 @@ def session_search(
         tasks = []
         for session_id, match_info in seen_sessions.items():
             try:
-                messages = db.get_messages_as_conversation(session_id)
+                # Load from the matched session (child if that's where FTS hit),
+                # falling back to the resolved root if the child has no messages.
+                match_session_id = match_info.get("match_session_id") or session_id
+                messages = db.get_messages_as_conversation(match_session_id)
+                if not messages and match_session_id != session_id:
+                    messages = db.get_messages_as_conversation(session_id)
                 if not messages:
                     continue
                 session_meta = db.get_session(session_id) or {}

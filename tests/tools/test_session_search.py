@@ -2,6 +2,8 @@
 
 import json
 import time
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from tools.session_search_tool import (
@@ -318,3 +320,90 @@ class TestSessionSearch:
         assert result["count"] == 0
         assert result["results"] == []
         assert result["sessions_searched"] == 0
+
+    def test_child_hit_uses_child_transcript_for_fallback_preview(self):
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {
+                "session_id": "child_sid",
+                "content": "needle in child",
+                "source": "telegram",
+                "session_started": 1709500000,
+                "model": "test",
+            },
+        ]
+
+        def _get_session(session_id):
+            if session_id == "child_sid":
+                return {"parent_session_id": "root_sid"}
+            if session_id == "root_sid":
+                return {"parent_session_id": None}
+            return None
+
+        def _get_messages(session_id):
+            if session_id == "child_sid":
+                return [
+                    {"role": "user", "content": "this contains the needle in child"},
+                    {"role": "assistant", "content": "child-specific follow-up"},
+                ]
+            if session_id == "root_sid":
+                return [
+                    {"role": "user", "content": "root transcript without the keyword"},
+                    {"role": "assistant", "content": "older root context"},
+                ]
+            return []
+
+        mock_db.get_session.side_effect = _get_session
+        mock_db.get_messages_as_conversation.side_effect = _get_messages
+
+        with patch("tools.session_search_tool.async_call_llm", new_callable=AsyncMock, side_effect=RuntimeError("no provider")):
+            result = json.loads(session_search(query="needle", db=mock_db))
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["results"][0]["session_id"] == "root_sid"
+        assert "needle in child" in result["results"][0]["summary"]
+        assert "root transcript without the keyword" not in result["results"][0]["summary"]
+
+    def test_recent_sessions_excludes_current_parent_lineage(self):
+        from tools.session_search_tool import _list_recent_sessions
+
+        mock_db = MagicMock()
+        mock_db.list_sessions_rich.return_value = [
+            {
+                "id": "parent",
+                "title": "Parent session",
+                "source": "telegram",
+                "started_at": "2026-04-09T10:00:00",
+                "last_active": "2026-04-09T10:10:00",
+                "message_count": 4,
+                "preview": "parent preview",
+                "parent_session_id": None,
+            },
+            {
+                "id": "other-session",
+                "title": "Other session",
+                "source": "cli",
+                "started_at": "2026-04-08T10:00:00",
+                "last_active": "2026-04-08T10:10:00",
+                "message_count": 2,
+                "preview": "other preview",
+                "parent_session_id": None,
+            },
+        ]
+
+        def _get_session(session_id):
+            if session_id == "child-longer-id":
+                return {"parent_session_id": "parent"}
+            if session_id == "parent":
+                return {"parent_session_id": None}
+            return None
+
+        mock_db.get_session.side_effect = _get_session
+
+        result = json.loads(_list_recent_sessions(mock_db, limit=5, current_session_id="child-longer-id"))
+
+        assert result["success"] is True
+        assert [r["session_id"] for r in result["results"]] == ["other-session"]
