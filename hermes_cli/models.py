@@ -1017,29 +1017,58 @@ def provider_label(provider: Optional[str]) -> str:
     return _PROVIDER_LABELS.get(normalized, original or "OpenRouter")
 
 
-_FAST_MODE_BACKEND_CONFIG: dict[tuple[str, str], dict[str, str]] = {
-    ("openai-codex", "gpt-5.4"): {"service_tier": "priority"},
+_FAST_MODE_BACKEND_CONFIG: dict[str, dict[str, Any]] = {
+    "gpt-5.4": {
+        "provider": "openai-codex",
+        "request_overrides": {"service_tier": "priority"},
+    },
 }
 
 
-def fast_mode_backend_config(provider: Optional[str], model_id: Optional[str]) -> dict[str, str] | None:
-    """Return backend request overrides for models that expose Fast mode.
+def fast_mode_backend_config(model_id: Optional[str]) -> dict[str, Any] | None:
+    """Return backend config for models that expose Fast mode.
 
-    To expose Fast mode for a new model, add its ``(provider, model)`` tuple to
-    ``_FAST_MODE_BACKEND_CONFIG`` along with the backend-specific request
-    overrides Hermes should apply when the user enables Fast mode.
+    To expose Fast mode for a new model, add its normalized model slug to
+    ``_FAST_MODE_BACKEND_CONFIG`` along with the backend runtime selection and
+    backend-specific request overrides Hermes should apply.
     """
-    normalized_provider = normalize_provider(provider)
     raw = str(model_id or "").strip().lower()
     if "/" in raw:
         raw = raw.split("/", 1)[1]
-    config = _FAST_MODE_BACKEND_CONFIG.get((normalized_provider, raw))
+    config = _FAST_MODE_BACKEND_CONFIG.get(raw)
     return dict(config) if config else None
 
 
-def codex_model_supports_fast_mode(provider: Optional[str], model_id: Optional[str]) -> bool:
+def model_supports_fast_mode(model_id: Optional[str]) -> bool:
     """Return whether Hermes should expose Fast mode for the active model."""
-    return fast_mode_backend_config(provider, model_id) is not None
+    return fast_mode_backend_config(model_id) is not None
+
+
+def resolve_fast_mode_runtime(model_id: Optional[str]) -> dict[str, Any] | None:
+    """Resolve runtime selection and request overrides for a fast-mode model."""
+    cfg = fast_mode_backend_config(model_id)
+    if not cfg:
+        return None
+
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    runtime = resolve_runtime_provider(
+        requested=cfg.get("provider"),
+        explicit_base_url=cfg.get("base_url"),
+        explicit_api_key=cfg.get("api_key"),
+    )
+    return {
+        "runtime": {
+            "api_key": runtime.get("api_key"),
+            "base_url": runtime.get("base_url"),
+            "provider": runtime.get("provider"),
+            "api_mode": runtime.get("api_mode"),
+            "command": runtime.get("command"),
+            "args": list(runtime.get("args") or []),
+            "credential_pool": runtime.get("credential_pool"),
+        },
+        "request_overrides": dict(cfg.get("request_overrides") or {}),
+    }
 
 
 def _resolve_copilot_catalog_api_key() -> str:

@@ -501,6 +501,7 @@ class AIAgent:
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         service_tier: str = None,
+        request_overrides: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
         user_id: str = None,
@@ -663,6 +664,7 @@ class AIAgent:
         self.max_tokens = max_tokens  # None = use model default
         self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
         self.service_tier = service_tier
+        self.request_overrides = dict(request_overrides or {})
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         
         # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
@@ -5443,11 +5445,16 @@ class AIAgent:
                 self.provider == "openai-codex"
                 or "chatgpt.com/backend-api/codex" in self.base_url.lower()
             )
-            try:
-                from hermes_cli.models import fast_mode_backend_config
-                fast_mode_config = fast_mode_backend_config(self.provider, self.model)
-            except Exception:
-                fast_mode_config = None
+            fast_mode_request_overrides = None
+            if self.service_tier:
+                try:
+                    from hermes_cli.models import fast_mode_backend_config
+
+                    fast_cfg = fast_mode_backend_config(self.model)
+                    if fast_cfg and fast_cfg.get("provider") == self.provider:
+                        fast_mode_request_overrides = dict(fast_cfg.get("request_overrides") or {})
+                except Exception:
+                    fast_mode_request_overrides = None
 
             # Resolve reasoning effort: config > default (medium)
             reasoning_effort = "medium"
@@ -5485,8 +5492,10 @@ class AIAgent:
             elif not is_github_responses:
                 kwargs["include"] = []
 
-            if self.service_tier and fast_mode_config:
-                kwargs.update(fast_mode_config)
+            if self.request_overrides:
+                kwargs.update(self.request_overrides)
+            elif fast_mode_request_overrides:
+                kwargs.update(fast_mode_request_overrides)
 
             if self.max_tokens is not None and not is_codex_backend:
                 kwargs["max_output_tokens"] = self.max_tokens
