@@ -2314,17 +2314,25 @@ class DiscordAdapter(BasePlatformAdapter):
 
             free_channels_raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
             free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
+            free_guilds_raw = os.getenv("DISCORD_FREE_RESPONSE_GUILDS", "")
+            free_guilds = {gid.strip() for gid in free_guilds_raw.split(",") if gid.strip()}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
 
+            guild_id = None
+            guild = getattr(message.channel, "guild", None)
+            if guild is not None:
+                guild_id = str(guild.id)
+
             require_mention = os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
             is_free_channel = bool(channel_ids & free_channels)
+            is_free_guild = bool(guild_id and guild_id in free_guilds)
 
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in).
             in_bot_thread = is_thread and thread_id in self._bot_participated_threads
 
-            if require_mention and not is_free_channel and not in_bot_thread:
+            if require_mention and not is_free_channel and not is_free_guild and not in_bot_thread:
                 if self._client.user not in message.mentions:
                     return
 
