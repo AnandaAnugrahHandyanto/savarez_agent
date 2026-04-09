@@ -42,6 +42,13 @@ class HermesOverlay:
 
 
 HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
+    "claude-cli": HermesOverlay(
+        # Inference via the local ``claude`` CLI subprocess.
+        # Requires npm install -g @anthropic-ai/claude-code and a Claude Pro/Max login.
+        # No API key needed — the CLI manages its own OAuth credentials.
+        transport="claude_cli",
+        auth_type="external_process",
+    ),
     "openrouter": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
@@ -158,6 +165,11 @@ class ProviderDef:
 # Uses models.dev IDs where possible.
 
 ALIASES: Dict[str, str] = {
+    # claude-cli
+    "claude_cli": "claude-cli",
+    "claude-code-cli": "claude-cli",
+    "claudecli": "claude-cli",
+
     # openrouter
     "openai": "openrouter",     # bare "openai" → route through aggregator
 
@@ -237,6 +249,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
+    "claude-cli": "Claude CLI",
     "local": "Local endpoint",
 }
 
@@ -247,6 +260,7 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "openai_chat": "chat_completions",
     "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
+    "claude_cli": "claude_cli",
 }
 
 
@@ -371,6 +385,7 @@ LABELS: Dict[str, str] = {
     "opencode-go": "OpenCode Go",
     "kilo": "Kilo Gateway",
     "huggingface": "Hugging Face",
+    "claude-cli": "Claude CLI",
     "local": "Local endpoint",
     "custom": "Custom endpoint",
     # Legacy Hermes IDs (point to same providers)
