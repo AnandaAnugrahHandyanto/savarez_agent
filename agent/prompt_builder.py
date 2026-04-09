@@ -904,10 +904,13 @@ def _load_agents_md(cwd_path: Path) -> str:
                 content = _scan_context_content(content, name)
                 result = f"## {name}\n\n{content}"
                 return _truncate_content(result, "AGENTS.md")
-        except OSError as e:
-            # Includes PermissionError — cwd may point into a sandbox
-            # filesystem the host user cannot read. See #6214.
-            logger.debug("Could not access %s: %s", candidate, e)
+        except (OSError, UnicodeError) as e:
+            # OSError (incl. PermissionError) — cwd may point into a
+            # sandbox filesystem the host user cannot read.
+            # UnicodeError (incl. UnicodeDecodeError) — the file exists
+            # and is readable but isn't valid UTF-8. Fail gracefully so
+            # prompt construction continues either way. See #6214.
+            logger.debug("Could not load %s: %s", candidate, e)
     return ""
 
 
@@ -923,10 +926,13 @@ def _load_claude_md(cwd_path: Path) -> str:
                 content = _scan_context_content(content, name)
                 result = f"## {name}\n\n{content}"
                 return _truncate_content(result, "CLAUDE.md")
-        except OSError as e:
-            # Includes PermissionError — cwd may point into a sandbox
-            # filesystem the host user cannot read. See #6214.
-            logger.debug("Could not access %s: %s", candidate, e)
+        except (OSError, UnicodeError) as e:
+            # OSError (incl. PermissionError) — cwd may point into a
+            # sandbox filesystem the host user cannot read.
+            # UnicodeError (incl. UnicodeDecodeError) — the file exists
+            # and is readable but isn't valid UTF-8. Fail gracefully so
+            # prompt construction continues either way. See #6214.
+            logger.debug("Could not load %s: %s", candidate, e)
     return ""
 
 
@@ -940,10 +946,11 @@ def _load_cursorrules(cwd_path: Path) -> str:
             if content:
                 content = _scan_context_content(content, ".cursorrules")
                 cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
-    except OSError as e:
-        # Includes PermissionError — cwd may point into a sandbox
-        # filesystem the host user cannot read. See #6214.
-        logger.debug("Could not access .cursorrules: %s", e)
+    except (OSError, UnicodeError) as e:
+        # OSError (incl. PermissionError) — cwd may point into a
+        # sandbox filesystem the host user cannot read.
+        # UnicodeError — the file isn't valid UTF-8. See #6214.
+        logger.debug("Could not load .cursorrules: %s", e)
 
     cursor_rules_dir = cwd_path / ".cursor" / "rules"
     try:
@@ -955,8 +962,10 @@ def _load_cursorrules(cwd_path: Path) -> str:
                     if content:
                         content = _scan_context_content(content, f".cursor/rules/{mdc_file.name}")
                         cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
-                except OSError as e:
-                    logger.debug("Could not read %s: %s", mdc_file, e)
+                except (OSError, UnicodeError) as e:
+                    # Skip the offending file (OSError for unreadable,
+                    # UnicodeError for non-UTF-8) and continue with the rest.
+                    logger.debug("Could not load %s: %s", mdc_file, e)
     except OSError as e:
         logger.debug("Could not access .cursor/rules: %s", e)
 
