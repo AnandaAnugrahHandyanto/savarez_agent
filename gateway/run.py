@@ -303,7 +303,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
-    return {
+    kwargs = {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
@@ -312,6 +312,16 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
     }
+    # Honour config.yaml::model.max_tokens (or top-level max_tokens) so
+    # gateway-spawned AIAgent instances don't unconditionally fall through
+    # to the model-metadata default. Critical on OpenRouter, which pre-
+    # authorizes max_tokens × output_price against the user's credit
+    # balance and returns HTTP 402 when the balance is insufficient — the
+    # model default for GLM 5.1 is 65536, which costs ~$0.12 per call.
+    max_tokens = _resolve_gateway_max_tokens()
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    return kwargs
 
 
 def _build_media_placeholder(event) -> str:
@@ -431,6 +441,30 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     elif isinstance(model_cfg, dict):
         return model_cfg.get("default") or model_cfg.get("model") or ""
     return ""
+
+
+def _resolve_gateway_max_tokens(config: dict | None = None) -> int | None:
+    """Read max output tokens from config.yaml.
+
+    Accepts either nested (``model.max_tokens``) or top-level (``max_tokens``)
+    forms, with the nested form taking priority. Returns None if unset so
+    AIAgent falls back to the model-metadata default.
+
+    Without this, gateway-spawned AIAgent instances always pass
+    max_tokens=None, which lets the model metadata default through — for
+    GLM 5.1 that's 65536, which OpenRouter pre-authorizes against the user's
+    credit balance and rejects with HTTP 402 when the balance is insufficient.
+    """
+    cfg = config if config is not None else _load_gateway_config()
+    model_cfg = cfg.get("model", {})
+    if isinstance(model_cfg, dict):
+        val = model_cfg.get("max_tokens")
+        if isinstance(val, (int, float)) and val > 0:
+            return int(val)
+    top_level = cfg.get("max_tokens")
+    if isinstance(top_level, (int, float)) and top_level > 0:
+        return int(top_level)
+    return None
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
@@ -793,7 +827,25 @@ class GatewayRunner:
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
         }
-        return resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
+        # Carry config.yaml::model.max_tokens through into the turn route so
+        # AIAgent receives it via **turn_route["runtime"] at the call sites
+        # (gateway/run.py:4607, 4782, 6718). Without this, runtime_kwargs'
+        # max_tokens is silently dropped on turn construction.
+        if "max_tokens" in runtime_kwargs and runtime_kwargs["max_tokens"] is not None:
+            primary["max_tokens"] = runtime_kwargs["max_tokens"]
+        route = resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
+        # Belt-and-braces: if the routing layer stripped max_tokens (it deals
+        # with provider routing, not model params), re-inject it into the
+        # returned runtime dict so **turn_route["runtime"] carries it.
+        if (
+            "max_tokens" in runtime_kwargs
+            and runtime_kwargs["max_tokens"] is not None
+            and isinstance(route, dict)
+            and isinstance(route.get("runtime"), dict)
+            and route["runtime"].get("max_tokens") is None
+        ):
+            route["runtime"]["max_tokens"] = runtime_kwargs["max_tokens"]
+        return route
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.
