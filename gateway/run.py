@@ -3522,7 +3522,7 @@ class GatewayRunner:
         # Validate the profile exists in the hierarchy registry
         try:
             import sys as _sys
-            _proj = str(Path.home() / "hermes_work" / "projects" / "hierarchical-architecture")
+            _proj = str(Path.home() / "hermes_work" / "projects" / "hierarchical-agents")
             if _proj not in _sys.path:
                 _sys.path.insert(0, _proj)
             from core.registry.profile_registry import ProfileRegistry
@@ -3569,7 +3569,20 @@ class GatewayRunner:
             return None
 
         message_text = event.text.strip()
-        if not message_text:
+
+        # Handle voice/audio messages: transcribe before routing to the profile.
+        # STT normally runs later in _handle_message_with_agent, so we must do
+        # it here ourselves or voice messages arrive as empty text and are dropped.
+        if not message_text and event.media_urls:
+            audio_paths = []
+            for i, path in enumerate(event.media_urls):
+                mtype = event.media_types[i] if i < len(event.media_types) else ""
+                if mtype.startswith("audio/") or event.message_type in (MessageType.VOICE, MessageType.AUDIO):
+                    audio_paths.append(path)
+            if audio_paths:
+                message_text = await self._enrich_message_with_transcription("", audio_paths)
+
+        if not message_text.strip():
             return None
 
         source = event.source
@@ -3589,7 +3602,7 @@ class GatewayRunner:
         # Send to the profile via IPC
         try:
             import sys as _sys
-            _proj = str(Path.home() / "hermes_work" / "projects" / "hierarchical-architecture")
+            _proj = str(Path.home() / "hermes_work" / "projects" / "hierarchical-agents")
             if _proj not in _sys.path:
                 _sys.path.insert(0, _proj)
             from core.ipc.message_bus import MessageBus
@@ -4056,7 +4069,7 @@ class GatewayRunner:
         # Validate the profile exists in the hierarchy
         try:
             import sys as _sys
-            _project_root = str(__import__("pathlib").Path.home() / "hermes_work" / "projects" / "hierarchical-architecture")
+            _project_root = str(__import__("pathlib").Path.home() / "hermes_work" / "projects" / "hierarchical-agents")
             if _project_root not in _sys.path:
                 _sys.path.insert(0, _project_root)
             from core.registry.profile_registry import ProfileRegistry
@@ -4114,7 +4127,7 @@ class GatewayRunner:
         try:
             import sys as _sys
             import json
-            _project_root = str(__import__("pathlib").Path.home() / "hermes_work" / "projects" / "hierarchical-architecture")
+            _project_root = str(__import__("pathlib").Path.home() / "hermes_work" / "projects" / "hierarchical-agents")
             if _project_root not in _sys.path:
                 _sys.path.insert(0, _project_root)
             from core.ipc.message_bus import MessageBus
