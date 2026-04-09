@@ -245,6 +245,19 @@ browser:
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120
 
+  # Browser Use session settings — customise cloud browser sessions created via
+  # the Browser Use provider.  Each key can also be set (or overridden) with
+  # the corresponding BROWSER_USE_* environment variable.
+  #
+  # browser_use:
+  #   profile_id: ""                # Browser Use profile UUID
+  #   proxy_country_code: us        # Two-letter country code for the proxy
+  #   timeout: 5                    # Session timeout in minutes
+  #   screen_width: 1920            # Browser viewport width in pixels
+  #   screen_height: 1080           # Browser viewport height in pixels
+  #   allow_resizing: false         # Allow the browser window to be resized
+  #   enable_recording: false       # Record the browser session
+
 # =============================================================================
 # Context Compression (Auto-shrinks long conversations)
 # =============================================================================

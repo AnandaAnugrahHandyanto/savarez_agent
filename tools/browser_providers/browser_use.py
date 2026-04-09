@@ -4,21 +4,34 @@ import logging
 import os
 import threading
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any
 
 import requests
+import yaml
 
+from hermes_constants import get_hermes_home
 from tools.browser_providers.base import CloudBrowserProvider
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 logger = logging.getLogger(__name__)
-_pending_create_keys: Dict[str, str] = {}
+_pending_create_keys: dict[str, str] = {}
 _pending_create_keys_lock = threading.Lock()
 
 _BASE_URL = "https://api.browser-use.com/api/v3"
 _DEFAULT_MANAGED_TIMEOUT_MINUTES = 5
 _DEFAULT_MANAGED_PROXY_COUNTRY_CODE = "us"
+
+# Maps snake_case config keys to camelCase API parameter names.
+_CONFIG_KEY_TO_API_PARAM: dict[str, str] = {
+    "profile_id": "profileId",
+    "proxy_country_code": "proxyCountryCode",
+    "timeout": "timeout",
+    "screen_width": "browserScreenWidth",
+    "screen_height": "browserScreenHeight",
+    "allow_resizing": "allowResizing",
+    "enable_recording": "enableRecording",
+}
 
 
 def _get_or_create_pending_create_key(task_id: str) -> str:
@@ -35,6 +48,15 @@ def _get_or_create_pending_create_key(task_id: str) -> str:
 def _clear_pending_create_key(task_id: str) -> None:
     with _pending_create_keys_lock:
         _pending_create_keys.pop(task_id, None)
+
+
+def _parse_env_value(value: str, api_key: str) -> Any:
+    """Parse an environment variable string into the appropriate type."""
+    if api_key in ("allowResizing", "enableRecording"):
+        return value.lower() in ("1", "true", "yes")
+    if api_key in ("timeout", "browserScreenWidth", "browserScreenHeight"):
+        return int(value)
+    return value
 
 
 def _should_preserve_pending_create_key(response: requests.Response) -> bool:
@@ -69,11 +91,7 @@ class BrowserUseProvider(CloudBrowserProvider):
     def is_configured(self) -> bool:
         return self._get_config_or_none() is not None
 
-    # ------------------------------------------------------------------
-    # Config resolution (direct API key OR managed Nous gateway)
-    # ------------------------------------------------------------------
-
-    def _get_config_or_none(self) -> Optional[Dict[str, Any]]:
+    def _get_config_or_none(self) -> dict[str, Any] | None:
         api_key = os.environ.get("BROWSER_USE_API_KEY")
         if api_key:
             return {
@@ -92,7 +110,7 @@ class BrowserUseProvider(CloudBrowserProvider):
             "managed_mode": True,
         }
 
-    def _get_config(self) -> Dict[str, Any]:
+    def _get_config(self) -> dict[str, Any]:
         config = self._get_config_or_none()
         if config is None:
             message = (
@@ -106,18 +124,48 @@ class BrowserUseProvider(CloudBrowserProvider):
             raise ValueError(message)
         return config
 
-    # ------------------------------------------------------------------
-    # Session lifecycle
-    # ------------------------------------------------------------------
+    def _resolve_session_settings(self) -> dict[str, Any]:
+        """Resolve Browser Use session settings from config YAML and env vars.
 
-    def _headers(self, config: Dict[str, Any]) -> Dict[str, str]:
+        Reads ``browser.browser_use`` from ``~/.hermes/config.yaml``, then
+        applies environment variable overrides (``BROWSER_USE_<UPPER_KEY>``).
+        Returns a dict with camelCase keys matching the Browser Use API.
+        """
+        settings: dict[str, Any] = {}
+
+        config_path = get_hermes_home() / "config.yaml"
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    cfg = yaml.safe_load(f) or {}
+                bu_cfg = cfg.get("browser", {}).get("browser_use", {})
+                if isinstance(bu_cfg, dict):
+                    for config_key, api_key in _CONFIG_KEY_TO_API_PARAM.items():
+                        if config_key in bu_cfg:
+                            settings[api_key] = bu_cfg[config_key]
+            except Exception:
+                logger.debug("Could not read browser_use settings from config.yaml", exc_info=True)
+
+        for config_key, api_key in _CONFIG_KEY_TO_API_PARAM.items():
+            env_var = f"BROWSER_USE_{config_key.upper()}"
+            value = os.environ.get(env_var)
+            if value is not None:
+                try:
+                    settings[api_key] = _parse_env_value(value, api_key)
+                except (ValueError, TypeError):
+                    logger.warning("Invalid value for %s: %r, skipping", env_var, value)
+
+        # Remove None values (explicit null in YAML means "don't send")
+        return {k: v for k, v in settings.items() if v is not None}
+
+    def _headers(self, config: dict[str, Any]) -> dict[str, str]:
         headers = {
             "Content-Type": "application/json",
             "X-Browser-Use-API-Key": config["api_key"],
         }
         return headers
 
-    def create_session(self, task_id: str) -> Dict[str, object]:
+    def create_session(self, task_id: str) -> dict[str, object]:
         config = self._get_config()
         managed_mode = bool(config.get("managed_mode"))
 
@@ -128,14 +176,14 @@ class BrowserUseProvider(CloudBrowserProvider):
         # Keep gateway-backed sessions short so billing authorization does not
         # default to a long Browser-Use timeout when Hermes only needs a task-
         # scoped ephemeral browser.
-        payload = (
-            {
-                "timeout": _DEFAULT_MANAGED_TIMEOUT_MINUTES,
-                "proxyCountryCode": _DEFAULT_MANAGED_PROXY_COUNTRY_CODE,
-            }
-            if managed_mode
-            else {}
-        )
+        # Start with managed defaults if applicable, then overlay user settings.
+        payload: dict[str, Any] = {}
+        if managed_mode:
+            payload["timeout"] = _DEFAULT_MANAGED_TIMEOUT_MINUTES
+            payload["proxyCountryCode"] = _DEFAULT_MANAGED_PROXY_COUNTRY_CODE
+
+        user_settings = self._resolve_session_settings()
+        payload.update(user_settings)
 
         response = requests.post(
             f"{config['base_url']}/browsers",

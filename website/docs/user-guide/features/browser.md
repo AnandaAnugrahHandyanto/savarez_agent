@@ -56,6 +56,33 @@ BROWSER_USE_API_KEY=***
 
 Get your API key at [browser-use.com](https://browser-use.com). Browser Use provides a cloud browser via its REST API. If both Browserbase and Browser Use credentials are set, Browserbase takes priority.
 
+#### Session settings
+
+You can customise Browser Use sessions via `config.yaml` and/or environment variables. Environment variables override config values.
+
+```yaml
+# In ~/.hermes/config.yaml
+browser:
+  browser_use:
+    profile_id: "550e8400-e29b-41d4-a716-446655440000"
+    proxy_country_code: de
+    timeout: 10
+    screen_width: 1920
+    screen_height: 1080
+    allow_resizing: true
+    enable_recording: true
+```
+
+| Config key | Env var | Description |
+|---|---|---|
+| `profile_id` | `BROWSER_USE_PROFILE_ID` | Browser Use profile UUID |
+| `proxy_country_code` | `BROWSER_USE_PROXY_COUNTRY_CODE` | Two-letter country code for the proxy |
+| `timeout` | `BROWSER_USE_TIMEOUT` | Session timeout in minutes |
+| `screen_width` | `BROWSER_USE_SCREEN_WIDTH` | Browser viewport width in pixels |
+| `screen_height` | `BROWSER_USE_SCREEN_HEIGHT` | Browser viewport height in pixels |
+| `allow_resizing` | `BROWSER_USE_ALLOW_RESIZING` | Allow the browser window to be resized |
+| `enable_recording` | `BROWSER_USE_ENABLE_RECORDING` | Record the browser session |
+
 ### Firecrawl cloud mode
 
 To use Firecrawl as your cloud browser provider, add:

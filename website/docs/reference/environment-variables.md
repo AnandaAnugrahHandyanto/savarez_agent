@@ -84,6 +84,13 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `BROWSERBASE_API_KEY` | Browser automation ([browserbase.com](https://browserbase.com/)) |
 | `BROWSERBASE_PROJECT_ID` | Browserbase project ID |
 | `BROWSER_USE_API_KEY` | Browser Use cloud browser API key ([browser-use.com](https://browser-use.com/)) |
+| `BROWSER_USE_PROFILE_ID` | Browser Use profile UUID (overrides `browser.browser_use.profile_id` in config) |
+| `BROWSER_USE_PROXY_COUNTRY_CODE` | Two-letter proxy country code (overrides `browser.browser_use.proxy_country_code`) |
+| `BROWSER_USE_TIMEOUT` | Session timeout in minutes (overrides `browser.browser_use.timeout`) |
+| `BROWSER_USE_SCREEN_WIDTH` | Browser viewport width in pixels (overrides `browser.browser_use.screen_width`) |
+| `BROWSER_USE_SCREEN_HEIGHT` | Browser viewport height in pixels (overrides `browser.browser_use.screen_height`) |
+| `BROWSER_USE_ALLOW_RESIZING` | Allow browser window resizing: `true`/`false` (overrides `browser.browser_use.allow_resizing`) |
+| `BROWSER_USE_ENABLE_RECORDING` | Record browser session: `true`/`false` (overrides `browser.browser_use.enable_recording`) |
 | `FIRECRAWL_BROWSER_TTL` | Firecrawl browser session TTL in seconds (default: 300) |
 | `BROWSER_CDP_URL` | Chrome DevTools Protocol URL for local browser (set via `/browser connect`, e.g. `ws://localhost:9222`) |
 | `CAMOFOX_URL` | Camofox local anti-detection browser URL (default: `http://localhost:9377`) |
