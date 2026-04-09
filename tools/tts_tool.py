@@ -278,6 +278,80 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
             close()
 
 
+
+# ===========================================================================
+# Provider: Gemini TTS
+# ===========================================================================
+def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """
+    Generate audio using Google Gemini API.
+
+    Args:
+        text: Text to convert.
+        output_path: Where to save the audio file.
+        tts_config: TTS config dict.
+
+    Returns:
+        Path to the saved audio file.
+    """
+    api_key = os.getenv("GEMINI_API_KEY", "")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY not set.")
+
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError:
+        raise ImportError("google-genai package is not installed. Run: pip install google-genai")
+
+    gemini_config = tts_config.get("gemini", {})
+    voice = gemini_config.get("voice", "Kore") # Kore, Puck, Charon, Fenrir, Aoede
+    model = gemini_config.get("model", "gemini-2.5-flash-tts")
+
+    # Gemini returns raw PCM, save to WAV first
+    wav_path = output_path
+    if not output_path.endswith(".wav"):
+        wav_path = output_path.rsplit(".", 1)[0] + ".wav"
+
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=model,
+        contents=text,
+        config=types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                        voice_name=voice,
+                    )
+                )
+            ),
+        )
+    )
+    
+    if not response.candidates or not response.candidates[0].content.parts:
+        raise RuntimeError("Gemini returned no audio data")
+
+    pcm_data = response.candidates[0].content.parts[0].inline_data.data
+
+    import wave
+    with wave.open(wav_path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(24000)
+        wf.writeframes(pcm_data)
+
+    # Convert if needed
+    if wav_path != output_path:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            subprocess.run([ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path], check=True, timeout=30)
+            os.remove(wav_path)
+        else:
+            os.rename(wav_path, output_path)
+
+    return output_path
+
 # ===========================================================================
 # Provider: MiniMax TTS
 # ===========================================================================
@@ -525,6 +599,10 @@ def text_to_speech_tool(
             logger.info("Generating speech with OpenAI TTS...")
             _generate_openai_tts(text, file_str, tts_config)
 
+        elif provider == "gemini":
+            logger.info("Generating speech with Gemini TTS...")
+            _generate_gemini_tts(text, file_str, tts_config)
+
         elif provider == "minimax":
             logger.info("Generating speech with MiniMax TTS...")
             _generate_minimax_tts(text, file_str, tts_config)
@@ -578,7 +656,7 @@ def text_to_speech_tool(
         # Try Opus conversion for Telegram compatibility
         # Edge TTS outputs MP3, NeuTTS outputs WAV — both need ffmpeg conversion
         voice_compatible = False
-        if provider in ("edge", "neutts", "minimax") and not file_str.endswith(".ogg"):
+        if provider in ("edge", "neutts", "minimax", "gemini") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
@@ -650,6 +728,8 @@ def check_tts_requirements() -> bool:
             return True
     except ImportError:
         pass
+    if os.getenv("GEMINI_API_KEY"):
+        return True
     if os.getenv("MINIMAX_API_KEY"):
         return True
     if _check_neutts_available():
