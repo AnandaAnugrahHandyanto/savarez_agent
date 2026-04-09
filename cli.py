@@ -2443,9 +2443,11 @@ class HermesCLI:
                 _skin = get_active_skin()
                 label = _skin.get_branding("response_label", "⚕ Hermes")
                 _text_hex = _skin.get_color("banner_text", "#FFF8DC")
+                _border_hex = _skin.get_color("response_border", "#CD7F32")
             except Exception:
                 label = "⚕ Hermes"
                 _text_hex = "#FFF8DC"
+                _border_hex = "#CD7F32"
             # Build a true-color ANSI escape for the response text color
             # so streamed content matches the Rich Panel appearance.
             try:
@@ -2457,7 +2459,7 @@ class HermesCLI:
                 self._stream_text_ansi = ""
             w = shutil.get_terminal_size().columns
             fill = w - 2 - len(label)
-            _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+            _cprint(f"\n[bold {_border_hex}]╭─{label}{'─' * max(fill - 1, 0)}╮[/]")
 
         self._stream_buf += text
 
@@ -2488,7 +2490,12 @@ class HermesCLI:
         # Close the response box
         if self._stream_box_opened:
             w = shutil.get_terminal_size().columns
-            _cprint(f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
+            try:
+                from hermes_cli.skin_engine import get_active_skin
+                _border_hex = get_active_skin().get_color("response_border", "#CD7F32")
+            except Exception:
+                _border_hex = "#CD7F32"
+            _cprint(f"[bold {_border_hex}]╰{'─' * (w - 2)}╯[/]")
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
@@ -7008,9 +7015,16 @@ class HermesCLI:
                     if not _streaming_box_opened:
                         _streaming_box_opened = True
                         w = self.console.width
-                        label = " ⚕ Hermes "
+                        try:
+                            from hermes_cli.skin_engine import get_active_skin
+                            _skin = get_active_skin()
+                            label = _skin.get_branding("response_label", " ⚕ Hermes ")
+                            _border_hex = _skin.get_color("response_border", "#CD7F32")
+                        except Exception:
+                            label = " ⚕ Hermes "
+                            _border_hex = "#CD7F32"
                         fill = w - 2 - len(label)
-                        _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+                        _cprint(f"\n[bold {_border_hex}]╭─{label}{'─' * max(fill - 1, 0)}╮[/]")
                     _cprint(sentence.rstrip())
 
                 tts_thread = threading.Thread(
@@ -7226,7 +7240,12 @@ class HermesCLI:
                 if use_streaming_tts and _streaming_box_opened and not is_error_response:
                     # Text was already printed sentence-by-sentence; just close the box
                     w = shutil.get_terminal_size().columns
-                    _cprint(f"\n{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
+                    try:
+                        from hermes_cli.skin_engine import get_active_skin
+                        _border_hex = get_active_skin().get_color("response_border", "#CD7F32")
+                    except Exception:
+                        _border_hex = "#CD7F32"
+                    _cprint(f"\n[bold {_border_hex}]╰{'─' * (w - 2)}╯[/]")
                 elif already_streamed:
                     # Response was already streamed token-by-token with box framing;
                     # _flush_stream() already closed the box. Skip Rich Panel.
