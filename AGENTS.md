@@ -8,6 +8,41 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 source venv/bin/activate  # ALWAYS activate before running Python
 ```
 
+## Hermes Core Change Control (SIP)
+
+Hermes internals are protected. Do not change Hermes core configs, file structure,
+agent architecture, system defaults, or tool/runtime internals unless all three
+conditions are satisfied:
+
+1. The change is documented
+2. The change is verified
+3. The change is explicitly authorized by the user
+
+If any of those are missing, stop and ask.
+
+The only escape hatch is an explicit user authorization containing the keyword
+`SIP-OVERRIDE`. Even with `SIP-OVERRIDE`, keep blast radius minimal, document what
+changed, and verify the affected path.
+
+Treat at least these areas as protected Hermes internals:
+- `run_agent.py`
+- `model_tools.py`
+- `toolsets.py`
+- `cli.py`
+- `agent/**`
+- `hermes_cli/**`
+- `tools/**`
+- `gateway/**`
+- `cron/**`
+- config defaults/migrations
+- memory/provider architecture
+- system prompt assembly
+- tool registry behavior
+- session/state persistence behavior
+
+Undocumented incremental drift in Hermes core is a reliability bug, not harmless
+cleanup. Do not make silent core changes.
+
 ## Project Structure
 
 ```

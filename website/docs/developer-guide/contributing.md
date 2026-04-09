@@ -161,6 +161,55 @@ Hermes has terminal access. Security matters.
 - Catch broad exceptions around tool execution
 - Test on all platforms if your change touches file paths or processes
 
+## Hermes Core Change Control (SIP)
+
+Some files define Hermes itself rather than a user project. Those internals are
+protected because small undocumented changes accumulate and degrade reliability.
+
+Do not modify Hermes core configs, file structure, agent architecture, system
+defaults, or tool/runtime internals unless all three conditions are satisfied:
+
+1. The change is documented
+2. The change is verified
+3. The change is explicitly authorized
+
+If any of those are missing, stop and get approval before proceeding.
+
+### Protected areas
+
+At minimum, treat these as protected Hermes internals:
+
+- `run_agent.py`
+- `model_tools.py`
+- `toolsets.py`
+- `cli.py`
+- `agent/**`
+- `hermes_cli/**`
+- `tools/**`
+- `gateway/**`
+- `cron/**`
+- config defaults and migrations
+- memory/provider architecture
+- system prompt assembly
+- tool registry behavior
+- session/state persistence behavior
+
+### SIP-OVERRIDE
+
+If the user explicitly includes the keyword `SIP-OVERRIDE`, the agent may proceed
+through a missing default process gate, but should still keep blast radius small,
+document what changed, and verify the affected paths.
+
+### Checklist for protected-core changes
+
+Before editing protected Hermes internals, confirm:
+
+- [ ] explicitly authorized
+- [ ] documentation updated
+- [ ] verification plan defined
+- [ ] protected paths identified
+- [ ] if bypassing a normal gate, the user explicitly said `SIP-OVERRIDE`
+
 ## Pull Request Process
 
 ### Branch Naming
