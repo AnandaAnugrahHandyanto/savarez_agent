@@ -180,7 +180,11 @@ class ContextCompressor:
             min_protect = min(protect_tail_count, len(result) - 1)
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
-                content_len = len(msg.get("content") or "")
+                _raw = msg.get("content") or ""
+                content_len = (
+                    sum(len(p.get("text", "")) for p in _raw if isinstance(p, dict))
+                    if isinstance(_raw, list) else len(_raw)
+                )
                 msg_tokens = content_len // _CHARS_PER_TOKEN + 10
                 for tc in msg.get("tool_calls") or []:
                     if isinstance(tc, dict):
@@ -577,8 +581,12 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
-            content = msg.get("content") or ""
-            msg_tokens = len(content) // _CHARS_PER_TOKEN + 10  # +10 for role/metadata
+            _raw_content = msg.get("content") or ""
+            content_len = (
+                sum(len(p.get("text", "")) for p in _raw_content if isinstance(p, dict))
+                if isinstance(_raw_content, list) else len(_raw_content)
+            )
+            msg_tokens = content_len // _CHARS_PER_TOKEN + 10  # +10 for role/metadata
             # Include tool call arguments in estimate
             for tc in msg.get("tool_calls") or []:
                 if isinstance(tc, dict):
