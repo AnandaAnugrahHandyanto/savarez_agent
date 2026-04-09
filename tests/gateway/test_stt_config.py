@@ -44,13 +44,14 @@ async def test_enrich_message_with_transcription_skips_when_stt_disabled():
         "tools.transcription_tools.get_stt_model_from_config",
         return_value=None,
     ):
-        result = await runner._enrich_message_with_transcription(
+        result, transcripts = await runner._enrich_message_with_transcription(
             "caption",
             ["/tmp/voice.ogg"],
         )
 
     assert "transcription is disabled" in result.lower()
     assert "caption" in result
+    assert transcripts == []
 
 
 @pytest.mark.asyncio
@@ -67,7 +68,7 @@ async def test_enrich_message_with_transcription_avoids_bogus_no_provider_messag
         "tools.transcription_tools.get_stt_model_from_config",
         return_value=None,
     ):
-        result = await runner._enrich_message_with_transcription(
+        result, transcripts = await runner._enrich_message_with_transcription(
             "caption",
             ["/tmp/voice.ogg"],
         )
@@ -75,3 +76,4 @@ async def test_enrich_message_with_transcription_avoids_bogus_no_provider_messag
     assert "No STT provider is configured" not in result
     assert "trouble transcribing" in result
     assert "caption" in result
+    assert transcripts == []
