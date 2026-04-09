@@ -32,6 +32,7 @@ Directory layout for user skills:
             └── SKILL.md
 """
 
+import ast
 import json
 import logging
 import os
@@ -40,7 +41,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +190,155 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
     return None
 
 
+# Pattern for detecting referenced supporting files inside SKILL.md prose.
+# Matches paths like "references/api.md", "scripts/setup.sh", "templates/x.yaml",
+# "assets/diagram.png" — anchored on a non-word/slash boundary so it doesn't match
+# partial paths inside larger identifiers (e.g. "my_references/foo"). The trailing
+# `\.\w{1,10}` requires an extension to avoid flagging bare directory mentions.
+_REFERENCED_FILE_RE = re.compile(
+    r'(?<![\w/])((?:references|templates|scripts|assets)/[\w./\-]+\.\w{1,10})'
+)
+
+
+def _extract_referenced_files(content: str) -> List[str]:
+    """
+    Scan SKILL.md content for paths that look like referenced supporting files.
+
+    Returns a sorted list of unique relative paths. Skips paths containing
+    glob wildcards (*, ?) since those aren't literal references.
+    """
+    if not content:
+        return []
+    found = set()
+    for match in _REFERENCED_FILE_RE.finditer(content):
+        path_str = match.group(1)
+        # Strip common trailing punctuation that may have been captured
+        path_str = path_str.rstrip('.,;:)')
+        # Skip glob patterns — not literal file references
+        if "*" in path_str or "?" in path_str:
+            continue
+        found.add(path_str)
+    return sorted(found)
+
+
+def _validate_skill_quality(
+    skill_dir: Path,
+    content: Optional[str] = None,
+    expected_name: Optional[str] = None,
+) -> List[str]:
+    """
+    Run non-blocking quality checks on a skill directory.
+
+    Implements the lint checks requested in issue #416:
+
+      * Python files (`.py`) parse successfully via ``ast.parse``
+      * Files referenced in SKILL.md (``references/``, ``templates/``,
+        ``scripts/``, ``assets/`` paths with extensions) actually exist
+      * No broken symlinks anywhere in the skill directory
+      * Skill ``name`` in frontmatter matches directory name (optional warning)
+
+    All checks are non-blocking: failures are returned as warning strings
+    so the agent can self-correct on the next turn. The caller decides
+    whether to surface them. An empty list means no issues were found.
+
+    Args:
+        skill_dir: Path to the skill directory (containing SKILL.md).
+        content: Optional SKILL.md content to scan. If omitted, reads from disk.
+        expected_name: Optional skill name to verify against frontmatter.
+
+    Returns:
+        List of warning strings. Empty if the skill passes all quality checks.
+    """
+    warnings: List[str] = []
+
+    if not skill_dir.exists() or not skill_dir.is_dir():
+        return warnings
+
+    # 1. Broken symlinks anywhere in the skill dir.
+    try:
+        for path in skill_dir.rglob("*"):
+            try:
+                if path.is_symlink() and not path.exists():
+                    rel = path.relative_to(skill_dir)
+                    warnings.append(f"Broken symlink: {rel}")
+            except OSError:
+                # Unreadable path — skip silently rather than crash the whole scan.
+                continue
+    except OSError as e:
+        logger.debug("Symlink scan failed for %s: %s", skill_dir, e)
+
+    # 2. Python files parse cleanly.
+    try:
+        for py_file in sorted(skill_dir.rglob("*.py")):
+            if not py_file.is_file():
+                continue
+            # Skip files inside hidden directories (e.g. .venv, __pycache__)
+            if any(part.startswith(".") or part == "__pycache__" for part in py_file.relative_to(skill_dir).parts):
+                continue
+            try:
+                src = py_file.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as e:
+                rel = py_file.relative_to(skill_dir)
+                warnings.append(f"Could not read Python file {rel}: {e}")
+                continue
+            try:
+                ast.parse(src, filename=str(py_file))
+            except SyntaxError as e:
+                rel = py_file.relative_to(skill_dir)
+                line_info = f" line {e.lineno}" if e.lineno else ""
+                warnings.append(
+                    f"Python syntax error in {rel}{line_info}: {e.msg}"
+                )
+    except OSError as e:
+        logger.debug("Python parse scan failed for %s: %s", skill_dir, e)
+
+    # 3. Referenced supporting files exist.
+    if content is None:
+        skill_md = skill_dir / "SKILL.md"
+        if skill_md.exists():
+            try:
+                content = skill_md.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                content = None
+
+    if content:
+        missing_refs = []
+        for ref in _extract_referenced_files(content):
+            target = skill_dir / ref
+            if not target.exists():
+                missing_refs.append(ref)
+        if missing_refs:
+            if len(missing_refs) == 1:
+                warnings.append(f"Referenced file missing: {missing_refs[0]}")
+            else:
+                warnings.append(
+                    f"Referenced files missing ({len(missing_refs)}): "
+                    + ", ".join(missing_refs)
+                )
+
+    # 4. Skill name in frontmatter matches directory name (optional warning).
+    if expected_name and content:
+        try:
+            # Parse the frontmatter block to get the declared name.
+            if content.startswith("---"):
+                end_match = re.search(r'\n---\s*\n', content[3:])
+                if end_match:
+                    fm = yaml.safe_load(content[3:end_match.start() + 3])
+                    if isinstance(fm, dict):
+                        declared = fm.get("name")
+                        if isinstance(declared, str) and declared != expected_name:
+                            warnings.append(
+                                f"Frontmatter name '{declared}' does not match "
+                                f"directory name '{expected_name}'."
+                            )
+        except (yaml.YAMLError, OSError):
+            # Frontmatter validation is already handled by _validate_frontmatter;
+            # this is a best-effort cross-check only.
+            pass
+
+    return warnings
+
+
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
     """Build the directory path for a new skill, optionally under a category."""
     if category:
@@ -326,6 +476,14 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     }
     if category:
         result["category"] = category
+
+    # Non-blocking quality checks (issue #416)
+    quality_warnings = _validate_skill_quality(
+        skill_dir, content=content, expected_name=name
+    )
+    if quality_warnings:
+        result["warnings"] = quality_warnings
+
     result["hint"] = (
         "To add reference files, templates, or scripts, use "
         "skill_manage(action='write_file', name='{}', file_path='references/example.md', file_content='...')".format(name)
@@ -359,11 +517,20 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
             _atomic_write_text(skill_md, original_content)
         return {"success": False, "error": scan_error}
 
-    return {
+    result = {
         "success": True,
         "message": f"Skill '{name}' updated.",
         "path": str(existing["path"]),
     }
+
+    # Non-blocking quality checks (issue #416)
+    quality_warnings = _validate_skill_quality(
+        existing["path"], content=content, expected_name=name
+    )
+    if quality_warnings:
+        result["warnings"] = quality_warnings
+
+    return result
 
 
 def _patch_skill(
@@ -446,10 +613,22 @@ def _patch_skill(
         _atomic_write_text(target, original_content)
         return {"success": False, "error": scan_error}
 
-    return {
+    result = {
         "success": True,
         "message": f"Patched {'SKILL.md' if not file_path else file_path} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",
     }
+
+    # Non-blocking quality checks (issue #416). When patching SKILL.md we use
+    # the new content directly; for supporting-file patches we let the quality
+    # check re-read SKILL.md from disk.
+    quality_content = new_content if not file_path else None
+    quality_warnings = _validate_skill_quality(
+        skill_dir, content=quality_content, expected_name=name
+    )
+    if quality_warnings:
+        result["warnings"] = quality_warnings
+
+    return result
 
 
 def _delete_skill(name: str) -> Dict[str, Any]:
@@ -515,11 +694,21 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
             target.unlink(missing_ok=True)
         return {"success": False, "error": scan_error}
 
-    return {
+    result = {
         "success": True,
         "message": f"File '{file_path}' written to skill '{name}'.",
         "path": str(target),
     }
+
+    # Non-blocking quality checks (issue #416). Re-read SKILL.md so the
+    # referenced-file check reflects the new file on disk.
+    quality_warnings = _validate_skill_quality(
+        existing["path"], expected_name=name
+    )
+    if quality_warnings:
+        result["warnings"] = quality_warnings
+
+    return result
 
 
 def _remove_file(name: str, file_path: str) -> Dict[str, Any]:

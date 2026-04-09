@@ -10,6 +10,8 @@ from tools.skill_manager_tool import (
     _validate_category,
     _validate_frontmatter,
     _validate_file_path,
+    _validate_skill_quality,
+    _extract_referenced_files,
     _find_skill,
     _resolve_skill_dir,
     _create_skill,
@@ -423,3 +425,376 @@ class TestSkillManageDispatcher:
             raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
         result = json.loads(raw)
         assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Quality validation (issue #416)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractReferencedFiles:
+    """Regex-level tests for the file-reference extractor."""
+
+    def test_empty_content(self):
+        assert _extract_referenced_files("") == []
+        assert _extract_referenced_files(None) == []
+
+    def test_finds_bare_reference(self):
+        content = "See references/api.md for details."
+        assert _extract_referenced_files(content) == ["references/api.md"]
+
+    def test_finds_all_four_subdirs(self):
+        content = (
+            "Use references/api.md, templates/config.yaml, "
+            "scripts/setup.sh, and assets/diagram.png."
+        )
+        refs = _extract_referenced_files(content)
+        assert "references/api.md" in refs
+        assert "templates/config.yaml" in refs
+        assert "scripts/setup.sh" in refs
+        assert "assets/diagram.png" in refs
+
+    def test_markdown_link(self):
+        content = "See the [API guide](references/api.md) here."
+        assert _extract_referenced_files(content) == ["references/api.md"]
+
+    def test_code_span(self):
+        content = "Run `scripts/validate.py` to check."
+        assert _extract_referenced_files(content) == ["scripts/validate.py"]
+
+    def test_fenced_code_block(self):
+        content = "```\npython scripts/run.py\n```"
+        assert _extract_referenced_files(content) == ["scripts/run.py"]
+
+    def test_ignores_partial_match_inside_identifier(self):
+        # "my_references/foo" should not match "references/foo"
+        content = "The variable my_references/foo.md is unused."
+        assert _extract_referenced_files(content) == []
+
+    def test_ignores_path_prefix_match(self):
+        # "a/references/foo.md" should not match "references/foo.md"
+        # because the preceding slash fails the lookbehind.
+        content = "Path is /home/references/foo.md"
+        assert _extract_referenced_files(content) == []
+
+    def test_requires_extension(self):
+        # Bare directory mentions should not match.
+        content = "Put stuff in references/ and templates/."
+        assert _extract_referenced_files(content) == []
+
+    def test_skips_glob_patterns(self):
+        content = "Run scripts/*.py to test."
+        assert _extract_referenced_files(content) == []
+
+    def test_strips_trailing_punctuation(self):
+        content = "See references/api.md, templates/config.yaml."
+        refs = _extract_referenced_files(content)
+        assert "references/api.md" in refs
+        assert "templates/config.yaml" in refs
+
+    def test_deduplicates(self):
+        content = (
+            "First mention: references/api.md\n"
+            "Second mention: references/api.md"
+        )
+        assert _extract_referenced_files(content) == ["references/api.md"]
+
+
+class TestValidateSkillQuality:
+    """Tests for the non-blocking quality validator."""
+
+    def _make_skill(self, tmp_path, name="my-skill", body="Step 1: Do it."):
+        """Create a minimal valid skill dir at tmp_path / name."""
+        skill_dir = tmp_path / name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        content = f"---\nname: {name}\ndescription: Test skill.\n---\n\n# {name}\n\n{body}\n"
+        (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+        return skill_dir, content
+
+    def test_clean_skill_no_warnings(self, tmp_path):
+        skill_dir, content = self._make_skill(tmp_path)
+        assert _validate_skill_quality(skill_dir, content=content, expected_name="my-skill") == []
+
+    def test_missing_skill_dir_returns_empty(self, tmp_path):
+        # Non-existent directory should not crash — just return []
+        assert _validate_skill_quality(tmp_path / "does-not-exist") == []
+
+    def test_detects_python_syntax_error(self, tmp_path):
+        skill_dir, content = self._make_skill(tmp_path)
+        scripts_dir = skill_dir / "scripts"
+        scripts_dir.mkdir()
+        bad_py = scripts_dir / "broken.py"
+        bad_py.write_text("def broken(:\n    pass\n", encoding="utf-8")
+
+        warnings = _validate_skill_quality(skill_dir, content=content)
+        assert any("Python syntax error" in w for w in warnings)
+        assert any("broken.py" in w for w in warnings)
+
+    def test_valid_python_no_warning(self, tmp_path):
+        skill_dir, content = self._make_skill(tmp_path)
+        scripts_dir = skill_dir / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "ok.py").write_text(
+            "def ok():\n    return 42\n", encoding="utf-8"
+        )
+        warnings = _validate_skill_quality(skill_dir, content=content)
+        assert not any("syntax error" in w for w in warnings)
+
+    def test_skips_hidden_and_pycache_dirs(self, tmp_path):
+        skill_dir, content = self._make_skill(tmp_path)
+        # Create a broken .py inside a __pycache__ dir — should be skipped
+        pycache = skill_dir / "scripts" / "__pycache__"
+        pycache.mkdir(parents=True)
+        (pycache / "garbage.py").write_text("this is (not python", encoding="utf-8")
+        # And one inside a hidden .venv — also skipped
+        hidden = skill_dir / ".venv"
+        hidden.mkdir()
+        (hidden / "also-garbage.py").write_text("also not python (", encoding="utf-8")
+
+        warnings = _validate_skill_quality(skill_dir, content=content)
+        assert not any("syntax error" in w for w in warnings)
+
+    def test_detects_broken_symlink(self, tmp_path):
+        skill_dir, content = self._make_skill(tmp_path)
+        broken = skill_dir / "assets" / "missing.png"
+        broken.parent.mkdir()
+        broken.symlink_to(tmp_path / "nonexistent-target.png")
+
+        warnings = _validate_skill_quality(skill_dir, content=content)
+        assert any("Broken symlink" in w for w in warnings)
+        assert any("missing.png" in w for w in warnings)
+
+    def test_valid_symlink_no_warning(self, tmp_path):
+        skill_dir, content = self._make_skill(tmp_path)
+        # Create a real target inside the skill dir, then symlink to it
+        target = skill_dir / "assets" / "real.png"
+        target.parent.mkdir()
+        target.write_bytes(b"fake png data")
+        link = skill_dir / "assets" / "link.png"
+        link.symlink_to(target)
+
+        warnings = _validate_skill_quality(skill_dir, content=content)
+        assert not any("Broken symlink" in w for w in warnings)
+
+    def test_detects_missing_single_reference(self, tmp_path):
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        content = (
+            "---\nname: my-skill\ndescription: Test.\n---\n\n"
+            "See references/api.md for details.\n"
+        )
+        (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+
+        warnings = _validate_skill_quality(skill_dir, content=content)
+        assert any(
+            "Referenced file missing: references/api.md" in w for w in warnings
+        )
+
+    def test_detects_multiple_missing_references(self, tmp_path):
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        content = (
+            "---\nname: my-skill\ndescription: Test.\n---\n\n"
+            "See references/api.md and templates/config.yaml.\n"
+        )
+        (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+
+        warnings = _validate_skill_quality(skill_dir, content=content)
+        # Combined multi-ref message
+        combined = [w for w in warnings if "Referenced files missing (2)" in w]
+        assert combined
+        assert "references/api.md" in combined[0]
+        assert "templates/config.yaml" in combined[0]
+
+    def test_existing_reference_no_warning(self, tmp_path):
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "api.md").write_text("# API", encoding="utf-8")
+        content = (
+            "---\nname: my-skill\ndescription: Test.\n---\n\n"
+            "See references/api.md for details.\n"
+        )
+        (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+
+        warnings = _validate_skill_quality(skill_dir, content=content)
+        assert not any("Referenced file missing" in w for w in warnings)
+        assert not any("Referenced files missing" in w for w in warnings)
+
+    def test_name_mismatch_warning(self, tmp_path):
+        skill_dir = tmp_path / "wrong-dir"
+        skill_dir.mkdir()
+        content = (
+            "---\nname: actual-name\ndescription: Test.\n---\n\nBody.\n"
+        )
+        (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+
+        warnings = _validate_skill_quality(
+            skill_dir, content=content, expected_name="wrong-dir"
+        )
+        assert any(
+            "Frontmatter name 'actual-name' does not match" in w for w in warnings
+        )
+
+    def test_name_match_no_warning(self, tmp_path):
+        skill_dir, content = self._make_skill(tmp_path, name="my-skill")
+        warnings = _validate_skill_quality(
+            skill_dir, content=content, expected_name="my-skill"
+        )
+        assert not any("does not match" in w for w in warnings)
+
+    def test_multiple_issues_accumulated(self, tmp_path):
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        content = (
+            "---\nname: my-skill\ndescription: Test.\n---\n\n"
+            "See references/api.md.\n"
+        )
+        (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+        # Add a broken .py
+        scripts = skill_dir / "scripts"
+        scripts.mkdir()
+        (scripts / "broken.py").write_text("def (:\n", encoding="utf-8")
+        # Add a broken symlink
+        link = skill_dir / "assets" / "missing.png"
+        link.parent.mkdir()
+        link.symlink_to(tmp_path / "nope.png")
+
+        warnings = _validate_skill_quality(skill_dir, content=content)
+        assert len(warnings) >= 3
+        assert any("Broken symlink" in w for w in warnings)
+        assert any("syntax error" in w for w in warnings)
+        assert any("Referenced file missing" in w for w in warnings)
+
+    def test_reads_skill_md_when_content_omitted(self, tmp_path):
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        content = (
+            "---\nname: my-skill\ndescription: Test.\n---\n\n"
+            "See references/api.md.\n"
+        )
+        (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+
+        # No content argument — should read from disk
+        warnings = _validate_skill_quality(skill_dir)
+        assert any("Referenced file missing" in w for w in warnings)
+
+
+class TestQualityWarningsIntegration:
+    """Tests that warnings flow into skill_manage results without blocking."""
+
+    def test_create_clean_skill_no_warnings_key(self, tmp_path):
+        # Use content whose frontmatter name matches the skill name
+        # so the name-mismatch check stays silent.
+        clean_content = (
+            "---\nname: my-skill\ndescription: Clean test skill.\n---\n\n"
+            "# My Skill\n\nStep 1: Do the thing.\n"
+        )
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", clean_content)
+        assert result["success"] is True
+        assert "warnings" not in result
+
+    def test_create_with_missing_reference_warns_but_succeeds(self, tmp_path):
+        content = (
+            "---\nname: my-skill\ndescription: Test.\n---\n\n"
+            "# My Skill\n\nSee references/missing.md for details.\n"
+        )
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", content)
+
+        # Still succeeds — warnings are non-blocking
+        assert result["success"] is True
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
+        assert "warnings" in result
+        assert any("references/missing.md" in w for w in result["warnings"])
+
+    def test_edit_surfaces_warnings(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            bad_content = (
+                "---\nname: my-skill\ndescription: Updated.\n---\n\n"
+                "# Updated\n\nSee scripts/missing.py for details.\n"
+            )
+            result = _edit_skill("my-skill", bad_content)
+
+        assert result["success"] is True
+        assert "warnings" in result
+        assert any("scripts/missing.py" in w for w in result["warnings"])
+
+    def test_patch_surfaces_warnings(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _patch_skill(
+                "my-skill",
+                "Do the thing.",
+                "Do the thing. See templates/nope.yaml.",
+            )
+
+        assert result["success"] is True
+        assert "warnings" in result
+        assert any("templates/nope.yaml" in w for w in result["warnings"])
+
+    def test_write_file_resolves_warning(self, tmp_path):
+        """Adding the missing reference file should clear the warning."""
+        content = (
+            "---\nname: my-skill\ndescription: Test.\n---\n\n"
+            "# Skill\n\nSee references/api.md for details.\n"
+        )
+        with _skill_dir(tmp_path):
+            create_result = _create_skill("my-skill", content)
+            assert "warnings" in create_result  # missing reference
+
+            write_result = _write_file(
+                "my-skill", "references/api.md", "# API Reference\n\nContent here.\n"
+            )
+
+        assert write_result["success"] is True
+        # Warning should be resolved now — references/api.md exists
+        assert "warnings" not in write_result or not any(
+            "references/api.md" in w for w in write_result.get("warnings", [])
+        )
+
+    def test_python_syntax_warning_via_write_file(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file(
+                "my-skill",
+                "scripts/broken.py",
+                "def broken(:\n    pass\n",  # syntax error
+            )
+
+        assert result["success"] is True  # non-blocking
+        assert "warnings" in result
+        assert any("syntax error" in w for w in result["warnings"])
+        assert any("broken.py" in w for w in result["warnings"])
+
+    def test_name_mismatch_warning_via_create(self, tmp_path):
+        # Frontmatter name doesn't match the skill name parameter
+        content = (
+            "---\nname: different-name\ndescription: Test.\n---\n\n"
+            "# Test\n\nBody.\n"
+        )
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", content)
+
+        assert result["success"] is True
+        assert "warnings" in result
+        assert any(
+            "does not match" in w and "different-name" in w
+            for w in result["warnings"]
+        )
+
+    def test_warnings_serialize_via_dispatcher(self, tmp_path):
+        """End-to-end: skill_manage JSON output contains warnings array."""
+        content = (
+            "---\nname: my-skill\ndescription: Test.\n---\n\n"
+            "# My Skill\n\nSee references/missing.md for details.\n"
+        )
+        with _skill_dir(tmp_path):
+            raw = skill_manage(action="create", name="my-skill", content=content)
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "warnings" in result
+        assert isinstance(result["warnings"], list)
+        assert len(result["warnings"]) >= 1
