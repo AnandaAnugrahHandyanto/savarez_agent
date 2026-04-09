@@ -1413,6 +1413,26 @@ def _model_flow_qwen_oauth(_config, current_model=""):
 
 
 
+def _is_valid_http_endpoint_url(url: str) -> bool:
+    """Return True when *url* is a syntactically valid http/https endpoint URL."""
+    from urllib.parse import urlparse
+
+    candidate = (url or "").strip()
+    if not candidate:
+        return False
+    try:
+        parsed = urlparse(candidate)
+        if parsed.scheme not in {"http", "https"}:
+            return False
+        if not parsed.hostname:
+            return False
+        _ = parsed.port  # triggers ValueError for malformed ports like '6153export'
+        return True
+    except ValueError:
+        return False
+
+
+
 def _model_flow_custom(config):
     """Custom endpoint: collect URL, API key, and model name.
 
@@ -1446,8 +1466,17 @@ def _model_flow_custom(config):
 
     # Validate URL format
     effective_url = base_url or current_url
-    if not effective_url.startswith(("http://", "https://")):
-        print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
+    if not _is_valid_http_endpoint_url(effective_url):
+        if not base_url and current_url:
+            print(
+                "Invalid current custom endpoint URL saved in environment/config: "
+                f"{current_url!r}. Enter a valid http(s) base URL instead."
+            )
+        else:
+            print(
+                f"Invalid URL: {effective_url!r} "
+                "(must be a valid http:// or https:// endpoint URL)"
+            )
         return
 
     effective_key = api_key or current_key
