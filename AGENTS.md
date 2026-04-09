@@ -218,6 +218,46 @@ The registry handles schema collection, dispatch, availability checking, and err
 
 ---
 
+## Analyst Council (Research Integrity Layer)
+
+`tools/analyst_council_tool.py` implements the Karpathy LLM Council pattern
+(poll → peer-review → synthesize) as a native async tool — ported verbatim
+from the Swift companion's `AnalystCouncilTool.swift`. When enabled, the
+system prompt instructs the agent to route all substantive research work
+through the council: 3–5 specialist reviewer personas run in parallel, a
+chairman LLM synthesizes a consensus report with high-confidence findings,
+contested points, and a final verdict.
+
+**Where the pieces live:**
+- `tools/analyst_council_tool.py` — the tool (3-stage pipeline, 4 domain
+  persona sets: finance / medicine / technology / general).
+- `agent/prompt_builder.py:COUNCIL_DIRECTIVE` — the system-prompt block
+  injected by `run_agent.py:_build_system_prompt()` when the tool is
+  loaded AND `self._council_enabled` is true.
+- `hermes_cli/config.py` — `council.{enabled,default_depth,reviewer_model,
+  chairman_model,skip_for_trivial,trivial_keywords}` in `DEFAULT_CONFIG`.
+- `gateway/platforms/api_server.py` — `X-Hermes-Council: on|off` header
+  plumbed through `_handle_chat_completions` + `_handle_responses` →
+  `_run_agent` → `_create_agent` → `AIAgent(council_enabled=...)`.
+- `cli.py` + `hermes_cli/main.py` — `--council / --no-council` flag on
+  `hermes chat`.
+
+**Cost control:** reviewer calls default to `smart_model_routing.cheap_model`
+(Gemini Flash / Haiku / local Ollama) so council overhead is ~1.5–2× a
+single call, not 4–11×. Only the chairman synthesis uses the strong model.
+
+**Override precedence** (highest wins): `--council / --no-council` flag →
+`X-Hermes-Council` header → `AIAgent(council_enabled=...)` kwarg →
+`council.enabled` config → built-in default.
+
+**Mirror Swift behavior:** the companion ships with council default-ON
+across all modes. The Python stack is intended to match, but the flip
+from `enabled: false` → `enabled: true` in `DEFAULT_CONFIG` is deliberate
+and should only happen after manual field testing (`hermes chat` smoke +
+gateway curl + hermes-webui browser test).
+
+---
+
 ## Adding Configuration
 
 ### config.yaml options:
