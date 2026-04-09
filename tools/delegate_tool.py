@@ -718,6 +718,12 @@ model: Optional[str] = None,
     _panel_lock = _panel_registry[1] if _panel_registry else None
     _panel_invalidate = _panel_registry[2] if _panel_registry else None
 
+    # Hook into CLI subagent panel if available
+    _panel_registry = getattr(parent_agent, '_cli_subagent_registry', None)
+    _panel: dict = _panel_registry[0] if _panel_registry else {}
+    _panel_lock = _panel_registry[1] if _panel_registry else None
+    _panel_invalidate = _panel_registry[2] if _panel_registry else None
+
     overall_start = time.monotonic()
     results = []
 
@@ -1134,7 +1140,7 @@ DELEGATE_TASK_SCHEMA = {
                     },
                     "required": ["goal"],
                 },
-                "maxItems": 3,
+                "maxItems": 6,
                 "description": (
                     "Batch mode: up to 3 tasks to run in parallel by default (configurable via "
                     "delegation.max_concurrent_children in config.yaml). Each gets "
