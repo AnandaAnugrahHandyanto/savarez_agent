@@ -29,6 +29,7 @@ from . import cleanup as _cleanup
 from . import drift as _drift
 from . import provider_health as _provider_health
 from . import cost_monitor as _cost_monitor
+from . import circuit_breaker as _circuit_breaker
 
 # === PATH RESOLUTION ===
 # Add hermes-agent to path for module imports
@@ -178,6 +179,18 @@ _DEFAULT_ARGUS_CONFIG = {
         "alert_at_percent": 80,             # Alert at 80% of budget
         "expensive_session_threshold": 2.00,  # Alert on single session >$2
         "per_provider_limits": {},          # Auto-populated from discover_providers()
+    },
+    
+    # Circuit breaker for provider failover (disabled by default)
+    "circuit_breaker": {
+        "enabled": False,                  # Disabled by default - user enables in config.yaml
+        "failure_threshold": 3,            # Consecutive failures to open circuit
+        "error_rate_threshold": 0.50,    # 50% error rate over window
+        "min_requests_for_rate": 5,      # Min requests before rate check
+        "recovery_timeout": 300,           # Seconds before retry (half-open)
+        "half_open_requests": 2,         # Successful requests to close
+        "notify_on_open": True,            # Alert when circuit opens
+        "notify_on_close": True,           # Alert when circuit closes
     },
 }
 
@@ -1186,6 +1199,35 @@ class Argus:
                             )
             except Exception as e:
                 logger.error("Cost monitoring failed: %s", e)
+
+        # Circuit breaker checks (every 10 cycles, offset by 8) - if enabled
+        if mod == 8:
+            cb_config = CONFIG.get("circuit_breaker", {})
+            if cb_config.get("enabled", False):
+                try:
+                    events = _circuit_breaker.check_circuits(self.cursor, self.conn, CONFIG)
+                    for event in events:
+                        if event.get("notify"):
+                            msg = _circuit_breaker.format_circuit_event(event)
+                            logger.warning("Circuit breaker: %s", msg)
+                            if CONFIG.get("audit_trail_enabled", True):
+                                _audit.record_circuit_event(
+                                    self.cursor,
+                                    self.conn,
+                                    provider=event["provider"],
+                                    transition=event["transition"],
+                                    reason=event["reason"],
+                                )
+                            if CONFIG.get("notifications_enabled", True):
+                                _notifications.send_notification(
+                                    self.cursor,
+                                    self.conn,
+                                    "system",
+                                    "circuit_breaker",
+                                    msg,
+                                )
+                except Exception as e:
+                    logger.error("Circuit breaker check failed: %s", e)
 
     def execute_action(self, session_id: str, decision: Dict):
         """Execute the decided action."""

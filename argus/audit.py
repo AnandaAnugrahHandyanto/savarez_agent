@@ -217,6 +217,26 @@ def record_cost_alert(
     )
 
 
+def record_circuit_event(
+    cursor: sqlite3.Cursor,
+    conn: sqlite3.Connection,
+    provider: str,
+    transition: str,
+    reason: str,
+) -> Optional[int]:
+    """Record a circuit breaker state change in the audit trail."""
+    severity = "critical" if "OPEN" in transition else "warning"
+    return record_decision(
+        cursor,
+        conn,
+        session_id="system",
+        action_type="circuit_breaker",
+        severity=severity,
+        decision_reason=f"Circuit {transition} for {provider}: {reason}",
+        metadata={"provider": provider, "transition": transition, "reason": reason},
+    )
+
+
 def query_by_session(
     cursor: sqlite3.Cursor,
     session_id: str,

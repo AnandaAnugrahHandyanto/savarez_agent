@@ -48,6 +48,9 @@ from .ml_data import (
 # Cost Monitoring
 from .cost_monitor import CostMonitor, check_costs, format_cost_alert
 
+# Circuit Breaker
+from .circuit_breaker import CircuitBreaker, check_circuits, format_circuit_event
+
 __all__ = [
     # Core
     "Argus",
@@ -82,4 +85,8 @@ __all__ = [
     "CostMonitor",
     "check_costs",
     "format_cost_alert",
+    # Circuit Breaker
+    "CircuitBreaker",
+    "check_circuits",
+    "format_circuit_event",
 ]
