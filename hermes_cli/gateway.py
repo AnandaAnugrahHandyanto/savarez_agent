@@ -1159,9 +1159,17 @@ def launchd_start():
         print("✓ Service started")
         return
 
-    refresh_launchd_plist_if_needed()
+    plist_refreshed = refresh_launchd_plist_if_needed()
     try:
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        if plist_refreshed:
+            # Plist was updated — kickstart does NOT re-read the plist file,
+            # so we need a full bootout/bootstrap cycle to force launchd to
+            # pick up the new service definition.
+            subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
+            subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+            subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        else:
+            subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
     except subprocess.CalledProcessError as e:
         if e.returncode not in (3, 113):
             raise
