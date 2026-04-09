@@ -57,6 +57,32 @@ Exports entropy detections as training data for model improvement.
 - ShareGPT format for fine-tuning
 - Native hermes-agent ML pipeline (if available)
 
+### Cost Monitoring (`cost_monitor.py`)
+
+Budget and cost alerts using Hermes insights (no tracking duplication).
+
+**User Configuration (config.yaml):**
+```yaml
+argus:
+  cost_monitoring:
+    enabled: true
+    daily_budget: 10.00              # User sets their budget
+    alert_at_percent: 80             # Alert threshold
+    expensive_session_threshold: 2.00
+    per_provider_limits:             # Optional, auto-populated
+      anthropic: 5.00
+      fireworks: 3.00
+```
+
+**How it works:**
+1. Discovers providers dynamically from session history
+2. Queries Hermes insights engine for current spend
+3. Alerts on: daily budget, per-provider limits, expensive sessions
+4. Records alerts to audit trail
+5. Sends notifications if enabled
+
+**No hardcoded providers** - works with any provider the user configures.
+
 ## File Organization
 
 ### Production (ships with package)
