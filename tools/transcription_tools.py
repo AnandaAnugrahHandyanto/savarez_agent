@@ -2,10 +2,14 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with three providers:
+Provides speech-to-text transcription with four providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
+  - **whisper_cpp** (free, reuses existing GGML weights) — shells out to a
+    whisper.cpp-based binary (``voxtype`` or plain ``whisper-cli``). Lets you
+    reuse a ``ggml-*.bin`` model you already have on disk, with GPU acceleration
+    via Vulkan/CUDA/Metal when the binary supports it.
   - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
   - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
 
@@ -25,17 +29,23 @@ Usage::
 
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from urllib.parse import urljoin
 
 from utils import is_truthy_value
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_openai_audio_api_key
+from tools.tool_backend_helpers import (
+    managed_nous_tools_enabled,
+    resolve_openai_audio_api_key,
+)
+
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -69,18 +79,44 @@ DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
-COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
+COMMON_LOCAL_BIN_DIRS = (
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    str(Path.home() / ".local" / "bin"),
+)
+
+# whisper.cpp backend binary candidates, in priority order. First match wins
+# during auto-detection. ``voxtype`` is a GPU-accelerated whisper.cpp wrapper
+# that ships its own GGML model; ``whisper-cli`` / ``whisper-cpp`` are the
+# stock whisper.cpp CLIs that require ``-m model_path``.
+WHISPER_CPP_BINARY_CANDIDATES = ("voxtype", "whisper-cli", "whisper-cpp")
+WHISPER_CPP_TARGET_SAMPLE_RATE = 16000  # whisper.cpp requires 16 kHz mono PCM
 
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 
-SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
+SUPPORTED_FORMATS = {
+    ".mp3",
+    ".mp4",
+    ".mpeg",
+    ".mpga",
+    ".m4a",
+    ".wav",
+    ".webm",
+    ".ogg",
+    ".aac",
+    ".flac",
+}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
 # Known model sets for auto-correction
 OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
-GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
+GROQ_MODELS = {
+    "whisper-large-v3",
+    "whisper-large-v3-turbo",
+    "distil-whisper-large-v3-en",
+}
 
 # Singleton for the local model — loaded once, reused across calls
 _local_model: Optional[object] = None
@@ -91,11 +127,26 @@ _local_model_name: Optional[str] = None
 # ---------------------------------------------------------------------------
 
 
+def get_stt_model_from_config() -> Optional[str]:
+    """Read the STT model name from ~/.hermes/config.yaml.
+
+    Returns the value of ``stt.model`` if present, otherwise ``None``.
+    Silently returns ``None`` on any error (missing file, bad YAML, etc.).
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        return read_raw_config().get("stt", {}).get("model")
+    except Exception:
+        pass
+    return None
+
 
 def _load_stt_config() -> dict:
     """Load the ``stt`` section from user config, falling back to defaults."""
     try:
         from hermes_cli.config import load_config
+
         return load_config().get("stt", {})
     except Exception:
         return {}
@@ -154,29 +205,10 @@ def _has_local_command() -> bool:
     return _get_local_command_template() is not None
 
 
-def _normalize_local_model(model_name: Optional[str]) -> str:
-    """Return a valid faster-whisper model size, mapping cloud-only names to the default.
-
-    Cloud providers like OpenAI use names such as ``whisper-1`` which are not
-    valid for faster-whisper (which expects ``tiny``, ``base``, ``small``,
-    ``medium``, or ``large-v*``).  When such a name is detected we fall back to
-    the default local model and emit a warning so the user knows what happened.
-    """
+def _normalize_local_command_model(model_name: Optional[str]) -> str:
     if not model_name or model_name in OPENAI_MODELS or model_name in GROQ_MODELS:
-        if model_name and (model_name in OPENAI_MODELS or model_name in GROQ_MODELS):
-            logger.warning(
-                "STT model '%s' is a cloud-only name and cannot be used with the local "
-                "provider. Falling back to '%s'. Set stt.local.model to a valid "
-                "faster-whisper size (tiny, base, small, medium, large-v3).",
-                model_name,
-                DEFAULT_LOCAL_MODEL,
-            )
         return DEFAULT_LOCAL_MODEL
     return model_name
-
-
-def _normalize_local_command_model(model_name: Optional[str]) -> str:
-    return _normalize_local_model(model_name)
 
 
 def _get_provider(stt_config: dict) -> str:
@@ -198,11 +230,23 @@ def _get_provider(stt_config: dict) -> str:
         if provider == "local":
             if _HAS_FASTER_WHISPER:
                 return "local"
+            if _has_whisper_cpp(stt_config):
+                logger.info("faster-whisper unavailable, falling back to whisper_cpp")
+                return "whisper_cpp"
             if _has_local_command():
                 return "local_command"
             logger.warning(
                 "STT provider 'local' configured but unavailable "
                 "(install faster-whisper or set HERMES_LOCAL_STT_COMMAND)"
+            )
+            return "none"
+
+        if provider == "whisper_cpp":
+            if _has_whisper_cpp(stt_config):
+                return "whisper_cpp"
+            logger.warning(
+                "STT provider 'whisper_cpp' configured but no compatible binary "
+                "(voxtype/whisper-cli) was found or model_path is invalid"
             )
             return "none"
 
@@ -212,25 +256,19 @@ def _get_provider(stt_config: dict) -> str:
             if _HAS_FASTER_WHISPER:
                 logger.info("Local STT command unavailable, using local faster-whisper")
                 return "local"
-            logger.warning(
-                "STT provider 'local_command' configured but unavailable"
-            )
+            logger.warning("STT provider 'local_command' configured but unavailable")
             return "none"
 
         if provider == "groq":
             if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
                 return "groq"
-            logger.warning(
-                "STT provider 'groq' configured but GROQ_API_KEY not set"
-            )
+            logger.warning("STT provider 'groq' configured but GROQ_API_KEY not set")
             return "none"
 
         if provider == "openai":
             if _HAS_OPENAI and _has_openai_audio_backend():
                 return "openai"
-            logger.warning(
-                "STT provider 'openai' configured but no API key available"
-            )
+            logger.warning("STT provider 'openai' configured but no API key available")
             return "none"
 
         if provider == "mistral":
@@ -244,10 +282,12 @@ def _get_provider(stt_config: dict) -> str:
 
         return provider  # Unknown — let it fail downstream
 
-    # --- Auto-detect (no explicit provider): local > groq > openai > mistral -
+    # --- Auto-detect (no explicit provider): local > whisper_cpp > groq > openai > mistral
 
     if _HAS_FASTER_WHISPER:
         return "local"
+    if _has_whisper_cpp(stt_config):
+        return "whisper_cpp"
     if _has_local_command():
         return "local_command"
     if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
@@ -261,6 +301,7 @@ def _get_provider(stt_config: dict) -> str:
         return "mistral"
     return "none"
 
+
 # ---------------------------------------------------------------------------
 # Shared validation
 # ---------------------------------------------------------------------------
@@ -271,9 +312,17 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
     audio_path = Path(file_path)
 
     if not audio_path.exists():
-        return {"success": False, "transcript": "", "error": f"Audio file not found: {file_path}"}
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Audio file not found: {file_path}",
+        }
     if not audio_path.is_file():
-        return {"success": False, "transcript": "", "error": f"Path is not a file: {file_path}"}
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Path is not a file: {file_path}",
+        }
     if audio_path.suffix.lower() not in SUPPORTED_FORMATS:
         return {
             "success": False,
@@ -286,12 +335,17 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
             return {
                 "success": False,
                 "transcript": "",
-                "error": f"File too large: {file_size / (1024*1024):.1f}MB (max {MAX_FILE_SIZE / (1024*1024):.0f}MB)",
+                "error": f"File too large: {file_size / (1024 * 1024):.1f}MB (max {MAX_FILE_SIZE / (1024 * 1024):.0f}MB)",
             }
     except OSError as e:
-        return {"success": False, "transcript": "", "error": f"Failed to access file: {e}"}
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Failed to access file: {e}",
+        }
 
     return None
+
 
 # ---------------------------------------------------------------------------
 # Provider: local (faster-whisper)
@@ -303,13 +357,21 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
     global _local_model, _local_model_name
 
     if not _HAS_FASTER_WHISPER:
-        return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "faster-whisper not installed",
+        }
 
     try:
         from faster_whisper import WhisperModel
+
         # Lazy-load the model (downloads on first use, ~150 MB for 'base')
         if _local_model is None or _local_model_name != model_name:
-            logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
+            logger.info(
+                "Loading faster-whisper model '%s' (first load downloads the model)...",
+                model_name,
+            )
             _local_model = WhisperModel(model_name, device="auto", compute_type="auto")
             _local_model_name = model_name
 
@@ -328,17 +390,26 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
 
         logger.info(
             "Transcribed %s via local whisper (%s, lang=%s, %.1fs audio)",
-            Path(file_path).name, model_name, info.language, info.duration,
+            Path(file_path).name,
+            model_name,
+            info.language,
+            info.duration,
         )
 
         return {"success": True, "transcript": transcript, "provider": "local"}
 
     except Exception as e:
         logger.error("Local transcription failed: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Local transcription failed: {e}",
+        }
 
 
-def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], Optional[str]]:
+def _prepare_local_audio(
+    file_path: str, work_dir: str
+) -> tuple[Optional[str], Optional[str]]:
     """Normalize audio for local CLI STT when needed."""
     audio_path = Path(file_path)
     if audio_path.suffix.lower() in LOCAL_NATIVE_AUDIO_FORMATS:
@@ -346,7 +417,10 @@ def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], 
 
     ffmpeg = _find_ffmpeg_binary()
     if not ffmpeg:
-        return None, "Local STT fallback requires ffmpeg for non-WAV inputs, but ffmpeg was not found"
+        return (
+            None,
+            "Local STT fallback requires ffmpeg for non-WAV inputs, but ffmpeg was not found",
+        )
 
     converted_path = os.path.join(work_dir, f"{audio_path.stem}.wav")
     command = [ffmpeg, "-y", "-i", file_path, converted_path]
@@ -392,7 +466,9 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
                 language=shlex.quote(language),
                 model=shlex.quote(normalized_model),
             )
-            subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+            subprocess.run(
+                command, shell=True, check=True, capture_output=True, text=True
+            )
 
             txt_files = sorted(Path(output_dir).glob("*.txt"))
             if not txt_files:
@@ -409,7 +485,11 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
                 normalized_model,
                 len(transcript_text),
             )
-            return {"success": True, "transcript": transcript_text, "provider": "local_command"}
+            return {
+                "success": True,
+                "transcript": transcript_text,
+                "provider": "local_command",
+            }
 
     except KeyError as e:
         return {
@@ -420,10 +500,312 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
     except subprocess.CalledProcessError as e:
         details = e.stderr.strip() or e.stdout.strip() or str(e)
         logger.error("Local STT command failed for %s: %s", file_path, details)
-        return {"success": False, "transcript": "", "error": f"Local STT failed: {details}"}
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Local STT failed: {details}",
+        }
     except Exception as e:
-        logger.error("Unexpected error during local command transcription: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
+        logger.error(
+            "Unexpected error during local command transcription: %s", e, exc_info=True
+        )
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Local transcription failed: {e}",
+        }
+
+
+# ---------------------------------------------------------------------------
+# Provider: whisper_cpp (GGML model via voxtype / whisper-cli / whisper-cpp)
+# ---------------------------------------------------------------------------
+#
+# This provider reuses an existing ``ggml-*.bin`` whisper.cpp model already on
+# disk (e.g. the one voxtype maintains). It shells out to a whisper.cpp-based
+# binary, which handles GPU acceleration (Vulkan / CUDA / Metal). No Python
+# model is loaded, and no model is re-downloaded — the weights live exactly
+# where the existing tool put them.
+#
+# Two binary "flavours" are supported via adapters:
+#
+#   * voxtype      — self-configuring wrapper; manages its own model/config.
+#                    Transcript is embedded in stdout log lines as
+#                    ``Transcription completed in X.XXs: "…"``.
+#   * whisper-cli  — stock whisper.cpp CLI; requires ``-m <model_path>`` and
+#                    prints the transcript to stdout when invoked with ``-nt``.
+#
+# Auto-detection picks the first available candidate. Config can override:
+#
+#   stt:
+#     provider: whisper_cpp
+#     whisper_cpp:
+#       binary: voxtype              # path or name; optional
+#       engine: whisper              # voxtype --engine flag; optional
+#       model_path: /path/ggml.bin   # required for whisper-cli flavour
+#       language: auto               # BCP-47 or "auto"; optional
+
+
+def _find_whisper_cpp_binary(preferred: Optional[str] = None) -> Optional[str]:
+    """Locate a whisper.cpp-compatible binary.
+
+    If ``preferred`` is given, it is tried first (as an absolute path or a
+    name on PATH). Otherwise the known candidates are tried in priority order.
+    """
+    if preferred:
+        preferred = preferred.strip()
+        if preferred:
+            # Absolute or relative path
+            if os.sep in preferred or preferred.startswith("~"):
+                expanded = os.path.expanduser(preferred)
+                if os.path.isfile(expanded) and os.access(expanded, os.X_OK):
+                    return expanded
+                return None
+            # Bare name — resolve via PATH / common dirs
+            found = _find_binary(preferred)
+            if found:
+                return found
+            return None
+
+    for candidate in WHISPER_CPP_BINARY_CANDIDATES:
+        found = _find_binary(candidate)
+        if found:
+            return found
+    return None
+
+
+def _whisper_cpp_flavour(binary_path: str) -> str:
+    """Classify the binary so we know which CLI conventions to use."""
+    name = Path(binary_path).name.lower()
+    if "voxtype" in name:
+        return "voxtype"
+    # whisper-cli, whisper-cpp, main (whisper.cpp upstream default name)
+    return "whisper_cli"
+
+
+def _has_whisper_cpp(stt_config: Optional[dict] = None) -> bool:
+    cfg = (stt_config or {}).get("whisper_cpp", {}) if stt_config else {}
+    binary = _find_whisper_cpp_binary(cfg.get("binary"))
+    if not binary:
+        return False
+    flavour = _whisper_cpp_flavour(binary)
+    # whisper-cli requires an explicit model path to be useful
+    if flavour == "whisper_cli":
+        model_path = cfg.get("model_path")
+        if not model_path or not Path(os.path.expanduser(model_path)).is_file():
+            return False
+    return True
+
+
+def _prepare_whisper_cpp_audio(
+    file_path: str, work_dir: str
+) -> tuple[Optional[str], Optional[str]]:
+    """Convert audio to 16 kHz mono PCM WAV (whisper.cpp's required format)."""
+    ffmpeg = _find_ffmpeg_binary()
+    if not ffmpeg:
+        return (
+            None,
+            "whisper_cpp backend requires ffmpeg to resample audio to 16 kHz mono WAV",
+        )
+
+    converted_path = os.path.join(work_dir, f"{Path(file_path).stem}.16k.wav")
+    command = [
+        ffmpeg,
+        "-y",
+        "-i",
+        file_path,
+        "-ac",
+        "1",
+        "-ar",
+        str(WHISPER_CPP_TARGET_SAMPLE_RATE),
+        "-c:a",
+        "pcm_s16le",
+        converted_path,
+    ]
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+        return converted_path, None
+    except subprocess.CalledProcessError as e:
+        details = e.stderr.strip() or e.stdout.strip() or str(e)
+        logger.error("ffmpeg resample failed for %s: %s", file_path, details)
+        return None, f"Failed to prepare audio for whisper_cpp: {details}"
+
+
+def _build_whisper_cpp_argv(
+    flavour: str,
+    binary_path: str,
+    wav_path: str,
+    whisper_cpp_cfg: dict,
+) -> List[str]:
+    """Build the argv list for the chosen whisper.cpp flavour."""
+    if flavour == "voxtype":
+        engine = whisper_cpp_cfg.get("engine", "whisper")
+        argv = [binary_path, "transcribe", "--engine", engine, wav_path]
+        return argv
+
+    # whisper_cli flavour — stock whisper.cpp CLI
+    model_path = os.path.expanduser(whisper_cpp_cfg["model_path"])
+    argv = [
+        binary_path,
+        "-m",
+        model_path,
+        "-f",
+        wav_path,
+        "-nt",  # no timestamps in output
+        "-np",  # no extra prints
+    ]
+    language = whisper_cpp_cfg.get("language")
+    if language and language != "auto":
+        argv.extend(["-l", language])
+    return argv
+
+
+# Regex for extracting the transcript from voxtype's log line:
+#   INFO Transcription completed in 4.14s: "Hello world."
+_VOXTYPE_TRANSCRIPT_RE = re.compile(
+    r'Transcription completed in [0-9.]+s:\s*"(?P<text>.*)"\s*$'
+)
+
+
+# ANSI escape sequence stripper — voxtype colorizes logs on stdout.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_ESCAPE_RE.sub("", text)
+
+
+def _is_voxtype_log_line(line: str) -> bool:
+    """Detect voxtype/whisper.cpp log output (vs. the actual transcript)."""
+    stripped = _strip_ansi(line).strip()
+    if not stripped:
+        return True  # blank lines aren't content
+    log_prefixes = (
+        "whisper_",
+        "ggml_",
+        "Loading ",
+        "Audio ",
+        "Processing ",
+        "main:",
+        "system_info:",
+    )
+    if any(stripped.startswith(p) for p in log_prefixes):
+        return True
+    # tracing-style timestamped log lines: 2026-04-05T17:13:22.573238Z  INFO …
+    if re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", stripped):
+        return True
+    if " INFO " in stripped or " WARN " in stripped or " ERROR " in stripped:
+        return True
+    return False
+
+
+def _parse_voxtype_output(stdout: str) -> str:
+    """Extract the transcript from voxtype's mixed log+text stdout.
+
+    Voxtype emits two representations of the transcript:
+
+      1. A log line like ``INFO Transcription completed in 0.56s: "…"`` where
+         the quoted text is TRUNCATED (~60 chars) for display readability.
+      2. The full, untruncated transcript as one or more bare stdout lines
+         printed AFTER all log output.
+
+    We collect all non-log lines (representation 2) and join them. The
+    log-embedded preview (representation 1) is only used as a last-resort
+    fallback if no bare transcript lines are present.
+    """
+    lines = stdout.splitlines()
+
+    # 1. Preferred: gather all non-log content lines (the real transcript)
+    content_lines = [
+        _strip_ansi(line).strip() for line in lines if not _is_voxtype_log_line(line)
+    ]
+    content_lines = [ln for ln in content_lines if ln]
+    if content_lines:
+        return " ".join(content_lines).strip()
+
+    # 2. Fallback: extract from the log line (may be truncated)
+    for line in reversed(lines):
+        match = _VOXTYPE_TRANSCRIPT_RE.search(line)
+        if match:
+            return match.group("text").strip()
+    return ""
+
+
+def _transcribe_whisper_cpp(file_path: str, stt_config: dict) -> Dict[str, Any]:
+    """Transcribe via a whisper.cpp-based binary, reusing an on-disk GGML model."""
+    whisper_cpp_cfg = stt_config.get("whisper_cpp", {}) or {}
+    binary = _find_whisper_cpp_binary(whisper_cpp_cfg.get("binary"))
+    if not binary:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": (
+                "whisper_cpp provider configured but no compatible binary found. "
+                f"Tried: {', '.join(WHISPER_CPP_BINARY_CANDIDATES)}. "
+                "Install voxtype or whisper.cpp, or set stt.whisper_cpp.binary."
+            ),
+        }
+
+    flavour = _whisper_cpp_flavour(binary)
+    if flavour == "whisper_cli":
+        model_path = whisper_cpp_cfg.get("model_path")
+        if not model_path or not Path(os.path.expanduser(model_path)).is_file():
+            return {
+                "success": False,
+                "transcript": "",
+                "error": (
+                    f"whisper_cpp binary '{binary}' requires stt.whisper_cpp.model_path "
+                    "to point at a valid ggml-*.bin file"
+                ),
+            }
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes-whispercpp-") as work_dir:
+            wav_path, prep_error = _prepare_whisper_cpp_audio(file_path, work_dir)
+            if prep_error:
+                return {"success": False, "transcript": "", "error": prep_error}
+
+            argv = _build_whisper_cpp_argv(flavour, binary, wav_path, whisper_cpp_cfg)
+            logger.info(
+                "Running whisper_cpp (%s) on %s: %s",
+                flavour,
+                Path(file_path).name,
+                " ".join(shlex.quote(a) for a in argv),
+            )
+            result = subprocess.run(argv, check=True, capture_output=True, text=True)
+
+            if flavour == "voxtype":
+                transcript_text = _parse_voxtype_output(result.stdout)
+            else:
+                # whisper-cli with -nt -np prints just the transcript on stdout
+                transcript_text = result.stdout.strip()
+
+            logger.info(
+                "Transcribed %s via whisper_cpp (%s, %d chars)",
+                Path(file_path).name,
+                flavour,
+                len(transcript_text),
+            )
+            return {
+                "success": True,
+                "transcript": transcript_text,
+                "provider": "whisper_cpp",
+                "flavour": flavour,
+            }
+
+    except subprocess.CalledProcessError as e:
+        details = (e.stderr or "").strip() or (e.stdout or "").strip() or str(e)
+        logger.error("whisper_cpp command failed for %s: %s", file_path, details)
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"whisper_cpp failed: {details}",
+        }
+    except Exception as e:
+        logger.error(
+            "Unexpected error during whisper_cpp transcription: %s", e, exc_info=True
+        )
+        return {"success": False, "transcript": "", "error": f"whisper_cpp error: {e}"}
+
 
 # ---------------------------------------------------------------------------
 # Provider: groq (Whisper API — free tier)
@@ -437,16 +819,27 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": "GROQ_API_KEY not set"}
 
     if not _HAS_OPENAI:
-        return {"success": False, "transcript": "", "error": "openai package not installed"}
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "openai package not installed",
+        }
 
     # Auto-correct model if caller passed an OpenAI-only model
     if model_name in OPENAI_MODELS:
-        logger.info("Model %s not available on Groq, using %s", model_name, DEFAULT_GROQ_STT_MODEL)
+        logger.info(
+            "Model %s not available on Groq, using %s",
+            model_name,
+            DEFAULT_GROQ_STT_MODEL,
+        )
         model_name = DEFAULT_GROQ_STT_MODEL
 
     try:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
-        client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL, timeout=30, max_retries=0)
+
+        client = OpenAI(
+            api_key=api_key, base_url=GROQ_BASE_URL, timeout=30, max_retries=0
+        )
         try:
             with open(file_path, "rb") as audio_file:
                 transcription = client.audio.transcriptions.create(
@@ -456,8 +849,12 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
                 )
 
             transcript_text = str(transcription).strip()
-            logger.info("Transcribed %s via Groq API (%s, %d chars)",
-                         Path(file_path).name, model_name, len(transcript_text))
+            logger.info(
+                "Transcribed %s via Groq API (%s, %d chars)",
+                Path(file_path).name,
+                model_name,
+                len(transcript_text),
+            )
 
             return {"success": True, "transcript": transcript_text, "provider": "groq"}
         finally:
@@ -466,7 +863,11 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
                 close()
 
     except PermissionError:
-        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Permission denied: {file_path}",
+        }
     except APIConnectionError as e:
         return {"success": False, "transcript": "", "error": f"Connection error: {e}"}
     except APITimeoutError as e:
@@ -475,7 +876,12 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": f"API error: {e}"}
     except Exception as e:
         logger.error("Groq transcription failed: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Transcription failed: {e}",
+        }
+
 
 # ---------------------------------------------------------------------------
 # Provider: openai (Whisper API)
@@ -494,15 +900,22 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
         }
 
     if not _HAS_OPENAI:
-        return {"success": False, "transcript": "", "error": "openai package not installed"}
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "openai package not installed",
+        }
 
     # Auto-correct model if caller passed a Groq-only model
     if model_name in GROQ_MODELS:
-        logger.info("Model %s not available on OpenAI, using %s", model_name, DEFAULT_STT_MODEL)
+        logger.info(
+            "Model %s not available on OpenAI, using %s", model_name, DEFAULT_STT_MODEL
+        )
         model_name = DEFAULT_STT_MODEL
 
     try:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
+
         client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
         try:
             with open(file_path, "rb") as audio_file:
@@ -513,17 +926,29 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
                 )
 
             transcript_text = _extract_transcript_text(transcription)
-            logger.info("Transcribed %s via OpenAI API (%s, %d chars)",
-                         Path(file_path).name, model_name, len(transcript_text))
+            logger.info(
+                "Transcribed %s via OpenAI API (%s, %d chars)",
+                Path(file_path).name,
+                model_name,
+                len(transcript_text),
+            )
 
-            return {"success": True, "transcript": transcript_text, "provider": "openai"}
+            return {
+                "success": True,
+                "transcript": transcript_text,
+                "provider": "openai",
+            }
         finally:
             close = getattr(client, "close", None)
             if callable(close):
                 close()
 
     except PermissionError:
-        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Permission denied: {file_path}",
+        }
     except APIConnectionError as e:
         return {"success": False, "transcript": "", "error": f"Connection error: {e}"}
     except APITimeoutError as e:
@@ -532,7 +957,12 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": f"API error: {e}"}
     except Exception as e:
         logger.error("OpenAI transcription failed: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Transcription failed: {e}",
+        }
+
 
 # ---------------------------------------------------------------------------
 # Provider: mistral (Voxtral Transcribe API)
@@ -562,15 +992,29 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
             transcript_text = _extract_transcript_text(result)
             logger.info(
                 "Transcribed %s via Mistral API (%s, %d chars)",
-                Path(file_path).name, model_name, len(transcript_text),
+                Path(file_path).name,
+                model_name,
+                len(transcript_text),
             )
-            return {"success": True, "transcript": transcript_text, "provider": "mistral"}
+            return {
+                "success": True,
+                "transcript": transcript_text,
+                "provider": "mistral",
+            }
 
     except PermissionError:
-        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Permission denied: {file_path}",
+        }
     except Exception as e:
         logger.error("Mistral transcription failed: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Mistral transcription failed: {type(e).__name__}"}
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Mistral transcription failed: {type(e).__name__}",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -615,10 +1059,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     if provider == "local":
         local_cfg = stt_config.get("local", {})
-        model_name = _normalize_local_model(
-            model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
-        )
+        model_name = model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         return _transcribe_local(file_path, model_name)
+
+    if provider == "whisper_cpp":
+        return _transcribe_whisper_cpp(file_path, stt_config)
 
     if provider == "local_command":
         local_cfg = stt_config.get("local", {})
