@@ -350,3 +350,93 @@ class TestApplyMemoryWritebackDedup:
         written = apply_memory_writeback(candidates, store, written_keys=pre_keys)
         assert written == []
         assert store.writes == []
+
+
+# ---------------------------------------------------------------------------
+# apply_memory_writeback — on_write callback (PR5: external provider bridge)
+# ---------------------------------------------------------------------------
+
+class TestApplyMemoryWritebackOnWrite:
+    """Verify on_write callback is invoked for each successful write."""
+
+    def test_on_write_called_for_each_successful_write(self):
+        store = _FakeMemoryStore()
+        calls = []
+        candidates = [
+            MemoryWriteCandidate("user_facts", "fact one"),
+            MemoryWriteCandidate("environment_facts", "fact two"),
+        ]
+        written = apply_memory_writeback(
+            candidates, store, on_write=lambda a, t, c: calls.append((a, t, c)),
+        )
+        assert len(written) == 2
+        assert calls == [
+            ("add", "user", "fact one"),
+            ("add", "memory", "fact two"),
+        ]
+
+    def test_on_write_not_called_for_duplicates(self):
+        store = _FakeMemoryStore()
+        calls = []
+        candidates = [
+            MemoryWriteCandidate("user_facts", "same"),
+            MemoryWriteCandidate("user_facts", "same"),
+        ]
+        written = apply_memory_writeback(
+            candidates, store, on_write=lambda a, t, c: calls.append((a, t, c)),
+        )
+        assert len(written) == 1
+        assert len(calls) == 1
+
+    def test_on_write_not_called_for_ignored_category(self):
+        store = _FakeMemoryStore()
+        calls = []
+        candidates = [MemoryWriteCandidate("ignore", "transient")]
+        apply_memory_writeback(
+            candidates, store, on_write=lambda a, t, c: calls.append((a, t, c)),
+        )
+        assert calls == []
+
+    def test_on_write_failure_does_not_affect_return(self):
+        """Callback exception should not prevent the write from being counted."""
+        store = _FakeMemoryStore()
+
+        def _exploding_callback(action, target, content):
+            raise RuntimeError("callback boom")
+
+        candidates = [MemoryWriteCandidate("user_facts", "fact")]
+        written = apply_memory_writeback(
+            candidates, store, on_write=_exploding_callback,
+        )
+        # Write succeeded despite callback failure
+        assert len(written) == 1
+        assert len(store.writes) == 1
+
+    def test_on_write_not_called_when_store_fails(self):
+        """Callback should not fire when the store write itself fails."""
+        store = _FakeMemoryStore(fail=True)
+        calls = []
+        candidates = [MemoryWriteCandidate("user_facts", "fact")]
+        written = apply_memory_writeback(
+            candidates, store, on_write=lambda a, t, c: calls.append((a, t, c)),
+        )
+        assert written == []
+        assert calls == []
+
+    def test_none_on_write_is_safe(self):
+        """on_write=None (default) works without errors."""
+        store = _FakeMemoryStore()
+        candidates = [MemoryWriteCandidate("user_facts", "fact")]
+        written = apply_memory_writeback(candidates, store, on_write=None)
+        assert len(written) == 1
+
+    def test_builtin_memory_still_works_without_on_write(self):
+        """PR4 behaviour preserved: built-in writeback works without any callback."""
+        store = _FakeMemoryStore()
+        candidates = [
+            MemoryWriteCandidate("user_facts", "I like Python"),
+            MemoryWriteCandidate("workflow_facts", "always run tests"),
+        ]
+        written = apply_memory_writeback(candidates, store)
+        assert len(written) == 2
+        assert store.writes == [("user", "I like Python"), ("memory", "always run tests")]

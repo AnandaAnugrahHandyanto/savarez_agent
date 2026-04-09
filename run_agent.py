@@ -9176,6 +9176,10 @@ class AIAgent:
                     written = apply_memory_writeback(
                         task_review.memory_write_candidates,
                         self._memory_store,
+                        on_write=(
+                            self._memory_manager.on_memory_write
+                            if self._memory_manager else None
+                        ),
                     )
                     if written:
                         _centralized_memory_written = True

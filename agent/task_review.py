@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +218,7 @@ def apply_memory_writeback(
     memory_store: Any,
     *,
     written_keys: Optional[Set[str]] = None,
+    on_write: Optional[Callable[[str, str, str], None]] = None,
 ) -> List[MemoryWriteCandidate]:
     """Route classified candidates to the built-in memory store.
 
@@ -239,6 +240,9 @@ def apply_memory_writeback(
             ``"success"`` key).
         written_keys: Mutable set for cross-call duplicate suppression.
             Created internally if ``None``.
+        on_write: Optional callback invoked after each successful write
+            with ``(action, target, content)`` — used to notify external
+            memory providers (e.g. Mem0) so they can curate their store.
 
     Returns:
         The subset of *candidates* that were successfully written.
@@ -278,6 +282,14 @@ def apply_memory_writeback(
                 "Memory writeback: %s → %s (%s)",
                 candidate.category, target, candidate.source,
             )
+            if on_write:
+                try:
+                    on_write("add", target, candidate.content)
+                except Exception:
+                    logger.debug(
+                        "on_write callback failed for %s",
+                        candidate.category, exc_info=True,
+                    )
         else:
             logger.debug(
                 "Memory writeback skipped for %s: %s",

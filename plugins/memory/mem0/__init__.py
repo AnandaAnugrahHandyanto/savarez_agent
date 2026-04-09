@@ -33,6 +33,14 @@ logger = logging.getLogger(__name__)
 _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_SECS = 120
 
+# Curation thresholds for on_memory_write deduplication.
+# When the built-in memory store writes a fact, we search Mem0 for similar
+# existing memories.  These thresholds determine how we act:
+#   UPDATE — best-match score >= this → update existing memory instead of adding
+_CURATE_UPDATE_THRESHOLD = 0.7
+#   DELETE — additional matches scoring >= this are treated as stale duplicates
+_CURATE_DELETE_THRESHOLD = 0.85
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -172,6 +180,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
         self._sync_thread = None
+        self._curate_thread = None
         # Circuit breaker state
         self._consecutive_failures = 0
         self._breaker_open_until = 0.0
@@ -444,8 +453,129 @@ class Mem0MemoryProvider(MemoryProvider):
 
         return tool_error(f"Unknown tool: {tool_name}")
 
+    # -- Curation: dedupe/update/delete on built-in memory writes ----------
+
+    def _curate_memory_write(self, content: str) -> Dict[str, Any]:
+        """Search Mem0 for similar facts and dedupe/update/conclude.
+
+        Synchronous — callers that need non-blocking behaviour should run
+        this in a background thread (see :meth:`on_memory_write`).
+
+        Returns a dict describing what happened::
+
+            {"action": "concluded"}           — new fact stored
+            {"action": "updated", "id": ...}  — existing memory updated
+            {"action": "skipped"}             — exact duplicate, no-op
+            {"action": "failed", ...}         — error (logged, non-fatal)
+
+        Extra key ``deleted_ids`` lists any stale duplicates removed.
+        """
+        try:
+            client = self._get_client()
+        except Exception as exc:
+            return {"action": "failed", "error": str(exc)}
+
+        try:
+            results = self._unwrap_results(client.search(
+                query=content,
+                filters=self._read_filters(),
+                rerank=True,
+                top_k=3,
+            ))
+        except Exception as exc:
+            self._record_failure()
+            return {"action": "failed", "error": str(exc)}
+
+        deleted_ids: list = []
+
+        if not results:
+            # No existing memories — store as new fact.
+            try:
+                client.add(
+                    [{"role": "user", "content": content}],
+                    **self._write_filters(),
+                    infer=False,
+                )
+                self._record_success()
+                return {"action": "concluded"}
+            except Exception as exc:
+                self._record_failure()
+                return {"action": "failed", "error": str(exc)}
+
+        best = results[0]
+        best_score = best.get("score", 0)
+        best_id = self._memory_id(best)
+        best_text = best.get("memory", "")
+
+        if best_score >= _CURATE_UPDATE_THRESHOLD and best_id:
+            # High similarity — same semantic fact.
+            if best_text.strip().lower() == content.strip().lower():
+                # Exact duplicate — nothing to do.
+                self._record_success()
+                return {"action": "skipped", "deleted_ids": deleted_ids}
+
+            # Reworded/corrected — update the existing memory.
+            try:
+                client.update(memory_id=best_id, text=content)
+            except Exception as exc:
+                self._record_failure()
+                return {"action": "failed", "error": str(exc)}
+
+            # Clean up additional near-duplicates beyond the primary match.
+            for extra in results[1:]:
+                extra_score = extra.get("score", 0)
+                extra_id = self._memory_id(extra)
+                if (extra_score >= _CURATE_DELETE_THRESHOLD
+                        and extra_id
+                        and extra_id != best_id):
+                    try:
+                        client.delete(extra_id)
+                        deleted_ids.append(extra_id)
+                    except Exception:
+                        logger.debug(
+                            "Mem0 curate: failed to delete stale duplicate %s",
+                            extra_id,
+                        )
+
+            self._record_success()
+            return {"action": "updated", "id": best_id, "deleted_ids": deleted_ids}
+
+        # No strong match — store as genuinely new fact.
+        try:
+            client.add(
+                [{"role": "user", "content": content}],
+                **self._write_filters(),
+                infer=False,
+            )
+            self._record_success()
+            return {"action": "concluded"}
+        except Exception as exc:
+            self._record_failure()
+            return {"action": "failed", "error": str(exc)}
+
+    def on_memory_write(self, action: str, target: str, content: str) -> None:
+        """Curate Mem0 state when the built-in memory store writes.
+
+        Searches for semantically similar existing memories and prefers
+        updating or deleting stale entries over appending duplicates.
+        Runs in a background thread so the main loop is never blocked.
+        """
+        if not content or action not in ("add", "replace"):
+            return
+        if self._is_breaker_open():
+            return
+
+        def _run():
+            result = self._curate_memory_write(content)
+            logger.debug("Mem0 curate result: %s", result)
+
+        self._curate_thread = threading.Thread(
+            target=_run, daemon=True, name="mem0-curate",
+        )
+        self._curate_thread.start()
+
     def shutdown(self) -> None:
-        for t in (self._prefetch_thread, self._sync_thread):
+        for t in (self._prefetch_thread, self._sync_thread, self._curate_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
         with self._client_lock:

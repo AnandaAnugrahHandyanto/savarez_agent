@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from plugins.memory.mem0 import Mem0MemoryProvider, _load_config
+from plugins.memory.mem0 import (
+    Mem0MemoryProvider,
+    _CURATE_DELETE_THRESHOLD,
+    _CURATE_UPDATE_THRESHOLD,
+    _load_config,
+)
 
 
 class FakeClientV2:
@@ -320,3 +325,227 @@ class TestMem0ConfigNormalization:
         saved = json.loads((Path(tmp_path) / "mem0.json").read_text(encoding="utf-8"))
         assert saved["rerank"] is False
         assert isinstance(saved["rerank"], bool)
+
+
+# ---------------------------------------------------------------------------
+# Mem0 curation: on_memory_write dedupe/update/delete/conclude
+# ---------------------------------------------------------------------------
+
+
+class TestMem0Curation:
+    """Test _curate_memory_write: search Mem0 → decide → update/delete/conclude."""
+
+    def _make_provider(self, monkeypatch, client):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        monkeypatch.setattr(provider, "_get_client", lambda: client)
+        return provider
+
+    # -- Genuinely new fact → conclude ------------------------------------
+
+    def test_new_fact_no_existing_memories_concludes(self, monkeypatch):
+        """No existing memories → conclude as new fact."""
+        client = FakeClientV2(search_results={"results": []})
+        provider = self._make_provider(monkeypatch, client)
+
+        result = provider._curate_memory_write("I prefer dark mode")
+
+        assert result["action"] == "concluded"
+        assert len(client.captured_add) == 1
+        call = client.captured_add[0]
+        assert call["messages"] == [{"role": "user", "content": "I prefer dark mode"}]
+        assert call["infer"] is False
+
+    def test_new_fact_low_similarity_concludes(self, monkeypatch):
+        """Existing memories with low similarity → conclude as new fact."""
+        client = FakeClientV2(search_results={"results": [
+            {"id": "m1", "memory": "User uses Linux", "score": 0.3},
+        ]})
+        provider = self._make_provider(monkeypatch, client)
+
+        result = provider._curate_memory_write("I prefer dark mode")
+
+        assert result["action"] == "concluded"
+        assert len(client.captured_add) == 1
+        assert client.captured_update == []
+
+    # -- Corrected/reworded fact → update ---------------------------------
+
+    def test_similar_fact_updates_existing(self, monkeypatch):
+        """Semantically similar but reworded fact → update existing memory."""
+        client = FakeClientV2(search_results={"results": [
+            {"id": "m1", "memory": "User prefers light mode", "score": 0.8},
+        ]})
+        provider = self._make_provider(monkeypatch, client)
+
+        result = provider._curate_memory_write("I prefer dark mode")
+
+        assert result["action"] == "updated"
+        assert result["id"] == "m1"
+        assert client.captured_update == [{"memory_id": "m1", "text": "I prefer dark mode"}]
+        assert client.captured_add == []  # No conclude — updated instead
+
+    # -- Exact duplicate → skip -------------------------------------------
+
+    def test_exact_duplicate_skips(self, monkeypatch):
+        """Exact same text already in Mem0 → skip (no write)."""
+        client = FakeClientV2(search_results={"results": [
+            {"id": "m1", "memory": "I prefer dark mode", "score": 0.99},
+        ]})
+        provider = self._make_provider(monkeypatch, client)
+
+        result = provider._curate_memory_write("I prefer dark mode")
+
+        assert result["action"] == "skipped"
+        assert client.captured_add == []
+        assert client.captured_update == []
+        assert client.captured_delete == []
+
+    def test_exact_duplicate_case_insensitive(self, monkeypatch):
+        """Case-insensitive exact match → skip."""
+        client = FakeClientV2(search_results={"results": [
+            {"id": "m1", "memory": "I Prefer Dark Mode", "score": 0.95},
+        ]})
+        provider = self._make_provider(monkeypatch, client)
+
+        result = provider._curate_memory_write("i prefer dark mode")
+
+        assert result["action"] == "skipped"
+
+    # -- Stale duplicate cleanup → delete ---------------------------------
+
+    def test_stale_duplicates_deleted_during_update(self, monkeypatch):
+        """When updating, additional high-similarity results are deleted."""
+        client = FakeClientV2(search_results={"results": [
+            {"id": "m1", "memory": "User prefers light mode", "score": 0.82},
+            {"id": "m2", "memory": "User likes light theme", "score": 0.90},
+            {"id": "m3", "memory": "Something unrelated", "score": 0.4},
+        ]})
+        provider = self._make_provider(monkeypatch, client)
+
+        result = provider._curate_memory_write("I prefer dark mode")
+
+        assert result["action"] == "updated"
+        assert result["id"] == "m1"
+        # m2 scores above DELETE threshold → deleted as stale duplicate
+        assert "m2" in result["deleted_ids"]
+        assert client.captured_delete == ["m2"]
+        # m3 below DELETE threshold → kept
+        assert "m3" not in result.get("deleted_ids", [])
+
+    def test_no_stale_duplicates_when_extras_below_threshold(self, monkeypatch):
+        """Additional results below DELETE threshold are not deleted."""
+        client = FakeClientV2(search_results={"results": [
+            {"id": "m1", "memory": "User prefers light mode", "score": 0.8},
+            {"id": "m2", "memory": "Something moderate", "score": 0.6},
+        ]})
+        provider = self._make_provider(monkeypatch, client)
+
+        result = provider._curate_memory_write("I prefer dark mode")
+
+        assert result["action"] == "updated"
+        assert result.get("deleted_ids", []) == []
+        assert client.captured_delete == []
+
+    # -- on_memory_write integration --------------------------------------
+
+    def test_on_memory_write_triggers_curate_for_add(self, monkeypatch):
+        """on_memory_write with action='add' triggers curation."""
+        client = FakeClientV2(search_results={"results": []})
+        provider = self._make_provider(monkeypatch, client)
+
+        provider.on_memory_write("add", "user", "I prefer dark mode")
+        # Join the background thread to ensure it completes
+        if provider._curate_thread:
+            provider._curate_thread.join(timeout=2)
+
+        assert len(client.captured_add) == 1
+
+    def test_on_memory_write_triggers_curate_for_replace(self, monkeypatch):
+        """on_memory_write with action='replace' triggers curation."""
+        client = FakeClientV2(search_results={"results": []})
+        provider = self._make_provider(monkeypatch, client)
+
+        provider.on_memory_write("replace", "user", "I prefer dark mode")
+        if provider._curate_thread:
+            provider._curate_thread.join(timeout=2)
+
+        assert len(client.captured_add) == 1
+
+    def test_on_memory_write_skips_remove_action(self, monkeypatch):
+        """on_memory_write with action='remove' does nothing."""
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+
+        provider.on_memory_write("remove", "user", "something")
+
+        assert provider._curate_thread is None
+        assert client.captured_add == []
+
+    def test_on_memory_write_skips_empty_content(self, monkeypatch):
+        """on_memory_write with empty content does nothing."""
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+
+        provider.on_memory_write("add", "user", "")
+
+        assert provider._curate_thread is None
+
+    def test_on_memory_write_skips_when_breaker_open(self, monkeypatch):
+        """on_memory_write does nothing when circuit breaker is tripped."""
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+        # Trip the circuit breaker
+        provider._consecutive_failures = 10
+        provider._breaker_open_until = float("inf")
+
+        provider.on_memory_write("add", "user", "fact")
+
+        assert provider._curate_thread is None
+
+    # -- Error handling ---------------------------------------------------
+
+    def test_curate_search_failure_returns_failed(self, monkeypatch):
+        """Search failure in curate → returns failed, doesn't crash."""
+        client = FakeClientV2()
+        client.search = lambda **kw: (_ for _ in ()).throw(RuntimeError("API down"))
+        provider = self._make_provider(monkeypatch, client)
+
+        result = provider._curate_memory_write("some fact")
+
+        assert result["action"] == "failed"
+
+    def test_curate_conclude_failure_returns_failed(self, monkeypatch):
+        """Conclude failure after no match → returns failed."""
+        client = FakeClientV2(search_results={"results": []})
+        client.add = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("write fail"))
+        provider = self._make_provider(monkeypatch, client)
+
+        result = provider._curate_memory_write("some fact")
+
+        assert result["action"] == "failed"
+
+    def test_curate_update_failure_returns_failed(self, monkeypatch):
+        """Update failure → returns failed, doesn't attempt delete."""
+        client = FakeClientV2(search_results={"results": [
+            {"id": "m1", "memory": "old version", "score": 0.9},
+            {"id": "m2", "memory": "duplicate", "score": 0.95},
+        ]})
+        client.update = lambda **kw: (_ for _ in ()).throw(RuntimeError("update fail"))
+        provider = self._make_provider(monkeypatch, client)
+
+        result = provider._curate_memory_write("new version")
+
+        assert result["action"] == "failed"
+        # Should NOT attempt to delete m2 since update failed
+        assert client.captured_delete == []
+
+    # -- Threshold sanity -------------------------------------------------
+
+    def test_threshold_constants_are_reasonable(self):
+        """Thresholds are in (0, 1] and UPDATE < DELETE."""
+        assert 0 < _CURATE_UPDATE_THRESHOLD < 1
+        assert 0 < _CURATE_DELETE_THRESHOLD <= 1
+        assert _CURATE_UPDATE_THRESHOLD < _CURATE_DELETE_THRESHOLD
