@@ -19,6 +19,23 @@ from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
 
+@pytest.fixture(autouse=True)
+def _isolate_auth_env(monkeypatch):
+    """Clear allow-all env vars that may leak in from ~/.hermes/.env at import time.
+
+    gateway.run loads the user's .env at module-import (before any test runs),
+    so a developer with GATEWAY_ALLOW_ALL_USERS=true in their .env would have
+    every test in this file silently authorize the unknown_user_999 fixture.
+    """
+    for var in (
+        "GATEWAY_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOWED_USERS",
+        "DISCORD_ALLOW_ALL_USERS",
+        "DISCORD_ALLOWED_USERS",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
