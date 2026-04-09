@@ -1,5 +1,6 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import json
 import time
 import pytest
 from pathlib import Path
@@ -37,6 +38,23 @@ class TestSessionLifecycle:
 
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
+
+    def test_create_session_persists_source_metadata(self, db):
+        db.create_session(
+            session_id="s1",
+            source="webhook",
+            source_metadata={
+                "session_family": "webhook",
+                "webhook_route": "github-pr",
+            },
+        )
+
+        session = db.get_session("s1")
+        assert session is not None
+        assert json.loads(session["source_metadata"]) == {
+            "session_family": "webhook",
+            "webhook_route": "github-pr",
+        }
 
     def test_end_session(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -935,7 +953,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 6
+        assert version == 7
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -943,8 +961,14 @@ class TestSchemaInit:
         columns = {row[1] for row in cursor.fetchall()}
         assert "title" in columns
 
+    def test_source_metadata_column_exists(self, db):
+        """Verify the source_metadata column was created in the sessions table."""
+        cursor = db._conn.execute("PRAGMA table_info(sessions)")
+        columns = {row[1] for row in cursor.fetchall()}
+        assert "source_metadata" in columns
+
     def test_migration_from_v2(self, tmp_path):
-        """Simulate a v2 database and verify migration adds title column."""
+        """Simulate a v2 database and verify migration reaches the latest schema."""
         import sqlite3
 
         db_path = tmp_path / "migrate_test.db"
@@ -991,22 +1015,111 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v6
+        # Open with SessionDB — should migrate to v7
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 6
+        assert cursor.fetchone()[0] == 7
 
-        # Verify title column exists and is NULL for existing sessions
+        # Verify new columns exist and are NULL for existing sessions
         session = migrated_db.get_session("existing")
         assert session is not None
         assert session["title"] is None
+        assert session["source_metadata"] is None
 
         # Verify we can set title on migrated session
         assert migrated_db.set_session_title("existing", "Migrated Title") is True
         session = migrated_db.get_session("existing")
         assert session["title"] == "Migrated Title"
+
+        migrated_db.close()
+
+    def test_migration_from_v6_adds_source_metadata(self, tmp_path):
+        """Simulate a v6 database and verify migration adds source_metadata."""
+        import sqlite3
+
+        db_path = tmp_path / "migrate_v6.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (6);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT
+            );
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT
+            );
+        """)
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("existing-v6", "cron", 1000.0),
+        )
+        conn.commit()
+        conn.close()
+
+        migrated_db = SessionDB(db_path=db_path)
+
+        cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
+        assert cursor.fetchone()[0] == 7
+
+        session = migrated_db.get_session("existing-v6")
+        assert session is not None
+        assert "source_metadata" in session
+        assert session["source_metadata"] is None
+
+        migrated_db.create_session(
+            session_id="new-v7",
+            source="cron",
+            source_metadata={
+                "session_family": "cron",
+                "cron_job_id": "job-123",
+            },
+        )
+        new_session = migrated_db.get_session("new-v7")
+        assert json.loads(new_session["source_metadata"]) == {
+            "session_family": "cron",
+            "cron_job_id": "job-123",
+        }
 
         migrated_db.close()
 
