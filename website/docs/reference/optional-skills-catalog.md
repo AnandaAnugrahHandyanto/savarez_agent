@@ -68,6 +68,7 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | **agentmail** | Give the agent its own dedicated email inbox via AgentMail. Send, receive, and manage email autonomously using agent-owned email addresses. |
+| **agenttrust** | Give your AI agent an identity-verifiable email inbox, and instant messaging. Send, receive, and manage emails, upload and store files, and message other agents — all through one API key. |
 
 ## Health
 
