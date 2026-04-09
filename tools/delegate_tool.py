@@ -20,6 +20,8 @@ import json
 import logging
 logger = logging.getLogger(__name__)
 import os
+import re
+import tempfile
 import time
 import uuid
 import threading
@@ -52,14 +54,29 @@ def _get_background_results_dir() -> str:
 
 def _save_background_result(session_id: str, data: dict) -> None:
     """Save delegation result to a file for later retrieval."""
+    # FIX 2: Validate session_id format to prevent path traversal
+    if not re.fullmatch(r'[a-f0-9]{8}', session_id):
+        raise ValueError(f"Invalid session_id format: {session_id!r}. Must be 8 hex characters.")
     results_dir = _get_background_results_dir()
     result_file = os.path.join(results_dir, f"{session_id}.json")
-    with open(result_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
+    # FIX 3: Atomic write via temp file + os.replace()
+    fd, tmp_path = tempfile.mkstemp(dir=results_dir, suffix='.json')
+    try:
+        with os.fdopen(fd, 'w') as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp_path, result_file)
+    except Exception:
+        # Clean up temp file on failure
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
 
 
 def _load_background_result(session_id: str) -> Optional[dict]:
     """Load a previously saved delegation result."""
+    # FIX 2: Validate session_id format to prevent path traversal
+    if not re.fullmatch(r'[a-f0-9]{8}', session_id):
+        raise ValueError(f"Invalid session_id format: {session_id!r}. Must be 8 hex characters.")
     results_dir = _get_background_results_dir()
     result_file = os.path.join(results_dir, f"{session_id}.json")
     if not os.path.exists(result_file):
@@ -538,6 +555,181 @@ def _run_single_child(
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 
+
+def _run_delegation_background(
+    session_id: str,
+    goal: Optional[str],
+    context: Optional[str],
+    toolsets: Optional[List[str]],
+    tasks: Optional[List[Dict[str, Any]]],
+    max_iterations: Optional[int],
+    acp_command: Optional[str],
+    acp_args: Optional[List[str]],
+    parent_agent,
+) -> None:
+    """Execute full delegation in a background thread and save result to file.
+
+    FIX 1: This function receives all raw input parameters and does ALL the
+    work (validation, credential resolution, child building, execution, result
+    saving) so the main thread can return immediately when background=True.
+
+    FIX 4: We save _parent_tool_names at thread start for use within this
+    thread's own child building, but we do NOT restore the global when done.
+    The main thread's _last_resolved_tool_names is separate — each thread
+    operates on its own view of the global at the time it was spawned.
+    """
+    import model_tools as _model_tools
+    _parent_tool_names = list(_model_tools._last_resolved_tool_names)
+
+    # FIX 1: Depth limit (checked in background thread since we branched early)
+    depth = getattr(parent_agent, '_delegate_depth', 0)
+    if depth >= MAX_DEPTH:
+        _save_background_result(session_id, {
+            "error": (
+                f"Delegation depth limit reached ({MAX_DEPTH}). "
+                "Subagents cannot spawn further subagents."
+            )
+        })
+        return
+
+    # Load config
+    cfg = _load_config()
+    default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+    effective_max_iter = max_iterations or default_max_iter
+
+    # Resolve delegation credentials
+    try:
+        creds = _resolve_delegation_credentials(cfg, parent_agent)
+    except ValueError as exc:
+        _save_background_result(session_id, {"error": str(exc)})
+        return
+
+    # Normalize to task list
+    if tasks and isinstance(tasks, list):
+        task_list = tasks[:MAX_CONCURRENT_CHILDREN]
+    elif goal and isinstance(goal, str) and goal.strip():
+        task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
+    else:
+        _save_background_result(session_id, {"error": "Provide either 'goal' (single task) or 'tasks' (batch)."})
+        return
+
+    if not task_list:
+        _save_background_result(session_id, {"error": "No tasks provided."})
+        return
+
+    # Validate each task has a goal
+    for i, task in enumerate(task_list):
+        if not task.get("goal", "").strip():
+            _save_background_result(session_id, {"error": f"Task {i} is missing a 'goal'."})
+            return
+
+    overall_start = time.monotonic()
+    results = []
+
+    n_tasks = len(task_list)
+    task_labels = [t["goal"][:40] for t in task_list]
+
+    # FIX 4: Save parent tool names BEFORE any child construction mutates the global
+    _parent_tool_names = list(_model_tools._last_resolved_tool_names)
+
+    children = []
+    try:
+        for i, t in enumerate(task_list):
+            child = _build_child_agent(
+                task_index=i, goal=t["goal"], context=t.get("context"),
+                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
+                max_iterations=effective_max_iter, parent_agent=parent_agent,
+                override_provider=creds["provider"], override_base_url=creds["base_url"],
+                override_api_key=creds["api_key"],
+                override_api_mode=creds["api_mode"],
+                override_acp_command=t.get("acp_command") or acp_command,
+                override_acp_args=t.get("acp_args") or acp_args,
+            )
+            child._delegate_saved_tool_names = _parent_tool_names
+            children.append((i, t, child))
+    finally:
+        # Authoritative restore: reset global to parent's tool names after all children built
+        _model_tools._last_resolved_tool_names = _parent_tool_names
+
+    if n_tasks == 1:
+        _i, _t, child = children[0]
+        result = _run_single_child(0, _t["goal"], child, parent_agent)
+        results.append(result)
+    else:
+        completed_count = 0
+        spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
+
+        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHILDREN) as executor:
+            futures = {}
+            for i, t, child in children:
+                future = executor.submit(
+                    _run_single_child,
+                    task_index=i,
+                    goal=t["goal"],
+                    child=child,
+                    parent_agent=parent_agent,
+                )
+                futures[future] = i
+
+            for future in as_completed(futures):
+                try:
+                    entry = future.result()
+                except Exception as exc:
+                    idx = futures[future]
+                    entry = {
+                        "task_index": idx,
+                        "status": "error",
+                        "summary": None,
+                        "error": str(exc),
+                        "api_calls": 0,
+                        "duration_seconds": 0,
+                    }
+                results.append(entry)
+                completed_count += 1
+
+                idx = entry["task_index"]
+                label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
+                dur = entry.get("duration_seconds", 0)
+                status = entry.get("status", "?")
+                icon = "✓" if status == "completed" else "✗"
+                remaining = n_tasks - completed_count
+                completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
+                if spinner_ref:
+                    try:
+                        spinner_ref.print_above(completion_line)
+                    except Exception:
+                        print(f"  {completion_line}")
+                else:
+                    print(f"  {completion_line}")
+
+                if spinner_ref and remaining > 0:
+                    try:
+                        spinner_ref.update_text(f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining")
+                    except Exception as e:
+                        logger.debug("Spinner update_text failed: %s", e)
+
+        results.sort(key=lambda r: r["task_index"])
+
+    if parent_agent and hasattr(parent_agent, '_memory_manager') and parent_agent._memory_manager:
+        for entry in results:
+            try:
+                _task_goal = task_list[entry["task_index"]]["goal"] if entry["task_index"] < len(task_list) else ""
+                parent_agent._memory_manager.on_delegation(
+                    task=_task_goal,
+                    result=entry.get("summary", "") or "",
+                    child_session_id=getattr(children[entry["task_index"]][2], "session_id", "") if entry["task_index"] < len(children) else "",
+                )
+            except Exception:
+                pass
+
+    total_duration = round(time.monotonic() - overall_start, 2)
+
+    _save_background_result(session_id, {
+        "results": results,
+        "total_duration_seconds": total_duration,
+    })
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -579,6 +771,28 @@ def delegate_task(
                          "The delegation may still be running or the result was discarded."
             })
         return json.dumps(result)
+
+    # FIX 1: Branch on background=True BEFORE any child construction or execution.
+    # If background, spawn a thread that does ALL the work and return immediately.
+    if background:
+        bg_session_id = str(uuid.uuid4())[:8]
+        thread = threading.Thread(
+            target=_run_delegation_background,
+            args=(
+                bg_session_id, goal, context, toolsets, tasks,
+                max_iterations, acp_command, acp_args, parent_agent,
+            ),
+            daemon=True,
+        )
+        thread.start()
+        return json.dumps({
+            "background": True,
+            "session_id": bg_session_id,
+            "message": "Delegation started in background. Use session_id to retrieve results.",
+        })
+
+    # Blocking path: do all validation and credential resolution on main thread
+    # before building any children.
 
     # Depth limit
     depth = getattr(parent_agent, '_delegate_depth', 0)
@@ -741,131 +955,7 @@ def delegate_task(
         "total_duration_seconds": total_duration,
     }
 
-    if background:
-        # Non-blocking: spawn background thread and return session_id immediately
-        bg_session_id = str(uuid.uuid4())[:8]
-        thread = threading.Thread(
-            target=_run_delegation_background,
-            args=(
-                bg_session_id, task_list, children, n_tasks,
-                task_labels, parent_agent, effective_max_iter,
-                creds, acp_command, acp_args, toolsets,
-            ),
-            daemon=True,
-        )
-        thread.start()
-        return json.dumps({
-            "background": True,
-            "session_id": bg_session_id,
-            "message": "Delegation started in background. Use session_id to retrieve results.",
-        })
-
     return json.dumps(result_data, ensure_ascii=False)
-
-
-def _run_delegation_background(
-    session_id: str,
-    task_list: list,
-    children: list,
-    n_tasks: int,
-    task_labels: list,
-    parent_agent,
-    effective_max_iter: int,
-    creds: dict,
-    acp_command: Optional[str],
-    acp_args: Optional[List[str]],
-    toolsets: Optional[List[str]],
-) -> None:
-    """Execute delegation in a background thread and save result to file."""
-    # Re-import for thread safety
-    import model_tools as _model_tools
-    _parent_tool_names = list(_model_tools._last_resolved_tool_names)
-
-    try:
-        results = []
-        overall_start = time.monotonic()
-
-        if n_tasks == 1:
-            _i, _t, child = children[0]
-            result = _run_single_child(0, _t["goal"], child, parent_agent)
-            results.append(result)
-        else:
-            completed_count = 0
-            spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
-
-            with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHILDREN) as executor:
-                futures = {}
-                for i, t, child in children:
-                    future = executor.submit(
-                        _run_single_child,
-                        task_index=i,
-                        goal=t["goal"],
-                        child=child,
-                        parent_agent=parent_agent,
-                    )
-                    futures[future] = i
-
-                for future in as_completed(futures):
-                    try:
-                        entry = future.result()
-                    except Exception as exc:
-                        idx = futures[future]
-                        entry = {
-                            "task_index": idx,
-                            "status": "error",
-                            "summary": None,
-                            "error": str(exc),
-                            "api_calls": 0,
-                            "duration_seconds": 0,
-                        }
-                    results.append(entry)
-                    completed_count += 1
-
-                    idx = entry["task_index"]
-                    label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
-                    dur = entry.get("duration_seconds", 0)
-                    status = entry.get("status", "?")
-                    icon = "✓" if status == "completed" else "✗"
-                    remaining = n_tasks - completed_count
-                    completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
-                    if spinner_ref:
-                        try:
-                            spinner_ref.print_above(completion_line)
-                        except Exception:
-                            print(f"  {completion_line}")
-                    else:
-                        print(f"  {completion_line}")
-
-                    if spinner_ref and remaining > 0:
-                        try:
-                            spinner_ref.update_text(f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining")
-                        except Exception as e:
-                            logger.debug("Spinner update_text failed: %s", e)
-
-            results.sort(key=lambda r: r["task_index"])
-
-        if parent_agent and hasattr(parent_agent, '_memory_manager') and parent_agent._memory_manager:
-            for entry in results:
-                try:
-                    _task_goal = task_list[entry["task_index"]]["goal"] if entry["task_index"] < len(task_list) else ""
-                    parent_agent._memory_manager.on_delegation(
-                        task=_task_goal,
-                        result=entry.get("summary", "") or "",
-                        child_session_id=getattr(children[entry["task_index"]][2], "session_id", "") if entry["task_index"] < len(children) else "",
-                    )
-                except Exception:
-                    pass
-
-        total_duration = round(time.monotonic() - overall_start, 2)
-
-        _save_background_result(session_id, {
-            "results": results,
-            "total_duration_seconds": total_duration,
-        })
-
-    finally:
-        import model_tools as _model_tools_2
-        _model_tools_2._last_resolved_tool_names = _parent_tool_names
 
 
 def _resolve_child_credential_pool(effective_provider: Optional[str], parent_agent):

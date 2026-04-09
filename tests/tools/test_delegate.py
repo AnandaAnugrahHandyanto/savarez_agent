@@ -11,8 +11,10 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import re
 import sys
 import threading
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -1050,6 +1052,93 @@ class TestChildCredentialLeasing(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         child._credential_pool.release_lease.assert_called_once_with("cred-a")
+
+
+class TestBackgroundDelegation(unittest.TestCase):
+    """Tests for non-blocking background delegation (background=True)."""
+
+    def test_background_returns_immediately(self):
+        """background=True must return within ~1 second even if child takes longer."""
+        parent = _make_mock_parent(depth=0)
+
+        # Patch _run_delegation_background to simulate slow child
+        import tools.delegate_tool as dt
+
+        original_bg = dt._run_delegation_background
+
+        def slow_bg(*args, **kwargs):
+            # Simulate a 5-second task but this should NOT block the caller
+            time.sleep(5)
+            original_bg(*args, **kwargs)
+
+        with patch.object(dt, '_run_delegation_background', slow_bg):
+            start = time.monotonic()
+            result = json.loads(delegate_task(goal="Long task", background=True, parent_agent=parent))
+            elapsed = time.monotonic() - start
+
+        # Must return immediately (within 2 seconds)
+        self.assertLess(elapsed, 2.0, "background=True took too long to return")
+        self.assertTrue(result.get("background"))
+        self.assertIn("session_id", result)
+        self.assertEqual(len(result["session_id"]), 8)
+        # Must be valid hex
+        self.assertTrue(re.fullmatch(r'[a-f0-9]{8}', result["session_id"]))
+
+    def test_session_id_retrieval(self):
+        """Providing session_id alone retrieves previously saved results."""
+        import tools.delegate_tool as dt
+
+        parent = _make_mock_parent(depth=0)
+
+        # Manually save a result file
+        test_session_id = "deadbeef"
+        saved_data = {
+            "results": [{"task_index": 0, "status": "completed", "summary": "Done!"}],
+            "total_duration_seconds": 1.5,
+        }
+        dt._save_background_result(test_session_id, saved_data)
+
+        try:
+            result = json.loads(delegate_task(session_id=test_session_id, parent_agent=parent))
+            self.assertEqual(result["results"][0]["summary"], "Done!")
+            self.assertEqual(result["total_duration_seconds"], 1.5)
+        finally:
+            # Clean up
+            results_dir = dt._get_background_results_dir()
+            result_file = os.path.join(results_dir, f"{test_session_id}.json")
+            if os.path.exists(result_file):
+                os.unlink(result_file)
+
+    def test_invalid_session_id_raises(self):
+        """Invalid session_id format must raise ValueError."""
+        import tools.delegate_tool as dt
+
+        parent = _make_mock_parent(depth=0)
+
+        # Test various malicious formats
+        malicious_ids = [
+            "../../../etc/passwd",
+            "..",
+            "invalid!chars",
+            "TOOLONGSESSIONID",
+            "",
+            "g" * 8,  # non-hex chars
+        ]
+        for bad_id in malicious_ids:
+            with self.assertRaises(ValueError, msg=f"Should reject: {bad_id!r}"):
+                dt._load_background_result(bad_id)
+
+    def test_background_branch_prevents_child_construction_in_main_thread(self):
+        """When background=True, no AIAgent construction happens in the main thread."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            result = json.loads(delegate_task(goal="Test", background=True, parent_agent=parent))
+
+        # AIAgent should NOT have been called (no blocking child construction)
+        MockAgent.assert_not_called()
+        self.assertTrue(result.get("background"))
+        self.assertIn("session_id", result)
 
 
 if __name__ == "__main__":
