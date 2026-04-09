@@ -290,6 +290,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 ),
             })
 
+        # ── Read safe-root guard (opt-in via HERMES_READ_SAFE_ROOT) ──
+        # When set, confines reads to a specific subtree. Used by the
+        # meta-harness diagnosis agent to sandbox itself to an
+        # optimization archive. No-op when the env var is unset.
+        from tools.file_operations import _is_read_denied
+        _denied, _reason = _is_read_denied(path)
+        if _denied:
+            return json.dumps({"error": _reason})
+
         # ── Hermes internal path guard ────────────────────────────────
         # Prevent prompt injection via catalog or hub metadata files.
         import pathlib as _pathlib
@@ -643,6 +652,14 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 task_id: str = "default") -> str:
     """Search for content or files."""
     try:
+        # ── Read safe-root guard (opt-in via HERMES_READ_SAFE_ROOT) ──
+        # Reject the starting path if it's outside the sandbox. ripgrep
+        # will not escape upward from a given root, so this is sufficient.
+        from tools.file_operations import _is_read_denied
+        _denied, _reason = _is_read_denied(path)
+        if _denied:
+            return json.dumps({"error": _reason})
+
         # Track searches to detect *consecutive* repeated search loops.
         # Include pagination args so users can page through truncated
         # results without tripping the repeated-search guard.

@@ -115,6 +115,63 @@ def _is_write_denied(path: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Read-path safe root — mirror of the write pattern above.
+# Used by the meta-harness diagnosis agent (Phase B) to sandbox a proposer
+# agent to an optimization archive directory. Without this, a proposer with
+# read_file + search_files tools could read SOUL.md, ~/.hermes/.env, the
+# session database, user memories, etc. — a clear injection/exfil risk.
+# ---------------------------------------------------------------------------
+
+
+def _get_safe_read_root() -> Optional[str]:
+    """Return the resolved HERMES_READ_SAFE_ROOT path, or None if unset.
+
+    When set, read_file / search_files operations are constrained to this
+    directory tree.  Reads outside it are rejected even if the target is
+    a user-owned file.  Opt-in hardening for scoped sub-agents that should
+    only see a specific archive or workspace.
+
+    Symlink escapes are prevented because we compare the *realpath* of the
+    requested file against the *realpath* of the root.
+    """
+    root = os.getenv("HERMES_READ_SAFE_ROOT", "")
+    if not root:
+        return None
+    try:
+        return os.path.realpath(os.path.expanduser(root))
+    except Exception:
+        return None
+
+
+def _is_read_denied(path: str) -> tuple[bool, Optional[str]]:
+    """Return (denied, reason_or_None) for a read operation.
+
+    Returns (False, None) if HERMES_READ_SAFE_ROOT is unset — i.e. this
+    check is purely opt-in and existing behavior is unchanged by default.
+    When the env var IS set, returns (True, reason) for any path whose
+    resolved realpath is not under the root.
+    """
+    safe_root = _get_safe_read_root()
+    if safe_root is None:
+        return (False, None)
+
+    try:
+        resolved = os.path.realpath(os.path.expanduser(str(path)))
+    except (OSError, ValueError) as exc:
+        return (True, f"Cannot resolve path: {exc}")
+
+    if resolved == safe_root:
+        return (False, None)
+    if resolved.startswith(safe_root + os.sep):
+        return (False, None)
+    return (
+        True,
+        f"Read denied: '{path}' resolves to '{resolved}' which is outside "
+        f"the sandbox root '{safe_root}'. HERMES_READ_SAFE_ROOT is active.",
+    )
+
+
 # =============================================================================
 # Result Data Classes
 # =============================================================================
