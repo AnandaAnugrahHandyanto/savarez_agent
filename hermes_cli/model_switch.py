@@ -792,12 +792,17 @@ def list_authenticated_providers(
         if overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         if overlay.auth_type in ("oauth_device_code", "oauth_external", "external_process"):
-            # These use auth stores, not env vars — check for auth.json entries
+            # These use auth stores, not env vars — check for auth.json entries.
+            # external_process providers may also be available purely from a local
+            # CLI binary (for example gemini-cli) with no auth-store entry.
             try:
-                from hermes_cli.auth import _load_auth_store
+                from hermes_cli.auth import _load_auth_store, get_external_process_provider_status
                 store = _load_auth_store()
                 if store and (pid in store.get("providers", {}) or pid in store.get("credential_pool", {})):
                     has_creds = True
+                elif overlay.auth_type == "external_process":
+                    status = get_external_process_provider_status(pid)
+                    has_creds = bool(status.get("configured") or status.get("logged_in"))
             except Exception as exc:
                 logger.debug("Auth store check failed for %s: %s", pid, exc)
         if not has_creds:
