@@ -1,8 +1,15 @@
 """
-ARGUS directive loading and execution.
+Agathos directive loading and execution.
 
 Loads directive definitions from directives.yaml and executes them
 against session data. Supports built-in check types and custom Python plugins.
+
+Built-in check types:
+- quality_threshold: AVG(quality_score) from holographic_memory.db
+- count_threshold: COUNT(*) from specified table
+- entropy_threshold: COUNT(*) from entropy_detections table
+
+Custom checks can be loaded from Python files in the checks/ directory.
 """
 
 import glob
@@ -23,7 +30,26 @@ _DEFAULT_CUSTOM_CHECKS_DIR = os.path.expanduser("~/.hermes/agathos/checks/")
 
 
 def load_directives(path: Optional[str] = None) -> Dict:
-    """Load directives.yaml. Returns parsed dict or empty defaults."""
+    """Load and parse directives.yaml configuration file.
+
+    Loads the Prime Directives configuration that defines quality thresholds,
+    count checks, and entropy monitoring rules. Returns safe defaults if
+    file missing or malformed.
+
+    Args:
+        path: Path to directives.yaml. Defaults to ~/.hermes/agathos/directives.yaml
+
+    Returns:
+        Dict with keys:
+        - prime_directive: Natural language guidance string
+        - checks: List of check configuration dicts
+        - custom_checks_dir: Optional path to custom Python checks
+        - ignore: Optional list of check names to skip
+
+    Returns empty defaults {"prime_directive": "", "checks": []} on any error.
+
+    Side effects: Logs info/warning/error via agathos.directives logger.
+    """
     path = path or _DEFAULT_DIRECTIVES_PATH
     if not os.path.exists(path):
         logger.info("No directives.yaml at %s — using empty defaults", path)
@@ -259,7 +285,38 @@ def execute_checks(
     holo_conn: Optional[sqlite3.Connection],
     directives: Dict,
 ) -> List[Dict]:
-    """Execute all enabled directive checks for a session."""
+    """Execute all enabled directive checks for a session.
+
+    Runs the Prime Directives check suite against a session. Each check
+    queries either agathos.db (for entropy) or holographic_memory.db
+    (for quality/count metrics) and returns pass/fail results.
+
+    Supported check types:
+    - quality_threshold: AVG(quality_score) >= threshold (holographic_memory.db)
+    - count_threshold: COUNT(*) >= min_count (holographic_memory.db table)
+    - entropy_threshold: COUNT(*) >= min_count (agathos.db entropy_detections)
+    - budget_threshold: Handled separately in agathos.py (skipped here)
+
+    Args:
+        session_id: Session to check
+        cursor: Database cursor for agathos.db
+        holo_conn: Optional connection to holographic_memory.db
+        directives: Dict from load_directives with 'checks' list
+
+    Returns:
+        List of result dicts, each with:
+        - check_type: Name of the check
+        - passed: Boolean (True = quality met, False = violation)
+        - details: JSON string with metrics and context
+
+    Side effects:
+        - Executes SQL queries against both databases
+        - Logs info/warning/error via agathos.directives logger
+        - Loads and executes custom Python checks if configured
+
+    Error handling: Individual check failures are caught, logged, and
+    return "passed": True (fail-safe) to prevent blocking sessions.
+    """
     results = []
     checks = directives.get("checks", [])
     custom_checks_dir = directives.get("custom_checks_dir")
