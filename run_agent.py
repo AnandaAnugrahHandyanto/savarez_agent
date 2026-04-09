@@ -73,19 +73,6 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from hermes_cli import chatgpt_web as _chatgpt_web
 
-# OpenAI lazy proxy + safe stdio + proxy URL helpers — see agent/process_bootstrap.py.
-# `OpenAI` is re-exported here so `patch("run_agent.OpenAI", ...)` in tests works.
-from agent.process_bootstrap import (
-    OpenAI,
-    _OpenAIProxy,
-    _load_openai_cls,
-    _SafeWriter,
-    _install_safe_stdio,
-    _get_proxy_from_env,
-    _get_proxy_for_base_url,
-)
-from agent.iteration_budget import IterationBudget
-
 
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_cli.timeouts import (
@@ -1495,65 +1482,6 @@ class AIAgent:
         self.suppress_status_output = False
         self._chatgpt_web_conversation_id = None
         self._chatgpt_web_parent_message_id = None
-        self._chatgpt_web_forced_tool_call = None
-        self._chatgpt_web_forced_tool_call_mode = "always"
-        self._chatgpt_web_selected_tool_names: list[str] = []
-        self._chatgpt_web_selected_tool_payload_messages: list[dict[str, Any]] = []
-        self._chatgpt_web_session_token = str(
-            chatgpt_web_session_token or os.getenv("CHATGPT_WEB_SESSION_TOKEN", "") or ""
-        ).strip()
-        self._chatgpt_web_cookie_header = str(
-            chatgpt_web_cookie_header or os.getenv("CHATGPT_WEB_COOKIE_HEADER", "") or ""
-        ).strip()
-        self._chatgpt_web_browser_cookies = chatgpt_web_browser_cookies
-        self._chatgpt_web_user_agent = str(
-            chatgpt_web_user_agent or os.getenv("CHATGPT_WEB_USER_AGENT", "") or ""
-        ).strip()
-        self._chatgpt_web_device_id = str(
-            chatgpt_web_device_id or os.getenv("CHATGPT_WEB_DEVICE_ID", "") or ""
-        ).strip()
-        if self.provider == "chatgpt-web":
-            try:
-                from agent.credential_pool import load_pool as _load_chatgpt_web_pool
-
-                _chatgpt_web_pool = _load_chatgpt_web_pool("chatgpt-web")
-                if _chatgpt_web_pool and _chatgpt_web_pool.has_credentials():
-                    _chatgpt_web_entry = _chatgpt_web_pool.select() or _chatgpt_web_pool.peek()
-                    if _chatgpt_web_entry is None:
-                        _chatgpt_web_entries = _chatgpt_web_pool.entries()
-                        _chatgpt_web_entry = _chatgpt_web_entries[0] if _chatgpt_web_entries else None
-                else:
-                    _chatgpt_web_entry = None
-            except Exception:
-                _chatgpt_web_entry = None
-            if _chatgpt_web_entry is not None and not (
-                self._chatgpt_web_session_token
-                or self._chatgpt_web_cookie_header
-                or self._chatgpt_web_browser_cookies is not None
-                or self._chatgpt_web_user_agent
-                or self._chatgpt_web_device_id
-            ):
-                self._chatgpt_web_session_token = str(
-                    getattr(_chatgpt_web_entry, "session_token", "")
-                    or self._chatgpt_web_session_token
-                    or ""
-                ).strip()
-                self._chatgpt_web_cookie_header = str(
-                    getattr(_chatgpt_web_entry, "cookie_header", "")
-                    or self._chatgpt_web_cookie_header
-                    or ""
-                ).strip()
-                self._chatgpt_web_browser_cookies = getattr(_chatgpt_web_entry, "browser_cookies", None)
-                self._chatgpt_web_user_agent = str(
-                    getattr(_chatgpt_web_entry, "user_agent", "")
-                    or self._chatgpt_web_user_agent
-                    or ""
-                ).strip()
-                self._chatgpt_web_device_id = str(
-                    getattr(_chatgpt_web_entry, "device_id", "")
-                    or self._chatgpt_web_device_id
-                    or ""
-                ).strip()
         self.thinking_callback = thinking_callback
         self.reasoning_callback = reasoning_callback
         self.clarify_callback = clarify_callback
@@ -11323,7 +11251,7 @@ class AIAgent:
                 timeout=get_provider_request_timeout(self.provider, self.model),
                 drop_context_1m_beta=_drop_1m,
             )
-    def _chatgpt_web_messages(self, api_messages: list) -> tuple[str, list[dict[str, Any]], bool]:
+    def _chatgpt_web_messages(self, api_messages: list) -> tuple[str, list[dict[str, Any]]]:
         instructions = ""
         payload_messages = api_messages
         if api_messages and api_messages[0].get("role") == "system":
@@ -11331,236 +11259,25 @@ class AIAgent:
             payload_messages = api_messages[1:]
         if not instructions:
             instructions = DEFAULT_AGENT_IDENTITY
-        instructions = self._chatgpt_web_enrich_instructions(instructions)
-
-        self._chatgpt_web_forced_tool_call = None
-        self._chatgpt_web_forced_tool_call_mode = "always"
-        self._chatgpt_web_selected_tool_names = []
-        self._chatgpt_web_selected_tool_payload_messages = []
-        selected_tools: list[dict[str, Any]] = []
-        uses_local_tool_loop = False
-        current_turn_messages = payload_messages
         if self.tools:
-            payload_messages = copy.deepcopy(payload_messages)
-            current_turn_messages = self._chatgpt_web_current_turn_messages(payload_messages)
-            attached_images_present = _chatgpt_web._messages_include_chatgpt_web_images(current_turn_messages)
-            if attached_images_present and _chatgpt_web._chatgpt_web_debug_base():
-                selected_tools = []
-            else:
-                selected_tools = self._select_chatgpt_web_tools(current_turn_messages)
-            uses_local_tool_loop = bool(selected_tools)
-        if uses_local_tool_loop:
-            used_tool_count = sum(
-                1 for item in current_turn_messages
-                if isinstance(item, dict) and item.get("role") == "tool"
+            instructions = (
+                instructions.rstrip()
+                + "\n\nImportant runtime limitation: this ChatGPT Web transport currently does not support Hermes tool calls. "
+                  "Never claim to have run a tool or accessed live system state through a tool."
             )
-            tool_protocol = self._chatgpt_web_tool_protocol(selected_tools).strip()
-            base_instructions = instructions.strip() or DEFAULT_AGENT_IDENTITY
-            instructions = f"{base_instructions}\n\n{tool_protocol}" if tool_protocol else base_instructions
-            selected_tool_names = [
-                str(tool.get("function", {}).get("name") or "").strip()
-                for tool in selected_tools
-                if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
-            ]
-            selected_tool_names = [name for name in selected_tool_names if name]
-            self._chatgpt_web_selected_tool_names = list(selected_tool_names)
-            self._chatgpt_web_selected_tool_payload_messages = copy.deepcopy(current_turn_messages)
-            selected_tool_text = ", ".join(selected_tool_names)
-            selected_tool_args = self._chatgpt_web_tool_args(selected_tool_names[0], current_turn_messages) if selected_tool_names else None
-            selected_tool_hint = (
-                "Use these exact arguments for this turn: " + json.dumps(selected_tool_args, ensure_ascii=False)
-                if selected_tool_args is not None
-                else (self._chatgpt_web_missing_args_hint(selected_tool_names[0]) if selected_tool_names else "")
-            )
-            selected_tool_argument_mirror = self._chatgpt_web_prompt_argument_mirror(selected_tool_args)
-            selected_tool_example = (
-                "<tool_call>\n"
-                + json.dumps({"name": selected_tool_names[0], "arguments": selected_tool_args}, ensure_ascii=False)
-                + "\n</tool_call>"
-                if selected_tool_names and selected_tool_args is not None
-                else (self._chatgpt_web_tool_guess_example(selected_tool_names[0]) if selected_tool_names else "")
-            )
-            original = self._chatgpt_web_original_user_request(payload_messages)
-            answer_only_mode = self._chatgpt_web_answer_only_mode(original)
-            prefer_consecutive_tool_flow = self._chatgpt_web_requests_consecutive_tool_flow(original)
-            force_followup_tool_call = bool(
-                selected_tool_names
-                and selected_tool_args is not None
-                and self._chatgpt_web_should_force_followup_tool_call(
-                    current_turn_messages,
-                    selected_tool_names[0],
-                    selected_tool_args,
-                )
-            )
-            if selected_tool_names and selected_tool_args is not None and (
-                used_tool_count == 0
-                or force_followup_tool_call
-                or prefer_consecutive_tool_flow
-            ):
-                self._chatgpt_web_forced_tool_call = {
-                    "name": selected_tool_names[0],
-                    "arguments": selected_tool_args,
-                }
-                self._chatgpt_web_forced_tool_call_mode = (
-                    "always"
-                    if (used_tool_count == 0 or force_followup_tool_call)
-                    else "if_pending_work"
-                )
-            final_answer_example = self._chatgpt_web_final_answer_example(original)
-            for item in reversed(current_turn_messages):
-                if isinstance(item, dict) and item.get("role") == "user":
-                    if original:
-                        reminder_lines = [f"The tool available for this turn is: {selected_tool_text}."] if selected_tool_text else []
-                        if used_tool_count == 0 or self._chatgpt_web_forced_tool_call is not None:
-                            reminder_lines.extend([
-                                "Hermes has already determined that another tool call is required before the final answer."
-                                if used_tool_count
-                                else "Hermes has already determined that this turn requires a tool call.",
-                                "Do not answer the user yet.",
-                                "Your next reply must be EXACTLY ONE <tool_call>...</tool_call> block with no explanatory prose before or after it.",
-                            ])
-                            if selected_tool_hint:
-                                reminder_lines.append(selected_tool_hint)
-                            if selected_tool_argument_mirror:
-                                reminder_lines.append(selected_tool_argument_mirror)
-                            if selected_tool_example:
-                                reminder_lines.append("Reply now with this exact structure:")
-                                reminder_lines.append(selected_tool_example)
-                        else:
-                            reminder_lines.append("You have already received at least one <tool_response>.")
-                            if force_followup_tool_call or prefer_consecutive_tool_flow:
-                                reminder_lines.extend([
-                                    "Hermes has already determined that another tool call is required before the final answer.",
-                                    "Hermes expects you to keep advancing the task through tool use until the original request is actually complete.",
-                                    "The user already approved the original task, so do not ask for permission to continue with the next obvious step.",
-                                    "Do not answer the user yet and do not narrate that you will continue later.",
-                                    "Use the available tool schema plus the latest <tool_response> to guess the single best next tool call needed for the main task.",
-                                    "Your next reply should be EXACTLY ONE <tool_call>...</tool_call> block with no explanatory prose before or after it.",
-                                ])
-                                if selected_tool_hint:
-                                    reminder_lines.append(selected_tool_hint)
-                                if selected_tool_argument_mirror:
-                                    reminder_lines.append(selected_tool_argument_mirror)
-                                if selected_tool_example:
-                                    reminder_lines.append("Reply now with this exact structure:")
-                                    reminder_lines.append(selected_tool_example)
-                            else:
-                                reminder_lines.extend([
-                                    "Do not make unsupported claims about created files, saved skills, packaged artifacts, or completed debugging unless a tool result already proved them.",
-                                    "If the main task is still in progress, your next reply should usually be EXACTLY ONE <tool_call>...</tool_call> block for the best next tool call.",
-                                    "The user already approved the original task, so do not ask whether to continue with the next obvious step.",
-                                    "Use the available tool schema plus the latest <tool_response> to guess the next tool call whenever another step is still needed.",
-                                    "If another tool is still required, emit EXACTLY ONE <tool_call>...</tool_call> block.",
-                                    "Otherwise, give the final answer directly with no extra tool-call markup.",
-                                    "When you give the final answer, follow the original user's requested output format exactly, including any 'answer only' constraint.",
-                                    "Do not add preambles, extra prose, commas, or quotes unless the user explicitly requested them.",
-                                ])
-                                if answer_only_mode == "line":
-                                    reminder_lines.append(
-                                        "For this request, the final answer must be ONLY the exact source line itself with no explanation, no line number, and no words like 'defined at line'."
-                                    )
-                                elif answer_only_mode == "path":
-                                    reminder_lines.append(
-                                        "For this request, the final answer must be ONLY the path string itself with no explanation."
-                                    )
-                                elif answer_only_mode in {"result", "value"}:
-                                    reminder_lines.append(
-                                        "For this request, the final answer must be ONLY the raw result value with no explanation."
-                                    )
-                                if final_answer_example:
-                                    reminder_lines.append(final_answer_example)
-                                if selected_tool_hint:
-                                    reminder_lines.append(selected_tool_hint)
-                                if selected_tool_argument_mirror:
-                                    reminder_lines.append(selected_tool_argument_mirror)
-                        item["content"] = (
-                            f"Original user request:\n{original}\n\nRuntime reminder:\n"
-                            + "\n".join(reminder_lines)
-                        )
-                    break
-
-        if not uses_local_tool_loop:
-            payload_messages = copy.deepcopy(payload_messages)
-            for item in reversed(payload_messages):
-                if not isinstance(item, dict) or item.get("role") != "user":
-                    continue
-                item["content"] = self._chatgpt_web_build_multimodal_user_content(item.get("content"))
-                break
-
-        if self._chatgpt_web_conversation_id and payload_messages and not uses_local_tool_loop:
+        if self._chatgpt_web_conversation_id and payload_messages:
             latest_user = None
             for item in reversed(payload_messages):
                 if isinstance(item, dict) and item.get("role") == "user":
                     latest_user = item
                     break
             payload_messages = [latest_user] if latest_user else payload_messages[-1:]
-        return instructions, payload_messages, uses_local_tool_loop
+        return instructions, payload_messages
 
     def _wrap_chatgpt_web_response(self, result: dict[str, Any]):
         message_text = str(result.get("content") or "")
         finish_reason = str(result.get("finish_reason") or "stop")
-        tool_calls = None
-        forced_tool_call = self._chatgpt_web_forced_tool_call
-        forced_tool_call_mode = self._chatgpt_web_forced_tool_call_mode
-        selected_tool_names = list(getattr(self, "_chatgpt_web_selected_tool_names", []) or [])
-        selected_tool_payload_messages = list(getattr(self, "_chatgpt_web_selected_tool_payload_messages", []) or [])
-        self._chatgpt_web_forced_tool_call = None
-        self._chatgpt_web_forced_tool_call_mode = "always"
-        self._chatgpt_web_selected_tool_names = []
-        self._chatgpt_web_selected_tool_payload_messages = []
-        if self.tools and message_text:
-            extracted_tool_calls, cleaned_text = _extract_xml_tool_calls_from_text(message_text)
-            if extracted_tool_calls:
-                tool_calls = self._chatgpt_web_normalize_extracted_tool_calls(
-                    extracted_tool_calls,
-                    selected_tool_payload_messages,
-                )
-                message_text = cleaned_text
-            else:
-                salvaged_tool_calls = self._chatgpt_web_salvage_malformed_tool_call(
-                    message_text,
-                    selected_tool_payload_messages,
-                )
-                if salvaged_tool_calls:
-                    tool_calls = salvaged_tool_calls
-                    message_text = ""
-            if tool_calls is None and isinstance(forced_tool_call, dict):
-                synth_mode = str(forced_tool_call_mode or "always").strip().lower()
-                should_synthesize = synth_mode == "always"
-                if synth_mode == "if_pending_work":
-                    should_synthesize = self._chatgpt_web_response_signals_pending_tool_work(message_text)
-                if should_synthesize:
-                    synthetic_block = (
-                        "<tool_call>\n"
-                        + json.dumps({
-                            "name": forced_tool_call.get("name"),
-                            "arguments": forced_tool_call.get("arguments", {}),
-                        }, ensure_ascii=False)
-                        + "\n</tool_call>"
-                    )
-                    extracted_tool_calls, _ = _extract_xml_tool_calls_from_text(synthetic_block)
-                    if extracted_tool_calls:
-                        tool_calls = extracted_tool_calls
-                        message_text = ""
-            elif tool_calls is None and len(selected_tool_names) == 1 and self._chatgpt_web_response_signals_pending_tool_work(message_text):
-                inferred_args = self._chatgpt_web_tool_args(
-                    selected_tool_names[0],
-                    selected_tool_payload_messages or [{"role": "user", "content": message_text}],
-                )
-                if inferred_args is not None:
-                    synthetic_block = (
-                        "<tool_call>\n"
-                        + json.dumps({
-                            "name": selected_tool_names[0],
-                            "arguments": inferred_args,
-                        }, ensure_ascii=False)
-                        + "\n</tool_call>"
-                    )
-                    extracted_tool_calls, _ = _extract_xml_tool_calls_from_text(synthetic_block)
-                    if extracted_tool_calls:
-                        tool_calls = extracted_tool_calls
-                        message_text = ""
-        assistant_message = SimpleNamespace(content=message_text, tool_calls=tool_calls, role="assistant")
+        assistant_message = SimpleNamespace(content=message_text, tool_calls=None, role="assistant")
         choice = SimpleNamespace(message=assistant_message, finish_reason=finish_reason)
         return SimpleNamespace(
             id=result.get("message_id") or result.get("parent_message_id") or str(uuid.uuid4()),
@@ -11577,60 +11294,18 @@ class AIAgent:
             if callback is not None:
                 callback(text)
 
-        import httpx as _httpx
-
-        call_kwargs = {
-            "access_token": self.api_key,
-            "model": api_kwargs.get("model") or self.model,
-            "messages": api_kwargs.get("messages") or [],
-            "instructions": api_kwargs.get("instructions") or DEFAULT_AGENT_IDENTITY,
-            "conversation_id": api_kwargs.get("conversation_id") or None,
-            "parent_message_id": api_kwargs.get("parent_message_id") or None,
-            "session_token": self._chatgpt_web_session_token,
-            "cookie_header": self._chatgpt_web_cookie_header,
-            "browser_cookies": self._chatgpt_web_browser_cookies,
-            "user_agent": self._chatgpt_web_user_agent,
-            "device_id": self._chatgpt_web_device_id,
-            "timeout": api_kwargs.get("timeout") or float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
-            "history_and_training_disabled": bool(api_kwargs.get("history_and_training_disabled", False)),
-            "on_delta": _on_delta,
-            "client": client,
-        }
-
-        retried_stale_thread = False
-        while True:
-            try:
-                result = _chatgpt_web.stream_chatgpt_web_completion(**call_kwargs)
-                break
-            except _httpx.HTTPStatusError as exc:
-                status = getattr(getattr(exc, "response", None), "status_code", None)
-                request_url = str(getattr(getattr(exc, "request", None), "url", "") or "")
-                response_url = str(getattr(getattr(exc, "response", None), "url", "") or "")
-                failed_url = request_url or response_url
-                had_remote_thread = bool(
-                    call_kwargs.get("conversation_id")
-                    or call_kwargs.get("parent_message_id")
-                    or self._chatgpt_web_conversation_id
-                    or self._chatgpt_web_parent_message_id
-                )
-                should_reset_remote_thread = (
-                    not retried_stale_thread
-                    and status in {404, 500}
-                    and "backend-api/f/conversation" in failed_url
-                    and had_remote_thread
-                )
-                if should_reset_remote_thread:
-                    logger.warning(
-                        "ChatGPT Web conversation thread returned %s; resetting remote thread and retrying once.",
-                        status,
-                    )
-                    retried_stale_thread = True
-                    self._chatgpt_web_conversation_id = None
-                    self._chatgpt_web_parent_message_id = None
-                    call_kwargs["conversation_id"] = None
-                    call_kwargs["parent_message_id"] = None
-                    continue
-                raise
+        result = _chatgpt_web.stream_chatgpt_web_completion(
+            access_token=self.api_key,
+            model=api_kwargs.get("model") or self.model,
+            messages=api_kwargs.get("messages") or [],
+            instructions=api_kwargs.get("instructions") or DEFAULT_AGENT_IDENTITY,
+            conversation_id=api_kwargs.get("conversation_id") or None,
+            parent_message_id=api_kwargs.get("parent_message_id") or None,
+            timeout=api_kwargs.get("timeout") or float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
+            history_and_training_disabled=bool(api_kwargs.get("history_and_training_disabled", False)),
+            on_delta=_on_delta,
+            client=client,
+        )
         self._chatgpt_web_conversation_id = result.get("conversation_id") or self._chatgpt_web_conversation_id
         self._chatgpt_web_parent_message_id = result.get("parent_message_id") or self._chatgpt_web_parent_message_id
         return self._wrap_chatgpt_web_response(result)
@@ -11996,20 +11671,7 @@ class AIAgent:
             finally:
                 self._codex_on_first_delta = None
         if self.api_mode == "chatgpt_web":
-            first_delta_fired = {"done": False}
-
-            def _chatgpt_web_stream_callback(text: str):
-                if not text:
-                    return
-                if not first_delta_fired["done"] and on_first_delta:
-                    first_delta_fired["done"] = True
-                    try:
-                        on_first_delta()
-                    except Exception:
-                        pass
-                self._fire_stream_delta(text)
-
-            self._chatgpt_web_on_delta = _chatgpt_web_stream_callback
+            self._chatgpt_web_on_delta = on_first_delta or self._fire_stream_delta
             try:
                 return self._interruptible_api_call(api_kwargs)
             finally:
@@ -13375,6 +13037,140 @@ class AIAgent:
 
         # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
         # sentinel (temperature omitted entirely), a numeric override, or None.
+            kwargs = {
+                "model": self.model,
+                "instructions": instructions,
+                "input": self._chat_messages_to_responses_input(payload_messages),
+                "tools": self._responses_tools(),
+                "tool_choice": "auto",
+                "parallel_tool_calls": True,
+                "store": False,
+            }
+
+            if not is_github_responses:
+                kwargs["prompt_cache_key"] = self.session_id
+
+            is_xai_responses = self.provider == "xai" or "api.x.ai" in (self.base_url or "").lower()
+
+            if reasoning_enabled and is_xai_responses:
+                # xAI reasons automatically — no effort param, just include encrypted content
+                kwargs["include"] = ["reasoning.encrypted_content"]
+            elif reasoning_enabled:
+                if is_github_responses:
+                    # Copilot's Responses route advertises reasoning-effort support,
+                    # but not OpenAI-specific prompt cache or encrypted reasoning
+                    # fields. Keep the payload to the documented subset.
+                    github_reasoning = self._github_models_reasoning_extra_body()
+                    if github_reasoning is not None:
+                        kwargs["reasoning"] = github_reasoning
+                else:
+                    kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+                    kwargs["include"] = ["reasoning.encrypted_content"]
+            elif not is_github_responses and not is_xai_responses:
+                kwargs["include"] = []
+
+            if self.request_overrides:
+                kwargs.update(self.request_overrides)
+
+            if self.max_tokens is not None and not is_codex_backend:
+                kwargs["max_output_tokens"] = self.max_tokens
+
+            if is_xai_responses and getattr(self, "session_id", None):
+                kwargs["extra_headers"] = {"x-grok-conv-id": self.session_id}
+
+            return kwargs
+
+        if self.api_mode == "chatgpt_web":
+            instructions, payload_messages = self._chatgpt_web_messages(api_messages)
+            return {
+                "model": self.model,
+                "instructions": instructions,
+                "messages": payload_messages,
+                "conversation_id": self._chatgpt_web_conversation_id,
+                "parent_message_id": self._chatgpt_web_parent_message_id,
+                "timeout": float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
+                "history_and_training_disabled": False,
+            }
+
+        sanitized_messages = api_messages
+        needs_sanitization = False
+        for msg in api_messages:
+            if not isinstance(msg, dict):
+                continue
+            if "codex_reasoning_items" in msg:
+                needs_sanitization = True
+                break
+
+            tool_calls = msg.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for tool_call in tool_calls:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    if "call_id" in tool_call or "response_item_id" in tool_call:
+                        needs_sanitization = True
+                        break
+                if needs_sanitization:
+                    break
+
+        if needs_sanitization:
+            sanitized_messages = copy.deepcopy(api_messages)
+            for msg in sanitized_messages:
+                if not isinstance(msg, dict):
+                    continue
+
+                # Codex-only replay state must not leak into strict chat-completions APIs.
+                msg.pop("codex_reasoning_items", None)
+
+                tool_calls = msg.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    for tool_call in tool_calls:
+                        if isinstance(tool_call, dict):
+                            tool_call.pop("call_id", None)
+                            tool_call.pop("response_item_id", None)
+
+        # Qwen portal: normalize content to list-of-dicts, inject cache_control.
+        # Must run AFTER codex sanitization so we transform the final messages.
+        # If sanitization already deepcopied, reuse that copy (in-place).
+        if self._is_qwen_portal():
+            if sanitized_messages is api_messages:
+                # No sanitization was done — we need our own copy.
+                sanitized_messages = self._qwen_prepare_chat_messages(sanitized_messages)
+            else:
+                # Already a deepcopy — transform in place to avoid a second deepcopy.
+                self._qwen_prepare_chat_messages_inplace(sanitized_messages)
+
+        # GPT-5 and Codex models respond better to 'developer' than 'system'
+        # for instruction-following.  Swap the role at the API boundary so
+        # internal message representation stays uniform ("system").
+        _model_lower = (self.model or "").lower()
+        if (
+            sanitized_messages
+            and sanitized_messages[0].get("role") == "system"
+            and any(p in _model_lower for p in DEVELOPER_ROLE_MODELS)
+        ):
+            # Shallow-copy the list + first message only — rest stays shared.
+            sanitized_messages = list(sanitized_messages)
+            sanitized_messages[0] = {**sanitized_messages[0], "role": "developer"}
+
+        provider_preferences = {}
+        if self.providers_allowed:
+            provider_preferences["only"] = self.providers_allowed
+        if self.providers_ignored:
+            provider_preferences["ignore"] = self.providers_ignored
+        if self.providers_order:
+            provider_preferences["order"] = self.providers_order
+        if self.provider_sort:
+            provider_preferences["sort"] = self.provider_sort
+        if self.provider_require_parameters:
+            provider_preferences["require_parameters"] = True
+        if self.provider_data_collection:
+            provider_preferences["data_collection"] = self.provider_data_collection
+
+        api_kwargs = {
+            "model": self.model,
+            "messages": sanitized_messages,
+            "timeout": float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
+        }
         try:
             from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
             _ft = _fixed_temperature_for_model(self.model, self.base_url)

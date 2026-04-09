@@ -942,7 +942,6 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (local desktop app with built-in model server)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),
-    ProviderEntry("alibaba",        "Qwen Cloud",               "Qwen Cloud / DashScope Coding (Qwen + multi-provider)"),
     ProviderEntry("chatgpt-web",    "ChatGPT Web",              "ChatGPT Web (ChatGPT.com web-app models)"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models — pro, omni, flash)"),
     ProviderEntry("tencent-tokenhub", "Tencent TokenHub",       "Tencent TokenHub (Hy3 Preview — direct API via tokenhub.tencentmaas.com)"),
@@ -1003,10 +1002,6 @@ _PROVIDER_ALIASES = {
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
-    "glm-coding-plan": "zai-coding-plan",
-    "zai-coding": "zai-coding-plan",
-    "zai_coding_plan": "zai-coding-plan",
-    "z-ai-coding-plan": "zai-coding-plan",
     "chatgpt": "chatgpt-web",
     "chatgpt.com": "chatgpt-web",
     "openai-chatgpt": "chatgpt-web",
@@ -2206,7 +2201,6 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if normalized == "chatgpt-web":
         try:
             from hermes_cli.chatgpt_web import (
-                DEFAULT_CHATGPT_WEB_MODELS,
                 fetch_chatgpt_web_model_ids,
                 resolve_chatgpt_web_runtime_credentials,
             )
@@ -2214,11 +2208,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             creds = resolve_chatgpt_web_runtime_credentials()
             live = fetch_chatgpt_web_model_ids(access_token=creds.get("api_key", ""))
             if live:
-                merged: list[str] = []
-                for mid in list(live) + list(DEFAULT_CHATGPT_WEB_MODELS):
-                    if mid and mid not in merged:
-                        merged.append(mid)
-                return merged
+                return live
         except Exception:
             pass
     if normalized in {"copilot", "copilot-acp"}:
