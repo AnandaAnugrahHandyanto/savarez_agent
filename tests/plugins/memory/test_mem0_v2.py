@@ -13,6 +13,7 @@ from plugins.memory.mem0 import (
     _CURATE_DELETE_THRESHOLD,
     _CURATE_UPDATE_THRESHOLD,
     _load_config,
+    _normalize_config_values,
 )
 
 
@@ -61,6 +62,7 @@ class TestMem0FiltersV2:
         provider.initialize("test-session")
         provider._user_id = "u123"
         provider._agent_id = "hermes"
+        provider._auto_capture = True
         monkeypatch.setattr(provider, "_get_client", lambda: client)
         return provider
 
@@ -328,6 +330,264 @@ class TestMem0ConfigNormalization:
 
 
 # ---------------------------------------------------------------------------
+# Hobby-plan tuning: configurable knobs for usage saving
+# ---------------------------------------------------------------------------
+
+
+class TestHobbyPlanConfigNormalization:
+    """_normalize_config_values handles the four new knobs correctly."""
+
+    def test_defaults_applied(self):
+        cfg = _normalize_config_values({})
+        assert cfg["top_k"] == 3
+        assert cfg["search_threshold"] == 0.5
+        assert cfg["auto_capture"] is False
+        assert cfg["auto_recall"] is True
+
+    def test_camel_case_aliases_mapped(self):
+        cfg = _normalize_config_values({
+            "topK": 5,
+            "searchThreshold": 0.7,
+            "autoCapture": "true",
+            "autoRecall": "false",
+        })
+        assert cfg["top_k"] == 5
+        assert cfg["search_threshold"] == 0.7
+        assert cfg["auto_capture"] is True
+        assert cfg["auto_recall"] is False
+        # camelCase keys removed
+        assert "topK" not in cfg
+        assert "searchThreshold" not in cfg
+        assert "autoCapture" not in cfg
+        assert "autoRecall" not in cfg
+
+    def test_snake_case_takes_precedence_over_camel(self):
+        cfg = _normalize_config_values({
+            "top_k": 10,
+            "topK": 20,
+            "auto_capture": True,
+            "autoCapture": False,
+        })
+        assert cfg["top_k"] == 10
+        assert cfg["auto_capture"] is True
+
+    def test_top_k_clamped(self):
+        assert _normalize_config_values({"top_k": 0})["top_k"] == 1
+        assert _normalize_config_values({"top_k": 100})["top_k"] == 50
+        assert _normalize_config_values({"top_k": "garbage"})["top_k"] == 3
+
+    def test_search_threshold_clamped(self):
+        assert _normalize_config_values({"search_threshold": -0.5})["search_threshold"] == 0.0
+        assert _normalize_config_values({"search_threshold": 1.5})["search_threshold"] == 1.0
+        assert _normalize_config_values({"search_threshold": "garbage"})["search_threshold"] == 0.5
+
+    def test_string_coercion_for_numeric_fields(self):
+        cfg = _normalize_config_values({"top_k": "7", "search_threshold": "0.8"})
+        assert cfg["top_k"] == 7
+        assert cfg["search_threshold"] == 0.8
+
+
+class TestHobbyPlanConfigLoading:
+    """New knobs load from mem0.json including camelCase aliases."""
+
+    def test_load_config_picks_up_new_knobs(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        (tmp_path / "mem0.json").write_text(json.dumps({
+            "top_k": 5,
+            "search_threshold": 0.8,
+            "auto_capture": True,
+            "auto_recall": False,
+        }), encoding="utf-8")
+
+        cfg = _load_config()
+        assert cfg["top_k"] == 5
+        assert cfg["search_threshold"] == 0.8
+        assert cfg["auto_capture"] is True
+        assert cfg["auto_recall"] is False
+
+    def test_load_config_camel_case_from_file(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        (tmp_path / "mem0.json").write_text(json.dumps({
+            "topK": 8,
+            "searchThreshold": 0.3,
+            "autoCapture": "true",
+            "autoRecall": "false",
+        }), encoding="utf-8")
+
+        cfg = _load_config()
+        assert cfg["top_k"] == 8
+        assert cfg["search_threshold"] == 0.3
+        assert cfg["auto_capture"] is True
+        assert cfg["auto_recall"] is False
+
+    def test_initialize_wires_knobs_to_provider(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        (tmp_path / "mem0.json").write_text(json.dumps({
+            "top_k": 7,
+            "search_threshold": 0.6,
+            "auto_capture": True,
+            "auto_recall": False,
+        }), encoding="utf-8")
+
+        provider = Mem0MemoryProvider()
+        provider.initialize("test")
+        assert provider._top_k == 7
+        assert provider._search_threshold == 0.6
+        assert provider._auto_capture is True
+        assert provider._auto_recall is False
+
+
+class TestAutoRecallGate:
+    """queue_prefetch is gated by auto_recall."""
+
+    def _make_provider(self, monkeypatch, client, *, auto_recall=True, top_k=3,
+                       search_threshold=0.5):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        provider._auto_recall = auto_recall
+        provider._top_k = top_k
+        provider._search_threshold = search_threshold
+        monkeypatch.setattr(provider, "_get_client", lambda: client)
+        return provider
+
+    def test_prefetch_skipped_when_auto_recall_false(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client, auto_recall=False)
+
+        provider.queue_prefetch("hello")
+
+        # Thread should not be started at all
+        assert provider._prefetch_thread is None
+        assert client.captured_search == {}
+
+    def test_prefetch_runs_when_auto_recall_true(self, monkeypatch):
+        client = FakeClientV2(search_results={
+            "results": [{"memory": "user likes tests"}]
+        })
+        provider = self._make_provider(monkeypatch, client, auto_recall=True)
+
+        provider.queue_prefetch("hello")
+        provider._prefetch_thread.join(timeout=2)
+
+        assert client.captured_search["query"] == "hello"
+
+    def test_prefetch_uses_configured_top_k(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client, top_k=7)
+
+        provider.queue_prefetch("hello")
+        provider._prefetch_thread.join(timeout=2)
+
+        assert client.captured_search["top_k"] == 7
+
+
+class TestSearchThresholdFiltering:
+    """Prefetch filters results by search_threshold when scores are present."""
+
+    def _make_provider(self, monkeypatch, client, *, search_threshold=0.5):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._auto_recall = True
+        provider._search_threshold = search_threshold
+        monkeypatch.setattr(provider, "_get_client", lambda: client)
+        return provider
+
+    def test_results_below_threshold_filtered(self, monkeypatch):
+        client = FakeClientV2(search_results={"results": [
+            {"memory": "high", "score": 0.9},
+            {"memory": "low", "score": 0.3},
+        ]})
+        provider = self._make_provider(monkeypatch, client, search_threshold=0.5)
+
+        provider.queue_prefetch("test")
+        provider._prefetch_thread.join(timeout=2)
+        result = provider.prefetch("test")
+
+        assert "high" in result
+        assert "low" not in result
+
+    def test_results_without_score_pass_through(self, monkeypatch):
+        client = FakeClientV2(search_results={"results": [
+            {"memory": "no score"},
+            {"memory": "has score", "score": 0.2},
+        ]})
+        provider = self._make_provider(monkeypatch, client, search_threshold=0.5)
+
+        provider.queue_prefetch("test")
+        provider._prefetch_thread.join(timeout=2)
+        result = provider.prefetch("test")
+
+        assert "no score" in result
+        assert "has score" not in result
+
+    def test_threshold_zero_passes_everything(self, monkeypatch):
+        client = FakeClientV2(search_results={"results": [
+            {"memory": "a", "score": 0.01},
+            {"memory": "b", "score": 0.0},
+        ]})
+        provider = self._make_provider(monkeypatch, client, search_threshold=0.0)
+
+        provider.queue_prefetch("test")
+        provider._prefetch_thread.join(timeout=2)
+        result = provider.prefetch("test")
+
+        assert "a" in result
+        assert "b" in result
+
+    def test_filter_by_threshold_unit(self):
+        provider = Mem0MemoryProvider()
+        provider._search_threshold = 0.5
+        results = [
+            {"memory": "a", "score": 0.9},
+            {"memory": "b", "score": 0.4},
+            {"memory": "c"},  # no score — passes through
+            {"memory": "d", "score": 0.5},  # exactly at threshold — passes
+        ]
+        filtered = provider._filter_by_threshold(results)
+        memories = [r["memory"] for r in filtered]
+        assert memories == ["a", "c", "d"]
+
+
+class TestAutoCaptureGate:
+    """sync_turn is gated by auto_capture."""
+
+    def _make_provider(self, monkeypatch, client, *, auto_capture=False):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        provider._auto_capture = auto_capture
+        monkeypatch.setattr(provider, "_get_client", lambda: client)
+        return provider
+
+    def test_sync_turn_skipped_when_auto_capture_false(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client, auto_capture=False)
+
+        provider.sync_turn("user said this", "assistant replied", session_id="s1")
+
+        # Thread should not be started at all
+        assert provider._sync_thread is None
+        assert len(client.captured_add) == 0
+
+    def test_sync_turn_runs_when_auto_capture_true(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client, auto_capture=True)
+
+        provider.sync_turn("user said this", "assistant replied", session_id="s1")
+        provider._sync_thread.join(timeout=2)
+
+        assert len(client.captured_add) == 1
+
+
+
+# ---------------------------------------------------------------------------
 # Mem0 curation: on_memory_write dedupe/update/delete/conclude
 # ---------------------------------------------------------------------------
 
@@ -549,3 +809,102 @@ class TestMem0Curation:
         assert 0 < _CURATE_UPDATE_THRESHOLD < 1
         assert 0 < _CURATE_DELETE_THRESHOLD <= 1
         assert _CURATE_UPDATE_THRESHOLD < _CURATE_DELETE_THRESHOLD
+
+class TestManualToolsUnaffected:
+    """Manual tools (mem0_search, mem0_conclude, etc.) work regardless of auto_* settings."""
+
+    def _make_provider(self, monkeypatch, client):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        provider._auto_capture = False
+        provider._auto_recall = False
+        monkeypatch.setattr(provider, "_get_client", lambda: client)
+        return provider
+
+    def test_mem0_search_works_when_auto_recall_off(self, monkeypatch):
+        client = FakeClientV2(search_results={
+            "results": [{"id": "m1", "memory": "test fact", "score": 0.9}]
+        })
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call(
+            "mem0_search", {"query": "test", "top_k": 5}
+        ))
+        assert result["count"] == 1
+        assert result["results"][0]["memory"] == "test fact"
+
+    def test_mem0_conclude_works_when_auto_capture_off(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call(
+            "mem0_conclude", {"conclusion": "user likes dark mode"}
+        ))
+        assert result["result"] == "Fact stored."
+        assert len(client.captured_add) == 1
+
+    def test_mem0_profile_works_when_auto_recall_off(self, monkeypatch):
+        client = FakeClientV2(all_results={"results": [
+            {"id": "m1", "memory": "a fact"}
+        ]})
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call("mem0_profile", {}))
+        assert result["count"] == 1
+
+    def test_mem0_update_works_when_auto_settings_off(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call(
+            "mem0_update", {"memory_id": "m1", "text": "corrected"}
+        ))
+        assert result["result"] == "Memory updated."
+
+    def test_mem0_delete_works_when_auto_settings_off(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call(
+            "mem0_delete", {"memory_id": "m1"}
+        ))
+        assert result["result"] == "Memory deleted."
+
+
+class TestConfigSchemaDocumentation:
+    """Config schema includes the new knobs with correct defaults."""
+
+    def test_schema_includes_all_new_keys(self):
+        provider = Mem0MemoryProvider()
+        schema = provider.get_config_schema()
+        keys = [s["key"] for s in schema]
+        assert "top_k" in keys
+        assert "search_threshold" in keys
+        assert "auto_capture" in keys
+        assert "auto_recall" in keys
+
+    def test_schema_defaults(self):
+        provider = Mem0MemoryProvider()
+        schema = {s["key"]: s for s in provider.get_config_schema()}
+        assert schema["top_k"]["default"] == "3"
+        assert schema["search_threshold"]["default"] == "0.5"
+        assert schema["auto_capture"]["default"] == "false"
+        assert schema["auto_recall"]["default"] == "true"
+
+    def test_save_config_normalizes_new_knobs(self, tmp_path):
+        provider = Mem0MemoryProvider()
+        provider.save_config({
+            "topK": 5,
+            "searchThreshold": 0.7,
+            "autoCapture": "true",
+            "autoRecall": "false",
+        }, tmp_path)
+
+        saved = json.loads((Path(tmp_path) / "mem0.json").read_text(encoding="utf-8"))
+        assert saved["top_k"] == 5
+        assert saved["search_threshold"] == 0.7
+        assert saved["auto_capture"] is True
+        assert saved["auto_recall"] is False
+        assert "topK" not in saved

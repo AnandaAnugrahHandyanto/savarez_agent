@@ -28,6 +28,15 @@ Config file: `$HERMES_HOME/mem0.json`
 | `user_id` | `hermes-user` | User identifier on Mem0 |
 | `agent_id` | `hermes` | Agent identifier |
 | `rerank` | `true` | Enable reranking for recall |
+| `top_k` / `topK` | `3` | Max memories returned by automatic pre-turn recall |
+| `search_threshold` / `searchThreshold` | `0.5` | Minimum score for automatic recall filtering when scores are present |
+| `auto_capture` / `autoCapture` | `false` | Automatically capture each completed turn into Mem0 |
+| `auto_recall` / `autoRecall` | `true` | Automatically recall relevant memories before each turn |
+
+Notes:
+- `top_k` / `search_threshold` apply to automatic prefetch recall, not manual `mem0_search` calls.
+- `search_threshold` only filters results that include a score; results without scores are preserved.
+- `auto_capture: false` is useful on the Hobby plan when you want to rely on explicit memory tools instead of per-turn ingestion.
 
 ## Tools
 

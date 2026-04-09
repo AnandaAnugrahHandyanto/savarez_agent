@@ -46,13 +46,52 @@ _CURATE_DELETE_THRESHOLD = 0.85
 # Config
 # ---------------------------------------------------------------------------
 
+_CAMEL_TO_SNAKE = {
+    "topK": "top_k",
+    "searchThreshold": "search_threshold",
+    "autoCapture": "auto_capture",
+    "autoRecall": "auto_recall",
+}
+
+
 def _normalize_config_values(config: dict) -> dict:
-    """Normalize bool-ish fields loaded from env/setup prompts into booleans."""
+    """Normalize bool-ish fields and camelCase aliases into canonical snake_case."""
     normalized = dict(config)
+
+    # Accept camelCase aliases from config — map to snake_case canonical keys.
+    # Important: base defaults may already contain snake_case keys, so precedence
+    # must be decided from the *incoming* config rather than the copied dict.
+    for camel, snake in _CAMEL_TO_SNAKE.items():
+        incoming_has_snake = snake in config
+        if camel in normalized and not incoming_has_snake:
+            normalized[snake] = normalized.pop(camel)
+        elif camel in normalized:
+            normalized.pop(camel)  # explicit snake_case input takes precedence
+
+    # Boolean coercion
     normalized["rerank"] = is_truthy_value(normalized.get("rerank"), default=True)
     normalized["keyword_search"] = is_truthy_value(
         normalized.get("keyword_search"), default=False
     )
+    normalized["auto_capture"] = is_truthy_value(
+        normalized.get("auto_capture"), default=False
+    )
+    normalized["auto_recall"] = is_truthy_value(
+        normalized.get("auto_recall"), default=True
+    )
+
+    # Numeric coercion with bounds
+    try:
+        normalized["top_k"] = max(1, min(int(normalized.get("top_k", 3)), 50))
+    except (TypeError, ValueError):
+        normalized["top_k"] = 3
+    try:
+        normalized["search_threshold"] = max(
+            0.0, min(float(normalized.get("search_threshold", 0.5)), 1.0)
+        )
+    except (TypeError, ValueError):
+        normalized["search_threshold"] = 0.5
+
     return normalized
 
 
@@ -71,12 +110,23 @@ def _load_config() -> dict:
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "rerank": True,
         "keyword_search": False,
+        "top_k": 3,
+        "search_threshold": 0.5,
+        "auto_capture": False,
+        "auto_recall": True,
     }
 
     config_path = get_hermes_home() / "mem0.json"
     if config_path.exists():
         try:
             file_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+            # Canonicalize file-local aliases before merging onto defaults so a
+            # camelCase override can beat the built-in snake_case default.
+            for camel, snake in _CAMEL_TO_SNAKE.items():
+                if camel in file_cfg and snake not in file_cfg:
+                    file_cfg[snake] = file_cfg.pop(camel)
+                elif camel in file_cfg:
+                    file_cfg.pop(camel)
             config.update({k: v for k, v in file_cfg.items()
                            if v is not None and v != ""})
         except Exception:
@@ -176,6 +226,10 @@ class Mem0MemoryProvider(MemoryProvider):
         self._user_id = "hermes-user"
         self._agent_id = "hermes"
         self._rerank = True
+        self._top_k = 3
+        self._search_threshold = 0.5
+        self._auto_capture = False
+        self._auto_recall = True
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
@@ -213,6 +267,10 @@ class Mem0MemoryProvider(MemoryProvider):
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
+            {"key": "top_k", "description": "Max memories returned by auto-recall prefetch (1-50)", "default": "3"},
+            {"key": "search_threshold", "description": "Min similarity score for auto-recall filtering (0.0-1.0). Only applied when scores are present.", "default": "0.5"},
+            {"key": "auto_capture", "description": "Automatically capture facts from each turn (sync_turn). Disable to save API usage on hobby plans.", "default": "false", "choices": ["true", "false"]},
+            {"key": "auto_recall", "description": "Automatically recall relevant memories before each turn (prefetch). Disable to use manual mem0_search only.", "default": "true", "choices": ["true", "false"]},
         ]
 
     def _get_client(self):
@@ -258,6 +316,10 @@ class Mem0MemoryProvider(MemoryProvider):
         self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")
         self._agent_id = self._config.get("agent_id", "hermes")
         self._rerank = self._config.get("rerank", True)
+        self._top_k = self._config.get("top_k", 3)
+        self._search_threshold = self._config.get("search_threshold", 0.5)
+        self._auto_capture = self._config.get("auto_capture", False)
+        self._auto_recall = self._config.get("auto_recall", True)
 
     def _read_filters(self) -> Dict[str, Any]:
         """Filters for search/get_all — scoped to user only for cross-session recall."""
@@ -299,7 +361,21 @@ class Mem0MemoryProvider(MemoryProvider):
             return ""
         return f"## Mem0 Memory\n{result}"
 
+    def _filter_by_threshold(self, results: list) -> list:
+        """Drop results below search_threshold when scores are present.
+
+        If a result has no ``score`` key, it passes through — we never invent
+        scores or discard results that simply lack scoring metadata.
+        """
+        threshold = self._search_threshold
+        return [
+            r for r in results
+            if "score" not in r or r["score"] >= threshold
+        ]
+
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
+        if not self._auto_recall:
+            return
         if self._is_breaker_open():
             return
 
@@ -310,8 +386,9 @@ class Mem0MemoryProvider(MemoryProvider):
                     query=query,
                     filters=self._read_filters(),
                     rerank=self._rerank,
-                    top_k=5,
+                    top_k=self._top_k,
                 ))
+                results = self._filter_by_threshold(results)
                 if results:
                     lines = [r.get("memory", "") for r in results if r.get("memory")]
                     with self._prefetch_lock:
@@ -326,6 +403,8 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Send the turn to Mem0 for server-side fact extraction (non-blocking)."""
+        if not self._auto_capture:
+            return
         if self._is_breaker_open():
             return
 
