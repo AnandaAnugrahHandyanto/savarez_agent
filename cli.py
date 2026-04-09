@@ -56,6 +56,16 @@ except (ImportError, AttributeError):
     _STEADY_CURSOR = None
 import threading
 import queue
+import re as _re_cli
+import unicodedata as _unicodedata_cli
+
+_ANSI_ESCAPE_RE = _re_cli.compile(r"\033\[[^m]*m")
+
+
+def _vlen(s: str) -> int:
+    """Visual column width of s after stripping ANSI escapes (EAW-aware)."""
+    s = _ANSI_ESCAPE_RE.sub("", s)
+    return sum(2 if _unicodedata_cli.east_asian_width(c) in ("W", "F") else 1 for c in s)
 
 from agent.usage_pricing import (
     CanonicalUsage,
@@ -65,7 +75,118 @@ from agent.usage_pricing import (
 )
 from hermes_cli.banner import _format_context_length, format_banner_version_label
 
-_COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+_SPINNER_STYLES: dict[str, tuple[str, ...]] = {
+    # ── ASCII (N, universally supported) ────────────────────────────────────────
+    "line":     ("|", "/", "-", "\\"),
+
+    # ── Braille single-char (N) ──────────────────────────────────────────────────
+    "dots":     ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"),
+    "bounce":   ("⠁", "⠂", "⠄", "⡀", "⢀", "⠠", "⠐", "⠈"),
+    "spin":     ("⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"),
+    "breathe":  ("⠒", "⠿", "⣿", "⠿"),               # braille centre → full → centre
+
+    # ── Braille 2-char combos (N) ────────────────────────────────────────────────
+    "wide":     ("⣾⣷", "⣽⣯", "⣻⣟", "⢿⡿", "⡿⢿", "⣟⣻", "⣯⣽", "⣷⣾"),   # mirrored ring
+    "twin":     ("⠁⢀", "⠂⠠", "⠄⠐", "⡀⠈", "⢀⠁", "⠠⠂", "⠐⠄", "⠈⡀"),   # two dots chasing
+    "dots2":    ("⠉⠀", "⠈⠁", "⠀⠉", "⠀⠘", "⠀⠰", "⠀⢠", "⠀⣀",
+                 "⢀⡀", "⣀⠀", "⡄⠀", "⠆⠀", "⠃⠀"),              # arc orbiting 2-cell perimeter
+    "wave":     ("⠁⠈", "⠂⠐", "⠄⠠", "⡀⢀", "⠠⠄", "⠐⠂", "⠈⠁"),           # symmetric sweep
+    "ping":     ("⠁⠀", "⠈⠀", "⠀⠁", "⠀⠈", "⠀⢀", "⠀⡀", "⢀⠀", "⡀⠀"),   # single dot clockwise
+
+    # ── Braille 3-char combos (N) ────────────────────────────────────────────────
+    "spin3":    ("⠁⠀⠀", "⠉⠀⠀", "⠉⠁⠀", "⠉⠉⠀", "⠉⠉⠁", "⠉⠉⠉",
+                 "⠋⠉⠉", "⠛⠉⠉", "⠛⠋⠉", "⠛⠛⠉", "⠛⠛⠋", "⠛⠛⠛",
+                 "⠟⠛⠛", "⠿⠛⠛", "⠿⠟⠛", "⠿⠿⠛", "⠿⠿⠟", "⠿⠿⠿",
+                 "⡿⠿⠿", "⣿⠿⠿", "⣿⡿⠿", "⣿⣿⠿", "⣿⣿⡿", "⣿⣿⣿"),
+    "spin3b":   ("⡀⠀⠀", "⣀⠀⠀", "⣀⡀⠀", "⣀⣀⠀", "⣀⣀⡀", "⣀⣀⣀",
+                 "⣄⣀⣀", "⣤⣀⣀", "⣤⣄⣀", "⣤⣤⣀", "⣤⣤⣄", "⣤⣤⣤",
+                 "⣦⣤⣤", "⣶⣤⣤", "⣶⣦⣤", "⣶⣶⣤", "⣶⣶⣦", "⣶⣶⣶",
+                 "⣷⣶⣶", "⣿⣶⣶", "⣿⣷⣶", "⣿⣿⣶", "⣿⣿⣷", "⣿⣿⣿"),
+    "bounce3":  ("⠁⠂⠄", "⠂⠄⡀", "⠄⡀⢀", "⡀⢀⠠", "⢀⠠⠐", "⠠⠐⠈", "⠐⠈⠁", "⠈⠁⠂"),
+    "bar":      ("⣀⠀⠀", "⣤⠀⠀", "⣶⠀⠀", "⣿⠀⠀",
+                 "⣿⣀⠀", "⣿⣤⠀", "⣿⣶⠀", "⣿⣿⠀",
+                 "⣿⣿⣀", "⣿⣿⣤", "⣿⣿⣶", "⣿⣿⣿",
+                 "⣿⣿⣶", "⣿⣿⣤", "⣿⣿⣀", "⣿⣿⠀",
+                 "⣿⣶⠀", "⣿⣤⠀", "⣿⣀⠀", "⣿⠀⠀",
+                 "⣶⠀⠀", "⣤⠀⠀", "⣀⠀⠀"),           # fill → drain 3-cell bar
+
+    # ── Block / geometric (A) ────────────────────────────────────────────────────
+    "grow":     ("▁▁", "▂▁", "▃▂", "▄▃", "▅▄", "▆▅", "▇▆", "█▇",
+                 "▇█", "▆▇", "▅▆", "▄▅", "▃▄", "▂▃"),              # left-leads-right wave
+    "fill":     ("▏▏", "▎▏", "▍▏", "▌▏", "▋▏", "▊▏", "▉▏", "█▏",
+                 "█▎", "█▍", "█▌", "█▋", "█▊", "█▉", "██",
+                 "█▉", "█▊", "█▋", "█▌", "█▍", "█▎", "█▏",
+                 "▉▏", "▊▏", "▋▏", "▌▏", "▍▏", "▎▏"),              # fill left→right, drain right→left
+    "shade":    ("░", "▒", "▓", "█", "▓", "▒"),
+    "box":      ("┤", "┘", "┴", "└", "├", "┌", "┬", "┐"),
+    "box2":     ("┌┐", "└┘", "├┤", "┬┴"),
+    "triangle": ("◢", "◣", "◤", "◥"),
+
+    # ── Geometric shapes (A) ─────────────────────────────────────────────────────
+    "circle":   ("○", "◐", "●", "◑"),
+    "zoom":     ("○", "◎", "⊙", "●"),
+    "quarters": ("◴", "◷", "◶", "◵"),              # filled quadrant rotating clockwise
+    "bold":     ("▲", "▼", "◀", "▶"),
+    "open":     ("▷", "▽", "◁", "△"),
+    "cross":    ("╀", "┾", "╁", "┽"),              # single heavy arm spinning N→E→S→W
+    "cards":    ("♠", "♥", "♣", "♤", "♡", "♧"),         # drop ♦♢ (N)
+    "music":    ("♩", "♪", "♬", "♭", "♯"),               # drop ♫♮ (N)
+    "nums":     ("①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"),
+    "tally":    ("❶", "❷", "❸", "❹", "❺", "❻", "❼", "❽", "❾", "❿"),
+
+    # ── Symbols (N) ──────────────────────────────────────────────────────────────
+    "weather":  ("☀", "☁", "☂", "☃"),
+    "dice":     ("⚀", "⚁", "⚂", "⚃", "⚄", "⚅"),
+    "chess":    ("♟", "♞", "♝", "♜", "♛", "♚"),
+    "floral":   ("✿", "❀", "❁", "❃"),
+    "corner":   ("▟", "▙", "▛", "▜"),
+
+    # ── Prompt-only: mixed/variable EAW or multi-codepoint sequences ────────────
+    "halves":   ("◐", "◓", "◑", "◒"),                   # mixed A+N
+    "pulse":    ("◜", "◠", "◝", "◞", "◡", "◟"),         # circular arc quadrants
+    "arrows":   ("←", "↖", "↑", "↗", "→", "↘", "↓", "↙"),
+    "star":     ("✶", "✷", "✸", "✹", "✺", "✹", "✸", "✷"),
+    "keycap":   ("0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"),
+    "hi":       ("👋🏻", "👋🏼", "👋🏽", "👋🏾", "👋🏿"),   # emoji + skin-tone modifier
+
+    # ── Emoji (W) ────────────────────────────────────────────────────────────────
+    "moon":     ("🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"),
+    "clock":    ("🕛", "🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚"),
+    "earth":    ("🌍", "🌎", "🌏"),
+    "orbs":     ("🔴", "🟠", "🟡", "🟢", "🔵", "🟣"),
+    "hearts":   ("🧡", "💛", "💚", "💙", "💜", "🤍"),   # drop ❤ (N)
+    "plants":   ("🌱", "🌿", "🍀", "🌾"),
+    "zodiac":   ("♈", "♉", "♊", "♋", "♌", "♍", "♎", "♏", "♐", "♑", "♒", "♓"),
+
+    "none":     ("",),
+}
+_COMMAND_SPINNER_FRAMES = _SPINNER_STYLES["dots"]  # overridden at CLI init from config/skin
+_TITLE_SPINNER_FRAMES   = _SPINNER_STYLES["dots"]  # overridden at CLI init; may differ from prompt
+
+# Styles whose frames all share the same East Asian Width category, making them
+# safe in proportional title-bar fonts (SF Pro, Segoe UI) without text shifting.
+# Prompt-only styles fall back to "dots" in the title bar unless the user sets
+# display.title_spinner_style explicitly.
+_TITLE_SAFE_STYLES: frozenset[str] = frozenset({
+    # ASCII N
+    "line",
+    # Braille N (single and multi-char)
+    "dots", "bounce", "spin", "breathe",
+    "wide", "twin", "dots2", "wave", "ping",
+    "spin3", "spin3b", "bounce3", "bar",
+    # Block / geometric A
+    "grow", "fill", "shade", "box", "box2", "triangle",
+    # Geometric shapes A
+    "circle", "zoom", "quarters", "bold", "open", "cross",
+    "cards", "music", "nums", "tally",
+    # Symbols N
+    "weather", "dice", "chess", "floral", "corner",
+    # Emoji W
+    "moon", "clock", "earth", "orbs", "hearts", "plants", "zodiac",
+    "none",
+    # NOT included: halves (mixed A+N), pulse/arrows/star (variable-width),
+    #               keycap/hi (multi-codepoint sequences)
+})
 
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
@@ -263,7 +384,7 @@ def load_cli_config() -> Dict[str, Any]:
             "show_reasoning": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
-
+            "syntax_bold": True,
             "skin": "default",
         },
         "clarify": {
@@ -539,6 +660,26 @@ try:
     set_tool_preview_max_len(int(_tpl) if _tpl else 0)
 except Exception:
     pass
+
+# Rich-based response highlighting (syntax highlight fenced code blocks)
+try:
+    import agent.display as _display
+    from agent.rich_output import StreamingBlockBuffer as _BlockBuf
+    from agent.rich_output import StreamingCodeBlockHighlighter as _CodeBlockHL
+    from agent.rich_output import format_response as _format_response
+    from agent.rich_output import apply_block_line as _apply_block_line
+    from agent.rich_output import apply_inline_markdown as _apply_inline_md
+    _RICH_RESPONSE = True
+    # display.py registers syntax/markdown callbacks when imported above.
+    # Re-apply the active skin now so any skin set before display.py was
+    # imported (e.g. init_skin_from_config at startup) takes effect.
+    try:
+        from hermes_cli.skin_engine import get_active_skin_name, set_active_skin
+        set_active_skin(get_active_skin_name())
+    except Exception:
+        pass
+except ImportError:
+    _RICH_RESPONSE = False
 
 # Neuter AsyncHttpxClientWrapper.__del__ before any AsyncOpenAI clients are
 # created.  The SDK's __del__ schedules aclose() on asyncio.get_running_loop()
@@ -988,13 +1129,37 @@ def _accent_hex() -> str:
         return "#FFBF00"
 
 
+def _resp_border_ansi() -> str:
+    """Return ANSI bold truecolor escape for the response box border from active skin."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        h = get_active_skin().get_color("response_border", "#FFD700").lstrip("#")
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return f"\033[1;38;2;{r};{g};{b}m"
+    except Exception:
+        return _GOLD
+
+
 def _rich_text_from_ansi(text: str) -> _RichText:
     """Safely render assistant/tool output that may contain ANSI escapes.
 
     Using Rich Text.from_ansi preserves literal bracketed text like
     ``[not markup]`` while still interpreting real ANSI color codes.
     """
-    return _RichText.from_ansi(text or "")
+    return _RichText.from_ansi(_normalize_ansi_c1(text or ""))
+
+
+def _normalize_ansi_c1(text: str) -> str:
+    """Normalize 8-bit C1 CSI controls to ESC-prefixed ANSI sequences.
+
+    Some tools emit CSI as the single-byte C1 control ``\\x9b`` instead of the
+    more common ``\\x1b[`` form. prompt_toolkit / Rich do not reliably treat that
+    form as ANSI in every environment, which can leak visible ``?[...m`` text
+    into the CLI. Converting it up front keeps the rendering path stable.
+    """
+    if "\x9b" not in text:
+        return text
+    return text.replace("\x9b", "\x1b[")
 
 
 def _cprint(text: str):
@@ -1004,7 +1169,16 @@ def _cprint(text: str):
     StdoutProxy.  Routing through print_formatted_text(ANSI(...)) lets
     prompt_toolkit parse the escapes and render real colors.
     """
-    _pt_print(_PT_ANSI(text))
+    _pt_print(_PT_ANSI(_normalize_ansi_c1(text)))
+
+
+def _dim_lines(text: str) -> list[str]:
+    """Return lines wrapped in DIM/RESET individually.
+
+    Per-line wrapping keeps reasoning blocks consistently dim even when a
+    line contains its own reset sequence.
+    """
+    return [f"{_DIM}{line}{_RST}" for line in text.splitlines()]
 
 
 # ---------------------------------------------------------------------------
@@ -1355,6 +1529,11 @@ class HermesCLI:
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
+        # rich_reasoning: apply full rich rendering pipeline inside reasoning blocks
+        self._rich_reasoning: bool = (
+            _RICH_RESPONSE
+            and CLI_CONFIG["display"].get("rich_reasoning", True)
+        )
         # busy_input_mode: "interrupt" (Enter interrupts current run) or "queue" (Enter queues for next turn)
         _bim = CLI_CONFIG["display"].get("busy_input_mode", "interrupt")
         self.busy_input_mode = "queue" if str(_bim).strip().lower() == "queue" else "interrupt"
@@ -1367,12 +1546,48 @@ class HermesCLI:
         # Inline diff previews for write actions (display.inline_diffs in config.yaml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
 
+        # Spinner style — explicit config overrides skin; skin overrides built-in default.
+        # An empty config value ("") means "defer to skin".
+        try:
+            from hermes_cli.skin_engine import get_active_skin as _get_skin
+            _skin_style = _get_skin().get_spinner_style()
+        except Exception:
+            _skin_style = None
+        _config_style = CLI_CONFIG["display"].get("spinner_style", "")
+        _spinner_key = _config_style or _skin_style or "dots"
+        global _COMMAND_SPINNER_FRAMES, _TITLE_SPINNER_FRAMES
+        _COMMAND_SPINNER_FRAMES = _SPINNER_STYLES.get(_spinner_key, _SPINNER_STYLES["dots"])
+        # Title spinner: explicit override > safe fallback from prompt style.
+        # Pulse/arrows/star have variable advance widths in proportional title fonts and
+        # will shift the text slightly each frame; dots/bounce/grow/moon/clock do not.
+        _title_key = CLI_CONFIG["display"].get("title_spinner_style") or (
+            _spinner_key if _spinner_key in _TITLE_SAFE_STYLES else "dots"
+        )
+        _TITLE_SPINNER_FRAMES = _SPINNER_STYLES.get(_title_key, _SPINNER_STYLES["dots"])
+
+        # Terminal tab/title — update with spinner frame while agent is active
+        self._title_spinner = CLI_CONFIG["display"].get("title_spinner", True)
+        self._title_base = CLI_CONFIG["display"].get("title_base", "Hermes")
+
+        # Syntax-highlighted code preview for execute_code (display.code_highlight in config.yaml)
+        self._code_highlight_enabled = CLI_CONFIG["display"].get("code_highlight", True)
+        from agent.display import set_code_highlight_active, set_diff_limits, set_preview_max_lines
+        set_code_highlight_active(self._code_highlight_enabled)
+        set_diff_limits(
+            max_lines=CLI_CONFIG["display"].get("diff_max_lines", 80),
+            max_files=CLI_CONFIG["display"].get("diff_max_files", 6),
+        )
+        set_preview_max_lines(CLI_CONFIG["display"].get("preview_max_lines", 40))
+
         # Streaming display state
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
+        self._stream_vis_len = 0     # Visual width of _stream_buf (ANSI-stripped, EAW-aware)
         self._stream_started = False  # True once first delta arrives
         self._stream_box_opened = False  # True once the response box header is printed
         self._reasoning_stream_started = False  # True once live reasoning starts streaming
         self._reasoning_preview_buf = ""  # Coalesce tiny reasoning chunks for [thinking] output
+        self._stream_code_hl = _CodeBlockHL() if _RICH_RESPONSE else None
+
         self._pending_edit_snapshots = {}
         
         # Configuration - priority: CLI args > env vars > config file
@@ -1902,47 +2117,84 @@ class HermesCLI:
         """Return the active reasoning display callback for the current mode."""
         if self.show_reasoning and self.streaming_enabled:
             return self._stream_reasoning_delta
-        if self.verbose and not self.show_reasoning:
+        if self.show_reasoning:
             return self._on_reasoning
         return None
 
     def _emit_reasoning_preview(self, reasoning_text: str) -> None:
         """Render a buffered reasoning preview as a single [thinking] block."""
-        import re
-        import textwrap
-
         preview_text = reasoning_text.strip()
         if not preview_text:
             return
 
-        try:
-            term_width = shutil.get_terminal_size().columns
-        except Exception:
-            term_width = 80
-        prefix = "  [thinking] "
-        wrap_width = max(30, term_width - len(prefix) - 2)
-
-        paragraphs = []
-        raw_paragraphs = re.split(r"\n\s*\n+", preview_text.replace("\r\n", "\n"))
-        for paragraph in raw_paragraphs:
-            compact = " ".join(line.strip() for line in paragraph.splitlines() if line.strip())
-            if compact:
-                paragraphs.append(textwrap.fill(compact, width=wrap_width))
-        preview_text = "\n".join(paragraphs)
-        if not preview_text:
-            return
-
-        if self.verbose:
-            _cprint(f"  {_DIM}[thinking] {preview_text}{_RST}")
-            return
-
-        lines = preview_text.splitlines()
-        if len(lines) > 5:
-            preview = "\n".join(lines[:5])
-            preview += f"\n  ... ({len(lines) - 5} more lines)"
+        if getattr(self, "_rich_reasoning", False):
+            buf = _BlockBuf()
+            hl  = _CodeBlockHL()
+            rendered_lines = []
+            for raw_line in preview_text.splitlines():
+                out = buf.process_line(raw_line)
+                if out is None:
+                    continue
+                out2 = hl.process_line(out)
+                if out2 is None:
+                    continue
+                if out2 is out:
+                    out = _apply_inline_md(_apply_block_line(out, reset_suffix=""), reset_suffix="")
+                    for sub in out.splitlines():
+                        rendered_lines.append(_dim_lines(sub)[0])
+                else:
+                    for sub in out2.splitlines():
+                        rendered_lines.append(_dim_lines(sub)[0])
+            # Flush state machine tails
+            for tail in (buf.flush() or "").splitlines():
+                if "\x1b" not in tail:
+                    tail = _apply_inline_md(_apply_block_line(tail, reset_suffix=""), reset_suffix="")
+                rendered_lines.append(_dim_lines(tail)[0])
+            for tail in (hl.flush() or "").splitlines():
+                rendered_lines.append(_dim_lines(tail)[0])
         else:
-            preview = preview_text
-        _cprint(f"  {_DIM}[thinking] {preview}{_RST}")
+            # Legacy: textwrap collapse (preserved exactly for backward compat)
+            import re
+            import textwrap
+            try:
+                term_width = shutil.get_terminal_size().columns
+            except Exception:
+                term_width = 80
+            prefix = "  [thinking] "
+            wrap_width = max(30, term_width - len(prefix) - 2)
+            paragraphs = []
+            for p in re.split(r"\n\s*\n+", preview_text.replace("\r\n", "\n")):
+                compact = " ".join(l.strip() for l in p.splitlines() if l.strip())
+                if compact:
+                    paragraphs.append(textwrap.fill(compact, width=wrap_width))
+            legacy_text = "\n".join(paragraphs)
+            if not legacy_text:
+                return
+            if self.verbose:
+                _cprint(f"  {_DIM}[thinking] {legacy_text}{_RST}")
+                return
+            lines = legacy_text.splitlines()
+            if len(lines) > 5:
+                legacy_preview = "\n".join(lines[:5])
+                legacy_preview += f"\n  ... ({len(lines) - 5} more lines)"
+            else:
+                legacy_preview = legacy_text
+            _cprint(f"  {_DIM}[thinking] {legacy_preview}{_RST}")
+            return
+
+        if not rendered_lines:
+            return
+
+        if not self.verbose and len(rendered_lines) > 5:
+            displayed = rendered_lines[:5]
+            displayed.append(f"  {_DIM}... ({len(rendered_lines) - 5} more lines){_RST}")
+        else:
+            displayed = rendered_lines
+
+        prefix = f"  {_DIM}[thinking]{_RST} "
+        _cprint(prefix + displayed[0])
+        for l in displayed[1:]:
+            _cprint("  " + l)
 
     def _flush_reasoning_preview(self, *, force: bool = False) -> None:
         """Flush buffered reasoning text at natural boundaries.
@@ -2019,16 +2271,40 @@ class HermesCLI:
             r_fill = w - 2 - len(r_label)
             _cprint(f"\n{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}")
 
+        # Track length of any partial reasoning line already shown
+        _prev_partial = _vlen(getattr(self, "_reasoning_buf", ""))
+
         self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
 
-        # Emit complete lines, and force-flush long partial lines so
-        # reasoning is visible in real-time even without newlines.
+        # Emit complete lines, keep partial remainder for per-token display
         while "\n" in self._reasoning_buf:
             line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
-            _cprint(f"{_DIM}{line}{_RST}")
-        if len(self._reasoning_buf) > 80:
-            _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
-            self._reasoning_buf = ""
+            # Clear any partial line shown before rendering the complete line
+            if _prev_partial:
+                _pt_print(_PT_ANSI(f"\r{' ' * _prev_partial}\r"), end="")
+                _prev_partial = 0
+            if getattr(self, "_rich_reasoning", False):
+                out = self._reasoning_block_buf.process_line(line)
+                if out is None:
+                    continue   # buffered inside a table / setext heading
+                out2 = self._reasoning_code_hl.process_line(out)
+                if out2 is None:
+                    continue   # buffered inside a fenced code block
+                if out2 is out:
+                    out = _apply_inline_md(_apply_block_line(out, reset_suffix=""), reset_suffix="")
+                    _cprint(_dim_lines(out)[0])
+                else:
+                    for hl_line in out2.splitlines():
+                        _cprint(_dim_lines(hl_line)[0])
+            elif _RICH_RESPONSE:
+                line = _apply_inline_md(_apply_block_line(line, reset_suffix=_DIM), reset_suffix=_DIM)
+                _cprint(_dim_lines(line)[0])
+            else:
+                _cprint(_dim_lines(line)[0])
+
+        # Show partial reasoning line immediately for per-token feedback
+        if self._reasoning_buf:
+            _pt_print(_PT_ANSI(f"\r{_DIM}{self._reasoning_buf}{_RST}"), end="", flush=True)
 
     def _close_reasoning_box(self) -> None:
         """Close the live reasoning box if it's open."""
@@ -2036,8 +2312,28 @@ class HermesCLI:
             # Flush remaining reasoning buffer
             buf = getattr(self, "_reasoning_buf", "")
             if buf:
-                _cprint(f"{_DIM}{buf}{_RST}")
+                # Clear any partial line shown during per-token streaming
+                partial_len = _vlen(buf)
+                if partial_len:
+                    _pt_print(_PT_ANSI(f"\r{' ' * partial_len}\r"), end="")
+                if getattr(self, "_rich_reasoning", False):
+                    buf = _apply_inline_md(_apply_block_line(buf, reset_suffix=""), reset_suffix="")
+                elif _RICH_RESPONSE:
+                    buf = _apply_inline_md(_apply_block_line(buf, reset_suffix=_DIM), reset_suffix=_DIM)
+                _cprint(_dim_lines(buf)[0])
                 self._reasoning_buf = ""
+            # Drain state machines (unclosed tables / fenced code blocks)
+            if getattr(self, "_rich_reasoning", False):
+                block_tail = self._reasoning_block_buf.flush()
+                if block_tail:
+                    for tl in block_tail.splitlines():
+                        if "\x1b" not in tl:
+                            tl = _apply_inline_md(_apply_block_line(tl, reset_suffix=""), reset_suffix="")
+                        _cprint(_dim_lines(tl)[0])
+                code_tail = self._reasoning_code_hl.flush()
+                if code_tail:
+                    for tl in code_tail.splitlines():
+                        _cprint(_dim_lines(tl)[0])
             w = shutil.get_terminal_size().columns
             _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
             self._reasoning_box_opened = False
@@ -2186,34 +2482,98 @@ class HermesCLI:
                 self._stream_text_ansi = ""
             w = shutil.get_terminal_size().columns
             fill = w - 2 - len(label)
-            _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
-
-        self._stream_buf += text
+            _cprint(f"\n{_resp_border_ansi()}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
         # Emit complete lines, keep partial remainder in buffer
         _tc = getattr(self, "_stream_text_ansi", "")
+
+        # Track length of any partial line already shown so we can clear it
+        _prev_partial = self._stream_vis_len
+
+        self._stream_buf += text
+        self._stream_vis_len = _vlen(self._stream_buf)
+
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
-            _cprint(f"{_tc}{line}{_RST}" if _tc else line)
+            self._stream_vis_len = _vlen(self._stream_buf)
+            # Clear any partial line printed before rendering the complete line
+            if _prev_partial:
+                _pt_print(_PT_ANSI(f"\r{' ' * _prev_partial}\r"), end="")
+                _prev_partial = 0
+            if _RICH_RESPONSE:
+                out = self._stream_block_buf.process_line(line)
+                if out is None:
+                    continue
+                out2 = self._stream_code_hl.process_line(out)
+                if out2 is None:
+                    continue
+                if out2 is out:
+                    # Plain text always gets markdown rendering during streaming.
+                    # display.code_highlight only controls syntax-highlighted
+                    # code previews and execute_code transcript formatting.
+                    out = _apply_inline_md(_apply_block_line(out, reset_suffix=_tc), reset_suffix=_tc)
+                    _cprint(f"{_tc}{out}{_RST}" if _tc else out)
+                else:
+                    for hl_line in out2.splitlines():
+                        _cprint(f"  {hl_line}")
+            else:
+                _cprint(f"{_tc}{line}{_RST}" if _tc else line)
+
+        # Show partial line immediately for per-token feedback
+        if self._stream_buf:
+            _pt_print(_PT_ANSI(f"\r{_tc}{self._stream_buf}{_RST}"), end="", flush=True)
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
         # Close reasoning box if still open (in case no content tokens arrived)
         self._close_reasoning_box()
 
+        _tc = getattr(self, "_stream_text_ansi", "")
         if self._stream_buf:
-            _tc = getattr(self, "_stream_text_ansi", "")
-            _cprint(f"{_tc}{self._stream_buf}{_RST}" if _tc else self._stream_buf)
+            # Clear the partial line shown during per-token streaming before final render
+            if self._stream_vis_len:
+                _pt_print(_PT_ANSI(f"\r{' ' * self._stream_vis_len}\r"), end="")
+            if _RICH_RESPONSE:
+                block_out = self._stream_block_buf.process_line(self._stream_buf)
+                if block_out is not None:
+                    out2 = self._stream_code_hl.process_line(block_out)
+                    if out2 is not None:
+                        if out2 is block_out:
+                            out2 = _apply_inline_md(_apply_block_line(out2, reset_suffix=_tc), reset_suffix=_tc)
+                            _cprint(f"{_tc}{out2}{_RST}" if _tc else out2)
+                        else:
+                            for hl_line in out2.splitlines():
+                                _cprint(hl_line)
+            else:
+                _cprint(f"{_tc}{self._stream_buf}{_RST}" if _tc else self._stream_buf)
             self._stream_buf = ""
+            self._stream_vis_len = 0
+
+        if _RICH_RESPONSE:
+            # Flush any buffered block-level state (must run even if _stream_buf
+            # was empty — e.g. API error hit right after a newline boundary).
+            buf_tail = self._stream_block_buf.flush()
+            if buf_tail is not None:
+                for hl_line in buf_tail.splitlines():
+                    if "\x1b" not in hl_line:
+                        hl_line = _apply_inline_md(_apply_block_line(hl_line, reset_suffix=_tc), reset_suffix=_tc)
+                    _cprint(f"{_tc}{hl_line}{_RST}" if _tc else hl_line)
+            # Flush any open code block (unclosed fence at end of response)
+            tail = self._stream_code_hl.flush()
+            if tail:
+                for hl_line in tail.splitlines():
+                    _cprint(f"  {hl_line}")
+                _cprint(_RST)
 
         # Close the response box
         if self._stream_box_opened:
             w = shutil.get_terminal_size().columns
-            _cprint(f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
+            _cprint(f"{_resp_border_ansi()}╰{'─' * (w - 2)}╯{_RST}")
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
         self._stream_buf = ""
+        self._stream_vis_len = 0
         self._stream_started = False
         self._stream_box_opened = False
         self._reasoning_stream_started = False
@@ -2224,6 +2584,23 @@ class HermesCLI:
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""
         self._deferred_content = ""
+        if _RICH_RESPONSE:
+            if not hasattr(self, "_stream_block_buf"):
+                self._stream_block_buf = _BlockBuf()
+            else:
+                self._stream_block_buf.reset()
+            if not hasattr(self, "_stream_code_hl"):
+                self._stream_code_hl = _CodeBlockHL()
+            else:
+                self._stream_code_hl.reset()
+            if not hasattr(self, "_reasoning_block_buf"):
+                self._reasoning_block_buf = _BlockBuf()
+            else:
+                self._reasoning_block_buf.reset()
+            if not hasattr(self, "_reasoning_code_hl"):
+                self._reasoning_code_hl = _CodeBlockHL()
+            else:
+                self._reasoning_code_hl.reset()
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
@@ -2285,7 +2662,7 @@ class HermesCLI:
             )
         except Exception as exc:
             message = format_runtime_provider_error(exc)
-            ChatConsole().print(f"[bold red]{message}[/]")
+            self._print_cli_markup(f"[bold red]{message}[/]")
             return False
 
         api_key = runtime.get("api_key")
@@ -2345,6 +2722,13 @@ class HermesCLI:
             self._active_agent_route_signature = None
 
         return True
+
+    def _print_cli_markup(self, markup: str) -> None:
+        """Render Rich markup safely inside the interactive prompt_toolkit UI."""
+        if self._app:
+            ChatConsole().print(markup)
+            return
+        self.console.print(markup)
 
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Resolve model/runtime overrides for a single user turn."""
@@ -5207,6 +5591,16 @@ class HermesCLI:
             return
 
         set_active_skin(new_skin)
+        # Refresh spinner frames to match the new skin's style preference.
+        global _COMMAND_SPINNER_FRAMES
+        try:
+            from hermes_cli.skin_engine import get_active_skin as _get_skin
+            _skin_style = _get_skin().get_spinner_style()
+        except Exception:
+            _skin_style = None
+        _config_style = CLI_CONFIG["display"].get("spinner_style", "")
+        _spinner_key = _config_style or _skin_style or "dots"
+        _COMMAND_SPINNER_FRAMES = _SPINNER_STYLES.get(_spinner_key, _SPINNER_STYLES["dots"])
         if save_config_value("display.skin", new_skin):
             print(f"  Skin set to: {new_skin} (saved)")
         else:
@@ -5242,6 +5636,17 @@ class HermesCLI:
             "verbose": f"{_Colors.BOLD}{_Colors.GREEN}Tool progress: VERBOSE{_Colors.RESET} — full args, results, think blocks, and debug logs.",
         }
         _cprint(labels.get(self.tool_progress_mode, ""))
+
+    def _toggle_code_highlight(self):
+        """Toggle syntax-highlighted code preview for execute_code."""
+        self._code_highlight_enabled = not self._code_highlight_enabled
+        from agent.display import set_code_highlight_active
+        set_code_highlight_active(self._code_highlight_enabled)
+        from hermes_cli.colors import Colors as _Colors
+        if self._code_highlight_enabled:
+            _cprint(f"{_Colors.GREEN}Code highlight: ON{_Colors.RESET} — execute_code will show syntax-highlighted Python.")
+        else:
+            _cprint(f"{_Colors.DIM}Code highlight: OFF{_Colors.RESET} — execute_code preview disabled.")
 
     def _toggle_yolo(self):
         """Toggle YOLO mode — skip all dangerous command approval prompts."""
@@ -5692,8 +6097,17 @@ class HermesCLI:
             logger.debug("Edit snapshot capture failed for %s", function_name, exc_info=True)
 
     def _on_tool_complete(self, tool_call_id: str, function_name: str, function_args: dict, function_result: str):
-        """Render file edits with inline diff after write-capable tools complete."""
+        """Render file edits with inline diff / code preview after tools complete.
+
+        Edit diffs are suppressed only in "off" mode.
+        Code previews (read_file, execute_code, terminal) are shown only in
+        "verbose" mode — they're full raw output, not a summary.
+        """
         snapshot = self._pending_edit_snapshots.pop(tool_call_id, None)
+
+        if self.tool_progress_mode == "off":
+            return
+
         try:
             from agent.display import render_edit_diff_with_delta
 
@@ -5706,6 +6120,24 @@ class HermesCLI:
             )
         except Exception:
             logger.debug("Edit diff preview failed for %s", function_name, exc_info=True)
+
+        if self.tool_progress_mode == "verbose" and self._code_highlight_enabled:
+            try:
+                from agent.display import (
+                    _result_succeeded,
+                    render_execute_code_preview,
+                    render_read_file_preview,
+                    render_terminal_preview,
+                )
+                if function_name == "execute_code":
+                    if _result_succeeded(function_result):
+                        render_execute_code_preview(function_args.get("code", ""), print_fn=_cprint)
+                elif function_name == "read_file":
+                    render_read_file_preview(function_args.get("path", ""), function_result, print_fn=_cprint)
+                elif function_name == "terminal":
+                    render_terminal_preview(function_args.get("command", ""), function_result, print_fn=_cprint)
+            except Exception:
+                logger.debug("%s highlight failed", function_name, exc_info=True)
 
     # ====================================================================
     # Voice mode methods
@@ -6547,9 +6979,14 @@ class HermesCLI:
                     if not _streaming_box_opened:
                         _streaming_box_opened = True
                         w = self.console.width
-                        label = " ⚕ Hermes "
+                        try:
+                            from hermes_cli.skin_engine import get_active_skin
+                            _sk = get_active_skin()
+                            label = _sk.get_branding("response_label", "⚕ Hermes")
+                        except Exception:
+                            label = " ⚕ Hermes "
                         fill = w - 2 - len(label)
-                        _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+                        _cprint(f"\n{_resp_border_ansi()}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
                     _cprint(sentence.rstrip())
 
                 tts_thread = threading.Thread(
@@ -6741,11 +7178,25 @@ class HermesCLI:
                     # Collapse long reasoning: show first 10 lines
                     lines = reasoning.strip().splitlines()
                     if len(lines) > 10:
-                        display_reasoning = "\n".join(lines[:10])
-                        display_reasoning += f"\n{_DIM}  ... ({len(lines) - 10} more lines){_RST}"
+                        visible = lines[:10]
+                        tail = f"  ... ({len(lines) - 10} more lines)"
                     else:
-                        display_reasoning = reasoning.strip()
-                    _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
+                        visible = lines
+                        tail = ""
+                    if getattr(self, "_rich_reasoning", False):
+                        visible = [
+                            _apply_inline_md(_apply_block_line(l, reset_suffix=""), reset_suffix="")
+                            for l in visible
+                        ]
+                    elif _RICH_RESPONSE:
+                        visible = [
+                            _apply_inline_md(_apply_block_line(l, reset_suffix=_DIM), reset_suffix=_DIM)
+                            for l in visible
+                        ]
+                    rendered_reasoning = "\n".join(_dim_lines("\n".join(visible)))
+                    if tail:
+                        rendered_reasoning += f"\n{_dim_lines(tail)[0]}"
+                    _cprint(f"\n{r_top}\n{rendered_reasoning}\n{r_bot}")
 
             if response and not response_previewed:
                 # Use skin engine for label/color with fallback
@@ -6765,15 +7216,25 @@ class HermesCLI:
                 if use_streaming_tts and _streaming_box_opened and not is_error_response:
                     # Text was already printed sentence-by-sentence; just close the box
                     w = shutil.get_terminal_size().columns
-                    _cprint(f"\n{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
+                    _cprint(f"\n{_resp_border_ansi()}╰{'─' * (w - 2)}╯{_RST}")
                 elif already_streamed:
                     # Response was already streamed token-by-token with box framing;
                     # _flush_stream() already closed the box. Skip Rich Panel.
                     pass
                 else:
                     _chat_console = ChatConsole()
+                    if _RICH_RESPONSE:
+                        try:
+                            _th = _resp_text.lstrip("#")
+                            _tr, _tg, _tb = int(_th[0:2], 16), int(_th[2:4], 16), int(_th[4:6], 16)
+                            _text_reset = f"\033[38;2;{_tr};{_tg};{_tb}m"
+                        except (ValueError, IndexError):
+                            _text_reset = ""
+                        _rendered_response = _format_response(response, reset_suffix=_text_reset)
+                    else:
+                        _rendered_response = response
                     _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                        _rich_text_from_ansi(_rendered_response),
                         title=f"[{_resp_color} bold]{label}[/]",
                         title_align="left",
                         border_style=_resp_color,
@@ -6957,7 +7418,7 @@ class HermesCLI:
         if self._command_running:
             return [("class:prompt-working", f"{self._command_spinner_frame()} {state_suffix}")]
         if self._agent_running:
-            return [("class:prompt-working", f"⚕ {state_suffix}")]
+            return [("class:prompt-working", f"{self._command_spinner_frame()} {state_suffix}")]
         if self._voice_mode:
             return [("class:voice-prompt", f"🎤 {state_suffix}")]
         return [("class:prompt", symbol)]
@@ -8219,22 +8680,41 @@ class HermesCLI:
 
         app._on_resize = _resize_clear_ghosts
 
+        def _set_terminal_title(title: str) -> None:
+            """Emit OSC 0 to update the terminal tab/window title."""
+            try:
+                if self._app:
+                    self._app.output.write_raw(f"\033]0;{title}\007")
+                    self._app.output.flush()
+            except Exception:
+                pass
+
         def spinner_loop():
             import time as _time
 
             last_idle_refresh = 0.0
+            last_title: str = ""
             while not self._should_exit:
                 if not self._app:
                     _time.sleep(0.1)
                     continue
-                if self._command_running:
+                if self._command_running or self._agent_running:
                     self._invalidate(min_interval=0.1)
+                    if self._title_spinner:
+                        t_idx = int(_time.monotonic() * 10) % len(_TITLE_SPINNER_FRAMES)
+                        new_title = f"{_TITLE_SPINNER_FRAMES[t_idx]} {self._title_base}"
+                        if new_title != last_title:
+                            _set_terminal_title(new_title)
+                            last_title = new_title
                     _time.sleep(0.1)
                 else:
                     now = _time.monotonic()
                     if now - last_idle_refresh >= 1.0:
                         last_idle_refresh = now
                         self._invalidate(min_interval=1.0)
+                        if self._title_spinner and last_title != self._title_base:
+                            _set_terminal_title(self._title_base)
+                            last_title = self._title_base
                     _time.sleep(0.2)
 
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
