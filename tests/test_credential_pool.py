@@ -541,7 +541,7 @@ def test_singleton_seed_does_not_clobber_manual_oauth_entry(tmp_path, monkeypatc
     assert {entry.source for entry in entries} == {"manual:hermes_pkce", "hermes_pkce"}
 
 
-def test_load_pool_prefers_anthropic_env_token_over_file_backed_oauth(tmp_path, monkeypatch):
+def test_load_pool_prefers_file_backed_anthropic_oauth_over_env_token(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("ANTHROPIC_TOKEN", "env-override-token")
@@ -567,8 +567,34 @@ def test_load_pool_prefers_anthropic_env_token_over_file_backed_oauth(tmp_path, 
     entry = pool.select()
 
     assert entry is not None
+    assert entry.source == "hermes_pkce"
+    assert entry.access_token == "file-backed-token"
+
+
+def test_load_pool_uses_anthropic_env_token_when_no_file_backed_oauth_exists(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_TOKEN", "env-only-token")
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_hermes_oauth_credentials",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: None,
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    entry = pool.select()
+
+    assert entry is not None
     assert entry.source == "env:ANTHROPIC_TOKEN"
-    assert entry.access_token == "env-override-token"
+    assert entry.access_token == "env-only-token"
 
 
 def test_least_used_strategy_selects_lowest_count(tmp_path, monkeypatch):

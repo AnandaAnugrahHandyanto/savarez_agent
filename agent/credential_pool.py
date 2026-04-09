@@ -674,10 +674,12 @@ def _normalize_pool_priorities(provider: str, entries: List[PooledCredential]) -
         return False
 
     source_rank = {
-        "env:ANTHROPIC_TOKEN": 0,
-        "env:CLAUDE_CODE_OAUTH_TOKEN": 1,
-        "hermes_pkce": 2,
-        "claude_code": 3,
+        # Prefer refreshable file-backed OAuth over static env setup-tokens so
+        # Anthropic reauth/refresh can actually take effect.
+        "hermes_pkce": 0,
+        "claude_code": 1,
+        "env:ANTHROPIC_TOKEN": 2,
+        "env:CLAUDE_CODE_OAUTH_TOKEN": 3,
         "env:ANTHROPIC_API_KEY": 4,
     }
     manual_entries = sorted(
