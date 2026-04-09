@@ -1128,6 +1128,7 @@ class AIAgent:
         if not isinstance(_compression_cfg, dict):
             _compression_cfg = {}
         compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+        compression_hard_threshold = float(_compression_cfg.get("hard_threshold", 0.80))
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_summary_model = _compression_cfg.get("summary_model") or None
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
@@ -1169,6 +1170,7 @@ class AIAgent:
         self.context_compressor = ContextCompressor(
             model=self.model,
             threshold_percent=compression_threshold,
+            hard_threshold_percent=compression_hard_threshold,
             protect_first_n=3,
             protect_last_n=compression_protect_last,
             summary_target_ratio=compression_target_ratio,
@@ -1228,7 +1230,7 @@ class AIAgent:
 
         if not self.quiet_mode:
             if compression_enabled:
-                print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {self.context_compressor.threshold_tokens:,})")
+                print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {self.context_compressor.threshold_tokens:,}, hard at {int(compression_hard_threshold*100)}% = {self.context_compressor.hard_threshold_tokens:,})")
             else:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (auto-compression disabled)")
 

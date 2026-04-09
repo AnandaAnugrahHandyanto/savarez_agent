@@ -8,6 +8,7 @@ memory tool output.
 """
 
 import pytest
+from collections import deque
 
 
 class TestContextCompressorUsagePercent:
@@ -21,7 +22,9 @@ class TestContextCompressorUsagePercent:
         comp.last_prompt_tokens = 210_000  # exceeds context_length
         comp.context_length = 200_000
         comp.threshold_tokens = 160_000
+        comp.hard_threshold_tokens = 180_000
         comp.compression_count = 0
+        comp._compression_timestamps = deque()
 
         status = comp.get_status()
         assert status["usage_percent"] <= 100
@@ -34,7 +37,9 @@ class TestContextCompressorUsagePercent:
         comp.last_prompt_tokens = 100_000
         comp.context_length = 200_000
         comp.threshold_tokens = 160_000
+        comp.hard_threshold_tokens = 180_000
         comp.compression_count = 0
+        comp._compression_timestamps = deque()
 
         status = comp.get_status()
         assert status["usage_percent"] == 50.0
@@ -47,7 +52,9 @@ class TestContextCompressorUsagePercent:
         comp.last_prompt_tokens = 1000
         comp.context_length = 0
         comp.threshold_tokens = 0
+        comp.hard_threshold_tokens = 0
         comp.compression_count = 0
+        comp._compression_timestamps = deque()
 
         status = comp.get_status()
         assert status["usage_percent"] == 0

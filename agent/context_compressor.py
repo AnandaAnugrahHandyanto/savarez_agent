@@ -15,6 +15,7 @@ Improvements over v1:
 
 import logging
 import time
+from collections import deque
 from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm
@@ -24,6 +25,13 @@ from agent.model_metadata import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Circuit breaker: if N compressions happen within M seconds, engage
+# aggressive tail truncation to break the loop.
+_CIRCUIT_BREAKER_WINDOW_SECONDS = 120
+_CIRCUIT_BREAKER_THRESHOLD = 3
+# When truncating tail tool outputs aggressively, cap each at this many chars
+_AGGRESSIVE_TOOL_OUTPUT_MAX_CHARS = 2000
 
 SUMMARY_PREFIX = (
     "[CONTEXT COMPACTION] Earlier turns in this conversation were compacted "
@@ -65,7 +73,8 @@ class ContextCompressor:
         self,
         model: str,
         threshold_percent: float = 0.50,
-        protect_first_n: int = 3,
+        hard_threshold_percent: float = 0.80,
+        protect_first_n: int = 1,
         protect_last_n: int = 20,
         summary_target_ratio: float = 0.20,
         quiet_mode: bool = False,
@@ -80,6 +89,7 @@ class ContextCompressor:
         self.api_key = api_key
         self.provider = provider
         self.threshold_percent = threshold_percent
+        self.hard_threshold_percent = max(hard_threshold_percent, threshold_percent + 0.05)
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
@@ -91,6 +101,7 @@ class ContextCompressor:
             provider=provider,
         )
         self.threshold_tokens = int(self.context_length * threshold_percent)
+        self.hard_threshold_tokens = int(self.context_length * self.hard_threshold_percent)
         self.compression_count = 0
 
         # Derive token budgets: ratio is relative to the threshold, not total context
@@ -103,10 +114,13 @@ class ContextCompressor:
         if not quiet_mode:
             logger.info(
                 "Context compressor initialized: model=%s context_length=%d "
-                "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
+                "threshold=%d (%.0f%%) hard_threshold=%d (%.0f%%) "
+                "target_ratio=%.0f%% tail_budget=%d "
                 "provider=%s base_url=%s",
                 model, self.context_length, self.threshold_tokens,
-                threshold_percent * 100, self.summary_target_ratio * 100,
+                threshold_percent * 100,
+                self.hard_threshold_tokens, self.hard_threshold_percent * 100,
+                self.summary_target_ratio * 100,
                 self.tail_token_budget,
                 provider or "none", base_url or "none",
             )
@@ -121,6 +135,9 @@ class ContextCompressor:
         # Stores the previous compaction summary for iterative updates
         self._previous_summary: Optional[str] = None
         self._summary_failure_cooldown_until: float = 0.0
+
+        # Circuit breaker: timestamps of recent compressions
+        self._compression_timestamps: deque = deque(maxlen=_CIRCUIT_BREAKER_THRESHOLD + 2)
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -143,10 +160,71 @@ class ContextCompressor:
         return {
             "last_prompt_tokens": self.last_prompt_tokens,
             "threshold_tokens": self.threshold_tokens,
+            "hard_threshold_tokens": self.hard_threshold_tokens,
             "context_length": self.context_length,
             "usage_percent": min(100, (self.last_prompt_tokens / self.context_length * 100)) if self.context_length else 0,
             "compression_count": self.compression_count,
+            "circuit_breaker_active": self._is_circuit_breaker_active(),
         }
+
+    # ------------------------------------------------------------------
+    # Circuit breaker: detect and break compression loops
+    # ------------------------------------------------------------------
+
+    def _record_compression(self) -> None:
+        """Record a compression event timestamp for circuit breaker tracking."""
+        self._compression_timestamps.append(time.monotonic())
+
+    def _is_circuit_breaker_active(self) -> bool:
+        """Check if compression is looping (N compressions in M seconds).
+
+        Returns True if the circuit breaker should engage, meaning we need
+        to take aggressive action (truncate tail tool outputs) instead of
+        normal compression that will just loop again.
+        """
+        if len(self._compression_timestamps) < _CIRCUIT_BREAKER_THRESHOLD:
+            return False
+        now = time.monotonic()
+        # Count compressions within the window
+        recent = sum(
+            1 for ts in self._compression_timestamps
+            if now - ts <= _CIRCUIT_BREAKER_WINDOW_SECONDS
+        )
+        return recent >= _CIRCUIT_BREAKER_THRESHOLD
+
+    def _truncate_large_tail_outputs(
+        self,
+        messages: List[Dict[str, Any]],
+        max_chars: int = _AGGRESSIVE_TOOL_OUTPUT_MAX_CHARS,
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """Truncate oversized tool outputs in the message tail.
+
+        This is the aggressive action taken when the circuit breaker fires.
+        Unlike _prune_old_tool_results (which replaces with a placeholder),
+        this preserves the first/last portion of each large tool output so
+        the model retains some context about what the tool returned.
+
+        Returns (modified_messages, count_of_truncated_messages).
+        """
+        result = [m.copy() for m in messages]
+        truncated = 0
+        for i, msg in enumerate(result):
+            if msg.get("role") != "tool":
+                continue
+            content = msg.get("content") or ""
+            if len(content) <= max_chars:
+                continue
+            # Keep first and last portion, insert truncation marker
+            keep_each = max_chars // 2
+            truncated_content = (
+                content[:keep_each]
+                + f"\n\n... [TRUNCATED: {len(content):,} chars → {max_chars:,} chars "
+                f"by circuit breaker to prevent compression loop] ...\n\n"
+                + content[-keep_each:]
+            )
+            result[i] = {**msg, "content": truncated_content}
+            truncated += 1
+        return result, truncated
 
     # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)
@@ -608,20 +686,25 @@ Write only the summary body. Do not include any preamble or prefix."""
     # ------------------------------------------------------------------
     # Main compression entry point
     # ------------------------------------------------------------------
-
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None) -> List[Dict[str, Any]]:
+    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None,
+                 force_truncation: bool = False) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
 
         Algorithm:
-          1. Prune old tool results (cheap pre-pass, no LLM call)
-          2. Protect head messages (system prompt + first exchange)
-          3. Find tail boundary by token budget (~20K tokens of recent context)
-          4. Summarize middle turns with structured LLM prompt
-          5. On re-compression, iteratively update the previous summary
+          1. Record compression event for circuit breaker tracking
+          2. If circuit breaker is active, truncate large tool outputs first
+          3. Prune old tool results (cheap pre-pass, no LLM call)
+          4. Protect head messages (system prompt + first exchange)
+          5. Find tail boundary by token budget (~20K tokens of recent context)
+          6. Summarize middle turns with structured LLM prompt
+          7. On re-compression, iteratively update the previous summary
 
         After compression, orphaned tool_call / tool_result pairs are cleaned
         up so the API never receives mismatched IDs.
         """
+        # Track compression event for circuit breaker
+        self._record_compression()
+
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self.protect_first_n + 3 + 1
@@ -634,6 +717,19 @@ Write only the summary body. Do not include any preamble or prefix."""
             return messages
 
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
+
+        # Circuit breaker: if compression is looping, truncate large tool
+        # outputs first to break the cycle. This is more aggressive than
+        # normal pruning -- it truncates ALL large tool outputs, not just
+        # old ones outside the protected tail.
+        if self._is_circuit_breaker_active() or force_truncation:
+            messages, cb_truncated = self._truncate_large_tail_outputs(messages)
+            if cb_truncated and not self.quiet_mode:
+                logger.warning(
+                    "⚡ Circuit breaker engaged: truncated %d large tool "
+                    "output(s) to break compression loop",
+                    cb_truncated,
+                )
 
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
