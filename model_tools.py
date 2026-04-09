@@ -170,6 +170,7 @@ def _discover_tools():
         "tools.mac_workflow_tool",
         "tools.browser_autonomous_tool",
         "tools.mac_native_tools",
+        "tools.probe_targets_tool",
     ]
     import importlib
     for mod_name in _modules:

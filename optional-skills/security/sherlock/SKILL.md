@@ -16,6 +16,15 @@ prerequisites:
 
 Hunt down social media accounts by username across 400+ social networks using the [Sherlock Project](https://github.com/sherlock-project/sherlock).
 
+> **Prefer the native `probe_targets` tool when available.** Hermes ships a
+> built-in parallel probe tool (`probe_targets` in the `web` toolset) that
+> queries ~460 sites from the same sherlock database, returns structured hits
+> the agent can reason about, and requires no separate CLI install. Use this
+> sherlock skill only when the native tool is unavailable, when the user
+> explicitly asks for the CLI, or for `--tor` / `--nsfw` flags the native tool
+> does not yet support. To refresh the underlying target catalogue run
+> `python hermes-agent/scripts/sync_sherlock_data.py`.
+
 ## When to Use
 
 - User asks to find accounts associated with a username
