@@ -11,38 +11,20 @@ requires-python = ">=3.11"
 authors = [{ name = "Nous Research" }]
 license = { text = "MIT" }
 dependencies = [
-  # Core — every direct dep is exact-pinned to ==X.Y.Z (no ranges).
-  # Rationale: ranges allow PyPI to ship a fresh version of a transitive
-  # at any time without a code review on our side. Exact pins mean the
-  # only way a new package version reaches a user is via an intentional
-  # update on our end (bump the pin in this file, regenerate uv.lock).
-  # This was tightened on 2026-05-12 in response to the Mini Shai-Hulud
-  # worm hitting mistralai 2.4.6 on PyPI; if that release had been
-  # captured by `mistralai>=2.3.0,<3` rather than an exact pin, every
-  # install in the hours before the quarantine would have pulled it.
-  #
-  # When updating: bump the version below AND regenerate uv.lock with
-  # `uv lock` so the transitive resolution stays consistent. Don't
-  # introduce ranges back without a written justification.
-  #
-  # Scope rule: only packages used by EVERY hermes session belong here.
-  # Anything that's provider-specific (`anthropic`, `firecrawl-py`,
-  # `exa-py`, `fal-client`, `edge-tts`, `parallel-web`) belongs in an
-  # extra and gets lazy-installed via `tools/lazy_deps.py` when the
-  # user picks that backend. Smaller `dependencies` = smaller blast
-  # radius for the next supply-chain attack.
-  "openai==2.24.0",
-  "python-dotenv==1.2.1",
-  "fire==0.7.1",
-  "httpx[socks]==0.28.1",
-  "websockets==15.0.1",
-  "rich==14.3.3",
-  "tenacity==9.1.4",
-  "pyyaml==6.0.3",
-  "ruamel.yaml==0.18.17",
-  "requests==2.33.0",  # CVE-2026-25645
-  "jinja2==3.1.6",
-  "pydantic==2.12.5",
+  # Core — pinned to known-good ranges to limit supply chain attack surface
+  "openai>=2.21.0,<3",
+  "anthropic>=0.39.0,<1",
+  "python-dotenv>=1.2.1,<2",
+  "fire>=0.7.1,<1",
+  "httpx[socks]>=0.28.1,<1",
+  "websockets>=15.0.1,<16",
+  "rich>=14.3.3,<15",
+  "tenacity>=9.1.4,<10",
+  "pyyaml>=6.0.2,<7",
+  "ruamel.yaml>=0.18.16,<0.19",
+  "requests>=2.33.0,<3",  # CVE-2026-25645
+  "jinja2>=3.1.5,<4",
+  "pydantic>=2.12.5,<3",
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
   "prompt_toolkit==3.0.52",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
