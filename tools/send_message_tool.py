@@ -393,7 +393,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         )
 
     last_result = None
-    for chunk in chunks:
+    for i, chunk in enumerate(chunks):
+        is_last_chunk = (i == len(chunks) - 1)
+        
         if platform == Platform.DISCORD:
             result = await _send_discord(pconfig.token, chat_id, chunk)
         elif platform == Platform.SLACK:
@@ -416,8 +418,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
         elif platform == Platform.FEISHU:
             # Only send media with the last chunk (matching Telegram behavior)
-            is_last = (chunk == chunks[-1]) if chunks else True
-            result = await _send_feishu(pconfig, chat_id, chunk, media_files=media_files if is_last else [], thread_id=thread_id)
+            result = await _send_feishu(pconfig, chat_id, chunk, media_files=media_files if is_last_chunk else [], thread_id=thread_id)
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         else:
