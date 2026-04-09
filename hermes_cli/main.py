@@ -2296,20 +2296,76 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
         print()
 
-    # Optional base URL override
+    # Base URL selection / override
     current_base = ""
     if base_url_env:
         current_base = get_env_value(base_url_env) or os.getenv(base_url_env, "")
     effective_base = current_base or pconfig.inference_base_url
 
-    try:
-        override = input(f"Base URL [{effective_base}]: ").strip()
-    except (KeyboardInterrupt, EOFError):
+    if provider_id == "zai" and base_url_env:
+        endpoint_choices = [
+            ("Auto-detect endpoint (recommended)", ""),
+            ("Z.AI Global (General) — https://api.z.ai/api/paas/v4", "https://api.z.ai/api/paas/v4"),
+            ("Z.AI Global (Coding) — https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/coding/paas/v4"),
+            ("Z.AI China (General) — https://open.bigmodel.cn/api/paas/v4", "https://open.bigmodel.cn/api/paas/v4"),
+            ("Z.AI China (Coding) — https://open.bigmodel.cn/api/coding/paas/v4", "https://open.bigmodel.cn/api/coding/paas/v4"),
+            ("Custom base URL...", None),
+            (f"Keep current ({effective_base})", "__keep__"),
+        ]
+
+        normalized_current_base = current_base.rstrip("/") if current_base else ""
+        default_choice = "1" if not normalized_current_base else "7"
+        if normalized_current_base:
+            for idx, (_label, value) in enumerate(endpoint_choices, start=1):
+                if isinstance(value, str) and value not in {"", "__keep__"}:
+                    if normalized_current_base == value.rstrip("/"):
+                        default_choice = str(idx)
+                        break
+
+        print("  Select Z.AI endpoint:")
+        for idx, (label, _value) in enumerate(endpoint_choices, start=1):
+            print(f"    {idx}. {label}")
         print()
-        override = ""
-    if override and base_url_env:
-        save_env_value(base_url_env, override)
-        effective_base = override
+
+        try:
+            endpoint_choice = input(f"  Choice [1-7] ({default_choice}): ").strip() or default_choice
+        except (KeyboardInterrupt, EOFError):
+            print()
+            endpoint_choice = default_choice
+
+        if endpoint_choice not in {"1", "2", "3", "4", "5", "6", "7"}:
+            endpoint_choice = default_choice
+
+        selected_value = endpoint_choices[int(endpoint_choice) - 1][1]
+
+        if selected_value == "":
+            save_env_value(base_url_env, "")
+            effective_base = pconfig.inference_base_url
+            print("  Using auto-detected Z.AI endpoint.")
+        elif selected_value is None:
+            try:
+                override = input(f"  Custom base URL [{effective_base}]: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                override = ""
+            if override:
+                save_env_value(base_url_env, override)
+                effective_base = override
+        elif selected_value == "__keep__":
+            pass
+        else:
+            save_env_value(base_url_env, selected_value)
+            effective_base = selected_value
+        print()
+    else:
+        try:
+            override = input(f"Base URL [{effective_base}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            override = ""
+        if override and base_url_env:
+            save_env_value(base_url_env, override)
+            effective_base = override
 
     # Model selection — resolution order:
     #   1. models.dev registry (cached, filtered for agentic/tool-capable models)

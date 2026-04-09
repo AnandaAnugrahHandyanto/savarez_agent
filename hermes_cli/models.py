@@ -493,6 +493,12 @@ _PROVIDER_ALIASES = {
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
+    # Backward-compat aliases for the former standalone Z.AI Coding entry.
+    "zai-coding": "zai",
+    "z-coding": "zai",
+    "z.ai-coding": "zai",
+    "glm-coding": "zai",
+    "zhipu-coding": "zai",
     "github": "copilot",
     "github-copilot": "copilot",
     "github-models": "copilot",

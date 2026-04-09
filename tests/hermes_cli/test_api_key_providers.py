@@ -161,6 +161,15 @@ class TestResolveProvider:
     def test_alias_z_ai(self):
         assert resolve_provider("z-ai") == "zai"
 
+    def test_alias_glm_coding(self):
+        assert resolve_provider("glm-coding") == "zai"
+
+    def test_alias_zai_coding(self):
+        assert resolve_provider("zai-coding") == "zai"
+
+    def test_alias_z_coding(self):
+        assert resolve_provider("z-coding") == "zai"
+
     def test_alias_zhipu(self):
         assert resolve_provider("zhipu") == "zai"
 

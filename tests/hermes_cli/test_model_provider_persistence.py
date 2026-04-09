@@ -257,3 +257,52 @@ class TestProviderPersistsAfterModelSave:
         assert model.get("provider") == "opencode-go"
         assert model.get("default") == "minimax-m2.5"
         assert model.get("api_mode") == "anthropic_messages"
+
+    def test_zai_coding_endpoint_selection_persists_base_url(self, config_home, monkeypatch):
+        from hermes_cli.main import _model_flow_api_key_provider
+        from hermes_cli.config import load_config
+
+        monkeypatch.setenv("GLM_API_KEY", "glm-test-key")
+
+        with patch("agent.models_dev.list_agentic_models", return_value=[]), \
+             patch("hermes_cli.models.fetch_api_models", return_value=[]), \
+             patch("hermes_cli.auth._prompt_model_selection", return_value="glm-4.7"), \
+             patch("hermes_cli.auth.deactivate_provider"), \
+             patch("builtins.input", return_value="3"):
+            _model_flow_api_key_provider(load_config(), "zai", "glm-5")
+
+        import yaml
+        from hermes_cli.config import get_env_value
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert model.get("provider") == "zai"
+        assert model.get("default") == "glm-4.7"
+        assert model.get("base_url") == "https://api.z.ai/api/coding/paas/v4"
+        assert get_env_value("GLM_BASE_URL") == "https://api.z.ai/api/coding/paas/v4"
+
+    def test_zai_auto_detect_choice_clears_base_url_override(self, config_home, monkeypatch):
+        from hermes_cli.main import _model_flow_api_key_provider
+        from hermes_cli.config import load_config
+
+        monkeypatch.setenv("GLM_API_KEY", "glm-test-key")
+        monkeypatch.setenv("GLM_BASE_URL", "https://custom.example/v4")
+
+        with patch("agent.models_dev.list_agentic_models", return_value=[]), \
+             patch("hermes_cli.models.fetch_api_models", return_value=[]), \
+             patch("hermes_cli.auth._prompt_model_selection", return_value="glm-5"), \
+             patch("hermes_cli.auth.deactivate_provider"), \
+             patch("builtins.input", return_value="1"):
+            _model_flow_api_key_provider(load_config(), "zai", "glm-4.7")
+
+        import yaml
+        from hermes_cli.config import get_env_value
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert model.get("provider") == "zai"
+        assert model.get("default") == "glm-5"
+        assert model.get("base_url") == "https://api.z.ai/api/paas/v4"
+        assert get_env_value("GLM_BASE_URL") == ""
