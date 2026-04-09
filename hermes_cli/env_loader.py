@@ -5,14 +5,19 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
+import dotenv  # Resolve .load_dotenv at call time — NOT via `from dotenv import load_dotenv`.
+# Rationale: a `from` import captures whatever `dotenv.load_dotenv` points to AT
+# IMPORT TIME.  If this module is imported while a test has `patch("dotenv.load_dotenv")`
+# active, our binding gets stuck on the MagicMock forever — long after the patch
+# context exits.  Calling `dotenv.load_dotenv(...)` each time resolves against
+# the current module attribute and is stable across patches.
 
 
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
     try:
-        load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
+        dotenv.load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
     except UnicodeDecodeError:
-        load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+        dotenv.load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
 
 
 def load_hermes_dotenv(

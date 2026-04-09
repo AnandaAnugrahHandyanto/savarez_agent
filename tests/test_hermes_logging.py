@@ -13,17 +13,42 @@ import hermes_logging
 
 @pytest.fixture(autouse=True)
 def _reset_logging_state():
-    """Reset the module-level sentinel and clean up root logger handlers
-    added by setup_logging() so tests don't leak state."""
+    """Reset the module-level sentinel and clean up any RotatingFileHandlers
+    added by setup_logging() — including ones attached at module-import time
+    (e.g. by ``import cli`` which calls ``setup_logging(mode='cli')`` before
+    the HERMES_HOME isolation fixture runs).
+
+    Without this, a prior test that imports ``cli`` leaves handlers pointing
+    at the real ``~/.hermes/logs/`` attached to root, and this test's
+    ``setup_logging(hermes_home=tmp_path)`` ADDS fresh handlers without
+    replacing the stale ones.  Assertions on ``agent_handlers[0].level``
+    then read the stale INFO handler instead of the test's requested level.
+    """
     hermes_logging._logging_initialized = False
     root = logging.getLogger()
-    original_handlers = list(root.handlers)
-    yield
-    # Restore — remove any handlers added during the test.
-    for h in list(root.handlers):
-        if h not in original_handlers:
-            root.removeHandler(h)
+    # Aggressive pre-test cleanup: drop any RotatingFileHandler pointing at
+    # a path containing "agent.log" or "errors.log" — those are hermes_logging's.
+    _stale_hermes_handlers = [
+        h for h in list(root.handlers)
+        if isinstance(h, RotatingFileHandler)
+        and any(name in getattr(h, "baseFilename", "") for name in ("agent.log", "errors.log"))
+    ]
+    for h in _stale_hermes_handlers:
+        root.removeHandler(h)
+        try:
             h.close()
+        except Exception:
+            pass
+    preserved_handlers = list(root.handlers)
+    yield
+    # Post-test cleanup: remove any handlers added during the test.
+    for h in list(root.handlers):
+        if h not in preserved_handlers:
+            root.removeHandler(h)
+            try:
+                h.close()
+            except Exception:
+                pass
     hermes_logging._logging_initialized = False
 
 

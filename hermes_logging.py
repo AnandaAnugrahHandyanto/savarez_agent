@@ -110,6 +110,26 @@ def setup_logging(
 
     root = logging.getLogger()
 
+    # When force=True, drop any previously-installed RotatingFileHandlers
+    # rooted in the target log_dir so the new configuration actually takes
+    # effect. Without this, _add_rotating_handler's idempotent-by-path guard
+    # skips replacement and the stale level/max_bytes/backup_count persists.
+    if force:
+        log_dir_resolved = log_dir.resolve()
+        for existing in list(root.handlers):
+            if not isinstance(existing, RotatingFileHandler):
+                continue
+            try:
+                existing_path = Path(getattr(existing, "baseFilename", "")).resolve()
+            except (OSError, ValueError):
+                continue
+            try:
+                existing_path.relative_to(log_dir_resolved)
+            except ValueError:
+                continue  # handler points outside the target log dir
+            root.removeHandler(existing)
+            existing.close()
+
     # --- agent.log (INFO+) — the main activity log -------------------------
     _add_rotating_handler(
         root,
