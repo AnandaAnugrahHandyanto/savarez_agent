@@ -151,6 +151,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M1-256k",
         "MiniMax-M2.5",
         "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
     ],
     "minimax-cn": [
         "MiniMax-M1",
@@ -160,6 +161,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M1-256k",
         "MiniMax-M2.5",
         "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
     ],
     "anthropic": [
         "claude-opus-4-6",
@@ -1719,3 +1721,4 @@ def validate_requested_model(
             f"If the service isn't down, this model may not be valid."
         ),
     }
+
