@@ -643,7 +643,7 @@ class MattermostAdapter(BasePlatformAdapter):
             # Waiki: match por prefijo de nombre de canal
             if not is_free_channel:
                 _prefix_raw = os.getenv(
-                    "MATTERMOST_NO_MENTION_PREFIX", ""
+                    "MATTERMOST_FREE_RESPONSE_PREFIX", ""
                 )
                 _prefixes = [
                     p.strip()
