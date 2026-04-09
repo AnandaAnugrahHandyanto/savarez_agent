@@ -17,6 +17,8 @@ Gateway-specific env vars:
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import logging
 import os
 import re
@@ -85,6 +87,20 @@ class SmsAdapter(BasePlatformAdapter):
         creds = f"{self._account_sid}:{self._auth_token}"
         encoded = base64.b64encode(creds.encode("ascii")).decode("ascii")
         return f"Basic {encoded}"
+
+    def _validate_twilio_signature(self, url: str, params: Dict[str, str], signature: str) -> bool:
+        """Validate the Twilio webhook signature for an inbound request."""
+        if not signature:
+            return False
+        payload = url + "".join(k + v for k, v in sorted(params.items()))
+        expected = base64.b64encode(
+            hmac.new(
+                self._auth_token.encode("utf-8"),
+                payload.encode("utf-8"),
+                hashlib.sha1,
+            ).digest()
+        ).decode("ascii")
+        return hmac.compare_digest(expected, signature)
 
     # ------------------------------------------------------------------
     # Required abstract methods
@@ -207,6 +223,23 @@ class SmsAdapter(BasePlatformAdapter):
     # Twilio webhook handler
     # ------------------------------------------------------------------
 
+    def _validate_twilio_signature(
+        self, request_url: str, params: Dict[str, str], signature: str
+    ) -> bool:
+        """Validate the X-Twilio-Signature header.
+
+        Algorithm: HMAC-SHA1( auth_token, url + sorted(k+v for k,v in params) )
+        See https://www.twilio.com/docs/usage/webhooks/webhooks-security
+        """
+        s = request_url + "".join(k + v for k, v in sorted(params.items()))
+        mac = hmac.new(
+            self._auth_token.encode("utf-8"),
+            s.encode("utf-8"),
+            hashlib.sha1,
+        )
+        expected = base64.b64encode(mac.digest()).decode("ascii")
+        return hmac.compare_digest(expected, signature)
+
     async def _handle_webhook(self, request) -> "aiohttp.web.Response":
         from aiohttp import web
 
@@ -220,6 +253,18 @@ class SmsAdapter(BasePlatformAdapter):
                 text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
                 content_type="application/xml",
                 status=400,
+            )
+
+        # Validate Twilio request signature before processing anything.
+        params = {key: values[0] for key, values in form.items() if values}
+        signature = request.headers.get("X-Twilio-Signature", "")
+        request_url = str(request.url)
+        if not self._validate_twilio_signature(request_url, params, signature):
+            logger.warning("[sms] rejected webhook with invalid Twilio signature from %s", request.remote)
+            return web.Response(
+                text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                content_type="application/xml",
+                status=403,
             )
 
         # Extract fields (parse_qs returns lists)
