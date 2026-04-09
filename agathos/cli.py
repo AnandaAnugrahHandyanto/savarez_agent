@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
 """
-Agathos CLI - Main entry point for the Agent Resource Guardian.
+Agathos CLI - Main entry point for the Agent Guardian & Health Oversight System.
 
 Usage:
-    argus                          # Show help
-    argus setup                    # Interactive setup
-    argus setup quick              # Quick setup (essential settings only)
-    argus setup core               # Core watcher settings
-    argus setup modules            # Monitoring modules
-    argus setup alerts             # Notifications/alerting
-    argus setup full               # Full reconfiguration
-    
-    argus status                   # Show ARGUS status
-    argus start                    # Start ARGUS daemon
-    argus stop                     # Stop ARGUS daemon
-    argus restart                  # Restart ARGUS daemon
-    argus logs                     # View ARGUS logs
-    
-    argus service install          # Install launchd service (macOS)
-    argus service uninstall        # Uninstall launchd service
-    argus service status           # Check service status
+    agathos                          # Show help
+    agathos setup                    # Interactive setup
+    agathos setup quick              # Quick setup (essential settings only)
+    agathos setup core               # Core watcher settings
+    agathos setup modules            # Monitoring modules
+    agathos setup alerts             # Notifications/alerting
+    agathos setup full               # Full reconfiguration
+
+    agathos status                   # Show Agathos status
+    agathos start                    # Start Agathos daemon
+    agathos stop                     # Stop Agathos daemon
+    agathos restart                  # Restart Agathos daemon
+    agathos logs                     # View Agathos logs
+
+    agathos service install          # Install launchd service (macOS)
+    agathos service uninstall        # Uninstall launchd service
+    agathos service status           # Check service status
+    agathos service list             # List running services
 """
 
 import argparse
@@ -27,6 +28,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional, Dict, Any, List
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -37,20 +39,24 @@ _AGATHOS_HOME = Path(os.path.expanduser("~/hermes"))
 
 
 def _require_tty(command_name: str) -> None:
-    """Exit if stdin is not a terminal."""
+    """Exit if stdin is not a terminal.
+
+    Args:
+        command_name: Name of the command requiring TTY (for error message)
+    """
     if not sys.stdin.isatty():
         print(
-            f"Error: 'argus {command_name}' requires an interactive terminal.\n"
+            f"Error: 'agathos {command_name}' requires an interactive terminal.\n"
             f"Run it directly in your terminal instead.",
             file=sys.stderr,
         )
         sys.exit(1)
 
 
-def _print_banner():
-    """Print the ARGUS CLI banner."""
+def _print_banner() -> None:
+    """Print the Agathos CLI banner."""
     print("\033[95m" + "  ┌─────────────────────────────────────────────────────────────┐" + "\033[0m")
-    print("\033[95m" + "  │           ⚔ ARGUS - Agent Resource Guardian                 │" + "\033[0m")
+    print("\033[95m" + "  │           AGATHOS - Agent Guardian & Health System          │" + "\033[0m")
     print("\033[95m" + "  │     Unified Supervisor for Hermes Agent Sessions            │" + "\033[0m")
     print("\033[95m" + "  └─────────────────────────────────────────────────────────────┘" + "\033[0m")
     print()

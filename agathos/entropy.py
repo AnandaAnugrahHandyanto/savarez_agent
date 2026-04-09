@@ -1,5 +1,5 @@
 """
-Entropy detection algorithms for ARGUS.
+Entropy detection algorithms for Agathos.
 
 Each function takes a sqlite3.Cursor and session_id, returns List[Dict]
 with entropy_type, severity, and details.
@@ -25,7 +25,25 @@ except (ImportError, TypeError):
 def detect_repeat_tool_calls(
     cursor: sqlite3.Cursor, session_id: str, threshold: int = 3
 ) -> List[Dict]:
-    """Detect repeated tool calls without changes."""
+    """Detect repeated identical tool calls within a session.
+
+    Identifies when the same tool is called with identical arguments multiple
+    times, indicating potential stuck loops or wasted iterations.
+
+    Args:
+        cursor: Database cursor for agathos.db
+        session_id: Session to analyze
+        threshold: Minimum repeat count to trigger detection (default: 3)
+
+    Returns:
+        List of detection dicts with keys:
+        - entropy_type: "repeat_tool_calls"
+        - severity: "warning" (3-4 repeats) or "critical" (5+)
+        - details: JSON with tool_name, tool_args, count
+
+    Query scope: Last 10 minutes of tool_calls table.
+    """
+
     detections = []
     try:
         cursor.execute(
@@ -60,7 +78,24 @@ def detect_repeat_tool_calls(
 def detect_repeat_commands(
     cursor: sqlite3.Cursor, session_id: str, threshold: int = 3
 ) -> List[Dict]:
-    """Detect repeated terminal commands."""
+    """Detect repeated terminal commands within a session.
+
+    Identifies when the same shell command is executed multiple times,
+    indicating potential redundant operations or stuck terminal loops.
+
+    Args:
+        cursor: Database cursor for agathos.db
+        session_id: Session to analyze
+        threshold: Minimum repeat count to trigger detection (default: 3)
+
+    Returns:
+        List of detection dicts with keys:
+        - entropy_type: "repeat_commands"
+        - severity: "warning" (3-4 repeats) or "critical" (5+)
+        - details: JSON with command, count
+
+    Query scope: Last 10 minutes of terminal_commands table.
+    """
     detections = []
     try:
         cursor.execute(
@@ -89,7 +124,25 @@ def detect_repeat_commands(
 
 
 def detect_stuck_loops(cursor: sqlite3.Cursor, session_id: str) -> List[Dict]:
-    """Detect stuck loops (same sequence of tool calls)."""
+    """Detect stuck loops — repeating sequences of tool calls.
+
+    Identifies when a pattern of tool calls repeats (e.g., read_file
+    -> write_file -> read_file -> write_file), indicating the agent
+    is stuck in a cycle without making progress.
+
+    Args:
+        cursor: Database cursor for agathos.db
+        session_id: Session to analyze
+
+    Returns:
+        List of detection dicts with keys:
+        - entropy_type: "stuck_loop"
+        - severity: "warning" (2 repeats) or "critical" (3+)
+        - details: JSON with pattern (tool sequence), repeat_count
+
+    Algorithm: Scans last 50 tool calls, looks for repeating 3-call
+    or 4-call sequences. Sequence must repeat at least twice.
+    """
     detections = []
     try:
         cursor.execute(
@@ -127,7 +180,24 @@ def detect_stuck_loops(cursor: sqlite3.Cursor, session_id: str) -> List[Dict]:
 
 
 def detect_no_file_changes(cursor: sqlite3.Cursor, session_id: str) -> List[Dict]:
-    """Detect write operations without file changes."""
+    """Detect write_file/patch operations that produced no file changes.
+
+    Identifies when write_file or patch tools report file_changed=False,
+    indicating the operation had no effect (e.g., writing same content,
+    patch with non-matching old_string).
+
+    Args:
+        cursor: Database cursor for agathos.db
+        session_id: Session to analyze
+
+    Returns:
+        List of detection dicts with keys:
+        - entropy_type: "no_file_changes"
+        - severity: "critical" (all cases — wasted operations)
+        - details: JSON with tool_call_id, tool_name, file_path
+
+    Query scope: Last 10 minutes, write_file and patch tools only.
+    """
     detections = []
     try:
         cursor.execute(
@@ -161,9 +231,23 @@ def detect_no_file_changes(cursor: sqlite3.Cursor, session_id: str) -> List[Dict
 
 
 def detect_error_cascade(cursor: sqlite3.Cursor, session_id: str) -> List[Dict]:
-    """Detect cascading tool failures (3+ consecutive errors).
+    """Detect cascading tool failures — consecutive errors without successes.
 
-    Same threshold pattern as repeat_tool_calls: warning at 3, critical at 5.
+    Identifies when 3+ consecutive tool calls fail, indicating the agent
+    is in a failure spiral (e.g., repeatedly trying the same failing operation).
+
+    Args:
+        cursor: Database cursor for agathos.db
+        session_id: Session to analyze
+
+    Returns:
+        List of detection dicts with keys:
+        - entropy_type: "error_cascade"
+        - severity: "warning" (3-4 consecutive) or "critical" (5+)
+        - details: JSON with consecutive_errors, tools (list), error_messages
+
+    Algorithm: Scans last 20 tool calls, finds longest consecutive error
+    run. Returns one detection per cascade found.
     """
     detections = []
     try:

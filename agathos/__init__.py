@@ -1,5 +1,7 @@
 """Agathos - Agent Guardian & Health Oversight System."""
 
+from typing import Any, Dict, List, Optional
+
 from .actions import (
     inject_prompt,
     kill_session,
