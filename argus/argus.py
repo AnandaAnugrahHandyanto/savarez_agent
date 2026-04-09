@@ -14,143 +14,114 @@ import subprocess
 import signal
 import logging
 import logging.handlers
-import urllib.request
-import urllib.error
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any, Union
+from typing import Dict, List, Optional, Union
+
+from wal_monitor import ToolCallMonitor
+import entropy as _entropy
+import directives as _directives
+import actions as _actions
+import notifications as _notifications
 
 # === PATH RESOLUTION ===
 # Add hermes-agent to path for module imports
-_HERMES_AGENT = os.path.expanduser('~/.hermes/hermes-agent')
+_HERMES_AGENT = os.path.expanduser("~/.hermes/hermes-agent")
 if os.path.isdir(_HERMES_AGENT) and _HERMES_AGENT not in sys.path:
     sys.path.insert(0, _HERMES_AGENT)
 
 try:
     from hermes_constants import get_hermes_home
+
     _HERMES_HOME = get_hermes_home()
 except ImportError:
-    _HERMES_HOME = Path(os.path.expanduser('~/.hermes'))
+    _HERMES_HOME = Path(os.path.expanduser("~/.hermes"))
 
-_ARGUS_HOME = Path(os.path.expanduser('~/hermes'))
+_ARGUS_HOME = Path(os.path.expanduser("~/hermes"))
+
 
 def _hermes_path(*parts: str) -> Path:
     """Build a path under HERMES_HOME (~/.hermes)."""
     return _HERMES_HOME.joinpath(*parts)
 
+
 def _argus_path(*parts: str) -> Path:
     """Build a path under ARGUS_HOME (~/hermes)."""
     return _ARGUS_HOME.joinpath(*parts)
+
 
 # === INTERNALS ===
 # Direct module imports when available, subprocess fallback otherwise.
 _HERMES_INTERNALS_AVAILABLE = False
 try:
-    from cron.jobs import pause_job, resume_job, trigger_job, list_jobs, get_job, update_job
+    from cron.jobs import (
+        list_jobs,
+    )
     from hermes_state import SessionDB, DEFAULT_DB_PATH
     from hermes_cli.config import load_config as _hermes_load_config
-    from hermes_cli.env_loader import load_hermes_dotenv
+
     _HERMES_INTERNALS_AVAILABLE = True
 except (ImportError, TypeError) as _e:
     import logging as _logging
-    _logging.getLogger('argus').warning("Internals unavailable (%s), using subprocess fallback", _e)
 
-    # Subprocess fallbacks
-    def pause_job(job_id, reason=None):
-        r = subprocess.run(['hermes', 'cron', 'pause', str(job_id)], capture_output=True, text=True, timeout=10)
-        return {'id': job_id, 'enabled': False} if r.returncode == 0 else None
+    _logging.getLogger("argus").warning(
+        "Internals unavailable (%s), using subprocess fallback", _e
+    )
+    from hermes_fallback import (
+        list_jobs,
+        SessionDB,
+        DEFAULT_DB_PATH,
+        _hermes_load_config,
+    )
 
-    def resume_job(job_id):
-        r = subprocess.run(['hermes', 'cron', 'resume', str(job_id)], capture_output=True, text=True, timeout=10)
-        return {'id': job_id, 'enabled': True} if r.returncode == 0 else None
-
-    def trigger_job(job_id):
-        r = subprocess.run(['hermes', 'cron', 'run', str(job_id)], capture_output=True, text=True, timeout=10)
-        return {'id': job_id} if r.returncode == 0 else None
-
-    def list_jobs(include_disabled=False):
-        r = subprocess.run(['hermes', 'cron', 'list', '--all'], capture_output=True, text=True, timeout=15)
-        if r.returncode == 0:
-            try:
-                return json.loads(r.stdout).get('jobs', [])
-            except json.JSONDecodeError:
-                return []
-        return []
-
-    def get_job(job_id):
-        for j in list_jobs(include_disabled=True):
-            if j.get('id') == job_id:
-                return j
-        return None
-
-    def update_job(job_id, updates):
-        return None
-
-    class SessionDB:
-        """Stub when hermes internals unavailable."""
-        def __init__(self, path): pass
-        def list_sessions_rich(self, **kw): return []
-        def close(self): pass
-
-    DEFAULT_DB_PATH = str(_hermes_path('state.db'))
-
-    def _hermes_load_config():
-        return {}
-
-    def load_hermes_dotenv():
-        """Fallback: load hermes .env — no-op when hermes internals unavailable."""
-        pass
-
-# WAL monitor
-from wal_monitor import ToolCallMonitor
 
 # Corrective prompt templates by entropy type
 CORRECTIVE_PROMPTS = {
-    'repeat_tool_calls': (
+    "repeat_tool_calls": (
         "ENTROPY CORRECTION: ARGUS detected repeated tool calls without progress. "
         "You are calling the same tool with the same arguments multiple times. "
         "Stop and reassess. Read the file/content you need ONCE, then act on it. "
         "Do not re-read files you already have in context. Complete the task."
     ),
-    'repeat_commands': (
+    "repeat_commands": (
         "ENTROPY CORRECTION: ARGUS detected repeated terminal commands. "
         "You are running the same command multiple times. "
         "Check the output you already received before re-running. "
         "If the command failed, fix the issue, don't retry blindly."
     ),
-    'stuck_loop': (
+    "stuck_loop": (
         "ENTROPY CORRECTION: ARGUS detected a stuck loop pattern. "
         "Your last several tool calls form a repeating cycle. "
         "STOP. Read your conversation history. Identify what you're trying to accomplish. "
         "Take a different approach. Do not repeat the same sequence."
     ),
-    'no_file_changes': (
+    "no_file_changes": (
         "ENTROPY CORRECTION: ARGUS detected write operations that didn't change files. "
         "You are calling write_file/patch but the file content is not changing. "
         "Read the file first, verify what you're writing is actually different. "
         "If using patch, check that old_string matches exactly."
     ),
-    'error_cascade': (
+    "error_cascade": (
         "ENTROPY CORRECTION: ARGUS detected a cascade of tool failures. "
         "Multiple consecutive tool calls have returned errors. "
         "STOP. Read the error messages carefully. The environment or arguments may be wrong. "
         "Check file paths, command syntax, and prerequisites before retrying. "
         "If a tool keeps failing, try a different approach or use a different tool."
     ),
-    'budget_pressure': (
+    "budget_pressure": (
         "BUDGET CORRECTION: You are burning through your iteration budget fast "
         "without productive output. "
         "Step back. Summarize what you have accomplished so far and what remains. "
         "Pick the simplest remaining task and complete it in one pass. "
         "Avoid exploratory tool calls — read once, then act."
     ),
-    'quality_gate': (
+    "quality_gate": (
         "QUALITY CORRECTION: Your output quality is below the 0.92 threshold. "
         "Provide mechanistic explanations, not surface descriptions. "
         "Include structured output with headers and metrics. "
         "Feed the pipeline: write facts, generate trajectories, enrich KB."
     ),
-    'pipeline_violation': (
+    "pipeline_violation": (
         "PIPELINE CORRECTION: You are not hitting all 4 pipeline targets. "
         "Every substantive interaction must produce: "
         "(1) target output, (2) holographic_memory.db facts, "
@@ -161,31 +132,33 @@ CORRECTIVE_PROMPTS = {
 
 # === CONFIGURATION ===
 _DEFAULT_ARGUS_CONFIG = {
-    'db_path': str(_argus_path('data', 'watcher', 'argus.db')),
-    'log_dir': str(_argus_path('logs', 'argus')),
-    'poll_interval': 30,
-    'entropy_threshold': 3,
-    'quality_threshold': 0.92,
-    'max_restart_count': 3,
-    'session_timeout_minutes': 60,
+    "db_path": str(_argus_path("data", "watcher", "argus.db")),
+    "log_dir": str(_argus_path("logs", "argus")),
+    "poll_interval": 30,
+    "entropy_threshold": 3,
+    "quality_threshold": 0.92,
+    "max_restart_count": 3,
+    "session_timeout_minutes": 60,
 }
+
 
 def _load_argus_config() -> Dict:
     """Load ARGUS config from hermes config.yaml 'argus' key, falling back to defaults."""
     try:
         hermes_config = _hermes_load_config()
-        argus_overrides = hermes_config.get('argus', {})
+        argus_overrides = hermes_config.get("argus", {})
         return {**_DEFAULT_ARGUS_CONFIG, **argus_overrides}
     except Exception:
         return dict(_DEFAULT_ARGUS_CONFIG)
+
 
 # Runtime config — loaded once at import
 CONFIG = _load_argus_config()
 
 
 # === PID FILE ===
-_ARGUS_PID_PATH = _argus_path('data', 'watcher', 'argus.pid')
-_ARGUS_KIND = 'argus-watcher'
+_ARGUS_PID_PATH = _argus_path("data", "watcher", "argus.pid")
+_ARGUS_KIND = "argus-watcher"
 
 
 def _get_argus_pid_path() -> Path:
@@ -196,10 +169,10 @@ def _get_argus_pid_path() -> Path:
 def _build_argus_pid_record() -> dict:
     """Build PID record for argus.pid."""
     return {
-        'pid': os.getpid(),
-        'kind': _ARGUS_KIND,
-        'argv': list(sys.argv),
-        'start_time': time.time(),
+        "pid": os.getpid(),
+        "kind": _ARGUS_KIND,
+        "argv": list(sys.argv),
+        "start_time": time.time(),
     }
 
 
@@ -230,7 +203,7 @@ def _read_argus_pid_record() -> Optional[dict]:
         return json.loads(raw)
     except json.JSONDecodeError:
         try:
-            return {'pid': int(raw)}
+            return {"pid": int(raw)}
         except ValueError:
             return None
 
@@ -242,7 +215,7 @@ def get_argus_running_pid() -> Optional[int]:
         remove_argus_pid_file()
         return None
     try:
-        pid = int(record['pid'])
+        pid = int(record["pid"])
     except (KeyError, TypeError, ValueError):
         remove_argus_pid_file()
         return None
@@ -262,8 +235,8 @@ def is_argus_running() -> bool:
 
 
 # === LAUNCHD ===
-_ARGUS_LAUNCHD_LABEL = 'com.hermes.argus'
-_ARGUS_SCRIPT = str(_argus_path('scripts', 'watcher', 'argus.py'))
+_ARGUS_LAUNCHD_LABEL = "com.hermes.argus"
+_ARGUS_SCRIPT = str(_argus_path("scripts", "watcher", "argus.py"))
 
 
 def get_argus_launchd_label() -> str:
@@ -273,11 +246,12 @@ def get_argus_launchd_label() -> str:
 
 def get_argus_launchd_plist_path() -> Path:
     """Return the launchd plist path."""
-    return _hermes_home_plist_dir() / f'{_ARGUS_LAUNCHD_LABEL}.plist'
+    return _hermes_home_plist_dir() / f"{_ARGUS_LAUNCHD_LABEL}.plist"
+
 
 def _hermes_home_plist_dir() -> Path:
     """Return ~/Library/LaunchAgents (macOS-specific)."""
-    return Path.home() / 'Library' / 'LaunchAgents'
+    return Path.home() / "Library" / "LaunchAgents"
 
 
 def generate_argus_launchd_plist() -> str:
@@ -286,28 +260,29 @@ def generate_argus_launchd_plist() -> str:
 
     label = get_argus_launchd_label()
     script = _ARGUS_SCRIPT
-    log_dir = str(_argus_path('logs', 'argus'))
+    log_dir = str(_argus_path("logs", "argus"))
     hermes_home = str(_HERMES_HOME)
 
     # Build PATH
-    venv_bin = str(_hermes_path('hermes-agent', 'venv', 'bin'))
+    venv_bin = str(_hermes_path("hermes-agent", "venv", "bin"))
     priority_dirs = [venv_bin] if os.path.isdir(venv_bin) else []
 
-    
-    hermes_bin = _shutil.which('hermes')
+    hermes_bin = _shutil.which("hermes")
     if hermes_bin:
         hermes_dir = str(Path(hermes_bin).resolve().parent)
         if hermes_dir not in priority_dirs:
             priority_dirs.append(hermes_dir)
 
-    sane_path = ':'.join(
-        dict.fromkeys(priority_dirs + [p for p in os.environ.get('PATH', '').split(':') if p])
+    sane_path = ":".join(
+        dict.fromkeys(
+            priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]
+        )
     )
 
     # Detect python
-    python = sys.executable or '/usr/bin/python3'
+    python = sys.executable or "/usr/bin/python3"
 
-    return f'''<?xml version="1.0" encoding="UTF-8"?>
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -349,7 +324,7 @@ def generate_argus_launchd_plist() -> str:
     <key>ThrottleInterval</key>
     <integer>10</integer>
 </dict>
-</plist>'''
+</plist>"""
 
 
 def argus_launchd_install() -> bool:
@@ -364,8 +339,11 @@ def argus_launchd_install() -> bool:
     # Bootstrap via launchctl
     try:
         subprocess.run(
-            ['launchctl', 'bootstrap', f'gui/{os.getuid()}', str(plist_path)],
-            check=True, capture_output=True, text=True, timeout=10
+            ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         logger.info("ARGUS launchd service bootstrapped")
         return True
@@ -382,8 +360,10 @@ def argus_launchd_uninstall() -> bool:
     # Bootout
     try:
         subprocess.run(
-            ['launchctl', 'bootout', f'gui/{os.getuid()}/{label}'],
-            capture_output=True, text=True, timeout=10
+            ["launchctl", "bootout", f"gui/{os.getuid()}/{label}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
     except Exception:
         pass
@@ -400,60 +380,71 @@ def argus_launchd_status() -> dict:
     plist_path = get_argus_launchd_plist_path()
 
     return {
-        'label': label,
-        'plist_exists': plist_path.exists(),
-        'plist_path': str(plist_path),
-        'pid_file_exists': _get_argus_pid_path().exists(),
-        'running_pid': get_argus_running_pid(),
-        'is_running': is_argus_running(),
+        "label": label,
+        "plist_exists": plist_path.exists(),
+        "plist_path": str(plist_path),
+        "pid_file_exists": _get_argus_pid_path().exists(),
+        "running_pid": get_argus_running_pid(),
+        "is_running": is_argus_running(),
     }
 
 
 # === LOGGING ===
-os.makedirs(CONFIG['log_dir'], exist_ok=True)
+os.makedirs(CONFIG["log_dir"], exist_ok=True)
 
-_LOG_MAX_BYTES = CONFIG.get('log_max_size_mb', 5) * 1024 * 1024  # 5MB default
-_LOG_BACKUP_COUNT = CONFIG.get('log_backup_count', 3)
+_LOG_MAX_BYTES = CONFIG.get("log_max_size_mb", 5) * 1024 * 1024  # 5MB default
+_LOG_BACKUP_COUNT = CONFIG.get("log_backup_count", 3)
 
-logger = logging.getLogger('argus')
+logger = logging.getLogger("argus")
 logger.setLevel(logging.INFO)
 
 
 _rotating_handler = logging.handlers.RotatingFileHandler(
-    str(Path(CONFIG['log_dir']) / 'argus.log'),
+    str(Path(CONFIG["log_dir"]) / "argus.log"),
     maxBytes=_LOG_MAX_BYTES,
     backupCount=_LOG_BACKUP_COUNT,
 )
-_rotating_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+_rotating_handler.setFormatter(
+    logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+)
 logger.addHandler(_rotating_handler)
 
 
 _stream_handler = logging.StreamHandler()
-_stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+_stream_handler.setFormatter(
+    logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+)
 logger.addHandler(_stream_handler)
+
 
 class Argus:
     def __init__(self):
-        self.db_path = CONFIG['db_path']
+        self.db_path = CONFIG["db_path"]
         self.conn = None
         self.cursor = None
         self.running = False
 
         # WAL monitor
         self.wal_monitor = ToolCallMonitor(
-            poll_interval=CONFIG.get('poll_interval', 30) / 10,
-            repeat_threshold=CONFIG.get('entropy_threshold', 3),
+            poll_interval=CONFIG.get("poll_interval", 30) / 10,
+            repeat_threshold=CONFIG.get("entropy_threshold", 3),
         )
 
         # Ensure database directory exists
         os.makedirs(Path(self.db_path).parent, exist_ok=True)
-        
+
         # Initialize database
         self._init_database()
-        
+
         # Load schema
         self._load_schema()
-    
+
+        # Load directive checks from directives.yaml
+        self._directives = _directives.load_directives()
+        logger.info(
+            "Loaded %d directive checks", len(self._directives.get("checks", []))
+        )
+
     def _init_database(self):
         """Initialize database connection."""
         self.conn = sqlite3.connect(self.db_path)
@@ -462,61 +453,65 @@ class Argus:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.cursor = self.conn.cursor()
         logger.info("Database connected: %s", self.db_path)
-    
+
     def _load_schema(self):
         """Load database schema if tables don't exist."""
-        schema_path = Path(__file__).parent / 'watcher_schema.sql'
+        schema_path = Path(__file__).parent / "watcher_schema.sql"
         if schema_path.exists():
-            with open(schema_path, 'r') as f:
+            with open(schema_path, "r") as f:
                 schema = f.read()
             self.conn.executescript(schema)
             self.conn.commit()
             logger.info("Database schema loaded")
-        
+
         # Migrate existing tables — add columns that may not exist
         self._migrate_schema()
-    
+
     def _migrate_schema(self):
         """Add columns to existing tables that were added after initial schema."""
         migrations = [
             ("tool_calls", "success", "BOOLEAN"),
             ("tool_calls", "error_message", "TEXT"),
         ]
-        
+
         for table, column, col_type in migrations:
             try:
                 self.cursor.execute("PRAGMA table_info(%s)" % table)
                 existing = {row[1] for row in self.cursor.fetchall()}
                 if column not in existing:
-                    self.cursor.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, col_type))
+                    self.cursor.execute(
+                        "ALTER TABLE %s ADD COLUMN %s %s" % (table, column, col_type)
+                    )
                     logger.info("Migrated: added %s.%s %s", table, column, col_type)
             except sqlite3.Error:
                 pass
-        
+
         self.conn.commit()
-    
+
     def _get_cron_env(self) -> Dict[str, str]:
         """Build a full environment dict for subprocess calls in sandboxed contexts."""
         env = os.environ.copy()
 
         # Ensure PATH includes all critical tool locations
         paths = [
-            '/opt/homebrew/bin',
-            '/usr/local/bin',
-            str(_argus_path('bin')),              # ~/hermes/bin
-            str(Path.home() / '.local' / 'bin'),   # ~/.local/bin
-            str(_hermes_path('credentials')),       # ~/.hermes/credentials
-            '/usr/bin',
-            '/bin',
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            str(_argus_path("bin")),  # ~/hermes/bin
+            str(Path.home() / ".local" / "bin"),  # ~/.local/bin
+            str(_hermes_path("credentials")),  # ~/.hermes/credentials
+            "/usr/bin",
+            "/bin",
         ]
-        env['PATH'] = ':'.join(paths)
+        env["PATH"] = ":".join(paths)
 
         # Ensure HOME is set (some launchd contexts may not have it)
-        env['HOME'] = os.path.expanduser('~')
+        env["HOME"] = os.path.expanduser("~")
 
         return env
 
-    def _safe_subprocess(self, cmd: List[str], timeout: int = 10, **kwargs) -> Optional[subprocess.CompletedProcess]:
+    def _safe_subprocess(
+        self, cmd: List[str], timeout: int = 10, **kwargs
+    ) -> Optional[subprocess.CompletedProcess]:
         """Run a subprocess with full env and error handling. Never raises."""
         try:
             return subprocess.run(
@@ -525,13 +520,13 @@ class Argus:
                 text=True,
                 timeout=timeout,
                 env=self._get_cron_env(),
-                **kwargs
+                **kwargs,
             )
         except FileNotFoundError:
             logger.warning("Command not found: %s (check PATH)", cmd[0])
             return None
         except subprocess.TimeoutExpired:
-            logger.warning("Command timed out after %ss: %s", timeout, ' '.join(cmd))
+            logger.warning("Command timed out after %ss: %s", timeout, " ".join(cmd))
             return None
         except Exception as e:
             logger.error("Subprocess error for %s: %s", cmd[0], e, exc_info=True)
@@ -540,18 +535,18 @@ class Argus:
     def discover_sessions(self) -> List[Dict]:
         """Discover all active agent sessions."""
         sessions = []
-        
+
         # 1. Cron jobs
         sessions.extend(self._discover_cron_sessions())
-        
+
         # 2. Delegate tasks
         sessions.extend(self._discover_delegate_sessions())
-        
+
         # 3. Manual sessions
         sessions.extend(self._discover_manual_sessions())
-        
+
         return sessions
-    
+
     def _discover_cron_sessions(self) -> List[Dict]:
         """Discover active cron job sessions via cron.jobs (same as hermes_cli/cron.py)."""
         sessions = []
@@ -560,21 +555,23 @@ class Argus:
             jobs = list_jobs(include_disabled=False)
 
             for job in jobs:
-                sessions.append({
-                    'session_id': f"cron_{job['id']}",
-                    'session_type': 'cron',
-                    'job_id': job['id'],
-                    'task_description': job.get('name', 'Unknown'),
-                    'model': job.get('model'),
-                    'provider': job.get('provider'),
-                    'metadata': json.dumps(job)
-                })
+                sessions.append(
+                    {
+                        "session_id": f"cron_{job['id']}",
+                        "session_type": "cron",
+                        "job_id": job["id"],
+                        "task_description": job.get("name", "Unknown"),
+                        "model": job.get("model"),
+                        "provider": job.get("provider"),
+                        "metadata": json.dumps(job),
+                    }
+                )
 
         except Exception as e:
             logger.error("Error discovering cron sessions: %s", e, exc_info=True)
 
         return sessions
-    
+
     def _discover_delegate_sessions(self) -> List[Dict]:
         """Discover delegate_task sessions via SessionDB (same as hermes_cli)."""
         sessions = []
@@ -587,23 +584,29 @@ class Argus:
                 db.close()
 
             for s in all_sessions:
-                if s.get('source') == 'delegate' or s.get('source') == 'delegate_task':
-                    sessions.append({
-                        'session_id': "delegate_%s" % s['id'],
-                        'session_type': 'delegate_task',
-                        'task_description': s.get('title', "Delegate %s" % s['id'][:12]),
-                        'metadata': json.dumps({
-                            'session_id': s['id'],
-                            'source': s.get('source'),
-                            'started_at': s.get('started_at'),
-                        })
-                    })
+                if s.get("source") == "delegate" or s.get("source") == "delegate_task":
+                    sessions.append(
+                        {
+                            "session_id": "delegate_%s" % s["id"],
+                            "session_type": "delegate_task",
+                            "task_description": s.get(
+                                "title", "Delegate %s" % s["id"][:12]
+                            ),
+                            "metadata": json.dumps(
+                                {
+                                    "session_id": s["id"],
+                                    "source": s.get("source"),
+                                    "started_at": s.get("started_at"),
+                                }
+                            ),
+                        }
+                    )
 
         except Exception as e:
             logger.error("Error discovering delegate sessions: %s", e, exc_info=True)
 
         return sessions
-    
+
     def _discover_manual_sessions(self) -> List[Dict]:
         """Discover manual agent sessions via SessionDB (same as hermes_cli)."""
         sessions = []
@@ -616,46 +619,60 @@ class Argus:
                 db.close()
 
             for s in all_sessions:
-                source = s.get('source', '')
-                if source in ('cli', 'telegram', 'manual', 'gateway'):
-                    sessions.append({
-                        'session_id': "manual_%s" % s['id'],
-                        'session_type': 'manual',
-                        'task_description': s.get('title', "Session %s" % s['id'][:12]),
-                        'metadata': json.dumps({
-                            'session_id': s['id'],
-                            'source': source,
-                            'started_at': s.get('started_at'),
-                        })
-                    })
+                source = s.get("source", "")
+                if source in ("cli", "telegram", "manual", "gateway"):
+                    sessions.append(
+                        {
+                            "session_id": "manual_%s" % s["id"],
+                            "session_type": "manual",
+                            "task_description": s.get(
+                                "title", "Session %s" % s["id"][:12]
+                            ),
+                            "metadata": json.dumps(
+                                {
+                                    "session_id": s["id"],
+                                    "source": source,
+                                    "started_at": s.get("started_at"),
+                                }
+                            ),
+                        }
+                    )
 
         except Exception as e:
             logger.error("Error discovering manual sessions: %s", e, exc_info=True)
 
         return sessions
-    
+
     def register_session(self, session: Dict):
         """Register a session in the database."""
         try:
-            self.cursor.execute('''
+            self.cursor.execute(
+                """
                 INSERT OR REPLACE INTO sessions 
                 (session_id, session_type, job_id, task_description, model, provider, metadata)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                session['session_id'],
-                session['session_type'],
-                session.get('job_id'),
-                session.get('task_description'),
-                session.get('model'),
-                session.get('provider'),
-                session.get('metadata')
-            ))
+            """,
+                (
+                    session["session_id"],
+                    session["session_type"],
+                    session.get("job_id"),
+                    session.get("task_description"),
+                    session.get("model"),
+                    session.get("provider"),
+                    session.get("metadata"),
+                ),
+            )
             self.conn.commit()
-            logger.debug("Registered session: %s", session['session_id'])
-        
+            logger.debug("Registered session: %s", session["session_id"])
+
         except Exception as e:
-            logger.error("Error registering session %s: %s", session['session_id'], e, exc_info=True)
-    
+            logger.error(
+                "Error registering session %s: %s",
+                session["session_id"],
+                e,
+                exc_info=True,
+            )
+
     def collect_metrics(self, session_id: str) -> None:
         """Collect metrics for a session from logs and holographic_memory.db."""
         try:
@@ -664,58 +681,69 @@ class Argus:
 
             # 2. Count existing tool calls for this session
             self.cursor.execute(
-                'SELECT COUNT(*) as cnt FROM tool_calls WHERE session_id = ?',
-                (session_id,)
+                "SELECT COUNT(*) as cnt FROM tool_calls WHERE session_id = ?",
+                (session_id,),
             )
-            tool_count = self.cursor.fetchone()['cnt']
+            tool_count = self.cursor.fetchone()["cnt"]
 
             # 3. Count terminal commands for this session
             self.cursor.execute(
-                'SELECT COUNT(*) as cnt FROM terminal_commands WHERE session_id = ?',
-                (session_id,)
+                "SELECT COUNT(*) as cnt FROM terminal_commands WHERE session_id = ?",
+                (session_id,),
             )
-            cmd_count = self.cursor.fetchone()['cnt']
+            cmd_count = self.cursor.fetchone()["cnt"]
 
             # 4. Get quality metrics from holographic_memory.db
             quality_score = self._fetch_quality_from_holographic(session_id)
 
             # 5. Update session with collected metrics
-            self.cursor.execute('''
+            self.cursor.execute(
+                """
                 UPDATE sessions
                 SET tool_call_count = ?, quality_gate_score = ?, last_activity_at = ?
                 WHERE session_id = ?
-            ''', (tool_count + cmd_count, quality_score, datetime.now().isoformat(), session_id))
+            """,
+                (
+                    tool_count + cmd_count,
+                    quality_score,
+                    datetime.now().isoformat(),
+                    session_id,
+                ),
+            )
 
             # 6. Record quality metric if available
             if quality_score is not None:
-                self.cursor.execute('''
+                self.cursor.execute(
+                    """
                     INSERT INTO quality_metrics (session_id, metric_type, metric_value, details)
                     VALUES (?, 'overall_quality', ?, ?)
-                ''', (session_id, quality_score, json.dumps({
-                    'tool_calls': tool_count,
-                    'terminal_commands': cmd_count
-                })))
+                """,
+                    (
+                        session_id,
+                        quality_score,
+                        json.dumps(
+                            {"tool_calls": tool_count, "terminal_commands": cmd_count}
+                        ),
+                    ),
+                )
 
             self.conn.commit()
 
         except Exception as e:
-            logger.error("Error collecting metrics for %s: %s", session_id, e, exc_info=True)
+            logger.error(
+                "Error collecting metrics for %s: %s", session_id, e, exc_info=True
+            )
 
     def _populate_tool_calls_from_session(self, session_id: str) -> None:
         """Read tool calls from state.db and insert into argus.db.tool_calls.
-        
+
         Also detects tool errors using the same heuristic as
         agent.display._detect_tool_failure and populates success/error_message.
         """
         if not _HERMES_INTERNALS_AVAILABLE:
             return
-        # Strip type prefix: cron_ec1a5e9f4c12 -> ec1a5e9f4c12
-        parts = session_id.split('_', 1)
-        if len(parts) == 2:
-            real_session_id = parts[1]
-        else:
-            real_session_id = session_id
-        
+        real_session_id = _actions.strip_session_prefix(session_id)
+
         try:
             db = SessionDB(DEFAULT_DB_PATH)
             try:
@@ -724,126 +752,108 @@ class Argus:
                 db.close()
         except Exception:
             return
-        
+
         if not messages:
             return
-        
+
         # Find the latest timestamp we've already ingested for this session
         self.cursor.execute(
-            'SELECT MAX(timestamp) as max_ts FROM tool_calls WHERE session_id = ?',
-            (session_id,)
+            "SELECT MAX(timestamp) as max_ts FROM tool_calls WHERE session_id = ?",
+            (session_id,),
         )
         row = self.cursor.fetchone()
-        last_ingested = row['max_ts'] if row and row['max_ts'] else '0'
-        
+        last_ingested = row["max_ts"] if row and row["max_ts"] else "0"
+
         try:
             last_ingested_float = float(last_ingested)
         except (ValueError, TypeError):
             last_ingested_float = 0.0
-        
+
         # Match tool results to calls
         tool_results: Dict[str, str] = {}
         for msg in messages:
-            if msg.get('role') == 'tool':
-                tc_id = msg.get('tool_call_id', '')
+            if msg.get("role") == "tool":
+                tc_id = msg.get("tool_call_id", "")
                 if tc_id:
-                    tool_results[tc_id] = str(msg.get('content', ''))
-        
+                    tool_results[tc_id] = str(msg.get("content", ""))
+
         # Extract tool calls from assistant messages, detect errors
         inserts = []
         for msg in messages:
-            if msg.get('role') != 'assistant':
+            if msg.get("role") != "assistant":
                 continue
-            
-            ts = msg.get('timestamp', '')
+
+            ts = msg.get("timestamp", "")
             try:
                 ts_float = float(ts) if ts else 0.0
             except (ValueError, TypeError):
                 ts_float = 0.0
-            
+
             if ts_float <= last_ingested_float:
                 continue
-            
-            tool_calls_raw = msg.get('tool_calls')
+
+            tool_calls_raw = msg.get("tool_calls")
             if not tool_calls_raw:
                 continue
-            
+
             try:
                 if isinstance(tool_calls_raw, str):
                     tool_calls_raw = json.loads(tool_calls_raw)
                 for tc in tool_calls_raw:
-                    name = tc.get('function', {}).get('name') or tc.get('name', '')
-                    args = tc.get('function', {}).get('arguments') or tc.get('arguments', '')
+                    name = tc.get("function", {}).get("name") or tc.get("name", "")
+                    args = tc.get("function", {}).get("arguments") or tc.get(
+                        "arguments", ""
+                    )
                     if isinstance(args, dict):
                         args = json.dumps(args)
                     if not name:
                         continue
-                    
+
                     # Match tool result and detect errors
-                    tc_id = tc.get('id', '')
-                    result_content = tool_results.get(tc_id, '')
-                    is_error, error_msg = self._detect_tool_error(name, result_content)
-                    
-                    inserts.append((
-                        session_id, name, str(args), str(ts),
-                        not is_error,  # success = not error
-                        error_msg,
-                    ))
+                    tc_id = tc.get("id", "")
+                    result_content = tool_results.get(tc_id, "")
+                    is_error, error_msg = _entropy.detect_tool_error(
+                        name, result_content
+                    )
+                    file_changed = _entropy.detect_file_changed(
+                        name, result_content, is_error
+                    )
+
+                    inserts.append(
+                        (
+                            session_id,
+                            name,
+                            str(args),
+                            str(ts),
+                            not is_error,  # success = not error
+                            error_msg,
+                            file_changed,
+                        )
+                    )
             except (json.JSONDecodeError, TypeError):
                 continue
-        
-        # Batch insert with success/error_message columns
+
+        # Batch insert with success/error_message/file_changed columns
         if inserts:
-            self.cursor.executemany('''
+            self.cursor.executemany(
+                """
                 INSERT OR IGNORE INTO tool_calls
-                (session_id, tool_name, tool_args, timestamp, success, error_message)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', inserts)
+                (session_id, tool_name, tool_args, timestamp, success, error_message, file_changed)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+                inserts,
+            )
             error_count = sum(1 for i in inserts if not i[4])
             logger.debug(
                 "Ingested %d tool calls for session %s (%d errors)",
-                len(inserts), session_id, error_count
+                len(inserts),
+                session_id,
+                error_count,
             )
-
-    @staticmethod
-    def _detect_tool_error(tool_name: str, result: str) -> Tuple[bool, str]:
-        """Detect tool failures using same heuristic as agent.display._detect_tool_failure.
-        
-        Returns (is_error, error_detail).  Empty string for error_detail on success.
-        """
-        if not result:
-            return False, ""
-        
-        # Terminal: check exit_code in JSON result
-        if tool_name == "terminal":
-            try:
-                data = json.loads(result)
-                exit_code = data.get("exit_code")
-                if exit_code is not None and exit_code != 0:
-                    return True, "exit %s" % exit_code
-            except (json.JSONDecodeError, TypeError, AttributeError):
-                pass
-            return False, ""
-        
-        # Memory: check for capacity errors
-        if tool_name == "memory":
-            try:
-                data = json.loads(result)
-                if data.get("success") is False and "exceed the limit" in data.get("error", ""):
-                    return True, "memory full"
-            except (json.JSONDecodeError, TypeError, AttributeError):
-                pass
-        
-        # Generic: check first 500 chars for error indicators
-        lower = result[:500].lower()
-        if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
-            return True, "error detected"
-        
-        return False, ""
 
     def _fetch_quality_from_holographic(self, session_id: str) -> Optional[float]:
         """Fetch quality score from holographic_memory.db for a session."""
-        holo_db = str(_hermes_path('holographic_memory.db'))
+        holo_db = str(_hermes_path("holographic_memory.db"))
         if not os.path.exists(holo_db):
             return None
 
@@ -853,1042 +863,275 @@ class Argus:
             cursor = holo_conn.cursor()
 
             # Get average quality score from recent facts
-            cursor.execute('''
+            cursor.execute("""
                 SELECT AVG(quality_score) as avg_quality
                 FROM facts
                 WHERE timestamp > datetime('now', '-24 hours')
                 AND quality_score IS NOT NULL
-            ''')
+            """)
             row = cursor.fetchone()
             holo_conn.close()
 
-            if row and row['avg_quality']:
-                return round(row['avg_quality'], 4)
+            if row and row["avg_quality"]:
+                return round(row["avg_quality"], 4)
 
         except Exception as e:
             logger.error("Error reading holographic_memory.db: %s", e, exc_info=True)
 
         return None
-    
+
     def detect_entropy(self, session_id: str) -> List[Dict]:
         """Detect entropy patterns in a session."""
+        threshold = CONFIG.get("entropy_threshold", 3)
+        cursor = self.cursor
         detections = []
-        
-        # 1. Check for repeat tool calls
-        detections.extend(self._detect_repeat_tool_calls(session_id))
-        
-        # 2. Check for repeat terminal commands
-        detections.extend(self._detect_repeat_commands(session_id))
-        
-        # 3. Check for stuck loops (same sequence of tool calls)
-        detections.extend(self._detect_stuck_loops(session_id))
-        
-        # 4. Check for no file changes despite write operations
-        detections.extend(self._detect_no_file_changes(session_id))
-        
-        # 5. Check for error cascades (consecutive tool failures)
-        detections.extend(self._detect_error_cascade(session_id))
-        
-        # 6. Check for iteration budget pressure
-        detections.extend(self._detect_budget_pressure(session_id))
-        
-        return detections
-    
-    def _detect_repeat_tool_calls(self, session_id: str) -> List[Dict]:
-        """Detect repeated tool calls without changes."""
-        detections = []
-        
-        try:
-            # Get recent tool calls for this session
-            self.cursor.execute('''
-                SELECT tool_name, tool_args, COUNT(*) as count
-                FROM tool_calls
-                WHERE session_id = ? AND timestamp > datetime('now', '-10 minutes')
-                GROUP BY tool_name, tool_args
-                HAVING count >= 3
-            ''', (session_id,))
-            
-            for row in self.cursor.fetchall():
-                detections.append({
-                    'entropy_type': 'repeat_tool_calls',
-                    'severity': 'warning' if row['count'] < 5 else 'critical',
-                    'details': json.dumps({
-                        'tool_name': row['tool_name'],
-                        'tool_args': row['tool_args'],
-                        'count': row['count']
-                    })
-                })
-        
-        except Exception as e:
-            logger.error("Error detecting repeat tool calls: %s", e, exc_info=True)
-        
-        return detections
-    
-    def _detect_repeat_commands(self, session_id: str) -> List[Dict]:
-        """Detect repeated terminal commands."""
-        detections = []
-        
-        try:
-            # Get recent terminal commands for this session
-            self.cursor.execute('''
-                SELECT command, COUNT(*) as count
-                FROM terminal_commands
-                WHERE session_id = ? AND timestamp > datetime('now', '-10 minutes')
-                GROUP BY command
-                HAVING count >= 3
-            ''', (session_id,))
-            
-            for row in self.cursor.fetchall():
-                detections.append({
-                    'entropy_type': 'repeat_commands',
-                    'severity': 'warning' if row['count'] < 5 else 'critical',
-                    'details': json.dumps({
-                        'command': row['command'],
-                        'count': row['count']
-                    })
-                })
-        
-        except Exception as e:
-            logger.error("Error detecting repeat commands: %s", e, exc_info=True)
-        
-        return detections
-    
-    def _detect_stuck_loops(self, session_id: str) -> List[Dict]:
-        """Detect stuck loops (same sequence of tool calls)."""
-        detections = []
-        
-        try:
-            # Get last 10 tool calls for this session
-            self.cursor.execute('''
-                SELECT tool_name, tool_args
-                FROM tool_calls
-                WHERE session_id = ?
-                ORDER BY timestamp DESC
-                LIMIT 10
-            ''', (session_id,))
-            
-            tool_calls = [dict(row) for row in self.cursor.fetchall()]
-            
-            if len(tool_calls) >= 6:
-                # Check for repeating pattern
-                for pattern_length in range(2, 4):
-                    if len(tool_calls) >= pattern_length * 2:
-                        pattern = tool_calls[:pattern_length]
-                        next_pattern = tool_calls[pattern_length:pattern_length*2]
-                        
-                        if pattern == next_pattern:
-                            detections.append({
-                                'entropy_type': 'stuck_loop',
-                                'severity': 'critical',
-                                'details': json.dumps({
-                                    'pattern_length': pattern_length,
-                                    'pattern': pattern
-                                })
-                            })
-        
-        except Exception as e:
-            logger.error("Error detecting stuck loops: %s", e, exc_info=True)
-        
-        return detections
-    
-    def _detect_no_file_changes(self, session_id: str) -> List[Dict]:
-        """Detect write operations without file changes."""
-        detections = []
-        
-        try:
-            # Get recent write operations that didn't change files
-            self.cursor.execute('''
-                SELECT tc.id, tc.tool_name, tc.file_path
-                FROM tool_calls tc
-                WHERE tc.session_id = ? 
-                AND tc.tool_name IN ('write_file', 'patch')
-                AND tc.file_changed = FALSE
-                AND tc.timestamp > datetime('now', '-10 minutes')
-            ''', (session_id,))
-            
-            for row in self.cursor.fetchall():
-                detections.append({
-                    'entropy_type': 'no_file_changes',
-                    'severity': 'critical',
-                    'details': json.dumps({
-                        'tool_call_id': row['id'],
-                        'tool_name': row['tool_name'],
-                        'file_path': row['file_path']
-                    })
-                })
-        
-        except Exception as e:
-            logger.error("Error detecting no file changes: %s", e, exc_info=True)
-        
-        return detections
-    
-    def _detect_error_cascade(self, session_id: str) -> List[Dict]:
-        """Detect cascading tool failures (3+ consecutive errors).
-        
-        Uses the success/error_message columns populated by _populate_tool_calls_from_session.
-        Same threshold pattern as repeat_tool_calls: warning at 3, critical at 5.
-        """
-        detections = []
-        
-        try:
-            # Get recent tool calls ordered chronologically
-            self.cursor.execute('''
-                SELECT tool_name, success, error_message, timestamp
-                FROM tool_calls
-                WHERE session_id = ?
-                ORDER BY timestamp ASC
-                LIMIT 20
-            ''', (session_id,))
-            
-            rows = self.cursor.fetchall()
-            if len(rows) < 3:
-                return detections
-            
-            # Scan for longest consecutive error run
-            max_run = 0
-            current_run = 0
-            run_tools = []
-            current_run_tools = []
-            
-            for row in rows:
-                is_error = (row['success'] == 0) or (
-                    row['success'] is None and bool(row['error_message'])
-                )
-                if is_error:
-                    current_run += 1
-                    current_run_tools.append(row['tool_name'])
-                else:
-                    if current_run > max_run:
-                        max_run = current_run
-                        run_tools = list(current_run_tools)
-                    current_run = 0
-                    current_run_tools = []
-            
-            # Check final run
-            if current_run > max_run:
-                max_run = current_run
-                run_tools = list(current_run_tools)
-            
-            if max_run >= 3:
-                severity = 'warning' if max_run < 5 else 'critical'
-                detections.append({
-                    'entropy_type': 'error_cascade',
-                    'severity': severity,
-                    'details': json.dumps({
-                        'consecutive_errors': max_run,
-                        'tools': run_tools[:5],
-                    })
-                })
-                logger.warning(
-                    "Error cascade detected in session %s: %d consecutive failures",
-                    session_id[:15], max_run
-                )
-        
-        except Exception as e:
-            logger.error("Error detecting error cascade: %s", e, exc_info=True)
-        
-        return detections
-
-    def _detect_budget_pressure(self, session_id: str) -> List[Dict]:
-        """Detect unproductive iteration budget burn.
-
-        Counts assistant messages from state.db (each = 1 API call / iteration).
-        Flags when budget ratio is high AND session shows entropy or errors.
-        """
-        detections = []
-
-        # Strip type prefix: cron_ec1a5e9f4c12 -> ec1a5e9f4c12
-        parts = session_id.split('_', 1)
-        real_session_id = parts[1] if len(parts) == 2 else session_id
-
-        try:
-            db = SessionDB(DEFAULT_DB_PATH)
-            try:
-                messages = db.get_messages(real_session_id)
-            finally:
-                db.close()
-        except Exception:
-            return detections
-
-        if not messages:
-            return detections
-
-        # Count assistant messages (each = 1 iteration consumed)
-        iterations_used = sum(1 for m in messages if m.get('role') == 'assistant')
-        if iterations_used == 0:
-            return detections
-
-        # Max budget — subagents use delegation.max_iterations (default 50)
-        self.cursor.execute('SELECT session_type FROM sessions WHERE session_id = ?', (session_id,))
-        row = self.cursor.fetchone()
-        is_delegate = row and row['session_type'] == 'delegate_task'
-        max_budget = CONFIG.get('max_iterations', 50 if is_delegate else 90)
-        if max_budget <= 0:
-            return detections
-
-        # Compute session age from first message timestamp
-        timestamps = []
-        for m in messages:
-            ts = m.get('timestamp')
-            if ts:
-                try:
-                    timestamps.append(float(ts))
-                except (ValueError, TypeError):
-                    pass
-
-        if timestamps:
-            session_age_sec = max(timestamps) - min(timestamps)
-            session_age_min = max(session_age_sec / 60.0, 1.0)
-        else:
-            session_age_min = 1.0
-
-        burn_rate = iterations_used / session_age_min
-        budget_ratio = iterations_used / max_budget
-
-        # Check recent error rate from argus.db
-        self.cursor.execute('''
-            SELECT
-                COUNT(*) as total,
-                SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as errors
-            FROM tool_calls
-            WHERE session_id = ?
-            AND timestamp > datetime('now', '-5 minutes')
-        ''', (session_id,))
-        row = self.cursor.fetchone()
-        total_recent = row['total'] if row and row['total'] else 0
-        error_recent = row['errors'] if row and row['errors'] else 0
-        error_rate = error_recent / total_recent if total_recent > 0 else 0.0
-
-        # Check for existing entropy detections in last 10 min
-        self.cursor.execute('''
-            SELECT COUNT(*) as cnt FROM entropy_detections
-            WHERE session_id = ?
-            AND timestamp > datetime('now', '-10 minutes')
-        ''', (session_id,))
-        entropy_row = self.cursor.fetchone()
-        has_entropy = (entropy_row['cnt'] > 0) if entropy_row else False
-
-        # Decision: flag when budget is draining unproductively
-        has_problems = has_entropy or error_rate > 0.5
-
-        if budget_ratio >= 0.85 and has_problems:
-            severity = 'critical'
-        elif budget_ratio >= 0.70 and has_problems:
-            severity = 'warning'
-        elif budget_ratio >= 0.90:
-            # Near exhaustion even without entropy
-            severity = 'warning'
-        else:
-            return detections
-
-        detections.append({
-            'entropy_type': 'budget_pressure',
-            'severity': severity,
-            'details': json.dumps({
-                'iterations_used': iterations_used,
-                'max_budget': max_budget,
-                'budget_ratio': round(budget_ratio, 3),
-                'burn_rate_per_min': round(burn_rate, 2),
-                'session_age_min': round(session_age_min, 1),
-                'error_rate': round(error_rate, 3),
-                'has_entropy': has_entropy,
-            })
-        })
-        logger.warning(
-            "Budget pressure in session %s: %d/%d iterations (%.0f%%), burn %.1f/min",
-            session_id[:15], iterations_used, max_budget,
-            budget_ratio * 100, burn_rate
+        detections.extend(
+            _entropy.detect_repeat_tool_calls(cursor, session_id, threshold)
         )
+        detections.extend(
+            _entropy.detect_repeat_commands(cursor, session_id, threshold)
+        )
+        detections.extend(_entropy.detect_stuck_loops(cursor, session_id))
+        detections.extend(_entropy.detect_no_file_changes(cursor, session_id))
+        detections.extend(_entropy.detect_error_cascade(cursor, session_id))
 
+        # Budget pressure needs session type lookup for max_budget
+        cursor.execute(
+            "SELECT session_type FROM sessions WHERE session_id = ?", (session_id,)
+        )
+        row = cursor.fetchone()
+        is_delegate = row and row["session_type"] == "delegate_task"
+        max_budget = CONFIG.get("max_iterations", 50 if is_delegate else 90)
+        detections.extend(
+            _entropy.detect_budget_pressure(
+                cursor, session_id, max_budget, DEFAULT_DB_PATH
+            )
+        )
         return detections
 
     def check_prime_directive(self, session_id: str) -> List[Dict]:
         """Check if session is following prime directive."""
-        checks = []
-        
-        # 1. Check pipeline compliance (4 targets)
-        checks.append(self._check_pipeline_compliance(session_id))
-        
-        # 2. Check quality gates
-        checks.append(self._check_quality_gates(session_id))
-        
-        # 3. Check trajectory generation
-        checks.append(self._check_trajectory_generation(session_id))
-        
-        # 4. Check fact extraction
-        checks.append(self._check_fact_extraction(session_id))
-        
-        return checks
-    
-    def _open_holographic_db(self) -> Optional[sqlite3.Connection]:
-        """Open holographic_memory.db with Row factory. Returns None if unavailable."""
-        holo_db = str(_hermes_path('holographic_memory.db'))
-        if not os.path.exists(holo_db):
-            return None
+        # Open holographic DB if available
+        holo_db = str(_hermes_path("holographic_memory.db"))
+        holo_conn = None
+        if os.path.exists(holo_db):
+            try:
+                holo_conn = sqlite3.connect(holo_db)
+                holo_conn.row_factory = sqlite3.Row
+            except sqlite3.Error:
+                pass
+
         try:
-            conn = sqlite3.connect(holo_db)
-            conn.row_factory = sqlite3.Row
-            return conn
-        except sqlite3.Error:
-            return None
-    
-    def _check_pipeline_compliance(self, session_id: str) -> Dict:
-        """Check if session is hitting all 4 pipeline targets.
-        
-        Targets: (1) target output, (2) facts in holographic DB,
-                 (3) trajectories, (4) KB enrichment.
-        For now we verify facts + trajectories exist with recent timestamps.
-        """
-        holo = self._open_holographic_db()
-        if not holo:
-            return {
-                'check_type': 'pipeline_compliance',
-                'passed': True,  # Can't verify — assume OK
-                'details': json.dumps({'note': 'holographic_memory.db unavailable'})
-            }
-        
-        try:
-            cur = holo.cursor()
-            
-            # Check recent facts (last 2 hours)
-            cur.execute("""
-                SELECT COUNT(*) as cnt FROM facts
-                WHERE timestamp > datetime('now', '-2 hours')
-                AND quality_score >= ?
-            """, (CONFIG['quality_threshold'],))
-            recent_facts = cur.fetchone()['cnt']
-            
-            # Check recent trajectories (last 2 hours)
-            cur.execute("""
-                SELECT COUNT(*) as cnt FROM trajectories
-                WHERE timestamp > datetime('now', '-2 hours')
-                AND quality_score >= ?
-            """, (CONFIG['quality_threshold'],))
-            recent_trajectories = cur.fetchone()['cnt']
-            
-            passed = recent_facts >= 1 and recent_trajectories >= 1
-            
-            return {
-                'check_type': 'pipeline_compliance',
-                'passed': passed,
-                'details': json.dumps({
-                    'recent_facts': recent_facts,
-                    'recent_trajectories': recent_trajectories,
-                    'quality_threshold': CONFIG['quality_threshold'],
-                })
-            }
-        except sqlite3.Error as e:
-            return {
-                'check_type': 'pipeline_compliance',
-                'passed': True,
-                'details': json.dumps({'error': str(e)})
-            }
+            results = _directives.execute_checks(
+                session_id, self.cursor, holo_conn, self._directives
+            )
         finally:
-            holo.close()
-    
-    def _check_quality_gates(self, session_id: str) -> Dict:
-        """Check if session meets quality thresholds."""
-        holo = self._open_holographic_db()
-        if not holo:
-            return {
-                'check_type': 'quality_gate',
-                'passed': True,
-                'details': json.dumps({'note': 'holographic_memory.db unavailable'})
-            }
-        
-        try:
-            cur = holo.cursor()
-            threshold = CONFIG['quality_threshold']
-            
-            # Average quality of recent facts
-            cur.execute("""
-                SELECT AVG(quality_score) as avg_q, COUNT(*) as cnt FROM facts
-                WHERE timestamp > datetime('now', '-2 hours')
-                AND quality_score IS NOT NULL
-            """)
-            row = cur.fetchone()
-            fact_avg = row['avg_q'] if row['avg_q'] else 0.0
-            fact_cnt = row['cnt']
-            
-            # Average quality of recent trajectories
-            cur.execute("""
-                SELECT AVG(quality_score) as avg_q, COUNT(*) as cnt FROM trajectories
-                WHERE timestamp > datetime('now', '-2 hours')
-                AND quality_score IS NOT NULL
-            """)
-            row = cur.fetchone()
-            traj_avg = row['avg_q'] if row['avg_q'] else 0.0
-            traj_cnt = row['cnt']
-            
-            # Pass if both averages meet threshold (or if no data to check)
-            if fact_cnt == 0 and traj_cnt == 0:
-                passed = True
-            elif fact_cnt == 0:
-                passed = traj_avg >= threshold
-            elif traj_cnt == 0:
-                passed = fact_avg >= threshold
-            else:
-                passed = fact_avg >= threshold and traj_avg >= threshold
-            
-            return {
-                'check_type': 'quality_gate',
-                'passed': passed,
-                'details': json.dumps({
-                    'fact_avg_quality': round(fact_avg, 4) if fact_cnt else None,
-                    'fact_count': fact_cnt,
-                    'trajectory_avg_quality': round(traj_avg, 4) if traj_cnt else None,
-                    'trajectory_count': traj_cnt,
-                    'threshold': threshold,
-                })
-            }
-        except sqlite3.Error as e:
-            return {
-                'check_type': 'quality_gate',
-                'passed': True,
-                'details': json.dumps({'error': str(e)})
-            }
-        finally:
-            holo.close()
-    
-    def _check_trajectory_generation(self, session_id: str) -> Dict:
-        """Check if session is generating trajectories."""
-        holo = self._open_holographic_db()
-        if not holo:
-            return {
-                'check_type': 'trajectory_generation',
-                'passed': True,
-                'details': json.dumps({'note': 'holographic_memory.db unavailable'})
-            }
-        
-        try:
-            cur = holo.cursor()
-            min_trajectories = 2
-            
-            # Check trajectories linked to this session
-            cur.execute("""
-                SELECT COUNT(*) as cnt FROM trajectories
-                WHERE session_id = ? AND timestamp > datetime('now', '-2 hours')
-            """, (session_id,))
-            session_traj = cur.fetchone()['cnt']
-            
-            # Also check any recent trajectories (system-wide, in case session mapping differs)
-            cur.execute("""
-                SELECT COUNT(*) as cnt FROM trajectories
-                WHERE timestamp > datetime('now', '-30 minutes')
-                AND quality_score >= ?
-            """, (CONFIG['quality_threshold'],))
-            recent_traj = cur.fetchone()['cnt']
-            
-            passed = session_traj >= min_trajectories or recent_traj >= 1
-            
-            return {
-                'check_type': 'trajectory_generation',
-                'passed': passed,
-                'details': json.dumps({
-                    'session_trajectories': session_traj,
-                    'recent_system_trajectories': recent_traj,
-                    'min_required': min_trajectories,
-                })
-            }
-        except sqlite3.Error as e:
-            return {
-                'check_type': 'trajectory_generation',
-                'passed': True,
-                'details': json.dumps({'error': str(e)})
-            }
-        finally:
-            holo.close()
-    
-    def _check_fact_extraction(self, session_id: str) -> Dict:
-        """Check if session is extracting facts."""
-        holo = self._open_holographic_db()
-        if not holo:
-            return {
-                'check_type': 'fact_extraction',
-                'passed': True,
-                'details': json.dumps({'note': 'holographic_memory.db unavailable'})
-            }
-        
-        try:
-            cur = holo.cursor()
-            min_facts = 1
-            
-            # Check recent high-quality facts (system-wide — facts lack session_id)
-            cur.execute("""
-                SELECT COUNT(*) as cnt FROM facts
-                WHERE timestamp > datetime('now', '-30 minutes')
-                AND quality_score >= ?
-            """, (CONFIG['quality_threshold'],))
-            recent_facts = cur.fetchone()['cnt']
-            
-            passed = recent_facts >= min_facts
-            
-            return {
-                'check_type': 'fact_extraction',
-                'passed': passed,
-                'details': json.dumps({
-                    'recent_high_quality_facts': recent_facts,
-                    'min_required': min_facts,
-                    'threshold': CONFIG['quality_threshold'],
-                })
-            }
-        except sqlite3.Error as e:
-            return {
-                'check_type': 'fact_extraction',
-                'passed': True,
-                'details': json.dumps({'error': str(e)})
-            }
-        finally:
-            holo.close()
-    
-    def make_decision(self, session_id: str, entropy_detections: List[Dict], directive_checks: List[Dict]) -> Optional[Dict]:
+            if holo_conn:
+                holo_conn.close()
+
+        return results
+
+    def make_decision(
+        self,
+        session_id: str,
+        entropy_detections: List[Dict],
+        directive_checks: List[Dict],
+    ) -> Optional[Dict]:
         """Make decision about what action to take."""
-        
+
         # Get session info
-        self.cursor.execute('SELECT * FROM sessions WHERE session_id = ?', (session_id,))
+        self.cursor.execute(
+            "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
+        )
         row = self.cursor.fetchone()
         if not row:
             return None
         session = dict(row)
-        
+
         # Check for critical entropy
-        critical_entropy = [d for d in entropy_detections if d['severity'] == 'critical']
-        
+        critical_entropy = [
+            d for d in entropy_detections if d["severity"] == "critical"
+        ]
+
         if critical_entropy:
             # Check if it's repeat tool calls (kill condition)
-            repeat_tool_calls = [d for d in critical_entropy if d['entropy_type'] == 'repeat_tool_calls']
-            
+            repeat_tool_calls = [
+                d for d in critical_entropy if d["entropy_type"] == "repeat_tool_calls"
+            ]
+
             if repeat_tool_calls:
                 # High entropy - kill condition
-                if session['restart_count'] >= CONFIG['max_restart_count']:
+                if session["restart_count"] >= CONFIG["max_restart_count"]:
                     return {
-                        'action': 'kill',
-                        'reason': f"High entropy: repeat tool calls detected ({len(repeat_tool_calls)} times), max restarts reached"
+                        "action": "kill",
+                        "reason": f"High entropy: repeat tool calls detected ({len(repeat_tool_calls)} times), max restarts reached",
                     }
                 else:
                     return {
-                        'action': 'restart',
-                        'reason': f"High entropy: repeat tool calls detected ({len(repeat_tool_calls)} times)"
+                        "action": "restart",
+                        "reason": f"High entropy: repeat tool calls detected ({len(repeat_tool_calls)} times)",
                     }
-            
+
             # Other critical entropy - restart
             return {
-                'action': 'restart',
-                'reason': f"Critical entropy detected: {critical_entropy[0]['entropy_type']}"
+                "action": "restart",
+                "reason": f"Critical entropy detected: {critical_entropy[0]['entropy_type']}",
             }
-        
+
         # Check for directive violations
-        failed_checks = [c for c in directive_checks if not c['passed']]
-        
+        failed_checks = [c for c in directive_checks if not c["passed"]]
+
         if failed_checks:
             return {
-                'action': 'restart',
-                'reason': f"Prime directive violation: {failed_checks[0]['check_type']}"
+                "action": "restart",
+                "reason": f"Prime directive violation: {failed_checks[0]['check_type']}",
             }
-        
+
         # Check for low quality
-        self.cursor.execute('''
+        self.cursor.execute(
+            """
             SELECT AVG(metric_value) as avg_quality
             FROM quality_metrics
             WHERE session_id = ? AND timestamp > datetime('now', '-1 hour')
-        ''', (session_id,))
-        
+        """,
+            (session_id,),
+        )
+
         result = self.cursor.fetchone()
-        if result and result['avg_quality'] and result['avg_quality'] < CONFIG['quality_threshold']:
+        if (
+            result
+            and result["avg_quality"]
+            and result["avg_quality"] < CONFIG["quality_threshold"]
+        ):
             return {
-                'action': 'restart',
-                'reason': f"Low quality: {result['avg_quality']:.3f} < {CONFIG['quality_threshold']}"
+                "action": "restart",
+                "reason": f"Low quality: {result['avg_quality']:.3f} < {CONFIG['quality_threshold']}",
             }
-        
+
         # No action needed
         return None
-    
+
     def execute_action(self, session_id: str, decision: Dict):
         """Execute the decided action."""
-        action = decision['action']
-        reason = decision['reason']
-        
+        action = decision["action"]
+        reason = decision["reason"]
+
         logger.info("Executing %s on %s: %s", action, session_id, reason)
-        
+
         # Record action in database
-        self.cursor.execute('''
+        self.cursor.execute(
+            """
             INSERT INTO watcher_actions (session_id, action_type, action_reason, details)
             VALUES (?, ?, ?, ?)
-        ''', (session_id, action, reason, json.dumps(decision)))
-        
+        """,
+            (session_id, action, reason, json.dumps(decision)),
+        )
+
         action_id = self.cursor.lastrowid
-        
+
         try:
-            if action == 'restart':
+            if action == "restart":
                 self._restart_session(session_id, reason)
-                self._send_notification(session_id, 'restart', f"Restarted: {reason}")
-            
-            elif action == 'kill':
+                self._send_notification(session_id, "restart", f"Restarted: {reason}")
+
+            elif action == "kill":
                 self._kill_session(session_id, reason)
-                self._send_notification(session_id, 'kill', f"Killed: {reason}")
-            
-            elif action == 'inject_prompt':
-                self._inject_prompt(session_id, decision.get('prompt', ''))
-            
+                self._send_notification(session_id, "kill", f"Killed: {reason}")
+
+            elif action == "inject_prompt":
+                self._inject_prompt(session_id, decision.get("prompt", ""))
+
             # Mark action as successful
-            self.cursor.execute('''
+            self.cursor.execute(
+                """
                 UPDATE watcher_actions SET success = TRUE WHERE id = ?
-            ''', (action_id,))
-            
+            """,
+                (action_id,),
+            )
+
         except Exception as e:
-            logger.error("Error executing %s on %s: %s", action, session_id, e, exc_info=True)
-            
+            logger.error(
+                "Error executing %s on %s: %s", action, session_id, e, exc_info=True
+            )
+
             # Mark action as failed
-            self.cursor.execute('''
+            self.cursor.execute(
+                """
                 UPDATE watcher_actions SET success = FALSE, details = ? WHERE id = ?
-            ''', (json.dumps({'error': str(e)}), action_id))
-        
+            """,
+                (json.dumps({"error": str(e)}), action_id),
+            )
+
         self.conn.commit()
-    
+
+    # --- Actions (delegates to actions.py module) ---
+
     def _restart_session(self, session_id: str, reason: str):
         """Restart a session with tighter constraints."""
-        # Get session info
-        self.cursor.execute('SELECT * FROM sessions WHERE session_id = ?', (session_id,))
-        row = self.cursor.fetchone()
-        if not row:
-            logger.warning("Session %s not found for restart", session_id)
-            return
-        session = dict(row)
-
-        # Increment restart count
-        self.cursor.execute('''
-            UPDATE sessions SET restart_count = restart_count + 1, status = 'restarted'
-            WHERE session_id = ?
-        ''', (session_id,))
-
-        session_type = session['session_type']
-        corrective_prompt = self._build_corrective_prompt(session_id, reason)
-
-        try:
-            if session_type == 'cron':
-                self._restart_cron_session(session, corrective_prompt)
-            elif session_type == 'delegate_task':
-                self._restart_delegate_session(session, corrective_prompt)
-            elif session_type == 'manual':
-                self._restart_manual_session(session, corrective_prompt)
-        except Exception as e:
-            logger.error("Error during restart of %s: %s", session_id, e, exc_info=True)
-
-        # Record restart action
-        self.cursor.execute('''
-            INSERT INTO watcher_actions (session_id, action_type, action_reason, success, details)
-            VALUES (?, 'restart', ?, TRUE, ?)
-        ''', (session_id, reason, json.dumps({
-            'session_type': session_type,
-            'restart_count': session['restart_count'] + 1,
-            'corrective_prompt': corrective_prompt[:200]
-        })))
-
-        self.conn.commit()
-        logger.info("Restarted %s session %s (restart count: %s)", session_type, session_id, session['restart_count'] + 1)
+        _actions.restart_session(
+            self.cursor, self.conn, session_id, reason, CORRECTIVE_PROMPTS
+        )
 
     def _restart_cron_session(self, session: Dict, corrective_prompt: str):
-        """Cron restart: pause job, update prompt, resume. Uses cron.jobs directly."""
-        job_id = session.get('job_id')
-        if not job_id:
-            logger.warning("No job_id for cron session %s, cannot restart", session['session_id'])
-            return
-
-        try:
-            
-            result = pause_job(job_id, reason='ARGUS restart: entropy detected')
-            if result:
-                logger.info("Paused cron job %s", job_id)
-            else:
-                logger.warning("pause_job returned None for %s", job_id)
-        except Exception as e:
-            logger.error("Failed to pause cron job %s: %s", job_id, e, exc_info=True)
-
-        # Update prompt with corrective instructions
-        try:
-            job = get_job(job_id)
-            if job:
-                original_prompt = job.get('prompt', '')
-                updated_prompt = f"{corrective_prompt}\n\n---\n\nOriginal task:\n{original_prompt}"
-                update_job(job_id, {'prompt': updated_prompt})
-                logger.info("Updated cron job %s prompt with corrective instructions", job_id)
-        except Exception as e:
-            logger.error("Failed to update cron prompt for %s: %s", job_id, e, exc_info=True)
-
-        # Resume
-        try:
-            result = resume_job(job_id)
-            if result:
-                logger.info("Resumed cron job %s with corrective prompt", job_id)
-            else:
-                logger.warning("resume_job returned None for %s", job_id)
-        except Exception as e:
-            logger.error("Failed to resume cron job %s: %s", job_id, e, exc_info=True)
+        """Cron restart: pause job, update prompt, resume."""
+        _actions.restart_cron_session(session, corrective_prompt)
 
     def _restart_delegate_session(self, session: Dict, corrective_prompt: str) -> None:
-        """Delegate restart: kill process, respawn with corrective prompt."""
-        metadata = json.loads(session.get('metadata', '{}'))
-        pid = metadata.get('pid')
-
-        if pid:
-            self._terminate_pid(pid, "restart")
-
-        # The respawn will happen naturally when the parent agent retries
-        logger.info("Killed delegate session, corrective prompt stored for respawn")
+        """Delegate restart: kill process, respawn."""
+        _actions.restart_delegate_session(session, corrective_prompt)
 
     def _restart_manual_session(self, session: Dict, corrective_prompt: str) -> None:
-        """Manual restart: record action, store corrective prompt for next interaction."""
-        # For manual sessions, we can't force a restart
-        # We record the corrective prompt and notify the user
-        logger.info("Manual session %s flagged for restart (user intervention needed)", session['session_id'])
+        """Manual restart: flag for user intervention."""
+        _actions.restart_manual_session(session, corrective_prompt)
 
     def _build_corrective_prompt(self, session_id: str, reason: str) -> str:
         """Build a corrective prompt based on entropy detections."""
-        # Get recent entropy detections for this session
-        self.cursor.execute('''
-            SELECT entropy_type, severity FROM entropy_detections
-            WHERE session_id = ? AND timestamp > datetime('now', '-10 minutes')
-            ORDER BY severity DESC, timestamp DESC
-            LIMIT 1
-        ''', (session_id,))
-
-        row = self.cursor.fetchone()
-        if row:
-            entropy_type = row['entropy_type']
-            template = CORRECTIVE_PROMPTS.get(entropy_type, CORRECTIVE_PROMPTS['stuck_loop'])
-            return "%s\n\nReason: %s" % (template, reason)
-
-        return "ENTROPY CORRECTION: ARGUS detected an issue requiring restart. %s" % reason
+        return _actions.build_corrective_prompt(
+            self.cursor, session_id, reason, CORRECTIVE_PROMPTS
+        )
 
     def _kill_session(self, session_id: str, reason: str) -> None:
         """Kill a session based on its type."""
-        # Get session info
-        self.cursor.execute('SELECT * FROM sessions WHERE session_id = ?', (session_id,))
-        row = self.cursor.fetchone()
-        if not row:
-            logger.warning("Session %s not found for kill", session_id)
-            return
-        session = dict(row)
-
-        session_type = session['session_type']
-
-        # Update session status
-        self.cursor.execute('''
-            UPDATE sessions SET status = 'killed', kill_count = kill_count + 1
-            WHERE session_id = ?
-        ''', (session_id,))
-
-        try:
-            if session_type == 'cron':
-                self._kill_cron_session(session, reason)
-            elif session_type == 'delegate_task':
-                self._kill_delegate_session(session, reason)
-            elif session_type == 'manual':
-                self._kill_manual_session(session, reason)
-        except Exception as e:
-            logger.error("Error killing %s: %s", session_id, e, exc_info=True)
-
-        # Record kill action
-        self.cursor.execute('''
-            INSERT INTO watcher_actions (session_id, action_type, action_reason, success, details)
-            VALUES (?, 'kill', ?, TRUE, ?)
-        ''', (session_id, reason, json.dumps({
-            'session_type': session_type,
-            'kill_count': session['kill_count'] + 1
-        })))
-
-        self.conn.commit()
-        logger.info("Killed %s session %s: %s", session_type, session_id, reason)
+        _actions.kill_session(self.cursor, self.conn, session_id, reason)
 
     def _kill_cron_session(self, session: Dict, reason: str) -> None:
-        """Permanently pause a cron job via cron.jobs."""
-        job_id = session.get('job_id')
-        if not job_id:
-            logger.warning("No job_id for cron session %s, cannot kill", session['session_id'])
-            return
-
-        try:
-            result = pause_job(job_id, reason='ARGUS kill: %s' % reason)
-            if result:
-                logger.info("Permanently paused cron job %s", job_id)
-            else:
-                logger.warning("pause_job returned None for %s", job_id)
-        except Exception as e:
-            logger.error("Failed to pause cron job %s for kill: %s", job_id, e, exc_info=True)
+        """Permanently pause a cron job."""
+        _actions.kill_cron_session(session, reason)
 
     def _kill_delegate_session(self, session: Dict, reason: str) -> None:
         """Terminate a delegate task subprocess."""
-        metadata = json.loads(session.get('metadata', '{}'))
-        pid = metadata.get('pid')
-
-        if pid:
-            self._terminate_pid(pid, "kill")
+        _actions.kill_delegate_session(session, reason)
 
     def _kill_manual_session(self, session: Dict, reason: str) -> None:
-        """Cannot kill manual sessions — send alert notification instead."""
-        message = (
-            "ARGUS cannot terminate manual session %s.\n"
-            "Action required: Please review this session manually.\n"
-            "Reason: %s" % (session['session_id'], reason)
-        )
-        self._send_notification(session['session_id'], 'kill', message)
-        logger.warning("Manual session %s flagged for kill — user intervention required", session['session_id'])
+        """Cannot kill manual sessions — record notification for user review."""
+        _actions.kill_manual_session(self.cursor, session, reason)
 
     def _terminate_pid(self, pid: Union[str, int], context: str = "terminate") -> None:
-        """Send SIGTERM then SIGKILL to a process. Shared by restart/kill paths."""
-        pid_str = str(pid)
-        self._safe_subprocess(['kill', '-TERM', pid_str])
-        logger.info("Sent SIGTERM to PID %s (%s)", pid_str, context)
-        time.sleep(2)
-        self._safe_subprocess(['kill', '-9', pid_str])
-    
+        """Send SIGTERM then SIGKILL to a process."""
+        _actions.terminate_pid(pid, context)
+
     def _inject_prompt(self, session_id: str, prompt: str):
-        """Inject a corrective prompt into a session based on its type."""
-        # Get session info
-        self.cursor.execute('SELECT * FROM sessions WHERE session_id = ?', (session_id,))
-        row = self.cursor.fetchone()
-        if not row:
-            logger.warning("Session %s not found for prompt injection", session_id)
-            return
-        session = dict(row)
-
-        session_type = session['session_type']
-
-        try:
-            if session_type == 'cron':
-                self._inject_cron_prompt(session, prompt)
-            elif session_type == 'delegate_task':
-                self._inject_delegate_prompt(session, prompt)
-            elif session_type == 'manual':
-                self._inject_manual_prompt(session, prompt)
-        except Exception as e:
-            logger.error("Error injecting prompt into %s: %s", session_id, e, exc_info=True)
-
-        # Record prompt injection action
-        self.cursor.execute('''
-            INSERT INTO watcher_actions (session_id, action_type, action_reason, success, details)
-            VALUES (?, 'inject_prompt', 'Corrective prompt injected', TRUE, ?)
-        ''', (session_id, json.dumps({
-            'session_type': session_type,
-            'corrective_prompt': prompt[:500]
-        })))
-
-        self.conn.commit()
-        logger.info("Injected corrective prompt into %s session %s", session_type, session_id)
+        """Inject a corrective prompt into a session."""
+        _actions.inject_prompt(self.cursor, self.conn, session_id, prompt)
 
     def _inject_cron_prompt(self, session: Dict, prompt: str):
-        """Update cron job prompt and trigger via cron.jobs."""
-        job_id = session.get('job_id')
-        if not job_id:
-            return
-
-        try:
-            job = get_job(job_id)
-            if job:
-                original_prompt = job.get('prompt', '')
-                updated_prompt = f"{prompt}\n\n---\n\nOriginal task:\n{original_prompt}"
-                update_job(job_id, {'prompt': updated_prompt})
-
-            # Force run with new prompt
-            trigger_job(job_id)
-            logger.info("Triggered cron job %s with corrective prompt", job_id)
-        except Exception as e:
-            logger.error("Failed to inject prompt into cron job %s: %s", job_id, e, exc_info=True)
+        """Update cron job prompt and trigger."""
+        _actions.inject_cron_prompt(session, prompt)
 
     def _inject_delegate_prompt(self, session: Dict, prompt: str) -> None:
         """Kill and respawn delegate with corrective prompt."""
-        metadata = json.loads(session.get('metadata', '{}'))
-        pid = metadata.get('pid')
-
-        if pid:
-            self._terminate_pid(pid, "prompt injection")
-            logger.info("Killed delegate PID %s for prompt injection — will respawn", pid)
+        _actions.inject_delegate_prompt(session, prompt)
 
     def _inject_manual_prompt(self, session: Dict, prompt: str):
-        """Store corrective prompt for manual session — user will see it on next interaction."""
-        # For manual sessions, we store the prompt in the notifications table
-        # so the user can review it
-        self.cursor.execute('''
-            INSERT INTO notifications (session_id, notification_type, message, delivered)
-            VALUES (?, 'inject_prompt', ?, FALSE)
-        ''', (session['session_id'], f"CORRECTIVE PROMPT FOR NEXT INTERACTION:\n\n{prompt}"))
-        logger.info("Stored corrective prompt for manual session %s", session['session_id'])
-    
+        """Store corrective prompt as notification for manual session."""
+        _actions.inject_manual_prompt(self.cursor, session, prompt)
+
     def _send_notification(self, session_id: str, notification_type: str, message: str):
         """Send notification via Telegram bot API."""
-        delivered = False
-        delivery_error = None
+        _notifications.send_notification(
+            self.cursor, self.conn, session_id, notification_type, message
+        )
 
-        try:
-            # Always build message for DB recording
-            self.cursor.execute('SELECT * FROM sessions WHERE session_id = ?', (session_id,))
-            row = self.cursor.fetchone()
-            session = dict(row) if row else {'session_type': 'unknown', 'task_description': 'Unknown'}
-
-            full_message = (
-                "Agent Watcher Alert\n\n"
-                "Session: %s\n"
-                "Type: %s\n"
-                "Task: %s\n"
-                "Action: %s\n"
-                "Reason: %s\n"
-                "Time: %s" % (
-                    session_id,
-                    session.get('session_type', 'unknown'),
-                    session.get('task_description', 'Unknown'),
-                    notification_type.upper(),
-                    message,
-                    datetime.now().isoformat(),
-                )
-            )
-
-            # Try to send via Telegram
-            try:
-                load_hermes_dotenv()
-            except Exception:
-                pass
-
-            bot_token = os.environ.get('TELEGRAM_BOT_TOKEN')
-            chat_id = os.environ.get('TELEGRAM_CHAT_ID')
-
-            if bot_token and chat_id:
-                url = "https://api.telegram.org/bot%s/sendMessage" % bot_token
-                payload = json.dumps({
-                    'chat_id': chat_id,
-                    'text': full_message,
-                    'parse_mode': 'HTML'
-                }).encode('utf-8')
-
-                req = urllib.request.Request(
-                    url, data=payload,
-                    headers={'Content-Type': 'application/json'}
-                )
-
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    result = json.loads(resp.read())
-                    delivered = result.get('ok', False)
-                    logger.info("Telegram notification sent for %s", session_id)
-            else:
-                delivery_error = "TELEGRAM_BOT_TOKEN/CHAT_ID not in environment"
-                logger.warning("Cannot send Telegram notification: %s", delivery_error)
-
-        except urllib.error.URLError as e:
-            delivery_error = f"Telegram API error: {e}"
-            logger.error("Failed to send Telegram notification: %s", e, exc_info=True)
-        except Exception as e:
-            delivery_error = str(e)
-            logger.error("Error sending notification: %s", e, exc_info=True)
-
-        # Record notification in database
-        try:
-            self.cursor.execute('''
-                INSERT INTO notifications (session_id, notification_type, message, delivered, delivery_error)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (session_id, notification_type, full_message, delivered, delivery_error))
-            self.conn.commit()
-        except Exception as e:
-            logger.error("Error recording notification: %s", e, exc_info=True)
-    
     def run(self):
         """Main watcher loop."""
         logger.info("Agent Watcher starting...")
@@ -1897,7 +1140,6 @@ class Argus:
         # Start WAL monitor for real-time tool call detection
         self.wal_monitor.start()
 
-        
         write_argus_pid_file()
         logger.info("ARGUS PID file written: %s", _get_argus_pid_path())
 
@@ -1911,28 +1153,34 @@ class Argus:
 
                 for session in sessions:
                     try:
-                        sid = session['session_id']
+                        sid = session["session_id"]
                         self.register_session(session)
                         self.collect_metrics(sid)
                         entropy_detections = self.detect_entropy(sid)
                         directive_checks = self.check_prime_directive(sid)
-                        decision = self.make_decision(sid, entropy_detections, directive_checks)
+                        decision = self.make_decision(
+                            sid, entropy_detections, directive_checks
+                        )
                         if decision:
                             self.execute_action(sid, decision)
                     except Exception as e:
-                        logger.error("Error processing session %s: %s", session.get('session_id'), e)
-                
+                        logger.error(
+                            "Error processing session %s: %s",
+                            session.get("session_id"),
+                            e,
+                        )
+
                 # Sleep before next poll
-                time.sleep(CONFIG['poll_interval'])
-            
+                time.sleep(CONFIG["poll_interval"])
+
             except KeyboardInterrupt:
                 logger.info("Received interrupt signal, shutting down...")
                 self.running = False
-            
+
             except Exception as e:
                 logger.error("Error in main loop: %s", e, exc_info=True)
-                time.sleep(CONFIG['poll_interval'])
-    
+                time.sleep(CONFIG["poll_interval"])
+
     def stop(self):
         """Stop the watcher."""
         logger.info("Stopping Agent Watcher...")
@@ -1947,63 +1195,79 @@ class Argus:
         events = self.wal_monitor.get_events(limit=50)
 
         for event in events:
-            if event.event_type == 'repeat_detected':
+            if event.event_type == "repeat_detected":
                 # Record entropy detection
-                self.cursor.execute('''
+                self.cursor.execute(
+                    """
                     INSERT INTO entropy_detections
                     (session_id, entropy_type, severity, details)
                     VALUES (?, 'repeat_tool_calls', 'warning', ?)
-                ''', (
-                    f"wal_{event.session_id}",
-                    json.dumps({
-                        'tool_name': event.tool_name,
-                        'source': 'wal_monitor',
-                        **event.details,
-                    })
-                ))
+                """,
+                    (
+                        f"wal_{event.session_id}",
+                        json.dumps(
+                            {
+                                "tool_name": event.tool_name,
+                                "source": "wal_monitor",
+                                **event.details,
+                            }
+                        ),
+                    ),
+                )
 
                 # Insert into tool_calls for compatibility with existing detection
-                self.cursor.execute('''
+                self.cursor.execute(
+                    """
                     INSERT INTO tool_calls
                     (session_id, tool_name, tool_args, timestamp, file_changed)
                     VALUES (?, ?, ?, ?, FALSE)
-                ''', (
-                    f"wal_{event.session_id}",
-                    event.tool_name,
-                    event.tool_args or '{}',
-                    str(event.timestamp),
-                ))
+                """,
+                    (
+                        f"wal_{event.session_id}",
+                        event.tool_name,
+                        event.tool_args or "{}",
+                        str(event.timestamp),
+                    ),
+                )
 
                 logger.warning(
                     "WAL: repeat tool '%s' in session %s",
-                    event.tool_name, event.session_id[:15]
+                    event.tool_name,
+                    event.session_id[:15],
                 )
 
-            elif event.event_type == 'stuck_loop_detected':
-                self.cursor.execute('''
+            elif event.event_type == "stuck_loop_detected":
+                self.cursor.execute(
+                    """
                     INSERT INTO entropy_detections
                     (session_id, entropy_type, severity, details)
                     VALUES (?, 'stuck_loop', 'critical', ?)
-                ''', (
-                    f"wal_{event.session_id}",
-                    json.dumps({
-                        'source': 'wal_monitor',
-                        **event.details,
-                    })
-                ))
+                """,
+                    (
+                        f"wal_{event.session_id}",
+                        json.dumps(
+                            {
+                                "source": "wal_monitor",
+                                **event.details,
+                            }
+                        ),
+                    ),
+                )
 
                 logger.warning(
                     "WAL: stuck loop in session %s: %s",
-                    event.session_id[:15], event.details.get('pattern')
+                    event.session_id[:15],
+                    event.details.get("pattern"),
                 )
 
         if events:
             self.conn.commit()
 
+
 def main():
     """Main entry point."""
     argus = Argus()
-    
+
     # Handle signals
     def _signal_handler(signum, frame):
         """Handle SIGINT/SIGTERM for graceful shutdown."""
@@ -2013,7 +1277,7 @@ def main():
 
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
-    
+
     # Run Argus
     try:
         argus.run()
@@ -2021,6 +1285,7 @@ def main():
         logger.error("Fatal error: %s", e, exc_info=True)
         argus.stop()
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

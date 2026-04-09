@@ -23,7 +23,7 @@ from typing import Dict, List, Optional
 from collections import Counter
 
 # === PATH RESOLUTION ===
-_HERMES_AGENT = os.path.expanduser('~/.hermes/hermes-agent')
+_HERMES_AGENT = os.path.expanduser("~/.hermes/hermes-agent")
 if os.path.isdir(_HERMES_AGENT) and _HERMES_AGENT not in sys.path:
     sys.path.insert(0, _HERMES_AGENT)
 
@@ -32,18 +32,20 @@ SessionDB = None  # Will be set if import succeeds
 try:
     from hermes_constants import get_hermes_home
     from hermes_state import SessionDB, DEFAULT_DB_PATH
+
     _HERMES_INTERNALS_AVAILABLE = True
     _HERMES_HOME = get_hermes_home()
 except (ImportError, TypeError) as _e:
-    DEFAULT_DB_PATH = str(Path.home() / '.hermes' / 'state.db')
-    _HERMES_HOME = Path.home() / '.hermes'
+    DEFAULT_DB_PATH = str(Path.home() / ".hermes" / "state.db")
+    _HERMES_HOME = Path.home() / ".hermes"
 
-logger = logging.getLogger('argus.wal')
+logger = logging.getLogger("argus.wal")
 
 
 @dataclass
 class ToolCallEvent:
     """A detected tool call or entropy pattern."""
+
     cursor: int
     session_id: str
     event_type: str  # "tool_call", "repeat_detected", "stuck_loop_detected"
@@ -108,7 +110,9 @@ class ToolCallMonitor:
         if self._running:
             return
         if not _HERMES_INTERNALS_AVAILABLE:
-            logger.warning("Hermes internals unavailable — ToolCallMonitor cannot start")
+            logger.warning(
+                "Hermes internals unavailable — ToolCallMonitor cannot start"
+            )
             return
 
         self._running = True
@@ -144,16 +148,16 @@ class ToolCallMonitor:
                 if len(history) < 3:
                     continue
                 counts = Counter(history)
-                repeats = {t: c for t, c in counts.items() if c >= self.repeat_threshold}
+                repeats = {
+                    t: c for t, c in counts.items() if c >= self.repeat_threshold
+                }
                 if repeats:
                     summary[session_id] = {
-                        'total_calls': len(history),
-                        'repeat_tools': repeats,
-                        'last_5': history[-5:],
+                        "total_calls": len(history),
+                        "repeat_tools": repeats,
+                        "last_5": history[-5:],
                     }
             return summary
-
-    
 
     def _poll_loop(self):
         """Background loop: poll state.db for new tool calls."""
@@ -166,12 +170,14 @@ class ToolCallMonitor:
                 if db is None:
                     db = SessionDB(DEFAULT_DB_PATH)
                     consecutive_errors = 0
-                
+
                 self._poll_once(db)
                 consecutive_errors = 0
             except Exception as e:
                 consecutive_errors += 1
-                logger.warning("ToolCallMonitor poll error (%d): %s", consecutive_errors, e)
+                logger.warning(
+                    "ToolCallMonitor poll error (%d): %s", consecutive_errors, e
+                )
                 # Close and reconnect on repeated errors
                 if db is not None:
                     try:
@@ -182,7 +188,7 @@ class ToolCallMonitor:
                 # Back off on persistent errors
                 if consecutive_errors > 3:
                     time.sleep(self.poll_interval * 3)
-            
+
             time.sleep(self.poll_interval)
 
         if db is not None:
@@ -218,7 +224,7 @@ class ToolCallMonitor:
         for session in sessions:
             if session is None:
                 continue
-            session_id = session.get('id', '')
+            session_id = session.get("id", "")
             if not session_id:
                 continue
 
@@ -239,14 +245,14 @@ class ToolCallMonitor:
         # Find assistant messages with tool_calls newer than last_seen
         new_tool_calls = []
         for msg in messages:
-            if msg.get('role') != 'assistant':
+            if msg.get("role") != "assistant":
                 continue
 
-            ts = self._ts_float(msg.get('timestamp', 0))
+            ts = self._ts_float(msg.get("timestamp", 0))
             if ts <= last_seen:
                 continue
 
-            tool_calls_raw = msg.get('tool_calls')
+            tool_calls_raw = msg.get("tool_calls")
             if not tool_calls_raw:
                 continue
 
@@ -255,7 +261,7 @@ class ToolCallMonitor:
                 if isinstance(tool_calls_raw, str):
                     tool_calls_raw = json.loads(tool_calls_raw)
                 for tc in tool_calls_raw:
-                    name = tc.get('function', {}).get('name') or tc.get('name', '')
+                    name = tc.get("function", {}).get("name") or tc.get("name", "")
                     if name:
                         new_tool_calls.append((name, ts))
             except (json.JSONDecodeError, TypeError):
@@ -263,7 +269,7 @@ class ToolCallMonitor:
 
         if not new_tool_calls:
             # Still update timestamp even if no tool calls
-            all_ts = [self._ts_float(m.get('timestamp', 0)) for m in messages]
+            all_ts = [self._ts_float(m.get("timestamp", 0)) for m in messages]
             if all_ts:
                 latest = max(all_ts)
                 if latest > last_seen:
@@ -278,55 +284,80 @@ class ToolCallMonitor:
                 history.append(tool_name)
 
                 # Emit tool_call event
-                self._enqueue(ToolCallEvent(
-                    cursor=0,
-                    session_id=session_id,
-                    event_type='tool_call',
-                    tool_name=tool_name,
-                    timestamp=ts,
-                ))
+                self._enqueue(
+                    ToolCallEvent(
+                        cursor=0,
+                        session_id=session_id,
+                        event_type="tool_call",
+                        tool_name=tool_name,
+                        timestamp=ts,
+                    )
+                )
 
             # Check for repeat patterns (3+ same tool consecutively)
             if len(history) >= self.repeat_threshold:
-                recent = history[-self.repeat_threshold:]
+                recent = history[-self.repeat_threshold :]
                 if len(set(recent)) == 1:  # All the same
-                    self._enqueue(ToolCallEvent(
-                        cursor=0,
-                        session_id=session_id,
-                        event_type='repeat_detected',
-                        tool_name=recent[0],
-                        details={'count': len(recent), 'consecutive': True},
-                    ))
+                    self._enqueue(
+                        ToolCallEvent(
+                            cursor=0,
+                            session_id=session_id,
+                            event_type="repeat_detected",
+                            tool_name=recent[0],
+                            details={"count": len(recent), "consecutive": True},
+                        )
+                    )
                     logger.warning(
                         "Repeat detected: %s called %d+ times in session %s",
-                        recent[0], len(recent), session_id[:15]
+                        recent[0],
+                        len(recent),
+                        session_id[:15],
                     )
 
             # Check for stuck loop patterns (A,B,C,A,B,C)
             if len(history) >= self.loop_pattern_length * 2:
-                pattern = history[-self.loop_pattern_length * 2:-self.loop_pattern_length]
-                next_pattern = history[-self.loop_pattern_length:]
+                pattern = history[
+                    -self.loop_pattern_length * 2 : -self.loop_pattern_length
+                ]
+                next_pattern = history[-self.loop_pattern_length :]
                 if pattern == next_pattern:
-                    self._enqueue(ToolCallEvent(
-                        cursor=0,
-                        session_id=session_id,
-                        event_type='stuck_loop_detected',
-                        details={
-                            'pattern': pattern,
-                            'pattern_length': self.loop_pattern_length,
-                        },
-                    ))
+                    self._enqueue(
+                        ToolCallEvent(
+                            cursor=0,
+                            session_id=session_id,
+                            event_type="stuck_loop_detected",
+                            details={
+                                "pattern": pattern,
+                                "pattern_length": self.loop_pattern_length,
+                            },
+                        )
+                    )
                     logger.warning(
                         "Stuck loop detected in session %s: %s repeating",
-                        session_id[:15], pattern
+                        session_id[:15],
+                        pattern,
                     )
 
             # Trim history to last 50 calls
             if len(history) > 50:
                 self._recent_tool_calls[session_id] = history[-50:]
 
+        # Evict stale sessions (no activity in 30 minutes)
+        now = time.time()
+        stale_cutoff = now - 1800  # 30 minutes
+        stale_sessions = [
+            sid for sid, ts in self._last_poll_timestamps.items() if ts < stale_cutoff
+        ]
+        for sid in stale_sessions:
+            self._last_poll_timestamps.pop(sid, None)
+            self._recent_tool_calls.pop(sid, None)
+        if stale_sessions:
+            logger.debug(
+                "Evicted %d stale sessions from WAL monitor", len(stale_sessions)
+            )
+
         # Update last seen timestamp
-        all_ts = [self._ts_float(m.get('timestamp', 0)) for m in messages]
+        all_ts = [self._ts_float(m.get("timestamp", 0)) for m in messages]
         if all_ts:
             latest = max(all_ts)
             if latest > last_seen:
@@ -353,6 +384,7 @@ class ToolCallMonitor:
             except ValueError:
                 try:
                     from datetime import datetime
+
                     return datetime.fromisoformat(ts).timestamp()
                 except Exception:
                     return 0.0
@@ -360,6 +392,7 @@ class ToolCallMonitor:
 
 
 # === Convenience: quick entropy check without the daemon ===
+
 
 def check_session_entropy(
     session_id: str,
@@ -371,7 +404,7 @@ def check_session_entropy(
     Returns dict with tool call counts, repeat patterns, stuck loops.
     """
     if not _HERMES_INTERNALS_AVAILABLE:
-        return {'error': 'hermes internals unavailable'}
+        return {"error": "hermes internals unavailable"}
 
     db = SessionDB(db_path or DEFAULT_DB_PATH)
     messages = db.get_messages(session_id)
@@ -380,23 +413,23 @@ def check_session_entropy(
     # Extract all tool calls
     tool_names = []
     for msg in messages:
-        if msg.get('role') != 'assistant':
+        if msg.get("role") != "assistant":
             continue
-        tc_raw = msg.get('tool_calls')
+        tc_raw = msg.get("tool_calls")
         if not tc_raw:
             continue
         try:
             if isinstance(tc_raw, str):
                 tc_raw = json.loads(tc_raw)
             for tc in tc_raw:
-                name = tc.get('function', {}).get('name') or tc.get('name', '')
+                name = tc.get("function", {}).get("name") or tc.get("name", "")
                 if name:
                     tool_names.append(name)
         except (json.JSONDecodeError, TypeError):
             continue
 
     if not tool_names:
-        return {'session_id': session_id, 'tool_calls': 0, 'entropy': 'none'}
+        return {"session_id": session_id, "tool_calls": 0, "entropy": "none"}
 
     # Analyze
     counts = Counter(tool_names)
@@ -405,7 +438,7 @@ def check_session_entropy(
     # Check consecutive repeats
     consecutive_repeats = 0
     for i in range(len(tool_names) - (repeat_threshold - 1)):
-        window = tool_names[i:i + repeat_threshold]
+        window = tool_names[i : i + repeat_threshold]
         if len(set(window)) == 1:
             consecutive_repeats += 1
 
@@ -414,20 +447,22 @@ def check_session_entropy(
     for pattern_len in range(2, 4):
         if len(tool_names) >= pattern_len * 2:
             for i in range(len(tool_names) - pattern_len * 2 + 1):
-                p1 = tool_names[i:i + pattern_len]
-                p2 = tool_names[i + pattern_len:i + pattern_len * 2]
+                p1 = tool_names[i : i + pattern_len]
+                p2 = tool_names[i + pattern_len : i + pattern_len * 2]
                 if p1 == p2:
                     stuck_loops += 1
 
     return {
-        'session_id': session_id,
-        'tool_calls': len(tool_names),
-        'unique_tools': len(counts),
-        'top_tools': counts.most_common(5),
-        'repeat_tools': repeats,
-        'consecutive_repeats': consecutive_repeats,
-        'stuck_loops': stuck_loops,
-        'entropy_level': 'critical' if stuck_loops > 0 or consecutive_repeats > 2
-                         else 'warning' if consecutive_repeats > 0
-                         else 'none',
+        "session_id": session_id,
+        "tool_calls": len(tool_names),
+        "unique_tools": len(counts),
+        "top_tools": counts.most_common(5),
+        "repeat_tools": repeats,
+        "consecutive_repeats": consecutive_repeats,
+        "stuck_loops": stuck_loops,
+        "entropy_level": "critical"
+        if stuck_loops > 0 or consecutive_repeats > 2
+        else "warning"
+        if consecutive_repeats > 0
+        else "none",
     }

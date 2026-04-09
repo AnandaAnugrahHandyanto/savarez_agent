@@ -1,0 +1,11 @@
+{
+  "include": ["."],
+  "exclude": ["__pycache__", ".local"],
+  "extraPaths": [
+    "/Users/zestehl/.hermes/hermes-agent"
+  ],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": "none"
+}

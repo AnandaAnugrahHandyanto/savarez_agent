@@ -12,8 +12,6 @@ Sections verified:
   4. General (no hardcoded hermes paths, Python 3.10+ compat)
 """
 
-import ast
-import os
 import re
 import sys
 import unittest
@@ -40,6 +38,7 @@ class _SourceMixin:
 # 1. CODE STYLE
 # =====================================================================
 
+
 class TestLoggingStyle(_SourceMixin, unittest.TestCase):
     """Contributing guide: Use logger.warning(), logger.error()."""
 
@@ -49,14 +48,19 @@ class TestLoggingStyle(_SourceMixin, unittest.TestCase):
         for i, line in enumerate(self.argus_lines, 1):
             stripped = line.strip()
             # Skip comments, docstrings, test files
-            if stripped.startswith("#") or stripped.startswith('"""') or stripped.startswith("'''"):
+            if (
+                stripped.startswith("#")
+                or stripped.startswith('"""')
+                or stripped.startswith("'''")
+            ):
                 continue
             # print() is only OK in stub functions or if logger is unavailable
             if "print(" in stripped and "def " not in stripped:
                 violations.append(f"  L{i}: {stripped[:80]}")
         self.assertEqual(
-            violations, [],
-            f"Bare print() found (should use logger):\n" + "\n".join(violations)
+            violations,
+            [],
+            "Bare print() found (should use logger):\n" + "\n".join(violations),
         )
 
     def test_logger_error_has_exc_info(self):
@@ -68,13 +72,20 @@ class TestLoggingStyle(_SourceMixin, unittest.TestCase):
             stripped = line.strip()
             if stripped.startswith("except "):
                 in_except = True
-            elif stripped and not stripped.startswith("#") and not stripped.startswith("logger"):
+            elif (
+                stripped
+                and not stripped.startswith("#")
+                and not stripped.startswith("logger")
+            ):
                 in_except = False
             if in_except and "logger.error(" in stripped and "exc_info" not in stripped:
                 violations.append(f"  L{i}: {stripped[:80]}")
         # Warning only, not failure — some errors don't need traceback
         if violations:
-            print(f"  WARNING: logger.error() without exc_info in except blocks:\n" + "\n".join(violations[:5]))
+            print(
+                "  WARNING: logger.error() without exc_info in except blocks:\n"
+                + "\n".join(violations[:5])
+            )
 
 
 class TestHermesHome(_SourceMixin, unittest.TestCase):
@@ -92,18 +103,28 @@ class TestHermesHome(_SourceMixin, unittest.TestCase):
                 in_function = True
             elif stripped.startswith("class "):
                 in_class = True
-            elif in_function and not line.startswith("    ") and not line.startswith("#") and stripped:
+            elif (
+                in_function
+                and not line.startswith("    ")
+                and not line.startswith("#")
+                and stripped
+            ):
                 in_function = False
 
             if in_function and not in_class:
                 # Check for hardcoded hermes paths
-                if "'~/.hermes/" in stripped or '"~/.hermes/' in stripped or "home / '.hermes'" in stripped:
+                if (
+                    "'~/.hermes/" in stripped
+                    or '"~/.hermes/' in stripped
+                    or "home / '.hermes'" in stripped
+                ):
                     # Skip if it's using expanduser (which is fine)
                     if "expanduser" not in stripped:
                         violations.append(f"  L{i}: {stripped[:80]}")
         self.assertEqual(
-            violations, [],
-            f"Hardcoded ~/.hermes in function bodies:\n" + "\n".join(violations)
+            violations,
+            [],
+            "Hardcoded ~/.hermes in function bodies:\n" + "\n".join(violations),
         )
 
 
@@ -111,14 +132,18 @@ class TestHermesHome(_SourceMixin, unittest.TestCase):
 # 2. CROSS-PLATFORM COMPATIBILITY
 # =====================================================================
 
+
 class TestPathlibUsage(_SourceMixin, unittest.TestCase):
     """Contributing guide: Use pathlib.Path instead of string concatenation."""
 
     def test_uses_pathlib_for_paths(self):
         """Core path operations should use pathlib.Path."""
         # Check that Path is imported
-        self.assertIn("from pathlib import Path", self.argus_src,
-                       "argus.py must import pathlib.Path")
+        self.assertIn(
+            "from pathlib import Path",
+            self.argus_src,
+            "argus.py must import pathlib.Path",
+        )
 
     def test_no_os_path_join_for_new_code(self):
         """New code should prefer Path / over os.path.join."""
@@ -128,17 +153,23 @@ class TestPathlibUsage(_SourceMixin, unittest.TestCase):
             # Flag sections that are clearly new (WAL, PID, launchd)
             if "# ===" in line:
                 section = line.strip()
-                in_new_section = any(k in section for k in ["WAL", "PID", "LAUNCHD", "LOGGING"])
+                in_new_section = any(
+                    k in section for k in ["WAL", "PID", "LAUNCHD", "LOGGING"]
+                )
             if in_new_section and "os.path.join(" in line:
                 violations.append(f"  L{i}: {line.strip()[:80]}")
         # Warning, not failure — os.path.join is acceptable
         if violations:
-            print(f"  WARNING: os.path.join in new sections (prefer Path /):\n" + "\n".join(violations[:3]))
+            print(
+                "  WARNING: os.path.join in new sections (prefer Path /):\n"
+                + "\n".join(violations[:3])
+            )
 
 
 # =====================================================================
 # 3. SECURITY
 # =====================================================================
+
 
 class TestSecuritySubprocess(_SourceMixin, unittest.TestCase):
     """Contributing guide: No shell=True, use shlex.quote()."""
@@ -150,8 +181,9 @@ class TestSecuritySubprocess(_SourceMixin, unittest.TestCase):
             if "shell=True" in line:
                 violations.append(f"  L{i}: {line.strip()[:80]}")
         self.assertEqual(
-            violations, [],
-            f"shell=True found (security violation):\n" + "\n".join(violations)
+            violations,
+            [],
+            "shell=True found (security violation):\n" + "\n".join(violations),
         )
 
     def test_no_string_interpolation_in_subprocess(self):
@@ -166,10 +198,12 @@ class TestSecuritySubprocess(_SourceMixin, unittest.TestCase):
                     next_line = self.argus_lines[j].strip()
                     if "f'" in next_line or 'f"' in next_line:
                         if any(cmd in next_line for cmd in ["kill", "hermes", "curl"]):
-                            violations.append(f"  L{j+1}: {next_line[:80]}")
+                            violations.append(f"  L{j + 1}: {next_line[:80]}")
         self.assertEqual(
-            violations, [],
-            f"F-string in subprocess args (shell injection risk):\n" + "\n".join(violations)
+            violations,
+            [],
+            "F-string in subprocess args (shell injection risk):\n"
+            + "\n".join(violations),
         )
 
 
@@ -186,15 +220,18 @@ class TestSecuritySQL(_SourceMixin, unittest.TestCase):
                 in_execute = True
             if in_execute:
                 # Check for f-string or .format() inside execute
-                if ("f'" in stripped or 'f"' in stripped) and ("SELECT" in stripped or "INSERT" in stripped or "UPDATE" in stripped):
+                if ("f'" in stripped or 'f"' in stripped) and (
+                    "SELECT" in stripped or "INSERT" in stripped or "UPDATE" in stripped
+                ):
                     violations.append(f"  L{i}: {stripped[:80]}")
-                if ".format(" in stripped and ("SELECT" in stripped or "INSERT" in stripped):
+                if ".format(" in stripped and (
+                    "SELECT" in stripped or "INSERT" in stripped
+                ):
                     violations.append(f"  L{i}: {stripped[:80]}")
                 if stripped.endswith(")") or stripped.endswith('""")'):
                     in_execute = False
         self.assertEqual(
-            violations, [],
-            f"Non-parameterized SQL found:\n" + "\n".join(violations)
+            violations, [], "Non-parameterized SQL found:\n" + "\n".join(violations)
         )
 
     def test_no_eval_exec(self):
@@ -204,17 +241,22 @@ class TestSecuritySQL(_SourceMixin, unittest.TestCase):
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue
-            if re.search(r'\beval\s*\(', stripped) or re.search(r'\bexec\s*\(', stripped):
+            if re.search(r"\beval\s*\(", stripped) or re.search(
+                r"\bexec\s*\(", stripped
+            ):
                 violations.append(f"  L{i}: {stripped[:80]}")
         for i, line in enumerate(self.wal_lines, 1):
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue
-            if re.search(r'\beval\s*\(', stripped) or re.search(r'\bexec\s*\(', stripped):
+            if re.search(r"\beval\s*\(", stripped) or re.search(
+                r"\bexec\s*\(", stripped
+            ):
                 violations.append(f"  wal_monitor.py L{i}: {stripped[:80]}")
         self.assertEqual(
-            violations, [],
-            f"eval()/exec() found (security violation):\n" + "\n".join(violations)
+            violations,
+            [],
+            "eval()/exec() found (security violation):\n" + "\n".join(violations),
         )
 
 
@@ -223,7 +265,6 @@ class TestSecurityPathTraversal(_SourceMixin, unittest.TestCase):
 
     def test_file_operations_resolve_paths(self):
         """File write operations should resolve paths to prevent traversal."""
-        violations = []
         for i, line in enumerate(self.argus_lines, 1):
             stripped = line.strip()
             # Look for direct file writes without realpath
@@ -239,6 +280,7 @@ class TestSecurityPathTraversal(_SourceMixin, unittest.TestCase):
 # 4. GENERAL COMPLIANCE
 # =====================================================================
 
+
 class TestImportStructure(_SourceMixin, unittest.TestCase):
     """Hermes imports must handle unavailable modules gracefully."""
 
@@ -253,13 +295,19 @@ class TestImportStructure(_SourceMixin, unittest.TestCase):
                 in_try = True
             elif stripped.startswith("except"):
                 in_try = False
-            elif "from cron." in stripped or "from hermes_" in stripped or "from gateway." in stripped:
+            elif (
+                "from cron." in stripped
+                or ("from hermes_" in stripped and "hermes_fallback" not in stripped)
+                or "from gateway." in stripped
+            ):
                 if not in_try:
                     hermes_imports_without_try.append(f"  L{i}: {stripped[:80]}")
 
         self.assertEqual(
-            hermes_imports_without_try, [],
-            f"Hermes imports without try/except fallback:\n" + "\n".join(hermes_imports_without_try)
+            hermes_imports_without_try,
+            [],
+            "Hermes imports without try/except fallback:\n"
+            + "\n".join(hermes_imports_without_try),
         )
 
     def test_no_hardcoded_credentials(self):
@@ -270,10 +318,13 @@ class TestImportStructure(_SourceMixin, unittest.TestCase):
             r'token\s*=\s*["\'][a-zA-Z0-9]{20,}',
             r'secret\s*=\s*["\'][a-zA-Z0-9]{10,}',
             r'password\s*=\s*["\'][^"\']+',
-            r'sk-[a-zA-Z0-9]{20,}',
-            r'ghp_[a-zA-Z0-9]{36}',
+            r"sk-[a-zA-Z0-9]{20,}",
+            r"ghp_[a-zA-Z0-9]{36}",
         ]
-        for name, lines in [("argus.py", self.argus_lines), ("wal_monitor.py", self.wal_lines)]:
+        for name, lines in [
+            ("argus.py", self.argus_lines),
+            ("wal_monitor.py", self.wal_lines),
+        ]:
             for i, line in enumerate(lines, 1):
                 stripped = line.strip()
                 if stripped.startswith("#"):
@@ -282,8 +333,7 @@ class TestImportStructure(_SourceMixin, unittest.TestCase):
                     if re.search(pattern, stripped, re.IGNORECASE):
                         violations.append(f"  {name}:{i}: potential secret")
         self.assertEqual(
-            violations, [],
-            f"Potential hardcoded secrets:\n" + "\n".join(violations)
+            violations, [], "Potential hardcoded secrets:\n" + "\n".join(violations)
         )
 
 
@@ -292,20 +342,31 @@ class TestDocstrings(_SourceMixin, unittest.TestCase):
 
     def test_public_functions_have_docstrings(self):
         """All public methods/functions need docstrings."""
-        for name, code in [("argus.py", self.argus_src), ("wal_monitor.py", self.wal_src)]:
+        for name, code in [
+            ("argus.py", self.argus_src),
+            ("wal_monitor.py", self.wal_src),
+        ]:
             # Find public functions (not starting with _)
-            func_defs = re.finditer(r'^(\s*)def ([^_]\w+)\([^)]*\):\s*$', code, re.MULTILINE)
+            func_defs = re.finditer(
+                r"^(\s*)def ([^_]\w+)\([^)]*\):\s*$", code, re.MULTILINE
+            )
             missing = []
             for match in func_defs:
                 func_name = match.group(2)
-                indent = match.group(1)
                 # Check next line for docstring
                 pos = match.end()
-                next_lines = code[pos:pos + 200]
-                if '"""' not in next_lines.split("\n")[1] if "\n" in next_lines else next_lines:
+                next_lines = code[pos : pos + 200]
+                if (
+                    '"""' not in next_lines.split("\n")[1]
+                    if "\n" in next_lines
+                    else next_lines
+                ):
                     missing.append(f"  {name}: {func_name}")
             if missing:
-                print(f"  WARNING: Public functions without docstrings:\n" + "\n".join(missing[:5]))
+                print(
+                    "  WARNING: Public functions without docstrings:\n"
+                    + "\n".join(missing[:5])
+                )
 
 
 class TestModuleStructure(_SourceMixin, unittest.TestCase):
@@ -313,14 +374,19 @@ class TestModuleStructure(_SourceMixin, unittest.TestCase):
 
     def test_has_main_guard(self):
         """Module must have if __name__ == '__main__' guard."""
-        self.assertIn('if __name__ == "__main__"', self.argus_src,
-                       "argus.py must have __main__ guard")
+        self.assertIn(
+            'if __name__ == "__main__"',
+            self.argus_src,
+            "argus.py must have __main__ guard",
+        )
 
     def test_shebang_line(self):
         """Module must start with shebang."""
         first_line = self.argus_lines[0]
-        self.assertTrue(first_line.startswith("#!"),
-                        f"First line must be shebang, got: {first_line}")
+        self.assertTrue(
+            first_line.startswith("#!"),
+            f"First line must be shebang, got: {first_line}",
+        )
 
     def test_module_docstring(self):
         """Module must have a docstring."""
@@ -339,6 +405,7 @@ class TestRuntimeCompatibility(_SourceMixin, unittest.TestCase):
         sys.path.insert(0, str(SCRIPT_DIR))
         try:
             import argus
+
             self.assertTrue(hasattr(argus, "Argus"))
             self.assertTrue(hasattr(argus, "CONFIG"))
             self.assertTrue(hasattr(argus, "is_argus_running"))
@@ -350,8 +417,15 @@ class TestRuntimeCompatibility(_SourceMixin, unittest.TestCase):
         sys.path.insert(0, str(SCRIPT_DIR))
         try:
             import argus
-            required = ["db_path", "log_dir", "poll_interval", "entropy_threshold",
-                        "quality_threshold", "max_restart_count"]
+
+            required = [
+                "db_path",
+                "log_dir",
+                "poll_interval",
+                "entropy_threshold",
+                "quality_threshold",
+                "max_restart_count",
+            ]
             for key in required:
                 self.assertIn(key, argus.CONFIG, f"CONFIG missing key: {key}")
         finally:
