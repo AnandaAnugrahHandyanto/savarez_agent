@@ -2115,7 +2115,33 @@ def resolve_nous_runtime_credentials(
 # =============================================================================
 
 def get_nous_auth_status() -> Dict[str, Any]:
-    """Status snapshot for `hermes status` output."""
+    """Status snapshot for `hermes status` output.
+
+    Checks the credential pool first (where ``hermes auth add nous`` stores
+    credentials), then falls back to the legacy provider state.
+    """
+    # Check credential pool first — this is where `hermes auth add` stores
+    # device-code tokens.
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool("nous")
+        if pool and pool.has_credentials():
+            entry = pool.select()
+            if entry is not None:
+                access_token = getattr(entry, "access_token", "")
+                if access_token:
+                    return {
+                        "logged_in": True,
+                        "portal_base_url": getattr(entry, "portal_base_url", None),
+                        "inference_base_url": getattr(entry, "base_url", None),
+                        "access_expires_at": getattr(entry, "expires_at", None),
+                        "agent_key_expires_at": None,
+                        "has_refresh_token": bool(getattr(entry, "refresh_token", None)),
+                    }
+    except Exception:
+        pass
+
+    # Fall back to legacy provider state
     state = get_provider_auth_state("nous")
     if not state:
         return {
