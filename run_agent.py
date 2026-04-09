@@ -4816,18 +4816,25 @@ class AIAgent:
                     self._close_request_openai_client(request_client, reason="stream_request_complete")
 
         _stream_stale_timeout_base = float(os.getenv("HERMES_STREAM_STALE_TIMEOUT", 180.0))
-        # Scale the stale timeout for large contexts: slow models (like Opus)
-        # can legitimately think for minutes before producing the first token
-        # when the context is large.  Without this, the stale detector kills
-        # healthy connections during the model's thinking phase, producing
-        # spurious RemoteProtocolError ("peer closed connection").
-        _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
-        if _est_tokens > 100_000:
-            _stream_stale_timeout = max(_stream_stale_timeout_base, 300.0)
-        elif _est_tokens > 50_000:
-            _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
+        # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
+        # for prefill on large contexts.  Disable the stale detector unless
+        # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
+        if _stream_stale_timeout_base == 180.0 and self.base_url and is_local_endpoint(self.base_url):
+            _stream_stale_timeout = float("inf")
+            logger.debug("Local provider detected (%s) — stale stream timeout disabled", self.base_url)
         else:
-            _stream_stale_timeout = _stream_stale_timeout_base
+            # Scale the stale timeout for large contexts: slow models (like Opus)
+            # can legitimately think for minutes before producing the first token
+            # when the context is large.  Without this, the stale detector kills
+            # healthy connections during the model's thinking phase, producing
+            # spurious RemoteProtocolError ("peer closed connection").
+            _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+            if _est_tokens > 100_000:
+                _stream_stale_timeout = max(_stream_stale_timeout_base, 300.0)
+            elif _est_tokens > 50_000:
+                _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
+            else:
+                _stream_stale_timeout = _stream_stale_timeout_base
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()
@@ -4979,7 +4986,7 @@ class AIAgent:
                 effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
                 self.api_key = effective_key
                 self._anthropic_api_key = effective_key
-                self._anthropic_base_url = getattr(fb_client, "base_url", None)
+                self._anthropic_base_url = fb_base_url
                 self._anthropic_client = build_anthropic_client(effective_key, self._anthropic_base_url)
                 self._is_anthropic_oauth = _is_oauth_token(effective_key)
                 self.client = None
@@ -5201,6 +5208,7 @@ class AIAgent:
                 is_oauth=self._is_anthropic_oauth,
                 preserve_dots=self._anthropic_preserve_dots(),
                 context_length=ctx_len,
+                base_url=getattr(self, "_anthropic_base_url", None),
             )
 
         if self.api_mode == "codex_responses":
@@ -5737,7 +5745,7 @@ class AIAgent:
                     tools=[memory_tool_def],
                     temperature=0.3,
                     max_tokens=5120,
-                    timeout=30.0,
+                    # timeout resolved from auxiliary.flush_memories.timeout config
                 )
             except RuntimeError:
                 _aux_available = False
@@ -5769,7 +5777,10 @@ class AIAgent:
                     "temperature": 0.3,
                     **self._max_tokens_param(5120),
                 }
-                response = self._ensure_primary_openai_client(reason="flush_memories").chat.completions.create(**api_kwargs, timeout=30.0)
+                from agent.auxiliary_client import _get_task_timeout
+                response = self._ensure_primary_openai_client(reason="flush_memories").chat.completions.create(
+                    **api_kwargs, timeout=_get_task_timeout("flush_memories")
+                )
 
             # Extract tool calls from the response, handling all API formats
             tool_calls = []
