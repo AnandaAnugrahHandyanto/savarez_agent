@@ -8906,6 +8906,24 @@ class AIAgent:
                             if repaired:
                                 print(f"{self.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
                                 tc.function.name = repaired
+
+                    # Auto-load deferred tools the model tried to call directly.
+                    # Weaker models skip tool_details/tool_search and just call
+                    # tools they see in the catalog.  If the tool is registered
+                    # (just not in the active set), load it on the fly.
+                    if self._tool_search_active:
+                        from tools.registry import registry as _tool_registry
+                        for tc in assistant_message.tool_calls:
+                            fname = tc.function.name
+                            if fname not in self.valid_tool_names:
+                                _schema = _tool_registry.get_single_definition(fname)
+                                if _schema:
+                                    self.tools.append(_schema)
+                                    self.valid_tool_names.add(fname)
+                                    self._loaded_tools[fname] = self._api_call_count
+                                    logger.info("Auto-loaded deferred tool on direct call: %s", fname)
+                                    self._vprint(f"{self.log_prefix}🔍 Auto-loaded deferred tool '{fname}'")
+
                     invalid_tool_calls = [
                         tc.function.name for tc in assistant_message.tool_calls
                         if tc.function.name not in self.valid_tool_names
