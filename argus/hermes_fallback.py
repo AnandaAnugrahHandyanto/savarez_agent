@@ -12,7 +12,7 @@ Import from this module on ImportError from the real hermes modules.
 import json
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 def _hermes_path(*parts: str) -> Path:

@@ -23,6 +23,11 @@ import entropy as _entropy
 import directives as _directives
 import actions as _actions
 import notifications as _notifications
+import audit as _audit
+import resources as _resources
+import cleanup as _cleanup
+import drift as _drift
+import provider_health as _provider_health
 
 # === PATH RESOLUTION ===
 # Add hermes-agent to path for module imports
@@ -444,6 +449,18 @@ class Argus:
         logger.info(
             "Loaded %d directive checks", len(self._directives.get("checks", []))
         )
+
+        # Initialize audit trail table
+        _audit.ensure_table(self.cursor, self.conn)
+        _provider_health.ensure_table(self.cursor, self.conn)
+
+        # Initialize drift detection table and detector
+        _drift.ensure_table(self.cursor, self.conn)
+        self._drift_detector = _drift.DriftDetector()
+        self._drift_detector.check()  # initialize baseline
+
+        # Cycle counter for periodic checks
+        self._cycle_count = 0
 
     def _init_database(self):
         """Initialize database connection."""
@@ -1011,6 +1028,98 @@ class Argus:
         # No action needed
         return None
 
+    def _run_periodic_checks(self):
+        """Run resource, drift, and cleanup checks every N cycles."""
+        cycle = self._cycle_count
+        mod = cycle % 10  # every 10 cycles
+
+        # Resource exhaustion check (every 10 cycles)
+        if mod == 0:
+            try:
+                report = _resources.run_resource_check()
+                if report["overall_severity"] in ("warning", "critical"):
+                    alert = _resources.format_alert(report)
+                    if alert:
+                        logger.warning("Resource alert:\n%s", alert)
+                        _audit.record_resource_alert(
+                            self.cursor,
+                            self.conn,
+                            resource_type="system",
+                            severity=report["overall_severity"],
+                            details=report,
+                        )
+                        _notifications.send_notification(
+                            self.cursor,
+                            self.conn,
+                            "system",
+                            "resource_alert",
+                            alert,
+                        )
+            except Exception as e:
+                logger.error("Resource check failed: %s", e)
+
+        # Config drift check (every cycle)
+        try:
+            changes = self._drift_detector.check()
+            if changes:
+                self._drift_detector.record_changes(
+                    self.cursor, self.conn, changes
+                )
+                for c in changes:
+                    _audit.record_drift_event(
+                        self.cursor,
+                        self.conn,
+                        file_label=c["file"],
+                        change_type=c["change_type"],
+                        old_hash=c.get("old_hash"),
+                        new_hash=c.get("new_hash"),
+                    )
+                    logger.info(
+                        "Drift: %s %s", c["file"], c["change_type"]
+                    )
+        except Exception as e:
+            logger.error("Drift check failed: %s", e)
+
+        # Provider health check (every 10 cycles, offset by 3)
+        if mod == 3:
+            try:
+                report = _provider_health.run_provider_check(
+                    self.cursor, self.conn
+                )
+                if report["overall_severity"] in ("warning", "critical"):
+                    alert = _provider_health.format_alert(report)
+                    if alert:
+                        logger.warning("Provider health alert:\n%s", alert)
+                        _audit.record_provider_alert(
+                            self.cursor,
+                            self.conn,
+                            providers=list(report.get("providers", {}).keys()),
+                            severity=report["overall_severity"],
+                            details=report,
+                        )
+                        _notifications.send_notification(
+                            self.cursor,
+                            self.conn,
+                            "system",
+                            "provider_health",
+                            alert,
+                        )
+            except Exception as e:
+                logger.error("Provider health check failed: %s", e)
+
+        # Dead session cleanup (every 10 cycles, offset by 5)
+        if mod == 5:
+            try:
+                findings = _cleanup.run_cleanup(self.cursor, self.conn)
+                total = sum(len(v) for v in findings.values())
+                if total > 0:
+                    logger.info("Cleanup: %d orphaned sessions found", total)
+                    _audit.record_cleanup_event(
+                        self.cursor, self.conn, findings
+                    )
+            except Exception as e:
+                logger.error("Cleanup failed: %s", e)
+
     def execute_action(self, session_id: str, decision: Dict):
         """Execute the decided action."""
         action = decision["action"]
@@ -1049,6 +1158,18 @@ class Argus:
                 (action_id,),
             )
 
+            # Audit trail
+            _audit.record_decision(
+                self.cursor,
+                self.conn,
+                session_id=session_id,
+                action_type=action,
+                severity="critical" if action == "kill" else "warning",
+                decision_reason=reason,
+                action_result="success",
+                metadata={"action_id": action_id, **decision},
+            )
+
         except Exception as e:
             logger.error(
                 "Error executing %s on %s: %s", action, session_id, e, exc_info=True
@@ -1060,6 +1181,18 @@ class Argus:
                 UPDATE watcher_actions SET success = FALSE, details = ? WHERE id = ?
             """,
                 (json.dumps({"error": str(e)}), action_id),
+            )
+
+            # Audit trail — failure
+            _audit.record_decision(
+                self.cursor,
+                self.conn,
+                session_id=session_id,
+                action_type=action,
+                severity="critical",
+                decision_reason=reason,
+                action_result="failure",
+                metadata={"action_id": action_id, "error": str(e)},
             )
 
         self.conn.commit()
@@ -1171,6 +1304,8 @@ class Argus:
                         )
 
                 # Sleep before next poll
+                self._cycle_count += 1
+                self._run_periodic_checks()
                 time.sleep(CONFIG["poll_interval"])
 
             except KeyboardInterrupt:
