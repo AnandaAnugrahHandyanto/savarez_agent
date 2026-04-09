@@ -165,6 +165,15 @@ def _install_safe_stdio() -> None:
             setattr(sys, stream_name, _SafeWriter(stream))
 
 
+def _coerce_positive_int(value: Any, default: int) -> int:
+    """Return a positive integer config value, or default for invalid input."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
 class IterationBudget:
     """Thread-safe iteration counter for an agent.
 
@@ -1106,6 +1115,10 @@ class AIAgent:
         if not isinstance(_agent_section, dict):
             _agent_section = {}
         self._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+        self._api_max_retries = _coerce_positive_int(
+            _agent_section.get("api_max_retries", 3),
+            default=3,
+        )
 
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
@@ -7412,7 +7425,7 @@ class AIAgent:
             
             api_start_time = time.time()
             retry_count = 0
-            max_retries = 3
+            max_retries = self._api_max_retries
             primary_recovery_attempted = False
             max_compression_attempts = 3
             codex_auth_retry_attempted=False
