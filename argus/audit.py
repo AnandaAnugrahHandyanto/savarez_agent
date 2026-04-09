@@ -195,6 +195,28 @@ def record_provider_alert(
     )
 
 
+def record_cost_alert(
+    cursor: sqlite3.Cursor,
+    conn: sqlite3.Connection,
+    details: Dict[str, Any],
+) -> Optional[int]:
+    """Record a cost/budget alert in the audit trail."""
+    daily = details.get("daily_budget", {})
+    spent = daily.get("spent", 0)
+    budget = daily.get("budget", 0)
+    percent = daily.get("percent_used", 0)
+    
+    return record_decision(
+        cursor,
+        conn,
+        session_id="system",
+        action_type="cost_alert",
+        severity="warning" if percent < 100 else "critical",
+        decision_reason=f"Budget: ${spent:.2f} / ${budget:.2f} ({percent:.1f}%)",
+        metadata=details,
+    )
+
+
 def query_by_session(
     cursor: sqlite3.Cursor,
     session_id: str,

@@ -28,6 +28,7 @@ from . import resources as _resources
 from . import cleanup as _cleanup
 from . import drift as _drift
 from . import provider_health as _provider_health
+from . import cost_monitor as _cost_monitor
 
 # === PATH RESOLUTION ===
 # Add hermes-agent to path for module imports
@@ -164,10 +165,20 @@ _DEFAULT_ARGUS_CONFIG = {
     "drift_detection_enabled": True,        # Quality drift detection
     "resource_checks_enabled": True,      # Resource exhaustion monitoring
     "audit_trail_enabled": True,          # Audit logging
+    "cost_monitoring_enabled": True,      # Budget and cost alerts
     
     # ML data export (optional feature, default OFF)
     "ml_data_enabled": False,             # Export trajectories to ~/.hermes/argus/ml_data/
     "ml_memory_enabled": False,           # Record to holographic memory
+    
+    # Cost monitoring configuration (user-populated based on their providers)
+    "cost_monitoring": {
+        "enabled": True,
+        "daily_budget": 10.00,              # USD - user sets based on their budget
+        "alert_at_percent": 80,             # Alert at 80% of budget
+        "expensive_session_threshold": 2.00,  # Alert on single session >$2
+        "per_provider_limits": {},          # Auto-populated from discover_providers()
+    },
 }
 
 
@@ -1150,6 +1161,31 @@ class Argus:
                         )
             except Exception as e:
                 logger.error("Cleanup failed: %s", e)
+
+        # Cost monitoring check (every 10 cycles, offset by 7) - if enabled
+        if mod == 7 and CONFIG.get("cost_monitoring_enabled", True):
+            try:
+                cost_status = _cost_monitor.check_costs(CONFIG)
+                if cost_status.get("has_alert"):
+                    alert_msg = _cost_monitor.format_cost_alert(cost_status)
+                    if alert_msg:
+                        logger.warning("Cost alert:\n%s", alert_msg)
+                        if CONFIG.get("audit_trail_enabled", True):
+                            _audit.record_cost_alert(
+                                self.cursor,
+                                self.conn,
+                                details=cost_status,
+                            )
+                        if CONFIG.get("notifications_enabled", True):
+                            _notifications.send_notification(
+                                self.cursor,
+                                self.conn,
+                                "system",
+                                "cost_alert",
+                                alert_msg,
+                            )
+            except Exception as e:
+                logger.error("Cost monitoring failed: %s", e)
 
     def execute_action(self, session_id: str, decision: Dict):
         """Execute the decided action."""

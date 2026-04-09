@@ -45,6 +45,9 @@ from .ml_data import (
     export_entropy_event,
 )
 
+# Cost Monitoring
+from .cost_monitor import CostMonitor, check_costs, format_cost_alert
+
 __all__ = [
     # Core
     "Argus",
@@ -75,4 +78,8 @@ __all__ = [
     "MLDataExporter",
     "HolographicMemoryBridge",
     "export_entropy_event",
+    # Cost Monitoring
+    "CostMonitor",
+    "check_costs",
+    "format_cost_alert",
 ]
