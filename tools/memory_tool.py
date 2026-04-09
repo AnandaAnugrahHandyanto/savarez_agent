@@ -22,11 +22,16 @@ logger = logging.getLogger(__name__)
 # Resolve memory dir dynamically so HERMES_HOME/profile switches are respected
 # at runtime instead of being frozen at first import.
 def get_memory_dir() -> Path:
-    return get_hermes_home() / "memories"
+    global MEMORY_DIR
+    current = get_hermes_home() / "memories"
+    if 'MEMORY_DIR' in globals() and MEMORY_DIR != current and MEMORY_DIR != globals().get('_BOOT_MEMORY_DIR'):
+        return Path(MEMORY_DIR)
+    return current
 
 # Backward-compatible alias for older callers/tests. New code should prefer
 # get_memory_dir() or live helpers that derive paths at runtime.
 MEMORY_DIR = get_memory_dir()
+_BOOT_MEMORY_DIR = MEMORY_DIR
 ENTRY_DELIMITER = "\n§\n"
 
 _MEMORY_THREAT_PATTERNS = [
@@ -72,15 +77,17 @@ class MemoryStore:
         self._backend = None
 
     def _db_path(self) -> Path:
-        if MEMORY_DIR.name == "memories":
-            return MEMORY_DIR.parent / "memory.db"
-        return MEMORY_DIR / "memory.db"
+        mem_dir = get_memory_dir()
+        if mem_dir.name == "memories":
+            return mem_dir.parent / "memory.db"
+        return mem_dir / "memory.db"
 
     def _backend_store(self) -> pm.PersistentMemoryStore:
         if self._backend is None:
+            mem_dir = get_memory_dir()
             self._backend = pm.PersistentMemoryStore(
                 db_path=self._db_path(),
-                memory_dir=MEMORY_DIR,
+                memory_dir=mem_dir,
                 memory_char_limit=self.memory_char_limit,
                 user_char_limit=self.user_char_limit,
             )
@@ -119,15 +126,17 @@ class MemoryStore:
         backend = self._backend_store()
         if backend.list_entries("memory", include_inactive=True) or backend.list_entries("user", include_inactive=True):
             return
+        mem_dir = get_memory_dir()
         for target, filename in (("memory", "MEMORY.md"), ("user", "USER.md")):
-            for entry in self._read_markdown_file(MEMORY_DIR / filename):
+            for entry in self._read_markdown_file(mem_dir / filename):
                 backend.add_entry(target, entry, kind=self._entry_kind(target, entry), source="migration")
 
     def load_from_disk(self):
-        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        mem_dir = get_memory_dir()
+        mem_dir.mkdir(parents=True, exist_ok=True)
         self._backend = pm.PersistentMemoryStore(
             db_path=self._db_path(),
-            memory_dir=MEMORY_DIR,
+            memory_dir=mem_dir,
             memory_char_limit=self.memory_char_limit,
             user_char_limit=self.user_char_limit,
         )

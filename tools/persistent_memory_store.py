@@ -17,6 +17,20 @@ from hermes_constants import get_hermes_home
 ENTRY_DELIMITER = "\n§\n"
 DEFAULT_MEMORY_DIR = get_hermes_home() / "memories"
 DEFAULT_DB_PATH = get_hermes_home() / "memory.db"
+_BOOT_DEFAULT_MEMORY_DIR = DEFAULT_MEMORY_DIR
+_BOOT_DEFAULT_DB_PATH = DEFAULT_DB_PATH
+
+
+def get_default_memory_dir() -> Path:
+    if DEFAULT_MEMORY_DIR != _BOOT_DEFAULT_MEMORY_DIR:
+        return Path(DEFAULT_MEMORY_DIR)
+    return get_hermes_home() / "memories"
+
+
+def get_default_db_path() -> Path:
+    if DEFAULT_DB_PATH != _BOOT_DEFAULT_DB_PATH:
+        return Path(DEFAULT_DB_PATH)
+    return get_hermes_home() / "memory.db"
 
 
 class PersistentMemoryStore:
@@ -27,8 +41,8 @@ class PersistentMemoryStore:
         memory_char_limit: int = 2200,
         user_char_limit: int = 1375,
     ):
-        self.db_path = Path(db_path or DEFAULT_DB_PATH)
-        self.memory_dir = Path(memory_dir or DEFAULT_MEMORY_DIR)
+        self.db_path = Path(db_path or get_default_db_path())
+        self.memory_dir = Path(memory_dir or get_default_memory_dir())
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
