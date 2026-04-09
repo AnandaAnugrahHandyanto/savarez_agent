@@ -679,6 +679,13 @@ class AIAgent:
         self._budget_warning_threshold = 0.9   # 90% — urgent, respond now
         self._budget_pressure_enabled = True
 
+        from agent.tool_loop_detector import ToolLoopDetector
+        self._tool_loop_detector = ToolLoopDetector(
+            warning_threshold=3,
+            critical_threshold=5,
+            window_size=30,
+        )
+
         # Context pressure warnings: notify the USER (not the LLM) as context
         # fills up.  Purely informational — displayed in CLI output and sent via
         # status_callback for gateway platforms.  Does NOT inject into messages.
@@ -900,6 +907,7 @@ class AIAgent:
         self.valid_tool_names = set()
         if self.tools:
             self.valid_tool_names = {tool["function"]["name"] for tool in self.tools}
+            self._tool_loop_detector._valid_tool_names = self.valid_tool_names
             tool_names = sorted(self.valid_tool_names)
             if not self.quiet_mode:
                 print(f"🛠️  Loaded {len(self.tools)} tools: {', '.join(tool_names)}")
@@ -1294,6 +1302,9 @@ class AIAgent:
         
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
+
+        if hasattr(self, '_tool_loop_detector'):
+            self._tool_loop_detector.reset()
 
         # Context compressor internal counters (if present)
         if hasattr(self, "context_compressor") and self.context_compressor:
@@ -2946,6 +2957,60 @@ class AIAgent:
             else:
                 logger.warning("Removed duplicate tool call: %s", tc.function.name)
         return unique if len(unique) < len(tool_calls) else tool_calls
+
+    def _check_tool_loop(self, messages: list, assistant_message, finish_reason: str) -> None:
+        """Check for tool call loops after tool execution. Prune context on critical."""
+        if not assistant_message.tool_calls:
+            return
+
+        reasoning = self._extract_reasoning(assistant_message)
+
+        for tc in assistant_message.tool_calls:
+            try:
+                args = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments
+            except (json.JSONDecodeError, AttributeError):
+                args = {}
+
+            last_tool_result = ""
+            for msg in reversed(messages):
+                if msg.get("role") == "tool" and msg.get("tool_call_id") == (getattr(tc, "id", None) or getattr(tc, "call_id", None)):
+                    last_tool_result = msg.get("content", "")
+                    break
+
+            verdict = self._tool_loop_detector.record(
+                tool_name=tc.function.name,
+                args=args,
+                result=last_tool_result,
+                reasoning=reasoning,
+            )
+
+            if verdict.severity == "critical":
+                from agent.tool_loop_pruner import prune_tool_loop
+                pruned = prune_tool_loop(
+                    messages,
+                    tool_name=tc.function.name,
+                    streak=verdict.streak,
+                    intended_tool=verdict.intended_tool,
+                    detector=verdict.detector,
+                )
+                messages.clear()
+                messages.extend(pruned)
+                if not self.quiet_mode:
+                    self._safe_print(
+                        f"\n{self.log_prefix}🔄 Loop detected ({verdict.detector}): "
+                        f"`{tc.function.name}` called {verdict.streak} times. "
+                        f"Pruned {verdict.streak - 1} repeated attempts from context."
+                    )
+                if verdict.intended_tool and not self.quiet_mode:
+                    self._safe_print(
+                        f"{self.log_prefix}   💡 Reasoning mentioned `{verdict.intended_tool}` — "
+                        f"guidance injected."
+                    )
+            elif verdict.severity == "warning" and not self.quiet_mode:
+                self._safe_print(
+                    f"\n{self.log_prefix}⚠️  Possible loop: `{tc.function.name}` called "
+                    f"{verdict.streak} consecutive times ({verdict.detector})"
+                )
 
     def _repair_tool_call(self, tool_name: str) -> str | None:
         """Attempt to repair a mismatched tool name before aborting.
@@ -7089,6 +7154,8 @@ class AIAgent:
         # They are initialized in __init__ and must persist across run_conversation
         # calls so that nudge logic accumulates correctly in CLI mode.
         self.iteration_budget = IterationBudget(self.max_iterations)
+        if hasattr(self, '_tool_loop_detector'):
+            self._tool_loop_detector.reset()
 
         # Log conversation turn start for debugging/observability
         _msg_preview = (user_message[:80] + "...") if len(user_message) > 80 else user_message
@@ -9007,6 +9074,8 @@ class AIAgent:
                             pass
 
                     self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+                    self._check_tool_loop(messages, assistant_message, finish_reason)
 
                     # Signal that a paragraph break is needed before the next
                     # streamed text.  We don't emit it immediately because
