@@ -1544,6 +1544,48 @@ class TestRunConversation:
         assert result["final_response"] == "hello"
         assert not any(name == "on_task_complete" for name, _ in hook_calls)
 
+    def test_task_review_result_populated_for_tool_run(self, agent):
+        """run_conversation should attach a TaskReviewResult for completed tool tasks."""
+        from agent.task_review import TaskReviewResult
+
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp2 = _mock_response(content="Search done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "Search done"
+        review = result.get("task_review")
+        assert isinstance(review, TaskReviewResult)
+        assert review.should_review_skills is True
+        assert review.payload is result["task_completion_payload"]
+
+    def test_task_review_absent_for_trivial_reply(self, agent):
+        """Trivial no-tool replies should not produce a task_review entry."""
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="hi", finish_reason="stop",
+        )
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result.get("task_review") is None
+
     def test_interrupt_breaks_loop(self, agent):
         self._setup_agent(agent)
 

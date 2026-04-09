@@ -97,6 +97,7 @@ from agent.display import (
     _detect_tool_failure,
     get_tool_emoji as _get_tool_emoji,
 )
+from agent.task_review import review_completed_task
 from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
@@ -9162,6 +9163,10 @@ class AIAgent:
         )
         if self._should_run_task_completion_review(task_completion_payload):
             result["task_completion_payload"] = task_completion_payload
+            try:
+                result["task_review"] = review_completed_task(task_completion_payload)
+            except Exception:
+                logger.debug("task review engine failed", exc_info=True)
 
         self._response_was_previewed = False
         
