@@ -126,8 +126,8 @@ auxiliary_is_nous: bool = False
 # Default auxiliary models per provider
 _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 _NOUS_MODEL = "google/gemini-3-flash-preview"
+_NOUS_FREE_TIER_AUX_MODEL = "airoboros-m2"
 _NOUS_FREE_TIER_VISION_MODEL = "xiaomi/mimo-v2-omni"
-_NOUS_FREE_TIER_AUX_MODEL = "xiaomi/mimo-v2-pro"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
@@ -1437,11 +1437,40 @@ def get_async_text_auxiliary_client(task: str = ""):
 _VISION_AUTO_PROVIDER_ORDER = (
     "openrouter",
     "nous",
+    "openai-codex",
+    "anthropic",
+    "minimax",
+    "custom",
 )
 
 
 def _normalize_vision_provider(provider: Optional[str]) -> str:
     return _normalize_aux_provider(provider, for_vision=True)
+
+
+def _try_minimax() -> Tuple[Optional[OpenAI], Optional[str]]:
+    """Try MiniMax as a vision backend (supports image_url multimodal)."""
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
+    except ImportError:
+        return None, None
+
+    pconfig = PROVIDER_REGISTRY.get("minimax")
+    if not pconfig:
+        return None, None
+
+    creds = resolve_api_key_provider_credentials("minimax")
+    api_key = str(creds.get("api_key", "")).strip()
+    if not api_key:
+        return None, None
+
+    # Use MINIMAX_BASE_URL env var if set, otherwise the provider's inference_base_url
+    base_url = _to_openai_base_url(
+        os.getenv("MINIMAX_BASE_URL", "").strip().rstrip("/") or pconfig.inference_base_url
+    )
+    model = "MiniMax-M2.7"
+    logger.debug("Auxiliary vision client: MiniMax (%s) at %s", model, base_url)
+    return OpenAI(api_key=api_key, base_url=base_url), model
 
 
 def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Optional[str]]:
@@ -1456,6 +1485,8 @@ def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Option
         return _try_anthropic()
     if provider == "custom":
         return _try_custom_endpoint()
+    if provider == "minimax":
+        return _try_minimax()
     return None, None
 
 

@@ -199,8 +199,18 @@ def retry(fn, max_attempts=3, delay=2):
                 time.sleep(delay * (2 ** attempt))
     raise last_err
 
-'''
 
+# ---------------------------------------------------------------------------
+# sys.path fixup — runs automatically on import so scripts don't need
+# explicit sys.path.insert workarounds to reach repo-root modules.
+# ---------------------------------------------------------------------------
+import os, sys as _sys
+
+_hermes_root = os.environ.get("HERMES_ROOT", "")
+if _hermes_root and _hermes_root not in _sys.path:
+    _sys.path.insert(0, _hermes_root)
+
+'''
 # ---- UDS transport (local backend) ---------------------------------------
 
 _UDS_TRANSPORT_HEADER = '''\
@@ -985,9 +995,10 @@ def execute_code(
                 child_env[k] = v
         child_env["HERMES_RPC_SOCKET"] = sock_path
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
-        # Ensure the hermes-agent root is importable in the sandbox so
-        # repo-root modules are available to child scripts.
+        # Pass HERMES_ROOT so hermes_tools.py can auto-fix sys.path on import.
+        # Also set PYTHONPATH as a belt-and-suspenders fallback.
         _hermes_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        child_env["HERMES_ROOT"] = _hermes_root
         _existing_pp = child_env.get("PYTHONPATH", "")
         child_env["PYTHONPATH"] = _hermes_root + (os.pathsep + _existing_pp if _existing_pp else "")
         # Inject user's configured timezone so datetime.now() in sandboxed

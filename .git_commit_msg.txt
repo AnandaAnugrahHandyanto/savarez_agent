@@ -1,0 +1,11 @@
+fix(auxiliary_client): restore 6 regressions from upstream
+
+- Restore _to_openai_base_url() function (rewrites */anthropic → */v1)
+  Fixes MiniMax auxiliary calls hitting wrong endpoint (404s)
+- Wire _to_openai_base_url() into all 4 base_url callsites
+- Restore _PROVIDER_ALIASES dict + _normalize_aux_provider()
+- Restore vision param in _try_nous() + Nous free-tier model constants
+- Restore named custom provider block in resolve_provider_client()
+- Restore upstream _VISION_AUTO_PROVIDER_ORDER (OpenRouter first)
+
+Fixes: hermes performance deterioration (auxiliary client silent failures)

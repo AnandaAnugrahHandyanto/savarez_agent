@@ -1535,10 +1535,45 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         Format message for Discord.
 
-        Discord uses its own markdown variant.
+        Discord does not reliably render GFM table syntax (| col | --- |)
+        in chat — pipes get misaligned and cells are dropped.  Tables are
+        detected and moved into fenced code blocks so the ASCII layout is
+        preserved intact.
         """
-        # Discord markdown is fairly standard, no special escaping needed
-        return content
+        if not content:
+            return content
+
+        # GFM table row: line starting and ending with |
+        is_table_row = re.compile(r'^\|[^\n]+\|$')
+        # Separator row: only | - : space characters (no alphabetic content)
+        is_separator_row = re.compile(r'^\|[:\- ]+\|$')
+
+        lines = content.split('\n')
+        result_parts = []
+        i = 0
+
+        while i < len(lines):
+            line = lines[i]
+            if is_table_row.match(line):
+                # Collect a block of consecutive table rows
+                block = [line]
+                j = i + 1
+                while j < len(lines) and is_table_row.match(lines[j]):
+                    block.append(lines[j])
+                    j += 1
+
+                # A table must have at least one non-separator row
+                non_sep_rows = [row for row in block if not is_separator_row.match(row)]
+                if len(non_sep_rows) >= 1:
+                    block_text = '\n'.join(block)
+                    result_parts.append(f'```\n{block_text}\n```')
+                    i = j
+                    continue
+
+            result_parts.append(line)
+            i += 1
+
+        return '\n'.join(result_parts)
 
     async def _run_simple_slash(
         self,
