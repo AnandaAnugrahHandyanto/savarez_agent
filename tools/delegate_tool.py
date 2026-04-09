@@ -168,10 +168,10 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
         if parent_cb:
             # Relay immediately so gateway/SSE consumers see each tool call in
             # real time rather than waiting for a batch of N to accumulate.
-            # Pass ``preview`` as the third positional arg so the gateway
-            # callback can surface the richer label instead of just the name.
+            # Pass the raw tool_name (no prefix) so the SSE `tool` field stays
+            # machine-readable; preview carries the human-readable label.
             try:
-                parent_cb("subagent_progress", f"{prefix}{tool_name or ''}", preview or "")
+                parent_cb("subagent_progress", tool_name or "", preview or "")
             except Exception as e:
                 logger.debug("Parent callback failed: %s", e)
 
