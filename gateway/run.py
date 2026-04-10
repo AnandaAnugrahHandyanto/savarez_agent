@@ -4573,7 +4573,7 @@ class GatewayRunner:
             platform_key = _platform_config_key(source.platform)
 
             from hermes_cli.tools_config import _get_platform_tools
-            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            enabled_toolsets = sorted([str(ts) for ts in _get_platform_tools(user_config, platform_key)])
 
             pr = self._provider_routing
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
@@ -6320,7 +6320,7 @@ class GatewayRunner:
         platform_key = _platform_config_key(source.platform)
 
         from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        enabled_toolsets = sorted([str(ts) for ts in _get_platform_tools(user_config, platform_key)])
 
         # Apply tool preview length config (0 = no limit)
         try:

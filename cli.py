@@ -8929,7 +8929,7 @@ def main(
     else:
         # Use the shared resolver so MCP servers are included at runtime
         from hermes_cli.tools_config import _get_platform_tools
-        toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
+        toolsets_list = sorted([str(ts) for ts in _get_platform_tools(CLI_CONFIG, "cli"))
     
     parsed_skills = _parse_skills_argument(skills)
 

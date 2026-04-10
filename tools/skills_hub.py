@@ -1997,7 +1997,7 @@ class LobeHubSource(SkillSource):
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
         # Strip "lobehub/" prefix if present
-        agent_id = identifier.split("/", 1)[-1] if identifier.startswith("lobehub/") else identifier
+        agent_id = identifier.split("/", 1)[-1] if identifier.lower().startswith("lobehub/") else identifier
 
         agent_data = self._fetch_agent(agent_id)
         if not agent_data:
@@ -2013,7 +2013,7 @@ class LobeHubSource(SkillSource):
         )
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
-        agent_id = identifier.split("/", 1)[-1] if identifier.startswith("lobehub/") else identifier
+        agent_id = identifier.split("/", 1)[-1] if identifier.lower().startswith("lobehub/") else identifier
         index = self._fetch_index()
         if not index:
             return None

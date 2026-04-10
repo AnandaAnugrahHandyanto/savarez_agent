@@ -447,7 +447,7 @@ class APIServerAdapter(BasePlatformAdapter):
         model = _resolve_gateway_model()
 
         user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        enabled_toolsets = sorted([str(ts) for ts in _get_platform_tools(user_config, "api_server"))
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
 
