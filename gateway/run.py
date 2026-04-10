@@ -1348,12 +1348,28 @@ class GatewayRunner:
                 for key, entry in _expired_entries:
                     try:
                         await self._async_flush_memories(entry.session_id)
-                        # Shut down memory provider on the cached agent
-                        cached_agent = self._running_agents.get(key)
-                        if cached_agent and cached_agent is not _AGENT_PENDING_SENTINEL:
+                        # Shut down memory provider and close tool resources
+                        # on the cached agent.  Idle agents live in
+                        # _agent_cache (not _running_agents), so look there.
+                        _cached_agent = None
+                        _cache_lock = getattr(self, "_agent_cache_lock", None)
+                        if _cache_lock is not None:
+                            with _cache_lock:
+                                _cached = self._agent_cache.get(key)
+                                _cached_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
+                        # Fall back to _running_agents in case the agent is
+                        # still mid-turn when the expiry fires.
+                        if _cached_agent is None:
+                            _cached_agent = self._running_agents.get(key)
+                        if _cached_agent and _cached_agent is not _AGENT_PENDING_SENTINEL:
                             try:
-                                if hasattr(cached_agent, 'shutdown_memory_provider'):
-                                    cached_agent.shutdown_memory_provider()
+                                if hasattr(_cached_agent, 'shutdown_memory_provider'):
+                                    _cached_agent.shutdown_memory_provider()
+                            except Exception:
+                                pass
+                            try:
+                                if hasattr(_cached_agent, 'close'):
+                                    _cached_agent.close()
                             except Exception:
                                 pass
                         # Mark as flushed and persist to disk so the flag
@@ -1536,6 +1552,14 @@ class GatewayRunner:
                     agent.shutdown_memory_provider()
             except Exception:
                 pass
+            # Close tool resources (terminal sandboxes, browser daemons,
+            # background processes, httpx clients) to prevent zombie
+            # process accumulation.
+            try:
+                if hasattr(agent, 'close'):
+                    agent.close()
+            except Exception:
+                pass
 
         for platform, adapter in list(self.adapters.items()):
             try:
@@ -1558,7 +1582,25 @@ class GatewayRunner:
         self._pending_messages.clear()
         self._pending_approvals.clear()
         self._shutdown_event.set()
-        
+
+        # Global cleanup: kill any remaining tool subprocesses not tied
+        # to a specific agent (catch-all for zombie prevention).
+        try:
+            from tools.process_registry import process_registry
+            process_registry.kill_all()
+        except Exception:
+            pass
+        try:
+            from tools.terminal_tool import cleanup_all_environments
+            cleanup_all_environments()
+        except Exception:
+            pass
+        try:
+            from tools.browser_tool import cleanup_all_browsers
+            cleanup_all_browsers()
+        except Exception:
+            pass
+
         from gateway.status import remove_pid_file, write_runtime_status
         remove_pid_file()
         try:
@@ -3335,8 +3377,22 @@ class GatewayRunner:
                 _flush_task.add_done_callback(self._background_tasks.discard)
         except Exception as e:
             logger.debug("Gateway memory flush on reset failed: %s", e)
+        # Close tool resources on the old agent (terminal sandboxes, browser
+        # daemons, background processes) before evicting from cache.
+        # Guard with getattr because test fixtures may skip __init__.
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        if _cache_lock is not None:
+            with _cache_lock:
+                _cached = self._agent_cache.get(session_key)
+                _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
+            if _old_agent is not None:
+                try:
+                    if hasattr(_old_agent, "close"):
+                        _old_agent.close()
+                except Exception:
+                    pass
         self._evict_cached_agent(session_key)
-        
+
         try:
             from tools.env_passthrough import clear_env_passthrough
             clear_env_passthrough()
