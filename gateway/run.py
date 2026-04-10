@@ -1874,15 +1874,13 @@ class GatewayRunner:
         # has been *idle* beyond the inactivity threshold (or when the agent
         # object has no activity tracker and wall-clock age is extreme).
         _raw_stale_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", 1800))
-        _stale_ts = self._running_agents_ts.get(_quick_key, 0)
+        running_agents_ts = getattr(self, "_running_agents_ts", {})
+        _stale_ts = running_agents_ts.get(_quick_key, 0)
         if _quick_key in self._running_agents and _stale_ts:
             _stale_age = time.time() - _stale_ts
             _stale_agent = self._running_agents.get(_quick_key)
-            # Never evict the pending sentinel — it was just placed moments
-            # ago during the async setup phase before the real agent is
-            # created.  Sentinels have no get_activity_summary(), so the
-            # idle check below would always evaluate to inf >= timeout and
-            # immediately evict them, racing with the setup path.
+            if _stale_agent is _AGENT_PENDING_SENTINEL:
+                _stale_age = 0.0  # do not aggressively evict a fresh sentinel
             _stale_idle = float("inf")  # assume idle if we can't check
             _stale_detail = ""
             if _stale_agent and hasattr(_stale_agent, "get_activity_summary"):
@@ -1907,6 +1905,9 @@ class GatewayRunner:
                     or _stale_age > _wall_ttl
                 )
             )
+            if _stale_agent is _AGENT_PENDING_SENTINEL:
+                # Sentinel means startup is in-flight; never evict immediately.
+                _should_evict = _stale_age > _wall_ttl
             if _should_evict:
                 logger.warning(
                     "Evicting stale _running_agents entry for %s "
@@ -1915,7 +1916,7 @@ class GatewayRunner:
                     _raw_stale_timeout, _stale_detail,
                 )
                 del self._running_agents[_quick_key]
-                self._running_agents_ts.pop(_quick_key, None)
+                running_agents_ts.pop(_quick_key, None)
 
         if _quick_key in self._running_agents:
             if event.get_command() == "status":
@@ -2046,12 +2047,14 @@ class GatewayRunner:
         # in hermes_cli/commands.py — no hardcoded set to maintain here.
         from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command as _resolve_cmd
         if command and command in GATEWAY_KNOWN_COMMANDS:
-            await self.hooks.emit(f"command:{command}", {
-                "platform": source.platform.value if source.platform else "",
-                "user_id": source.user_id,
-                "command": command,
-                "args": event.get_command_args().strip(),
-            })
+            hooks = getattr(self, "hooks", None)
+            if hooks is not None:
+                await hooks.emit(f"command:{command}", {
+                    "platform": source.platform.value if source.platform else "",
+                    "user_id": source.user_id,
+                    "command": command,
+                    "args": event.get_command_args().strip(),
+                })
 
         # Resolve aliases to canonical name so dispatch only checks canonicals.
         _cmd_def = _resolve_cmd(command) if command else None
@@ -3423,8 +3426,14 @@ class GatewayRunner:
         fallback.  Force-clean the session lock in all cases for safety.
         """
         source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
-        session_key = session_entry.session_key
+        session_store = getattr(self, "session_store", None)
+        if session_store is not None:
+            session_entry = session_store.get_or_create_session(source)
+            session_key = session_entry.session_key
+        else:
+            # Unit tests may construct a minimal runner via object.__new__.
+            from gateway.session import build_session_key
+            session_key = build_session_key(source)
         
         agent = self._running_agents.get(session_key)
         if agent is _AGENT_PENDING_SENTINEL:
