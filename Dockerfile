@@ -9,8 +9,11 @@ RUN apt-get update && \
 COPY . /opt/hermes
 WORKDIR /opt/hermes
 
-# Install Python and Node dependencies in one layer, no cache
-RUN pip install --no-cache-dir -e ".[all]" --break-system-packages && \
+# Install Python and Node dependencies in one layer, no cache.
+# Avoid `.[all]` here: pip's resolver on Debian 13 / Python 3.13 backtracks
+# too deeply on the self-referential extra graph (especially overlapping
+# messaging/slack extras). Use a flattened extras list instead.
+RUN pip install --no-cache-dir -e ".[modal,daytona,messaging,cron,cli,dev,tts-premium,pty,honcho,mcp,homeassistant,sms,acp,voice,dingtalk,feishu,mistral]" --break-system-packages && \
     npm install --prefer-offline --no-audit && \
     npx playwright install --with-deps chromium --only-shell && \
     cd /opt/hermes/scripts/whatsapp-bridge && \
