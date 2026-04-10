@@ -880,10 +880,59 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
 # - Dim: #B8860B (muted text)
 
 # ANSI building blocks for conversation display
-_GOLD = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — matches Rich Panel gold
+_GOLD_DEFAULT = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — fallback
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RST = "\033[0m"
+
+
+def _hex_to_ansi_bold(hex_color: str) -> str:
+    """Convert a hex color like '#268bd2' to a bold true-color ANSI escape."""
+    try:
+        r = int(hex_color[1:3], 16)
+        g = int(hex_color[3:5], 16)
+        b = int(hex_color[5:7], 16)
+        return f"\033[1;38;2;{r};{g};{b}m"
+    except (ValueError, IndexError):
+        return _GOLD_DEFAULT
+
+
+class _SkinAwareAnsi:
+    """Lazy ANSI escape that resolves from the skin engine on first use.
+
+    Acts as a string in f-strings and concatenation.  Call ``.reset()`` to
+    force re-resolution after a ``/skin`` switch.
+    """
+
+    def __init__(self, skin_key: str, fallback_hex: str = "#FFD700"):
+        self._skin_key = skin_key
+        self._fallback_hex = fallback_hex
+        self._cached: str | None = None
+
+    def __str__(self) -> str:
+        if self._cached is None:
+            try:
+                from hermes_cli.skin_engine import get_active_skin
+                self._cached = _hex_to_ansi_bold(
+                    get_active_skin().get_color(self._skin_key, self._fallback_hex)
+                )
+            except Exception:
+                self._cached = _hex_to_ansi_bold(self._fallback_hex)
+        return self._cached
+
+    def __add__(self, other: str) -> str:
+        return str(self) + other
+
+    def __radd__(self, other: str) -> str:
+        return other + str(self)
+
+    def reset(self) -> None:
+        """Clear cache so the next access re-reads the skin."""
+        self._cached = None
+
+
+_GOLD = _SkinAwareAnsi("response_border", "#FFD700")
+
 
 def _accent_hex() -> str:
     """Return the active skin accent color for legacy CLI output lines."""
@@ -1036,9 +1085,17 @@ COMPACT_BANNER = """
 
 def _build_compact_banner() -> str:
     """Build a compact banner that fits the current terminal width."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        _skin = get_active_skin()
+        _title = _skin.get_color("banner_title", "#FFD700")
+        _accent = _skin.get_color("banner_accent", "#FFBF00")
+        _dim = _skin.get_color("banner_dim", "#B8860B")
+    except Exception:
+        _title, _accent, _dim = "#FFD700", "#FFBF00", "#B8860B"
     w = min(shutil.get_terminal_size().columns - 2, 64)
     if w < 30:
-        return "\n[#FFBF00]⚕ NOUS HERMES[/] [dim #B8860B]- Nous Research[/]\n"
+        return f"\n[{_accent}]⚕ NOUS HERMES[/] [dim {_dim}]- Nous Research[/]\n"
     inner = w - 2  # inside the box border
     bar = "═" * w
     line1 = "⚕ NOUS HERMES - AI Agent Framework"
@@ -1047,10 +1104,10 @@ def _build_compact_banner() -> str:
     line1 = line1[:inner - 2].ljust(inner - 2)
     line2 = line2[:inner - 2].ljust(inner - 2)
     return (
-        f"\n[bold #FFD700]╔{bar}╗[/]\n"
-        f"[bold #FFD700]║[/] [#FFBF00]{line1}[/] [bold #FFD700]║[/]\n"
-        f"[bold #FFD700]║[/] [dim #B8860B]{line2}[/] [bold #FFD700]║[/]\n"
-        f"[bold #FFD700]╚{bar}╝[/]\n"
+        f"\n[bold {_title}]╔{bar}╗[/]\n"
+        f"[bold {_title}]║[/] [{_accent}]{line1}[/] [bold {_title}]║[/]\n"
+        f"[bold {_title}]║[/] [dim {_dim}]{line2}[/] [bold {_title}]║[/]\n"
+        f"[bold {_title}]╚{bar}╝[/]\n"
     )
 
 
@@ -2481,15 +2538,17 @@ class HermesCLI:
             title_part = ""
             if session_meta.get("title"):
                 title_part = f' "{session_meta["title"]}"'
+            _sl = _accent_hex()
             self.console.print(
-                f"[#DAA520]↻ Resumed session [bold]{self.session_id}[/bold]"
+                f"[{_sl}]↻ Resumed session [bold]{self.session_id}[/bold]"
                 f"{title_part} "
                 f"({msg_count} user message{'s' if msg_count != 1 else ''}, "
                 f"{len(restored)} total messages)[/]"
             )
         else:
+            _sl = _accent_hex()
             self.console.print(
-                f"[#DAA520]Session {self.session_id} found but has no "
+                f"[{_sl}]Session {self.session_id} found but has no "
                 f"messages. Starting fresh.[/]"
             )
             return False
@@ -2922,18 +2981,27 @@ class HermesCLI:
         else:
             api_indicator = "[red bold]●[/]"
         
-        # Build status line with proper markup
+        # Build status line with proper markup — skin-aware colors
+        _dim_c = _accent_hex()
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            _sk = get_active_skin()
+            _dim_c2 = _sk.get_color("banner_dim", "#B8860B")
+            _accent_c = _sk.get_color("ui_accent", "#FFBF00")
+            _label_c = _sk.get_color("ui_label", "#4dd0e1")
+        except Exception:
+            _dim_c2, _accent_c, _label_c = "#B8860B", "#FFBF00", "cyan"
         toolsets_info = ""
         if self.enabled_toolsets and "all" not in self.enabled_toolsets:
-            toolsets_info = f" [dim #B8860B]·[/] [#CD7F32]toolsets: {', '.join(self.enabled_toolsets)}[/]"
+            toolsets_info = f" [dim {_dim_c2}]·[/] [{_label_c}]toolsets: {', '.join(self.enabled_toolsets)}[/]"
 
-        provider_info = f" [dim #B8860B]·[/] [dim]provider: {self.provider}[/]"
+        provider_info = f" [dim {_dim_c2}]·[/] [dim]provider: {self.provider}[/]"
         if self._provider_source:
-            provider_info += f" [dim #B8860B]·[/] [dim]auth: {self._provider_source}[/]"
+            provider_info += f" [dim {_dim_c2}]·[/] [dim]auth: {self._provider_source}[/]"
 
         self.console.print(
-            f"  {api_indicator} [#FFBF00]{model_short}[/] "
-            f"[dim #B8860B]·[/] [bold cyan]{tool_count} tools[/]"
+            f"  {api_indicator} [{_accent_c}]{model_short}[/] "
+            f"[dim {_dim_c2}]·[/] [bold {_label_c}]{tool_count} tools[/]"
             f"{toolsets_info}{provider_info}"
         )
     
@@ -5105,6 +5173,7 @@ class HermesCLI:
             return
 
         set_active_skin(new_skin)
+        _GOLD.reset()  # Re-resolve ANSI color for the new skin
         if save_config_value("display.skin", new_skin):
             print(f"  Skin set to: {new_skin} (saved)")
         else:
