@@ -637,35 +637,36 @@ def _read_codex_access_token() -> Optional[str]:
     fallback-to-Codex working when the pool state is stale but the stored OAuth
     token is still valid.
     """
-    pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        token = _pool_runtime_api_key(entry)
-        if token:
-            return token
+    def _usable_codex_token(token: Any) -> Optional[str]:
+        cleaned = str(token or "").strip()
+        if not cleaned:
+            return None
+        try:
+            from hermes_cli.auth import _codex_access_token_is_expiring
+
+            if _codex_access_token_is_expiring(cleaned, 0):
+                logger.debug("Codex access token expired, skipping")
+                return None
+        except Exception:
+            pass  # Non-JWT token or decode issue — use as-is
+        return cleaned
+
+    try:
+        pool = load_pool("openai-codex")
+    except Exception as exc:
+        logger.debug("Auxiliary client: could not load Codex pool: %s", exc)
+        pool = None
+    if pool and pool.has_credentials():
+        for entry in pool.entries():
+            token = _usable_codex_token(getattr(entry, "runtime_api_key", None))
+            if token:
+                return token
 
     try:
         from hermes_cli.auth import _read_codex_tokens
         data = _read_codex_tokens()
         tokens = data.get("tokens", {})
-        access_token = tokens.get("access_token")
-        if not isinstance(access_token, str) or not access_token.strip():
-            return None
-
-        # Check JWT expiry — expired tokens block the auto chain and
-        # prevent fallback to working providers (e.g. Anthropic).
-        try:
-            import base64
-            payload = access_token.split(".")[1]
-            payload += "=" * (-len(payload) % 4)
-            claims = json.loads(base64.urlsafe_b64decode(payload))
-            exp = claims.get("exp", 0)
-            if exp and time.time() > exp:
-                logger.debug("Codex access token expired (exp=%s), skipping", exp)
-                return None
-        except Exception:
-            pass  # Non-JWT token or decode error — use as-is
-
-        return access_token.strip()
+        return _usable_codex_token(tokens.get("access_token"))
     except Exception as exc:
         logger.debug("Could not read Codex auth for auxiliary client: %s", exc)
         return None
