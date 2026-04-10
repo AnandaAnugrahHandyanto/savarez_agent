@@ -87,7 +87,10 @@ DANGEROUS_PATTERNS = [
     # Any shell invocation via -c or combined flags like -lc, -ic, etc.
     (r'\b(bash|sh|zsh|ksh)\s+-[^\s]*c(\s+|$)', "shell command via -c/-lc flag"),
     (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
-    (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe remote content to shell"),
+    (r'\b(curl|wget)\b.*\|\s*(sudo\s+(-\S+\s+)*)?(ba)?sh\b', "pipe remote content to shell"),
+    (r'\b(curl|wget)\b.*\|\s*(sudo\s+(-\S+\s+)*)?(python[23]?|perl|ruby|node)\b', "pipe remote content to interpreter"),
+    (r'\b(curl|wget)\b\s+[^\|]*-[^\s]*o\s+\S+.*&&.*(\bchmod\b|\bsh\b|\bbash\b|\bpython)', "download and execute pattern"),
+    (r'\b(curl|wget)\b\s+[^\|]*-[^\s]*o\s+\S+.*;\s*(\bchmod\b|\bsh\b|\bbash\b|\bpython)', "download and execute pattern"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
@@ -103,6 +106,21 @@ DANGEROUS_PATTERNS = [
     (r'\b(cp|mv|install)\b.*\s/etc/', "copy/move file into /etc/"),
     (r'\bsed\s+-[^\s]*i.*\s/etc/', "in-place edit of system config"),
     (r'\bsed\s+--in-place\b.*\s/etc/', "in-place edit of system config (long flag)"),
+    # Execute scripts/binaries from world-writable temp directories
+    (r'\b(bash|sh|zsh|ksh)\s+/(tmp|var/tmp|dev/shm)/', "execute shell script from temp directory"),
+    (r'\b(python[23]?|perl|ruby|node)\s+/(tmp|var/tmp|dev/shm)/', "execute script from temp directory"),
+    (r'\bchmod\s+[^\s]*\+x\s+/(tmp|var/tmp|dev/shm)/', "make temp file executable"),
+    # Download to temp directory (common malware staging)
+    (r'\b(curl|wget)\b\s+[^\|]*-[^\s]*[oO]\s*/(tmp|var/tmp|dev/shm)/', "download file to temp directory"),
+    # Clone and install from source in one command (supply chain risk)
+    (r'\bgit\s+clone\b.*&&.*\b(make\s+install|sudo\s+make|cmake\s+--install)', "clone and install from source"),
+    (r'\bgit\s+clone\b.*&&.*\bpip[3]?\s+install\s+[.\-]', "clone and pip install from source"),
+    # Package install from URL or custom registry (supply chain risk)
+    (r'\bpip[3]?\s+install\s+[^\s]*https?://', "pip install from URL"),
+    (r'\bpip[3]?\s+install\s+--index-url\s', "pip install from custom index"),
+    (r'\bpip[3]?\s+install\s+--extra-index-url\s', "pip install from extra index (dependency confusion risk)"),
+    (r'\bnpm\s+install\s+[^\s]*https?://', "npm install from URL"),
+    (r'\bnpm\s+install\s+--registry\s', "npm install from custom registry"),
 ]
 
 
