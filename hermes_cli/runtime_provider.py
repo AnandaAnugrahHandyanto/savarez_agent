@@ -166,7 +166,20 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "nous":
         api_mode = "chat_completions"
     elif provider == "copilot":
-        api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
+        # Exchange the raw GitHub token for a Copilot JWT and derive the
+        # correct API base URL (individual vs enterprise) from the exchange
+        # response.  The pool stores the raw token; the exchange is cached
+        # in-process so repeated calls are cheap.
+        try:
+            from hermes_cli.copilot_auth import resolve_copilot_api_token
+            exchanged_token, derived_base_url = resolve_copilot_api_token(api_key)
+            if exchanged_token:
+                api_key = exchanged_token
+            if derived_base_url:
+                base_url = derived_base_url
+        except Exception:
+            pass  # fall back to raw token + default base_url
+        api_mode = _copilot_runtime_api_mode(model_cfg, api_key)
     else:
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
         # Honour model.base_url from config.yaml when the configured provider
@@ -544,7 +557,7 @@ def _resolve_explicit_runtime(
 
         base_url = explicit_base_url
         if not base_url:
-            if provider == "kimi-coding":
+            if provider in ("kimi-coding", "copilot"):
                 creds = resolve_api_key_provider_credentials(provider)
                 base_url = creds.get("base_url", "").rstrip("/")
             else:
@@ -781,7 +794,13 @@ def resolve_runtime_provider(
         cfg_base_url = ""
         if cfg_provider == provider:
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
-        base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
+        # For copilot, always prefer the base_url from credentials (derived
+        # from token exchange) over config.yaml — the exchange returns the
+        # correct endpoint (individual vs enterprise) for this account.
+        if provider == "copilot":
+            base_url = creds.get("base_url", "").rstrip("/") or cfg_base_url
+        else:
+            base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
         api_mode = "chat_completions"
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))

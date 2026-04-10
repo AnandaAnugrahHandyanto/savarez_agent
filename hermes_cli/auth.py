@@ -343,16 +343,22 @@ def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
     return True
 
 
+# Module-level cache for the Copilot enterprise base URL derived from token exchange.
+_copilot_derived_base_url: Optional[str] = None
+
+
 def _resolve_api_key_provider_secret(
     provider_id: str, pconfig: ProviderConfig
 ) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
+    global _copilot_derived_base_url
     if provider_id == "copilot":
         # Use the dedicated copilot auth module for proper token validation
         try:
             from hermes_cli.copilot_auth import resolve_copilot_token
-            token, source = resolve_copilot_token()
+            token, source, base_url = resolve_copilot_token()
             if token:
+                _copilot_derived_base_url = base_url
                 return token, source
         except ValueError as exc:
             logger.warning("Copilot token validation failed: %s", exc)
@@ -2372,7 +2378,11 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
 
-    if provider_id == "kimi-coding":
+    if provider_id == "copilot" and _copilot_derived_base_url:
+        # Use the enterprise base URL derived from the token exchange
+        # (proxy-ep field in the exchanged token).
+        base_url = _copilot_derived_base_url
+    elif provider_id == "kimi-coding":
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)

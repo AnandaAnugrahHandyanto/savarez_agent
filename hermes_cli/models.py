@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.request
 import urllib.error
 from difflib import get_close_matches
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
 COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
@@ -1143,15 +1144,28 @@ def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | Non
     return {"service_tier": "priority"}
 
 
-def _resolve_copilot_catalog_api_key() -> str:
-    """Best-effort GitHub token for fetching the Copilot model catalog."""
+def _resolve_copilot_catalog_credentials() -> tuple[str, Optional[str]]:
+    """Best-effort GitHub token and base URL for fetching the Copilot model catalog.
+
+    Returns (api_key, base_url) where base_url may be an enterprise endpoint
+    derived from the token exchange.
+    """
     try:
         from hermes_cli.auth import resolve_api_key_provider_credentials
 
         creds = resolve_api_key_provider_credentials("copilot")
-        return str(creds.get("api_key") or "").strip()
+        return (
+            str(creds.get("api_key") or "").strip(),
+            str(creds.get("base_url") or "").strip() or None,
+        )
     except Exception:
-        return ""
+        return "", None
+
+
+def _resolve_copilot_catalog_api_key() -> str:
+    """Best-effort GitHub token for fetching the Copilot model catalog."""
+    key, _ = _resolve_copilot_catalog_credentials()
+    return key
 
 
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
@@ -1169,7 +1183,8 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         return get_codex_model_ids()
     if normalized in {"copilot", "copilot-acp"}:
         try:
-            live = _fetch_github_models(_resolve_copilot_catalog_api_key())
+            api_key, catalog_base_url = _resolve_copilot_catalog_credentials()
+            live = _fetch_github_models(api_key, base_url=catalog_base_url)
             if live:
                 return live
         except Exception:
@@ -1312,9 +1327,17 @@ def _copilot_catalog_item_is_text_model(item: dict[str, Any]) -> bool:
 
 
 def fetch_github_model_catalog(
-    api_key: Optional[str] = None, timeout: float = 5.0
+    api_key: Optional[str] = None, timeout: float = 5.0,
+    base_url: Optional[str] = None,
 ) -> Optional[list[dict[str, Any]]]:
-    """Fetch the live GitHub Copilot model catalog for this account."""
+    """Fetch the live GitHub Copilot model catalog for this account.
+
+    When *base_url* is provided (e.g. an enterprise endpoint from token
+    exchange), the catalog is fetched from ``{base_url}/models`` instead
+    of the default ``api.githubcopilot.com/models``.
+    """
+    models_url = f"{base_url.rstrip('/')}/models" if base_url else COPILOT_MODELS_URL
+
     attempts: list[dict[str, str]] = []
     if api_key:
         attempts.append({
@@ -1324,7 +1347,7 @@ def fetch_github_model_catalog(
     attempts.append(copilot_default_headers())
 
     for headers in attempts:
-        req = urllib.request.Request(COPILOT_MODELS_URL, headers=headers)
+        req = urllib.request.Request(models_url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
@@ -1349,16 +1372,70 @@ def fetch_github_model_catalog(
 def _is_github_models_base_url(base_url: Optional[str]) -> bool:
     normalized = (base_url or "").strip().rstrip("/").lower()
     return (
-        normalized.startswith(COPILOT_BASE_URL)
+        ".githubcopilot.com" in normalized
         or normalized.startswith("https://models.github.ai/inference")
     )
 
 
-def _fetch_github_models(api_key: Optional[str] = None, timeout: float = 5.0) -> Optional[list[str]]:
-    catalog = fetch_github_model_catalog(api_key=api_key, timeout=timeout)
+def _fetch_github_models(api_key: Optional[str] = None, timeout: float = 5.0, base_url: Optional[str] = None) -> Optional[list[str]]:
+    catalog = fetch_github_model_catalog(api_key=api_key, timeout=timeout, base_url=base_url)
     if not catalog:
         return None
     return [item.get("id", "") for item in catalog if item.get("id")]
+
+
+# ---------------------------------------------------------------------------
+# Copilot catalog context-window cache
+# ---------------------------------------------------------------------------
+
+_copilot_catalog_cache: Optional[Dict[str, Dict[str, Any]]] = None
+_copilot_catalog_cache_time: float = 0.0
+_COPILOT_CATALOG_TTL = 3600  # 1 hour
+
+
+def _get_copilot_catalog_cached() -> Dict[str, Dict[str, Any]]:
+    """Return {model_id: catalog_item} from the Copilot /models API (cached 1h)."""
+    global _copilot_catalog_cache, _copilot_catalog_cache_time
+    now = time.time()
+    if _copilot_catalog_cache is not None and (now - _copilot_catalog_cache_time) < _COPILOT_CATALOG_TTL:
+        return _copilot_catalog_cache
+
+    api_key, catalog_base_url = _resolve_copilot_catalog_credentials()
+    catalog = fetch_github_model_catalog(api_key=api_key, base_url=catalog_base_url) if api_key else None
+    if catalog:
+        _copilot_catalog_cache = {item["id"]: item for item in catalog if item.get("id")}
+        _copilot_catalog_cache_time = now
+        return _copilot_catalog_cache
+
+    _copilot_catalog_cache = {}
+    _copilot_catalog_cache_time = now
+    return _copilot_catalog_cache
+
+
+def get_copilot_model_context_window(model_id: str) -> Optional[int]:
+    """Get the real context window for a Copilot model from the live API.
+
+    Returns ``max_prompt_tokens`` from the Copilot /models catalog, which
+    represents the actual usable context (prompt) window.  Falls back to
+    ``max_context_window_tokens`` if ``max_prompt_tokens`` is absent.
+    Returns None if the model is not found or the catalog is unavailable.
+    """
+    catalog = _get_copilot_catalog_cached()
+    item = catalog.get(model_id)
+    if not item:
+        return None
+
+    limits = (item.get("capabilities") or {}).get("limits") or {}
+    # Prefer max_prompt_tokens (actual usable context) over
+    # max_context_window_tokens (which includes output budget).
+    ctx = limits.get("max_prompt_tokens") or limits.get("max_context_window_tokens")
+    if isinstance(ctx, (int, float)) and ctx > 0:
+        return int(ctx)
+    # Fallback: top-level context_window key (some catalog formats)
+    ctx = item.get("context_window")
+    if isinstance(ctx, (int, float)) and ctx > 0:
+        return int(ctx)
+    return None
 
 
 _COPILOT_MODEL_ALIASES = {

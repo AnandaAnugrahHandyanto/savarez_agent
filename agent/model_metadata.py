@@ -209,7 +209,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "generativelanguage.googleapis.com": "gemini",
     "inference-api.nousresearch.com": "nous",
     "api.deepseek.com": "deepseek",
-    "api.githubcopilot.com": "copilot",
+    ".githubcopilot.com": "copilot",
     "models.github.ai": "copilot",
     "api.fireworks.ai": "fireworks",
     "opencode.ai": "opencode-go",
@@ -990,6 +990,17 @@ def get_model_context_length(
             inferred = _infer_provider_from_url(base_url)
             if inferred:
                 effective_provider = inferred
+
+    # 5a. Copilot live catalog — the /models endpoint returns the real
+    # per-account context windows which may differ from models.dev.
+    if effective_provider in ("copilot", "copilot-acp"):
+        try:
+            from hermes_cli.models import get_copilot_model_context_window
+            copilot_ctx = get_copilot_model_context_window(model)
+            if copilot_ctx:
+                return copilot_ctx
+        except Exception:
+            pass  # fall through to models.dev
 
     if effective_provider == "nous":
         ctx = _resolve_nous_context_length(model)

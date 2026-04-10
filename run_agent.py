@@ -881,7 +881,7 @@ class AIAgent:
                         "X-OpenRouter-Title": "Hermes Agent",
                         "X-OpenRouter-Categories": "productivity,cli-agent",
                     }
-                elif "api.githubcopilot.com" in effective_base.lower():
+                elif ".githubcopilot.com" in effective_base.lower():
                     from hermes_cli.models import copilot_default_headers
 
                     client_kwargs["default_headers"] = copilot_default_headers()
@@ -4273,7 +4273,7 @@ class AIAgent:
         normalized = (base_url or "").lower()
         if "openrouter" in normalized:
             self._client_kwargs["default_headers"] = dict(_OR_HEADERS)
-        elif "api.githubcopilot.com" in normalized:
+        elif ".githubcopilot.com" in normalized:
             from hermes_cli.models import copilot_default_headers
 
             self._client_kwargs["default_headers"] = copilot_default_headers()
@@ -5618,7 +5618,7 @@ class AIAgent:
 
             is_github_responses = (
                 "models.github.ai" in self.base_url.lower()
-                or "api.githubcopilot.com" in self.base_url.lower()
+                or ".githubcopilot.com" in self.base_url.lower()
             )
             is_codex_backend = (
                 self.provider == "openai-codex"
@@ -5779,7 +5779,7 @@ class AIAgent:
         _is_openrouter = self._is_openrouter_url()
         _is_github_models = (
             "models.github.ai" in self._base_url_lower
-            or "api.githubcopilot.com" in self._base_url_lower
+            or ".githubcopilot.com" in self._base_url_lower
         )
 
         # Provider preferences (only, ignore, order, sort) are OpenRouter-
@@ -5853,7 +5853,7 @@ class AIAgent:
             return True
         if "ai-gateway.vercel.sh" in self._base_url_lower:
             return True
-        if "models.github.ai" in self._base_url_lower or "api.githubcopilot.com" in self._base_url_lower:
+        if "models.github.ai" in self._base_url_lower or ".githubcopilot.com" in self._base_url_lower:
             try:
                 from hermes_cli.models import github_model_reasoning_efforts
 

@@ -29,6 +29,7 @@ from hermes_cli.providers import (
     determine_api_mode,
     get_label,
     is_aggregator,
+    normalize_provider,
     resolve_provider_full,
 )
 from hermes_cli.model_normalize import (
@@ -858,6 +859,30 @@ def list_authenticated_providers(
 
         # Use curated list — look up by Hermes slug, fall back to overlay key
         model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
+
+        # For Copilot, try fetching the live model catalog from the API
+        # so that account-specific models (e.g. claude-opus-4.6-1m) appear.
+        if pid == "github-copilot":
+            try:
+                from hermes_cli.auth import resolve_api_key_provider_credentials
+                creds = resolve_api_key_provider_credentials("copilot")
+                copilot_key = creds.get("api_key", "")
+                copilot_base = creds.get("base_url", "") or None
+                if copilot_key:
+                    from hermes_cli.models import _fetch_github_models
+                    live = _fetch_github_models(api_key=copilot_key, timeout=5.0, base_url=copilot_base)
+                    if live:
+                        # Merge: live catalog first, then any curated models
+                        # not already in the live list
+                        seen = set(live)
+                        merged = list(live)
+                        for m in model_ids:
+                            if m not in seen:
+                                merged.append(m)
+                                seen.add(m)
+                        model_ids = merged
+            except Exception as exc:
+                logger.debug("Copilot live catalog fetch failed: %s", exc)
         total = len(model_ids)
         top = model_ids[:max_models]
 

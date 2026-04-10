@@ -641,7 +641,9 @@ def get_model_info(
     """Get full model metadata from models.dev.
 
     Accepts Hermes or models.dev provider ID.  Tries exact match then
-    case-insensitive fallback.  Returns None if not found.
+    case-insensitive fallback.  For Copilot providers, overrides the
+    context_window with the live value from the Copilot /models API.
+    Returns None if not found.
     """
     mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
 
@@ -654,17 +656,34 @@ def get_model_info(
     if not isinstance(models, dict):
         return None
 
+    info: Optional[ModelInfo] = None
+
     # Exact match
     raw = models.get(model_id)
     if isinstance(raw, dict):
-        return _parse_model_info(model_id, raw, mdev_id)
+        info = _parse_model_info(model_id, raw, mdev_id)
 
     # Case-insensitive fallback
-    model_lower = model_id.lower()
-    for mid, mdata in models.items():
-        if mid.lower() == model_lower and isinstance(mdata, dict):
-            return _parse_model_info(mid, mdata, mdev_id)
+    if info is None:
+        model_lower = model_id.lower()
+        for mid, mdata in models.items():
+            if mid.lower() == model_lower and isinstance(mdata, dict):
+                info = _parse_model_info(mid, mdata, mdev_id)
+                break
 
-    return None
+    if info is None:
+        return None
+
+    # Override context_window with the live Copilot catalog value
+    if provider_id in ("copilot", "copilot-acp", "github-copilot"):
+        try:
+            from hermes_cli.models import get_copilot_model_context_window
+            live_ctx = get_copilot_model_context_window(model_id)
+            if live_ctx:
+                info.context_window = live_ctx
+        except Exception:
+            pass
+
+    return info
 
 
