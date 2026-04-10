@@ -63,6 +63,31 @@ def _ensure_slack_mock(monkeypatch):
 
 
 class TestSendMessageTool:
+    def test_parse_ndr_target_is_explicit(self):
+        from tools.send_message_tool import _parse_target_ref
+
+        chat_id, thread_id, is_explicit = _parse_target_ref("ndr", "npub1exampletarget")
+        assert chat_id == "npub1exampletarget"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_send_ndr_uses_one_off_helper(self):
+        from tools.send_message_tool import _send_ndr
+
+        with patch("gateway.platforms.ndr.check_ndr_requirements", return_value=True), patch(
+            "gateway.platforms.ndr.send_ndr_message",
+            new=AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg-123")),
+        ) as send_mock:
+            result = asyncio.run(_send_ndr({"bin": "ndr", "data_dir": "/tmp/ndr"}, "chat-123", "hello"))
+
+        assert result == {
+            "success": True,
+            "platform": "ndr",
+            "chat_id": "chat-123",
+            "message_id": "msg-123",
+        }
+        send_mock.assert_awaited_once_with("chat-123", "hello", extra={"bin": "ndr", "data_dir": "/tmp/ndr"})
+
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
         config, _telegram_cfg = _make_config()

@@ -141,6 +141,17 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_ndr_target_is_treated_as_explicit(self):
+        job = {"deliver": "ndr:npub1exampletarget"}
+        with patch("gateway.channel_directory.resolve_channel_name") as resolve_mock:
+            result = _resolve_delivery_target(job)
+        resolve_mock.assert_not_called()
+        assert result == {
+            "platform": "ndr",
+            "chat_id": "npub1exampletarget",
+            "thread_id": None,
+        }
+
     def test_bare_platform_uses_matching_origin_chat(self):
         job = {
             "deliver": "telegram",
@@ -204,6 +215,16 @@ class TestResolveDeliveryTarget:
         assert result == {
             "platform": "discord",
             "chat_id": "1001234567890",
+            "thread_id": None,
+        }
+
+    def test_origin_without_origin_falls_back_to_ndr_home_channel(self, monkeypatch):
+        monkeypatch.setenv("NDR_HOME_CHANNEL", "chat-ndr-home")
+        job = {"deliver": "origin"}
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "ndr",
+            "chat_id": "chat-ndr-home",
             "thread_id": None,
         }
 
