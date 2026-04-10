@@ -1804,6 +1804,7 @@ class HermesCLI:
             "session_total_tokens": 0,
             "session_api_calls": 0,
             "compressions": 0,
+            "last_turn_tps": 0.0,
         }
 
         if not agent:
@@ -1817,6 +1818,7 @@ class HermesCLI:
         snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
+        snapshot["last_turn_tps"] = getattr(agent, "last_turn_tps", 0.0) or 0.0
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -1941,11 +1943,17 @@ class HermesCLI:
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
 
+            # Format TPS label
+            tps = snapshot.get("last_turn_tps", 0.0) or 0.0
+            tps_label = f"{tps:.2f} tk/s" if tps > 0 else None
+
             if width < 52:
                 text = f"⚕ {snapshot['model_short']} · {duration_label}"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                if tps_label:
+                    parts.append(tps_label)
                 parts.append(duration_label)
                 return self._trim_status_bar_text(" · ".join(parts), width)
 
@@ -1957,6 +1965,8 @@ class HermesCLI:
                 context_label = "ctx --"
 
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            if tps_label:
+                parts.append(tps_label)
             parts.append(duration_label)
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
@@ -1986,16 +1996,25 @@ class HermesCLI:
             else:
                 percent = snapshot["context_percent"]
                 percent_label = f"{percent}%" if percent is not None else "--"
+                tps = snapshot.get("last_turn_tps", 0.0) or 0.0
+                tps_label = f"{tps:.2f} tk/s" if tps > 0 else None
                 if width < 76:
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
+                    ]
+                    if tps_label:
+                        frags.extend([
+                            ("class:status-bar-dim", " · "),
+                            ("class:status-bar-dim", tps_label),
+                        ])
+                    frags.extend([
                         ("class:status-bar-dim", " · "),
                         ("class:status-bar-dim", duration_label),
                         ("class:status-bar", " "),
-                    ]
+                    ])
                 else:
                     if snapshot["context_length"]:
                         ctx_total = _format_context_length(snapshot["context_length"])
@@ -2014,10 +2033,17 @@ class HermesCLI:
                         (bar_style, self._build_context_bar(percent)),
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
+                    ]
+                    if tps_label:
+                        frags.extend([
+                            ("class:status-bar-dim", " │ "),
+                            ("class:status-bar-dim", tps_label),
+                        ])
+                    frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
                         ("class:status-bar", " "),
-                    ]
+                    ])
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:

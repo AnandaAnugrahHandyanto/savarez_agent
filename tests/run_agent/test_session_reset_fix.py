@@ -46,6 +46,7 @@ def _make_minimal_agent() -> AIAgent:
     agent.session_estimated_cost_usd = 0.0
     agent.session_cost_status = "unknown"
     agent.session_cost_source = "none"
+    agent.last_turn_tps = 0.0
 
     # The two fields under test
     agent._user_turn_count = 0
@@ -119,3 +120,13 @@ class TestResetSessionState:
         agent.reset_session_state()
 
         assert agent._user_turn_count == 0
+
+
+class TestTurnRuntimeMetrics:
+    def test_reset_turn_runtime_metrics_clears_last_turn_tps(self):
+        agent = _make_minimal_agent()
+        agent.last_turn_tps = 42.5
+
+        agent._reset_turn_runtime_metrics()
+
+        assert agent.last_turn_tps == 0.0

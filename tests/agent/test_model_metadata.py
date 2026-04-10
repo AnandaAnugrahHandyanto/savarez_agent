@@ -23,6 +23,7 @@ from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
     _strip_provider_prefix,
+    detect_local_server_type,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
     get_model_context_length,
@@ -138,6 +139,33 @@ class TestDefaultContextLengths:
 
     def test_dict_is_not_empty(self):
         assert len(DEFAULT_CONTEXT_LENGTHS) >= 10
+
+
+class TestDetectLocalServerType:
+    def test_llamacpp_checked_before_ollama_tags(self):
+        props_response = MagicMock(status_code=200, text='{"default_generation_settings": {}}')
+        tags_response = MagicMock(status_code=200)
+        tags_response.json.return_value = {"models": [{"name": "also-present"}]}
+        models_response = MagicMock(status_code=404)
+
+        client = MagicMock()
+
+        def _get(url):
+            if url.endswith("/api/v1/models"):
+                return models_response
+            if url.endswith("/v1/props"):
+                return props_response
+            if url.endswith("/api/tags"):
+                return tags_response
+            raise AssertionError(f"Unexpected URL probed: {url}")
+
+        client.get.side_effect = _get
+        client_cm = MagicMock()
+        client_cm.__enter__.return_value = client
+        client_cm.__exit__.return_value = False
+
+        with patch("agent.model_metadata.httpx.Client", return_value=client_cm):
+            assert detect_local_server_type("http://127.0.0.1:8080/v1") == "llamacpp"
 
 
 # =========================================================================

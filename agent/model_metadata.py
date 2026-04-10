@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import requests
+import httpx
 import yaml
 
 from hermes_constants import OPENROUTER_MODELS_URL
@@ -264,8 +265,6 @@ def detect_local_server_type(base_url: str) -> Optional[str]:
 
     Returns one of: "ollama", "lm-studio", "vllm", "llamacpp", or None.
     """
-    import httpx
-
     normalized = _normalize_base_url(base_url)
     server_url = normalized
     if server_url.endswith("/v1"):
@@ -280,6 +279,17 @@ def detect_local_server_type(base_url: str) -> Optional[str]:
                     return "lm-studio"
             except Exception:
                 pass
+            # llama.cpp exposes /v1/props (older builds used /props without the /v1 prefix).
+            # Check this before /api/tags because some llama.cpp builds/plugins can
+            # also answer that path, which would otherwise cause a false Ollama match.
+            try:
+                r = client.get(f"{server_url}/v1/props")
+                if r.status_code != 200:
+                    r = client.get(f"{server_url}/props")  # fallback for older builds
+                if r.status_code == 200 and "default_generation_settings" in r.text:
+                    return "llamacpp"
+            except Exception:
+                pass
             # Ollama exposes /api/tags and responds with {"models": [...]}
             # LM Studio returns {"error": "Unexpected endpoint"} with status 200
             # on this path, so we must verify the response contains "models".
@@ -292,15 +302,6 @@ def detect_local_server_type(base_url: str) -> Optional[str]:
                             return "ollama"
                     except Exception:
                         pass
-            except Exception:
-                pass
-            # llama.cpp exposes /v1/props (older builds used /props without the /v1 prefix)
-            try:
-                r = client.get(f"{server_url}/v1/props")
-                if r.status_code != 200:
-                    r = client.get(f"{server_url}/props")  # fallback for older builds
-                if r.status_code == 200 and "default_generation_settings" in r.text:
-                    return "llamacpp"
             except Exception:
                 pass
             # vLLM: /version

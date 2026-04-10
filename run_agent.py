@@ -88,7 +88,7 @@ from agent.model_metadata import (
     estimate_tokens_rough, estimate_messages_tokens_rough, estimate_request_tokens_rough,
     get_next_probe_tier, parse_context_limit_from_error,
     parse_available_output_tokens_from_error,
-    save_context_length, is_local_endpoint,
+    save_context_length, is_local_endpoint, detect_local_server_type,
     query_ollama_num_ctx,
 )
 from agent.context_compressor import ContextCompressor
@@ -698,6 +698,8 @@ class AIAgent:
         self._last_activity_desc: str = "initializing"
         self._current_tool: str | None = None
         self._api_call_count: int = 0
+        self._local_server_type: str | None = None
+        self._local_server_type_base_url: str = ""
 
         # Rate limit tracking — updated from x-ratelimit-* response headers
         # after each API call.  Accessed by /usage slash command.
@@ -1203,7 +1205,9 @@ class AIAgent:
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
-        
+
+        self._reset_turn_runtime_metrics()
+
         # ── Ollama num_ctx injection ──
         # Ollama defaults to 2048 context regardless of the model's capabilities.
         # When running against an Ollama server, detect the model's max context
@@ -1265,6 +1269,10 @@ class AIAgent:
                 "is_anthropic_oauth": self._is_anthropic_oauth,
             })
 
+    def _reset_turn_runtime_metrics(self):
+        """Clear metrics that should not bleed across user turns."""
+        self.last_turn_tps = 0.0
+
     def reset_session_state(self):
         """Reset all session-scoped token counters to 0 for a fresh session.
         
@@ -1296,7 +1304,10 @@ class AIAgent:
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
-        
+
+        # Tokens/sec tracking for status bar
+        self.last_turn_tps = 0.0
+
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
 
@@ -1548,6 +1559,65 @@ class AIAgent:
         if self._is_direct_openai_url():
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
+
+    def _get_local_server_type(self) -> Optional[str]:
+        """Return the detected local server type for the current base URL."""
+        base_url = (self.base_url or "").strip().rstrip("/")
+        if not base_url or not is_local_endpoint(base_url):
+            self._local_server_type = None
+            self._local_server_type_base_url = ""
+            return None
+        if base_url != self._local_server_type_base_url:
+            detected = None
+            try:
+                detected = detect_local_server_type(base_url)
+            except Exception as exc:
+                logger.debug("Local server type detection failed for %s: %s", base_url, exc)
+            self._local_server_type = detected
+            self._local_server_type_base_url = base_url
+        return self._local_server_type
+
+    def _should_request_llamacpp_timings(self) -> bool:
+        return self.api_mode == "chat_completions" and self._get_local_server_type() == "llamacpp"
+
+    def _extract_llamacpp_timings(self, payload: Any) -> Optional[Dict[str, Any]]:
+        if not self._should_request_llamacpp_timings() or payload is None:
+            return None
+        model_extra = getattr(payload, "model_extra", None) or {}
+        for timings in (
+            getattr(payload, "timings", None),
+            model_extra.get("timings") if isinstance(model_extra, dict) else None,
+        ):
+            if hasattr(timings, "model_dump"):
+                try:
+                    timings = timings.model_dump()
+                except Exception:
+                    continue
+            if isinstance(timings, dict):
+                return timings
+        return None
+
+    def _extract_llamacpp_tps(self, response: Any) -> Optional[float]:
+        """Return provider-native llama.cpp generation speed, if available."""
+        if not self._should_request_llamacpp_timings():
+            return None
+        timings = self._extract_llamacpp_timings(response)
+        if not timings:
+            return None
+        try:
+            generation_tps = float(timings.get("predicted_per_second") or 0.0)
+        except (TypeError, ValueError):
+            generation_tps = 0.0
+        if generation_tps > 0:
+            return generation_tps
+        try:
+            predicted_n = float(timings.get("predicted_n") or 0.0)
+            predicted_ms = float(timings.get("predicted_ms") or 0.0)
+        except (TypeError, ValueError):
+            return None
+        if predicted_n > 0 and predicted_ms > 0:
+            return predicted_n / (predicted_ms / 1000.0)
+        return None
 
     def _has_content_after_think_block(self, content: str) -> bool:
         """
@@ -4483,6 +4553,7 @@ class AIAgent:
             role = "assistant"
             reasoning_parts: list = []
             usage_obj = None
+            timings_obj = None
             # Reset per-call reasoning tracking so _build_assistant_message
             # knows whether reasoning was already displayed during streaming.
             self._reasoning_deltas_fired = False
@@ -4503,6 +4574,9 @@ class AIAgent:
                     # Usage comes in the final chunk with empty choices
                     if hasattr(chunk, "usage") and chunk.usage:
                         usage_obj = chunk.usage
+                    chunk_timings = self._extract_llamacpp_timings(chunk)
+                    if chunk_timings:
+                        timings_obj = chunk_timings
                     continue
 
                 delta = chunk.choices[0].delta
@@ -4597,6 +4671,9 @@ class AIAgent:
                 # Usage in the final chunk
                 if hasattr(chunk, "usage") and chunk.usage:
                     usage_obj = chunk.usage
+                chunk_timings = self._extract_llamacpp_timings(chunk)
+                if chunk_timings:
+                    timings_obj = chunk_timings
 
             # Build mock response matching non-streaming shape
             full_content = "".join(content_parts) or None
@@ -4643,6 +4720,7 @@ class AIAgent:
                 model=model_name,
                 choices=[mock_choice],
                 usage=usage_obj,
+                timings=timings_obj,
             )
 
         def _call_anthropic():
@@ -5636,6 +5714,8 @@ class AIAgent:
                 pass  # fail open — let the proxy pick its default
 
         extra_body = {}
+        if self._should_request_llamacpp_timings():
+            extra_body["timings_per_token"] = True
 
         _is_openrouter = self._is_openrouter_url()
         _is_github_models = (
@@ -7127,6 +7207,7 @@ class AIAgent:
         self._incomplete_scratchpad_retries = 0
         self._codex_incomplete_retries = 0
         self._thinking_prefill_retries = 0
+        self._reset_turn_runtime_metrics()
         self._last_content_with_tools = None
         self._mute_post_response = False
         self._surrogate_sanitized = False
@@ -7979,6 +8060,10 @@ class AIAgent:
                                 "error": "First response truncated due to output length limit"
                             }
                     
+                    generation_tps = self._extract_llamacpp_tps(response)
+                    if generation_tps is not None and generation_tps > 0:
+                        self.last_turn_tps = generation_tps
+
                     # Track actual token usage from response for context management
                     if hasattr(response, 'usage') and response.usage:
                         canonical_usage = normalize_usage(
