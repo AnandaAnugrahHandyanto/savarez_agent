@@ -1618,11 +1618,16 @@ class AIAgent:
     def _summarize_background_review_actions(
         review_messages: List[Dict],
         prior_snapshot: List[Dict],
+        notification_mode: str = "on",
     ) -> List[str]:
         """Forwarder — see ``agent.background_review.summarize_background_review_actions``."""
         from agent.background_review import summarize_background_review_actions
 
-        return summarize_background_review_actions(review_messages, prior_snapshot)
+        return summarize_background_review_actions(
+            review_messages,
+            prior_snapshot,
+            notification_mode=notification_mode,
+        )
 
     def _spawn_background_review(
         self,
@@ -1789,7 +1794,10 @@ class AIAgent:
             # repair compacts the list around them.
             current_session_id = getattr(self, "session_id", None)
             flushed_session_id = getattr(self, "_flushed_db_message_session_id", None)
-            if flushed_session_id != current_session_id or self._last_flushed_db_idx == 0:
+            if (
+                flushed_session_id != current_session_id
+                or self._last_flushed_db_idx == 0
+            ):
                 self._flushed_db_message_ids = set()
                 self._flushed_db_message_session_id = current_session_id
             flushed_ids = getattr(self, "_flushed_db_message_ids", None)
@@ -1797,7 +1805,8 @@ class AIAgent:
                 flushed_ids = set()
                 self._flushed_db_message_ids = flushed_ids
             history_ids = {
-                id(item) for item in (conversation_history or [])
+                id(item)
+                for item in (conversation_history or [])
                 if isinstance(item, dict)
             }
 
@@ -3179,6 +3188,7 @@ class AIAgent:
         enabled = True
         try:
             from hermes_cli.config import load_config as _load_config
+
             _cfg = _load_config() or {}
             _display = _cfg.get("display") if isinstance(_cfg, dict) else None
             if isinstance(_display, dict) and "credits_notices" in _display:
@@ -3635,6 +3645,7 @@ class AIAgent:
     ) -> List[Dict[str, Any]]:
         """Forwarder — see ``agent.agent_runtime_helpers.drop_thinking_only_and_merge_users``."""
         from agent.agent_runtime_helpers import drop_thinking_only_and_merge_users
+
         return drop_thinking_only_and_merge_users(
             messages,
             drop_codex_reasoning_items=drop_codex_reasoning_items,
@@ -4983,6 +4994,7 @@ class AIAgent:
     ) -> bool:
         """Forwarder — see ``agent.conversation_compression.try_shrink_image_parts_in_messages``."""
         from agent.conversation_compression import try_shrink_image_parts_in_messages
+
         return try_shrink_image_parts_in_messages(
             api_messages,
             max_dimension=max_dimension,
