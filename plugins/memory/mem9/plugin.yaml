@@ -1,0 +1,3 @@
+name: mem9
+version: 1.0.0
+description: "mem9 (mnemos) — persistent, shared memory for AI agents with semantic search via TiDB Cloud vector index."
