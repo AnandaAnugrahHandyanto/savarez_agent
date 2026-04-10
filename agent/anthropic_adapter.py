@@ -958,6 +958,10 @@ def convert_messages_to_anthropic(
                 try:
                     parsed_args = json.loads(args) if isinstance(args, str) else args
                 except (json.JSONDecodeError, ValueError):
+                    logger.warning(
+                        "Malformed tool arguments for %s (falling back to empty dict): %s",
+                        fn.get("name", "?"), args[:200] if isinstance(args, str) else repr(args),
+                    )
                     parsed_args = {}
                 blocks.append({
                     "type": "tool_use",

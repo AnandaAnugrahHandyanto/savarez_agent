@@ -1555,6 +1555,11 @@ class GatewayRunner:
 
         self.adapters.clear()
         self._running_agents.clear()
+        if self._pending_messages:
+            logger.warning(
+                "Discarding %d pending message(s) during shutdown",
+                len(self._pending_messages),
+            )
         self._pending_messages.clear()
         self._pending_approvals.clear()
         self._shutdown_event.set()
