@@ -3,7 +3,7 @@
 When an agent is running, the base adapter's Level 1 guard in
 handle_message() intercepts all incoming messages and queues them as
 pending.  Certain commands (/stop, /new, /reset, /approve, /deny,
-/status) must bypass this guard and be dispatched directly to the gateway
+/status, /side) must bypass this guard and be dispatched directly to the gateway
 runner — otherwise they are queued as user text and either:
   - leak into the conversation as agent input (/stop, /new), or
   - deadlock (/approve, /deny — agent blocks on Event.wait)
@@ -175,6 +175,18 @@ class TestCommandBypassActiveSession:
         assert any("handled:background" in r for r in adapter.sent_responses), (
             "/background response was not sent back to the user"
         )
+
+    @pytest.mark.asyncio
+    async def test_side_bypasses_guard(self):
+        """/side must bypass so side questions don't interrupt the main task."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/side what does /sethome do?"))
+
+        assert sk not in adapter._pending_messages
+        assert any("handled:side" in r for r in adapter.sent_responses)
 
 
 # ---------------------------------------------------------------------------

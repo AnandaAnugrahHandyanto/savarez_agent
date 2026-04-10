@@ -323,6 +323,30 @@ async def test_stop_clears_pending_messages():
 
 
 # ------------------------------------------------------------------
+# Test 6d: /side bypasses running-agent interrupt path
+# ------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_side_bypasses_running_agent_interrupt_path():
+    """/side should dispatch immediately without interrupting the active agent."""
+    runner = _make_runner()
+    session_key = build_session_key(
+        SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm")
+    )
+
+    fake_agent = MagicMock()
+    runner._running_agents[session_key] = fake_agent
+    runner._handle_side_command = AsyncMock(return_value="side-ok")
+
+    side_event = _make_event(text="/side what does /sethome do?")
+    result = await runner._handle_message(side_event)
+
+    assert result == "side-ok"
+    fake_agent.interrupt.assert_not_called()
+    assert session_key not in runner._pending_messages
+    runner._handle_side_command.assert_awaited_once()
+
+
+# ------------------------------------------------------------------
 # Test 7: Shutdown skips sentinel entries
 # ------------------------------------------------------------------
 @pytest.mark.asyncio
