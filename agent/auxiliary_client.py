@@ -1870,12 +1870,15 @@ def _resolve_task_provider_model(
             return env_provider, resolved_model, None, cfg_api_key
 
         if cfg_base_url:
-            # When a provider is explicitly configured (not "auto"), honour it
-            # even if a base_url is also set.  Providers like "nous" and
-            # "openai-codex" use OAuth tokens from auth.json — routing them
-            # through the "custom" handler bypasses that auth lookup and
-            # causes 401 errors.
-            if cfg_provider and cfg_provider not in ("auto", "custom"):
+            # OAuth providers ("nous", "openai-codex") read tokens from
+            # auth.json via their _try_*() handlers.  Routing them through
+            # the "custom" handler bypasses that auth lookup and causes 401
+            # errors.  For all other providers, preserve the existing
+            # behaviour of treating an explicit base_url as a custom
+            # endpoint (this keeps proxy setups working for OpenRouter,
+            # Anthropic, etc.).
+            _OAUTH_PROVIDERS = {"nous", "openai-codex", "codex"}
+            if cfg_provider in _OAUTH_PROVIDERS:
                 return cfg_provider, resolved_model, cfg_base_url, cfg_api_key
             return "custom", resolved_model, cfg_base_url, cfg_api_key
         if cfg_provider and cfg_provider != "auto":
