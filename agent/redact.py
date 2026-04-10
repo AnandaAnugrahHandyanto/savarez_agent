@@ -10,6 +10,7 @@ the first 6 and last 4 characters for debuggability.
 import logging
 import os
 import re
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,13 @@ _DB_CONNSTR_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Generic URL credentials: https://TOKEN@host or https://user:password@host
+# Covers git remotes and ad-hoc HTTP(S) auth URLs that don't match the
+# database-specific patterns above.
+_URL_USERINFO_RE = re.compile(
+    r"([A-Za-z][A-Za-z0-9+.-]*://)([^/\s@]+)@"
+)
+
 # E.164 phone numbers: +<country><number>, 7-15 digits
 # Negative lookahead prevents matching hex strings or identifiers
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
@@ -159,6 +167,16 @@ def redact_sensitive_text(text: str) -> str:
     # Database connection string passwords
     text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
 
+    # Generic URL credentials (git remotes, HTTPS basic auth, token@host URLs)
+    def _redact_url_userinfo(m):
+        scheme, userinfo = m.group(1), m.group(2)
+        if ":" in userinfo:
+            username, _password = userinfo.split(":", 1)
+            safe_username = username or "***"
+            return f"{scheme}{safe_username}:***@"
+        return f"{scheme}***@"
+    text = _URL_USERINFO_RE.sub(_redact_url_userinfo, text)
+
     # E.164 phone numbers (Signal, WhatsApp)
     def _redact_phone(m):
         phone = m.group(1)
@@ -168,6 +186,19 @@ def redact_sensitive_text(text: str) -> str:
     text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
 
     return text
+
+
+def redact_sensitive_data(value: Any) -> Any:
+    """Recursively redact secrets inside nested JSON-like structures."""
+    if isinstance(value, str):
+        return redact_sensitive_text(value)
+    if isinstance(value, list):
+        return [redact_sensitive_data(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_sensitive_data(item) for item in value)
+    if isinstance(value, dict):
+        return {key: redact_sensitive_data(item) for key, item in value.items()}
+    return value
 
 
 class RedactingFormatter(logging.Formatter):

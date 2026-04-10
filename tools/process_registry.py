@@ -41,6 +41,8 @@ import time
 import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
+from agent.redact import redact_sensitive_text
+from tools.ansi_strip import strip_ansi
 from tools.environments.local import _find_shell, _sanitize_subprocess_env
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -48,6 +50,13 @@ from typing import Any, Dict, List, Optional
 from hermes_cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_visible_text(text: str) -> str:
+    """Strip ANSI escapes and redact secrets before output reaches the model/UI."""
+    if not text:
+        return ""
+    return redact_sensitive_text(strip_ansi(text))
 
 
 # Checkpoint file for crash recovery (gateway only)
@@ -493,11 +502,10 @@ class ProcessRegistry:
         # If the caller requested agent notification, enqueue the completion
         # so the CLI/gateway can auto-trigger a new agent turn.
         if session.notify_on_complete:
-            from tools.ansi_strip import strip_ansi
-            output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
+            output_tail = _sanitize_visible_text(session.output_buffer[-2000:])
             self.completion_queue.put({
                 "session_id": session.id,
-                "command": session.command,
+                "command": redact_sensitive_text(session.command),
                 "exit_code": session.exit_code,
                 "output": output_tail,
             })
@@ -512,18 +520,16 @@ class ProcessRegistry:
 
     def poll(self, session_id: str) -> dict:
         """Check status and get new output for a background process."""
-        from tools.ansi_strip import strip_ansi
-
         session = self.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
         with session._lock:
-            output_preview = strip_ansi(session.output_buffer[-1000:]) if session.output_buffer else ""
+            output_preview = _sanitize_visible_text(session.output_buffer[-1000:])
 
         result = {
             "session_id": session.id,
-            "command": session.command,
+            "command": redact_sensitive_text(session.command),
             "status": "exited" if session.exited else "running",
             "pid": session.pid,
             "uptime_seconds": int(time.time() - session.started_at),
@@ -538,14 +544,12 @@ class ProcessRegistry:
 
     def read_log(self, session_id: str, offset: int = 0, limit: int = 200) -> dict:
         """Read the full output log with optional pagination by lines."""
-        from tools.ansi_strip import strip_ansi
-
         session = self.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
         with session._lock:
-            full_output = strip_ansi(session.output_buffer)
+            full_output = _sanitize_visible_text(session.output_buffer)
 
         lines = full_output.splitlines()
         total_lines = len(lines)
@@ -576,7 +580,6 @@ class ProcessRegistry:
             dict with status ("exited", "timeout", "interrupted", "not_found")
             and output snapshot.
         """
-        from tools.ansi_strip import strip_ansi
         from tools.terminal_tool import _interrupt_event
 
         default_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
@@ -605,7 +608,7 @@ class ProcessRegistry:
                 result = {
                     "status": "exited",
                     "exit_code": session.exit_code,
-                    "output": strip_ansi(session.output_buffer[-2000:]),
+                    "output": _sanitize_visible_text(session.output_buffer[-2000:]),
                 }
                 if timeout_note:
                     result["timeout_note"] = timeout_note
@@ -614,7 +617,7 @@ class ProcessRegistry:
             if _interrupt_event.is_set():
                 result = {
                     "status": "interrupted",
-                    "output": strip_ansi(session.output_buffer[-1000:]),
+                    "output": _sanitize_visible_text(session.output_buffer[-1000:]),
                     "note": "User sent a new message -- wait interrupted",
                 }
                 if timeout_note:
@@ -625,7 +628,7 @@ class ProcessRegistry:
 
         result = {
             "status": "timeout",
-            "output": strip_ansi(session.output_buffer[-1000:]),
+            "output": _sanitize_visible_text(session.output_buffer[-1000:]),
         }
         if timeout_note:
             result["timeout_note"] = timeout_note
@@ -761,13 +764,13 @@ class ProcessRegistry:
         for s in all_sessions:
             entry = {
                 "session_id": s.id,
-                "command": s.command[:200],
+                "command": redact_sensitive_text(s.command[:200]),
                 "cwd": s.cwd,
                 "pid": s.pid,
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(s.started_at)),
                 "uptime_seconds": int(time.time() - s.started_at),
                 "status": "exited" if s.exited else "running",
-                "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
+                "output_preview": _sanitize_visible_text(s.output_buffer[-200:]),
             }
             if s.exited:
                 entry["exit_code"] = s.exit_code

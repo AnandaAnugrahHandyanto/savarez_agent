@@ -145,6 +145,20 @@ class TestAuthHeaders:
         assert "mytoken12345" not in result
 
 
+class TestUrlCredentials:
+    def test_token_only_git_url(self):
+        text = "origin https://super-secret-token@github.com/owner/repo.git"
+        result = redact_sensitive_text(text)
+        assert "super-secret-token" not in result
+        assert "https://***@github.com/owner/repo.git" in result
+
+    def test_username_password_url(self):
+        text = "origin https://alice:hunter2@github.com/owner/repo.git"
+        result = redact_sensitive_text(text)
+        assert "hunter2" not in result
+        assert "https://alice:***@github.com/owner/repo.git" in result
+
+
 class TestTelegramTokens:
     def test_bot_token(self):
         text = "bot123456789:ABCDEfghij-KLMNopqrst_UVWXyz12345"

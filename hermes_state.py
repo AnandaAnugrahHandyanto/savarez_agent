@@ -22,6 +22,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
+from agent.redact import redact_sensitive_data, redact_sensitive_text
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
@@ -964,14 +965,17 @@ class SessionDB:
             rows = cursor.fetchall()
         messages = []
         for row in rows:
-            msg = {"role": row["role"], "content": row["content"]}
+            msg = {
+                "role": row["role"],
+                "content": redact_sensitive_text(row["content"]),
+            }
             if row["tool_call_id"]:
                 msg["tool_call_id"] = row["tool_call_id"]
             if row["tool_name"]:
                 msg["tool_name"] = row["tool_name"]
             if row["tool_calls"]:
                 try:
-                    msg["tool_calls"] = json.loads(row["tool_calls"])
+                    msg["tool_calls"] = redact_sensitive_data(json.loads(row["tool_calls"]))
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to deserialize tool_calls in conversation replay, falling back to []")
                     msg["tool_calls"] = []
@@ -980,16 +984,20 @@ class SessionDB:
             # coherent multi-turn reasoning context.
             if row["role"] == "assistant":
                 if row["reasoning"]:
-                    msg["reasoning"] = row["reasoning"]
+                    msg["reasoning"] = redact_sensitive_text(row["reasoning"])
                 if row["reasoning_details"]:
                     try:
-                        msg["reasoning_details"] = json.loads(row["reasoning_details"])
+                        msg["reasoning_details"] = redact_sensitive_data(
+                            json.loads(row["reasoning_details"])
+                        )
                     except (json.JSONDecodeError, TypeError):
                         logger.warning("Failed to deserialize reasoning_details, falling back to None")
                         msg["reasoning_details"] = None
                 if row["codex_reasoning_items"]:
                     try:
-                        msg["codex_reasoning_items"] = json.loads(row["codex_reasoning_items"])
+                        msg["codex_reasoning_items"] = redact_sensitive_data(
+                            json.loads(row["codex_reasoning_items"])
+                        )
                     except (json.JSONDecodeError, TypeError):
                         logger.warning("Failed to deserialize codex_reasoning_items, falling back to None")
                         msg["codex_reasoning_items"] = None

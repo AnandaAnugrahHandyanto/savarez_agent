@@ -102,6 +102,18 @@ class TestGetAndPoll:
         assert result["status"] == "exited"
         assert result["exit_code"] == 0
 
+    def test_poll_redacts_credentials_in_command_and_output(self, registry):
+        s = _make_session(
+            command="git ls-remote https://super-secret-token@github.com/acme/repo.git",
+            output="origin https://alice:hunter2@github.com/acme/repo.git",
+        )
+        registry._running[s.id] = s
+        result = registry.poll(s.id)
+        assert "super-secret-token" not in result["command"]
+        assert "hunter2" not in result["output_preview"]
+        assert "https://***@github.com/acme/repo.git" in result["command"]
+        assert "https://alice:***@github.com/acme/repo.git" in result["output_preview"]
+
 
 # =========================================================================
 # Read log
@@ -133,6 +145,15 @@ class TestReadLog:
         registry._running[s.id] = s
         result = registry.read_log(s.id, offset=10, limit=5)
         assert "5 lines" in result["showing"]
+
+    def test_read_log_redacts_credentials(self, registry):
+        s = _make_session(
+            output="git remote set-url origin https://alice:hunter2@github.com/acme/repo.git"
+        )
+        registry._running[s.id] = s
+        result = registry.read_log(s.id)
+        assert "hunter2" not in result["output"]
+        assert "https://alice:***@github.com/acme/repo.git" in result["output"]
 
 
 # =========================================================================
