@@ -2946,6 +2946,24 @@ class GatewayRunner:
                 _response_time, _api_calls, _resp_len,
             )
 
+            # Intercept the "(empty)" sentinel from run_agent — the model
+            # returned no visible content (reasoning-only or truly blank).
+            # Don't deliver the raw sentinel to users; replace with a
+            # human-friendly nudge and log a warning for diagnostics.
+            if response == "(empty)":
+                logger.warning(
+                    "Agent returned (empty) sentinel for session %s — "
+                    "model produced no visible content",
+                    session_key,
+                )
+                response = (
+                    "⚠️ The model returned an empty response. "
+                    "This usually means the conversation context is too "
+                    "large for the current provider.\n"
+                    "Try /compact to compress the session, or /reset to "
+                    "start fresh."
+                )
+
             # Surface error details when the agent failed silently (final_response=None)
             if not response and agent_result.get("failed"):
                 error_detail = agent_result.get("error", "unknown error")

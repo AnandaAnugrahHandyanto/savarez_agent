@@ -9244,22 +9244,36 @@ class AIAgent:
                             self._save_session_log(messages)
                             continue
 
-                        # ── Empty response retry (no reasoning) ──────
-                        # Model returned nothing — no content, no
-                        # structured reasoning, no tool calls.  Common
+                        # ── Empty response retry ──────────────────────
+                        # Model returned no visible content (no text, no
+                        # structured reasoning, no tool calls).  Common
                         # with open models (transient provider issues,
-                        # rate limits, sampling flukes).  Silently retry
-                        # up to 3 times before giving up.  Skip when
-                        # content has inline <think> tags (model chose
-                        # to reason, just no visible text).
+                        # rate limits, sampling flukes) and gateway
+                        # providers (e.g. copilot) under context pressure.
+                        # Retry up to 3 times with a lightweight nudge
+                        # message so the model knows to produce actual
+                        # text.  Skip when content has inline <think>
+                        # tags (model chose to reason, just no visible
+                        # text).
                         _truly_empty = not final_response.strip()
                         if _truly_empty and not _has_structured and self._empty_content_retries < 3:
                             self._empty_content_retries += 1
                             self._vprint(
                                 f"{self.log_prefix}↻ Empty response (no content or reasoning) "
-                                f"— retrying ({self._empty_content_retries}/3)",
+                                f"— retrying with nudge ({self._empty_content_retries}/3)",
                                 force=True,
                             )
+                            # Append a lightweight user nudge so the model
+                            # tries again without ballooning context.
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    "[System: your previous response was empty. "
+                                    "Please provide a visible text response to "
+                                    "the user's message.]"
+                                ),
+                            })
+                            self._session_messages = messages
                             continue
 
                         # Exhausted prefill attempts, empty retries, or
@@ -9275,7 +9289,7 @@ class AIAgent:
                             reasoning_preview = reasoning_text[:500] + "..." if len(reasoning_text) > 500 else reasoning_text
                             self._vprint(f"{self.log_prefix}ℹ️  Reasoning-only response (no visible content). Reasoning: {reasoning_preview}")
                         else:
-                            self._vprint(f"{self.log_prefix}ℹ️  Empty response (no content or reasoning) after 3 retries.")
+                            self._vprint(f"{self.log_prefix}ℹ️  Empty response (no content or reasoning) after {self._empty_content_retries} retries.")
 
                         final_response = "(empty)"
                         break
