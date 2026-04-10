@@ -82,7 +82,7 @@ def check_telegram_requirements() -> bool:
 # when it appears outside a code span or fenced code block.
 _MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
 
-_AUTH_ERROR_CLASS_NAMES = {"Unauthorized"}
+_AUTH_ERROR_CLASS_NAMES = {"InvalidToken", "Unauthorized"}
 _AUTH_ERROR_MESSAGE_FRAGMENTS = (
     "rejected by the server",
     "invalid token",
@@ -792,8 +792,25 @@ class TelegramAdapter(BasePlatformAdapter):
                     pass
             message = f"Telegram startup failed: {e}"
             if _is_nonretryable_auth_error(e):
+                logger.error(
+                    "[%s] Telegram token/auth rejected during startup; entering degraded retry handling. Error: %s",
+                    self.name,
+                    e,
+                )
                 self._set_fatal_error("telegram_invalid_token", message, retryable=False)
+            elif self._looks_like_network_error(e):
+                logger.warning(
+                    "[%s] Transient Telegram startup/network error; gateway will retry. Error: %s",
+                    self.name,
+                    e,
+                )
+                self._set_fatal_error("telegram_connect_error", message, retryable=True)
             else:
+                logger.warning(
+                    "[%s] Telegram startup failed with retryable error; gateway will retry. Error: %s",
+                    self.name,
+                    e,
+                )
                 self._set_fatal_error("telegram_connect_error", message, retryable=True)
             logger.error("[%s] Failed to connect to Telegram: %s", self.name, e, exc_info=True)
             return False
