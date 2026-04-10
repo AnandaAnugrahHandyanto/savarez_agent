@@ -92,6 +92,41 @@ def test_check_for_updates_fallback_to_project_root(tmp_path, monkeypatch):
     assert mock_run.call_count >= 1
 
 
+def test_check_for_updates_prefers_active_checkout_over_hermes_home_repo(tmp_path):
+    """Runtime split: prefer the checkout this CLI runs from over ~/.hermes/hermes-agent."""
+    import hermes_cli.banner as banner
+
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    (runtime_root / ".git").mkdir()
+
+    stale_home_repo = tmp_path / ".hermes" / "hermes-agent"
+    stale_home_repo.mkdir(parents=True)
+    (stale_home_repo / ".git").mkdir()
+
+    fake_banner = runtime_root / "hermes_cli" / "banner.py"
+    fake_banner.parent.mkdir(parents=True, exist_ok=True)
+    fake_banner.touch()
+
+    calls = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return MagicMock(returncode=0, stdout="0\n")
+
+    original = banner.__file__
+    try:
+        banner.__file__ = str(fake_banner)
+        with patch("hermes_cli.banner.os.getenv", return_value=str(tmp_path / ".hermes")):
+            with patch("hermes_cli.banner.subprocess.run", side_effect=_fake_run):
+                result = banner.check_for_updates()
+        assert result == 0
+        assert calls, "expected git commands to run"
+        assert calls[0][1]["cwd"] == str(runtime_root)
+    finally:
+        banner.__file__ = original
+
+
 def test_prefetch_non_blocking():
     """prefetch_update_check() should return immediately without blocking."""
     import hermes_cli.banner as banner
