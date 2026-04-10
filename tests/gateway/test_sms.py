@@ -245,12 +245,36 @@ def _twilio_signature(auth_token: str, url: str, params: dict) -> str:
 
 
 class TestTwilioSignatureValidation:
-    """Unit tests for _validate_twilio_signature."""
+    """Unit tests for Twilio request URL/signature helpers."""
+
+    def test_external_request_url_prefers_forwarded_headers(self):
+        adapter = _make_sms_adapter()
+        req = MagicMock()
+        req.headers = {
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "public.example.com",
+            "X-Forwarded-Port": "443",
+        }
+        req.path_qs = "/webhooks/twilio?foo=1"
+        req.url = "http://internal:8080/webhooks/twilio?foo=1"
+        assert adapter._external_request_url(req) == "https://public.example.com/webhooks/twilio?foo=1"
+
+    def test_external_request_url_keeps_non_default_forwarded_port(self):
+        adapter = _make_sms_adapter()
+        req = MagicMock()
+        req.headers = {
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "public.example.com",
+            "X-Forwarded-Port": "8443",
+        }
+        req.path_qs = "/webhooks/twilio"
+        req.url = "http://internal:8080/webhooks/twilio"
+        assert adapter._external_request_url(req) == "https://public.example.com:8443/webhooks/twilio"
 
     def test_valid_signature_returns_true(self):
         adapter = _make_sms_adapter()
         url = "https://example.com/webhooks/twilio"
-        params = {"From": "+15559876543", "Body": "hello", "To": "+15550001111"}
+        params = {"From": "+155****6543", "Body": "hello", "To": "+155****1111"}
         sig = _twilio_signature(adapter._auth_token, url, params)
         assert adapter._validate_twilio_signature(url, params, sig) is True
 
@@ -323,9 +347,27 @@ class TestTwilioWebhookSignatureEnforcement:
         adapter = _make_sms_adapter()
         adapter.handle_message = AsyncMock()
         url = "https://example.com/webhooks/twilio"
-        params = {"From": "+15559876543", "Body": "hi", "To": "+15550001111", "MessageSid": "SM1"}
+        params = {"From": "+155****6543", "Body": "hi", "To": "+155****1111", "MessageSid": "SM1"}
         sig = _twilio_signature(adapter._auth_token, url, params)
         req = self._make_request(params, sig)
         req.url = url
+        resp = await adapter._handle_webhook(req)
+        assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_forwarded_headers_allow_valid_signature_behind_proxy(self):
+        adapter = _make_sms_adapter()
+        adapter.handle_message = AsyncMock()
+        public_url = "https://public.example.com/webhooks/twilio"
+        params = {"From": "+155****6543", "Body": "hi", "To": "+155****1111", "MessageSid": "SM2"}
+        sig = _twilio_signature(adapter._auth_token, public_url, params)
+        req = self._make_request(params, sig)
+        req.url = "http://internal:8080/webhooks/twilio"
+        req.path_qs = "/webhooks/twilio"
+        req.headers.update({
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "public.example.com",
+            "X-Forwarded-Port": "443",
+        })
         resp = await adapter._handle_webhook(req)
         assert resp.status == 200

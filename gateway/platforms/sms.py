@@ -88,19 +88,33 @@ class SmsAdapter(BasePlatformAdapter):
         encoded = base64.b64encode(creds.encode("ascii")).decode("ascii")
         return f"Basic {encoded}"
 
-    def _validate_twilio_signature(self, url: str, params: Dict[str, str], signature: str) -> bool:
-        """Validate the Twilio webhook signature for an inbound request."""
-        if not signature:
-            return False
-        payload = url + "".join(k + v for k, v in sorted(params.items()))
-        expected = base64.b64encode(
-            hmac.new(
-                self._auth_token.encode("utf-8"),
-                payload.encode("utf-8"),
-                hashlib.sha1,
-            ).digest()
-        ).decode("ascii")
-        return hmac.compare_digest(expected, signature)
+    def _external_request_url(self, request) -> str:
+        """Best-effort external URL reconstruction for signature validation.
+
+        Twilio signs the public webhook URL. Behind a reverse proxy, aiohttp may
+        see an internal host/scheme, so prefer forwarded headers when present.
+        """
+        headers = getattr(request, "headers", {}) or {}
+        forwarded_proto = headers.get("X-Forwarded-Proto") or headers.get("x-forwarded-proto")
+        forwarded_host = headers.get("X-Forwarded-Host") or headers.get("x-forwarded-host")
+        forwarded_port = headers.get("X-Forwarded-Port") or headers.get("x-forwarded-port")
+        path = getattr(request, "path_qs", None) or getattr(request, "path", None)
+        if not path:
+            url_obj = getattr(request, "url", "")
+            path = getattr(url_obj, "path_qs", None) or str(url_obj)
+            if "://" in path:
+                path = "/" + path.split("://", 1)[1].split("/", 1)[1] if "/" in path.split("://", 1)[1] else "/"
+
+        if forwarded_host:
+            scheme = forwarded_proto or "https"
+            host = forwarded_host
+            if forwarded_port and ":" not in host:
+                default_port = "443" if scheme == "https" else "80"
+                if str(forwarded_port) != default_port:
+                    host = f"{host}:{forwarded_port}"
+            return f"{scheme}://{host}{path}"
+
+        return str(request.url)
 
     # ------------------------------------------------------------------
     # Required abstract methods
@@ -258,7 +272,7 @@ class SmsAdapter(BasePlatformAdapter):
         # Validate Twilio request signature before processing anything.
         params = {key: values[0] for key, values in form.items() if values}
         signature = request.headers.get("X-Twilio-Signature", "")
-        request_url = str(request.url)
+        request_url = self._external_request_url(request)
         if not self._validate_twilio_signature(request_url, params, signature):
             logger.warning("[sms] rejected webhook with invalid Twilio signature from %s", request.remote)
             return web.Response(
