@@ -31,6 +31,10 @@ from hermes_constants import get_hermes_dir
 
 logger = logging.getLogger(__name__)
 
+# Allowed root for bridge-provided local media paths — any absolute path from
+# the bridge JSON must resolve inside this directory to be accepted.
+_ALLOWED_MEDIA_ROOT = Path(get_hermes_home()) / "cache"
+
 
 def _kill_port_process(port: int) -> None:
     """Kill any process listening on the given TCP port."""
@@ -860,9 +864,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         media_types.append("image/jpeg")
                 elif msg_type == MessageType.PHOTO and os.path.isabs(url):
                     # Local file path — bridge already downloaded the image
-                    cached_urls.append(url)
-                    media_types.append("image/jpeg")
-                    print(f"[{self.name}] Using bridge-cached image: {url}", flush=True)
+                    if Path(url).resolve().is_relative_to(_ALLOWED_MEDIA_ROOT):
+                        cached_urls.append(url)
+                        media_types.append("image/jpeg")
+                        print(f"[{self.name}] Using bridge-cached image: {url}", flush=True)
+                    else:
+                        print(f"[{self.name}] Rejected bridge image path outside cache dir: {url}", flush=True)
                 elif msg_type == MessageType.VOICE and url.startswith(("http://", "https://")):
                     try:
                         cached_path = await cache_audio_from_url(url, ext=".ogg")
@@ -875,20 +882,29 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         media_types.append("audio/ogg")
                 elif msg_type == MessageType.VOICE and os.path.isabs(url):
                     # Local file path — bridge already downloaded the audio
-                    cached_urls.append(url)
-                    media_types.append("audio/ogg")
-                    print(f"[{self.name}] Using bridge-cached audio: {url}", flush=True)
+                    if Path(url).resolve().is_relative_to(_ALLOWED_MEDIA_ROOT):
+                        cached_urls.append(url)
+                        media_types.append("audio/ogg")
+                        print(f"[{self.name}] Using bridge-cached audio: {url}", flush=True)
+                    else:
+                        print(f"[{self.name}] Rejected bridge audio path outside cache dir: {url}", flush=True)
                 elif msg_type == MessageType.DOCUMENT and os.path.isabs(url):
                     # Local file path — bridge already downloaded the document
-                    cached_urls.append(url)
-                    ext = Path(url).suffix.lower()
-                    mime = SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
-                    media_types.append(mime)
-                    print(f"[{self.name}] Using bridge-cached document: {url}", flush=True)
+                    if Path(url).resolve().is_relative_to(_ALLOWED_MEDIA_ROOT):
+                        cached_urls.append(url)
+                        ext = Path(url).suffix.lower()
+                        mime = SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
+                        media_types.append(mime)
+                        print(f"[{self.name}] Using bridge-cached document: {url}", flush=True)
+                    else:
+                        print(f"[{self.name}] Rejected bridge document path outside cache dir: {url}", flush=True)
                 elif msg_type == MessageType.VIDEO and os.path.isabs(url):
-                    cached_urls.append(url)
-                    media_types.append("video/mp4")
-                    print(f"[{self.name}] Using bridge-cached video: {url}", flush=True)
+                    if Path(url).resolve().is_relative_to(_ALLOWED_MEDIA_ROOT):
+                        cached_urls.append(url)
+                        media_types.append("video/mp4")
+                        print(f"[{self.name}] Using bridge-cached video: {url}", flush=True)
+                    else:
+                        print(f"[{self.name}] Rejected bridge video path outside cache dir: {url}", flush=True)
                 else:
                     cached_urls.append(url)
                     media_types.append("unknown")

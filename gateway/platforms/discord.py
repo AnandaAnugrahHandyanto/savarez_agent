@@ -2583,7 +2583,7 @@ if DISCORD_AVAILABLE:
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             """Verify the user clicking is authorized."""
             if not self.allowed_user_ids:
-                return True  # No allowlist = anyone can approve
+                return False  # No allowlist configured — fail closed
             return str(interaction.user.id) in self.allowed_user_ids
 
         async def _resolve(
@@ -2675,7 +2675,7 @@ if DISCORD_AVAILABLE:
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             if not self.allowed_user_ids:
-                return True
+                return False  # No allowlist configured — fail closed
             return str(interaction.user.id) in self.allowed_user_ids
 
         async def _respond(

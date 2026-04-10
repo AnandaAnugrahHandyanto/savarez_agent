@@ -1062,6 +1062,11 @@ class FeishuAdapter(BasePlatformAdapter):
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
         self._load_seen_message_ids()
+        if not self._encrypt_key and not self._verification_token:
+            logger.warning(
+                "[Feishu] Neither encrypt_key nor verification_token is configured — "
+                "webhook endpoint has no authentication. Set encrypt_key in config.yaml."
+            )
 
     @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
@@ -2455,9 +2460,9 @@ class FeishuAdapter(BasePlatformAdapter):
             ]
             for k in stale_keys:
                 del self._webhook_rate_counts[k]
-            # If still at capacity after pruning, allow through without tracking.
+            # If still at capacity after pruning, deny untracked IPs (fail closed).
             if rate_key not in self._webhook_rate_counts and len(self._webhook_rate_counts) >= _FEISHU_WEBHOOK_RATE_MAX_KEYS:
-                return True
+                return False
         self._webhook_rate_counts[rate_key] = (1, now)
         return True
 
