@@ -1396,6 +1396,9 @@ def resolve_provider_client(
 
         default_model = _API_KEY_PROVIDER_AUX_MODELS.get(provider, "")
         final_model = model or default_model
+        # Strip provider prefix for non-OpenRouter APIs (#6211)
+        if final_model and "/" in final_model:
+            final_model = final_model.split("/", 1)[1]
 
         # Provider-specific headers
         headers = {}

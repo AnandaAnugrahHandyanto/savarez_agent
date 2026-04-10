@@ -1337,3 +1337,15 @@ class TestCallLlmPaymentFallback:
                     task="compression",
                     messages=[{"role": "user", "content": "hello"}],
                 )
+
+
+
+class TestResolveProviderClientStripPrefix:
+    """Prefixed model names should be stripped for direct API providers (#6211)."""
+
+    def test_strips_prefix_for_api_key_provider(self, monkeypatch):
+        monkeypatch.setenv("GLM_API_KEY", "fake-glm-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            _, model = resolve_provider_client("zai", model="zai/glm-5.1")
+            assert model == "glm-5.1"

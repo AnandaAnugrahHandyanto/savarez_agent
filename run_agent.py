@@ -559,6 +559,7 @@ class AIAgent:
         _install_safe_stdio()
 
         self.model = model
+        self._original_model = model  # preserve for logging/display
         self.max_iterations = max_iterations
         # Shared iteration budget — parent creates, children inherit.
         # Consumed by every LLM turn across parent + all subagents.
@@ -869,6 +870,10 @@ class AIAgent:
             except Exception as e:
                 raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
         
+        # Strip provider prefix (e.g. "zai/glm-5.1" → "glm-5.1") for non-OpenRouter APIs (#6211)
+        if "/" in self.model and not self._is_openrouter_url():
+            self.model = self.model.split("/", 1)[1]
+
         # Provider fallback chain — ordered list of backup providers tried
         # when the primary is exhausted (rate-limit, overload, connection
         # failure).  Supports both legacy single-dict ``fallback_model`` and
