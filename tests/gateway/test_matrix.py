@@ -563,6 +563,7 @@ class TestMatrixAccessTokenAuth:
         fake_client = MagicMock()
         fake_client.whoami = AsyncMock(return_value=FakeWhoamiResponse("@bot:example.org", "DEV123"))
         fake_client.sync = AsyncMock(return_value=FakeSyncResponse())
+        fake_client.receive_response = AsyncMock()
         fake_client.keys_upload = AsyncMock()
         fake_client.keys_query = AsyncMock()
         fake_client.keys_claim = AsyncMock()
@@ -769,6 +770,7 @@ class TestMatrixDeviceId:
         fake_client = MagicMock()
         fake_client.whoami = AsyncMock(return_value=FakeWhoamiResponse("@bot:example.org", "WHOAMI_DEV"))
         fake_client.sync = AsyncMock(return_value=FakeSyncResponse())
+        fake_client.receive_response = AsyncMock()
         fake_client.keys_upload = AsyncMock()
         fake_client.keys_query = AsyncMock()
         fake_client.keys_claim = AsyncMock()
@@ -880,6 +882,7 @@ class TestMatrixPasswordLoginDeviceId:
         fake_client = MagicMock()
         fake_client.login = AsyncMock(return_value=FakeLoginResponse())
         fake_client.sync = AsyncMock(return_value=FakeSyncResponse())
+        fake_client.receive_response = AsyncMock()
         fake_client.close = AsyncMock()
         fake_client.add_event_callback = MagicMock()
         fake_client.rooms = {}
@@ -952,6 +955,7 @@ class TestMatrixE2EEMaintenance:
 
         fake_client = MagicMock()
         fake_client.sync = AsyncMock(side_effect=_sync_once)
+        fake_client.receive_response = AsyncMock()
         fake_client.send_to_device_messages = AsyncMock(return_value=[])
         fake_client.keys_upload = AsyncMock()
         fake_client.keys_query = AsyncMock()
@@ -959,6 +963,7 @@ class TestMatrixE2EEMaintenance:
             return_value={"@alice:example.org": ["DEVICE1"]}
         )
         fake_client.keys_claim = AsyncMock()
+        fake_client.receive_response = AsyncMock()
         fake_client.olm = object()
         fake_client.should_upload_keys = True
         fake_client.should_query_keys = True
@@ -968,6 +973,7 @@ class TestMatrixE2EEMaintenance:
 
         fake_nio = MagicMock()
         fake_nio.SyncError = FakeSyncError
+        fake_nio.SyncResponse = type('SyncResponse', (), {})
 
         with patch.dict("sys.modules", {"nio": fake_nio}):
             await adapter._sync_loop()
@@ -1125,6 +1131,7 @@ class TestMatrixMegolmEventHandling:
     @pytest.mark.asyncio
     async def test_megolm_event_requests_room_key_and_buffers(self):
         adapter = _make_adapter()
+        adapter._initial_sync_done = True
         adapter._user_id = "@bot:example.org"
         adapter._startup_ts = 0.0
         adapter._dm_rooms = {}
@@ -1163,6 +1170,7 @@ class TestMatrixMegolmEventHandling:
     @pytest.mark.asyncio
     async def test_megolm_buffer_capped(self):
         adapter = _make_adapter()
+        adapter._initial_sync_done = True
         adapter._user_id = "@bot:example.org"
         adapter._startup_ts = 0.0
         adapter._dm_rooms = {}
@@ -1443,6 +1451,7 @@ class TestMatrixEncryptedMedia:
         fake_client = MagicMock()
         fake_client.whoami = AsyncMock(return_value=FakeWhoamiResponse("@bot:example.org", "DEV123"))
         fake_client.sync = AsyncMock(return_value=FakeSyncResponse())
+        fake_client.receive_response = AsyncMock()
         fake_client.keys_upload = AsyncMock()
         fake_client.keys_query = AsyncMock()
         fake_client.keys_claim = AsyncMock()
@@ -1707,6 +1716,7 @@ class TestMatrixEncryptedMedia:
     @pytest.mark.asyncio
     async def test_on_room_message_media_does_not_emit_ciphertext_url_when_encrypted_media_decryption_fails(self):
         adapter = _make_adapter()
+        adapter._initial_sync_done = True
         adapter._user_id = "@bot:example.org"
         adapter._startup_ts = 0.0
         adapter._dm_rooms = {}
@@ -2188,3 +2198,78 @@ class TestMatrixMessageTypes:
         with patch.dict("sys.modules", {"nio": _make_fake_nio()}):
             result = await self.adapter.send_emote("!room:ex", "")
         assert result.success is False
+
+class TestMatrixPasswordAuth:
+    """Password login must apply user_id, device_id, and access_token to the client."""
+
+    @pytest.mark.asyncio
+    async def test_connect_applies_credentials_from_login_response(self):
+        """Regression: password login was discarding LoginResponse credentials,
+        leaving the client without access_token/device_id so subsequent syncs
+        silently received no new events (#5819)."""
+        from gateway.platforms.matrix import MatrixAdapter
+        from unittest.mock import patch, AsyncMock, MagicMock
+
+        config = PlatformConfig(
+            enabled=True,
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "password": "s3cr3t",
+                "encryption": False,
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        class FakeLoginResponse:
+            user_id = "@bot:example.org"
+            device_id = "DEVPWD1"
+            access_token = "syt_password_derived_token"
+
+        class FakeSyncResponse:
+            def __init__(self):
+                self.rooms = MagicMock(join={})
+
+        fake_client = MagicMock()
+        fake_client.login = AsyncMock(return_value=FakeLoginResponse())
+        fake_client.sync = AsyncMock(return_value=FakeSyncResponse())
+        fake_client.receive_response = AsyncMock()
+        fake_client.close = AsyncMock()
+        fake_client.add_event_callback = MagicMock()
+        fake_client.rooms = {}
+        fake_client.account_data = {}
+        fake_client.olm = None
+        fake_client.should_upload_keys = False
+        fake_client.should_query_keys = False
+        fake_client.should_claim_keys = False
+
+        fake_nio = MagicMock()
+        fake_nio.AsyncClient = MagicMock(return_value=fake_client)
+        fake_nio.LoginResponse = FakeLoginResponse
+        fake_nio.SyncResponse = FakeSyncResponse
+        fake_nio.WhoamiResponse = type("WhoamiResponse", (), {})
+        fake_nio.RoomMessageText = type("RoomMessageText", (), {})
+        fake_nio.RoomMessageImage = type("RoomMessageImage", (), {})
+        fake_nio.RoomMessageAudio = type("RoomMessageAudio", (), {})
+        fake_nio.RoomMessageVideo = type("RoomMessageVideo", (), {})
+        fake_nio.RoomMessageFile = type("RoomMessageFile", (), {})
+        fake_nio.InviteMemberEvent = type("InviteMemberEvent", (), {})
+        fake_nio.MegolmEvent = type("MegolmEvent", (), {})
+        fake_nio.ReactionEvent = type("ReactionEvent", (), {})
+
+        from gateway.platforms import matrix as matrix_mod
+        with patch.dict("sys.modules", {"nio": fake_nio}):
+            with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                    result = await adapter.connect()
+
+        assert result is True
+        # All three credentials must be set on the client after password login
+        assert fake_client.user_id == "@bot:example.org", "user_id not set from LoginResponse"
+        assert fake_client.device_id == "DEVPWD1", "device_id not set from LoginResponse"
+        assert adapter._device_id == "DEVPWD1", "self._device_id not updated — device flooding will occur on restart"
+        assert fake_client.access_token == "syt_password_derived_token", "access_token not set from LoginResponse"
+        # self._user_id must also be updated
+        assert adapter._user_id == "@bot:example.org"
+        await adapter.disconnect()
+
