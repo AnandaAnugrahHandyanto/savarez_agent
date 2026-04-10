@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
-    "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
+    "ndr", "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
     "wecom", "sms", "email", "webhook", "bluebubbles",
 })
 
@@ -91,7 +91,7 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
             }
         # Origin missing (e.g. job created via API/script) — try each
         # platform's home channel as a fallback instead of silently dropping.
-        for platform_name in ("matrix", "telegram", "discord", "slack", "bluebubbles"):
+        for platform_name in ("matrix", "telegram", "discord", "slack", "ndr", "bluebubbles"):
             chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
             if chat_id:
                 logger.info(
@@ -119,17 +119,18 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
             chat_id, thread_id = rest, None
 
         # Resolve human-friendly labels like "Alice (dm)" to real IDs.
-        try:
-            from gateway.channel_directory import resolve_channel_name
-            resolved = resolve_channel_name(platform_key, chat_id)
-            if resolved:
-                parsed_chat_id, parsed_thread_id, resolved_is_explicit = _parse_target_ref(platform_key, resolved)
-                if resolved_is_explicit:
-                    chat_id, thread_id = parsed_chat_id, parsed_thread_id
-                else:
-                    chat_id = resolved
-        except Exception:
-            pass
+        if not is_explicit:
+            try:
+                from gateway.channel_directory import resolve_channel_name
+                resolved = resolve_channel_name(platform_key, chat_id)
+                if resolved:
+                    parsed_chat_id, parsed_thread_id, resolved_is_explicit = _parse_target_ref(platform_key, resolved)
+                    if resolved_is_explicit:
+                        chat_id, thread_id = parsed_chat_id, parsed_thread_id
+                    else:
+                        chat_id = resolved
+            except Exception:
+                pass
 
         return {
             "platform": platform_name,
@@ -228,6 +229,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
+        "ndr": Platform.NDR,
         "matrix": Platform.MATRIX,
         "mattermost": Platform.MATTERMOST,
         "homeassistant": Platform.HOMEASSISTANT,

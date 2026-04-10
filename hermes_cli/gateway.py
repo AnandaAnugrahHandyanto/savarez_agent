@@ -1501,6 +1501,29 @@ _PLATFORMS = [
         "token_var": "SIGNAL_HTTP_URL",
     },
     {
+        "key": "ndr",
+        "label": "NDR",
+        "emoji": "🔐",
+        "token_var": "NDR_ENABLED",
+        "setup_instructions": [
+            "1. Install or build the upstream ndr CLI from nostr-double-ratchet",
+            "2. Create or choose an NDR data dir, then log in with `ndr login <nsec>`",
+            "3. Hermes runs `ndr --json listen` and `ndr --json send` against that data dir",
+            "4. Restrict access with NDR_ALLOWED_USERS for production use",
+        ],
+        "vars": [
+            {"name": "NDR_BIN", "prompt": "ndr binary path (default: ndr)", "password": False,
+             "help": "Path to the upstream ndr CLI binary."},
+            {"name": "NDR_DATA_DIR", "prompt": "NDR data directory (optional override)", "password": False,
+             "help": "Leave empty to use the profile-safe default under HERMES_HOME/platforms/ndr."},
+            {"name": "NDR_ALLOWED_USERS", "prompt": "Allowed sender pubkeys (comma-separated)", "password": False,
+             "is_allowlist": True,
+             "help": "Comma-separated sender pubkeys allowed to interact with the bot."},
+            {"name": "NDR_HOME_CHANNEL", "prompt": "Home chat target (optional, for cron/notifications)", "password": False,
+             "help": "Default chat target for scheduled results and notifications."},
+        ],
+    },
+    {
         "key": "email",
         "label": "Email",
         "emoji": "📧",
@@ -1676,6 +1699,10 @@ def _platform_status(platform: dict) -> str:
             return "configured"
         if val or account:
             return "partially configured"
+        return "not configured"
+    if platform.get("key") == "ndr":
+        if val and val.lower() in ("true", "1", "yes"):
+            return "configured"
         return "not configured"
     if platform.get("key") == "email":
         pwd = get_env_value("EMAIL_PASSWORD")
@@ -2000,6 +2027,80 @@ def _setup_signal():
     print_info(f"  Groups: {'enabled' if get_env_value('SIGNAL_GROUP_ALLOWED_USERS') else 'disabled'}")
 
 
+def _setup_ndr():
+    """Interactive setup for the ndr CLI."""
+    import shutil
+
+    print()
+    print(color("  ─── 🔐 NDR Setup ───", Colors.CYAN))
+
+    existing_enabled = get_env_value("NDR_ENABLED")
+    existing_bin = get_env_value("NDR_BIN") or "ndr"
+    existing_allowed = get_env_value("NDR_ALLOWED_USERS") or ""
+    existing_home = get_env_value("NDR_HOME_CHANNEL") or ""
+
+    if existing_enabled and existing_enabled.lower() in ("true", "1", "yes"):
+        print()
+        print_success("NDR is already configured.")
+        if not prompt_yes_no("  Reconfigure NDR?", False):
+            return
+
+    print()
+    if shutil.which(existing_bin):
+        print_success(f"ndr found: {existing_bin}")
+    else:
+        print_warning("ndr not found on PATH.")
+        print_info("  Install or build the upstream CLI first:")
+        print_info("    https://github.com/mmalmi/nostr-double-ratchet")
+        print_info("  Hermes expects the configured NDR data dir to already be logged in:")
+        print_info("    ndr login <nsec>")
+
+    try:
+        ndr_bin = input(f"  NDR binary path [{existing_bin}]: ").strip() or existing_bin
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Setup cancelled.")
+        return
+
+    save_env_value("NDR_BIN", ndr_bin)
+    save_env_value("NDR_ENABLED", "true")
+
+    print()
+    print_info("  Optional: override the NDR data directory used by Hermes.")
+    print_info("  Leave empty to use HERMES_HOME/platforms/ndr.")
+    try:
+        data_dir = input(f"  NDR data dir [{get_env_value('NDR_DATA_DIR') or ''}]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Setup cancelled.")
+        return
+    if data_dir:
+        save_env_value("NDR_DATA_DIR", data_dir)
+
+    print()
+    print_info("  Restrict access by sender pubkey. Leave empty to rely on pairing/global policy.")
+    try:
+        allowed = input(f"  Allowed users [{existing_allowed}]: ").strip() or existing_allowed
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Setup cancelled.")
+        return
+    if allowed:
+        save_env_value("NDR_ALLOWED_USERS", allowed)
+
+    print()
+    print_info("  Optional: set a default chat target for cron/notification delivery.")
+    try:
+        home = input(f"  Home chat target [{existing_home}]: ").strip() or existing_home
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Setup cancelled.")
+        return
+    if home:
+        save_env_value("NDR_HOME_CHANNEL", home)
+
+    print()
+    print_success("NDR configured!")
+    print_info(f"  Binary: {ndr_bin}")
+    print_info("  Next step: ensure the configured NDR data dir is logged in via `ndr login <nsec>`")
+
+
 def gateway_setup():
     """Interactive setup for messaging platforms + gateway service."""
     if is_managed():
@@ -2061,6 +2162,8 @@ def gateway_setup():
             _setup_whatsapp()
         elif platform["key"] == "signal":
             _setup_signal()
+        elif platform["key"] == "ndr":
+            _setup_ndr()
         else:
             _setup_standard_platform(platform)
 

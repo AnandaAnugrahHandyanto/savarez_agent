@@ -67,7 +67,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'ndr:npub1...'"
             },
             "message": {
                 "type": "string",
@@ -150,6 +150,7 @@ def _handle_send(args):
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
+        "ndr": Platform.NDR,
         "bluebubbles": Platform.BLUEBUBBLES,
         "matrix": Platform.MATRIX,
         "mattermost": Platform.MATTERMOST,
@@ -233,6 +234,8 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _FEISHU_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
+    if platform_name == "ndr" and target_ref.strip():
+        return target_ref.strip(), None, True
     if platform_name == "discord":
         match = _NUMERIC_TOPIC_RE.fullmatch(target_ref)
         if match:
@@ -394,6 +397,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.NDR:
+            result = await _send_ndr(pconfig.extra, chat_id, chunk)
         elif platform == Platform.EMAIL:
             result = await _send_email(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SMS:
@@ -928,6 +933,24 @@ async def _send_bluebubbles(extra, chat_id, message):
             await adapter.disconnect()
     except Exception as e:
         return _error(f"BlueBubbles send failed: {e}")
+
+
+async def _send_ndr(extra, chat_id, message):
+    """Send via the NDR adapter using the upstream ndr CLI."""
+    try:
+        from gateway.platforms.ndr import check_ndr_requirements, send_ndr_message
+        if not check_ndr_requirements(extra.get("bin")):
+            return {"error": "NDR requirements not met (ndr binary not found)."}
+    except ImportError:
+        return {"error": "NDR adapter not available."}
+
+    try:
+        result = await send_ndr_message(chat_id, message, extra=extra)
+        if not result.success:
+            return _error(f"NDR send failed: {result.error}")
+        return {"success": True, "platform": "ndr", "chat_id": chat_id, "message_id": result.message_id}
+    except Exception as e:
+        return _error(f"NDR send failed: {e}")
 
 
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):

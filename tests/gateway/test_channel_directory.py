@@ -196,6 +196,23 @@ class TestBuildFromSessions:
         assert "Alice" in names
         assert "Bob" in names
 
+    def test_builds_ndr_from_sessions_json(self, tmp_path):
+        self._write_sessions(tmp_path, {
+            "session_1": {
+                "origin": {
+                    "platform": "ndr",
+                    "chat_id": "chat-123",
+                    "user_name": "alice",
+                },
+                "chat_type": "dm",
+            },
+        })
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_from_sessions("ndr")
+
+        assert entries == [{"id": "chat-123", "name": "alice", "type": "dm", "thread_id": None}]
+
     def test_missing_sessions_file(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             entries = _build_from_sessions("telegram")

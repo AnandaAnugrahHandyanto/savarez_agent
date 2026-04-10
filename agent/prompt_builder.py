@@ -325,6 +325,12 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "ndr": (
+        "You are chatting over nostr-double-ratchet via the ndr CLI. "
+        "Use plain text only; do not rely on markdown rendering. "
+        "This is a private double-ratchet direct message channel, so keep "
+        "responses concise and text-first."
+    ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "
         "suitable for email. Use plain text formatting (no markdown). "

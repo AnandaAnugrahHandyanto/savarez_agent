@@ -53,6 +53,7 @@ class Platform(Enum):
     WHATSAPP = "whatsapp"
     SLACK = "slack"
     SIGNAL = "signal"
+    NDR = "ndr"
     MATTERMOST = "mattermost"
     MATRIX = "matrix"
     HOMEASSISTANT = "homeassistant"
@@ -269,6 +270,9 @@ class GatewayConfig:
                 connected.append(platform)
             # Signal uses extra dict for config (http_url + account)
             elif platform == Platform.SIGNAL and config.extra.get("http_url"):
+                connected.append(platform)
+            # NDR uses a local CLI/binary and persisted data dir
+            elif platform == Platform.NDR:
                 connected.append(platform)
             # Email uses extra dict for config (address + imap_host + smtp_host)
             elif platform == Platform.EMAIL and config.extra.get("address"):
@@ -786,6 +790,26 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             platform=Platform.SIGNAL,
             chat_id=signal_home,
             name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
+        )
+
+    # NDR (nostr-double-ratchet CLI)
+    ndr_enabled = os.getenv("NDR_ENABLED", "").lower() in ("true", "1", "yes")
+    ndr_bin = os.getenv("NDR_BIN", "").strip()
+    ndr_data_dir = os.getenv("NDR_DATA_DIR", "").strip()
+    if ndr_enabled or ndr_bin or ndr_data_dir:
+        if Platform.NDR not in config.platforms:
+            config.platforms[Platform.NDR] = PlatformConfig()
+        config.platforms[Platform.NDR].enabled = True
+        if ndr_bin:
+            config.platforms[Platform.NDR].extra["bin"] = ndr_bin
+        if ndr_data_dir:
+            config.platforms[Platform.NDR].extra["data_dir"] = ndr_data_dir
+    ndr_home = os.getenv("NDR_HOME_CHANNEL")
+    if ndr_home and Platform.NDR in config.platforms:
+        config.platforms[Platform.NDR].home_channel = HomeChannel(
+            platform=Platform.NDR,
+            chat_id=ndr_home,
+            name=os.getenv("NDR_HOME_CHANNEL_NAME", "Home"),
         )
 
     # Mattermost
