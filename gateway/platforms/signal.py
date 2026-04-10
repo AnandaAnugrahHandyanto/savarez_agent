@@ -13,6 +13,7 @@ Requires:
 
 import asyncio
 import base64
+import collections
 import json
 import logging
 import os
@@ -181,7 +182,7 @@ class SignalAdapter(BasePlatformAdapter):
 
         # Track recently sent message timestamps to prevent echo-back loops
         # in Note to Self / self-chat mode (mirrors WhatsApp recentlySentIds)
-        self._recent_sent_timestamps: set = set()
+        self._recent_sent_timestamps: collections.deque = collections.deque(maxlen=50)
         self._max_recent_timestamps = 50
 
         self._phone_lock_identity: Optional[str] = None
@@ -412,7 +413,10 @@ class SignalAdapter(BasePlatformAdapter):
                     if dest == self._account_normalized:
                         # Check if this is an echo of our own outbound reply
                         if sent_ts and sent_ts in self._recent_sent_timestamps:
-                            self._recent_sent_timestamps.discard(sent_ts)
+                            try:
+                                self._recent_sent_timestamps.remove(sent_ts)
+                            except ValueError:
+                                pass
                             return
                         # Genuine user Note to Self — promote to dataMessage
                         is_note_to_self = True
@@ -658,9 +662,8 @@ class SignalAdapter(BasePlatformAdapter):
         """Record outbound message timestamp for echo-back filtering."""
         ts = rpc_result.get("timestamp") if isinstance(rpc_result, dict) else None
         if ts:
-            self._recent_sent_timestamps.add(ts)
-            if len(self._recent_sent_timestamps) > self._max_recent_timestamps:
-                self._recent_sent_timestamps.pop()
+            self._recent_sent_timestamps.append(ts)
+            # deque(maxlen=50) auto-evicts the oldest entry (FIFO)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send a typing indicator."""

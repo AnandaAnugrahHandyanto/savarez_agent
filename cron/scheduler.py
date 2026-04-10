@@ -455,8 +455,11 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         try:
             from agent.redact import redact_sensitive_text
             stdout = redact_sensitive_text(stdout)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Redaction failure is a security event — do NOT pass unredacted
+            # output to the LLM prompt.  Return a sanitized error instead.
+            logger.warning("Secret redaction failed for cron script output: %s", exc)
+            stdout = "[Script output redacted due to redaction engine failure]"
         return True, stdout
 
     except subprocess.TimeoutExpired:
