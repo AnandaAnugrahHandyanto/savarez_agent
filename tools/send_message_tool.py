@@ -148,6 +148,7 @@ def _handle_send(args):
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
+        "weixin": Platform.WEIXIN,
         "bluebubbles": Platform.BLUEBUBBLES,
         "matrix": Platform.MATRIX,
         "mattermost": Platform.MATTERMOST,
@@ -312,6 +313,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.platforms.telegram import TelegramAdapter
     from gateway.platforms.discord import DiscordAdapter
     from gateway.platforms.slack import SlackAdapter
+    from gateway.platforms.weixin import WeixinAdapter
 
     # Feishu adapter import is optional (requires lark-oapi)
     try:
@@ -334,6 +336,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH,
         Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
+        Platform.WEIXIN: WeixinAdapter.MAX_MESSAGE_LENGTH,
     }
     if _feishu_available:
         _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
@@ -363,11 +366,26 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    if platform == Platform.WEIXIN:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_weixin(
+                pconfig,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else [],
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-Telegram platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram; "
+                f"send_message MEDIA delivery is currently only supported for telegram and weixin; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -375,7 +393,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram"
+            "native send_message media delivery is currently only supported for telegram and weixin"
         )
 
     last_result = None
@@ -404,6 +422,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.WEIXIN:
+            result = await _send_weixin(pconfig, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
         else:
@@ -915,6 +935,84 @@ async def _send_bluebubbles(extra, chat_id, message):
             await adapter.disconnect()
     except Exception as e:
         return _error(f"BlueBubbles send failed: {e}")
+
+
+async def _send_weixin(pconfig, chat_id, message, media_files=None):
+    """Send via WeChat using a persisted reply context."""
+    media_files = media_files or []
+
+    try:
+        import httpx
+        from gateway.config import PlatformConfig
+        from gateway.platforms.weixin import WeixinAdapter
+        from hermes_constants import get_hermes_home
+    except ImportError:
+        return {"error": "WeChat dependencies are not installed. Need httpx + cryptography."}
+
+    token = pconfig.token or os.getenv("WEIXIN_TOKEN", "")
+    extra = dict(pconfig.extra or {})
+    if not token:
+        return {"error": "WeChat token not configured (WEIXIN_TOKEN)"}
+
+    try:
+        adapter = WeixinAdapter(PlatformConfig(enabled=True, token=token, extra=extra))
+        try:
+            tokens_path = get_hermes_home() / "weixin" / "context_tokens.json"
+            if tokens_path.exists():
+                tokens = json.loads(tokens_path.read_text(encoding="utf-8"))
+                context_token = tokens.get(chat_id)
+                if context_token:
+                    adapter._context_tokens[chat_id] = context_token
+        except Exception:
+            pass
+
+        if chat_id not in adapter._context_tokens:
+            return {
+                "error": (
+                    "No context_token for this WeChat user. "
+                    "They must message the bot first before Hermes can reply."
+                )
+            }
+
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            adapter._http = client
+            last_result = None
+
+            if message.strip():
+                result = await adapter.send(chat_id, message)
+                if not result.success:
+                    return {"error": f"WeChat send failed: {result.error}"}
+                last_result = {
+                    "success": True,
+                    "platform": "weixin",
+                    "chat_id": chat_id,
+                    "message_id": result.message_id,
+                }
+
+            for media_path, _is_voice in media_files:
+                if not os.path.exists(media_path):
+                    return {"error": f"Media file not found: {media_path}"}
+                ext = os.path.splitext(media_path)[1].lower()
+                if ext in _IMAGE_EXTS:
+                    result = await adapter.send_image_file(chat_id, media_path)
+                elif ext in _VIDEO_EXTS:
+                    result = await adapter.send_video(chat_id, media_path)
+                elif ext in _AUDIO_EXTS:
+                    result = await adapter.send_voice(chat_id, media_path)
+                else:
+                    result = await adapter.send_document(chat_id, media_path)
+                if not result.success:
+                    return {"error": f"WeChat media send failed: {result.error}"}
+                last_result = {
+                    "success": True,
+                    "platform": "weixin",
+                    "chat_id": chat_id,
+                    "message_id": result.message_id,
+                }
+
+            return last_result or {"error": "Nothing to send"}
+    except Exception as e:
+        return {"error": f"WeChat send failed: {e}"}
 
 
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):

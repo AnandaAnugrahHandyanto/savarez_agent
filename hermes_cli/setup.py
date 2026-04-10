@@ -2148,6 +2148,22 @@ def _setup_mattermost():
     if home_channel:
         save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
 
+    # ── WeChat (Weixin) ──
+    existing_weixin = get_env_value("WEIXIN_TOKEN")
+    if existing_weixin:
+        print_info("WeChat (Weixin): already configured")
+        if prompt_yes_no("Reconfigure WeChat (Weixin)?", False):
+            existing_weixin = None
+
+    if not existing_weixin and prompt_yes_no("Set up WeChat (Weixin)?", False):
+        print_info("WeChat uses the official iLink Bot API with QR login.")
+        print_info("Hermes will open the built-in QR login flow and save credentials automatically.")
+        print()
+        from hermes_cli.main import cmd_wechat
+        import argparse
+
+        cmd_wechat(argparse.Namespace())
+
 
 def _setup_whatsapp():
     """Configure WhatsApp bridge."""
