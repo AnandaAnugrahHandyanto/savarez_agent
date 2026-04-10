@@ -1020,124 +1020,153 @@ def execute_code(
         if _tz_name:
             child_env["TZ"] = _tz_name
 
-        proc = subprocess.Popen(
-            [sys.executable, "script.py"],
-            cwd=tmpdir,
-            env=child_env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            preexec_fn=None if _IS_WINDOWS else os.setsid,
-        )
+        # --- Docker sandbox path (when TERMINAL_ENV=docker is set by gateway) ---
+        _gateway_backend = os.environ.get("TERMINAL_ENV", "local")
+        _docker_image = os.environ.get("TERMINAL_DOCKER_IMAGE", "")
+        _use_docker_sandbox = _gateway_backend == "docker" and bool(_docker_image)
 
-        # --- Poll loop: watch for exit, timeout, and interrupt ---
-        deadline = time.monotonic() + timeout
-        stderr_chunks: list = []
-
-        # Background readers to avoid pipe buffer deadlocks.
-        # For stdout we use a head+tail strategy: keep the first HEAD_BYTES
-        # and a rolling window of the last TAIL_BYTES so the final print()
-        # output is never lost.  Stderr keeps head-only (errors appear early).
-        _STDOUT_HEAD_BYTES = int(MAX_STDOUT_BYTES * 0.4)   # 40% head
-        _STDOUT_TAIL_BYTES = MAX_STDOUT_BYTES - _STDOUT_HEAD_BYTES  # 60% tail
-
-        def _drain(pipe, chunks, max_bytes):
-            """Simple head-only drain (used for stderr)."""
-            total = 0
-            try:
-                while True:
-                    data = pipe.read(4096)
-                    if not data:
-                        break
-                    if total < max_bytes:
-                        keep = max_bytes - total
-                        chunks.append(data[:keep])
-                    total += len(data)
-            except (ValueError, OSError) as e:
-                logger.debug("Error reading process output: %s", e, exc_info=True)
-
-        stdout_total_bytes = [0]  # mutable ref for total bytes seen
-
-        def _drain_head_tail(pipe, head_chunks, tail_chunks, head_bytes, tail_bytes, total_ref):
-            """Drain stdout keeping both head and tail data."""
-            head_collected = 0
-            from collections import deque
-            tail_buf = deque()
-            tail_collected = 0
-            try:
-                while True:
-                    data = pipe.read(4096)
-                    if not data:
-                        break
-                    total_ref[0] += len(data)
-                    # Fill head buffer first
-                    if head_collected < head_bytes:
-                        keep = min(len(data), head_bytes - head_collected)
-                        head_chunks.append(data[:keep])
-                        head_collected += keep
-                        data = data[keep:]  # remaining goes to tail
-                        if not data:
-                            continue
-                    # Everything past head goes into rolling tail buffer
-                    tail_buf.append(data)
-                    tail_collected += len(data)
-                    # Evict old tail data to stay within tail_bytes budget
-                    while tail_collected > tail_bytes and tail_buf:
-                        oldest = tail_buf.popleft()
-                        tail_collected -= len(oldest)
-            except (ValueError, OSError):
-                pass
-            # Transfer final tail to output list
-            tail_chunks.extend(tail_buf)
-
-        stdout_head_chunks: list = []
-        stdout_tail_chunks: list = []
-
-        stdout_reader = threading.Thread(
-            target=_drain_head_tail,
-            args=(proc.stdout, stdout_head_chunks, stdout_tail_chunks,
-                  _STDOUT_HEAD_BYTES, _STDOUT_TAIL_BYTES, stdout_total_bytes),
-            daemon=True
-        )
-        stderr_reader = threading.Thread(
-            target=_drain, args=(proc.stderr, stderr_chunks, MAX_STDERR_BYTES), daemon=True
-        )
-        stdout_reader.start()
-        stderr_reader.start()
-
-        status = "success"
-        while proc.poll() is None:
-            if _interrupt_event.is_set():
-                _kill_process_group(proc)
-                status = "interrupted"
-                break
-            if time.monotonic() > deadline:
-                _kill_process_group(proc, escalate=True)
-                status = "timeout"
-                break
-            time.sleep(0.2)
-
-        # Wait for readers to finish draining
-        stdout_reader.join(timeout=3)
-        stderr_reader.join(timeout=3)
-
-        stdout_head = b"".join(stdout_head_chunks).decode("utf-8", errors="replace")
-        stdout_tail = b"".join(stdout_tail_chunks).decode("utf-8", errors="replace")
-        stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")
-
-        # Assemble stdout with head+tail truncation
-        total_stdout = stdout_total_bytes[0]
-        if total_stdout > MAX_STDOUT_BYTES and stdout_tail:
-            omitted = total_stdout - len(stdout_head) - len(stdout_tail)
-            truncated_notice = (
-                f"\n\n... [OUTPUT TRUNCATED - {omitted:,} chars omitted "
-                f"out of {total_stdout:,} total] ...\n\n"
+        if _use_docker_sandbox:
+            from tools.execute_code_docker import run_script_in_docker
+            _stdout_bytes, _stderr_bytes, _exit_code = run_script_in_docker(
+                script_path=os.path.join(tmpdir, "script.py"),
+                tmpdir=tmpdir,
+                sock_path=sock_path,
+                image=_docker_image,
+                child_env=child_env,
+                timeout=timeout,
             )
-            stdout_text = stdout_head + truncated_notice + stdout_tail
+            _raw_stdout = _stdout_bytes.decode("utf-8", errors="replace")
+            stderr_text = _stderr_bytes.decode("utf-8", errors="replace")
+            total_stdout = len(_raw_stdout)
+            if total_stdout > MAX_STDOUT_BYTES:
+                omitted = total_stdout - MAX_STDOUT_BYTES
+                stdout_text = _raw_stdout[:MAX_STDOUT_BYTES] + (
+                    f"\n\n... [OUTPUT TRUNCATED - {omitted:,} chars omitted "
+                    f"out of {total_stdout:,} total] ...\n\n"
+                )
+            else:
+                stdout_text = _raw_stdout
+            exit_code = _exit_code
+            status = "timeout" if _exit_code == -1 else "success"
         else:
-            stdout_text = stdout_head + stdout_tail
+            proc = subprocess.Popen(
+                [sys.executable, "script.py"],
+                cwd=tmpdir,
+                env=child_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                preexec_fn=None if _IS_WINDOWS else os.setsid,
+            )
 
-        exit_code = proc.returncode if proc.returncode is not None else -1
+            # --- Poll loop: watch for exit, timeout, and interrupt ---
+            deadline = time.monotonic() + timeout
+            stderr_chunks: list = []
+
+            # Background readers to avoid pipe buffer deadlocks.
+            # For stdout we use a head+tail strategy: keep the first HEAD_BYTES
+            # and a rolling window of the last TAIL_BYTES so the final print()
+            # output is never lost.  Stderr keeps head-only (errors appear early).
+            _STDOUT_HEAD_BYTES = int(MAX_STDOUT_BYTES * 0.4)   # 40% head
+            _STDOUT_TAIL_BYTES = MAX_STDOUT_BYTES - _STDOUT_HEAD_BYTES  # 60% tail
+
+            def _drain(pipe, chunks, max_bytes):
+                """Simple head-only drain (used for stderr)."""
+                total = 0
+                try:
+                    while True:
+                        data = pipe.read(4096)
+                        if not data:
+                            break
+                        if total < max_bytes:
+                            keep = max_bytes - total
+                            chunks.append(data[:keep])
+                        total += len(data)
+                except (ValueError, OSError) as e:
+                    logger.debug("Error reading process output: %s", e, exc_info=True)
+
+            stdout_total_bytes = [0]  # mutable ref for total bytes seen
+
+            def _drain_head_tail(pipe, head_chunks, tail_chunks, head_bytes, tail_bytes, total_ref):
+                """Drain stdout keeping both head and tail data."""
+                head_collected = 0
+                from collections import deque
+                tail_buf = deque()
+                tail_collected = 0
+                try:
+                    while True:
+                        data = pipe.read(4096)
+                        if not data:
+                            break
+                        total_ref[0] += len(data)
+                        # Fill head buffer first
+                        if head_collected < head_bytes:
+                            keep = min(len(data), head_bytes - head_collected)
+                            head_chunks.append(data[:keep])
+                            head_collected += keep
+                            data = data[keep:]  # remaining goes to tail
+                            if not data:
+                                continue
+                        # Everything past head goes into rolling tail buffer
+                        tail_buf.append(data)
+                        tail_collected += len(data)
+                        # Evict old tail data to stay within tail_bytes budget
+                        while tail_collected > tail_bytes and tail_buf:
+                            oldest = tail_buf.popleft()
+                            tail_collected -= len(oldest)
+                except (ValueError, OSError):
+                    pass
+                # Transfer final tail to output list
+                tail_chunks.extend(tail_buf)
+
+            stdout_head_chunks: list = []
+            stdout_tail_chunks: list = []
+
+            stdout_reader = threading.Thread(
+                target=_drain_head_tail,
+                args=(proc.stdout, stdout_head_chunks, stdout_tail_chunks,
+                      _STDOUT_HEAD_BYTES, _STDOUT_TAIL_BYTES, stdout_total_bytes),
+                daemon=True
+            )
+            stderr_reader = threading.Thread(
+                target=_drain, args=(proc.stderr, stderr_chunks, MAX_STDERR_BYTES), daemon=True
+            )
+            stdout_reader.start()
+            stderr_reader.start()
+
+            status = "success"
+            while proc.poll() is None:
+                if _interrupt_event.is_set():
+                    _kill_process_group(proc)
+                    status = "interrupted"
+                    break
+                if time.monotonic() > deadline:
+                    _kill_process_group(proc, escalate=True)
+                    status = "timeout"
+                    break
+                time.sleep(0.2)
+
+            # Wait for readers to finish draining
+            stdout_reader.join(timeout=3)
+            stderr_reader.join(timeout=3)
+
+            stdout_head = b"".join(stdout_head_chunks).decode("utf-8", errors="replace")
+            stdout_tail = b"".join(stdout_tail_chunks).decode("utf-8", errors="replace")
+            stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+
+            # Assemble stdout with head+tail truncation
+            total_stdout = stdout_total_bytes[0]
+            if total_stdout > MAX_STDOUT_BYTES and stdout_tail:
+                omitted = total_stdout - len(stdout_head) - len(stdout_tail)
+                truncated_notice = (
+                    f"\n\n... [OUTPUT TRUNCATED - {omitted:,} chars omitted "
+                    f"out of {total_stdout:,} total] ...\n\n"
+                )
+                stdout_text = stdout_head + truncated_notice + stdout_tail
+            else:
+                stdout_text = stdout_head + stdout_tail
+
+            exit_code = proc.returncode if proc.returncode is not None else -1
         duration = round(time.monotonic() - exec_start, 2)
 
         # Wait for RPC thread to finish

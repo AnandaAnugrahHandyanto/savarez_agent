@@ -317,7 +317,21 @@ DEFAULT_CONFIG = {
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
     },
-    
+
+    "gateway": {
+        # Override terminal.backend for all gateway sessions.
+        # When set, all messaging platform sessions (Telegram, Discord, etc.)
+        # use this backend instead of the global terminal.backend.
+        # Recommended: "docker" for production gateway deployments.
+        # Options: "local", "docker", "modal", "daytona", "ssh", "singularity"
+        "terminal_backend": None,
+        # Docker image to use for gateway sandbox sessions (if terminal_backend is docker).
+        # Defaults to terminal.docker_image if not set.
+        "sandbox_image": None,
+        # Lifetime in seconds before an idle sandbox session is cleaned up.
+        "sandbox_lifetime": 3600,
+    },
+
     "browser": {
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)

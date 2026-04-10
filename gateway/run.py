@@ -89,6 +89,7 @@ load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve(
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.
 _config_path = _hermes_home / 'config.yaml'
+_gateway_raw_cfg: dict = {}  # module-level snapshot of parsed config.yaml
 if _config_path.exists():
     try:
         import yaml as _yaml
@@ -97,6 +98,7 @@ if _config_path.exists():
         # Expand ${ENV_VAR} references before bridging to env vars.
         from hermes_cli.config import _expand_env_vars
         _cfg = _expand_env_vars(_cfg)
+        _gateway_raw_cfg = _cfg  # capture for use in GatewayRunner.start()
         # Top-level simple values (fallback only — don't override .env)
         for _key, _val in _cfg.items():
             if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
@@ -197,6 +199,9 @@ if _config_path.exists():
             _redact = _security_cfg.get("redact_secrets")
             if _redact is not None:
                 os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
+        # Apply gateway-level terminal backend override
+        from gateway.sandbox_config import apply_gateway_backend_to_env
+        apply_gateway_backend_to_env(_cfg)
     except Exception:
         pass  # Non-fatal; gateway can still run with .env values
 
@@ -1051,6 +1056,20 @@ class GatewayRunner:
         """
         logger.info("Starting Hermes Gateway...")
         logger.info("Session storage: %s", self.config.sessions_dir)
+
+        # Warn if running with local backend (no sandbox isolation)
+        # Uses _gateway_raw_cfg captured at module load — avoids a second disk read.
+        try:
+            from gateway.sandbox_config import should_warn_insecure_gateway
+            if should_warn_insecure_gateway(_gateway_raw_cfg):
+                logger.warning(
+                    "Gateway is running with local terminal backend. "
+                    "Commands from messaging platforms will execute on this machine. "
+                    "Consider setting gateway.terminal_backend: docker in config.yaml "
+                    "for production deployments. See: https://github.com/NousResearch/hermes-agent/issues/4281"
+                )
+        except Exception:
+            pass
         try:
             from hermes_cli.profiles import get_active_profile_name
             _profile = get_active_profile_name()

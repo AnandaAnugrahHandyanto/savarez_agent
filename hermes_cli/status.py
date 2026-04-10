@@ -285,6 +285,21 @@ def show_status(args):
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
     
+    try:
+        _gw_cfg = load_config()
+        gateway_cfg = _gw_cfg.get('gateway', {})
+    except Exception:
+        gateway_cfg = {}
+    gw_backend = gateway_cfg.get('terminal_backend')
+    if gw_backend:
+        print(f"  Gateway sandbox: {gw_backend}")
+        if gw_backend == 'docker':
+            try:
+                img = gateway_cfg.get('sandbox_image') or _gw_cfg.get('terminal', {}).get('docker_image', 'default')
+            except Exception:
+                img = 'default'
+            print(f"  Sandbox image:  {img}")
+
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")
     
