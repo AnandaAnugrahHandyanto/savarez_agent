@@ -142,9 +142,6 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
         return None
 
     # Prefer the configured home channel over the origin chat.
-    # Before this fix, jobs created from a Discord DM with deliver='discord'
-    # would short-circuit here and route back to the origin DM instead of the
-    # home channel — making deliver='discord' behave identically to deliver='origin'.
     chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
     if chat_id:
         return {

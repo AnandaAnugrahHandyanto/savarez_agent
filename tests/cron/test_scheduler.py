@@ -174,10 +174,8 @@ class TestResolveDeliveryTarget:
         }
 
     def test_bare_discord_same_origin_routes_to_home_channel_not_origin(self, monkeypatch):
-        """Regression test for PR #7222: deliver='discord' when origin is also discord
-        must route to the configured home channel, NOT back to the origin chat.
-        Before the fix, the short-circuit on line 141 would return origin['chat_id'],
-        making deliver='discord' behave identically to deliver='origin'."""
+        """Regression test for bug fix #7206: deliver='discord' when origin is also discord
+        must route to the configured home channel, NOT back to the origin chat."""
         monkeypatch.setenv("DISCORD_HOME_CHANNEL", "1491576180317360148")
         job = {
             "deliver": "discord",
