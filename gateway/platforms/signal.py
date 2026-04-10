@@ -468,6 +468,40 @@ class SignalAdapter(BasePlatformAdapter):
                 logger.debug("Signal: group %s not in allowlist", group_id[:8] if group_id else "?")
                 return
 
+        # Require mention in groups (per-group overrides supported).
+        # Requires @mention before responding in group chats.
+        # Priority: per-group override > global require_mention > SIGNAL_REQUIRE_MENTION env var.
+        if is_group:
+            require_mention = False
+            # Check per-group override first
+            overrides = self.config.extra.get("require_mention_overrides", {})
+            group_key = f"group:{group_id}"
+            if group_key in overrides:
+                rm_value = overrides[group_key]
+                if isinstance(rm_value, str):
+                    require_mention = rm_value.lower() in ("true", "1", "yes")
+                else:
+                    require_mention = bool(rm_value)
+            else:
+                # Fall back to global config, then env var
+                configured = self.config.extra.get("require_mention")
+                if configured is not None:
+                    if isinstance(configured, str):
+                        require_mention = configured.lower() in ("true", "1", "yes")
+                    else:
+                        require_mention = bool(configured)
+                else:
+                    require_mention = os.getenv("SIGNAL_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes")
+
+            if require_mention:
+                mentions = data_message.get("mentions", [])
+                mentioned_uuids = [m.get("uuid", "") for m in mentions]
+                mentioned_numbers = [m.get("number", "") for m in mentions]
+                bot_account = self._account_normalized
+                if bot_account and bot_account not in mentioned_numbers and bot_account not in mentioned_uuids:
+                    logger.debug("Signal: ignoring group message (require_mention enabled, bot not mentioned)")
+                    return
+
         # Build chat info
         chat_id = sender if not is_group else f"group:{group_id}"
         chat_type = "group" if is_group else "dm"
