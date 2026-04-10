@@ -53,6 +53,7 @@ class TestHandleFastCommand(unittest.TestCase):
             patch.object(cli_mod, "_cprint"),
             patch.object(cli_mod, "save_config_value", return_value=True) as mock_save,
             patch.object(cli_mod, "_prompt_fast_mode_selection", return_value="fast") as mock_prompt,
+            patch.object(cli_mod, "_resolve_fast_mode_status", return_value=(True, "openai-codex")),
         ):
             cli_mod.HermesCLI._handle_fast_command(stub, "/fast")
 
@@ -60,6 +61,32 @@ class TestHandleFastCommand(unittest.TestCase):
         mock_save.assert_called_once_with("agent.service_tier", "fast")
         self.assertEqual(stub.service_tier, "priority")
         self.assertIsNone(stub.agent)
+
+    def test_fast_argument_warns_when_backend_unavailable(self):
+        cli_mod = _import_cli()
+        stub = self._make_cli(service_tier=None)
+        with (
+            patch.object(cli_mod, "_cprint") as mock_cprint,
+            patch.object(cli_mod, "save_config_value", return_value=True),
+            patch.object(cli_mod, "_resolve_fast_mode_status", return_value=(False, None)),
+        ):
+            cli_mod.HermesCLI._handle_fast_command(stub, "/fast fast")
+
+        rendered = "\n".join(call.args[0] for call in mock_cprint.call_args_list)
+        self.assertIn("Fast backend unavailable right now", rendered)
+
+    def test_fast_status_reports_backend_unavailable(self):
+        cli_mod = _import_cli()
+        stub = self._make_cli(service_tier="priority")
+        with (
+            patch.object(cli_mod, "_cprint") as mock_cprint,
+            patch.object(cli_mod, "_resolve_fast_mode_status", return_value=(False, None)),
+        ):
+            cli_mod.HermesCLI._handle_fast_command(stub, "/fast status")
+
+        rendered = "\n".join(call.args[0] for call in mock_cprint.call_args_list)
+        self.assertIn("Codex inference tier: fast", rendered)
+        self.assertIn("Fast backend unavailable right now", rendered)
 
     def test_normal_argument_clears_service_tier(self):
         cli_mod = _import_cli()

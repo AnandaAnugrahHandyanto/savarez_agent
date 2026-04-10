@@ -189,6 +189,25 @@ def _prompt_fast_mode_selection(current_tier: str | None = None) -> str | None:
             return None
 
 
+def _resolve_fast_mode_status(model_id: str | None) -> tuple[bool, str | None]:
+    """Return whether the fast backend is currently reachable for *model_id*."""
+    try:
+        from hermes_cli.models import resolve_fast_mode_runtime
+    except Exception:
+        return False, None
+
+    try:
+        fast_runtime = resolve_fast_mode_runtime(model_id)
+    except Exception:
+        return False, None
+    if not fast_runtime:
+        return False, None
+
+    runtime = fast_runtime.get("runtime") or {}
+    provider = str(runtime.get("provider") or "").strip() or None
+    return True, provider
+
+
 def _get_chrome_debug_candidates(system: str) -> list[str]:
     """Return likely browser executables for local CDP auto-launch."""
     candidates: list[str] = []
@@ -5476,6 +5495,7 @@ class HermesCLI:
             _cprint("  (._.) /fast is only available for models that explicitly expose a fast backend.")
             return
 
+        active_model = getattr(getattr(self, "agent", None), "model", None) or getattr(self, "model", None)
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2:
             selected = _prompt_fast_mode_selection(current_tier=self.service_tier)
@@ -5488,6 +5508,15 @@ class HermesCLI:
         if arg == "status":
             status = "fast" if self.service_tier == "priority" else "normal"
             _cprint(f"  {_GOLD}Codex inference tier: {status}{_RST}")
+            if self.service_tier == "priority":
+                backend_ready, backend_provider = _resolve_fast_mode_status(active_model)
+                if backend_ready:
+                    backend_label = backend_provider or "openai-codex"
+                    _cprint(f"  {_DIM}Fast backend ready via {backend_label}.{_RST}")
+                else:
+                    _cprint(
+                        f"  {_DIM}Fast backend unavailable right now — Hermes will stay on the normal route until Codex credentials resolve.{_RST}"
+                    )
             _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
             return
 
@@ -5509,6 +5538,16 @@ class HermesCLI:
             _cprint(f"  {_GOLD}✓ Codex inference tier set to {label} (saved to config){_RST}")
         else:
             _cprint(f"  {_GOLD}✓ Codex inference tier set to {label} (session only){_RST}")
+
+        if self.service_tier == "priority":
+            backend_ready, backend_provider = _resolve_fast_mode_status(active_model)
+            if backend_ready:
+                backend_label = backend_provider or "openai-codex"
+                _cprint(f"  {_DIM}Fast backend ready via {backend_label}.{_RST}")
+            else:
+                _cprint(
+                    f"  {_DIM}Fast backend unavailable right now — Hermes will stay on the normal route until Codex credentials resolve.{_RST}"
+                )
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""
