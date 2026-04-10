@@ -196,6 +196,11 @@ TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
 # Used by code_execution_tool to know which tools are available in this session.
 _last_resolved_tool_names: List[str] = []
 
+# Full session tool names *before* tool_search deferral.  tool_search controls
+# which schemas the model sees, but the execute_code sandbox should still be
+# able to call any tool the user hasn't explicitly disabled.
+_all_session_tool_names: List[str] = []
+
 
 # =============================================================================
 # Legacy toolset name mapping  (old _tools-suffixed names -> tool name lists)
@@ -228,6 +233,34 @@ _LEGACY_TOOLSET_MAP = {
 
 
 # =============================================================================
+# Deferred tool loading (tool search)
+# =============================================================================
+
+_deferred_catalog: list[dict] | None = None
+
+
+def _estimate_tool_tokens(definitions: list[dict]) -> int:
+    """Rough token estimate for tool definitions (~4 chars/token)."""
+    return sum(len(json.dumps(d)) // 4 for d in definitions)
+
+
+def should_defer_tools(
+    tool_token_estimate: int,
+    context_length: int,
+    mode: str = "auto",
+    threshold: float = 0.10,
+) -> bool:
+    """Decide whether to use deferred tool loading."""
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    if context_length <= 0:
+        return False
+    return tool_token_estimate / context_length > threshold
+
+
+# =============================================================================
 # get_tool_definitions  (the main schema provider)
 # =============================================================================
 
@@ -235,6 +268,8 @@ def get_tool_definitions(
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
     quiet_mode: bool = False,
+    deferred: bool = False,
+    pinned_tools: list[str] | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -346,6 +381,45 @@ def get_tool_definitions(
             print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(tool_names)}")
         else:
             print("🛠️  No tools selected (all filtered out or unavailable)")
+
+    # Capture the full tool list before deferral.  The execute_code sandbox
+    # needs this so it can generate stubs for all registered tools, not just
+    # the subset that tool_search exposes to the model.
+    global _all_session_tool_names
+    _all_session_tool_names = [t["function"]["name"] for t in filtered_tools]
+
+    # ── Deferred tool loading ────────────────────────────────────────
+    # When deferred=True, replace full schemas with tool_search/tool_details
+    # meta-tools + any pinned tools.  Store the compact catalog globally so
+    # prompt_builder can inject it into the system prompt.
+    if deferred:
+        global _deferred_catalog
+        from tools.tool_search import register_tool_search
+        register_tool_search()
+
+        _deferred_catalog = registry.get_catalog(tools_to_include)
+
+        pinned = set(pinned_tools or [])
+        pinned_defs = [d for d in filtered_tools if d["function"]["name"] in pinned]
+        meta_defs = registry.get_definitions({"tool_search", "tool_details"}, quiet=True)
+        filtered_tools = meta_defs + pinned_defs
+
+        if not quiet_mode:
+            n_deferred = len(_deferred_catalog) - len(pinned_defs)
+            tool_names = [t["function"]["name"] for t in filtered_tools]
+            print(
+                f"🔍 Tool search active: {n_deferred} tools deferred, "
+                f"{len(pinned_defs)} pinned, {len(meta_defs)} meta-tools"
+            )
+            print(f"🛠️  Loaded tools: {', '.join(tool_names)}")
+
+    else:
+        if not quiet_mode:
+            if filtered_tools:
+                tool_names = [t["function"]["name"] for t in filtered_tools]
+                print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(tool_names)}")
+            else:
+                print("🛠️  No tools selected (all filtered out or unavailable)")
 
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
@@ -511,9 +585,14 @@ def handle_function_call(
             pass
 
         if function_name == "execute_code":
-            # Prefer the caller-provided list so subagents can't overwrite
-            # the parent's tool set via the process-global.
-            sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+            # Use the full session tools (pre-deferral) so the sandbox can
+            # call tools that tool_search deferred from the model's view.
+            # Falls back to caller-provided list, then the process-global.
+            sandbox_enabled = (
+                _all_session_tool_names
+                or enabled_tools
+                or _last_resolved_tool_names
+            )
             result = registry.dispatch(
                 function_name, function_args,
                 task_id=task_id,
