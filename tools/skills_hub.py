@@ -430,7 +430,7 @@ class GitHubSource(SkillSource):
                 continue
 
             dir_name = entry["name"]
-            if dir_name.startswith(".") or dir_name.startswith("_"):
+            if dir_name.startswith((".", "_")):
                 continue
 
             prefix = path.rstrip("/")
@@ -1163,7 +1163,7 @@ class SkillsShSource(SkillSource):
                         if entry.get("type") != "dir":
                             continue
                         dir_name = entry["name"]
-                        if dir_name.startswith(".") or dir_name.startswith("_"):
+                        if dir_name.startswith((".", "_")):
                             continue
                         if dir_name in ("skills", ".agents", ".claude"):
                             continue  # already tried
@@ -1382,7 +1382,7 @@ class ClawHubSource(SkillSource):
         if isinstance(tags, list):
             return [str(t) for t in tags]
         if isinstance(tags, dict):
-            return [str(k) for k in tags.keys() if str(k) != "latest"]
+            return [str(k) for k in tags if str(k) != "latest"]
         return []
 
     @staticmethod
@@ -2524,6 +2524,22 @@ def install_from_quarantine(
 
     if install_dir.exists():
         shutil.rmtree(install_dir)
+
+    # Warn (but don't block) if SKILL.md is very large
+    skill_md = quarantine_path / "SKILL.md"
+    if skill_md.exists():
+        try:
+            skill_size = skill_md.stat().st_size
+            if skill_size > 100_000:
+                logger.warning(
+                    "Skill '%s' has a large SKILL.md (%s chars). "
+                    "Large skills consume significant context when loaded. "
+                    "Consider asking the author to split it into smaller files.",
+                    safe_skill_name,
+                    f"{skill_size:,}",
+                )
+        except OSError:
+            pass
 
     install_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(quarantine_path), str(install_dir))
