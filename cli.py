@@ -4904,6 +4904,9 @@ class HermesCLI:
             self._show_usage()
         elif canonical == "insights":
             self._show_insights(cmd_original)
+        elif canonical == "stats":
+            from hermes_cli.stats import print_stats
+            print_stats()
         elif canonical == "paste":
             self._handle_paste_command()
         elif canonical == "image":
