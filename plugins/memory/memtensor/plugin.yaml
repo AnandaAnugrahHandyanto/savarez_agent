@@ -1,0 +1,8 @@
+name: memtensor
+version: 0.1.0
+description: "MemTensor — persistent semantic memory with hybrid search (vector + FTS + recency), powered by memos-core."
+author: MemTensor
+requires_env: []
+hooks:
+  - on_session_end
+  - on_memory_write
