@@ -578,6 +578,15 @@ def _run_single_child(
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 
+        # Reset the parent's idle timer so the gateway poll loop doesn't
+        # kill the parent with "Agent inactive for 30 min" after a long
+        # child execution.  Safe to call even if parent_agent is None.
+        if parent_agent is not None and hasattr(parent_agent, '_touch_activity'):
+            try:
+                parent_agent._touch_activity("delegate child completed")
+            except Exception:
+                pass
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,

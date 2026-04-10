@@ -159,10 +159,15 @@ class TestSendWithRetryNetworkRetry:
         ]
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             result = await adapter._send_with_retry("chat1", "hello", max_retries=3, base_delay=0)
-        # No retry, no fallback — timeout returns failure immediately
+        # No retry, no fallback — timeout returns failure immediately.
+        # A delivery-failure notice is sent to the user (2nd call).
         mock_sleep.assert_not_called()
         assert not result.success
-        assert len(adapter._send_calls) == 1
+        assert len(adapter._send_calls) == 2
+        # First call: the original message that timed out
+        assert adapter._send_calls[0] == ("chat1", "hello")
+        # Second call: delivery-failure notice to the user
+        assert "timed out" in adapter._send_calls[1][1].lower()
 
     @pytest.mark.asyncio
     async def test_connect_timeout_still_retried(self):

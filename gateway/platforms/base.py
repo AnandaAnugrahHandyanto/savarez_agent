@@ -1265,6 +1265,18 @@ class BasePlatformAdapter(ABC):
         # Timeout errors are not safe to retry (message may have been
         # delivered) and not formatting errors — return the failure as-is.
         if not is_network and self._is_timeout_error(error_str):
+            logger.warning(
+                "[%s] Non-network timeout during send (not retrying): %s", self.name, error_str,
+            )
+            notice = (
+                "\u26a0\ufe0f Message delivery timed out. "
+                "Your request was processed but the response could not be sent. "
+                "Please try again."
+            )
+            try:
+                await self.send(chat_id=chat_id, content=notice, reply_to=reply_to, metadata=metadata)
+            except Exception as notify_err:
+                logger.debug("[%s] Could not send timeout delivery-failure notice: %s", self.name, notify_err)
             return result
 
         if is_network:
@@ -1692,8 +1704,11 @@ class BasePlatformAdapter(ABC):
                     ),
                     metadata=_thread_metadata,
                 )
-            except Exception:
-                pass  # Last resort — don't let error reporting crash the handler
+            except Exception as notify_err:
+                logger.error(
+                    "[%s] Failed to send error notification to user: %s",
+                    self.name, notify_err, exc_info=True,
+                )  # Last resort — don't let error reporting crash the handler
         finally:
             # Stop typing indicator
             typing_task.cancel()
