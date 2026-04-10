@@ -46,10 +46,7 @@ class TestCliSkinPromptIntegration:
         cli = _make_cli_stub()
 
         set_active_skin("aphrodite")
-        assert cli._get_tui_prompt_fragments() == [
-            ("class:prompt-icon", "♥ "),
-            ("class:prompt", "❯ "),
-        ]
+        assert cli._get_tui_prompt_fragments() == [("class:prompt", "♥ ❯ ")]
 
     def test_secret_prompt_fragments_preserve_secret_state(self):
         cli = _make_cli_stub()
