@@ -2034,6 +2034,16 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "model":
                 return "Agent is running — wait or /stop first, then switch models."
 
+            # Commands that require an idle agent — reject with a helpful message.
+            _REJECT_IF_RUNNING = frozenset({
+                "retry", "undo", "title", "branch",
+                "compress", "rollback", "resume",
+                "reasoning", "fast", "personality",
+                "update", "reload-mcp",
+            })
+            if _cmd_def_inner and _cmd_def_inner.name in _REJECT_IF_RUNNING:
+                return "Agent is running — wait or /stop first."
+
             # /approve and /deny must bypass the running-agent interrupt path.
             # The agent thread is blocked on a threading.Event inside
             # tools/approval.py — sending an interrupt won't unblock it.

@@ -1356,7 +1356,20 @@ class BasePlatformAdapter(ABC):
             # session lifecycle and its cleanup races with the running task
             # (see PR #4926).
             cmd = event.get_command()
-            if cmd in ("approve", "deny", "status", "stop", "new", "reset", "background", "queue", "q", "model"):
+            if cmd in (
+                # Session control
+                "approve", "deny", "status", "stop", "new", "reset",
+                "background", "bg", "queue", "q",
+                # Execute immediately (info/config — no agent interaction needed)
+                "help", "commands", "profile", "provider",
+                "usage", "insights", "sethome", "set-home",
+                "voice", "yolo", "btw",
+                # Reject with message (needs idle agent)
+                "model", "retry", "undo", "title", "branch", "fork",
+                "compress", "rollback", "resume",
+                "reasoning", "fast", "personality",
+                "update", "reload-mcp", "reload_mcp",
+            ):
                 logger.debug(
                     "[%s] Command '/%s' bypassing active-session guard for %s",
                     self.name, cmd, session_key,

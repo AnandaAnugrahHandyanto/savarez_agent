@@ -327,3 +327,68 @@ class TestBypassWithBotnameSuffix:
 
         assert sk not in adapter._pending_messages
         assert any("handled:new" in r for r in adapter.sent_responses)
+
+
+# ---------------------------------------------------------------------------
+# Tests: commands that should execute immediately (bypass guard)
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteImmediatelyCommands:
+    """Commands that should bypass and execute even while agent is running."""
+
+    EXEC_IMMEDIATE = [
+        "help", "commands", "profile", "provider",
+        "usage", "insights", "sethome", "voice",
+        "yolo", "btw",
+    ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cmd", EXEC_IMMEDIATE)
+    async def test_exec_immediate_bypasses_guard(self, cmd):
+        """Each command must be dispatched directly, not queued."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event(f"/{cmd}"))
+
+        assert sk not in adapter._pending_messages, (
+            f"/{cmd} was queued as pending instead of being dispatched"
+        )
+        assert any(f"handled:{cmd}" in r for r in adapter.sent_responses), (
+            f"/{cmd} response was not sent back to the user"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests: commands that should bypass and return 'agent running' rejection
+# ---------------------------------------------------------------------------
+
+
+class TestRejectWithMessageCommands:
+    """Commands that should bypass and return 'agent running' rejection."""
+
+    REJECT_COMMANDS = [
+        "retry", "undo", "title", "branch", "fork",
+        "compress", "rollback", "resume",
+        "reasoning", "fast", "personality",
+        "update", "reload-mcp",
+    ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cmd", REJECT_COMMANDS)
+    async def test_reject_command_bypasses_guard(self, cmd):
+        """Each reject command must be dispatched directly, not queued."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event(f"/{cmd}"))
+
+        assert sk not in adapter._pending_messages, (
+            f"/{cmd} was queued as pending instead of being dispatched"
+        )
+        assert any(f"handled:{cmd}" in r for r in adapter.sent_responses), (
+            f"/{cmd} response was not sent back to the user"
+        )
