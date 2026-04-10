@@ -86,6 +86,7 @@ _PASSTHROUGH_PROVIDERS: frozenset[str] = frozenset({
     "alibaba",
     "qwen-oauth",
     "huggingface",
+    "fireworks",
     "openai-codex",
     "custom",
 })

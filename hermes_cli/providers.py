@@ -127,6 +127,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="HF_BASE_URL",
     ),
+    "fireworks": HermesOverlay(
+        transport="openai_chat",
+        base_url_env_var="FIREWORKS_BASE_URL",
+    ),
 }
 
 
@@ -206,6 +210,10 @@ ALIASES: Dict[str, str] = {
     # deepseek
     "deep-seek": "deepseek",
 
+    # fireworks
+    "fireworks-ai": "fireworks",
+    "fw": "fireworks",
+
     # alibaba
     "dashscope": "alibaba",
     "aliyun": "alibaba",
@@ -238,6 +246,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
     "local": "Local endpoint",
+    "fireworks": "Fireworks AI",
 }
 
 
@@ -373,6 +382,7 @@ LABELS: Dict[str, str] = {
     "huggingface": "Hugging Face",
     "local": "Local endpoint",
     "custom": "Custom endpoint",
+    "fireworks": "Fireworks AI",
     # Legacy Hermes IDs (point to same providers)
     "ai-gateway": "Vercel AI Gateway",
     "kilocode": "Kilo Gateway",

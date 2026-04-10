@@ -832,6 +832,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "FIREWORKS_API_KEY": {
+        "description": "Fireworks AI API key (fast serverless inference)",
+        "prompt": "Fireworks AI API key",
+        "url": "https://fireworks.ai/account/api-keys",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "FIREWORKS_BASE_URL": {
+        "description": "Fireworks AI base URL override (default: https://api.fireworks.ai/inference/v1)",
+        "prompt": "Fireworks base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
 
     # ── Tool API keys ──
     "EXA_API_KEY": {
