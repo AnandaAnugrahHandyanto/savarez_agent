@@ -171,6 +171,11 @@ def _is_oauth_token(key: str) -> bool:
     # Regular Console API keys use x-api-key header
     if key.startswith("sk-ant-api"):
         return False
+    # Third-party proxy keys that don't follow Anthropic's prefix convention
+    # also use x-api-key (e.g. road2all, custom proxies).
+    # Only treat keys with known Anthropic OAuth prefixes as OAuth tokens.
+    if not key.startswith(("sk-ant-oat", "sk-ant-mng", "eyJ")):
+        return False
     # Everything else (setup-tokens, managed keys, JWTs) uses Bearer auth
     return True
 
