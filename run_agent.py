@@ -6278,14 +6278,7 @@ class AIAgent:
             )
         elif function_name == "delegate_task":
             from tools.delegate_tool import delegate_task as _delegate_task
-            return _delegate_task(
-                goal=function_args.get("goal"),
-                context=function_args.get("context"),
-                toolsets=function_args.get("toolsets"),
-                tasks=function_args.get("tasks"),
-                max_iterations=function_args.get("max_iterations"),
-                parent_agent=self,
-            )
+            return _delegate_task(**self._build_delegate_task_kwargs(function_args))
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
@@ -6293,6 +6286,21 @@ class AIAgent:
                 session_id=self.session_id or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
             )
+
+    def _build_delegate_task_kwargs(self, function_args: dict) -> dict:
+        """Normalize delegate_task args shared by sequential and concurrent paths."""
+        return {
+            "goal": function_args.get("goal"),
+            "context": function_args.get("context"),
+            "toolsets": function_args.get("toolsets"),
+            "tasks": function_args.get("tasks"),
+            "provider": function_args.get("provider"),
+            "model": function_args.get("model"),
+            "max_iterations": function_args.get("max_iterations"),
+            "acp_command": function_args.get("acp_command"),
+            "acp_args": function_args.get("acp_args"),
+            "parent_agent": self,
+        }
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute multiple tool calls concurrently using a thread pool.
@@ -6670,12 +6678,7 @@ class AIAgent:
                 _delegate_result = None
                 try:
                     function_result = _delegate_task(
-                        goal=function_args.get("goal"),
-                        context=function_args.get("context"),
-                        toolsets=function_args.get("toolsets"),
-                        tasks=tasks_arg,
-                        max_iterations=function_args.get("max_iterations"),
-                        parent_agent=self,
+                        **self._build_delegate_task_kwargs(function_args)
                     )
                     _delegate_result = function_result
                 finally:

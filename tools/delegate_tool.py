@@ -335,6 +335,39 @@ def _build_child_agent(
 
     return child
 
+
+def _resolve_child_acp_overrides(
+    task: Dict[str, Any],
+    *,
+    top_level_command: Optional[str],
+    top_level_args: Optional[List[str]],
+    runtime_command: Optional[str],
+    runtime_args: Optional[List[str]],
+) -> tuple[Optional[str], Optional[List[str]]]:
+    """Resolve ACP transport overrides for a child task.
+
+    Precedence:
+    1. Per-task override
+    2. Top-level delegate_task override
+    3. Runtime provider-resolved transport
+    4. Parent inheritance inside _build_child_agent()
+    """
+    if "acp_command" in task and task.get("acp_command") is not None:
+        command = task.get("acp_command")
+    elif top_level_command is not None:
+        command = top_level_command
+    else:
+        command = runtime_command
+
+    if "acp_args" in task and task.get("acp_args") is not None:
+        args = task.get("acp_args")
+    elif top_level_args is not None:
+        args = top_level_args
+    else:
+        args = runtime_args
+
+    return command, list(args) if args is not None else None
+
 def _run_single_child(
     task_index: int,
     goal: str,
@@ -592,6 +625,13 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            child_acp_command, child_acp_args = _resolve_child_acp_overrides(
+                t,
+                top_level_command=acp_command,
+                top_level_args=acp_args,
+                runtime_command=creds.get("command"),
+                runtime_args=creds.get("args"),
+            )
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets, model=creds["model"],
@@ -599,8 +639,8 @@ def delegate_task(
                 override_provider=creds["provider"], override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
-                override_acp_command=t.get("acp_command") or acp_command,
-                override_acp_args=t.get("acp_args") or acp_args,
+                override_acp_command=child_acp_command,
+                override_acp_args=child_acp_args,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names

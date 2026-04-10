@@ -1046,6 +1046,47 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             for call in mock_build.call_args_list:
                 self.assertEqual(call.kwargs.get("model"), "google/gemini-3-flash-preview")
 
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_runtime_provider_acp_transport_reaches_child_agent(self, mock_creds, mock_cfg):
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "claude-sonnet-4.6",
+            "provider": "copilot-acp",
+        }
+        mock_creds.return_value = {
+            "model": "claude-sonnet-4.6",
+            "provider": "copilot-acp",
+            "base_url": "acp://copilot",
+            "api_key": "copilot-acp",
+            "api_mode": "chat_completions",
+            "command": "/usr/bin/copilot",
+            "args": ["--acp", "--stdio"],
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_build.return_value = MagicMock()
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "Done",
+                "api_calls": 1,
+                "duration_seconds": 1.0,
+            }
+
+            delegate_task(
+                goal="Use Copilot ACP",
+                provider="copilot-acp",
+                parent_agent=parent,
+            )
+
+        mock_build.assert_called_once()
+        self.assertEqual(mock_build.call_args.kwargs.get("override_provider"), "copilot-acp")
+        self.assertEqual(mock_build.call_args.kwargs.get("override_acp_command"), "/usr/bin/copilot")
+        self.assertEqual(mock_build.call_args.kwargs.get("override_acp_args"), ["--acp", "--stdio"])
+
 
 class TestChildCredentialPoolResolution(unittest.TestCase):
     def test_same_provider_shares_parent_pool(self):

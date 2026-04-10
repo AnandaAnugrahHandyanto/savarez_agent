@@ -1381,6 +1381,75 @@ class TestConcurrentToolExecution:
             )
             assert result == "result"
 
+    def test_invoke_tool_forwards_delegate_task_overrides(self, agent):
+        delegate_args = {
+            "goal": "Review the diff",
+            "context": "Check delegate provider overrides",
+            "toolsets": ["terminal", "file"],
+            "tasks": [{"goal": "Task A"}],
+            "provider": "nous",
+            "model": "google/gemini-3-flash-preview",
+            "max_iterations": 12,
+            "acp_command": "copilot",
+            "acp_args": ["--acp", "--stdio"],
+        }
+
+        with patch("tools.delegate_tool.delegate_task", return_value="delegated") as mock_delegate:
+            result = agent._invoke_tool("delegate_task", delegate_args, "task-1")
+
+        mock_delegate.assert_called_once_with(
+            goal="Review the diff",
+            context="Check delegate provider overrides",
+            toolsets=["terminal", "file"],
+            tasks=[{"goal": "Task A"}],
+            provider="nous",
+            model="google/gemini-3-flash-preview",
+            max_iterations=12,
+            acp_command="copilot",
+            acp_args=["--acp", "--stdio"],
+            parent_agent=agent,
+        )
+        assert result == "delegated"
+
+    def test_sequential_delegate_task_forwards_delegate_overrides(self, agent):
+        delegate_args = {
+            "goal": "Review the diff",
+            "provider": "nous",
+            "model": "google/gemini-3-flash-preview",
+            "acp_command": "copilot",
+            "acp_args": ["--acp", "--stdio"],
+        }
+        tool_call = _mock_tool_call(
+            name="delegate_task",
+            arguments=json.dumps(delegate_args),
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        with (
+            patch("tools.delegate_tool.delegate_task", return_value='{"results": []}') as mock_delegate,
+            patch.object(agent, "_should_emit_quiet_tool_messages", return_value=False),
+            patch.object(agent, "_should_start_quiet_spinner", return_value=False),
+        ):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        mock_delegate.assert_called_once_with(
+            goal="Review the diff",
+            context=None,
+            toolsets=None,
+            tasks=None,
+            provider="nous",
+            model="google/gemini-3-flash-preview",
+            max_iterations=None,
+            acp_command="copilot",
+            acp_args=["--acp", "--stdio"],
+            parent_agent=agent,
+        )
+        assert len(messages) == 1
+        assert messages[0]["tool_call_id"] == "c1"
+        assert messages[0]["content"] == '{"results": []}'
+
     def test_sequential_tool_callbacks_fire_in_order(self, agent):
         tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
