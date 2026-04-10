@@ -397,25 +397,42 @@ def get_hermes_cli_path() -> str:
 # =============================================================================
 
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
-    python_path = get_python_path()
-    working_dir = str(PROJECT_ROOT)
-    venv_dir = str(PROJECT_ROOT / "venv")
-    venv_bin = str(PROJECT_ROOT / "venv" / "bin")
-    node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
-
-    path_entries = [venv_bin, node_bin]
     resolved_node = shutil.which("node")
-    if resolved_node:
-        resolved_node_dir = str(Path(resolved_node).resolve().parent)
-        if resolved_node_dir not in path_entries:
-            path_entries.append(resolved_node_dir)
-    path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
-    sane_path = ":".join(path_entries)
-
-    hermes_home = str(Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")).resolve())
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
+        hermes_home = str(Path(home_dir) / ".hermes")
+
+        # Remap python/venv/workdir to the target user's home, not root's.
+        target_home = Path(home_dir)
+        target_project = target_home / ".hermes" / "hermes-agent"
+        target_venv_bin = target_project / "venv" / "bin"
+
+        if target_project.exists():
+            working_dir = str(target_project)
+            python_path = (
+                str(target_venv_bin / "python")
+                if (target_venv_bin / "python").exists()
+                else get_python_path()
+            )
+            venv_dir = str(target_project / "venv")
+            venv_bin = str(target_venv_bin)
+        else:
+            # Non-standard install: keep current paths as fallback.
+            working_dir = str(PROJECT_ROOT)
+            python_path = get_python_path()
+            venv_dir = str(PROJECT_ROOT / "venv")
+            venv_bin = str(PROJECT_ROOT / "venv" / "bin")
+
+        node_bin = str(target_project / "node_modules" / ".bin")
+        path_entries = [venv_bin, node_bin]
+        if resolved_node:
+            resolved_node_dir = str(Path(resolved_node).resolve().parent)
+            if resolved_node_dir not in path_entries:
+                path_entries.append(resolved_node_dir)
+        path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
+        sane_path = ":".join(path_entries)
+
         return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -446,6 +463,22 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 """
+
+    # User service: use current process paths as before.
+    python_path = get_python_path()
+    working_dir = str(PROJECT_ROOT)
+    venv_dir = str(PROJECT_ROOT / "venv")
+    venv_bin = str(PROJECT_ROOT / "venv" / "bin")
+    node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
+    hermes_home = str(Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")).resolve())
+
+    path_entries = [venv_bin, node_bin]
+    if resolved_node:
+        resolved_node_dir = str(Path(resolved_node).resolve().parent)
+        if resolved_node_dir not in path_entries:
+            path_entries.append(resolved_node_dir)
+    path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
+    sane_path = ":".join(path_entries)
 
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
