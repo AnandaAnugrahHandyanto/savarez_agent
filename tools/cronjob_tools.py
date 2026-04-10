@@ -359,8 +359,12 @@ def cronjob(
                         return tool_error(script_error, success=False)
                 updates["script"] = _normalize_optional_job_value(script) if script else None
             if repeat is not None:
-                # Normalize: treat 0 or negative as None (infinite)
-                normalized_repeat = None if repeat <= 0 else repeat
+                # Normalize: coerce strings to int, treat invalid/0/negative as None (infinite)
+                try:
+                    repeat = int(repeat)
+                except (TypeError, ValueError):
+                    repeat = None
+                normalized_repeat = None if repeat is None or repeat <= 0 else repeat
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state
