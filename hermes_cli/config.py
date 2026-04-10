@@ -493,6 +493,7 @@ DEFAULT_CONFIG = {
         "auto_tts": False,
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
+        "reply_style_prompt": "",    # Extra instruction applied when replying to voice/audio inputs
     },
     
     "human_delay": {
@@ -612,7 +613,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 14,
+    "_config_version": 15,
 }
 
 # =============================================================================

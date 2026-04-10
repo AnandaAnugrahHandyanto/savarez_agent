@@ -28,6 +28,9 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
 
+
+_VOICE_TTS_BLOCK_RE = re.compile(r"<tts>\s*(.*?)\s*</tts>", re.IGNORECASE | re.DOTALL)
+
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
@@ -2885,6 +2888,8 @@ class GatewayRunner:
             if not found_in_history:
                 message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
+        message_text = self._apply_voice_reply_preferences(event, message_text)
+
         try:
             # Emit agent:start hook
             hook_ctx = {
@@ -2995,6 +3000,10 @@ class GatewayRunner:
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
 
+            spoken_response = response
+            if response:
+                response, spoken_response = self._split_voice_reply_text(response)
+
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
                 **hook_ctx,
@@ -3086,8 +3095,11 @@ class GatewayRunner:
                         # Skip system messages (they're rebuilt each run)
                         if msg.get("role") == "system":
                             continue
+                        sanitized_msg = dict(msg)
+                        if sanitized_msg.get("role") == "assistant" and isinstance(sanitized_msg.get("content"), str):
+                            sanitized_msg["content"], _ = self._split_voice_reply_text(sanitized_msg["content"])
                         # Add timestamp to each message for debugging
-                        entry = {**msg, "timestamp": ts}
+                        entry = {**sanitized_msg, "timestamp": ts}
                         self.session_store.append_to_transcript(
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
@@ -3104,7 +3116,7 @@ class GatewayRunner:
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
-                await self._send_voice_reply(event, response)
+                await self._send_voice_reply(event, response, spoken_text=spoken_response)
 
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
@@ -4280,6 +4292,54 @@ class GatewayRunner:
 
         await adapter.handle_message(event)
 
+    def _load_voice_reply_config(self) -> Dict[str, Any]:
+        """Load voice reply preferences from the main Hermes config."""
+        try:
+            from hermes_cli.config import load_config
+            config = load_config() or {}
+        except Exception:
+            logger.debug("Failed to load voice reply config", exc_info=True)
+            return {}
+        return config.get("voice", {}) or {}
+
+    def _apply_voice_reply_preferences(self, event: MessageEvent, message_text: str) -> str:
+        """Append per-user guidance for voice-originated messages only."""
+        if event.message_type not in (MessageType.VOICE, MessageType.AUDIO):
+            return message_text
+
+        voice_config = self._load_voice_reply_config()
+        style_prompt = (voice_config.get("reply_style_prompt") or "").strip()
+        if not style_prompt:
+            return message_text
+
+        guidance = (
+            "[Voice reply preference: Reply in a casual, light, natural tone. "
+            f"Additional style instruction: {style_prompt} "
+            "Keep the visible text clean and natural. If the spoken reply would "
+            "benefit from ElevenLabs v3 expression tags such as [chuckles], "
+            "[softly], or [excited], append a hidden <tts>...</tts> block with "
+            "the spoken-only version. Do not mention the hidden block explicitly.]"
+        )
+        if message_text:
+            return f"{message_text}\n\n{guidance}"
+        return guidance
+
+    def _split_voice_reply_text(self, text: str) -> tuple[str, str]:
+        """Return (visible_text, spoken_text) for auto voice replies.
+
+        Visible text strips a hidden <tts>...</tts> block before the message is
+        shown to the user, while spoken_text prefers the hidden block when
+        present so ElevenLabs v3 tags stay out of the chat transcript.
+        """
+        if not text:
+            return "", ""
+
+        match = _VOICE_TTS_BLOCK_RE.search(text)
+        visible_text = _VOICE_TTS_BLOCK_RE.sub("", text)
+        visible_text = re.sub(r"\n{3,}", "\n\n", visible_text).strip()
+        spoken_text = (match.group(1).strip() if match else visible_text)
+        return visible_text, spoken_text
+
     def _should_send_voice_reply(
         self,
         event: MessageEvent,
@@ -4334,7 +4394,12 @@ class GatewayRunner:
 
         return True
 
-    async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
+    async def _send_voice_reply(
+        self,
+        event: MessageEvent,
+        text: str,
+        spoken_text: Optional[str] = None,
+    ) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""
         import uuid as _uuid
         audio_path = None
@@ -4342,7 +4407,9 @@ class GatewayRunner:
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
-            tts_text = _strip_markdown_for_tts(text[:4000])
+            if spoken_text is None:
+                _, spoken_text = self._split_voice_reply_text(text)
+            tts_text = _strip_markdown_for_tts((spoken_text or "")[:4000])
             if not tts_text:
                 return
 

@@ -339,6 +339,58 @@ class TestAutoVoiceReply:
 # _send_voice_reply
 # =====================================================================
 
+class TestVoiceReplyFormatting:
+
+    @pytest.fixture
+    def runner(self, tmp_path):
+        return _make_runner(tmp_path)
+
+    def test_split_voice_reply_text_extracts_hidden_tts_block(self, runner):
+        visible, spoken = runner._split_voice_reply_text(
+            "Hola, aquí va la respuesta visible.\n\n<tts>[chuckles] Hola, aquí va la respuesta hablada.</tts>"
+        )
+
+        assert visible == "Hola, aquí va la respuesta visible."
+        assert spoken == "[chuckles] Hola, aquí va la respuesta hablada."
+
+    def test_split_voice_reply_text_falls_back_to_visible_text(self, runner):
+        visible, spoken = runner._split_voice_reply_text("Hola sin bloque oculto")
+
+        assert visible == "Hola sin bloque oculto"
+        assert spoken == "Hola sin bloque oculto"
+
+    def test_apply_voice_reply_preferences_for_voice_messages(self, runner, monkeypatch):
+        event = _make_event(message_type=MessageType.VOICE)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "voice": {
+                    "reply_style_prompt": "Responde con tono casual, ligero y cercano.",
+                }
+            },
+        )
+
+        enriched = runner._apply_voice_reply_preferences(
+            event, 'El usuario dijo: "hola"'
+        )
+
+        assert 'tono casual, ligero y cercano' in enriched
+        assert '<tts>' in enriched
+        assert 'El usuario dijo: "hola"' in enriched
+
+    def test_apply_voice_reply_preferences_ignores_text_messages(self, runner, monkeypatch):
+        event = _make_event(message_type=MessageType.TEXT)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "voice": {
+                    "reply_style_prompt": "Responde con tono casual, ligero y cercano.",
+                }
+            },
+        )
+
+        assert runner._apply_voice_reply_preferences(event, "Hola") == "Hola"
+
 class TestSendVoiceReply:
 
     @pytest.fixture
@@ -364,6 +416,28 @@ class TestSendVoiceReply:
         mock_adapter.send_voice.assert_called_once()
         call_args = mock_adapter.send_voice.call_args
         assert call_args.kwargs.get("chat_id") == "123"
+
+    @pytest.mark.asyncio
+    async def test_uses_hidden_tts_block_for_audio_generation(self, runner):
+        mock_adapter = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        event = _make_event()
+        runner.adapters[event.source.platform] = mock_adapter
+
+        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+
+        with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(
+                event,
+                "Texto visible.\n\n<tts>[chuckles] Texto hablado.</tts>",
+            )
+
+        assert mock_tts.call_args.kwargs["text"] == "[chuckles] Texto hablado."
+        mock_adapter.send_voice.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_empty_text_after_strip_skips(self, runner):
