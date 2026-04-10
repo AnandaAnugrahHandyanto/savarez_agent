@@ -105,6 +105,38 @@ from agent.trajectory import (
 from utils import atomic_json_write, env_var_enabled
 
 
+def _resolve_effective_anthropic_key(preferred_key: str = "", *, base_url: str = "") -> str:
+    normalized_base = str(base_url or "").strip().rstrip("/")
+    if normalized_base and "anthropic.com" not in normalized_base.lower():
+        try:
+            from hermes_cli.config import load_config as _load_runtime_config
+
+            model_cfg = _load_runtime_config().get("model")
+            if isinstance(model_cfg, dict) and str(model_cfg.get("provider") or "").strip().lower() == "anthropic":
+                cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+                if cfg_base_url == normalized_base:
+                    for key_name in ("api_key", "api"):
+                        value = model_cfg.get(key_name)
+                        if isinstance(value, str) and value.strip():
+                            return value.strip()
+        except Exception:
+            pass
+    if preferred_key:
+        return preferred_key
+    from agent.anthropic_adapter import resolve_anthropic_token
+
+    return resolve_anthropic_token() or ""
+
+
+def _anthropic_runtime_uses_oauth(api_key: str = "", *, base_url: str = "") -> bool:
+    from agent.anthropic_adapter import _is_oauth_token
+
+    normalized_base = str(base_url or "").strip().rstrip("/").lower()
+    if normalized_base and "anthropic.com" not in normalized_base:
+        return False
+    return _is_oauth_token(api_key)
+
+
 
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError/ValueError from broken pipes.
@@ -769,17 +801,23 @@ class AIAgent:
         self._is_anthropic_oauth = False
 
         if self.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
+            from agent.anthropic_adapter import build_anthropic_client
             # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
             # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
             # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
             _is_native_anthropic = self.provider == "anthropic"
-            effective_key = (api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or "")
+            effective_key = (
+                _resolve_effective_anthropic_key(api_key, base_url=base_url)
+                if _is_native_anthropic
+                else (api_key or "")
+            )
             self.api_key = effective_key
             self._anthropic_api_key = effective_key
             self._anthropic_base_url = base_url
-            from agent.anthropic_adapter import _is_oauth_token as _is_oat
-            self._is_anthropic_oauth = _is_oat(effective_key)
+            self._is_anthropic_oauth = _anthropic_runtime_uses_oauth(
+                effective_key,
+                base_url=base_url,
+            )
             self._anthropic_client = build_anthropic_client(effective_key, base_url)
             # No OpenAI client needed for Anthropic mode
             self.client = None
@@ -1358,19 +1396,21 @@ class AIAgent:
 
         # ── Build new client ──
         if api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import (
-                build_anthropic_client,
-                resolve_anthropic_token,
-                _is_oauth_token,
+            from agent.anthropic_adapter import build_anthropic_client
+            effective_key = _resolve_effective_anthropic_key(
+                api_key or self.api_key,
+                base_url=base_url or getattr(self, "_anthropic_base_url", None) or self.base_url,
             )
-            effective_key = api_key or self.api_key or resolve_anthropic_token() or ""
             self.api_key = effective_key
             self._anthropic_api_key = effective_key
             self._anthropic_base_url = base_url or getattr(self, "_anthropic_base_url", None)
             self._anthropic_client = build_anthropic_client(
                 effective_key, self._anthropic_base_url,
             )
-            self._is_anthropic_oauth = _is_oauth_token(effective_key)
+            self._is_anthropic_oauth = _anthropic_runtime_uses_oauth(
+                effective_key,
+                base_url=self._anthropic_base_url,
+            )
             self.client = None
             self._client_kwargs = {}
         else:
@@ -4093,9 +4133,13 @@ class AIAgent:
             return False
 
         try:
-            from agent.anthropic_adapter import resolve_anthropic_token, build_anthropic_client
+            from agent.anthropic_adapter import build_anthropic_client
 
-            new_token = resolve_anthropic_token()
+            anthropic_base_url = getattr(self, "_anthropic_base_url", None) or self.base_url
+            new_token = _resolve_effective_anthropic_key(
+                getattr(self, "_anthropic_api_key", "") or self.api_key,
+                base_url=anthropic_base_url,
+            )
         except Exception as exc:
             logger.debug("Anthropic credential refresh failed: %s", exc)
             return False
@@ -4112,15 +4156,17 @@ class AIAgent:
             pass
 
         try:
-            self._anthropic_client = build_anthropic_client(new_token, getattr(self, "_anthropic_base_url", None))
+            self._anthropic_client = build_anthropic_client(new_token, anthropic_base_url)
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
             return False
 
         self._anthropic_api_key = new_token
         # Update OAuth flag — token type may have changed (API key ↔ OAuth)
-        from agent.anthropic_adapter import _is_oauth_token
-        self._is_anthropic_oauth = _is_oauth_token(new_token)
+        self._is_anthropic_oauth = _anthropic_runtime_uses_oauth(
+            new_token,
+            base_url=anthropic_base_url,
+        )
         return True
 
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
@@ -4143,7 +4189,7 @@ class AIAgent:
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
 
         if self.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
+            from agent.anthropic_adapter import build_anthropic_client
 
             try:
                 self._anthropic_client.close()
@@ -4153,7 +4199,11 @@ class AIAgent:
             self._anthropic_api_key = runtime_key
             self._anthropic_base_url = runtime_base
             self._anthropic_client = build_anthropic_client(runtime_key, runtime_base)
-            self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
+            self._is_anthropic_oauth = (
+                _anthropic_runtime_uses_oauth(runtime_key, base_url=runtime_base)
+                if self.provider == "anthropic"
+                else False
+            )
             self.api_key = runtime_key
             self.base_url = runtime_base
             return
@@ -4921,13 +4971,23 @@ class AIAgent:
 
             if fb_api_mode == "anthropic_messages":
                 # Build native Anthropic client instead of using OpenAI client
-                from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
-                effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
+                from agent.anthropic_adapter import build_anthropic_client
+                effective_key = (
+                    _resolve_effective_anthropic_key(
+                        fb_client.api_key or "",
+                        base_url=str(getattr(fb_client, "base_url", "") or ""),
+                    )
+                    if fb_provider == "anthropic"
+                    else (fb_client.api_key or "")
+                )
                 self.api_key = effective_key
                 self._anthropic_api_key = effective_key
                 self._anthropic_base_url = getattr(fb_client, "base_url", None)
                 self._anthropic_client = build_anthropic_client(effective_key, self._anthropic_base_url)
-                self._is_anthropic_oauth = _is_oauth_token(effective_key)
+                self._is_anthropic_oauth = _anthropic_runtime_uses_oauth(
+                    effective_key,
+                    base_url=self._anthropic_base_url,
+                )
                 self.client = None
                 self._client_kwargs = {}
             else:

@@ -27,6 +27,11 @@ from hermes_cli.config import load_config
 from hermes_constants import OPENROUTER_BASE_URL
 
 
+def _is_third_party_anthropic_base_url(base_url: str) -> bool:
+    normalized = (base_url or "").strip().rstrip("/").lower()
+    return bool(normalized) and "anthropic.com" not in normalized
+
+
 def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
 
@@ -598,6 +603,23 @@ def resolve_runtime_provider(
         return explicit_runtime
 
     should_use_pool = provider != "openrouter"
+    if provider == "anthropic":
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+        cfg_api_key = ""
+        for key in ("api_key", "api"):
+            value = model_cfg.get(key)
+            if isinstance(value, str) and value.strip():
+                cfg_api_key = value.strip()
+                break
+        if (
+            cfg_provider == "anthropic"
+            and _is_third_party_anthropic_base_url(cfg_base_url)
+            and has_usable_secret(cfg_api_key)
+            and not explicit_api_key
+            and not explicit_base_url
+        ):
+            should_use_pool = False
     if provider == "openrouter":
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = str(model_cfg.get("base_url") or "").strip()
@@ -696,6 +718,27 @@ def resolve_runtime_provider(
 
     # Anthropic (native Messages API)
     if provider == "anthropic":
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_base_url = ""
+        if cfg_provider == "anthropic":
+            cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+        cfg_api_key = ""
+        for key in ("api_key", "api"):
+            value = model_cfg.get(key)
+            if isinstance(value, str) and value.strip():
+                cfg_api_key = value.strip()
+                break
+
+        if _is_third_party_anthropic_base_url(cfg_base_url) and has_usable_secret(cfg_api_key):
+            return {
+                "provider": "anthropic",
+                "api_mode": "anthropic_messages",
+                "base_url": cfg_base_url,
+                "api_key": cfg_api_key,
+                "source": "config",
+                "requested_provider": requested_provider,
+            }
+
         from agent.anthropic_adapter import resolve_anthropic_token
         token = resolve_anthropic_token()
         if not token:
@@ -706,10 +749,6 @@ def resolve_runtime_provider(
         # Allow base URL override from config.yaml model.base_url, but only
         # when the configured provider is anthropic — otherwise a non-Anthropic
         # base_url (e.g. Codex endpoint) would leak into Anthropic requests.
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-        cfg_base_url = ""
-        if cfg_provider == "anthropic":
-            cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
         base_url = cfg_base_url or "https://api.anthropic.com"
         return {
             "provider": "anthropic",

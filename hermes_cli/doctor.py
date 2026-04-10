@@ -643,6 +643,29 @@ def run_doctor(args):
         check_warn("OpenRouter API", "(not configured)")
     
     anthropic_key = os.getenv("ANTHROPIC_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
+    anthropic_base_url = "https://api.anthropic.com"
+    anthropic_is_third_party = False
+    anthropic_cfg_key = ""
+    try:
+        from hermes_cli.config import load_config
+
+        model_cfg = load_config().get("model")
+        if isinstance(model_cfg, dict) and str(model_cfg.get("provider") or "").strip().lower() == "anthropic":
+            cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+            if cfg_base_url:
+                anthropic_base_url = cfg_base_url
+                anthropic_is_third_party = "anthropic.com" not in cfg_base_url.lower()
+            for key_name in ("api_key", "api"):
+                value = model_cfg.get(key_name)
+                if isinstance(value, str) and value.strip():
+                    anthropic_cfg_key = value.strip()
+                    break
+    except Exception:
+        pass
+
+    if anthropic_is_third_party and anthropic_cfg_key:
+        anthropic_key = anthropic_cfg_key
+
     if anthropic_key:
         print("  Checking Anthropic API...", end="", flush=True)
         try:
@@ -650,13 +673,23 @@ def run_doctor(args):
             from agent.anthropic_adapter import _is_oauth_token, _COMMON_BETAS, _OAUTH_ONLY_BETAS
 
             headers = {"anthropic-version": "2023-06-01"}
-            if _is_oauth_token(anthropic_key):
+            target_url = "https://api.anthropic.com/v1/models"
+            if anthropic_is_third_party:
+                base = anthropic_base_url.rstrip("/")
+                if base.endswith("/v1"):
+                    target_url = f"{base}/models"
+                else:
+                    target_url = f"{base}/v1/models"
+                headers["x-api-key"] = anthropic_key
+                if _COMMON_BETAS:
+                    headers["anthropic-beta"] = ",".join(_COMMON_BETAS)
+            elif _is_oauth_token(anthropic_key):
                 headers["Authorization"] = f"Bearer {anthropic_key}"
                 headers["anthropic-beta"] = ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)
             else:
                 headers["x-api-key"] = anthropic_key
             response = httpx.get(
-                "https://api.anthropic.com/v1/models",
+                target_url,
                 headers=headers,
                 timeout=10
             )
