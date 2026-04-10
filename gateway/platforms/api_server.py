@@ -1577,6 +1577,245 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._run_streams_created.pop(run_id, None)
 
     # ------------------------------------------------------------------
+    # Workspace API — direct filesystem + git, no LLM
+    # Routes: /ws/{repo}/tree, /ws/{repo}/file, /ws/{repo}/git/*
+    # ------------------------------------------------------------------
+
+    def _ws_find_repo(self, repo: str) -> "str | None":
+        """Find the workspace directory for a repo name."""
+        import os
+        candidates = [
+            f"/root/{repo}",
+            f"/workspace/{repo}",
+            f"/workspaces/{repo}",
+            f"/home/ubuntu/{repo}",
+            f"/home/user/{repo}",
+            os.path.expanduser(f"~/{repo}"),
+        ]
+        for p in candidates:
+            if os.path.isdir(p):
+                return p
+        return None
+
+    async def _ws_run(self, cmd: list, cwd: str) -> "tuple[int, str, str]":
+        """Run a shell command asynchronously, return (returncode, stdout, stderr)."""
+        import asyncio
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        return proc.returncode, stdout.decode(errors="replace"), stderr.decode(errors="replace")
+
+    async def _handle_ws_init(self, request: "web.Request") -> "web.Response":
+        """POST /ws/{repo}/init — clone repo or pull latest."""
+        import os, json as _json
+        repo = request.match_info["repo"]
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        url = body.get("url", "")
+        branch = body.get("branch", "main")
+
+        workspace = self._ws_find_repo(repo)
+        if workspace:
+            rc, out, err = await self._ws_run(["git", "pull", "--rebase", "origin", branch], workspace)
+            return web.json_response({"status": "ok", "action": "pulled", "path": workspace, "output": out.strip(), "error": err.strip() if rc else None})
+        else:
+            if not url:
+                return web.json_response({"status": "error", "message": "Repo not found and no clone URL provided"}, status=404)
+            dest = f"/root/{repo}"
+            rc, out, err = await self._ws_run(["git", "clone", "--branch", branch, url, dest], "/root")
+            if rc == 0:
+                return web.json_response({"status": "ok", "action": "cloned", "path": dest})
+            return web.json_response({"status": "error", "message": err.strip()}, status=500)
+
+    async def _handle_ws_tree(self, request: "web.Request") -> "web.Response":
+        """GET /ws/{repo}/tree?path= — list directory contents (one level)."""
+        import os
+        repo = request.match_info["repo"]
+        rel = request.rel_url.query.get("path", "")
+
+        workspace = self._ws_find_repo(repo)
+        if not workspace:
+            return web.json_response({"status": "error", "message": f"Workspace for '{repo}' not found"}, status=404)
+
+        target = os.path.join(workspace, rel) if rel else workspace
+        if not os.path.isdir(target):
+            return web.json_response({"status": "error", "message": "Path is not a directory"}, status=400)
+
+        entries = []
+        try:
+            for entry in sorted(os.scandir(target), key=lambda e: (not e.is_dir(), e.name.lower())):
+                if entry.name.startswith(".git") and entry.name != ".gitignore":
+                    continue
+                rel_path = os.path.relpath(entry.path, workspace)
+                entries.append({"name": entry.name, "path": rel_path, "type": "dir" if entry.is_dir() else "file"})
+        except PermissionError as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=403)
+
+        return web.json_response({"status": "ok", "path": rel, "entries": entries})
+
+    async def _handle_ws_file_get(self, request: "web.Request") -> "web.Response":
+        """GET /ws/{repo}/file?path= — read file content."""
+        import os
+        repo = request.match_info["repo"]
+        rel = request.rel_url.query.get("path", "")
+        if not rel:
+            return web.json_response({"status": "error", "message": "path query param required"}, status=400)
+
+        workspace = self._ws_find_repo(repo)
+        if not workspace:
+            return web.json_response({"status": "error", "message": f"Workspace for '{repo}' not found"}, status=404)
+
+        abs_path = os.path.realpath(os.path.join(workspace, rel))
+        if not abs_path.startswith(os.path.realpath(workspace)):
+            return web.json_response({"status": "error", "message": "Path traversal not allowed"}, status=403)
+
+        if not os.path.isfile(abs_path):
+            return web.json_response({"status": "error", "message": "File not found"}, status=404)
+
+        try:
+            with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            return web.json_response({"status": "ok", "path": rel, "content": content})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    async def _handle_ws_file_post(self, request: "web.Request") -> "web.Response":
+        """POST /ws/{repo}/file — write file content. Body: {path, content}."""
+        import os
+        repo = request.match_info["repo"]
+        workspace = self._ws_find_repo(repo)
+        if not workspace:
+            return web.json_response({"status": "error", "message": f"Workspace for '{repo}' not found"}, status=404)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON body"}, status=400)
+
+        rel = body.get("path", "")
+        content = body.get("content", "")
+        if not rel:
+            return web.json_response({"status": "error", "message": "path required"}, status=400)
+
+        abs_path = os.path.realpath(os.path.join(workspace, rel))
+        if not abs_path.startswith(os.path.realpath(workspace)):
+            return web.json_response({"status": "error", "message": "Path traversal not allowed"}, status=403)
+
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+        try:
+            with open(abs_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            return web.json_response({"status": "ok", "path": rel, "written": True})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    async def _handle_ws_git_status(self, request: "web.Request") -> "web.Response":
+        """GET /ws/{repo}/git/status — git status + ahead/behind."""
+        repo = request.match_info["repo"]
+        workspace = self._ws_find_repo(repo)
+        if not workspace:
+            return web.json_response({"status": "error", "message": f"Workspace for '{repo}' not found"}, status=404)
+
+        rc, out, _ = await self._ws_run(["git", "status", "--porcelain"], workspace)
+        changed = []
+        for line in out.splitlines():
+            if len(line) >= 3:
+                code = line[:2].strip()
+                path = line[3:]
+                changed.append({"path": path, "status": code[0] if code else "?"})
+
+        rc2, rev, _ = await self._ws_run(["git", "rev-list", "--count", "--left-right", "@{u}...HEAD"], workspace)
+        ahead, behind = 0, 0
+        if rc2 == 0 and "\t" in rev:
+            b, a = rev.strip().split("\t")
+            behind, ahead = int(b or 0), int(a or 0)
+
+        return web.json_response({"status": "ok", "changed": changed, "ahead": ahead, "behind": behind})
+
+    async def _handle_ws_git_commit(self, request: "web.Request") -> "web.Response":
+        """POST /ws/{repo}/git/commit — stage all + commit. Body: {message}."""
+        repo = request.match_info["repo"]
+        workspace = self._ws_find_repo(repo)
+        if not workspace:
+            return web.json_response({"status": "error", "message": f"Workspace for '{repo}' not found"}, status=404)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+
+        message = body.get("message", "").strip()
+        if not message:
+            return web.json_response({"status": "error", "message": "commit message required"}, status=400)
+
+        await self._ws_run(["git", "add", "-A"], workspace)
+        rc, out, err = await self._ws_run(["git", "commit", "-m", message], workspace)
+        if rc == 0:
+            # extract SHA
+            sha = ""
+            for line in out.splitlines():
+                if "]" in line:
+                    parts = line.split("]")
+                    sha = parts[0].split()[-1] if parts else ""
+                    break
+            return web.json_response({"status": "ok", "sha": sha, "output": out.strip()})
+        return web.json_response({"status": "error", "message": err.strip() or out.strip()}, status=500)
+
+    async def _handle_ws_git_push(self, request: "web.Request") -> "web.Response":
+        """POST /ws/{repo}/git/push — git push origin HEAD."""
+        repo = request.match_info["repo"]
+        workspace = self._ws_find_repo(repo)
+        if not workspace:
+            return web.json_response({"status": "error", "message": f"Workspace for '{repo}' not found"}, status=404)
+
+        rc, out, err = await self._ws_run(["git", "push", "origin", "HEAD"], workspace)
+        if rc == 0:
+            return web.json_response({"status": "ok", "output": out.strip() or err.strip()})
+        return web.json_response({"status": "error", "message": err.strip()}, status=500)
+
+    async def _handle_ws_git_pull(self, request: "web.Request") -> "web.Response":
+        """POST /ws/{repo}/git/pull — git pull --rebase."""
+        repo = request.match_info["repo"]
+        workspace = self._ws_find_repo(repo)
+        if not workspace:
+            return web.json_response({"status": "error", "message": f"Workspace for '{repo}' not found"}, status=404)
+
+        rc, out, err = await self._ws_run(["git", "pull", "--rebase", "origin", "HEAD"], workspace)
+        if rc == 0:
+            return web.json_response({"status": "ok", "output": out.strip()})
+        return web.json_response({"status": "error", "message": err.strip()}, status=500)
+
+    async def _handle_ws_git_pr(self, request: "web.Request") -> "web.Response":
+        """POST /ws/{repo}/git/pr — gh pr create. Body: {title, body?, base?}."""
+        repo = request.match_info["repo"]
+        workspace = self._ws_find_repo(repo)
+        if not workspace:
+            return web.json_response({"status": "error", "message": f"Workspace for '{repo}' not found"}, status=404)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+
+        title = body.get("title", "").strip()
+        pr_body = body.get("body", "")
+        base = body.get("base", "main")
+        if not title:
+            return web.json_response({"status": "error", "message": "title required"}, status=400)
+
+        cmd = ["gh", "pr", "create", "--title", title, "--body", pr_body, "--base", base]
+        rc, out, err = await self._ws_run(cmd, workspace)
+        if rc == 0:
+            pr_url = out.strip().splitlines()[-1] if out.strip() else ""
+            return web.json_response({"status": "ok", "pr_url": pr_url})
+        return web.json_response({"status": "error", "message": err.strip()}, status=500)
+
+    # ------------------------------------------------------------------
     # BasePlatformAdapter interface
     # ------------------------------------------------------------------
 
@@ -1609,6 +1848,16 @@ class APIServerAdapter(BasePlatformAdapter):
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
+            # Workspace API — direct filesystem + git (no LLM, fast)
+            self._app.router.add_post("/ws/{repo}/init", self._handle_ws_init)
+            self._app.router.add_get("/ws/{repo}/tree", self._handle_ws_tree)
+            self._app.router.add_get("/ws/{repo}/file", self._handle_ws_file_get)
+            self._app.router.add_post("/ws/{repo}/file", self._handle_ws_file_post)
+            self._app.router.add_get("/ws/{repo}/git/status", self._handle_ws_git_status)
+            self._app.router.add_post("/ws/{repo}/git/commit", self._handle_ws_git_commit)
+            self._app.router.add_post("/ws/{repo}/git/push", self._handle_ws_git_push)
+            self._app.router.add_post("/ws/{repo}/git/pull", self._handle_ws_git_pull)
+            self._app.router.add_post("/ws/{repo}/git/pr", self._handle_ws_git_pr)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:
