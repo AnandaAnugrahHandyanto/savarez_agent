@@ -506,6 +506,22 @@ def _get_platform_tools(
             if ts_tools and ts_tools.issubset(all_tool_names):
                 enabled_toolsets.add(ts_key)
 
+        # Also include non-configurable, non-platform-default toolsets (e.g.
+        # "messaging") whose tools are fully covered by the base composite
+        # toolset.  These toolsets are always-on by design — they rely on
+        # check_fn at runtime for gating, not on UI config toggles.  Without
+        # this step the reverse-mapping silently drops send_message and any
+        # other core capability that lives outside CONFIGURABLE_TOOLSETS.
+        from toolsets import TOOLSETS as _ALL_TS
+        _platform_default_names = {p["default_toolset"] for p in PLATFORMS.values()}
+        for _ts_name in _ALL_TS:
+            if _ts_name in configurable_keys or _ts_name in _platform_default_names:
+                continue  # already handled above or is a composite toolset
+            _ts_tools = set(resolve_toolset(_ts_name))
+            if _ts_tools and _ts_tools.issubset(all_tool_names):
+                enabled_toolsets.add(_ts_name)
+                logger.debug("[toolsets] auto-enabled non-configurable toolset: %s", _ts_name)
+
     # Plugin toolsets: enabled by default unless explicitly disabled.
     # A plugin toolset is "known" for a platform once `hermes tools`
     # has been saved for that platform (tracked via known_plugin_toolsets).
