@@ -505,3 +505,72 @@ class TestSegmentBreakOnToolBoundary:
         assert len(sent_texts) == 3
         assert sent_texts[0].startswith(prefix)
         assert sum(len(t) for t in sent_texts[1:]) == len(tail)
+
+
+# ── Cursor stripping on fallback (#7183) ───────────────────────────────────
+
+
+class TestCursorStrippingOnFallback:
+    """Regression: cursor must be stripped when fallback continuation is empty (#7183)."""
+
+    @pytest.mark.asyncio
+    async def test_cursor_stripped_when_continuation_empty(self):
+        """When _send_fallback_final has nothing new to send, it should edit to remove cursor."""
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg-1")
+        )
+
+        consumer = GatewayStreamConsumer(adapter, "chat-1",
+            config=StreamConsumerConfig(cursor=" ▉"))
+        consumer._message_id = "msg-1"
+        consumer._last_sent_text = "Hello world ▉"
+        consumer._fallback_final_send = False
+
+        await consumer._send_fallback_final("Hello world")
+
+        # Should have attempted to edit the message to strip cursor
+        adapter.edit_message.assert_called_once()
+        call_args = adapter.edit_message.call_args
+        assert call_args.kwargs.get("content", call_args[1].get("content", "")) == "Hello world"
+        assert consumer._already_sent is True
+
+    @pytest.mark.asyncio
+    async def test_cursor_not_stripped_when_no_cursor_configured(self):
+        """No edit attempted when cursor is not configured."""
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat-1",
+            config=StreamConsumerConfig(cursor=""))
+        consumer._message_id = "msg-1"
+        consumer._last_sent_text = "Hello world"
+        consumer._fallback_final_send = False
+
+        await consumer._send_fallback_final("Hello world")
+
+        adapter.edit_message = AsyncMock()
+        assert consumer._already_sent is True
+
+    @pytest.mark.asyncio
+    async def test_cursor_strip_edit_failure_handled(self):
+        """If cursor-stripping edit fails, it should not crash."""
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=False, error="flood_control")
+        )
+
+        consumer = GatewayStreamConsumer(adapter, "chat-1",
+            config=StreamConsumerConfig(cursor=" ▉"))
+        consumer._message_id = "msg-1"
+        consumer._last_sent_text = "Hello ▉"
+        consumer._fallback_final_send = False
+
+        await consumer._send_fallback_final("Hello")
+
+        # Should still set already_sent despite edit failure
+        assert consumer._already_sent is True
+        # last_sent_text should NOT be updated on failure
+        assert consumer._last_sent_text == "Hello ▉"
