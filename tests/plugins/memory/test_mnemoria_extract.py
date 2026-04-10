@@ -113,10 +113,10 @@ from plugins.memory.mnemoria.extract import content_slug
 
 class TestContentSlug:
     def test_basic_slug(self):
-        assert content_slug("Python 3.12 project") == "python-3.12"
+        assert content_slug("Python 3.12 project") == "python-3.12-project"
 
     def test_strips_common_words(self):
-        assert content_slug("The user prefers dark mode") == "user-prefers"
+        assert content_slug("The user prefers dark mode") == "user-prefers-dark"
 
     def test_limits_to_three_words(self):
         slug = content_slug("one two three four five six")
@@ -129,4 +129,4 @@ class TestContentSlug:
         assert content_slug("the a is are") == "general"
 
     def test_lowercases(self):
-        assert content_slug("JWT Authentication Setup") == "jwt-authentication"
+        assert content_slug("JWT Authentication Setup") == "jwt-authentication-setup"

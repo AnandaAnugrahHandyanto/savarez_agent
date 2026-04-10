@@ -15,7 +15,6 @@ _STOP_WORDS = frozenset({
     "should", "may", "might", "shall", "can", "to", "of", "in", "for",
     "on", "with", "at", "by", "from", "as", "into", "about", "that",
     "this", "it", "its", "and", "or", "but", "not", "no", "so",
-    "project", "dark", "mode", "setup",
 })
 
 
