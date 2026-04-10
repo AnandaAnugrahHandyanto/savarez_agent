@@ -10,42 +10,48 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
 
 ## System Overview
 
-```text
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Entry Points                                  │
-│                                                                      │
-│  CLI (cli.py)    Gateway (gateway/run.py)    ACP (acp_adapter/)     │
-│  Batch Runner    API Server                  Python Library          │
-└──────────┬──────────────┬───────────────────────┬────────────────────┘
-           │              │                       │
-           ▼              ▼                       ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                     AIAgent (run_agent.py)                           │
-│                                                                      │
-│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐                │
-│  │ Prompt        │ │ Provider     │ │ Tool         │                │
-│  │ Builder       │ │ Resolution   │ │ Dispatch     │                │
-│  │ (prompt_      │ │ (runtime_    │ │ (model_      │                │
-│  │  builder.py)  │ │  provider.py)│ │  tools.py)   │                │
-│  └──────┬───────┘ └──────┬───────┘ └──────┬───────┘                │
-│         │                │                │                          │
-│  ┌──────┴───────┐ ┌──────┴───────┐ ┌──────┴───────┐                │
-│  │ Compression  │ │ 3 API Modes  │ │ Tool Registry│                │
-│  │ & Caching    │ │ chat_compl.  │ │ (registry.py)│                │
-│  │              │ │ codex_resp.  │ │ 48 tools     │                │
-│  │              │ │ anthropic    │ │ 40 toolsets   │                │
-│  └──────────────┘ └──────────────┘ └──────────────┘                │
-└─────────────────────────────────────────────────────────────────────┘
-           │                                    │
-           ▼                                    ▼
-┌───────────────────┐              ┌──────────────────────┐
-│ Session Storage   │              │ Tool Backends         │
-│ (SQLite + FTS5)   │              │ Terminal (6 backends) │
-│ hermes_state.py   │              │ Browser (5 backends)  │
-│ gateway/session.py│              │ Web (4 backends)      │
-└───────────────────┘              │ MCP (dynamic)         │
-                                   │ File, Vision, etc.    │
-                                   └──────────────────────┘
+```mermaid
+flowchart TB
+  subgraph Entry["Entry Points"]
+    CLI["CLI<br/>cli.py"]
+    Gateway["Gateway<br/>gateway/run.py"]
+    ACP["ACP<br/>acp_adapter/"]
+    Batch["Batch Runner"]
+    API["API Server"]
+    Library["Python Library"]
+  end
+
+  Agent["AIAgent<br/>run_agent.py"]
+
+  CLI --> Agent
+  Gateway --> Agent
+  ACP --> Agent
+  Batch --> Agent
+  API --> Agent
+  Library --> Agent
+
+  subgraph Runtime["Core runtime"]
+    Prompt["Prompt Builder<br/>prompt_builder.py"]
+    Provider["Provider Resolution<br/>runtime_provider.py"]
+    Dispatch["Tool Dispatch<br/>model_tools.py"]
+    Compression["Compression &amp; Caching"]
+    Modes["3 API Modes<br/>chat_completions<br/>codex_responses<br/>anthropic_messages"]
+    Registry["Tool Registry<br/>registry.py<br/>48 tools / 40 toolsets"]
+
+    Prompt --> Compression
+    Provider --> Modes
+    Dispatch --> Registry
+  end
+
+  Agent --> Prompt
+  Agent --> Provider
+  Agent --> Dispatch
+
+  Session["Session Storage<br/>SQLite + FTS5<br/>hermes_state.py<br/>gateway/session.py"]
+  Backends["Tool Backends<br/>Terminal / Browser / Web<br/>MCP / File / Vision"]
+
+  Agent --> Session
+  Agent --> Backends
 ```
 
 ## Directory Structure

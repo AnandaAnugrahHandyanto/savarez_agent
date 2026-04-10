@@ -107,14 +107,15 @@ Providers validate these sequences and will reject malformed histories.
 
 API requests are wrapped in `_api_call_with_interrupt()` which runs the actual HTTP call in a background thread while monitoring an interrupt event:
 
-```text
-┌──────────────────────┐     ┌──────────────┐
-│  Main thread         │     │  API thread   │
-│  wait on:            │────▶│  HTTP POST    │
-│  - response ready    │     │  to provider  │
-│  - interrupt event   │     └──────────────┘
-│  - timeout           │
-└──────────────────────┘
+```mermaid
+flowchart LR
+  subgraph Main["Main thread"]
+    Wait["Wait on:<br/>- response ready<br/>- interrupt event<br/>- timeout"]
+  end
+  subgraph API["API thread"]
+    Post["HTTP POST<br/>to provider"]
+  end
+  Wait --> Post
 ```
 
 When interrupted (user sends new message, `/stop` command, or signal):
