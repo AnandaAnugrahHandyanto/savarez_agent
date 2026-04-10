@@ -256,6 +256,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2.5",
         "MiniMax-M2.5",
     ],
+    "tinfoil": [],  # Populated dynamically via agent.tinfoil_adapter.list_models()
     # Curated HF model list — only agentic models that map to OpenRouter defaults.
     "huggingface": [
         "Qwen/Qwen3.5-397B-A17B",
@@ -484,6 +485,7 @@ _PROVIDER_LABELS = {
     "kilocode": "Kilo Code",
     "alibaba": "Alibaba Cloud (DashScope)",
     "qwen-oauth": "Qwen OAuth (Portal)",
+    "tinfoil": "Tinfoil (Confidential AI)",
     "huggingface": "Hugging Face",
     "custom": "Custom endpoint",
 }
@@ -771,7 +773,7 @@ def list_available_providers() -> list[dict[str, str]]:
         "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "qwen-oauth",
         "opencode-zen", "opencode-go",
-        "ai-gateway", "deepseek", "custom",
+        "ai-gateway", "deepseek", "tinfoil", "custom",
     ]
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
@@ -1031,8 +1033,8 @@ def _resolve_copilot_catalog_api_key() -> str:
 def provider_model_ids(provider: Optional[str]) -> list[str]:
     """Return the best known model catalog for a provider.
 
-    Tries live API endpoints for providers that support them (Codex, Nous),
-    falling back to static lists.
+    Tries live API endpoints for providers that support them (Codex, Nous,
+    Tinfoil), falling back to static lists.
     """
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
@@ -1069,6 +1071,19 @@ def provider_model_ids(provider: Optional[str]) -> list[str]:
         live = _fetch_ai_gateway_models()
         if live:
             return live
+    if normalized == "tinfoil":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+            from agent.tinfoil_adapter import list_models as _list_tinfoil_models
+
+            creds = resolve_api_key_provider_credentials("tinfoil")
+            api_key = str(creds.get("api_key") or "").strip()
+            if api_key:
+                live = _list_tinfoil_models(api_key)
+                if live:
+                    return live
+        except Exception:
+            pass
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:

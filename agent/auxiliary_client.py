@@ -106,6 +106,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
+    "tinfoil": "llama3-3-70b",
 }
 
 # OpenRouter app attribution headers
@@ -676,6 +677,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
     Returns (client, model) for the first provider with usable runtime
     credentials, or (None, None) if none are configured.
+
+    Tinfoil is intentionally excluded from this generic auto chain. It must
+    only be selected explicitly so confidential-mode routing stays auditable.
     """
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
@@ -685,6 +689,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
     for provider_id, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key":
+            continue
+        if provider_id == "tinfoil":
             continue
         if provider_id == "anthropic":
             return _try_anthropic()
@@ -967,6 +973,24 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
     return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
 
 
+def _try_tinfoil(*, suppress_errors: bool = True) -> Tuple[Optional[Any], Optional[str]]:
+    """Try to build a Tinfoil auxiliary client from env credentials."""
+    api_key = os.getenv("TINFOIL_API_KEY") or os.getenv("TINFOIL_TOKEN")
+    if not api_key:
+        return None, None
+    try:
+        from agent.tinfoil_adapter import build_client as _tinfoil_build
+        client = _tinfoil_build(api_key.strip())
+        model = _API_KEY_PROVIDER_AUX_MODELS.get("tinfoil", "llama3-3-70b")
+        logger.debug("Auxiliary client: Tinfoil confidential (%s)", model)
+        return client, model
+    except Exception as exc:
+        if not suppress_errors:
+            raise
+        logger.debug("Tinfoil auxiliary client build failed: %s", exc)
+        return None, None
+
+
 def _resolve_forced_provider(forced: str) -> Tuple[Optional[OpenAI], Optional[str]]:
     """Resolve a specific forced provider.  Returns (None, None) if creds missing."""
     if forced == "openrouter":
@@ -987,8 +1011,30 @@ def _resolve_forced_provider(forced: str) -> Tuple[Optional[OpenAI], Optional[st
             logger.warning("auxiliary.provider=codex but no Codex OAuth token found (run: hermes model)")
         return client, model
 
+    if forced == "tinfoil":
+        client, model = _try_tinfoil()
+        if client is None:
+            logger.warning("auxiliary.provider=tinfoil but no Tinfoil credentials found (set TINFOIL_API_KEY)")
+        return client, model
+
     if forced == "main":
-        # "main" = skip OpenRouter/Nous, use the main chat model's credentials.
+        # When the main provider is Tinfoil, auxiliary tasks must also use Tinfoil.
+        # Do not silently route to OpenRouter — that would violate confidentiality.
+        try:
+            from hermes_cli.config import load_config as _load_config
+            _cfg = _load_config()
+            _model_cfg = _cfg.get("model", {})
+            _main_provider = str(_model_cfg.get("provider") or "").strip().lower()
+        except Exception:
+            _main_provider = ""
+
+        if _main_provider == "tinfoil":
+            client, model = _try_tinfoil()
+            if client is None:
+                logger.warning("auxiliary.provider=main with tinfoil main provider but TINFOIL_API_KEY not set")
+            return client, model
+
+        # Original "main" fallback chain for non-Tinfoil providers
         for try_fn in (_try_custom_endpoint, _try_codex, _resolve_api_key_provider):
             client, model = try_fn()
             if client is not None:
@@ -1206,6 +1252,7 @@ def resolve_provider_client(
     raw_codex: bool = False,
     explicit_base_url: str = None,
     explicit_api_key: str = None,
+    task: str = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Central router: given a provider name and optional model, return a
     configured client with the correct auth, base URL, and API format.
@@ -1218,6 +1265,7 @@ def resolve_provider_client(
         provider: Provider identifier.  One of:
             "openrouter", "nous", "openai-codex" (or "codex"),
             "zai", "kimi-coding", "minimax", "minimax-cn",
+            "tinfoil" (Tinfoil confidential AI),
             "custom" (OPENAI_BASE_URL + OPENAI_API_KEY),
             "auto" (full auto-detection chain).
         model: Model slug override.  If None, uses the provider's default
@@ -1229,12 +1277,30 @@ def resolve_provider_client(
             the main agent loop).
         explicit_base_url: Optional direct OpenAI-compatible endpoint.
         explicit_api_key: Optional API key paired with explicit_base_url.
+        task: Optional task hint (e.g. "vision") used for fail-closed guards.
 
     Returns:
         (client, resolved_model) or (None, None) if auth is unavailable.
     """
     # Normalise aliases
     provider = _normalize_aux_provider(provider)
+
+    # Tinfoil confidentiality guard: if the main provider is Tinfoil, vision
+    # auxiliary must not fall back to OpenRouter or other non-confidential providers.
+    # Return None rather than silently leaking data.
+    if task == "vision":
+        try:
+            from hermes_cli.config import load_config as _load_cfg_vision
+            _vcfg = _load_cfg_vision()
+            _vprovider = str((_vcfg.get("model") or {}).get("provider") or "").strip().lower()
+        except Exception:
+            _vprovider = ""
+        if provider == "tinfoil" or (_vprovider == "tinfoil" and provider not in ("tinfoil", "custom")):
+            logger.warning(
+                "Vision auxiliary disabled: Tinfoil is active and vision is not yet "
+                "supported through Tinfoil. Configure a non-Tinfoil main provider to enable vision."
+            )
+            return None, None
 
     # ── Auto: try all providers in priority order ────────────────────
     if provider == "auto":
@@ -1298,6 +1364,17 @@ def resolve_provider_client(
         final_model = model or default
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
+
+    # ── Tinfoil (explicit only, fail closed) ─────────────────────────
+    if provider == "tinfoil":
+        client, default = _try_tinfoil(suppress_errors=False)
+        if client is None:
+            logger.warning(
+                "resolve_provider_client: tinfoil requested but TINFOIL_API_KEY is not set"
+            )
+            return None, None
+        final_model = model or default
+        return client, final_model
 
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
@@ -1536,6 +1613,16 @@ def get_available_vision_backends() -> List[str]:
     return available
 
 
+def _vprovider_for_vision() -> str:
+    """Return the configured main provider for use in vision fail-closed checks."""
+    try:
+        from hermes_cli.config import load_config as _lcfg
+        _cfg = _lcfg()
+        return str((_cfg.get("model") or {}).get("provider") or "").strip().lower()
+    except Exception:
+        return ""
+
+
 def resolve_vision_provider_client(
     provider: Optional[str] = None,
     model: Optional[str] = None,
@@ -1555,6 +1642,17 @@ def resolve_vision_provider_client(
         "vision", provider, model, base_url, api_key
     )
     requested = _normalize_vision_provider(requested)
+
+    # Tinfoil fail-closed: vision is not supported through Tinfoil's confidential enclave.
+    # Never fall back to OpenRouter or other providers when Tinfoil is active —
+    # that would silently route potentially-sensitive image data off-enclave.
+    if requested == "tinfoil" or _vprovider_for_vision() == "tinfoil":
+        logger.warning(
+            "Vision auxiliary disabled: Tinfoil is configured as the main provider. "
+            "Vision tasks require a non-Tinfoil provider. "
+            "Configure 'auxiliary.vision' in config.yaml to enable vision separately."
+        )
+        return None, None, None
 
     def _finalize(resolved_provider: str, sync_client: Any, default_model: Optional[str]):
         if sync_client is None:

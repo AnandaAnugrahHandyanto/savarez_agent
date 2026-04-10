@@ -124,7 +124,7 @@ def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
         return "chat_completions"
 
 
-_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages"}
+_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "tinfoil"}
 
 
 def _parse_api_mode(raw: Any) -> Optional[str]:
@@ -167,6 +167,8 @@ def _resolve_runtime_from_pool_entry(
         api_mode = "chat_completions"
     elif provider == "copilot":
         api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
+    elif provider == "tinfoil":
+        api_mode = "tinfoil"
     else:
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
         # Honour model.base_url from config.yaml when the configured provider
@@ -558,7 +560,9 @@ def _resolve_explicit_runtime(
                 base_url = creds.get("base_url", "").rstrip("/")
 
         api_mode = "chat_completions"
-        if provider == "copilot":
+        if provider == "tinfoil":
+            api_mode = "tinfoil"
+        elif provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, api_key)
         else:
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
@@ -769,10 +773,16 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
-    # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
+    # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN, Tinfoil)
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
+        # Tinfoil requires an API key — fail early with an actionable message.
+        if provider == "tinfoil" and not creds.get("api_key"):
+            raise AuthError(
+                "No Tinfoil credentials found. Set TINFOIL_API_KEY in your environment. "
+                "Get an API key at https://tinfoil.sh"
+            )
         # Honour model.base_url from config.yaml when the configured provider
         # matches this provider — mirrors the Anthropic path above.  Without
         # this, users who set model.base_url to e.g. api.minimaxi.com/anthropic
@@ -783,7 +793,9 @@ def resolve_runtime_provider(
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
         api_mode = "chat_completions"
-        if provider == "copilot":
+        if provider == "tinfoil":
+            api_mode = "tinfoil"
+        elif provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
         else:
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()

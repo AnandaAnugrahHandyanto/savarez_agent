@@ -17,7 +17,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from hermes_cli.nous_subscription import (
     apply_nous_provider_defaults,
@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 _DOCS_BASE = "https://hermes-agent.nousresearch.com/docs"
+
+
+# Shim for testing: tests can monkeypatch hermes_cli.setup._tinfoil_list_models
+def _tinfoil_list_models(api_key: str) -> List[str]:
+    from agent.tinfoil_adapter import list_models
+    return list_models(api_key)
 
 
 def _model_config_dict(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -116,6 +122,11 @@ _DEFAULT_PROVIDER_MODELS = {
         "Qwen/Qwen3-Coder-480B-A35B-Instruct", "deepseek-ai/DeepSeek-R1-0528",
         "deepseek-ai/DeepSeek-V3.2", "moonshotai/Kimi-K2.5",
     ],
+    "tinfoil": [
+        "llama3-3-70b",
+        "llama3-1-405b",
+        "mistral-7b-instruct",
+    ],
 }
 
 
@@ -192,6 +203,7 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
 
     pconfig = PROVIDER_REGISTRY[provider_id]
     is_copilot_catalog_provider = provider_id in {"copilot", "copilot-acp"}
+    is_tinfoil = provider_id == "tinfoil"
 
     # Resolve API key and base URL for the probe
     if is_copilot_catalog_provider:
@@ -226,6 +238,12 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
     # Try live /models endpoint
     if is_copilot_catalog_provider and catalog:
         live_models = [item.get("id", "") for item in catalog if item.get("id")]
+    elif is_tinfoil:
+        # Tinfoil: fetch models through the Tinfoil client (not generic /models probe)
+        tf_api_key = get_env_value("TINFOIL_API_KEY") or os.getenv("TINFOIL_API_KEY", "")
+        if not tf_api_key:
+            tf_api_key = get_env_value("TINFOIL_TOKEN") or os.getenv("TINFOIL_TOKEN", "")
+        live_models = _tinfoil_list_models(tf_api_key) if tf_api_key else []
     else:
         live_models = fetch_api_models(api_key, base_url)
 

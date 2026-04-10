@@ -586,7 +586,7 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
-        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
+        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "tinfoil"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
@@ -748,8 +748,22 @@ class AIAgent:
         # access for Codex Responses API streaming.
         self._anthropic_client = None
         self._is_anthropic_oauth = False
+        self._tinfoil_client = None
 
-        if self.api_mode == "anthropic_messages":
+        if self.api_mode == "tinfoil":
+            from agent.tinfoil_adapter import build_client as _tinfoil_build
+            if not api_key:
+                raise RuntimeError(
+                    "Tinfoil mode requires TINFOIL_API_KEY. "
+                    "Set it in your environment or run 'hermes model' to reconfigure."
+                )
+            self.api_key = api_key
+            self._tinfoil_client = _tinfoil_build(api_key)
+            self.client = None
+            self._client_kwargs = {}
+            if not self.quiet_mode:
+                print(f"🤖 AI Agent initialized with model: {self.model} (Tinfoil confidential)")
+        elif self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
             # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
             # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
@@ -4288,6 +4302,9 @@ class AIAgent:
                     )
                 elif self.api_mode == "anthropic_messages":
                     result["response"] = self._anthropic_messages_create(api_kwargs)
+                elif self.api_mode == "tinfoil":
+                    from agent.tinfoil_adapter import create_chat_completion
+                    result["response"] = create_chat_completion(self._tinfoil_client, **api_kwargs)
                 else:
                     request_client_holder["client"] = self._create_request_openai_client(reason="chat_completion_request")
                     result["response"] = request_client_holder["client"].chat.completions.create(**api_kwargs)
@@ -4315,6 +4332,11 @@ class AIAgent:
                             self._anthropic_api_key,
                             getattr(self, "_anthropic_base_url", None),
                         )
+                    elif self.api_mode == "tinfoil":
+                        # Rebuild the Tinfoil client to get a fresh connection
+                        # after an interrupt — do not fall back to any other provider.
+                        from agent.tinfoil_adapter import build_client as _tinfoil_rebuild
+                        self._tinfoil_client = _tinfoil_rebuild(self.api_key)
                     else:
                         request_client = request_client_holder.get("client")
                         if request_client is not None:
@@ -4438,19 +4460,28 @@ class AIAgent:
                     pool=30.0,
                 ),
             }
-            request_client_holder["client"] = self._create_request_openai_client(
-                reason="chat_completion_stream_request"
-            )
             # Reset stale-stream timer so the detector measures from this
             # attempt's start, not a previous attempt's last chunk.
             last_chunk_time["t"] = time.time()
             self._touch_activity("waiting for provider response (streaming)")
-            stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
+            if self.api_mode == "tinfoil":
+                # Do NOT put the shared tinfoil client into the holder — the
+                # holder's cleanup paths call close() which would break all
+                # future requests.  Keep streaming on the dedicated Tinfoil
+                # adapter path instead of the generic OpenAI client path.
+                from agent.tinfoil_adapter import stream_chat_completion
 
-            # Capture rate limit headers from the initial HTTP response.
-            # The OpenAI SDK Stream object exposes the underlying httpx
-            # response via .response before any chunks are consumed.
-            self._capture_rate_limits(getattr(stream, "response", None))
+                stream = stream_chat_completion(self._tinfoil_client, **stream_kwargs)
+            else:
+                request_client_holder["client"] = self._create_request_openai_client(
+                    reason="chat_completion_stream_request"
+                )
+                stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
+
+                # Capture rate limit headers from the initial HTTP response.
+                # The OpenAI SDK Stream object exposes the underlying httpx
+                # response via .response before any chunks are consumed.
+                self._capture_rate_limits(getattr(stream, "response", None))
 
             content_parts: list = []
             tool_calls_acc: dict = {}
@@ -4885,6 +4916,9 @@ class AIAgent:
                             self._anthropic_api_key,
                             getattr(self, "_anthropic_base_url", None),
                         )
+                    elif self.api_mode == "tinfoil":
+                        from agent.tinfoil_adapter import build_client as _tinfoil_rebuild
+                        self._tinfoil_client = _tinfoil_rebuild(self.api_key)
                     else:
                         request_client = request_client_holder.get("client")
                         if request_client is not None:
@@ -4929,10 +4963,18 @@ class AIAgent:
         can continue with the new backend.  Advances through the chain on
         each call; returns False when exhausted.
 
+        Tinfoil mode refuses all fallback to preserve confidentiality.
+
         Uses the centralized provider router (resolve_provider_client) for
         auth resolution and client construction — no duplicated provider→key
         mappings.
         """
+        if self.api_mode == "tinfoil":
+            logging.warning(
+                "Tinfoil mode is active; refusing provider fallback to preserve confidentiality."
+            )
+            return False
+
         if self._fallback_index >= len(self._fallback_chain):
             return False
 
