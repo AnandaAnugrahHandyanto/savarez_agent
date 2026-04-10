@@ -167,8 +167,9 @@ def _secure_dir(path):
     if is_managed():
         return
     try:
-        os.chmod(path, 0o700)
-    except (OSError, NotImplementedError):
+        mode_str = os.environ.get("HERMES_HOME_MODE", "0700")
+        os.chmod(path, int(mode_str, 8))
+    except (OSError, ValueError, NotImplementedError):
         pass
 
 
