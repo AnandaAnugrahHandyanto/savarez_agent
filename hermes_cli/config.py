@@ -614,6 +614,66 @@ DEFAULT_CONFIG = {
         "backup_count": 3,     # Number of rotated backup files to keep
     },
 
+    # Fine-tuning pipeline — optional, used by the finetune skill.
+    # All sub-keys are ignored if absent.
+    "finetune": {
+        "enabled": False,
+        "extract": {
+            "min_turns": 2,
+            "exclude_sources": [],
+        },
+        "scoring": {
+            "weights": {
+                "conversation_signal": 0.3,
+                "turn_signal": 0.4,
+                "sentiment_modifier": 0.1,
+                "judge_score": 0.2,
+            },
+            "thresholds": {
+                "good": 0.7,
+                "neutral": 0.4,
+            },
+        },
+        "clustering": {
+            "embedding_model": "all-MiniLM-L6-v2",
+            "min_cluster_size": 30,
+            "confidence_threshold": 0.6,
+        },
+        "training": {
+            "base_model": "~/programs/carnice/Carnice-9b-Q8_0.gguf",
+            "chat_template": "chatml",
+            "quantization": "Q5_K_M",
+            "terminal_backend": "local",
+            # Per-turn extraction (see format.py::extract_training_turns)
+            "context_window_turns": 8,
+            "min_turn_score": 0.7,
+        },
+        "routing": {
+            "enabled": False,
+            "providers": ["local", "llama-cpp", "custom"],
+        },
+        "retraining": {
+            "data_growth_trigger": 0.2,
+            "schedule": "weekly",
+        },
+        "feedback": {
+            "cli_keybindings": False,
+            "gateway_reactions": False,
+        },
+        # Auto-redeploy llama-server with newly trained adapters.
+        # Off by default — requires user-specific paths to be set first.
+        "serving": {
+            "auto_redeploy": False,
+            "converter": "~/programs/llama.cpp/convert_lora_to_gguf.py",
+            "base_model_snapshot": "auto",
+            "server_command": "",
+            "server_pid_file": "/tmp/hermes-llama-server.pid",
+            "server_log_path": "/tmp/hermes-llama-server.log",
+            "health_check_url": "http://localhost:8008/v1/models",
+            "health_check_timeout": 30,
+        },
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 14,
 }
@@ -1450,7 +1510,7 @@ _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
-    "auxiliary", "custom_providers", "memory", "gateway",
+    "auxiliary", "custom_providers", "memory", "gateway", "finetune",
 }
 
 # Valid fields inside a custom_providers list entry

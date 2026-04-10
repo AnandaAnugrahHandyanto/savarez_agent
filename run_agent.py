@@ -5812,6 +5812,13 @@ class AIAgent:
         if _is_nous:
             extra_body["tags"] = ["product=hermes-agent"]
 
+        # Finetune adapter routing: if a LoRA adapter was selected by the
+        # finetune routing hook, inject it for local llama.cpp providers.
+        # The env var is set by the routing hook and cleared after use.
+        _ft_adapter = os.environ.pop("_HERMES_FINETUNE_ADAPTER", "")
+        if _ft_adapter and not _is_openrouter and not _is_nous and not _is_github_models:
+            extra_body["lora_adapters"] = [{"path": _ft_adapter, "scale": 1.0}]
+
         # Ollama num_ctx: override the 2048 default so the model actually
         # uses the context window it was trained for.  Passed via the OpenAI
         # SDK's extra_body → options.num_ctx, which Ollama's OpenAI-compat
