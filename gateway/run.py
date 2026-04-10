@@ -531,6 +531,15 @@ class GatewayRunner:
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
 
+        # Claude Code MCP session state (chat_id -> session info)
+        # Keyed by chat_id so sessions persist across multi-turn conversations
+        # Value: {"session_id": str, "last_activity": float, "task": asyncio.Task}
+        import threading as _claude_threading
+        self._claude_sessions: Dict[str, dict] = {}
+        self._claude_sessions_lock = _claude_threading.Lock()
+        self._claude_cleanup_thread = None
+        self._claude_cleanup_running = False
+
         # Track pending /update prompt responses per session.
         # Key: session_key, Value: True when a prompt is waiting for user input.
         self._update_prompt_pending: Dict[str, bool] = {}
@@ -570,6 +579,8 @@ class GatewayRunner:
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
 
+        # Start Claude Code session cleanup thread
+        self._start_claude_cleanup_thread()
 
 
 
@@ -1098,6 +1109,15 @@ class GatewayRunner:
         
         # Discover and load event hooks
         self.hooks.discover_and_load()
+
+        # Discover and register MCP tools (e.g. claude_code session tools)
+        try:
+            from tools.mcp_tool import discover_mcp_tools
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, discover_mcp_tools)
+            logger.info("MCP tools discovered and registered")
+        except Exception as e:
+            logger.warning("MCP tool discovery failed: %s", e)
         
         # Recover background processes from checkpoint (crash recovery)
         try:
@@ -1967,6 +1987,20 @@ class GatewayRunner:
                     del self._running_agents[_quick_key]
                 return await self._handle_reset_command(event)
 
+            # /claude-code also bypasses the running-agent guard — it must interrupt
+            # the running agent and take over with Claude Code MCP.
+            if _cmd_def_inner and _cmd_def_inner.name == "claude-code":
+                running_agent = self._running_agents.get(_quick_key)
+                if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+                    running_agent.interrupt("Claude Code takeover requested")
+                adapter = self.adapters.get(source.platform)
+                if adapter and hasattr(adapter, 'get_pending_message'):
+                    adapter.get_pending_message(_quick_key)  # consume and discard
+                self._pending_messages.pop(_quick_key, None)
+                if _quick_key in self._running_agents:
+                    del self._running_agents[_quick_key]
+                return await self._handle_claude_command(event)
+
             # /queue <prompt> — queue without interrupting
             if event.get_command() in ("queue", "q"):
                 queued_text = event.get_command_args().strip()
@@ -2159,6 +2193,9 @@ class GatewayRunner:
 
         if canonical == "background":
             return await self._handle_background_command(event)
+
+        if canonical == "claude-code":
+            return await self._handle_claude_command(event)
 
         if canonical == "btw":
             return await self._handle_btw_command(event)
@@ -5065,6 +5102,384 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Manual compress failed: %s", e)
             return f"Compression failed: {e}"
+
+    # -- Claude Code session cleanup thread -------------------------------------
+
+    CLAUDE_SESSION_INACTIVITY_TIMEOUT = 300  # 5 minutes
+
+    def _start_claude_cleanup_thread(self) -> None:
+        if self._claude_cleanup_thread is None or not self._claude_cleanup_thread.is_alive():
+            self._claude_cleanup_running = True
+            self._claude_cleanup_thread = threading.Thread(
+                target=self._claude_cleanup_thread_worker,
+                name="claude-session-cleanup",
+                daemon=True,
+            )
+            self._claude_cleanup_thread.start()
+            logger.info("Claude Code session cleanup thread started")
+
+    def _claude_cleanup_thread_worker(self) -> None:
+        import sys
+        print("[Claude Cleanup] Worker started", flush=True, file=sys.stderr)
+        while self._claude_cleanup_running:
+            try:
+                self._cleanup_inactive_claude_sessions()
+            except Exception as e:
+                logger.warning("Claude cleanup thread error: %s", e)
+            for _ in range(30):
+                if not self._claude_cleanup_running:
+                    break
+                time.sleep(1)
+
+    def _cleanup_inactive_claude_sessions(self) -> None:
+        """Stop sessions inactive for more than CLAUDE_SESSION_INACTIVITY_TIMEOUT seconds."""
+        import sys
+        from tools.registry import registry
+        current_time = time.time()
+        with self._claude_sessions_lock:
+            stale_chat_ids = [
+                chat_id for chat_id, info in self._claude_sessions.items()
+                if current_time - info["last_activity"] > self.CLAUDE_SESSION_INACTIVITY_TIMEOUT
+            ]
+        print(f"[Claude Cleanup] Checking sessions, stale: {[chat_id for chat_id in stale_chat_ids]}", flush=True, file=sys.stderr)
+        for chat_id in stale_chat_ids:
+            try:
+                session_info = self._claude_sessions.get(chat_id, {})
+                session_id = session_info.get("session_id")
+                logger.info("Cleaning up inactive Claude session for chat %s (session %s)", chat_id, session_id)
+                if session_id:
+                    try:
+                        registry.dispatch("mcp_claude_code_claude_session_stop", {"session_id": session_id})
+                    except Exception as e:
+                        logger.warning("Error stopping session %s: %s", session_id, e)
+                with self._claude_sessions_lock:
+                    self._claude_sessions.pop(chat_id, None)
+                # Notify user that session expired (best-effort)
+                try:
+                    loop = asyncio.get_running_loop()
+                    asyncio.run_coroutine_threadsafe(
+                        self._notify_session_expired(chat_id),
+                        loop
+                    )
+                except Exception as notify_err:
+                    logger.debug("Could not notify session expiry to chat %s: %s", chat_id, notify_err)
+            except Exception as e:
+                logger.warning("Error cleaning up stale session for chat %s: %s", chat_id, e)
+
+    def _get_or_create_claude_session(self, chat_id: str) -> str:
+        """
+        Return existing session_id for chat_id, or start a new session.
+        Updates last_activity on access.
+        If an existing session is found but no longer active, discard it and create new.
+        """
+        from tools.registry import registry
+        with self._claude_sessions_lock:
+            info = self._claude_sessions.get(chat_id)
+        if info:
+            # Check if session is still alive
+            session_id = info.get("session_id")
+            if session_id:
+                try:
+                    status_raw = registry.dispatch("mcp_claude_code_claude_session_status", {"session_id": session_id})
+                    status_parsed = json.loads(status_raw)
+                    # If session is not running/waiting, it's stale - remove it
+                    if status_parsed.get("error"):
+                        # Stale session, will create new below
+                        pass
+                    elif "running" not in str(status_parsed.get("result", "")).lower() and "waiting" not in str(status_parsed.get("result", "")).lower():
+                        # Not alive, treat as stale
+                        info = None
+                    else:
+                        info["last_activity"] = time.time()
+                        return session_id
+                except Exception:
+                    # Can't check status, treat as stale
+                    info = None
+            if info:
+                info["last_activity"] = time.time()
+                return info["session_id"]
+            # Fall through to create new session
+        # Start new session (dispatch is thread-safe, runs in thread pool)
+        # Don't wait for ready - the session starts and immediately waits for input.
+        # The first send() will deliver the actual prompt.
+        result = registry.dispatch(
+            "mcp_claude_code_claude_session_start",
+            {"prompt": "", "workdir": "/Users/zoe/workspace", "wait_for_ready": False}
+        )
+        parsed = json.loads(result)
+        if parsed.get("error"):
+            raise RuntimeError(f"Failed to start session: {parsed['error']}")
+        # Extract session_id from result string like "Session started: running, waiting\nOutput:\n{...}"
+        result_str = parsed.get("result", "")
+        if isinstance(result_str, str) and "\nOutput:\n" in result_str:
+            import json as _json
+            try:
+                inner = _json.loads(result_str.split("\nOutput:\n", 1)[1])
+                session_id = inner.get("session_id", "")
+            except Exception:
+                session_id = ""
+        else:
+            session_id = ""
+        with self._claude_sessions_lock:
+            self._claude_sessions[chat_id] = {
+                "session_id": session_id,
+                "last_activity": time.time(),
+                "task": None,
+            }
+        logger.info("Created new Claude session %s for chat %s", session_id, chat_id)
+        return session_id
+
+    async def _handle_claude_stop_command(self, source, chat_id: str) -> str:
+        """Handle /claude-code:stop -- stop the active Claude Code session for this chat."""
+        from tools.registry import registry
+        adapter = self.adapters.get(source.platform)
+        _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
+
+        with self._claude_sessions_lock:
+            info = self._claude_sessions.pop(chat_id, None)
+
+        if info and info.get("session_id"):
+            try:
+                registry.dispatch("mcp_claude_code_claude_session_stop", {"session_id": info["session_id"]})
+            except Exception as e:
+                logger.warning("Error stopping session %s: %s", info["session_id"], e)
+            msg = "✅ Claude Code 会话已停止。"
+        else:
+            msg = "ℹ️ 没有正在运行的 Claude Code 会话。"
+
+        if adapter:
+            await adapter.send(source.chat_id, msg, metadata=_thread_metadata)
+        return ""
+
+    async def _notify_session_expired(self, chat_id: str) -> None:
+        """Send a notification that the Claude session timed out."""
+        # Find the adapter for this chat_id by checking all platforms
+        for platform_name, adapter in self.adapters.items():
+            try:
+                await adapter.send(
+                    chat_id,
+                    "⏰ Claude Code 会话已超时（5分钟无活动），已自动结束。\n重新发送 /claude <任务> 可开启新会话。",
+                    metadata=None,
+                )
+                return
+            except Exception:
+                pass
+        logger.debug("No adapter found to notify session expiry for chat %s", chat_id)
+
+    async def _handle_claude_command(self, event: MessageEvent) -> str:
+        """Handle /claude-code <task> -- run a task using Claude Code MCP tool.
+        
+        Uses persistent sessions per chat_id. First call creates the session,
+        subsequent calls reuse it. Sessions auto-expire after 5 min of inactivity.
+        """
+        prompt = event.get_command_args().strip()
+        if not prompt:
+            return "Usage: /claude <task>\nExample: /claude 分析 calculator.py 有哪些方法"
+
+        source = event.source
+        chat_id = source.chat_id
+        _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
+
+        task_id = f"claude_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
+
+        # Handle /claude-code:stop (stop the active session)
+        if prompt.lower() in ("stop", "end", "quit", "exit"):
+            return await self._handle_claude_stop_command(source, chat_id)
+
+        _task = asyncio.create_task(
+            self._run_claude_task(prompt, source, task_id, chat_id)
+        )
+        self._background_tasks.add(_task)
+        _task.add_done_callback(self._background_tasks.discard)
+
+        return "🤖 Claude Code 正在处理中..."
+
+    async def _run_claude_task(self, prompt: str, source, task_id: str, chat_id: str) -> None:
+        """Execute a Claude Code MCP task using persistent session, deliver result to chat."""
+        from tools.registry import registry
+
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            logger.warning("No adapter for platform %s in claude task %s", source.platform, task_id)
+            return
+
+        _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
+
+        # Helper to extract text from MCP JSON-RPC responses
+        def _extract_text(mcp_response: dict) -> str:
+            result = mcp_response.get("result", {})
+            if isinstance(result, str):
+                if "\nOutput:\n" in result:
+                    json_part = result.split("\nOutput:\n", 1)[1]
+                    try:
+                        result = json.loads(json_part)
+                    except json.JSONDecodeError:
+                        return result.split("\nOutput:\n", 1)[1]
+                else:
+                    try:
+                        result = json.loads(result)
+                    except json.JSONDecodeError:
+                        return result
+            if isinstance(result, dict):
+                content = result.get("content", [])
+                if isinstance(content, list) and len(content) > 0:
+                    text = content[0].get("text", "")
+                    # Filter out internal status lines that shouldn't go to users
+                    lines = text.split("\n")
+                    filtered = [
+                        line for line in lines
+                        if line.strip()
+                        and not line.strip().startswith("Status:")
+                        and not line.strip().startswith("[ACK:")
+                        and not line.strip().startswith("Session started:")
+                        and not line.strip().startswith("Note:")
+                    ]
+                    return "\n".join(filtered).strip()
+            if isinstance(result, list) and len(result) > 0:
+                return result[0].get("text", "")
+            return ""
+
+        try:
+            # Start new session with the actual prompt directly.
+            # This avoids the PUA "empty prompt" activation problem.
+            # wait_for_ready=True so we wait for session to be ready.
+            start_result = await asyncio.to_thread(
+                registry.dispatch,
+                "mcp_claude_code_claude_session_start",
+                {"prompt": prompt, "workdir": "/Users/zoe/workspace", "model": "MiniMax-M2.7-highspeed", "wait_for_ready": True}
+            )
+            start_parsed = json.loads(start_result)
+            if start_parsed.get("error"):
+                await adapter.send(
+                    source.chat_id,
+                    f"❌ Claude Code 启动失败: {start_parsed['error']}",
+                    metadata=_thread_metadata,
+                )
+                return
+
+            # Extract session_id from result string
+            result_str = start_parsed.get("result", "")
+            session_id = "default"
+            if isinstance(result_str, str) and "\nOutput:\n" in result_str:
+                try:
+                    inner = json.loads(result_str.split("\nOutput:\n", 1)[1])
+                    session_id = inner.get("session_id", "default")
+                except Exception:
+                    pass
+
+            # Store session for potential follow-up
+            with self._claude_sessions_lock:
+                self._claude_sessions[chat_id] = {
+                    "session_id": session_id,
+                    "last_activity": time.time(),
+                    "task": task_id,
+                }
+
+            # Collect initial output from start response
+            initial_content = _extract_text(start_parsed)
+            if initial_content:
+                await adapter.send(
+                    source.chat_id,
+                    initial_content,
+                    metadata=_thread_metadata,
+                )
+
+            # Poll for new output until session goes idle
+            max_turns = 20
+            turn = 0
+            consecutive_quiet = 0  # local counter, reset per task
+            
+            while turn < max_turns:
+                await asyncio.sleep(2)
+                
+                # Update last activity
+                with self._claude_sessions_lock:
+                    if chat_id in self._claude_sessions:
+                        self._claude_sessions[chat_id]["last_activity"] = time.time()
+
+                # Poll
+                poll_result = await asyncio.to_thread(
+                    registry.dispatch,
+                    "mcp_claude_code_claude_session_poll",
+                    {}
+                )
+                poll_parsed = json.loads(poll_result)
+                poll_text = _extract_text(poll_parsed)
+
+                if poll_text and poll_text.strip() not in ("(no new output)", ""):
+                    await adapter.send(
+                        source.chat_id,
+                        poll_text,
+                        metadata=_thread_metadata,
+                    )
+                    # Update activity after sending output too
+                    with self._claude_sessions_lock:
+                        if chat_id in self._claude_sessions:
+                            self._claude_sessions[chat_id]["last_activity"] = time.time()
+                
+                # Check status
+                status_result = await asyncio.to_thread(
+                    registry.dispatch,
+                    "mcp_claude_code_claude_session_status",
+                    {}
+                )
+                status_parsed = json.loads(status_result)
+                status_text = _extract_text(status_parsed)
+
+                # Exit when session is truly done (not just "waiting" between turns).
+                # "running, waiting" = Claude Code finished this turn, waiting for more input.
+                #   Output may still be in the reader buffer — keep polling to collect it.
+                # "done" = session has ended, no more output coming.
+                # We also exit if we've collected actual output AND the session has been
+                # continuously waiting for long enough (>= 2 polls with no new output).
+                no_new_output = not poll_text or poll_text.strip() in ("(no new output)", "")
+
+                # Check if session is truly ended (not just between turns)
+                session_done = "done" in status_text.lower()
+
+                # Track consecutive quiet polls to ensure output is fully delivered
+                if no_new_output:
+                    consecutive_quiet += 1
+                else:
+                    consecutive_quiet = 0
+
+                # Exit conditions:
+                # 1. Session actually ended -> done
+                # 2. 3+ consecutive quiet polls while waiting and we've done at least 1 poll
+                if session_done or (consecutive_quiet >= 3 and turn >= 1):
+                    # Update activity before returning
+                    with self._claude_sessions_lock:
+                        if chat_id in self._claude_sessions:
+                            self._claude_sessions[chat_id]["last_activity"] = time.time()
+                    await adapter.send(
+                        source.chat_id,
+                        f"✅ Claude Code 任务完成",
+                        metadata=_thread_metadata,
+                    )
+                    return
+                
+                turn += 1
+
+            # Hit max turns - session still running
+            with self._claude_sessions_lock:
+                if chat_id in self._claude_sessions:
+                    self._claude_sessions[chat_id]["last_activity"] = time.time()
+            await adapter.send(
+                source.chat_id,
+                f"✅ Claude Code 任务完成 (已达上限)",
+                metadata=_thread_metadata,
+            )
+
+        except Exception as e:
+            logger.exception("Claude task %s failed: %s", task_id, e)
+            try:
+                await adapter.send(
+                    source.chat_id,
+                    f"❌ Claude Code 任务失败: {e}",
+                    metadata=_thread_metadata,
+                )
+            except Exception:
+                pass
 
     async def _handle_title_command(self, event: MessageEvent) -> str:
         """Handle /title command — set or show the current session's title."""
