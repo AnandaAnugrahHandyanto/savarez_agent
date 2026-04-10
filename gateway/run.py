@@ -6384,7 +6384,16 @@ class GatewayRunner:
             if not progress_queue:
                 return
 
-            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
+            # Act on tool.started events and subagent_progress relays from
+            # delegate_tool.  Ignore tool.completed, reasoning.available, etc.
+            if event_type == "subagent_progress":
+                # Pre-formatted by delegate_tool (includes 🔀 prefix + task labels).
+                # Relay directly into the progress queue — no dedup, no mode filter,
+                # since these are already batched (5 tools/line) by delegate_tool.
+                msg = tool_name or preview or "🔀 subagent working..."
+                progress_queue.put(msg)
+                return
+
             if event_type not in ("tool.started",):
                 return
 
@@ -7073,6 +7082,26 @@ class GatewayRunner:
         if tool_progress_enabled:
             progress_task = asyncio.create_task(send_progress_messages())
 
+        # Fix B: Typing heartbeat — refresh typing indicator every 5s so
+        # Telegram keeps showing "typing..." for long-running operations.
+        # Telegram typing indicators expire after ~5s; without this the
+        # chat appears dead during 10+ min delegate_task runs.
+        async def _typing_heartbeat():
+            _hb_adapter = self.adapters.get(source.platform)
+            if not _hb_adapter or not hasattr(_hb_adapter, "send_typing"):
+                return
+            _hb_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+            while True:
+                try:
+                    await _hb_adapter.send_typing(source.chat_id, metadata=_hb_metadata)
+                except asyncio.CancelledError:
+                    return
+                except Exception:
+                    pass
+                await asyncio.sleep(5)
+
+        _typing_heartbeat_task = asyncio.create_task(_typing_heartbeat())
+
         # Start stream consumer task — polls for consumer creation since it
         # happens inside run_sync (thread pool) after the agent is constructed.
         stream_task = None
@@ -7122,16 +7151,22 @@ class GatewayRunner:
         interrupt_monitor = asyncio.create_task(monitor_for_interrupt())
 
         # Periodic "still working" notifications for long-running tasks.
-        # Fires every 10 minutes so the user knows the agent hasn't died.
-        _NOTIFY_INTERVAL = 600  # 10 minutes
+        # Fix C: Fire after 2 min of silence (reduced from 10 min), then every
+        # 60s after that, so users see regular updates during delegate_task runs.
+        _NOTIFY_INTERVAL_FIRST = 120   # First heartbeat after 2 min silence
+        _NOTIFY_INTERVAL_REPEAT = 60   # Subsequent heartbeats every 60s
         _notify_start = time.time()
 
         async def _notify_long_running():
             _notify_adapter = self.adapters.get(source.platform)
             if not _notify_adapter:
                 return
+            _first_fired = False
             while True:
-                await asyncio.sleep(_NOTIFY_INTERVAL)
+                # Wait shorter on the first heartbeat (2 min), then every 60s.
+                _interval = _NOTIFY_INTERVAL_FIRST if not _first_fired else _NOTIFY_INTERVAL_REPEAT
+                await asyncio.sleep(_interval)
+                _first_fired = True
                 _elapsed_mins = int((time.time() - _notify_start) // 60)
                 # Include agent activity context if available.
                 _agent_ref = agent_holder[0]
@@ -7147,14 +7182,20 @@ class GatewayRunner:
                         _status_detail = " — " + ", ".join(_parts)
                     except Exception:
                         pass
-                try:
-                    await _notify_adapter.send(
-                        source.chat_id,
-                        f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
-                        metadata=_status_thread_metadata,
-                    )
-                except Exception as _ne:
-                    logger.debug("Long-running notification error: %s", _ne)
+                _heartbeat_msg = f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})"
+                # Push into progress queue so it appears in the editable progress
+                # message if one exists, instead of always sending a new message.
+                if progress_queue is not None:
+                    progress_queue.put(_heartbeat_msg)
+                else:
+                    try:
+                        await _notify_adapter.send(
+                            source.chat_id,
+                            _heartbeat_msg,
+                            metadata=_status_thread_metadata,
+                        )
+                    except Exception as _ne:
+                        logger.debug("Long-running notification error: %s", _ne)
 
         _notify_task = asyncio.create_task(_notify_long_running())
 
@@ -7399,11 +7440,12 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                 )
         finally:
-            # Stop progress sender, interrupt monitor, and notification task
+            # Stop progress sender, interrupt monitor, typing heartbeat, and notification task
             if progress_task:
                 progress_task.cancel()
             interrupt_monitor.cancel()
             _notify_task.cancel()
+            _typing_heartbeat_task.cancel()
 
             # Wait for stream consumer to finish its final edit
             if stream_task:
