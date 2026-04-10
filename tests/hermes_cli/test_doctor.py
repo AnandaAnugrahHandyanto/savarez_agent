@@ -292,3 +292,49 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
     assert "system dependency not met" in out
     assert "agent-browser is not installed (expected in the tested Termux path)" in out
     assert "npm install -g agent-browser && agent-browser install" in out
+
+
+def test_run_doctor_opencode_go_reports_key_configured_without_models_probe(monkeypatch, tmp_path):
+    helper = TestDoctorMemoryProviderSection()
+
+    for env_var in (
+        "OPENROUTER_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_TOKEN",
+        "GLM_API_KEY",
+        "ZAI_API_KEY",
+        "Z_AI_API_KEY",
+        "KIMI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "HF_TOKEN",
+        "DASHSCOPE_API_KEY",
+        "MINIMAX_API_KEY",
+        "MINIMAX_CN_API_KEY",
+        "AI_GATEWAY_API_KEY",
+        "KILOCODE_API_KEY",
+        "OPENCODE_ZEN_API_KEY",
+        "OPENCODE_GO_BASE_URL",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
+
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "sk-test-opencode-go")
+
+    import httpx
+
+    calls: list[str] = []
+
+    class _FakeResponse:
+        status_code = 200
+
+    def fake_get(url, *args, **kwargs):
+        calls.append(str(url))
+        return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
+
+    opencode_lines = [line for line in out.splitlines() if "OpenCode Go" in line]
+    assert opencode_lines
+    assert any("(key configured)" in line for line in opencode_lines)
+    assert not any("opencode.ai/zen/go/v1/models" in url for url in calls)

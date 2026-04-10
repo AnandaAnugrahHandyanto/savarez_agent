@@ -73,6 +73,32 @@ def test_chat_subcommand_accepts_image_flag(monkeypatch):
     }
 
 
+def test_chat_subcommand_accepts_opencode_go_provider(monkeypatch):
+    import hermes_cli.main as main_mod
+
+    captured = {}
+
+    def fake_cmd_chat(args):
+        captured["provider"] = args.provider
+        captured["model"] = args.model
+        captured["query"] = args.query
+
+    monkeypatch.setattr(main_mod, "cmd_chat", fake_cmd_chat)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "chat", "-q", "hello", "--provider", "opencode-go", "-m", "opencode-go/mimo-v2-pro"],
+    )
+
+    main_mod.main()
+
+    assert captured == {
+        "provider": "opencode-go",
+        "model": "opencode-go/mimo-v2-pro",
+        "query": "hello",
+    }
+
+
 def test_continue_worktree_and_skills_flags_work_together(monkeypatch):
     import hermes_cli.main as main_mod
 
