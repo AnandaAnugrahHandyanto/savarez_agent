@@ -462,8 +462,8 @@ class TestChatCompletionsEndpoint:
                 assert " about it..." in body
 
     @pytest.mark.asyncio
-    async def test_stream_includes_tool_progress(self, adapter):
-        """tool_progress_callback fires → progress appears in the SSE stream."""
+    async def test_stream_omits_tool_progress_from_chat_content(self, adapter):
+        """Tool progress must not be injected into chat-completions delta.content."""
         import asyncio
 
         app = _create_app(adapter)
@@ -494,14 +494,14 @@ class TestChatCompletionsEndpoint:
                 assert resp.status == 200
                 body = await resp.text()
                 assert "[DONE]" in body
-                # Tool progress message must appear in the stream
-                assert "ls -la" in body
+                # Tool progress must not be exposed as assistant content
+                assert "ls -la" not in body
                 # Final content must also be present
                 assert "Here are the files." in body
 
     @pytest.mark.asyncio
-    async def test_stream_tool_progress_skips_internal_events(self, adapter):
-        """Internal events (name starting with _) are not streamed."""
+    async def test_stream_omits_all_tool_progress_events(self, adapter):
+        """Neither internal nor visible tool progress should reach delta.content."""
         import asyncio
 
         app = _create_app(adapter)
@@ -531,10 +531,63 @@ class TestChatCompletionsEndpoint:
                 )
                 assert resp.status == 200
                 body = await resp.text()
-                # Internal _thinking event should NOT appear
+                # Tool progress should not be serialized into assistant content
                 assert "some internal state" not in body
-                # Real tool progress should appear
-                assert "Python docs" in body
+                assert "Python docs" not in body
+                assert "Found it." in body
+
+    @pytest.mark.asyncio
+    async def test_assistant_history_strips_persisted_tool_progress_markers(self, adapter):
+        """Stateless chat history should drop persisted SSE-only tool markers."""
+        mock_result = {"final_response": "Next step", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [
+                            {"role": "assistant", "content": "`⏰ ls -la`\n\nI found the files you asked for."},
+                            {"role": "user", "content": "What should I open next?"},
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["conversation_history"] == [
+                {"role": "assistant", "content": "I found the files you asked for."}
+            ]
+
+    @pytest.mark.asyncio
+    async def test_assistant_history_drops_marker_only_messages(self, adapter):
+        """Marker-only assistant turns should not be replayed back into model history."""
+        mock_result = {"final_response": "Next step", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [
+                            {"role": "user", "content": "List the files"},
+                            {"role": "assistant", "content": "`⏰ ls -la`"},
+                            {"role": "user", "content": "What should I open next?"},
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["conversation_history"] == [
+                {"role": "user", "content": "List the files"}
+            ]
 
     @pytest.mark.asyncio
     async def test_no_user_message_returns_400(self, adapter):
@@ -1694,6 +1747,34 @@ class TestSessionIdHeader:
             # History must come from DB, not from the request body
             assert call_kwargs["conversation_history"] == db_history
             assert call_kwargs["user_message"] == "new question"
+
+    @pytest.mark.asyncio
+    async def test_provided_session_id_sanitizes_persisted_assistant_markers(self, adapter):
+        """Stored assistant history should be cleaned before it is sent back to the agent."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "stored message 1"},
+            {"role": "assistant", "content": "`🔍 Python docs`\n\nStored reply 1"},
+        ]
+        adapter._session_db = mock_db
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Hermes-Session-Id": "existing-session"},
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "new question"}]},
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["conversation_history"] == [
+                {"role": "user", "content": "stored message 1"},
+                {"role": "assistant", "content": "Stored reply 1"},
+            ]
 
     @pytest.mark.asyncio
     async def test_db_failure_falls_back_to_empty_history(self, adapter):

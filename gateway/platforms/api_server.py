@@ -24,8 +24,10 @@ import hmac
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
+import unicodedata
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -280,6 +282,63 @@ def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
     from hashlib import sha256
     subset = {k: body.get(k) for k in keys}
     return sha256(repr(subset).encode("utf-8")).hexdigest()
+
+
+def _is_tool_progress_marker(text: str) -> bool:
+    """Detect the chat-completions tool progress marker format injected by Hermes SSE."""
+    stripped = text.strip()
+    if not stripped.startswith("`") or not stripped.endswith("`"):
+        return False
+
+    inner = stripped[1:-1].strip()
+    if not inner or "`" in inner or "\n" in inner:
+        return False
+
+    marker, _, label = inner.partition(" ")
+    if not marker or not label.strip():
+        return False
+    if any(ch.isalnum() or ch == "_" for ch in marker):
+        return False
+
+    # Hermes emits emoji/symbol prefixes such as `⚡ terminal` or `🔍 search`.
+    return any(ord(ch) > 127 and unicodedata.category(ch).startswith("S") for ch in marker)
+
+
+def _strip_tool_progress_markers(content: Any) -> Any:
+    """Remove persisted Hermes tool-progress marker paragraphs from assistant history."""
+    if not isinstance(content, str) or "`" not in content:
+        return content
+
+    cleaned_lines = []
+    removed_marker = False
+    for line in content.splitlines():
+        if _is_tool_progress_marker(line):
+            removed_marker = True
+            continue
+        cleaned_lines.append(line)
+
+    if not removed_marker:
+        return content
+
+    cleaned = "\n".join(cleaned_lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip("\n")
+
+
+def _sanitize_assistant_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Strip stale tool-progress markers from assistant messages before reusing history."""
+    sanitized: List[Dict[str, Any]] = []
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            sanitized.append(msg)
+            continue
+
+        updated = dict(msg)
+        updated["content"] = _strip_tool_progress_markers(updated.get("content", ""))
+        if updated["content"] == "":
+            continue
+        sanitized.append(updated)
+    return sanitized
 
 
 class APIServerAdapter(BasePlatformAdapter):
@@ -537,6 +596,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 else:
                     system_prompt = system_prompt + "\n" + content
             elif role in ("user", "assistant"):
+                if role == "assistant":
+                    content = _strip_tool_progress_markers(content)
+                    if content == "":
+                        continue
                 conversation_messages.append({"role": role, "content": content})
 
         # Extract the last user message as the primary input
@@ -560,7 +623,7 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 db = self._ensure_session_db()
                 if db is not None:
-                    history = db.get_messages_as_conversation(session_id)
+                    history = _sanitize_assistant_history(db.get_messages_as_conversation(session_id))
             except Exception as e:
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
                 history = []
@@ -587,17 +650,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put(delta)
 
-            def _on_tool_progress(event_type, name, preview, args, **kwargs):
-                """Inject tool progress into the SSE stream for Open WebUI."""
-                if event_type != "tool.started":
-                    return  # Only show tool start events in chat stream
-                if name.startswith("_"):
-                    return  # Skip internal events (_thinking)
-                from agent.display import get_tool_emoji
-                emoji = get_tool_emoji(name)
-                label = preview or name
-                _stream_q.put(f"\n`{emoji} {label}`\n")
-
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             agent_ref = [None]
@@ -607,7 +659,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
-                tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
             ))
 
