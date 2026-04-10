@@ -50,6 +50,81 @@ import logging
 import os
 import asyncio
 import datetime
+
+import sys
+from rich.live import Live
+from rich.table import Table
+from rich.panel import Panel
+from rich.text import Text
+from rich.console import Group
+from rich.progress import Progress, BarColumn, TextColumn
+import time
+import os
+
+class MoAStateUI:
+    def __init__(self, ref_models, agg_model):
+        self.ref_models = {m: {"status": "pending", "start_time": 0, "end_time": 0, "chars": 0, "attempts": 1} for m in ref_models}
+        self.agg_model_name = agg_model
+        self.agg_model = {agg_model: {"status": "pending", "start_time": 0, "end_time": 0, "chars": 0, "attempts": 1}}
+        self.start_time = time.time()
+        self.total_models = len(ref_models) + 1
+        self.active = hasattr(sys.stdout, "isatty") and sys.stdout.isatty() and not os.getenv("HERMES_SPINNER_PAUSE")
+
+    def render(self):
+        table = Table(box=None, expand=True, padding=(0, 2))
+        table.add_column("Agent Model", style="bold bright_yellow")
+        table.add_column("State", width=15)
+        table.add_column("Time", justify="right", width=10)
+        table.add_column("Metrics", justify="right", width=15)
+
+        now = time.time()
+        spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        spin_char = spinner_frames[int(now * 10) % len(spinner_frames)]
+
+        layers = [("Reference Layer", self.ref_models), ("Aggregation Layer", self.agg_model)]
+        completed = 0
+
+        for layer_name, models in layers:
+            table.add_row(Text(layer_name, style="bold underline yellow"), "", "", "")
+            for m, s in models.items():
+                status = s["status"]
+                if status == "pending":
+                    st = Text("⏸ Pending", style="dim")
+                    tt = ""
+                    met = ""
+                elif status == "running":
+                    st = Text(f"{spin_char} Thinking", style="bright_cyan")
+                    tt = f"{now - s['start_time']:.1f}s"
+                    met = f"retry {s['attempts']}" if s['attempts'] > 1 else ""
+                elif status == "complete":
+                    completed += 1
+                    st = Text("✓ Complete", style="green")
+                    tt = f"{s['end_time'] - s['start_time']:.1f}s"
+                    met = f"{s['chars']} chars"
+                else:
+                    completed += 1
+                    st = Text("✗ Failed", style="red")
+                    tt = f"{s['end_time'] - s['start_time']:.1f}s"
+                    met = ""
+
+                table.add_row(f"  {m}", st, tt, met)
+            table.add_row("", "", "", "")
+
+        progress = Progress(
+            TextColumn("[bold yellow]{task.description}"),
+            BarColumn(bar_width=40, style="dim yellow", complete_style="bold yellow"),
+            TextColumn("[yellow]{task.percentage:>3.0f}%")
+        )
+        progress.add_task("Total Progress", total=self.total_models, completed=completed)
+
+        return Panel(
+            Group(table, progress),
+            title="[bold yellow]🧠 Mixture of Agents (MoA)[/bold yellow]",
+            subtitle=f"[dim]Elapsed: {now - self.start_time:.1f}s[/dim]",
+            border_style="yellow",
+            padding=(1, 2)
+        )
+
 from typing import Dict, Any, List, Optional
 from tools.openrouter_client import get_async_client as _get_openrouter_client, check_api_key as check_openrouter_api_key
 from agent.auxiliary_client import extract_content_or_reasoning
@@ -106,7 +181,8 @@ async def _run_reference_model_safe(
     user_prompt: str,
     temperature: float = REFERENCE_TEMPERATURE,
     max_tokens: int = 32000,
-    max_retries: int = 6
+    max_retries: int = 6,
+    ui_state: MoAStateUI = None
 ) -> tuple[str, str, bool]:
     """
     Run a single reference model with retry logic and graceful failure handling.
@@ -124,6 +200,11 @@ async def _run_reference_model_safe(
     for attempt in range(max_retries):
         try:
             logger.info("Querying %s (attempt %s/%s)", model, attempt + 1, max_retries)
+            if ui_state:
+                ui_state.ref_models[model]["status"] = "running"
+                ui_state.ref_models[model]["attempts"] = attempt + 1
+                if attempt == 0:
+                    ui_state.ref_models[model]["start_time"] = time.time()
             
             # Build parameters for the API call
             api_params = {
@@ -152,6 +233,10 @@ async def _run_reference_model_safe(
                     await asyncio.sleep(min(2 ** (attempt + 1), 60))
                     continue
             logger.info("%s responded (%s characters)", model, len(content))
+            if ui_state:
+                ui_state.ref_models[model]["status"] = "complete"
+                ui_state.ref_models[model]["end_time"] = time.time()
+                ui_state.ref_models[model]["chars"] = len(content)
             return model, content, True
             
         except Exception as e:
@@ -173,6 +258,9 @@ async def _run_reference_model_safe(
             else:
                 error_msg = f"{model} failed after {max_retries} attempts: {error_str}"
                 logger.error("%s", error_msg, exc_info=True)
+                if ui_state:
+                    ui_state.ref_models[model]["status"] = "error"
+                    ui_state.ref_models[model]["end_time"] = time.time()
                 return model, error_msg, False
 
 
@@ -180,7 +268,8 @@ async def _run_aggregator_model(
     system_prompt: str,
     user_prompt: str,
     temperature: float = AGGREGATOR_TEMPERATURE,
-    max_tokens: int = None
+    max_tokens: int = None,
+    ui_state: MoAStateUI = None
 ) -> str:
     """
     Run the aggregator model to synthesize the final response.
@@ -195,6 +284,9 @@ async def _run_aggregator_model(
         str: Synthesized final response
     """
     logger.info("Running aggregator model: %s", AGGREGATOR_MODEL)
+    if ui_state:
+        ui_state.agg_model[ui_state.agg_model_name]["status"] = "running"
+        ui_state.agg_model[ui_state.agg_model_name]["start_time"] = time.time()
 
     # Build parameters for the API call
     api_params = {
@@ -227,6 +319,10 @@ async def _run_aggregator_model(
         content = extract_content_or_reasoning(response)
 
     logger.info("Aggregation complete (%s characters)", len(content))
+    if ui_state:
+        ui_state.agg_model[ui_state.agg_model_name]["status"] = "complete"
+        ui_state.agg_model[ui_state.agg_model_name]["end_time"] = time.time()
+        ui_state.agg_model[ui_state.agg_model_name]["chars"] = len(content)
     return content
 
 
@@ -306,51 +402,82 @@ async def mixture_of_agents_tool(
         
         logger.info("Using %s reference models in 2-layer MoA architecture", len(ref_models))
         
-        # Layer 1: Generate diverse responses from reference models (with failure handling)
-        logger.info("Layer 1: Generating reference responses...")
-        model_results = await asyncio.gather(*[
-            _run_reference_model_safe(model, user_prompt, REFERENCE_TEMPERATURE)
-            for model in ref_models
-        ])
-        
-        # Separate successful and failed responses
-        successful_responses = []
-        failed_models = []
-        
-        for model_name, content, success in model_results:
-            if success:
-                successful_responses.append(content)
-            else:
-                failed_models.append(model_name)
-        
-        successful_count = len(successful_responses)
-        failed_count = len(failed_models)
-        
-        logger.info("Reference model results: %s successful, %s failed", successful_count, failed_count)
-        
-        if failed_models:
-            logger.warning("Failed models: %s", ', '.join(failed_models))
-        
-        # Check if we have enough successful responses to proceed
-        if successful_count < MIN_SUCCESSFUL_REFERENCES:
-            raise ValueError(f"Insufficient successful reference models ({successful_count}/{len(ref_models)}). Need at least {MIN_SUCCESSFUL_REFERENCES} successful responses.")
-        
-        debug_call_data["reference_responses_count"] = successful_count
-        debug_call_data["failed_models_count"] = failed_count
-        debug_call_data["failed_models"] = failed_models
-        
-        # Layer 2: Aggregate responses using the aggregator model
-        logger.info("Layer 2: Synthesizing final response...")
-        aggregator_system_prompt = _construct_aggregator_prompt(
-            AGGREGATOR_SYSTEM_PROMPT, 
-            successful_responses
-        )
-        
-        final_response = await _run_aggregator_model(
-            aggregator_system_prompt,
-            user_prompt,
-            AGGREGATOR_TEMPERATURE
-        )
+        ui_state = MoAStateUI(ref_models, agg_model)
+
+        async def run_moa():
+            # Layer 1: Generate diverse responses from reference models (with failure handling)
+            logger.info("Layer 1: Generating reference responses...")
+            model_results = await asyncio.gather(*[
+                _run_reference_model_safe(model, user_prompt, REFERENCE_TEMPERATURE, ui_state=ui_state)
+                for model in ref_models
+            ])
+
+            # Separate successful and failed responses
+            successful_responses = []
+            failed_models = []
+
+            for model_name, content, success in model_results:
+                if success:
+                    successful_responses.append(content)
+                else:
+                    failed_models.append(model_name)
+
+            successful_count = len(successful_responses)
+            failed_count = len(failed_models)
+
+            logger.info("Reference model results: %s successful, %s failed", successful_count, failed_count)
+
+            if failed_models:
+                logger.warning("Failed models: %s", ', '.join(failed_models))
+
+            # Check if we have enough successful responses to proceed
+            if successful_count < MIN_SUCCESSFUL_REFERENCES:
+                raise ValueError(f"Insufficient successful reference models ({successful_count}/{len(ref_models)}). Need at least {MIN_SUCCESSFUL_REFERENCES} successful responses.")
+
+            debug_call_data["reference_responses_count"] = successful_count
+            debug_call_data["failed_models_count"] = failed_count
+            debug_call_data["failed_models"] = failed_models
+
+            # Layer 2: Aggregate responses using the aggregator model
+            logger.info("Layer 2: Synthesizing final response...")
+            aggregator_system_prompt = _construct_aggregator_prompt(
+                AGGREGATOR_SYSTEM_PROMPT,
+                successful_responses
+            )
+
+            final_resp = await _run_aggregator_model(
+                aggregator_system_prompt,
+                user_prompt,
+                AGGREGATOR_TEMPERATURE,
+                ui_state=ui_state
+            )
+            return final_resp
+
+        if ui_state.active:
+            # We want to pause KawaiiSpinner if it is running
+            was_paused = os.getenv("HERMES_SPINNER_PAUSE")
+            os.environ["HERMES_SPINNER_PAUSE"] = "1"
+            sys.stdout.write("\r\033[K")
+            sys.stdout.flush()
+
+            final_response = None
+            moa_task = asyncio.create_task(run_moa())
+
+            try:
+                with Live(ui_state.render(), refresh_per_second=10) as live:
+                    while not moa_task.done():
+                        live.update(ui_state.render())
+                        await asyncio.sleep(0.1)
+                    live.update(ui_state.render())
+                    final_response = moa_task.result()
+            finally:
+                if was_paused is None:
+                    if "HERMES_SPINNER_PAUSE" in os.environ:
+                        del os.environ["HERMES_SPINNER_PAUSE"]
+                else:
+                    os.environ["HERMES_SPINNER_PAUSE"] = was_paused
+        else:
+            final_response = await run_moa()
         
         # Calculate processing time
         end_time = datetime.datetime.now()
