@@ -181,3 +181,28 @@ def test_on_session_end_does_not_raise_without_store(monkeypatch):
     provider = MnemoriaMemoryProvider()
     provider._read_only = False
     provider.on_session_end([{"role": "user", "content": "bye"}])
+
+
+def test_full_lifecycle_smoke():
+    """Smoke test: provider can be instantiated and all hook methods exist."""
+    provider = MnemoriaMemoryProvider()
+
+    assert callable(provider.initialize)
+    assert callable(provider.system_prompt_block)
+    assert callable(provider.prefetch)
+    assert callable(provider.queue_prefetch)
+    assert callable(provider.on_memory_write)
+    assert callable(provider.on_delegation)
+    assert callable(provider.on_pre_compress)
+    assert callable(provider.on_session_end)
+    assert callable(provider.get_config_schema)
+    assert callable(provider.save_config)
+    assert callable(provider.shutdown)
+
+    block = provider.system_prompt_block()
+    assert isinstance(block, str)
+    assert len(block) > 0
+
+    schema = provider.get_config_schema()
+    assert isinstance(schema, list)
+    assert len(schema) > 0
