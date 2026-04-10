@@ -1518,6 +1518,7 @@ def run_doctor(args):
             (PROJECT_ROOT, "web workspace", ["--workspace", "web"]),
             (PROJECT_ROOT, "ui-tui workspace", ["--workspace", "ui-tui"]),
             (PROJECT_ROOT / "scripts" / "whatsapp-bridge", "WhatsApp bridge", []),
+            (PROJECT_ROOT / "scripts" / "session-bridge", "Session bridge", []),
         ]
         for npm_dir, label, audit_extra in npm_audit_targets:
             # For workspace-scoped audits run from PROJECT_ROOT the
@@ -1569,6 +1570,13 @@ def run_doctor(args):
             except Exception:
                 pass
 
+   # Session gateway checks
+    try:
+        from gateway.platforms.session import session_doctor_checks
+        fixed_count += session_doctor_checks(check_ok, check_fail, check_warn, issues, should_fix)
+    except ImportError:
+        pass
+    
     if _is_termux():
         check_info("Termux compatibility fallbacks:")
         for note in _termux_install_all_fallback_notes():

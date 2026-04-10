@@ -648,6 +648,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/messaging/ntfy',
             'user-guide/messaging/open-webui',
             'user-guide/messaging/webhooks',
+            'user-guide/messaging/session',
           ],
         },
       ],
