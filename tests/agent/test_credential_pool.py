@@ -328,6 +328,158 @@ def test_mark_exhausted_and_rotate_persists_status(tmp_path, monkeypatch):
     assert persisted["last_error_code"] == 402
 
 
+def test_persist_preserves_entries_added_by_other_process(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-ant-api-primary",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    assert pool.select() is not None
+
+    auth_path = tmp_path / "hermes" / "auth.json"
+    payload = json.loads(auth_path.read_text())
+    payload["credential_pool"]["anthropic"].append(
+        {
+            "id": "cred-2",
+            "label": "concurrent",
+            "auth_type": "api_key",
+            "priority": 1,
+            "source": "manual",
+            "access_token": "sk-ant-api-concurrent",
+        }
+    )
+    auth_path.write_text(json.dumps(payload, indent=2))
+
+    pool.mark_exhausted_and_rotate(status_code=402)
+
+    persisted = json.loads(auth_path.read_text())["credential_pool"]["anthropic"]
+    persisted_by_id = {entry["id"]: entry for entry in persisted}
+    assert set(persisted_by_id) == {"cred-1", "cred-2"}
+    assert persisted_by_id["cred-1"]["last_status"] == "exhausted"
+    assert persisted_by_id["cred-1"]["last_error_code"] == 402
+    assert persisted_by_id["cred-2"]["access_token"] == "sk-ant-api-concurrent"
+
+
+def test_sync_codex_entry_from_cli_skips_manual_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "manual",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "manual-access",
+                        "refresh_token": "manual-refresh",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    monkeypatch.setattr(
+        "agent.credential_pool._import_codex_cli_tokens",
+        lambda: {
+            "access_token": "cli-access",
+            "refresh_token": "cli-refresh",
+        },
+    )
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is not None
+
+    synced = pool._sync_codex_entry_from_cli(entry)
+    assert synced.id == "cred-1"
+    assert synced.access_token == "manual-access"
+    assert synced.refresh_token == "manual-refresh"
+
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    saved = persisted["credential_pool"]["openai-codex"][0]
+    assert saved["access_token"] == "manual-access"
+    assert saved["refresh_token"] == "manual-refresh"
+
+
+def test_sync_codex_entry_from_cli_preserves_exhausted_status(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    exhausted_at = time.time() - 10
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "device-code",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "device_code",
+                        "access_token": "old-access",
+                        "refresh_token": "old-refresh",
+                        "last_status": "exhausted",
+                        "last_status_at": exhausted_at,
+                        "last_error_code": 429,
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    monkeypatch.setattr(
+        "agent.credential_pool._import_codex_cli_tokens",
+        lambda: {
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+        },
+    )
+
+    pool = load_pool("openai-codex")
+    entry = pool.entries()[0]
+    synced = pool._sync_codex_entry_from_cli(entry)
+
+    assert synced.access_token == "new-access"
+    assert synced.refresh_token == "new-refresh"
+    assert synced.last_status == "exhausted"
+    assert synced.last_status_at == exhausted_at
+    assert synced.last_error_code == 429
+
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    saved = persisted["credential_pool"]["openai-codex"][0]
+    assert saved["access_token"] == "new-access"
+    assert saved["refresh_token"] == "new-refresh"
+    assert saved["last_status"] == "exhausted"
+    assert saved["last_status_at"] == exhausted_at
+    assert saved["last_error_code"] == 429
+
+
 def test_try_refresh_current_updates_only_current_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(
