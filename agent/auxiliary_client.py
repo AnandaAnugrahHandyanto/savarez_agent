@@ -215,13 +215,9 @@ def _pool_runtime_base_url(entry: Any, fallback: str = "") -> str:
 
 def _jwt_is_expired(token: str) -> bool:
     try:
-        import base64
+        from hermes_cli.auth import _codex_access_token_is_expiring
 
-        payload = token.split(".")[1]
-        payload += "=" * (-len(payload) % 4)
-        claims = json.loads(base64.urlsafe_b64decode(payload))
-        exp = claims.get("exp", 0)
-        return bool(exp and time.time() > exp)
+        return bool(_codex_access_token_is_expiring(token, 0))
     except Exception:
         return False
 
