@@ -1128,6 +1128,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     volumes = cc.get("docker_volumes", [])
     docker_forward_env = cc.get("docker_forward_env", [])
     docker_env = cc.get("docker_env", {})
+    expiry_seconds = cc.get("container_expiry_seconds", 7200)
+    max_concurrent = cc.get("max_concurrent_containers", 2)
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
@@ -1143,6 +1145,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             forward_env=docker_forward_env,
             env=docker_env,
             run_as_host_user=cc.get("docker_run_as_host_user", False),
+            expiry_seconds=expiry_seconds,
+            max_concurrent_containers=max_concurrent,
         )
     
     elif env_type == "singularity":
@@ -1787,10 +1791,13 @@ def terminal_tool(
                                 "modal_mode": config.get("modal_mode", "auto"),
                                 "vercel_runtime": config.get("vercel_runtime", ""),
                                 "docker_volumes": config.get("docker_volumes", []),
-                                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                                 "docker_forward_env": config.get("docker_forward_env", []),
                                 "docker_env": config.get("docker_env", {}),
+                                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+                                "docker_forward_env": config.get("docker_forward_env", []),
                                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                                "container_expiry_seconds": config.get("container_expiry_seconds", 7200),
+                                "max_concurrent_containers": config.get("max_concurrent_containers", 2),
                             }
 
                         local_config = None
