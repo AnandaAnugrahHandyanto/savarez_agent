@@ -728,7 +728,7 @@ def _classify_by_message(
     if any(p in error_msg for p in _AUTH_PATTERNS):
         return result_fn(
             FailoverReason.auth,
-            retryable=True,
+            retryable=False,
             should_rotate_credential=True,
         )
 
