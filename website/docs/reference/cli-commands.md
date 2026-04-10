@@ -646,6 +646,19 @@ hermes insights [--days N] [--source platform]
 ## `hermes claw`
 
 ```bash
+hermes claw <subcommand>
+```
+
+Commands for importing an OpenClaw setup into Hermes and archiving leftover OpenClaw directories after migration.
+
+| Subcommand | Description |
+|------------|-------------|
+| `migrate [options]` | Import settings, memories, skills, providers, and compatible secrets into Hermes. |
+| `cleanup [options]` (alias: `clean`) | Archive leftover OpenClaw directories by renaming them to `.pre-migration` to prevent state fragmentation. |
+
+### `hermes claw migrate`
+
+```bash
 hermes claw migrate [options]
 ```
 
@@ -688,6 +701,35 @@ hermes claw migrate --preset user-data --overwrite
 
 # Migrate from a custom OpenClaw path
 hermes claw migrate --source /home/user/old-openclaw
+```
+
+### `hermes claw cleanup`
+
+```bash
+hermes claw cleanup [options]
+```
+
+Archive leftover OpenClaw directories after migration by renaming them to `.pre-migration`. This keeps the old directory available for manual rollback while preventing Hermes or helper scripts from discovering stale workspace state.
+
+| Option | Description |
+|--------|-------------|
+| `--source <path>` | Path to a specific OpenClaw directory to clean up. |
+| `--dry-run` | Preview what would be archived without renaming anything. |
+| `--yes` | Skip confirmation prompts. |
+
+If `--source` is omitted, Hermes scans the default OpenClaw locations: `~/.openclaw`, `~/.clawdbot`, and `~/.moldbot`.
+
+Examples:
+
+```bash
+# Preview which directories would be archived
+hermes claw cleanup --dry-run
+
+# Archive the default OpenClaw directory without prompting
+hermes claw cleanup --yes
+
+# Clean up a specific legacy directory
+hermes claw cleanup --source /home/user/.clawdbot
 ```
 
 ## `hermes profile`

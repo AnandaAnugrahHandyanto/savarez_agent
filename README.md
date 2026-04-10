@@ -121,6 +121,8 @@ hermes claw migrate              # Interactive migration (full preset)
 hermes claw migrate --dry-run    # Preview what would be migrated
 hermes claw migrate --preset user-data   # Migrate without secrets
 hermes claw migrate --overwrite  # Overwrite existing conflicts
+hermes claw cleanup --dry-run    # Preview old directories that would be archived
+hermes claw cleanup              # Rename ~/.openclaw to ~/.openclaw.pre-migration
 ```
 
 What gets imported:
@@ -133,7 +135,7 @@ What gets imported:
 - **TTS assets** — workspace audio files
 - **Workspace instructions** — AGENTS.md (with `--workspace-target`)
 
-See `hermes claw migrate --help` for all options, or use the `openclaw-migration` skill for an interactive agent-guided migration with dry-run previews.
+After a successful migration, run `hermes claw cleanup` to archive the old OpenClaw directory without deleting it. See `hermes claw migrate --help` and `hermes claw cleanup --help` for all options, or use the `openclaw-migration` skill for an interactive agent-guided migration with dry-run previews.
 
 ---
 

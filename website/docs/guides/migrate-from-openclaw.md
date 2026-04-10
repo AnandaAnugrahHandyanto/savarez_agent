@@ -14,7 +14,7 @@ description: "Complete guide to migrating your OpenClaw / Clawdbot setup to Herm
 # Preview what would happen (no files changed)
 hermes claw migrate --dry-run
 
-# Run the migration (secrets excluded by default)
+# Run the migration with the default full preset
 hermes claw migrate
 
 # Full migration including API keys
@@ -22,6 +22,20 @@ hermes claw migrate --preset full
 ```
 
 The migration reads from `~/.openclaw/` by default. If you still have a legacy `~/.clawdbot/` or `~/.moldbot/` directory, it's detected automatically. Same for legacy config filenames (`clawdbot.json`, `moldbot.json`).
+
+## Archive the old OpenClaw directory
+
+After you confirm Hermes is working, archive the old OpenClaw directory so leftover state stops being discovered:
+
+```bash
+# Preview which directories would be archived
+hermes claw cleanup --dry-run
+
+# Rename ~/.openclaw to ~/.openclaw.pre-migration
+hermes claw cleanup
+```
+
+`hermes claw cleanup` renames the directory; it does not delete it. By default it checks `~/.openclaw`, `~/.clawdbot`, and `~/.moldbot`. Use `--source /path/to/dir` if your old installation lives elsewhere.
 
 ## Options
 
@@ -215,13 +229,15 @@ The migration resolves all three formats. For env templates and SecretRef object
 
 2. **Review archived files** — anything in `~/.hermes/migration/openclaw/<timestamp>/archive/` needs manual attention.
 
-3. **Verify API keys** — run `hermes status` to check provider authentication.
+3. **Archive the old OpenClaw directory** — run `hermes claw cleanup` once you no longer need `~/.openclaw` to stay live.
 
-4. **Test messaging** — if you migrated platform tokens, restart the gateway: `systemctl --user restart hermes-gateway`
+4. **Verify API keys** — run `hermes status` to check provider authentication.
 
-5. **Check session policies** — verify `hermes config get session_reset` matches your expectations.
+5. **Test messaging** — if you migrated platform tokens, restart the gateway: `hermes gateway restart`
 
-6. **Re-pair WhatsApp** — WhatsApp uses QR code pairing (Baileys), not token migration. Run `hermes whatsapp` to pair.
+6. **Check session policies** — verify `hermes config get session_reset` matches your expectations.
+
+7. **Re-pair WhatsApp** — WhatsApp uses QR code pairing (Baileys), not token migration. Run `hermes whatsapp` to pair.
 
 ## Troubleshooting
 
