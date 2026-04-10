@@ -2118,10 +2118,21 @@ class HermesCLI:
         return changed
 
     def _on_thinking(self, text: str) -> None:
-        """Called by agent when thinking starts/stops. Updates TUI spinner."""
+        """Called by agent when thinking starts/stops.
+
+        Interactive mode routes this into the TUI spinner widget. Single-query
+        mode has no prompt_toolkit app, so emit a plain stdout progress line that
+        adapters can parse instead of silently dropping the thinking state.
+        """
         if not text:
             self._flush_reasoning_preview(force=True)
         self._spinner_text = text or ""
+
+        if not getattr(self, "_app", None):
+            if text and self.tool_progress_mode != "off" and not self.verbose:
+                _cprint(f"  ┊ 💭 {text}")
+            return
+
         self._invalidate()
 
     # ── Streaming display ────────────────────────────────────────────────
@@ -6081,9 +6092,10 @@ class HermesCLI:
     def _on_tool_progress(self, event_type: str, function_name: str = None, preview: str = None, function_args: dict = None, **kwargs):
         """Called on tool lifecycle events (tool.started, tool.completed, reasoning.available, etc.).
 
-        Updates the TUI spinner widget so the user can see what the agent
-        is doing during tool execution (fills the gap between thinking
-        spinner and next response).  Also plays audio cue in voice mode.
+        Updates the TUI spinner widget in interactive mode. In single-query
+        mode there is no prompt_toolkit app, so emit a `[tool]` line that
+        adapters can parse into an incremental tool_call event. Also plays
+        audio cue in voice mode.
         """
         # Only act on tool.started; ignore tool.completed, reasoning.available, etc.
         if event_type != "tool.started":
@@ -6097,7 +6109,11 @@ class HermesCLI:
             if _pl > 0 and len(label) > _pl:
                 label = label[:_pl - 3] + "..."
             self._spinner_text = f"{emoji} {label}"
-            self._invalidate()
+
+            if getattr(self, "_app", None):
+                self._invalidate()
+            elif self.tool_progress_mode != "off" and not self.verbose:
+                _cprint(f"  [tool] {emoji} {label}")
 
         if not self._voice_mode:
             return
