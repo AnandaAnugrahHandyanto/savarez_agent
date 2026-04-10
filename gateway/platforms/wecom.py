@@ -143,9 +143,6 @@ class WeComAdapter(BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
-    # Threshold for detecting WeCom client-side message splits.
-    # When a chunk is near the 4000-char limit, a continuation is almost certain.
-    _SPLIT_THRESHOLD = 3900
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM)
@@ -174,13 +171,7 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._seen_messages: Dict[str, float] = {}
         self._reply_req_ids: Dict[str, str] = {}
-
-        # Text batching: merge rapid successive messages (Telegram-style).
-        # WeCom clients split long messages around 4000 chars.
-        self._text_batch_delay_seconds = float(os.getenv("HERMES_WECOM_TEXT_BATCH_DELAY_SECONDS", "0.6"))
-        self._text_batch_split_delay_seconds = float(os.getenv("HERMES_WECOM_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
-        self._pending_text_batches: Dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        self._active_streams: Dict[str, Tuple[str, str]] = {}  # message_id -> (reply_req_id, stream_id)
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -529,82 +520,7 @@ class WeComAdapter(BasePlatformAdapter):
             timestamp=datetime.now(tz=timezone.utc),
         )
 
-        # Only batch plain text messages — commands, media, etc. dispatch
-        # immediately since they won't be split by the WeCom client.
-        if message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
-            self._enqueue_text_event(event)
-        else:
-            await self.handle_message(event)
-
-    # ------------------------------------------------------------------
-    # Text message aggregation (handles WeCom client-side splits)
-    # ------------------------------------------------------------------
-
-    def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching."""
-        from gateway.session import build_session_key
-        return build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-        )
-
-    def _enqueue_text_event(self, event: MessageEvent) -> None:
-        """Buffer a text event and reset the flush timer.
-
-        When WeCom splits a long user message at 4000 chars, the chunks
-        arrive within a few hundred milliseconds.  This merges them into
-        a single event before dispatching.
-        """
-        key = self._text_batch_key(event)
-        existing = self._pending_text_batches.get(key)
-        chunk_len = len(event.text or "")
-        if existing is None:
-            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            self._pending_text_batches[key] = event
-        else:
-            if event.text:
-                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
-            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            # Merge any media that might be attached
-            if event.media_urls:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
-
-        # Cancel any pending flush and restart the timer
-        prior_task = self._pending_text_batch_tasks.get(key)
-        if prior_task and not prior_task.done():
-            prior_task.cancel()
-        self._pending_text_batch_tasks[key] = asyncio.create_task(
-            self._flush_text_batch(key)
-        )
-
-    async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch the aggregated text.
-
-        Uses a longer delay when the latest chunk is near WeCom's 4000-char
-        split point, since a continuation chunk is almost certain.
-        """
-        current_task = asyncio.current_task()
-        try:
-            pending = self._pending_text_batches.get(key)
-            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-            if last_len >= self._SPLIT_THRESHOLD:
-                delay = self._text_batch_split_delay_seconds
-            else:
-                delay = self._text_batch_delay_seconds
-            await asyncio.sleep(delay)
-            event = self._pending_text_batches.pop(key, None)
-            if not event:
-                return
-            logger.info(
-                "[WeCom] Flushing text batch %s (%d chars)",
-                key, len(event.text or ""),
-            )
-            await self.handle_message(event)
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)
+        await self.handle_message(event)
 
     @staticmethod
     def _extract_text(body: Dict[str, Any]) -> Tuple[str, Optional[str]]:
@@ -1160,20 +1076,45 @@ class WeComAdapter(BasePlatformAdapter):
         self._raise_for_wecom_error(response, "send media message")
         return response
 
-    async def _send_reply_stream(self, reply_req_id: str, content: str) -> Dict[str, Any]:
-        response = await self._send_reply_request(
-            reply_req_id,
-            {
+    async def _send_reply_stream(
+        self,
+        reply_req_id: str,
+        content: str,
+        stream_id: Optional[str] = None,
+        finish: bool = True,
+    ) -> Dict[str, Any]:
+        stream_id = stream_id or self._new_req_id("stream")
+        payload = {
+            "cmd": APP_CMD_RESPONSE,
+            "headers": {"req_id": str(reply_req_id).strip()},
+            "body": {
                 "msgtype": "stream",
                 "stream": {
-                    "id": self._new_req_id("stream"),
-                    "finish": True,
+                    "id": stream_id,
+                    "finish": finish,
                     "content": content[:self.MAX_MESSAGE_LENGTH],
                 },
             },
-        )
-        self._raise_for_wecom_error(response, "send reply stream")
-        return response
+        }
+        if finish:
+            # Final chunk: use request/response to get ACK
+            response = await self._send_reply_request(
+                reply_req_id,
+                {
+                    "msgtype": "stream",
+                    "stream": {
+                        "id": stream_id,
+                        "finish": True,
+                        "content": content[:self.MAX_MESSAGE_LENGTH],
+                    },
+                },
+            )
+            self._raise_for_wecom_error(response, "send reply stream")
+            return response
+        else:
+            # Intermediate chunk: fire-and-forget to avoid blocking
+            await self._send_json(payload)
+            return {"headers": {"req_id": reply_req_id}}
 
     async def _send_reply_media_message(
         self,
@@ -1291,8 +1232,13 @@ class WeComAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send markdown to a WeCom chat via proactive ``aibot_send_msg``."""
-        del metadata
+        """Send markdown to a WeCom chat via proactive ``aibot_send_msg``.
+
+        When ``metadata`` contains ``{"streaming": True}`` (set by the stream
+        consumer), the first chunk is sent with ``finish=False`` so that
+        subsequent ``edit_message`` calls can continue the stream.
+        """
+        _streaming = bool(metadata.get("streaming")) if metadata else False
 
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
@@ -1300,7 +1246,16 @@ class WeComAdapter(BasePlatformAdapter):
         try:
             reply_req_id = self._reply_req_id_for_message(reply_to)
             if reply_req_id:
-                response = await self._send_reply_stream(reply_req_id, content)
+                stream_id = self._new_req_id("stream")
+                finish = not _streaming
+                response = await self._send_reply_stream(
+                    reply_req_id, content, stream_id=stream_id, finish=finish,
+                )
+                msg_id = reply_req_id
+                if _streaming:
+                    # Track the stream so edit_message / finalize_stream can continue
+                    self._active_streams[msg_id] = (reply_req_id, stream_id)
+                return SendResult(success=True, message_id=msg_id, raw_response=response)
             else:
                 response = await self._send_request(
                     APP_CMD_SEND,
@@ -1325,6 +1280,43 @@ class WeComAdapter(BasePlatformAdapter):
             message_id=self._payload_req_id(response) or uuid.uuid4().hex[:12],
             raw_response=response,
         )
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+    ) -> SendResult:
+        """Edit a streamed message by sending the next stream chunk."""
+        stream_info = self._active_streams.get(message_id)
+        if not stream_info:
+            return SendResult(success=False, error="No active stream for this message")
+
+        reply_req_id, stream_id = stream_info
+        try:
+            await self._send_reply_stream(
+                reply_req_id, content, stream_id=stream_id, finish=False,
+            )
+            return SendResult(success=True, message_id=message_id)
+        except Exception as exc:
+            logger.error("[%s] Stream edit failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc))
+
+    async def finalize_stream(self, chat_id: str, message_id: str, content: str) -> SendResult:
+        """Send the final stream chunk with finish=True and clean up."""
+        stream_info = self._active_streams.pop(message_id, None)
+        if not stream_info:
+            return SendResult(success=False, error="No active stream to finalize")
+
+        reply_req_id, stream_id = stream_info
+        try:
+            response = await self._send_reply_stream(
+                reply_req_id, content, stream_id=stream_id, finish=True,
+            )
+            return SendResult(success=True, message_id=message_id, raw_response=response)
+        except Exception as exc:
+            logger.error("[%s] Stream finalize failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc))
 
     async def send_image(
         self,

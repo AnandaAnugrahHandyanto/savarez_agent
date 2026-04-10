@@ -62,11 +62,13 @@ class GatewayStreamConsumer:
         chat_id: str,
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
+        reply_to: Optional[str] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
         self.metadata = metadata
+        self.reply_to = reply_to
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
         self._message_id: Optional[str] = None
@@ -200,7 +202,18 @@ class GatewayStreamConsumer:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
                         elif self._message_id:
-                            await self._send_or_edit(self._accumulated)
+                            # If the adapter supports finalize_stream, send the
+                            # final chunk with finish=True (e.g. WeCom native
+                            # streaming).  Otherwise fall back to a regular edit.
+                            if hasattr(self.adapter, "finalize_stream"):
+                                try:
+                                    await self.adapter.finalize_stream(
+                                        self.chat_id, self._message_id, self._accumulated,
+                                    )
+                                except Exception:
+                                    await self._send_or_edit(self._accumulated)
+                            else:
+                                await self._send_or_edit(self._accumulated)
                         elif not self._already_sent:
                             await self._send_or_edit(self._accumulated)
                     return
@@ -210,6 +223,14 @@ class GatewayStreamConsumer:
                 # text chunk creates a fresh message below any tool-progress
                 # messages the gateway sent in between.
                 if got_segment_break:
+                    # Finalize the current stream before resetting
+                    if self._message_id and hasattr(self.adapter, "finalize_stream"):
+                        try:
+                            await self.adapter.finalize_stream(
+                                self.chat_id, self._message_id, self._last_sent_text or self._accumulated,
+                            )
+                        except Exception:
+                            pass
                     self._message_id = None
                     self._accumulated = ""
                     self._last_sent_text = ""
@@ -222,7 +243,12 @@ class GatewayStreamConsumer:
             # Best-effort final edit on cancellation
             if self._accumulated and self._message_id:
                 try:
-                    await self._send_or_edit(self._accumulated)
+                    if hasattr(self.adapter, "finalize_stream"):
+                        await self.adapter.finalize_stream(
+                            self.chat_id, self._message_id, self._accumulated,
+                        )
+                    else:
+                        await self._send_or_edit(self._accumulated)
                 except Exception:
                     pass
         except Exception as e:
@@ -399,10 +425,13 @@ class GatewayStreamConsumer:
                     pass
             else:
                 # First message — send new
+                _meta = dict(self.metadata) if self.metadata else {}
+                _meta["streaming"] = True
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=text,
-                    metadata=self.metadata,
+                    reply_to=self.reply_to,
+                    metadata=_meta,
                 )
                 if result.success and result.message_id:
                     self._message_id = result.message_id
