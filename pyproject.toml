@@ -43,7 +43,6 @@ dev = ["debugpy>=1.8.0,<2", "pytest>=9.0.2,<10", "pytest-asyncio>=1.3.0,<2", "py
 messaging = ["python-telegram-bot[webhooks]>=22.6,<23", "discord.py[voice]>=2.7.1,<3", "aiohttp>=3.13.3,<4", "slack-bolt>=1.18.0,<2", "slack-sdk>=3.27.0,<4"]
 cron = ["croniter>=6.0.0,<7"]
 slack = ["slack-bolt>=1.18.0,<2", "slack-sdk>=3.27.0,<4"]
-matrix = ["matrix-nio[e2e]>=0.24.0,<1", "Markdown>=3.6,<4"]
 cli = ["simple-term-menu>=1.0,<2"]
 tts-premium = ["elevenlabs>=1.0,<2"]
 voice = [
@@ -88,10 +87,10 @@ all = [
   "hermes-agent[modal]",
   "hermes-agent[daytona]",
   "hermes-agent[messaging]",
-  # matrix excluded: python-olm (required by matrix-nio[e2e]) is upstream-broken
-  # on modern macOS (archived libolm, C++ errors with Clang 21+). Including it
-  # here causes the entire [all] install to fail, dropping all other extras.
-  # Users who need Matrix can install manually: pip install 'hermes-agent[matrix]'
+  # Matrix extras are intentionally omitted from packaging metadata for now.
+  # Current matrix-nio wheels still pin h11~=0.14, which conflicts with the
+  # httpcore==1.x stack required by Hermes core deps. Users who need Matrix can
+  # still install matrix-nio manually until a compatible dependency set exists.
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[dev]",

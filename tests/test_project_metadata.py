@@ -11,12 +11,21 @@ def _load_optional_dependencies():
     return project["optional-dependencies"]
 
 
-def test_matrix_extra_exists_but_excluded_from_all():
-    """matrix-nio[e2e] depends on python-olm which is upstream-broken on modern
-    macOS (archived libolm, C++ errors with Clang 21+).  The [matrix] extra is
-    kept for opt-in install but deliberately excluded from [all] so one broken
-    upstream dep doesn't nuke every other extra during ``hermes update``."""
+def test_broken_matrix_extra_not_advertised():
+    """Do not publish a Matrix extra until its dependency stack is compatible.
+
+    Current matrix-nio wheels still require h11~=0.14, which conflicts with the
+    httpcore==1.x stack pulled in by Hermes core dependencies. Advertising a
+    ``hermes-agent[matrix]`` install path would therefore publish a broken
+    dependency set in packaging metadata.
+    """
     optional_dependencies = _load_optional_dependencies()
 
-    assert "matrix" in optional_dependencies
-    assert "hermes-agent[matrix]" not in optional_dependencies["all"]
+    assert "matrix" not in optional_dependencies
+
+
+def test_all_extra_does_not_pull_matrix_dependencies():
+    """The catch-all extra must stay installable even while Matrix is guarded."""
+    optional_dependencies = _load_optional_dependencies()
+
+    assert all("matrix" not in dep for dep in optional_dependencies["all"])
