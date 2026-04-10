@@ -1384,6 +1384,9 @@ DEFAULT_CONFIG = {
         "backup_keep": 5,
     },
 
+    # MCP servers — top-level key so save_config() preserves it on round-trip.
+    "mcp_servers": {},
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 23,
 }
