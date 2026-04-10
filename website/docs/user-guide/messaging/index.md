@@ -211,11 +211,11 @@ Control how much tool activity is displayed in `~/.hermes/config.yaml`:
 
 ```yaml
 display:
-  tool_progress: all    # off | new | all | verbose
+  tool_progress: off    # off (default for gateway) | new | all | verbose
   tool_progress_command: false  # set to true to enable /verbose in messaging
 ```
 
-When enabled, the bot sends status messages as it works:
+Gateway platforms default to `off` — only the final response is shown. Set to `all` or `new` to see tool activity. When enabled, the bot sends status messages as it works:
 
 ```text
 💻 `ls -la`...

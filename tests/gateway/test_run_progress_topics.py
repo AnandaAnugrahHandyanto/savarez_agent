@@ -103,6 +103,7 @@ def _make_runner(adapter):
     runner._fallback_model = None
     runner._session_db = None
     runner._running_agents = {}
+    runner._session_model_overrides = {}
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     return runner
 
@@ -323,6 +324,66 @@ def test_all_mode_respects_custom_preview_length(monkeypatch, tmp_path):
     assert len(preview_text) > 40, f"Preview suspiciously short ({len(preview_text)}): {preview_text}"
     # But still capped at 120
     assert len(preview_text) <= 120, f"Preview too long ({len(preview_text)}): {preview_text}"
+
+
+class NullSafeFakeAgent:
+    """Like FakeAgent but guards callback calls — used when progress is off."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.tool_progress_callback:
+            self.tool_progress_callback("tool.started", "terminal", "pwd", {})
+            time.sleep(0.35)
+            self.tool_progress_callback("tool.started", "browser_navigate", "https://example.com", {})
+            time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+@pytest.mark.asyncio
+async def test_gateway_defaults_to_off_no_progress_messages(monkeypatch, tmp_path):
+    """Without explicit tool_progress config or env var, gateway default is 'off' — no progress messages."""
+    # Deliberately do NOT set HERMES_TOOL_PROGRESS_MODE
+    monkeypatch.delenv("HERMES_TOOL_PROGRESS_MODE", raising=False)
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = NullSafeFakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-default",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    # With default "off", no progress messages should be sent
+    assert adapter.sent == [], f"Expected no progress messages, got {adapter.sent}"
+    assert adapter.edits == [], f"Expected no edits, got {adapter.edits}"
 
 
 def test_all_mode_no_truncation_when_preview_fits(monkeypatch, tmp_path):

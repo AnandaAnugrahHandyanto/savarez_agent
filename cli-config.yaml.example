@@ -759,12 +759,14 @@ display:
   # Use compact banner mode
   compact: false
 
-  # Tool progress display level (CLI and gateway)
+  # Tool progress display level
   #   off:     Silent — no tool activity shown, just the final response
   #   new:     Show a tool indicator only when the tool changes (skip repeats)
-  #   all:     Show every tool call with a short preview (default)
+  #   all:     Show every tool call with a short preview
   #   verbose: Full args, results, and debug logs (same as /verbose)
-  # Toggle at runtime with /verbose in the CLI
+  # CLI default: "all" (spinner shows tool activity inline)
+  # Gateway default: "off" (messaging users only see the final response)
+  # Toggle at runtime with /verbose in the CLI or gateway
   tool_progress: all
 
   # What Enter does when Hermes is already busy in the CLI.

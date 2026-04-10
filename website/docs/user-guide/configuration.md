@@ -821,7 +821,7 @@ This controls both the `text_to_speech` tool and spoken replies in voice mode (`
 
 ```yaml
 display:
-  tool_progress: all      # off | new | all | verbose
+  tool_progress: all      # off (gateway default) | new | all (CLI default) | verbose
   tool_progress_command: false  # Enable /verbose slash command in messaging gateway
   tool_progress_overrides: {}  # Per-platform overrides (see below)
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
@@ -839,7 +839,7 @@ display:
 |------|-------------|
 | `off` | Silent — just the final response |
 | `new` | Tool indicator only when the tool changes |
-| `all` | Every tool call with a short preview (default) |
+| `all` | Every tool call with a short preview (CLI default) |
 | `verbose` | Full args, results, and debug logs |
 
 In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in messaging platforms (Telegram, Discord, Slack, etc.), set `tool_progress_command: true` in the `display` section above. The command will then cycle the mode and save to config.
@@ -850,7 +850,7 @@ Different platforms have different verbosity needs. For example, Signal can't ed
 
 ```yaml
 display:
-  tool_progress: all          # global default
+  tool_progress: all          # explicit opt-in for gateway (CLI default is already "all")
   tool_progress_overrides:
     signal: 'off'             # silence progress on Signal
     telegram: verbose         # detailed progress on Telegram

@@ -107,8 +107,8 @@ class TestVerboseCommand:
                 f"Expected {mode}, got {saved['display']['tool_progress']}"
 
     @pytest.mark.asyncio
-    async def test_defaults_to_all_when_no_tool_progress_set(self, tmp_path, monkeypatch):
-        """When tool_progress is not in config, defaults to 'all' then cycles to verbose."""
+    async def test_defaults_to_off_when_no_tool_progress_set(self, tmp_path, monkeypatch):
+        """When tool_progress is not in config, gateway defaults to 'off' then cycles to 'new'."""
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
@@ -122,10 +122,10 @@ class TestVerboseCommand:
         runner = _make_runner()
         result = await runner._handle_verbose_command(_make_event())
 
-        # default "all" -> verbose
-        assert "VERBOSE" in result
+        # gateway default "off" -> new
+        assert "NEW" in result
         saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        assert saved["display"]["tool_progress"] == "verbose"
+        assert saved["display"]["tool_progress"] == "new"
 
     @pytest.mark.asyncio
     async def test_no_config_file_returns_disabled(self, tmp_path, monkeypatch):

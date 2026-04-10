@@ -4979,7 +4979,7 @@ class GatewayRunner:
             "verbose": "⚙️ Tool progress: **VERBOSE** — every tool call with full arguments.",
         }
 
-        raw_progress = user_config.get("display", {}).get("tool_progress", "all")
+        raw_progress = user_config.get("display", {}).get("tool_progress", "off")
         # YAML 1.1 parses bare "off" as boolean False — normalise back
         if raw_progress is False:
             current = "off"
@@ -4988,7 +4988,7 @@ class GatewayRunner:
         else:
             current = str(raw_progress).lower()
         if current not in cycle:
-            current = "all"
+            current = "off"
         idx = (cycle.index(current) + 1) % len(cycle)
         new_mode = cycle[idx]
 
@@ -6420,11 +6420,16 @@ class GatewayRunner:
         # Tool progress mode from config.yaml: "all", "new", "verbose", "off"
         # Falls back to env vars for backward compatibility.
         # YAML 1.1 parses bare `off` as boolean False — normalise before
-        # the `or` chain so it doesn't silently fall through to "all".
+        # the `or` chain so it doesn't silently fall through to the default.
+        #
+        # Gateway default is "off" — messaging users only see the final
+        # response unless they explicitly opt in via config.yaml or
+        # /verbose.  CLI default remains "all" (set in cli.py).
         #
         # Per-platform overrides (display.tool_progress_overrides) take
-        # priority over the global setting — e.g. Signal users can set
-        # tool_progress to "off" while keeping Telegram on "all".
+        # priority over the global setting — e.g. users can set
+        # tool_progress_overrides.telegram to "all" while keeping the
+        # global gateway default "off".
         _display_cfg = user_config.get("display", {})
         _overrides = _display_cfg.get("tool_progress_overrides", {})
         _raw_tp = _overrides.get(platform_key)
@@ -6435,7 +6440,7 @@ class GatewayRunner:
         progress_mode = (
             _raw_tp
             or os.getenv("HERMES_TOOL_PROGRESS_MODE")
-            or "all"
+            or "off"
         )
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
