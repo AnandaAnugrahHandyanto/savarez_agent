@@ -171,10 +171,17 @@ _find_shell = _find_bash
 
 
 # Standard PATH entries for environments with minimal PATH.
-_SANE_PATH = (
-    "/opt/homebrew/bin:/opt/homebrew/sbin:"
-    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+_SANE_PATH_DIRS = (
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/sbin",
+    "/usr/local/bin",
+    "/usr/sbin",
+    "/usr/bin",
+    "/sbin",
+    "/bin",
 )
+_SANE_PATH = os.pathsep.join(_SANE_PATH_DIRS)
 
 
 def _make_run_env(env: dict) -> dict:
@@ -193,8 +200,9 @@ def _make_run_env(env: dict) -> dict:
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
     existing_path = run_env.get("PATH", "")
-    if "/usr/bin" not in existing_path.split(":"):
-        run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
+    path_parts = [p for p in existing_path.split(os.pathsep) if p]
+    if "/usr/bin" not in path_parts:
+        run_env["PATH"] = os.pathsep.join(path_parts + list(_SANE_PATH_DIRS))
     return run_env
 
 
