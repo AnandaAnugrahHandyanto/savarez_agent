@@ -1978,9 +1978,9 @@ class LobeHubSource(SkillSource):
             desc = meta.get("description", "")
             tags = meta.get("tags", [])
 
-            searchable = f"{title} {desc} {' '.join(tags) if isinstance(tags, list) else ''}".lower()
+            identifier = agent.get("identifier", title.lower().replace(" ", "-"))
+            searchable = f"{identifier} {title} {desc} {' '.join(tags) if isinstance(tags, list) else ''}".lower()
             if query_lower in searchable:
-                identifier = agent.get("identifier", title.lower().replace(" ", "-"))
                 results.append(SkillMeta(
                     name=identifier,
                     description=desc[:200],
@@ -1996,8 +1996,8 @@ class LobeHubSource(SkillSource):
         return results
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
-        # Strip "lobehub/" prefix if present
-        agent_id = identifier.split("/", 1)[-1] if identifier.startswith("lobehub/") else identifier
+        # Strip "lobehub/" prefix if present (case-insensitive)
+        agent_id = identifier.split("/", 1)[-1] if identifier.lower().startswith("lobehub/") else identifier
 
         agent_data = self._fetch_agent(agent_id)
         if not agent_data:
@@ -2013,7 +2013,7 @@ class LobeHubSource(SkillSource):
         )
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
-        agent_id = identifier.split("/", 1)[-1] if identifier.startswith("lobehub/") else identifier
+        agent_id = identifier.split("/", 1)[-1] if identifier.lower().startswith("lobehub/") else identifier
         index = self._fetch_index()
         if not index:
             return None

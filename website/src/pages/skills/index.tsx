@@ -107,6 +107,16 @@ function highlightMatch(text: string, query: string): React.ReactNode {
   );
 }
 
+/** Map docs source labels to the CLI prefix needed for `hermes skills install`. */
+const SOURCE_PREFIX: Record<string, string> = {
+  LobeHub: "lobehub/",
+};
+
+function installIdentifier(skill: Skill): string {
+  const prefix = SOURCE_PREFIX[skill.source] || "";
+  return `${prefix}${skill.name}`;
+}
+
 function SkillCard({
   skill,
   query,
@@ -208,7 +218,7 @@ function SkillCard({
               </div>
             )}
             <div className={styles.installHint}>
-              <code>hermes skills install {skill.name}</code>
+              <code>hermes skills install {installIdentifier(skill)}</code>
             </div>
           </div>
         )}

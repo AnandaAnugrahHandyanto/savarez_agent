@@ -961,6 +961,49 @@ class TestConvertToSkillMd:
 
 
 # ---------------------------------------------------------------------------
+# LobeHubSource — case-insensitive prefix handling
+# ---------------------------------------------------------------------------
+
+
+class TestLobeHubCaseInsensitivePrefix:
+    """Ensure fetch() and inspect() accept any casing of the 'lobehub/' prefix."""
+
+    def test_fetch_uppercase_prefix(self):
+        src = LobeHubSource()
+        with patch.object(src, "_fetch_agent", return_value=None) as mock_fetch:
+            src.fetch("LobeHub/test-agent")
+            mock_fetch.assert_called_once_with("test-agent")
+
+    def test_fetch_mixed_case_prefix(self):
+        src = LobeHubSource()
+        with patch.object(src, "_fetch_agent", return_value=None) as mock_fetch:
+            src.fetch("LOBEHUB/test-agent")
+            mock_fetch.assert_called_once_with("test-agent")
+
+    def test_fetch_lowercase_prefix(self):
+        src = LobeHubSource()
+        with patch.object(src, "_fetch_agent", return_value=None) as mock_fetch:
+            src.fetch("lobehub/test-agent")
+            mock_fetch.assert_called_once_with("test-agent")
+
+    def test_inspect_uppercase_prefix(self):
+        src = LobeHubSource()
+        fake_index = {"agents": [{"identifier": "test-agent", "meta": {"title": "Test", "description": "Desc", "tags": []}}]}
+        with patch.object(src, "_fetch_index", return_value=fake_index):
+            result = src.inspect("LobeHub/test-agent")
+            assert result is not None
+            assert result.name == "test-agent"
+
+    def test_inspect_mixed_case_prefix(self):
+        src = LobeHubSource()
+        fake_index = {"agents": [{"identifier": "test-agent", "meta": {"title": "Test", "description": "Desc", "tags": []}}]}
+        with patch.object(src, "_fetch_index", return_value=fake_index):
+            result = src.inspect("LOBEHUB/test-agent")
+            assert result is not None
+            assert result.name == "test-agent"
+
+
+# ---------------------------------------------------------------------------
 # unified_search — dedup logic
 # ---------------------------------------------------------------------------
 
