@@ -1071,6 +1071,75 @@ class TestBuildJobPromptMissingSkill:
         assert "go" in result
 
 
+class TestBuildJobPromptBraidPlan:
+    """Verify cron jobs render a skill's optional SKILL.mmd BRAID plan.
+
+    Cron runs have their own skill-loading path in ``_build_job_prompt``
+    (separate from ``_build_skill_message``), so BRAID Mermaid plans must
+    be rendered here too — otherwise the cron prototype would silently
+    run with prose-only skills. See arXiv:2512.15959.
+    """
+
+    def test_braid_plan_rendered_when_skill_returns_mermaid(self):
+        def _view(name: str) -> str:
+            return json.dumps(
+                {
+                    "success": True,
+                    "content": "# Prose skill body.",
+                    "mermaid_plan": "flowchart TD\n    Start --> End",
+                }
+            )
+
+        with patch("tools.skills_tool.skill_view", side_effect=_view):
+            result = _build_job_prompt(
+                {"skills": ["braidy"], "prompt": "run the plan"}
+            )
+
+        assert "BRAID Reasoning Plan" in result
+        assert "```mermaid" in result
+        assert "flowchart TD" in result
+        assert "Start --> End" in result
+        # Plan must precede the prose body
+        assert result.index("```mermaid") < result.index("Prose skill body")
+        # User prompt still carried through
+        assert "run the plan" in result
+
+    def test_no_braid_section_when_skill_has_no_plan(self):
+        def _view(name: str) -> str:
+            return json.dumps({"success": True, "content": "Prose only."})
+
+        with patch("tools.skills_tool.skill_view", side_effect=_view):
+            result = _build_job_prompt({"skills": ["plain"], "prompt": "go"})
+
+        assert "BRAID Reasoning Plan" not in result
+        assert "```mermaid" not in result
+        assert "Prose only." in result
+
+    def test_braid_plan_rendered_only_for_skill_that_has_it(self):
+        """With multiple skills in a job, only the ones with mermaid_plan get a BRAID section."""
+
+        def _view(name: str) -> str:
+            if name == "has-plan":
+                return json.dumps(
+                    {
+                        "success": True,
+                        "content": "Has-plan body.",
+                        "mermaid_plan": "flowchart TD\n    A --> B",
+                    }
+                )
+            return json.dumps({"success": True, "content": "No-plan body."})
+
+        with patch("tools.skills_tool.skill_view", side_effect=_view):
+            result = _build_job_prompt(
+                {"skills": ["has-plan", "no-plan"], "prompt": "go"}
+            )
+
+        assert result.count("```mermaid") == 1
+        assert result.count("BRAID Reasoning Plan") == 1
+        assert "Has-plan body." in result
+        assert "No-plan body." in result
+
+
 class TestTickAdvanceBeforeRun:
     """Verify that tick() calls advance_next_run before run_job for crash safety."""
 

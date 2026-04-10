@@ -281,6 +281,38 @@ Generate some audio.
         assert msg is not None
         assert 'file_path="<path>"' in msg
 
+    def test_braid_plan_rendered_when_skill_has_mermaid_sibling(self, tmp_path):
+        """A SKILL.mmd sibling must be rendered as a dedicated BRAID section
+        ahead of the prose skill content, per arXiv:2512.15959."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "braid-skill")
+            (skill_dir / "SKILL.mmd").write_text(
+                "flowchart TD\n    Start --> Verify\n    Verify --> Done\n"
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/braid-skill", "run it")
+
+        assert msg is not None
+        assert "BRAID Reasoning Plan" in msg
+        assert "```mermaid" in msg
+        assert "flowchart TD" in msg
+        assert "Start --> Verify" in msg
+        # The BRAID section must appear BEFORE the SKILL.md body so the
+        # solver treats it as the primary reasoning topology.
+        assert msg.index("```mermaid") < msg.index("Do the thing.")
+        # User instruction is still preserved
+        assert "run it" in msg
+
+    def test_no_braid_section_when_no_mermaid_sibling(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "plain-skill")
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/plain-skill", "do stuff")
+
+        assert msg is not None
+        assert "BRAID Reasoning Plan" not in msg
+        assert "```mermaid" not in msg
+
 
 class TestPlanSkillHelpers:
     def test_build_plan_path_uses_workspace_relative_dir_and_slugifies_request(self):

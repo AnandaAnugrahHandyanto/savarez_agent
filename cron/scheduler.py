@@ -478,15 +478,32 @@ def _build_job_prompt(job: dict) -> str:
             continue
 
         content = str(loaded.get("content") or "").strip()
+        mermaid_plan = str(loaded.get("mermaid_plan") or "").strip()
         if parts:
             parts.append("")
-        parts.extend(
-            [
-                f'[SYSTEM: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
-                "",
-                content,
-            ]
+        parts.append(
+            f'[SYSTEM: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]'
         )
+        # BRAID optional reasoning plan — rendered ahead of the prose body
+        # so the solver treats the flowchart as the primary decision topology.
+        # See arXiv:2512.15959.
+        if mermaid_plan:
+            parts.extend(
+                [
+                    "",
+                    "[BRAID Reasoning Plan — treat this Mermaid flowchart as your primary "
+                    "decision topology. Each node is an atomic step; labeled edges are "
+                    "explicit conditions; terminal Check nodes must all pass before emitting "
+                    "the final response. Do not render the diagram visually — traverse it to "
+                    "produce the final output. The prose skill content below is reference "
+                    "detail.]",
+                    "",
+                    "```mermaid",
+                    mermaid_plan,
+                    "```",
+                ]
+            )
+        parts.extend(["", content])
 
     if skipped:
         notice = (

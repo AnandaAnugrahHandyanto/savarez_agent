@@ -1279,6 +1279,39 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         from agent.skill_utils import apply_skill_personalization
         content = apply_skill_personalization(content)
 
+        # Optional BRAID Mermaid reasoning plan (SKILL.mmd sibling of SKILL.md).
+        # When present, the invocation message builder prepends it as the
+        # primary decision topology for the solver model. See arXiv:2512.15959.
+        mermaid_plan: Optional[str] = None
+        if skill_dir:
+            mermaid_path = skill_dir / "SKILL.mmd"
+            if mermaid_path.is_file():
+                try:
+                    mermaid_raw = mermaid_path.read_text(encoding="utf-8")
+                except Exception as e:
+                    logger.debug(
+                        "Failed to read SKILL.mmd for skill '%s': %s", skill_name, e
+                    )
+                    mermaid_raw = ""
+                if mermaid_raw:
+                    # Reject plans >16 KiB — realistic BRAID graphs are <4 KiB
+                    # and a large plan defeats the whole token-efficiency point.
+                    if len(mermaid_raw.encode("utf-8")) > 16 * 1024:
+                        logger.warning(
+                            "Skill '%s' SKILL.mmd exceeds 16 KiB cap; ignoring",
+                            skill_name,
+                        )
+                    elif any(p in mermaid_raw.lower() for p in _INJECTION_PATTERNS):
+                        logger.warning(
+                            "Skill '%s' SKILL.mmd contains patterns that may "
+                            "indicate prompt injection; ignoring",
+                            skill_name,
+                        )
+                    else:
+                        mermaid_plan = apply_skill_personalization(
+                            mermaid_raw.strip()
+                        )
+
         result = {
             "success": True,
             "name": skill_name,
@@ -1286,6 +1319,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             "tags": tags,
             "related_skills": related_skills,
             "content": content,
+            "mermaid_plan": mermaid_plan,
             "path": rel_path,
             "linked_files": linked_files if linked_files else None,
             "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'"

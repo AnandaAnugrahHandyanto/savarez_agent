@@ -88,7 +88,31 @@ def _build_skill_message(
 
     content = str(loaded_skill.get("content") or "")
 
-    parts = [activation_note, "", content.strip()]
+    parts = [activation_note]
+
+    # BRAID optional reasoning plan (arXiv:2512.15959). When a skill ships
+    # a SKILL.mmd sibling, render it ahead of the prose content so the
+    # solver treats the flowchart as the primary decision topology and the
+    # SKILL.md body as reference detail.
+    mermaid_plan = str(loaded_skill.get("mermaid_plan") or "").strip()
+    if mermaid_plan:
+        parts.extend(
+            [
+                "",
+                "[BRAID Reasoning Plan — treat this Mermaid flowchart as your primary "
+                "decision topology. Each node is an atomic step; labeled edges are "
+                "explicit conditions; terminal Check nodes must all pass before emitting "
+                "the final response. Do not render the diagram visually — traverse it to "
+                "produce the final output. The prose skill content below is reference "
+                "detail.]",
+                "",
+                "```mermaid",
+                mermaid_plan,
+                "```",
+            ]
+        )
+
+    parts.extend(["", content.strip()])
 
     if loaded_skill.get("setup_skipped"):
         parts.extend(
