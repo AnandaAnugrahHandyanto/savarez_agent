@@ -15,6 +15,8 @@ hermes claw migrate                      # Full migration with confirmation prom
 hermes claw migrate --dry-run            # Preview what would happen
 hermes claw migrate --preset user-data   # Migrate without API keys/secrets
 hermes claw migrate --yes                # Skip confirmation prompt
+hermes claw cleanup --dry-run            # Preview old directories that would be archived
+hermes claw cleanup                      # Rename ~/.openclaw to ~/.openclaw.pre-migration
 ```
 
 **All options:**
@@ -29,6 +31,10 @@ hermes claw migrate --yes                # Skip confirmation prompt
 | `--workspace-target PATH` | Copy workspace instructions (AGENTS.md) to this absolute path |
 | `--skill-conflict {skip,overwrite,rename}` | How to handle skill name conflicts (default: `skip`) |
 | `--yes`, `-y` | Skip confirmation prompts |
+
+### Post-migration cleanup
+
+After you confirm Hermes is working, run `hermes claw cleanup` to archive leftover OpenClaw directories without deleting them. By default it scans `~/.openclaw`, `~/.clawdbot`, and `~/.moldbot`, then renames any directory it finds to `.pre-migration`.
 
 ### 3. Agent-Guided (interactive, with previews)
 
