@@ -558,7 +558,7 @@ class GatewayRunner:
         
         # DM pairing store for code-based user authorization
         from gateway.pairing import PairingStore
-        self.pairing_store = PairingStore()
+        self.pairing_store = PairingStore(base_dir=_hermes_home / "platforms" / "pairing")
         
         # Event hook system
         from gateway.hooks import HookRegistry
