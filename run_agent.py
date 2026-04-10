@@ -7950,6 +7950,10 @@ class AIAgent:
                                 "error": "First response truncated due to output length limit"
                             }
                     
+                    # Reset truncated-tool-call retry counter after a successful
+                    # (non-truncated) response so future turns get a fair retry.
+                    truncated_tool_call_retries = 0
+
                     # Track actual token usage from response for context management
                     if hasattr(response, 'usage') and response.usage:
                         canonical_usage = normalize_usage(
