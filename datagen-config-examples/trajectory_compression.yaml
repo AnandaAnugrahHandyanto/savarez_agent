@@ -99,3 +99,15 @@ metrics:
   
   # Metrics file name (saved in output directory)
   output_file: "compression_metrics.json"
+
+# TOON encoding for tool results (issue #7110)
+# Reduces token count by 30-60% for JSON array tool results
+# See: https://toonformat.dev
+# 
+toon_encoding:
+  # Enable TOON encoding for JSON tool results (opt-in)
+  enabled: false
+  
+  # Minimum rows required to trigger TOON encoding
+  # Arrays with fewer rows won't be converted (not worth overhead)
+  min_rows: 3
