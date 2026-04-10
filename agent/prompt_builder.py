@@ -241,7 +241,7 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     try:
         from tools.skills_tool import _parse_frontmatter, skill_matches_platform
 
-        raw = skill_file.read_text(encoding="utf-8")[:2000]
+        raw = skill_file.read_text(encoding="utf-8")
         frontmatter, _ = _parse_frontmatter(raw)
 
         if not skill_matches_platform(frontmatter):
@@ -256,7 +256,7 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
 
         return True, frontmatter, desc
     except Exception as e:
-        logger.debug("Failed to parse skill file %s: %s", skill_file, e)
+        logger.warning("Failed to parse skill file %s: %s", skill_file, e)
         return True, {}, ""
 
 
@@ -264,7 +264,7 @@ def _read_skill_conditions(skill_file: Path) -> dict:
     """Extract conditional activation fields from SKILL.md frontmatter."""
     try:
         from tools.skills_tool import _parse_frontmatter
-        raw = skill_file.read_text(encoding="utf-8")[:2000]
+        raw = skill_file.read_text(encoding="utf-8")
         frontmatter, _ = _parse_frontmatter(raw)
         hermes = frontmatter.get("metadata", {}).get("hermes", {})
         return {
@@ -274,7 +274,7 @@ def _read_skill_conditions(skill_file: Path) -> dict:
             "requires_tools": hermes.get("requires_tools", []),
         }
     except Exception as e:
-        logger.debug("Failed to read skill conditions from %s: %s", skill_file, e)
+        logger.warning("Failed to read skill conditions from %s: %s", skill_file, e)
         return {}
 
 
