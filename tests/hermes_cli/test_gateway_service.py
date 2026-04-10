@@ -498,6 +498,62 @@ class TestSystemUnitHermesHome:
         assert f'HERMES_HOME={hermes_home}' in unit
 
 
+class TestRemapPathForUser:
+    """Unit tests for _remap_path_for_user()."""
+
+    def test_remaps_path_under_current_home(self, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        result = gateway_cli._remap_path_for_user("/root/.hermes/hermes-agent", "/home/alice")
+        assert result == "/home/alice/.hermes/hermes-agent"
+
+    def test_remaps_venv_python(self, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        result = gateway_cli._remap_path_for_user("/root/.hermes/hermes-agent/.venv/bin/python", "/home/alice")
+        assert result == "/home/alice/.hermes/hermes-agent/.venv/bin/python"
+
+    def test_keeps_system_path_unchanged(self, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        result = gateway_cli._remap_path_for_user("/opt/hermes/bin/python", "/home/alice")
+        assert result == "/opt/hermes/bin/python"
+
+    def test_noop_when_same_user(self, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/home/alice")))
+        result = gateway_cli._remap_path_for_user("/home/alice/.venv/bin/python", "/home/alice")
+        assert result == "/home/alice/.venv/bin/python"
+
+
+class TestSystemUnitFullPathRemap:
+    """System units must remap ALL paths from root's home to the target user."""
+
+    def test_system_unit_remaps_exec_workdir_venv(self, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", Path("/root/.hermes/hermes-agent"))
+        monkeypatch.setattr(
+            gateway_cli, "get_python_path",
+            lambda: "/root/.hermes/hermes-agent/.venv/bin/python",
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_detect_venv_dir",
+            lambda: Path("/root/.hermes/hermes-agent/.venv"),
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_build_user_local_paths",
+            lambda home, existing: [],
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert "ExecStart=/home/alice/.hermes/hermes-agent/.venv/bin/python" in unit
+        assert "WorkingDirectory=/home/alice/.hermes/hermes-agent" in unit
+        assert "VIRTUAL_ENV=/home/alice/.hermes/hermes-agent/.venv" in unit
+        assert "/root/" not in unit
+
+
 class TestHermesHomeForTargetUser:
     """Unit tests for _hermes_home_for_target_user()."""
 
