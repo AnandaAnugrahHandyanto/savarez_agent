@@ -588,8 +588,10 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
-        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
+        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "claude_cli"}:
             self.api_mode = api_mode
+        elif self.provider in ("claude-cli", "claude_cli"):
+            self.api_mode = "claude_cli"
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
         elif (provider_name is None) and "chatgpt.com/backend-api/codex" in self._base_url_lower:
@@ -752,8 +754,16 @@ class AIAgent:
         # access for Codex Responses API streaming.
         self._anthropic_client = None
         self._is_anthropic_oauth = False
+        self._claude_cli_adapter = None
 
-        if self.api_mode == "anthropic_messages":
+        if self.api_mode == "claude_cli":
+            from agent.claude_cli_adapter import ClaudeCliAdapter
+            self._claude_cli_adapter = ClaudeCliAdapter(model=model)
+            self.client = None
+            self._client_kwargs = {}
+            if not self.quiet_mode:
+                print(f"🤖 AI Agent initialized with model: {self.model} (Claude CLI subprocess)")
+        elif self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
             # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
             # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
@@ -1344,7 +1354,12 @@ class AIAgent:
             self.api_key = api_key
 
         # ── Build new client ──
-        if api_mode == "anthropic_messages":
+        if api_mode == "claude_cli":
+            from agent.claude_cli_adapter import ClaudeCliAdapter
+            self._claude_cli_adapter = ClaudeCliAdapter(model=new_model)
+            self.client = None
+            self._client_kwargs = {}
+        elif api_mode == "anthropic_messages":
             from agent.anthropic_adapter import (
                 build_anthropic_client,
                 resolve_anthropic_token,
@@ -4295,6 +4310,12 @@ class AIAgent:
                     )
                 elif self.api_mode == "anthropic_messages":
                     result["response"] = self._anthropic_messages_create(api_kwargs)
+                elif self.api_mode == "claude_cli":
+                    result["response"] = self._claude_cli_adapter.chat.completions.create(
+                        messages=api_kwargs.get("messages", []),
+                        model=api_kwargs.get("model", self.model),
+                        tools=api_kwargs.get("tools") or None,
+                    )
                 else:
                     request_client_holder["client"] = self._create_request_openai_client(reason="chat_completion_request")
                     result["response"] = request_client_holder["client"].chat.completions.create(**api_kwargs)
@@ -4701,7 +4722,15 @@ class AIAgent:
             try:
                 for _stream_attempt in range(_max_stream_retries + 1):
                     try:
-                        if self.api_mode == "anthropic_messages":
+                        if self.api_mode == "claude_cli":
+                            # Claude CLI does not support streaming — run
+                            # non-interruptibly and return the full response.
+                            result["response"] = self._claude_cli_adapter.chat.completions.create(
+                                messages=api_kwargs.get("messages", []),
+                                model=api_kwargs.get("model", self.model),
+                                tools=api_kwargs.get("tools") or None,
+                            )
+                        elif self.api_mode == "anthropic_messages":
                             self._try_refresh_anthropic_client_credentials()
                             result["response"] = _call_anthropic()
                         else:

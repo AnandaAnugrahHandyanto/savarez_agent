@@ -57,6 +57,16 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 ]
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
+    # Models available via the local ``claude`` CLI subprocess.
+    # The CLI accepts any model the user's subscription supports.
+    "claude-cli": [
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "claude-opus-4-5",
+        "claude-sonnet-4-5",
+        "claude-haiku-4-5-20251001",
+        "claude-3-7-sonnet-20250219",
+    ],
     "nous": [
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
