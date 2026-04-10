@@ -105,14 +105,14 @@ class TestConfigFilePermissions(unittest.TestCase):
             file_mode = stat.S_IMODE(os.stat(env_path).st_mode)
             self.assertEqual(file_mode, 0o600)
 
-    def test_ensure_hermes_home_sets_0700(self):
+    def test_ensure_hermes_home_sets_permissions(self):
         home = Path(self.tmpdir) / ".hermes"
         with patch("hermes_cli.config.get_hermes_home", return_value=home):
             from hermes_cli.config import ensure_hermes_home
             ensure_hermes_home()
 
             home_mode = stat.S_IMODE(os.stat(home).st_mode)
-            self.assertEqual(home_mode, 0o700)
+            self.assertEqual(home_mode, 0o701)
 
             for subdir in ("cron", "sessions", "logs", "memories"):
                 subdir_mode = stat.S_IMODE(os.stat(home / subdir).st_mode)
