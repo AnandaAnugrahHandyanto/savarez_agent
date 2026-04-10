@@ -314,7 +314,70 @@ async def test_stop_clears_pending_messages():
 
 
 # ------------------------------------------------------------------
-# Test 7: Shutdown skips sentinel entries
+# Test 7: /reasoning should still work while a session is busy
+# ------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_reasoning_command_during_sentinel_dispatches_immediately():
+    """If /reasoning arrives while the session is still in the sentinel
+    startup window, it should be handled immediately instead of being queued
+    as plain text for the agent."""
+    runner = _make_runner()
+    runner.hooks = MagicMock()
+    runner.hooks.emit = AsyncMock()
+    runner._handle_reasoning_command = AsyncMock(return_value="reasoning settings")
+
+    event1 = _make_event(text="hello")
+    session_key = build_session_key(event1.source)
+    barrier = asyncio.Event()
+
+    async def slow_inner(self_inner, ev, src, qk):
+        await barrier.wait()
+        return "ok"
+
+    with patch.object(GatewayRunner, "_handle_message_with_agent", slow_inner):
+        task1 = asyncio.create_task(runner._handle_message(event1))
+        await asyncio.sleep(0)
+
+        assert runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL
+
+        result = await runner._handle_message(_make_event(text="/reasoning"))
+
+        assert result == "reasoning settings"
+        runner._handle_reasoning_command.assert_awaited_once()
+        assert runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL
+        assert session_key not in runner.adapters[Platform.TELEGRAM]._pending_messages
+
+        barrier.set()
+        await task1
+
+
+@pytest.mark.asyncio
+async def test_reasoning_command_during_running_agent_does_not_interrupt():
+    """A busy-session /reasoning command should bypass the interrupt path and
+    return its command response directly."""
+    runner = _make_runner()
+    runner.hooks = MagicMock()
+    runner.hooks.emit = AsyncMock()
+    runner._handle_reasoning_command = AsyncMock(return_value="reasoning settings")
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm")
+    session_key = build_session_key(source)
+    fake_agent = MagicMock()
+    runner._running_agents[session_key] = fake_agent
+
+    result = await runner._handle_message(
+        MessageEvent(text="/reasoning", message_type=MessageType.COMMAND, source=source)
+    )
+
+    assert result == "reasoning settings"
+    runner._handle_reasoning_command.assert_awaited_once()
+    assert runner._running_agents.get(session_key) is fake_agent
+    fake_agent.interrupt.assert_not_called()
+    assert session_key not in runner._pending_messages
+
+
+# ------------------------------------------------------------------
+# Test 8: Shutdown skips sentinel entries
 # ------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_shutdown_skips_sentinel():
