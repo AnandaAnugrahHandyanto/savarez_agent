@@ -979,6 +979,12 @@ def get_model_context_length(
                 if local_ctx and local_ctx > 0:
                     save_context_length(model, base_url, local_ctx)
                     return local_ctx
+            # For custom remote endpoints, try hardcoded defaults before falling back
+            # to 128K probe-down. This fixes glm-5 and similar models on custom providers.
+            model_lower = model.lower()
+            for default_model, length in sorted(DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True):
+                if default_model in model_lower:
+                    return length
             logger.info(
                 "Could not detect context length for model %r at %s — "
                 "defaulting to %s tokens (probe-down). Set model.context_length "
