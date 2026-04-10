@@ -20,6 +20,8 @@ import base64
 import logging
 import os
 import re
+import hashlib
+import hmac
 import urllib.parse
 from typing import Any, Dict, Optional
 
@@ -79,6 +81,28 @@ class SmsAdapter(BasePlatformAdapter):
         )
         self._runner = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
+
+    def _validate_twilio_signature(
+        self, request_url: str, post_params: dict, signature: str
+    ) -> bool:
+        """Validate X-Twilio-Signature using HMAC-SHA1.
+
+        Implements the Twilio signature validation algorithm:
+        https://www.twilio.com/docs/usage/security#validating-signatures
+        """
+        # Build the string to sign: URL + sorted key/value pairs concatenated
+        s = request_url
+        for key in sorted(post_params.keys()):
+            s += key + post_params[key]
+
+        # Compute HMAC-SHA1 digest and base64-encode it
+        mac = hmac.new(
+            self._auth_token.encode("utf-8"),
+            s.encode("utf-8"),
+            hashlib.sha1,
+        )
+        expected = base64.b64encode(mac.digest()).decode("utf-8")
+        return hmac.compare_digest(expected, signature)
 
     def _basic_auth_header(self) -> str:
         """Build HTTP Basic auth header value for Twilio."""
@@ -210,6 +234,9 @@ class SmsAdapter(BasePlatformAdapter):
     async def _handle_webhook(self, request) -> "aiohttp.web.Response":
         from aiohttp import web
 
+        # --- Twilio signature validation ---
+        sig = request.headers.get("X-Twilio-Signature", "")
+        url = str(request.url)
         try:
             raw = await request.read()
             # Twilio sends form-encoded data, not JSON
@@ -221,6 +248,15 @@ class SmsAdapter(BasePlatformAdapter):
                 content_type="application/xml",
                 status=400,
             )
+
+        # Flatten form dict (parse_qs returns lists; Twilio signs single values)
+        flat_params = {k: v[0] for k, v in form.items()}
+        if not self._validate_twilio_signature(url, flat_params, sig):
+            logger.warning(
+                "[sms] rejected webhook: invalid Twilio signature from %s",
+                request.remote,
+            )
+            return web.Response(status=403)
 
         # Extract fields (parse_qs returns lists)
         from_number = (form.get("From", [""]))[0].strip()
