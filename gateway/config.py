@@ -579,6 +579,11 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
+                mrc = discord_cfg.get("mention_required_channels")
+                if mrc is not None and not os.getenv("DISCORD_MENTION_REQUIRED_CHANNELS"):
+                    if isinstance(mrc, list):
+                        mrc = ",".join(str(v) for v in mrc)
+                    os.environ["DISCORD_MENTION_REQUIRED_CHANNELS"] = str(mrc)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
                 if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):

@@ -205,6 +205,52 @@ async def test_discord_free_response_channel_overrides_mention_requirement(adapt
 
 
 @pytest.mark.asyncio
+async def test_discord_mention_required_channel_overrides_global_free_response(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_MENTION_REQUIRED_CHANNELS", "789,999")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(channel=FakeTextChannel(channel_id=789), content="should require mention here")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_mention_required_channel_still_accepts_bot_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_MENTION_REQUIRED_CHANNELS", "789")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content=f"<@{bot_user.id}> stock update",
+        mentions=[bot_user],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "stock update"
+
+
+@pytest.mark.asyncio
+async def test_discord_mention_required_channel_beats_free_response_override(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_MENTION_REQUIRED_CHANNELS", "789")
+
+    message = make_message(channel=FakeTextChannel(channel_id=789), content="explicit lock wins")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_discord_forum_parent_in_free_response_list_allows_forum_thread(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "222")

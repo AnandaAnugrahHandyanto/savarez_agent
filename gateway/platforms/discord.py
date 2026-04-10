@@ -2280,6 +2280,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Config (all settable via discord.* in config.yaml or DISCORD_* env vars):
         #   discord.require_mention: Require @mention in server channels (default: true)
         #   discord.free_response_channels: Channel IDs where bot responds without mention
+        #   discord.mention_required_channels: Channel IDs that require @mention even when global require_mention is false
         #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
@@ -2314,11 +2315,15 @@ class DiscordAdapter(BasePlatformAdapter):
 
             free_channels_raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
             free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
+            mention_required_channels_raw = os.getenv("DISCORD_MENTION_REQUIRED_CHANNELS", "")
+            mention_required_channels = {ch.strip() for ch in mention_required_channels_raw.split(",") if ch.strip()}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
 
             require_mention = os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
-            is_free_channel = bool(channel_ids & free_channels)
+            is_explicit_mention_required_channel = bool(channel_ids & mention_required_channels)
+            is_free_channel = bool(channel_ids & free_channels) and not is_explicit_mention_required_channel
+            require_mention = require_mention or is_explicit_mention_required_channel
 
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in).
