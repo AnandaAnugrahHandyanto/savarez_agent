@@ -765,6 +765,11 @@ def list_authenticated_providers(
         # Use curated list, falling back to models.dev if no curated list
         model_ids = curated.get(hermes_id, [])
         total = len(model_ids)
+        # Skip providers with no curated LLM models (e.g. Groq has GROQ_API_KEY
+        # set for STT but no curated LLM list — don't clutter the picker with
+        # "0 models" entries users can't click).
+        if total == 0:
+            continue
         top = model_ids[:max_models]
 
         slug = hermes_id
