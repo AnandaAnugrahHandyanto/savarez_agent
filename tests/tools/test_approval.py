@@ -194,10 +194,10 @@ class TestSessionKeyContext:
         import os
         import threading
 
-        clear_session("alice")
-        clear_session("bob")
-        pop_pending("alice")
-        pop_pending("bob")
+        _clear_session("alice")
+        _clear_session("bob")
+        _pop_pending("alice")
+        _pop_pending("bob")
         approval_module._permanent_approved.clear()
 
         alice_ready = threading.Event()
@@ -231,8 +231,8 @@ class TestSessionKeyContext:
             t1.join()
             t2.join()
 
-        assert pop_pending("alice") is not None
-        assert pop_pending("bob") is None
+        assert _pop_pending("alice") is not None
+        assert _pop_pending("bob") is None
 
 
 
