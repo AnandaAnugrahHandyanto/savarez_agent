@@ -7,6 +7,8 @@
   pyproject-nix,
   pyproject-build-systems,
   stdenv,
+
+  dependency-groups ? [ "all" ],
 }:
 let
   workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = ./..; };
@@ -36,7 +38,11 @@ let
     };
 
   pythonPackageOverrides = final: _prev:
-    if isAarch64Darwin then {
+    {
+      atomicwrites = hacks.nixpkgsPrebuilt{
+        from = python.pkgs.atomicwrites;
+      };
+    } // (if isAarch64Darwin then {
       numpy = mkPrebuiltOverride final python.pkgs.numpy { };
 
       av = mkPrebuiltOverride final python.pkgs.av { };
@@ -66,7 +72,7 @@ let
         tokenizers = [ ];
         tqdm = [ ];
       };
-    } else {};
+    } else {});
 
   pythonSet =
     (callPackage pyproject-nix.build.packages {
@@ -79,5 +85,5 @@ let
       ]);
 in
 pythonSet.mkVirtualEnv "hermes-agent-env" {
-  hermes-agent = [ "all" ];
+  hermes-agent = dependency-groups;
 }
