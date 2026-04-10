@@ -30,6 +30,7 @@
         ./nix/nixosModules.nix
         ./nix/checks.nix
         ./nix/devShell.nix
+        ./nix/overlays.nix
       ];
     };
 }
