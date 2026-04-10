@@ -129,11 +129,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     ),
     "astraflow": HermesOverlay(
         transport="openai_chat",
+        extra_env_vars=("ASTRAFLOW_API_KEY",),
         base_url_override="https://api-us-ca.umodelverse.ai/v1",
         base_url_env_var="ASTRAFLOW_BASE_URL",
     ),
     "astraflow-cn": HermesOverlay(
         transport="openai_chat",
+        extra_env_vars=("ASTRAFLOW_CN_API_KEY",),
         base_url_override="https://api.modelverse.cn/v1",
         base_url_env_var="ASTRAFLOW_CN_BASE_URL",
     ),
