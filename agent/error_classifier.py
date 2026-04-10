@@ -700,12 +700,15 @@ def _classify_by_message(
             should_compress=True,
         )
 
-    # Auth patterns
+    # Auth patterns — match the status-code-based 401 classification
+    # (retryable=False, should_fallback=True) so message-only auth
+    # errors don't waste retries on credentials that will never work.
     if any(p in error_msg for p in _AUTH_PATTERNS):
         return result_fn(
             FailoverReason.auth,
-            retryable=True,
+            retryable=False,
             should_rotate_credential=True,
+            should_fallback=True,
         )
 
     # Model not found patterns
