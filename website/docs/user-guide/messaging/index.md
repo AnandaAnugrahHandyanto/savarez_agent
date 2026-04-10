@@ -29,6 +29,7 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 | WeCom | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | Weixin | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
+| QQ Bot | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 
 **Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
 
@@ -53,6 +54,7 @@ flowchart TB
     wc[WeCom]
     wx[Weixin]
     bb[BlueBubbles]
+    qq[QQ Bot]
             api["API Server<br/>(OpenAI-compatible)"]
             wh[Webhooks]
         end
@@ -77,6 +79,7 @@ flowchart TB
     wc --> store
     wx --> store
     bb --> store
+    qq --> store
     api --> store
     wh --> store
     store --> agent
@@ -362,6 +365,7 @@ Each platform has its own toolset:
 | WeCom | `hermes-wecom` | Full tools including terminal |
 | Weixin | `hermes-weixin` | Full tools including terminal |
 | BlueBubbles | `hermes-bluebubbles` | Full tools including terminal |
+| QQ Bot | `hermes-qq` | Full tools including terminal |
 | API Server | `hermes` (default) | Full tools including terminal |
 | Webhooks | `hermes-webhook` | Full tools including terminal |
 
@@ -381,6 +385,7 @@ Each platform has its own toolset:
 - [Feishu/Lark Setup](feishu.md)
 - [WeCom Setup](wecom.md)
 - [Weixin Setup (WeChat)](weixin.md)
+- [QQ Bot Setup](qq.md)
 - [BlueBubbles Setup (iMessage)](bluebubbles.md)
 - [Open WebUI + API Server](open-webui.md)
 - [Webhooks](webhooks.md)
