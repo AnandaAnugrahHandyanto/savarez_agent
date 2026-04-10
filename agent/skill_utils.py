@@ -440,3 +440,10 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
             matches.append(Path(root) / filename)
     for path in sorted(matches, key=lambda p: str(p.relative_to(skills_dir))):
         yield path
+
+
+def _normalize_to_list(val):
+    if isinstance(val, str):
+        return [val]
+    return val if val else []
+
