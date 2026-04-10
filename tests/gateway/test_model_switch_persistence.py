@@ -83,6 +83,24 @@ def _make_runner():
 class TestApplySessionModelOverride:
     """Verify _apply_session_model_override replaces config defaults."""
 
+    def test_missing_override_store_returns_originals(self):
+        """Bare runner stubs may skip __init__ and never create the override store."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        orig_model = "anthropic/claude-sonnet-4"
+        orig_rt = {
+            "provider": "anthropic",
+            "api_key": "ant-key",
+            "base_url": "https://api.anthropic.com",
+            "api_mode": "anthropic_messages",
+        }
+
+        model, rt = runner._apply_session_model_override("session-key", orig_model, dict(orig_rt))
+
+        assert model == orig_model
+        assert rt == orig_rt
+
     def test_override_replaces_all_fields(self):
         runner = _make_runner()
         sk = build_session_key(_make_source())
@@ -194,6 +212,13 @@ class TestApplySessionModelOverride:
 
 class TestIsIntentionalModelSwitch:
     """Verify fallback detection respects intentional /model overrides."""
+
+    def test_missing_override_store_returns_false(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+
+        assert runner._is_intentional_model_switch("session-key", "gpt-5.4") is False
 
     def test_matches_override(self):
         runner = _make_runner()

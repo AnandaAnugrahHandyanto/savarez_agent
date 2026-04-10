@@ -3354,7 +3354,9 @@ class GatewayRunner:
 
         # Clear any session-scoped model override so the next agent picks up
         # the configured default instead of the previously switched model.
-        self._session_model_overrides.pop(session_key, None)
+        overrides = getattr(self, "_session_model_overrides", None)
+        if overrides is not None:
+            overrides.pop(session_key, None)
 
         # Fire plugin on_session_finalize hook (session boundary)
         try:
@@ -6481,7 +6483,7 @@ class GatewayRunner:
         subsequent messages.  Fields with ``None`` values are skipped so
         partial overrides don't clobber valid config defaults.
         """
-        override = self._session_model_overrides.get(session_key)
+        override = getattr(self, "_session_model_overrides", {}).get(session_key)
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
@@ -6493,7 +6495,7 @@ class GatewayRunner:
 
     def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
         """Return True if *agent_model* matches an active /model session override."""
-        override = self._session_model_overrides.get(session_key)
+        override = getattr(self, "_session_model_overrides", {}).get(session_key)
         return override is not None and override.get("model") == agent_model
 
     def _evict_cached_agent(self, session_key: str) -> None:

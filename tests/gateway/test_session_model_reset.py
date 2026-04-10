@@ -99,6 +99,17 @@ async def test_new_command_no_override_is_noop():
 
 
 @pytest.mark.asyncio
+async def test_new_command_missing_override_store_is_noop():
+    """Bare runner stubs may skip __init__ and never create the override store."""
+    runner = _make_runner()
+    del runner._session_model_overrides
+
+    await runner._handle_reset_command(_make_event("/new"))
+
+    assert runner.session_store.reset_session.called
+
+
+@pytest.mark.asyncio
 async def test_new_command_only_clears_own_session():
     """/new must only clear the override for the session that triggered it."""
     runner = _make_runner()
