@@ -295,11 +295,26 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
 DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 
 SUPPORTED_DOCUMENT_TYPES = {
+    # Documents
     ".pdf": "application/pdf",
     ".md": "text/markdown",
     ".txt": "text/plain",
     ".log": "text/plain",
+    ".csv": "text/csv",
+    ".xml": "application/xml",
+    ".html": "text/html",
+    ".json": "application/json",
+    ".yaml": "application/x-yaml",
+    ".yml": "application/x-yaml",
+    # Code
+    ".py": "text/x-python",
+    ".js": "application/javascript",
+    ".ts": "application/typescript",
+    ".sh": "application/x-sh",
+    ".sql": "text/x-sql",
+    # Archives
     ".zip": "application/zip",
+    # Office
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
