@@ -370,6 +370,9 @@ class TestCmdUpdateLaunchdRestart:
         )
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli, "is_linux", lambda: True,
+        )
 
         mock_run.side_effect = _make_run_side_effect(
             commit_count="3",
