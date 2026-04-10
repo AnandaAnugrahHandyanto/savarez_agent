@@ -127,6 +127,11 @@ class TestDefaultContextLengths:
             if "gpt-4.1" in key:
                 assert value == 1047576, f"{key} should be 1047576"
 
+    def test_gpt5_models_1m(self):
+        for key, value in DEFAULT_CONTEXT_LENGTHS.items():
+            if "gpt-5" in key:
+                assert value == 1000000, f"{key} should be 1000000"
+
     def test_gemini_models_1m(self):
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
             if "gemini" in key:
@@ -164,6 +169,26 @@ class TestGetModelContextLength:
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_partial_match_in_defaults(self, mock_fetch):
+        mock_fetch.return_value = {}
+        assert get_model_context_length("openai/gpt-4o") == 128000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_gpt5_fallback_to_1m_default(self, mock_fetch):
+        mock_fetch.return_value = {}
+        assert get_model_context_length("gpt-5.4") == 1000000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_gpt5_mini_fallback_to_1m_default(self, mock_fetch):
+        mock_fetch.return_value = {}
+        assert get_model_context_length("gpt-5-mini") == 1000000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_gpt41_mini_fallback_to_1m_default(self, mock_fetch):
+        mock_fetch.return_value = {}
+        assert get_model_context_length("openai/gpt-4.1-mini") == 1047576
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_gpt4o_fallback_to_128k_default(self, mock_fetch):
         mock_fetch.return_value = {}
         assert get_model_context_length("openai/gpt-4o") == 128000
 

@@ -242,15 +242,15 @@ def build_anthropic_client(api_key: str, base_url: str = None):
     common_betas = _common_betas_for_base_url(normalized_base_url)
 
     if _requires_bearer_auth(normalized_base_url):
-        # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
-        # Authorization: Bearer even for regular API keys. Route those endpoints
-        # through auth_token so the SDK sends Bearer auth instead of x-api-key.
-        # Check this before OAuth token shape detection because MiniMax secrets do
-        # not use Anthropic's sk-ant-api prefix and would otherwise be misread as
-        # Anthropic OAuth/setup tokens.
-        kwargs["auth_token"] = api_key
+        # Some Anthropic-compatible providers (e.g. MiniMax) expect explicit
+        # Authorization: Bearer *** for regular API keys. In practice, relying on
+        # the SDK's auth_token path has proven unreliable for these third-party
+        # endpoints, so inject the Authorization header directly and avoid the
+        # native x-api-key path entirely.
+        bearer_headers = {"Authorization": f"Bearer {api_key}"}
         if common_betas:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+            bearer_headers["anthropic-beta"] = ",".join(common_betas)
+        kwargs["default_headers"] = bearer_headers
     elif _is_third_party_anthropic_endpoint(base_url):
         # Third-party proxies (Azure AI Foundry, AWS Bedrock, etc.) use their
         # own API keys with x-api-key auth. Skip OAuth detection — their keys

@@ -3210,6 +3210,33 @@ class GatewayRunner:
                             pass
                     provider = model_cfg.get("provider") or None
                     base_url = model_cfg.get("base_url") or None
+
+                # Keep session-info display aligned with runtime resolution:
+                # if top-level model.context_length is unset, fall back to the
+                # matching custom provider's per-model context_length.
+                if config_context_length is None:
+                    custom_providers = data.get("custom_providers")
+                    if isinstance(custom_providers, list):
+                        normalized_base = (base_url or "").rstrip("/")
+                        for cp_entry in custom_providers:
+                            if not isinstance(cp_entry, dict):
+                                continue
+                            cp_url = (cp_entry.get("base_url") or "").rstrip("/")
+                            if not cp_url or not normalized_base or cp_url != normalized_base:
+                                continue
+                            cp_models = cp_entry.get("models", {})
+                            if not isinstance(cp_models, dict):
+                                break
+                            cp_model_cfg = cp_models.get(model, {})
+                            if not isinstance(cp_model_cfg, dict):
+                                break
+                            raw_cp_ctx = cp_model_cfg.get("context_length")
+                            if raw_cp_ctx is not None:
+                                try:
+                                    config_context_length = int(raw_cp_ctx)
+                                except (TypeError, ValueError):
+                                    pass
+                            break
         except Exception:
             pass
 

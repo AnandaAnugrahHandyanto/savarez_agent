@@ -75,7 +75,7 @@ class TestResolveProviderClientMainAlias:
         _write_config(tmp_path, {
             "model": {"default": "my-model", "provider": "beans"},
             "custom_providers": [
-                {"name": "beans", "base_url": "http://beans.local/v1", "api_key": "k"},
+                {"name": "beans", "base_url": "http://beans.local/v1", "api_key": "***"},
             ],
         })
         from agent.auxiliary_client import resolve_provider_client
@@ -88,7 +88,7 @@ class TestResolveProviderClientMainAlias:
         _write_config(tmp_path, {
             "model": {"default": "my-model", "provider": "custom:beans"},
             "custom_providers": [
-                {"name": "beans", "base_url": "http://beans.local/v1", "api_key": "k"},
+                {"name": "beans", "base_url": "http://beans.local/v1", "api_key": "***"},
             ],
         })
         from agent.auxiliary_client import resolve_provider_client
@@ -100,11 +100,32 @@ class TestResolveProviderClientMainAlias:
 class TestResolveProviderClientNamedCustom:
     """resolve_provider_client should resolve named custom providers directly."""
 
+    def test_custom_google_gemini_preserves_named_custom_provider(self):
+        from agent.auxiliary_client import _normalize_aux_provider
+        assert _normalize_aux_provider("custom:google-gemini") == "custom:google-gemini"
+
+    def test_named_custom_google_gemini_not_remapped_to_native_provider(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "gemini-2.5-flash"},
+            "custom_providers": [
+                {
+                    "name": "Google-Gemini",
+                    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+                    "api_key": "***",
+                },
+            ],
+        })
+        from agent.auxiliary_client import resolve_provider_client
+        client, model = resolve_provider_client("custom:google-gemini", "gemini-2.5-flash")
+        assert client is not None
+        assert model == "gemini-2.5-flash"
+        assert "generativelanguage.googleapis.com" in str(client.base_url)
+
     def test_named_custom_provider(self, tmp_path):
         _write_config(tmp_path, {
             "model": {"default": "test-model"},
             "custom_providers": [
-                {"name": "beans", "base_url": "http://beans.local/v1", "api_key": "k"},
+                {"name": "beans", "base_url": "http://beans.local/v1", "api_key": "***"},
             ],
         })
         from agent.auxiliary_client import resolve_provider_client
@@ -117,7 +138,7 @@ class TestResolveProviderClientNamedCustom:
         _write_config(tmp_path, {
             "model": {"default": "main-model"},
             "custom_providers": [
-                {"name": "beans", "base_url": "http://beans.local/v1", "api_key": "k"},
+                {"name": "beans", "base_url": "http://beans.local/v1", "api_key": "***"},
             ],
         })
         from agent.auxiliary_client import resolve_provider_client
@@ -149,3 +170,17 @@ class TestResolveProviderClientNamedCustom:
         # "coffee" doesn't exist in custom_providers
         client, model = resolve_provider_client("coffee", "test")
         assert client is None
+
+
+class TestSelectiveProxyRouting:
+    def test_google_gemini_host_uses_proxy(self):
+        from agent.auxiliary_client import _should_use_selective_proxy
+        assert _should_use_selective_proxy("https://generativelanguage.googleapis.com/v1beta/openai") is True
+
+    def test_domestic_host_stays_direct(self):
+        from agent.auxiliary_client import _should_use_selective_proxy
+        assert _should_use_selective_proxy("https://dashscope.aliyuncs.com/compatible-mode/v1") is False
+
+    def test_unlisted_host_stays_direct(self):
+        from agent.auxiliary_client import _should_use_selective_proxy
+        assert _should_use_selective_proxy("https://example.com/v1") is False

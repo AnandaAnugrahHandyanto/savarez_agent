@@ -47,10 +47,12 @@ import logging
 import os
 import threading
 import time
+from fnmatch import fnmatch
 from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
 from openai import OpenAI
 
 from agent.credential_pool import load_pool
@@ -58,6 +60,67 @@ from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_SELECTIVE_PROXY_URL = "http://172.29.192.1:7890"
+_DEFAULT_PROXY_WHITELIST = (
+    "generativelanguage.googleapis.com,*.googleapis.com,"
+    "googleapis.com,*.google.com,google.com,cloudcode-pa.googleapis.com"
+)
+
+
+def _proxy_whitelist_patterns() -> List[str]:
+    raw = (
+        os.getenv("HERMES_PROXY_WHITELIST")
+        or os.getenv("HERMES_OVERSEAS_PROXY_WHITELIST")
+        or _DEFAULT_PROXY_WHITELIST
+    )
+    return [part.strip().lower() for part in raw.split(",") if part.strip()]
+
+
+def _proxy_url() -> str:
+    return (
+        os.getenv("HERMES_SELECTIVE_PROXY_URL")
+        or os.getenv("HERMES_OVERSEAS_PROXY_URL")
+        or os.getenv("HERMES_PROXY_URL")
+        or _DEFAULT_SELECTIVE_PROXY_URL
+    ).strip()
+
+
+def _host_matches_proxy_whitelist(host: str) -> bool:
+    host = (host or "").strip().lower()
+    if not host:
+        return False
+    for pattern in _proxy_whitelist_patterns():
+        if pattern.startswith("."):
+            if host.endswith(pattern) or host == pattern[1:]:
+                return True
+            continue
+        if fnmatch(host, pattern):
+            return True
+    return False
+
+
+def _should_use_selective_proxy(base_url: str | None) -> bool:
+    normalized = str(base_url or "").strip()
+    if not normalized:
+        return False
+    try:
+        host = httpx.URL(normalized).host or ""
+    except Exception:
+        return False
+    return _host_matches_proxy_whitelist(host)
+
+
+def _build_openai_http_client(base_url: str, *, async_mode: bool = False):
+    client_kwargs = {"trust_env": False}
+    if _should_use_selective_proxy(base_url):
+        proxy = _proxy_url()
+        if proxy:
+            client_kwargs["proxy"] = proxy
+            logger.debug("Selective proxy enabled for %s via %s", base_url, proxy)
+    if async_mode:
+        return httpx.AsyncClient(**client_kwargs)
+    return httpx.Client(**client_kwargs)
 
 _PROVIDER_ALIASES = {
     "google": "gemini",
@@ -82,7 +145,9 @@ def _normalize_aux_provider(provider: Optional[str], *, for_vision: bool = False
         suffix = normalized.split(":", 1)[1].strip()
         if not suffix:
             return "custom"
-        normalized = suffix if not for_vision else "custom"
+        if not for_vision:
+            return f"custom:{suffix}"
+        normalized = "custom"
     if normalized == "codex":
         return "openai-codex"
     if normalized == "main":
@@ -707,7 +772,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 from hermes_cli.models import copilot_default_headers
 
                 extra["default_headers"] = copilot_default_headers()
-            return OpenAI(api_key=api_key, base_url=base_url, **extra), model
+            return OpenAI(api_key=api_key, base_url=base_url,
+                      http_client=_build_openai_http_client(base_url), **extra), model
 
         creds = resolve_api_key_provider_credentials(provider_id)
         api_key = str(creds.get("api_key", "")).strip()
@@ -768,6 +834,7 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
         base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
         logger.debug("Auxiliary client: OpenRouter via pool")
         return OpenAI(api_key=or_key, base_url=base_url,
+                       http_client=_build_openai_http_client(base_url),
                        default_headers=_OR_HEADERS), _OPENROUTER_MODEL
 
     or_key = os.getenv("OPENROUTER_API_KEY")
@@ -775,6 +842,7 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
+                   http_client=_build_openai_http_client(OPENROUTER_BASE_URL),
                    default_headers=_OR_HEADERS), _OPENROUTER_MODEL
 
 
@@ -803,6 +871,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         OpenAI(
             api_key=_nous_api_key(nous),
             base_url=str(nous.get("inference_base_url") or _nous_base_url()).rstrip("/"),
+            http_client=_build_openai_http_client(str(nous.get("inference_base_url") or _nous_base_url()).rstrip("/")),
         ),
         model,
     )
@@ -895,7 +964,8 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
         return None, None
     model = _read_main_model() or "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s)", model)
-    return OpenAI(api_key=custom_key, base_url=custom_base), model
+    return OpenAI(api_key=custom_key, base_url=custom_base,
+                  http_client=_build_openai_http_client(custom_base)), model
 
 
 def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
@@ -915,7 +985,8 @@ def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
             return None, None
         base_url = _CODEX_AUX_BASE_URL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", _CODEX_AUX_MODEL)
-    real_client = OpenAI(api_key=codex_token, base_url=base_url)
+    real_client = OpenAI(api_key=codex_token, base_url=base_url,
+                         http_client=_build_openai_http_client(base_url))
     return CodexAuxiliaryClient(real_client, _CODEX_AUX_MODEL), _CODEX_AUX_MODEL
 
 
@@ -1186,6 +1257,7 @@ def _to_async_client(sync_client, model: str):
     async_kwargs = {
         "api_key": sync_client.api_key,
         "base_url": str(sync_client.base_url),
+        "http_client": _build_openai_http_client(str(sync_client.base_url), async_mode=True),
     }
     base_lower = str(sync_client.base_url).lower()
     if "openrouter" in base_lower:
@@ -1287,7 +1359,8 @@ def resolve_provider_client(
                                "but no Codex OAuth token found (run: hermes model)")
                 return None, None
             final_model = model or _CODEX_AUX_MODEL
-            raw_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL)
+            raw_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL,
+                                http_client=_build_openai_http_client(_CODEX_AUX_BASE_URL))
             return (raw_client, final_model)
         # Standard path: wrap in CodexAuxiliaryClient adapter
         client, default = _try_codex()
@@ -1321,7 +1394,8 @@ def resolve_provider_client(
             elif "api.githubcopilot.com" in custom_base.lower():
                 from hermes_cli.models import copilot_default_headers
                 extra["default_headers"] = copilot_default_headers()
-            client = OpenAI(api_key=custom_key, base_url=custom_base, **extra)
+            client = OpenAI(api_key=custom_key, base_url=custom_base,
+                            http_client=_build_openai_http_client(custom_base), **extra)
             return (_to_async_client(client, final_model) if async_mode
                     else (client, final_model))
         # Try custom first, then codex, then API-key providers
@@ -1345,7 +1419,8 @@ def resolve_provider_client(
             custom_key = custom_entry.get("api_key", "").strip() or "no-key-required"
             if custom_base:
                 final_model = model or _read_main_model() or "gpt-4o-mini"
-                client = OpenAI(api_key=custom_key, base_url=custom_base)
+                client = OpenAI(api_key=custom_key, base_url=custom_base,
+                                http_client=_build_openai_http_client(custom_base))
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s)",
                     provider, final_model)
@@ -1407,6 +1482,7 @@ def resolve_provider_client(
             headers.update(copilot_default_headers())
 
         client = OpenAI(api_key=api_key, base_url=base_url,
+                        http_client=_build_openai_http_client(base_url),
                         **({"default_headers": headers} if headers else {}))
         logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
         return (_to_async_client(client, final_model) if async_mode

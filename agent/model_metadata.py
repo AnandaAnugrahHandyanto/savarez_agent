@@ -100,7 +100,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "claude": 200000,
     # OpenAI
     "gpt-4.1": 1047576,
-    "gpt-5": 128000,
+    # GPT-5 family should be treated as 1M-context in our working defaults.
+    "gpt-5": 1000000,
     "gpt-4": 128000,
     # Google
     "gemini": 1048576,
