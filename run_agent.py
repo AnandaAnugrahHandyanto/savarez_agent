@@ -9176,10 +9176,14 @@ class AIAgent:
             completed=completed,
             interrupted=interrupted,
         )
-        # Track whether centralized writeback handled memory for this turn.
-        _centralized_memory_written = False
+        # Track whether the structured task-complete review ran this turn.
+        # When it fires, generic background nudge reviews are redundant —
+        # the task review already handles memory/skill decisions.
+        _task_review_ran = False
 
         if self._should_run_task_completion_review(task_completion_payload):
+            _task_review_ran = True
+            logger.debug("Task-complete review firing — will suppress generic background reviews")
             result["task_completion_payload"] = task_completion_payload
             try:
                 task_review = review_completed_task(task_completion_payload)
@@ -9204,7 +9208,6 @@ class AIAgent:
                         ),
                     )
                     if written:
-                        _centralized_memory_written = True
                         logger.debug(
                             "Centralized writeback wrote %d entries", len(written),
                         )
@@ -9241,11 +9244,21 @@ class AIAgent:
             except Exception:
                 pass
 
-        # If centralized writeback already handled memory for this turn,
-        # suppress the background LLM memory review to prevent near-duplicate
-        # entries.  Skill review is unaffected.
-        if _centralized_memory_written:
+        # If the structured task-complete review ran this turn, suppress
+        # both generic background memory AND skill reviews — the task review
+        # already made targeted decisions about what to persist.
+        if _task_review_ran:
+            logger.debug(
+                "Suppressing generic background reviews (memory=%s, skills=%s) — task review handled this turn",
+                _should_review_memory, _should_review_skills,
+            )
             _should_review_memory = False
+            _should_review_skills = False
+        else:
+            logger.debug(
+                "No task-complete review — generic reviews proceed (memory=%s, skills=%s)",
+                _should_review_memory, _should_review_skills,
+            )
 
         # Background memory/skill review — runs AFTER the response is delivered
         # so it never competes with the user's task for model attention.

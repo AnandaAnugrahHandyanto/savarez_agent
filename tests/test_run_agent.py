@@ -1586,34 +1586,8 @@ class TestRunConversation:
 
         assert result.get("task_review") is None
 
-    def test_centralized_writeback_suppresses_background_memory_review(self, agent_with_memory_tool):
-        """Task-complete writeback should suppress the generic background memory review."""
-        agent = agent_with_memory_tool
-        self._setup_agent(agent)
-        agent._memory_store = MagicMock()
-        agent._memory_store.add.return_value = {"success": True, "message": "Entry added"}
-        agent._memory_nudge_interval = 1
-        agent._turns_since_memory = 0
-        agent.client.chat.completions.create.return_value = _mock_response(
-            content="Saved.", finish_reason="stop",
-        )
-
-        with (
-            patch("hermes_cli.plugins.invoke_hook", return_value=[]),
-            patch.object(agent, "_spawn_background_review") as mock_bg_review,
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            result = agent.run_conversation("remember this: I prefer dark mode")
-
-        assert result["final_response"] == "Saved."
-        agent._memory_store.add.assert_called_once_with("user", "I prefer dark mode")
-        assert result["task_review"].memory_write_candidates
-        mock_bg_review.assert_not_called()
-
-    def test_centralized_writeback_preserves_skill_review_when_due(self, agent_with_memory_tool):
-        """Centralized memory writeback should not suppress the skill-review path."""
+    def test_task_review_suppresses_both_generic_reviews(self, agent_with_memory_tool):
+        """Task-complete review should suppress both generic memory and skill background reviews."""
         agent = agent_with_memory_tool
         self._setup_agent(agent)
         agent.valid_tool_names = {"web_search", "memory", "skill_manage"}
@@ -1640,11 +1614,76 @@ class TestRunConversation:
             result = agent.run_conversation("remember this: I prefer dark mode")
 
         assert result["final_response"] == "Done"
+        # Centralized writeback still runs
         agent._memory_store.add.assert_called_once_with("user", "I prefer dark mode")
+        assert result["task_review"].memory_write_candidates
+        # Both generic background reviews are suppressed
+        mock_bg_review.assert_not_called()
+
+    def test_task_review_suppresses_skill_review_even_when_due(self, agent_with_memory_tool):
+        """Even when skill nudge counter is due, task-complete review suppresses it."""
+        agent = agent_with_memory_tool
+        self._setup_agent(agent)
+        agent.valid_tool_names = {"web_search", "memory", "skill_manage"}
+        agent._memory_store = MagicMock()
+        agent._memory_store.add.return_value = {"success": True, "message": "Entry added"}
+        # Memory nudge NOT due (interval=0 disables), but skill IS due.
+        agent._memory_nudge_interval = 0
+        agent._skill_nudge_interval = 1
+        agent._iters_since_skill = 0
+
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp2 = _mock_response(content="Done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+            patch.object(agent, "_spawn_background_review") as mock_bg_review,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("remember this: I prefer dark mode")
+
+        assert result["final_response"] == "Done"
+        # Task-complete review ran, so generic skill review is suppressed
+        assert result.get("task_review") is not None
+        mock_bg_review.assert_not_called()
+
+    def test_generic_reviews_fire_when_task_review_does_not_run(self, agent_with_memory_tool):
+        """When task-complete review does not fire, generic nudge reviews still proceed."""
+        agent = agent_with_memory_tool
+        self._setup_agent(agent)
+        agent.valid_tool_names = {"web_search", "memory", "skill_manage"}
+        agent._memory_store = MagicMock()
+        agent._memory_nudge_interval = 1
+        agent._turns_since_memory = 0
+        agent._skill_nudge_interval = 1
+        agent._iters_since_skill = 0
+
+        # Trivial no-tool reply — task-complete review does NOT fire.
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="hello", finish_reason="stop",
+        )
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+            patch.object(agent, "_spawn_background_review") as mock_bg_review,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "hello"
+        # No task review ran
+        assert result.get("task_review") is None
+        # Generic memory review should fire (nudge interval reached)
         mock_bg_review.assert_called_once()
         _, kwargs = mock_bg_review.call_args
-        assert kwargs["review_memory"] is False
-        assert kwargs["review_skills"] is True
+        assert kwargs["review_memory"] is True
 
     def test_interrupt_breaks_loop(self, agent):
         self._setup_agent(agent)
