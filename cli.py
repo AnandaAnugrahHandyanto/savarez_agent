@@ -3960,11 +3960,11 @@ class HermesCLI:
         total = len(turns)
 
         lines = []
-        lines.append(f"  ↻ {total} messages — newest first   (q to quit, / to search)\n")
+        lines.append(f"  ↻ {total} messages — oldest first, scroll up for history   (q to quit, / to search)\n")
         lines.append("═" * W + "\n")
 
-        for i, (role, text, tools) in enumerate(reversed(turns)):
-            idx = total - i
+        for i, (role, text, tools) in enumerate(turns):
+            idx = i + 1
             if role == "user":
                 header = f"[{idx}/{total}] ● You"
             else:
