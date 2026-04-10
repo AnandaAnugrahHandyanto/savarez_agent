@@ -1,0 +1,177 @@
+name: pantheon
+description: Pantheon — elite divine command system · god-tier control center
+
+colors:
+  banner_border: "#C9A227"
+  banner_title: "#FFD700"
+  banner_accent: "#FFD700"
+  banner_dim: "#4A6FA5"
+  banner_text: "#B8E0FF"
+  ui_accent: "#FFD700"
+  ui_label: "#5F87D4"
+  ui_ok: "#00E5A0"
+  ui_error: "#FF3355"
+  ui_warn: "#FFD700"
+  prompt: "#FFD700"
+  input_rule: "#C9A227"
+  response_border: "#C9A227"
+  session_label: "#C9A227"
+  session_border: "#4A6FA5"
+
+spinner:
+  waiting_faces:
+    - "(⚡)"
+    - "(▲)"
+    - "(◈)"
+    - "(✦)"
+    - "(⊛)"
+  thinking_faces:
+    - "(⚡)"
+    - "(▲)"
+    - "(◈)"
+    - "(✦)"
+    - "(⊛)"
+  thinking_verbs:
+    - "routing through the pantheon"
+    - "consulting the oracle"
+    - "invoking divine logic"
+    - "aligning the gods"
+    - "forging the decree"
+    - "reading the omens"
+    - "channeling Athena"
+    - "weighing fate"
+    - "traversing the agora"
+    - "awakening the fleet"
+    - "threading the ether"
+    - "executing divine will"
+  wings:
+    - ["⟪⚡", "⚡⟫"]
+    - ["⟪▲", "▲⟫"]
+    - ["⟪◈", "◈⟫"]
+    - ["⟪✦", "✦⟫"]
+
+branding:
+  agent_name: "⚡ HERMES · OLYMPUS ⚡"
+  welcome: "⚡ OLYMPUS ONLINE · DIVINE FLOW STABLE · THE GODS ARE WATCHING ⚡"
+  goodbye: "The messenger departs. Olympus endures. ⚡"
+  response_label: " ⚡ HERMES "
+  prompt_symbol: "⚡ "
+  help_header: "⚡ OLYMPUS COMMAND REFERENCE ⚡"
+
+tool_prefix: "│"
+
+pantheon:
+  - name: Hermes
+    icon: "~H~"
+    rank: "CORE"
+    role: Orchestrator / Router / Messenger
+    desc: "routes all. forges paths."
+    hat: "/~\\"
+    face: "(-⚡-)"
+  - name: Athena
+    icon: ">A<"
+    rank: "STRAT"
+    role: Strategy / Planning / Reasoning
+    desc: "wise. precise. lethal."
+    hat: "^.^"
+    face: "(o_o)"
+  - name: Hephaestus
+    icon: "[H]"
+    rank: "FORGE"
+    role: Code Generation / Building
+    desc: "builds what gods dream."
+    hat: "[#]"
+    face: "(o_-)"
+  - name: Apollo
+    icon: "*A*"
+    rank: "SAGE"
+    role: Analysis / Clarity / Insight
+    desc: "sees through the noise."
+    hat: "*.*"
+    face: "(^_^)"
+  - name: Artemis
+    icon: "->-"
+    rank: "HUNT"
+    role: Search / Retrieval / Precision
+    desc: "never misses."
+    hat: ">=>"
+    face: "(>.>)"
+  - name: Ares
+    icon: ">|<"
+    rank: "EXEC"
+    role: Execution / Force / Action
+    desc: "gets it done. hard."
+    hat: ">|<"
+    face: "(>#<)"
+  - name: Zeus
+    icon: "/Z\\"
+    rank: "JUDG"
+    role: Final Decisions / Authority
+    desc: "the last word."
+    hat: "/V\\"
+    face: "(|_|)"
+  - name: Poseidon
+    icon: "-P-"
+    rank: "FLOW"
+    role: Data Flow / Systems / Infra
+    desc: "moves everything."
+    hat: "~v~"
+    face: "(~_~)"
+  - name: Hades
+    icon: "X.X"
+    rank: "MEM"
+    role: Memory / Storage / History
+    desc: "forgets nothing."
+    hat: "._."
+    face: "(X_X)"
+  - name: Dionysus
+    icon: "<~>"
+    rank: "FLUX"
+    role: Creativity / Generation
+    desc: "chaos into beauty."
+    hat: "~w~"
+    face: "(^w^)"
+
+tool_emojis:
+  terminal: "⚡"
+  web_search: "◈"
+  file: "✦"
+  browser: "⊛"
+
+banner_logo: |
+  [#1A2744]  ✦  ·  ·  ✦  ·  ·  ✦  ·  ·  ✦  ·  ·  ✦  ·  ·  ✦  ·  ·  ✦  ·  ·  ✦  ·  ·  ✦  ·  ·  ✦  ·  ·[/]
+  [#2A3F6F]  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[/]
+  [#3A5A8A]  ▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░[/]
+  [#4A6FA5]  ▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒[/]
+  [#C9A227]  ══╦══════════════════════════════════════════════════════════════════════════════════════════╦══[/]
+  [#C9A227]  ║[/]  [dim #5F87D4]⚡[/]              [bold #FFD700]⚡  H · E · R · M · E · S  //  O · L · Y · M · P · U · S  ⚡[/]              [dim #5F87D4]⚡[/]  [#C9A227]║[/]
+  [#C9A227]  ══╬══════════════════════════════════════════════════════════════════════════════════════════╬══[/]
+  [bold #FFD700]  ██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗[/]  [bold #5F87D4]      █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
+  [bold #FFD700]  ██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝[/]  [bold #5F87D4]     ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
+  [bold #FFD700]  ███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗[/][#C9A227]█████╗[/][bold #5F87D4]███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
+  [#FFD700]  ██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║[/][#C9A227]╚════╝[/][#5F87D4]██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
+  [#FFD700]  ██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║[/]  [#5F87D4]     ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
+  [dim #C9A227]  ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝[/]  [dim #5F87D4]     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]
+  [#C9A227]  ══╬══════════════════════════════════════════════════════════════════════════════════════════╬══[/]
+  [#C9A227]  ║[/]  [bold #FFD700]⚡[/]  [#B8E0FF]Messenger Core  ·  Pantheon Runtime  ·  Oracle-Driven Execution[/]  [bold #FFD700]⚡[/]  [dim #00E5A0]▲ DIVINE FLOW STABLE[/]  [#C9A227]║[/]
+  [#C9A227]  ══╩══════════════════════════════════════════════════════════════════════════════════════════╩══[/]
+  [#4A6FA5]  ▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒[/]
+  [#3A5A8A]  ▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░[/]
+
+banner_hero: |
+  [bold #5F87D4]  ✦       ✦  [/]
+  [bold #C9A227]⠀⠀⠀⢰⣦⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣴⡆⠀⠀⠀[/]
+  [bold #C9A227]⠀⠀⢀⣿⠟⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠻⣿⡀⠀⠀[/]
+  [bold #5F87D4]⠀⢀⣾⡏⠀⠀⚡⠀⠀⠀⠀⠀⠀⠀⚡⠀⠀⠀⢹⣷⡀⠀⠀[/]
+  [bold #FFD700]⠀⠸⣿⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⣿⠇⠀⠀[/]
+  [bold #FFD700]⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+  [bold #FFD700]⠀⠀⠀⠀⠀⢀⣠⣴⣾⣿⣿⣇⠸⣿⣿⠇⣸⣿⣿⣷⣦⣄⡀[/]
+  [bold #5F87D4]⢀⣠⣴⣶⠿⠋⣩⡿⣿⡿⠻⣿⡇⢠⡄⢸⣿⠟⢿⣿⢿⣍⠙[/]
+  [bold #5F87D4]⠀⠉⠉⠁⠶⠟⠋⠀⠉⠀⢀⣈⣁⡈⢁⣈⣁⡀⠀⠉⠀⠙⠻[/]
+  [bold #C9A227]⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⡿⠛⢁⡈⠛⢿⣿⣦⠀⠀⠀⠀[/]
+  [bold #C9A227]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠿⣿⣦⣤⣈⠁⢠⣴⣿⠿⠀⠀⠀⠀[/]
+  [bold #FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠻⢿⣿⣦⡉⠁⠀⠀⠀⠀⠀[/]
+  [bold #FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⢷⣦⣈⠛⠃⠀⠀⠀⠀⠀⠀[/]
+  [bold #C9A227]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣴⠦⠈⠙⠿⣦⡄⠀⠀⠀⠀⠀[/]
+  [bold #C9A227]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⣿⣤⡈⠁⢤⣿⠇⠀⠀⠀⠀⠀[/]
+  [bold #FFD700]  ⚡  HERMES — ORCHESTRATOR · MESSENGER · CORE  ⚡[/]

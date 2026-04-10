@@ -1,0 +1,330 @@
+/* OLYMPUS ASCENDED DASHBOARD — Divine Command Center Theme */
+/* Cinematic TUI aesthetic with glass morphism, divine panels, and animations */
+
+Screen {
+    background: #0A0A12;
+}
+
+.hidden {
+    display: none;
+}
+
+#view-assembly, #view-chronicle, #view-oracle,
+#view-tablets, #view-deepdive, #view-local, #view-switch {
+    height: 1fr;
+}
+
+#nav-tabs {
+    dock: top;
+    height: 3;
+    background: #08080F;
+    border-bottom: heavy #FFD700;
+    padding: 0 1;
+}
+
+#header-title {
+    color: #FFD700;
+    text-style: bold;
+    width: auto;
+}
+
+#header-status {
+    color: #00D4FF;
+    dock: right;
+    width: auto;
+}
+
+.nav-button {
+    min-width: 14;
+    height: 3;
+    margin: 0 0;
+    background: #08080F;
+    color: #555577;
+    border: none;
+    text-style: bold;
+}
+
+.nav-button:hover {
+    background: #12122A;
+    color: #FFD700;
+}
+
+.nav-button.-active {
+    background: #12122A;
+    color: #FFD700;
+    border-bottom: heavy #FFD700;
+}
+
+#back-btn {
+    min-width: 6;
+    background: #08080F;
+    color: #00D4FF;
+    border: none;
+}
+
+#back-btn:hover {
+    color: #FFD700;
+}
+
+#main-content {
+    height: 1fr;
+    padding: 0 1;
+}
+
+.bento-gold {
+    border: round #3A3010;
+    background: #0C0C18;
+    padding: 1 2;
+    margin: 0 0 1 0;
+    text-align: center;
+}
+
+.bento-gold:hover {
+    border: round #FFD700;
+}
+
+.divine-panel {
+    border: round #2A2A50;
+    background: #0C0C18;
+    padding: 1 2;
+    margin: 0 0 1 0;
+    text-align: center;
+}
+
+.divine-panel:focus {
+    border: round #FFD700;
+}
+
+.divine-panel:hover {
+    border: round #3A3A6A;
+    background: #0E0E1C;
+}
+
+.divine-panel-gold {
+    border: double #C9A227;
+    background: #0C0C18;
+    padding: 1 2;
+    margin: 0 0 1 0;
+    text-align: center;
+}
+
+.divine-panel-gold:hover {
+    border: double #FFD700;
+    background: #0E0E1C;
+}
+
+.divine-panel-gold:focus {
+    border: double #FFEC8B;
+}
+
+.bento-row {
+    layout: horizontal;
+    height: auto;
+    margin: 0 0 1 0;
+}
+
+.bento-row > * {
+    width: 1fr;
+    margin: 0 1 0 0;
+}
+
+#model-status {
+    height: auto;
+    min-height: 3;
+    border: double #3A3010;
+    background: #0A0A14;
+    padding: 1 2;
+    margin: 0 0 1 0;
+    text-align: center;
+}
+
+#model-status:hover {
+    border: double #FFD700;
+}
+
+#quick-stats {
+    height: auto;
+    min-height: 3;
+    border: round #3A3010;
+    background: #0C0C18;
+    padding: 1 2;
+    margin: 0 0 1 0;
+    text-align: center;
+}
+
+#quick-stats:hover {
+    border: round #FFD700;
+}
+
+#recent-sessions {
+    width: 2fr;
+    margin-right: 1;
+}
+
+#search-input, #dive-input {
+    width: 100%;
+    background: #0C0C18;
+    color: #E0F7FF;
+    border: round #2A2A50;
+    margin: 0 0 1 0;
+}
+
+#search-input:focus, #dive-input:focus {
+    border: round #FFD700;
+}
+
+#switch-row {
+    layout: horizontal;
+    height: auto;
+    margin: 0 0 1 0;
+}
+
+#switch-input-model {
+    width: 2fr;
+    background: #0C0C18;
+    color: #E0F7FF;
+    border: round #2A2A50;
+    margin: 0 1 0 0;
+}
+
+#switch-input-context {
+    width: 1fr;
+    min-width: 18;
+    background: #0C0C18;
+    color: #E0F7FF;
+    border: round #2A2A50;
+    margin: 0 0 0 0;
+}
+
+#switch-input-model:focus, #switch-input-context:focus {
+    border: round #FFD700;
+}
+
+.stat-card {
+    width: 1fr;
+    height: auto;
+    min-height: 5;
+    border: round #2A2A50;
+    background: #0C0C18;
+    padding: 1;
+    margin: 0 1 1 0;
+    content-align: center middle;
+    text-align: center;
+}
+
+.stat-card:hover {
+    border: round #3A3A6A;
+    background: #0E0E1C;
+}
+
+.stat-card:focus {
+    border: round #FFD700;
+}
+
+#stats-row {
+    layout: horizontal;
+    height: auto;
+    min-height: 5;
+    margin-bottom: 1;
+}
+
+.quick-actions {
+    layout: horizontal;
+    height: 3;
+    background: #0A0A14;
+    border: round #2A2A50;
+    padding: 0 1;
+    margin: 0 0 1 0;
+}
+
+.quick-action-btn {
+    min-width: 12;
+    height: 3;
+    background: #0C0C18;
+    color: #00D4FF;
+    border: round #2A2A50;
+    margin: 0 1 0 0;
+}
+
+.quick-action-btn:hover {
+    background: #12122A;
+    color: #FFD700;
+    border: round #3A3A6A;
+}
+
+.quick-action-btn:focus {
+    border: round #FFD700;
+}
+
+.hero-art {
+    border: none;
+    background: #0A0A12;
+    padding: 0;
+    margin: 0 0 1 0;
+    text-align: center;
+    min-height: 22;
+}
+
+.hero-art:hover {
+    background: #0C0C14;
+}
+
+#god-leaderboard {
+    border: double #C9A227;
+    background: #0A0A14;
+    padding: 1 2;
+    margin: 0 0 1 0;
+    min-height: 15;
+}
+
+#god-leaderboard:hover {
+    border: double #FFD700;
+}
+
+#pantheon-strip {
+    height: auto;
+    min-height: 3;
+    border: round #2A2A50;
+    background: #0C0C18;
+    padding: 1 2;
+    margin: 0 0 1 0;
+    text-align: center;
+}
+
+#pantheon-strip:hover {
+    border: round #3A3A6A;
+}
+
+#activity-dashboard {
+    border: round #2A2A50;
+    background: #0A0A14;
+    padding: 1 2;
+    margin: 0 0 1 0;
+}
+
+#activity-dashboard:hover {
+    border: round #3A3A6A;
+}
+
+#achievements {
+    border: round #3A3010;
+    background: #0A0A14;
+    padding: 1 2;
+    margin: 0 0 1 0;
+}
+
+#achievements:hover {
+    border: round #FFD700;
+}
+
+Scrollbar {
+    background: #0A0A12;
+}
+
+ScrollBar > .scrollbar--bar {
+    color: #1A1A3A;
+}
+
+ScrollBar > .scrollbar--bar:hover {
+    color: #FFD700;
+}

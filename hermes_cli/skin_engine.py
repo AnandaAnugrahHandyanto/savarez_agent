@@ -104,10 +104,9 @@ from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
+_COMPLETION_BG = "#1a1a2e"
+_COMPLETION_BG_CURRENT = "#333355"
 
-# =============================================================================
-# Skin data structure
-# =============================================================================
 
 @dataclass
 class SkinConfig:
@@ -121,6 +120,18 @@ class SkinConfig:
     tool_emojis: Dict[str, str] = field(default_factory=dict)  # per-tool emoji overrides
     banner_logo: str = ""    # Rich-markup ASCII art logo (replaces HERMES_AGENT_LOGO)
     banner_hero: str = ""    # Rich-markup hero art (replaces HERMES_CADUCEUS)
+    pantheon: List[Dict[str, str]] = field(default_factory=list)  # [{name, role}] for Pantheon Registry
+    pantheon_style: str = ""  # "strip" for compact horizontal, "" for default grid
+    tool_god_mapping: Dict[str, str] = field(default_factory=dict)  # tool_name -> god_name
+    execution_lanes: List[Dict[str, Any]] = field(default_factory=list)  # lane definitions
+    animations: Dict[str, Any] = field(default_factory=dict)  # animation settings
+    notifications: Dict[str, str] = field(default_factory=dict)  # notification icons
+    dashboard: Dict[str, Any] = field(default_factory=dict)  # dashboard-specific settings
+    hero_frames: List[str] = field(default_factory=list)  # animation frames for hero art
+    flow_diagram: str = ""  # flow diagram template
+    cinematic_intro_frames: List[str] = field(default_factory=list)  # intro animation frames
+    god_activation_cinematics: Dict[str, List[str]] = field(default_factory=dict)  # per-god activation animations
+    god_detail_template: str = ""  # template for god detail panels
 
     def get_color(self, key: str, fallback: str = "") -> str:
         """Get a color value with fallback."""
@@ -143,10 +154,76 @@ class SkinConfig:
         """Get a branding value with fallback."""
         return self.branding.get(key, fallback)
 
+    def get_god_for_tool(self, tool_name: str) -> Optional[str]:
+        """Get the god assigned to a tool, or None if not mapped."""
+        return self.tool_god_mapping.get(tool_name)
 
-# =============================================================================
-# Built-in skin definitions
-# =============================================================================
+    def get_god_by_name(self, god_name: str) -> Optional[Dict[str, str]]:
+        """Get pantheon god data by name."""
+        for god in self.pantheon:
+            if god.get("name") == god_name:
+                return god
+        return None
+
+    def get_lane_by_god(self, god_name: str) -> Optional[Dict[str, Any]]:
+        """Get execution lane by god name."""
+        for lane in self.execution_lanes:
+            if lane.get("god") == god_name:
+                return lane
+        return None
+
+    def get_god_lore(self, god_name: str) -> Optional[str]:
+        """Get the lore/backstory for a god."""
+        god = self.get_god_by_name(god_name)
+        return god.get("lore") if god else None
+
+    def get_god_pixel_art(self, god_name: str) -> Optional[str]:
+        """Get the pixel art for a god."""
+        god = self.get_god_by_name(god_name)
+        return god.get("pixel_art") if god else None
+
+    def get_god_abilities(self, god_name: str) -> List[str]:
+        """Get the abilities list for a god."""
+        god = self.get_god_by_name(god_name)
+        return god.get("abilities", []) if god else []
+
+    def get_god_quotes(self, god_name: str) -> List[str]:
+        """Get the quotes list for a god."""
+        god = self.get_god_by_name(god_name)
+        return god.get("quotes", []) if god else []
+
+    def get_god_active_animation(self, god_name: str) -> List[str]:
+        """Get the active animation frames for a god."""
+        god = self.get_god_by_name(god_name)
+        return god.get("active_animation", []) if god else []
+
+    def get_god_activation_cinematic(self, god_name: str) -> List[str]:
+        """Get the activation cinematic frames for a god."""
+        return self.god_activation_cinematics.get(god_name, [])
+
+    def get_god_color(self, god_name: str) -> str:
+        """Get the primary color for a god."""
+        god = self.get_god_by_name(god_name)
+        return god.get("color", "#FFD700") if god else "#FFD700"
+
+    def get_god_title(self, god_name: str) -> str:
+        """Get the title for a god."""
+        god = self.get_god_by_name(god_name)
+        return god.get("title", "") if god else ""
+
+    def get_god_domain(self, god_name: str) -> str:
+        """Get the domain for a god."""
+        god = self.get_god_by_name(god_name)
+        return god.get("domain", "") if god else ""
+
+    def get_dashboard_setting(self, key: str, fallback: Any = None) -> Any:
+        """Get a dashboard setting with fallback."""
+        return self.dashboard.get(key, fallback)
+
+    def get_notification_icon(self, level: str, fallback: str = "•") -> str:
+        """Get notification icon for a level (info, warn, error, success)."""
+        return self.notifications.get(f"{level}_icon", fallback)
+
 
 _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
     "default": {
@@ -504,10 +581,6 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 }
 
 
-# =============================================================================
-# Skin loading and management
-# =============================================================================
-
 _active_skin: Optional[SkinConfig] = None
 _active_skin_name: str = "default"
 
@@ -551,6 +624,18 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
         tool_emojis=data.get("tool_emojis", {}),
         banner_logo=data.get("banner_logo", ""),
         banner_hero=data.get("banner_hero", ""),
+        pantheon=data.get("pantheon", []),
+        pantheon_style=data.get("pantheon_style", ""),
+        tool_god_mapping=data.get("tool_god_mapping", {}),
+        execution_lanes=data.get("execution_lanes", []),
+        animations=data.get("animations", {}),
+        notifications=data.get("notifications", {}),
+        dashboard=data.get("dashboard", {}),
+        hero_frames=data.get("hero_frames", []),
+        flow_diagram=data.get("flow_diagram", ""),
+        cinematic_intro_frames=data.get("cinematic_intro_frames", []),
+        god_activation_cinematics=data.get("god_activation_cinematics", {}),
+        god_detail_template=data.get("god_detail_template", ""),
     )
 
 
@@ -638,11 +723,6 @@ def init_skin_from_config(config: dict) -> None:
         set_active_skin("default")
 
 
-# =============================================================================
-# Convenience helpers for CLI modules
-# =============================================================================
-
-
 def get_active_prompt_symbol(fallback: str = "❯ ") -> str:
     """Get the interactive prompt symbol from the active skin."""
     try:
@@ -698,11 +778,11 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         "hint": f"{dim} italic",
         "input-rule": input_rule,
         "image-badge": f"{label} bold",
-        "completion-menu": f"bg:#1a1a2e {text}",
-        "completion-menu.completion": f"bg:#1a1a2e {text}",
-        "completion-menu.completion.current": f"bg:#333355 {title}",
-        "completion-menu.meta.completion": f"bg:#1a1a2e {dim}",
-        "completion-menu.meta.completion.current": f"bg:#333355 {label}",
+        "completion-menu": f"bg:{_COMPLETION_BG} {text}",
+        "completion-menu.completion": f"bg:{_COMPLETION_BG} {text}",
+        "completion-menu.completion.current": f"bg:{_COMPLETION_BG_CURRENT} {title}",
+        "completion-menu.meta.completion": f"bg:{_COMPLETION_BG} {dim}",
+        "completion-menu.meta.completion.current": f"bg:{_COMPLETION_BG_CURRENT} {label}",
         "clarify-border": input_rule,
         "clarify-title": f"{title} bold",
         "clarify-question": f"{text} bold",

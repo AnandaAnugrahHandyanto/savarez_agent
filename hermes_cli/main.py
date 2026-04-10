@@ -2673,6 +2673,131 @@ def cmd_config(args):
     config_command(args)
 
 
+def cmd_dashboard(args):
+    """Launch the Olympus interactive dashboard."""
+    _require_tty("dashboard")
+    from hermes_cli.dashboard.app import run_dashboard
+    run_dashboard()
+
+
+def cmd_zeus(args):
+    """Launch the Zeus Monitor or chat with Zeus."""
+    # Check for chat mode
+    if getattr(args, 'chat', False) or (getattr(args, 'message', None) and not getattr(args, 'drive', False) and not getattr(args, 'auto', False)):
+        _run_zeus_chat(args)
+        return
+    
+    # Determine mode
+    if getattr(args, 'auto', False):
+        mode = "auto"
+    elif getattr(args, 'drive', False):
+        mode = "drive"
+    else:
+        mode = "watch"
+    
+    # Get goal from message args if provided
+    goal = ""
+    if getattr(args, 'message', None):
+        goal = " ".join(args.message)
+    
+    # Launch monitor
+    _require_tty("zeus")
+    from hermes_cli.zeus_monitor import run_monitor
+    run_monitor(mode=mode, goal=goal)
+
+
+def _run_zeus_chat(args):
+    """Interactive chat with Zeus overseer."""
+    from agent.zeus_overseer import get_overseer
+    from hermes_constants import get_hermes_home
+    
+    overseer = get_overseer()
+    if not overseer.enabled:
+        print("⚡ Zeus is not enabled. Add this to ~/.hermes/config.yaml:")
+        print()
+        print("  overseer:")
+        print("    enabled: true")
+        print("    model: gemma2:2b  # or any local model")
+        print("    base_url: http://localhost:11434/v1")
+        print()
+        return
+    
+    # Get session context if available
+    session_context = ""
+    sessions_dir = get_hermes_home() / "sessions"
+    if sessions_dir.exists():
+        notes_files = sorted(sessions_dir.glob("notes_*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if notes_files:
+            try:
+                session_context = notes_files[0].read_text(encoding="utf-8")[-3000:]
+            except Exception:
+                pass
+    
+    # Single message mode
+    if getattr(args, 'message', None):
+        message = " ".join(args.message)
+        response = overseer.chat(message, session_context=session_context)
+        print(f"\n⚡ Zeus: {response}\n")
+        
+        # Check if Zeus wants to relay something to Hermes
+        if getattr(args, 'relay', False) and response:
+            relay_msg = overseer.relay_to_hermes(response)
+            print(f"📨 Relay to Hermes: {relay_msg}")
+        return
+    
+    # Interactive chat mode
+    print()
+    print("⚡ ═══════════════════════════════════════════════════════════")
+    print("   ZEUS OVERSEER — Divine Supervisor of Hermes")
+    print("   Type your message, or 'quit' to exit")
+    print("   Use 'relay: <instruction>' to send commands to Hermes")
+    print("═══════════════════════════════════════════════════════════ ⚡")
+    print()
+    
+    conversation_history = []
+    
+    while True:
+        try:
+            user_input = input("You: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n⚡ Zeus returns to Olympus.")
+            break
+        
+        if not user_input:
+            continue
+        if user_input.lower() in ('quit', 'exit', 'q'):
+            print("⚡ Zeus returns to Olympus.")
+            break
+        
+        # Check for relay command
+        if user_input.lower().startswith('relay:'):
+            instruction = user_input[6:].strip()
+            if instruction:
+                relay_msg = overseer.relay_to_hermes(instruction)
+                print(f"\n📨 Queued for Hermes: {relay_msg}")
+                print("   (Copy this into your Hermes session or use /zeus relay in chat)\n")
+            else:
+                print("   Usage: relay: <instruction for Hermes>")
+            continue
+        
+        # Chat with Zeus
+        response = overseer.chat(
+            user_input,
+            session_context=session_context,
+            conversation_history=conversation_history,
+        )
+        
+        # Update history
+        conversation_history.append({"role": "user", "content": user_input})
+        conversation_history.append({"role": "assistant", "content": response})
+        
+        # Keep history manageable
+        if len(conversation_history) > 20:
+            conversation_history = conversation_history[-20:]
+        
+        print(f"\n⚡ Zeus: {response}\n")
+
+
 def cmd_version(args):
     """Show version."""
     print(f"Hermes Agent v{__version__} ({__release_date__})")
@@ -3402,6 +3527,179 @@ def _install_python_dependencies_with_optional_fallback(
         print(f"  ✓ Reinstalled optional extras individually: {', '.join(installed_extras)}")
     if failed_extras:
         print(f"  ⚠ Skipped optional extras that still failed: {', '.join(failed_extras)}")
+
+
+def cmd_safe_update(args):
+    """Update Hermes with automatic config backup and restore.
+    
+    This command:
+    1. Backs up config.yaml, .env, skins/, skills/, MEMORY.md, USER.md, SOUL.md
+    2. Runs the standard hermes update
+    3. Restores config if it was overwritten
+    4. Runs config migration to add new fields
+    5. Keeps last 5 backups, cleans older ones
+    """
+    import shutil
+    from datetime import datetime
+    from hermes_constants import get_hermes_home
+    
+    hermes_home = get_hermes_home()
+    backup_dir = hermes_home / "backups"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_subdir = backup_dir / f"pre_update_{timestamp}"
+    
+    print("⚕ Hermes Safe Update")
+    print("━" * 70)
+    print()
+    
+    # ── Step 1: Create backup ────────────────────────────────────────────────
+    print("→ Creating backup...")
+    backup_subdir.mkdir(parents=True, exist_ok=True)
+    
+    backed_up = []
+    
+    # Backup config.yaml
+    config_file = hermes_home / "config.yaml"
+    if config_file.exists():
+        shutil.copy2(config_file, backup_subdir / "config.yaml")
+        backed_up.append("config.yaml")
+        print("  ✓ Backed up config.yaml")
+    
+    # Backup .env
+    env_file = hermes_home / ".env"
+    if env_file.exists():
+        shutil.copy2(env_file, backup_subdir / ".env")
+        backed_up.append(".env")
+        print("  ✓ Backed up .env")
+    
+    # Backup skins/
+    skins_dir = hermes_home / "skins"
+    if skins_dir.exists():
+        shutil.copytree(skins_dir, backup_subdir / "skins")
+        backed_up.append("skins/")
+        print("  ✓ Backed up skins/")
+    
+    # Backup skills/
+    skills_dir = hermes_home / "skills"
+    if skills_dir.exists():
+        shutil.copytree(skills_dir, backup_subdir / "skills")
+        backed_up.append("skills/")
+        print("  ✓ Backed up skills/")
+    
+    # Backup memory files
+    for mem_file in ["MEMORY.md", "USER.md", "SOUL.md"]:
+        mem_path = hermes_home / mem_file
+        if mem_path.exists():
+            shutil.copy2(mem_path, backup_subdir / mem_file)
+            backed_up.append(mem_file)
+            print(f"  ✓ Backed up {mem_file}")
+    
+    print()
+    print(f"✓ Backup saved to: {backup_subdir}")
+    print()
+    
+    # ── Step 2: Store config hash for comparison ─────────────────────────────
+    config_hash_before = None
+    if config_file.exists():
+        import hashlib
+        config_hash_before = hashlib.md5(config_file.read_bytes()).hexdigest()
+    
+    # ── Step 3: Run the actual update ────────────────────────────────────────
+    print("→ Running hermes update...")
+    print()
+    
+    update_success = False
+    try:
+        cmd_update(args)
+        update_success = True
+    except SystemExit as e:
+        if e.code == 0:
+            update_success = True
+        else:
+            print()
+            print("⚠ Update encountered issues (see above)")
+    except Exception as e:
+        print(f"✗ Update failed: {e}")
+    
+    print()
+    
+    # ── Step 4: Check if config was overwritten ──────────────────────────────
+    print("→ Verifying config preservation...")
+    
+    config_restored = False
+    if config_file.exists() and config_hash_before:
+        import hashlib
+        config_hash_after = hashlib.md5(config_file.read_bytes()).hexdigest()
+        
+        if config_hash_before != config_hash_after:
+            print("  ⚠ Config was modified during update")
+            print("  Restoring your custom config...")
+            backup_config = backup_subdir / "config.yaml"
+            if backup_config.exists():
+                shutil.copy2(backup_config, config_file)
+                config_restored = True
+                print("  ✓ Custom config restored")
+        else:
+            print("  ✓ Config unchanged (preserved)")
+    elif not config_file.exists() and (backup_subdir / "config.yaml").exists():
+        shutil.copy2(backup_subdir / "config.yaml", config_file)
+        config_restored = True
+        print("  ✓ Config restored from backup")
+    
+    # Restore .env if missing
+    if not env_file.exists() and (backup_subdir / ".env").exists():
+        shutil.copy2(backup_subdir / ".env", env_file)
+        print("  ✓ .env restored from backup")
+    
+    print()
+    
+    # ── Step 5: Run config migration ─────────────────────────────────────────
+    print("→ Checking for new config options...")
+    try:
+        from hermes_cli.config import migrate_config
+        migrate_config(interactive=False, quiet=True)
+        print("  ✓ Config migration complete")
+    except Exception as e:
+        print(f"  ⚠ Config migration skipped: {e}")
+    
+    print()
+    
+    # ── Step 6: Summary ──────────────────────────────────────────────────────
+    print("━" * 70)
+    print("⚕ Update Summary")
+    print()
+    
+    if update_success:
+        print("✓ Hermes updated successfully")
+    else:
+        print("⚠ Update had issues (check above)")
+    
+    if config_restored:
+        print("✓ Custom config was restored")
+    else:
+        print("✓ Custom config was preserved")
+    
+    print()
+    print(f"Backup location: {backup_subdir}")
+    print()
+    print("To restore manually if needed:")
+    print(f"  cp {backup_subdir}/config.yaml {config_file}")
+    print(f"  cp {backup_subdir}/.env {env_file}")
+    print()
+    
+    # ── Step 7: Cleanup old backups (keep last 5) ────────────────────────────
+    try:
+        backups = sorted(backup_dir.glob("pre_update_*"), key=lambda p: p.name, reverse=True)
+        if len(backups) > 5:
+            print("→ Cleaning old backups (keeping last 5)...")
+            for old_backup in backups[5:]:
+                shutil.rmtree(old_backup)
+            print(f"  ✓ Removed {len(backups) - 5} old backup(s)")
+            print()
+    except Exception:
+        pass  # Non-fatal
+    
+    print("Done!")
 
 
 def cmd_update(args):
@@ -5438,6 +5736,65 @@ For more help on a command:
     claw_parser.set_defaults(func=cmd_claw)
 
     # =========================================================================
+    # dashboard command
+    # =========================================================================
+    dashboard_parser = subparsers.add_parser(
+        "dashboard",
+        help="Launch the Olympus interactive dashboard (TUI)",
+    )
+    dashboard_parser.set_defaults(func=cmd_dashboard)
+
+    # =========================================================================
+    # zeus command — monitor active Hermes session or chat with Zeus
+    # =========================================================================
+    zeus_parser = subparsers.add_parser(
+        "zeus",
+        help="Monitor Hermes session, chat with Zeus, or let Zeus drive autonomously",
+        description="""Zeus — Divine supervisor for Hermes
+
+Modes:
+  (default)     Watch mode — read-only monitoring of Hermes activity
+  --drive       Drive mode — Zeus responds when Hermes stops, keeps it working
+  --auto        Auto mode  — Zeus drives Hermes autonomously all day
+  --chat        Chat mode  — Interactive conversation with Zeus
+
+Examples:
+  hermes zeus                    # Watch Hermes activity
+  hermes zeus --drive            # Zeus nudges Hermes when it stops
+  hermes zeus --auto             # Full autopilot — Zeus runs your business
+  hermes zeus --auto "Build my SaaS MVP"  # Auto mode with a goal
+  hermes zeus --chat             # Chat with Zeus directly
+  hermes zeus "What's the status?"        # Quick question to Zeus
+"""
+    )
+    zeus_parser.add_argument(
+        "--drive", "-d",
+        action="store_true",
+        help="Drive mode: Zeus responds when Hermes stops working"
+    )
+    zeus_parser.add_argument(
+        "--auto", "-a",
+        action="store_true",
+        help="Auto mode: Zeus drives Hermes autonomously all day"
+    )
+    zeus_parser.add_argument(
+        "--chat", "-c",
+        action="store_true",
+        help="Start interactive chat with Zeus"
+    )
+    zeus_parser.add_argument(
+        "--relay", "-r",
+        action="store_true",
+        help="Relay Zeus's response as an instruction for Hermes"
+    )
+    zeus_parser.add_argument(
+        "message",
+        nargs="*",
+        help="Goal for auto/drive mode, or message for chat mode"
+    )
+    zeus_parser.set_defaults(func=cmd_zeus)
+
+    # =========================================================================
     # version command
     # =========================================================================
     version_parser = subparsers.add_parser(
@@ -5459,6 +5816,16 @@ For more help on a command:
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)"
     )
     update_parser.set_defaults(func=cmd_update)
+
+    # =========================================================================
+    # safe-update command
+    # =========================================================================
+    safe_update_parser = subparsers.add_parser(
+        "safe-update",
+        help="Update Hermes with automatic config backup/restore",
+        description="Backs up config.yaml, .env, skins, skills, and memory before updating, then restores if needed"
+    )
+    safe_update_parser.set_defaults(func=cmd_safe_update)
     
     # =========================================================================
     # uninstall command

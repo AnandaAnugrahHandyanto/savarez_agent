@@ -106,6 +106,7 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
+from agent.session_notes import SessionNotesTracker
 from utils import atomic_json_write, env_var_enabled
 
 
@@ -958,6 +959,11 @@ class AIAgent:
         # Track conversation messages for session logging
         self._session_messages: List[Dict[str, Any]] = []
         
+        # Session notes tracker — human-readable .txt file with important observations
+        # Initialized later after config is loaded (to respect display.session_notes setting)
+        self._session_notes = None
+        self._session_notes_enabled = True  # Default, may be overridden by config
+        
         # Cached system prompt -- built once per session, only rebuilt on compression
         self._cached_system_prompt: Optional[str] = None
         
@@ -1007,6 +1013,12 @@ class AIAgent:
             _agent_cfg = _load_agent_config()
         except Exception:
             _agent_cfg = {}
+
+        # Initialize session notes tracker (respects display.session_notes config)
+        display_cfg = _agent_cfg.get("display", {})
+        self._session_notes_enabled = display_cfg.get("session_notes", True)
+        if self._session_notes_enabled:
+            self._session_notes = SessionNotesTracker(self.session_id, self.logs_dir, model)
 
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
@@ -1203,6 +1215,11 @@ class AIAgent:
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
+        self.last_output_tok_s = 0.0
+        self._last_api_start = 0.0
+        self.llm_phase = "idle"
+        self.llm_phase_start = 0.0
+        self.llm_ttft = 0.0
         
         # ── Ollama num_ctx injection ──
         # Ollama defaults to 2048 context regardless of the model's capabilities.
@@ -1296,6 +1313,11 @@ class AIAgent:
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
+        self.last_output_tok_s = 0.0
+        self._last_api_start = 0.0
+        self.llm_phase = "idle"
+        self.llm_phase_start = 0.0
+        self.llm_ttft = 0.0
         
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
@@ -4422,12 +4444,17 @@ class AIAgent:
         last_chunk_time = {"t": time.time()}
 
         def _fire_first_delta():
-            if not first_delta_fired["done"] and on_first_delta:
+            if not first_delta_fired["done"]:
                 first_delta_fired["done"] = True
-                try:
-                    on_first_delta()
-                except Exception:
-                    pass
+                now = time.time()
+                self.llm_ttft = now - self._last_api_start
+                self.llm_phase = "generating"
+                self.llm_phase_start = now
+                if on_first_delta:
+                    try:
+                        on_first_delta()
+                    except Exception:
+                        pass
 
         def _call_chat_completions():
             """Stream a chat completions response."""
@@ -6122,6 +6149,13 @@ class AIAgent:
         new_system_prompt = self._build_system_prompt(system_message)
         self._cached_system_prompt = new_system_prompt
 
+        # Log compression event to session notes
+        if self._session_notes:
+            try:
+                self._session_notes.log_event("compression", f"Context compressed, starting new session segment")
+            except Exception:
+                pass
+        
         if self._session_db:
             try:
                 # Propagate title to the new session with auto-numbering
@@ -6131,6 +6165,9 @@ class AIAgent:
                 self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
                 # Update session_log_file to point to the new session's JSON file
                 self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
+                # Update session notes tracker for new session
+                if self._session_notes_enabled:
+                    self._session_notes = SessionNotesTracker(self.session_id, self.logs_dir, self.model)
                 self._session_db.create_session(
                     session_id=self.session_id,
                     source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
@@ -6312,6 +6349,7 @@ class AIAgent:
                     "role": "tool",
                     "content": f"[Tool execution cancelled — {tc.function.name} was skipped due to user interrupt]",
                     "tool_call_id": tc.id,
+                    "tool_name": tc.function.name,
                 })
             return
 
@@ -6492,6 +6530,7 @@ class AIAgent:
                 "role": "tool",
                 "content": function_result,
                 "tool_call_id": tc.id,
+                "tool_name": name,
             }
             messages.append(tool_msg)
 
@@ -6535,6 +6574,7 @@ class AIAgent:
                         "role": "tool",
                         "content": f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
                         "tool_call_id": skipped_tc.id,
+                        "tool_name": skipped_name,
                     }
                     messages.append(skip_msg)
                 break
@@ -6800,7 +6840,8 @@ class AIAgent:
             tool_msg = {
                 "role": "tool",
                 "content": function_result,
-                "tool_call_id": tool_call.id
+                "tool_call_id": tool_call.id,
+                "tool_name": function_name,
             }
             messages.append(tool_msg)
 
@@ -6820,7 +6861,8 @@ class AIAgent:
                     skip_msg = {
                         "role": "tool",
                         "content": f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
-                        "tool_call_id": skipped_tc.id
+                        "tool_call_id": skipped_tc.id,
+                        "tool_name": skipped_name,
                     }
                     messages.append(skip_msg)
                 break
@@ -7556,6 +7598,10 @@ class AIAgent:
                 logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
             
             api_start_time = time.time()
+            self._last_api_start = api_start_time
+            self.llm_phase = "processing"
+            self.llm_phase_start = api_start_time
+            self.llm_ttft = 0.0
             retry_count = 0
             max_retries = 3
             primary_recovery_attempted = False
@@ -7637,6 +7683,7 @@ class AIAgent:
                         response = self._interruptible_api_call(api_kwargs)
                     
                     api_duration = time.time() - api_start_time
+                    self.llm_phase = "idle"
                     
                     # Stop thinking spinner silently -- the response box or tool
                     # execution messages that follow are more informative.
@@ -8018,7 +8065,6 @@ class AIAgent:
                         self.session_cache_write_tokens += canonical_usage.cache_write_tokens
                         self.session_reasoning_tokens += canonical_usage.reasoning_tokens
 
-                        # Log API call details for debugging/observability
                         _cache_pct = ""
                         if canonical_usage.cache_read_tokens and prompt_tokens:
                             _cache_pct = f" cache={canonical_usage.cache_read_tokens}/{prompt_tokens} ({100*canonical_usage.cache_read_tokens/prompt_tokens:.0f}%)"
@@ -8028,6 +8074,11 @@ class AIAgent:
                             prompt_tokens, completion_tokens, total_tokens,
                             api_duration, _cache_pct,
                         )
+
+                        if self._last_api_start and completion_tokens > 0:
+                            api_elapsed = time.time() - self._last_api_start
+                            if api_elapsed > 0.1:
+                                self.last_output_tok_s = round(completion_tokens / api_elapsed, 1)
 
                         cost_result = estimate_usage_cost(
                             self.model,
@@ -9008,6 +9059,7 @@ class AIAgent:
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tc.id,
+                                "tool_name": tc.function.name,
                                 "content": content,
                             })
                         continue
@@ -9071,6 +9123,7 @@ class AIAgent:
                                 messages.append({
                                     "role": "tool",
                                     "tool_call_id": tc.id,
+                                    "tool_name": tc.function.name,
                                     "content": tool_result,
                                 })
                             continue
@@ -9421,6 +9474,7 @@ class AIAgent:
                                 err_msg = {
                                     "role": "tool",
                                     "tool_call_id": tc["id"],
+                                    "tool_name": tc.get("function", {}).get("name"),
                                     "content": f"Error executing tool: {error_msg}",
                                 }
                                 messages.append(err_msg)
@@ -9566,6 +9620,29 @@ class AIAgent:
         
         # Clear interrupt state after handling
         self.clear_interrupt()
+        
+        # Log session notes — extract tool calls from conversation for tracking
+        if self._session_notes:
+            try:
+                turn_tool_calls = []
+                turn_tool_results = []
+                for msg in messages:
+                    if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                        for tc in msg["tool_calls"]:
+                            if isinstance(tc, dict):
+                                turn_tool_calls.append(tc)
+                    elif msg.get("role") == "tool":
+                        turn_tool_results.append(msg.get("content", ""))
+                
+                self._session_notes.log_turn(
+                    user_message=original_user_message,
+                    assistant_response=final_response or "",
+                    tool_calls=turn_tool_calls,
+                    tool_results=turn_tool_results,
+                    tokens_used=self.session_total_tokens,
+                )
+            except Exception as e:
+                logger.debug("Session notes logging failed: %s", e)
 
         # Clear stream callback so it doesn't leak into future calls
         self._stream_callback = None
@@ -9606,6 +9683,63 @@ class AIAgent:
         # provider before the second message. Actual session-end cleanup is
         # handled by the CLI (atexit / /reset) and gateway (session expiry /
         # _reset_session).
+
+        # Zeus Overseer — lightweight supervisor for task completion monitoring
+        # Runs after each turn to evaluate if the task is complete
+        overseer_nudge = None
+        try:
+            overseer_cfg = _agent_cfg.get("overseer", {})
+            if overseer_cfg.get("enabled", False) and final_response and not interrupted:
+                trigger = overseer_cfg.get("trigger", "on_completion")
+                should_evaluate = False
+                
+                # Determine if we should run the overseer
+                if trigger == "every_turn":
+                    should_evaluate = True
+                elif trigger == "on_completion":
+                    # Check if agent seems to think it's done (no tool calls in last response)
+                    last_msg = messages[-1] if messages else {}
+                    should_evaluate = last_msg.get("role") == "assistant" and not last_msg.get("tool_calls")
+                elif trigger == "on_idle":
+                    # Agent stopped making tool calls
+                    should_evaluate = completed
+                
+                if should_evaluate:
+                    from agent.zeus_overseer import get_overseer
+                    overseer = get_overseer()
+                    
+                    # Get session notes content for evaluation
+                    notes_content = ""
+                    if self._session_notes and self._session_notes.notes_file.exists():
+                        try:
+                            notes_content = self._session_notes.notes_file.read_text(encoding="utf-8")[-2000:]
+                        except Exception:
+                            pass
+                    
+                    overseer_result = overseer.evaluate(
+                        task=original_user_message,
+                        session_notes=notes_content,
+                        last_response=final_response,
+                    )
+                    
+                    # Log overseer evaluation to session notes
+                    if self._session_notes:
+                        status = "✓ COMPLETE" if overseer_result.complete else "⚡ IN PROGRESS"
+                        self._session_notes.log_event(
+                            "zeus_overseer",
+                            f"{status} (confidence: {overseer_result.confidence:.0%}) — {overseer_result.reasoning}"
+                        )
+                    
+                    # Prepare nudge for injection if configured
+                    if overseer_cfg.get("inject_nudges", True) and not overseer_result.complete:
+                        overseer_nudge = overseer.format_nudge_for_injection(overseer_result)
+                        if overseer_nudge:
+                            result["overseer_nudge"] = overseer_nudge
+                    
+                    result["overseer_complete"] = overseer_result.complete
+                    result["overseer_confidence"] = overseer_result.confidence
+        except Exception as e:
+            logger.debug("Zeus Overseer evaluation failed: %s", e)
 
         # Plugin hook: on_session_end
         # Fired at the very end of every run_conversation call.

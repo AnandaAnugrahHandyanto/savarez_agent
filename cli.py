@@ -545,6 +545,16 @@ try:
 except Exception:
     pass  # Skin engine is optional — default skin used if unavailable
 
+# Initialize fleet monitor (Telegram mirror + agent state tracking + CLI observability)
+try:
+    from agent.fleet_monitor import init_fleet_monitor
+    _fm = init_fleet_monitor(CLI_CONFIG)
+    # Set observability level from config
+    _obs_level = CLI_CONFIG.get("display", {}).get("subagent_observability", "summary")
+    _fm.set_observability(_obs_level)
+except Exception:
+    pass  # Fleet monitor is optional
+
 # Initialize tool preview length from config
 try:
     from agent.display import set_tool_preview_max_len
@@ -1548,6 +1558,7 @@ class HermesCLI:
         self._reasoning_stream_started = False  # True once live reasoning starts streaming
         self._reasoning_preview_buf = ""  # Coalesce tiny reasoning chunks for [thinking] output
         self._pending_edit_snapshots = {}
+        self._tool_trace: list = []
         
         # Configuration - priority: CLI args > env vars > config file
         # Model comes from: CLI arg or config.yaml (single source of truth).
@@ -1822,6 +1833,10 @@ class HermesCLI:
         snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
+        snapshot["output_tok_s"] = getattr(agent, "last_output_tok_s", 0.0) or 0.0
+        snapshot["llm_phase"] = getattr(agent, "llm_phase", "idle")
+        snapshot["llm_phase_start"] = getattr(agent, "llm_phase_start", 0.0)
+        snapshot["llm_ttft"] = getattr(agent, "llm_ttft", 0.0)
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -1962,6 +1977,17 @@ class HermesCLI:
                 context_label = "ctx --"
 
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            llm_phase = snapshot.get("llm_phase", "idle")
+            tok_s = snapshot.get("output_tok_s", 0)
+            if llm_phase == "processing":
+                parts.append("⏳ prompt")
+            elif llm_phase == "generating":
+                gen_label = "⚡ gen"
+                if tok_s > 0:
+                    gen_label += f" {tok_s:.1f} t/s"
+                parts.append(gen_label)
+            elif tok_s > 0:
+                parts.append(f"{tok_s:.1f} tok/s")
             parts.append(duration_label)
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
@@ -2010,6 +2036,8 @@ class HermesCLI:
                         context_label = "ctx --"
 
                     bar_style = self._status_bar_context_style(percent)
+                    tok_s = snapshot.get("output_tok_s", 0)
+                    tok_s_label = f"{tok_s:.1f} tok/s" if tok_s > 0 else ""
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
@@ -2019,10 +2047,34 @@ class HermesCLI:
                         (bar_style, self._build_context_bar(percent)),
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
-                        ("class:status-bar-dim", " │ "),
-                        ("class:status-bar-dim", duration_label),
-                        ("class:status-bar", " "),
                     ]
+                    llm_phase = snapshot.get("llm_phase", "idle")
+                    phase_start = snapshot.get("llm_phase_start", 0.0)
+                    if llm_phase == "processing" and phase_start > 0:
+                        _pe = time.time() - phase_start
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-warn", f"⏳ prompt {_pe:.0f}s"))
+                    elif llm_phase == "generating":
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-strong", "⚡ gen"))
+                        if tok_s > 0:
+                            frags.append(("class:status-bar-strong", f" {tok_s:.1f} t/s"))
+                        ttft = snapshot.get("llm_ttft", 0.0)
+                        if ttft > 0:
+                            frags.append(("class:status-bar-dim", f" ttft {ttft:.1f}s"))
+                    elif tok_s_label:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-strong", tok_s_label))
+                    frags.append(("class:status-bar-dim", " │ "))
+                    frags.append(("class:status-bar-dim", duration_label))
+                    
+                    # Show queued message count when in queue mode and agent is running
+                    queue_count = self._pending_input.qsize() if hasattr(self, '_pending_input') else 0
+                    if queue_count > 0 and self._agent_running:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-warn", f"📬 {queue_count} queued"))
+                    
+                    frags.append(("class:status-bar", " "))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
@@ -2776,6 +2828,16 @@ class HermesCLI:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
+
+            # Wrap callbacks with fleet monitor hooks (Telegram mirror)
+            try:
+                from agent.fleet_monitor import get_fleet_monitor
+                _fm = get_fleet_monitor()
+                self.agent.thinking_callback = _fm.wrap_thinking(self.agent.thinking_callback)
+                self.agent.tool_progress_callback = _fm.wrap_tool(self.agent.tool_progress_callback)
+                self.agent.status_callback = _fm.on_status
+            except Exception:
+                pass  # Never break the CLI over fleet monitor
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),
@@ -4855,6 +4917,7 @@ class HermesCLI:
                 else:
                     _cprint("  Session database not available.")
         elif canonical == "new":
+            self._tool_trace.clear()
             self.new_session()
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
@@ -4943,19 +5006,60 @@ class HermesCLI:
         elif canonical == "btw":
             self._handle_btw_command(cmd_original)
         elif canonical == "queue":
-            # Extract prompt after "/queue " or "/q "
+            # /queue [prompt] — show queue status or add to queue
             parts = cmd_original.split(None, 1)
             payload = parts[1].strip() if len(parts) > 1 else ""
-            if not payload:
-                _cprint("  Usage: /queue <prompt>")
-            else:
-                self._pending_input.put(payload)
-                if self._agent_running:
-                    _cprint(f"  Queued for the next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+            
+            if payload == "clear":
+                # Clear the queue
+                cleared = 0
+                while not self._pending_input.empty():
+                    try:
+                        self._pending_input.get_nowait()
+                        cleared += 1
+                    except queue.Empty:
+                        break
+                _cprint(f"  {_DIM}📭 Cleared {cleared} queued message{'s' if cleared != 1 else ''}{_RST}")
+            elif payload == "mode":
+                # Show/toggle queue mode
+                current = self.busy_input_mode
+                _cprint(f"  {_DIM}Current mode:{_RST} {current}")
+                _cprint(f"  {_DIM}Set in config.yaml:{_RST} display.busy_input_mode: queue")
+            elif not payload:
+                # Show queue status
+                queue_size = self._pending_input.qsize()
+                mode_label = "queue" if self.busy_input_mode == "queue" else "interrupt"
+                if queue_size == 0:
+                    _cprint(f"  {_DIM}📭 Queue is empty (mode: {mode_label}){_RST}")
                 else:
-                    _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+                    _cprint(f"  {_DIM}📬 {queue_size} message{'s' if queue_size != 1 else ''} queued (mode: {mode_label}){_RST}")
+                    # Peek at queued items (without removing them)
+                    items = list(self._pending_input.queue)[:5]
+                    for i, item in enumerate(items, 1):
+                        preview = str(item)[:50] + ('...' if len(str(item)) > 50 else '')
+                        _cprint(f"    {i}. {preview}")
+                    if queue_size > 5:
+                        _cprint(f"    {_DIM}... and {queue_size - 5} more{_RST}")
+            else:
+                # Add to queue
+                self._pending_input.put(payload)
+                queue_size = self._pending_input.qsize()
+                if self._agent_running:
+                    _cprint(f"  {_DIM}📬 Queued #{queue_size}:{_RST} {payload[:60]}{'...' if len(payload) > 60 else ''}")
+                else:
+                    _cprint(f"  {_DIM}📬 Queued:{_RST} {payload[:60]}{'...' if len(payload) > 60 else ''}")
+        elif canonical == "zeus":
+            self._handle_zeus_command(cmd_original)
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
+        elif canonical == "dashboard":
+            import subprocess, sys
+            project_root = str(Path(__file__).parent.resolve())
+            env = os.environ.copy()
+            env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
+            subprocess.run([sys.executable, "-m", "hermes_cli.dashboard"], env=env)
+        elif canonical == "tree":
+            self._handle_tree_command()
         elif canonical == "voice":
             self._handle_voice_command(cmd_original)
         else:
@@ -5566,6 +5670,165 @@ class HermesCLI:
             print("   status       Show current browser mode")
             print()
 
+    def _handle_tree_command(self):
+        """Render the tool call trace as an ASCII tree graph."""
+        accent = _skin_color("banner_accent", "#FFD700")
+        dim = _skin_color("banner_dim", "#555577")
+        ok = _skin_color("ui_ok", "#00FF99")
+        label = _skin_color("ui_label", "#00D4FF")
+
+        if not self._tool_trace:
+            _cprint(f"[dim {dim}]No tool calls recorded yet. Run a task first.[/]")
+            return
+
+        from rich.console import Console as _RCons
+        from rich.panel import Panel as _RPan
+
+        console = _RCons()
+        lines = []
+
+        t0 = self._tool_trace[0]["time"]
+        delegate_stack = []
+        indent = 0
+
+        for i, call in enumerate(self._tool_trace):
+            elapsed = call["time"] - t0
+            name = call["name"]
+            preview = call["preview"]
+            delegate_name = call.get("delegate", "")
+
+            ts = f"[dim {dim}]+{elapsed:.1f}s[/]"
+
+            if name == "delegate_task" and delegate_name:
+                connector = "├── " if i < len(self._tool_trace) - 1 else "└── "
+                pfx = "│   " * indent
+                lines.append(f"[{dim}]{pfx}{connector}[/][bold {accent}]⚕ {delegate_name.upper()}[/]  {ts}")
+                lines.append(f"[{dim}]{pfx}│   [/][dim {dim}]{preview[:80]}[/]")
+                delegate_stack.append(indent)
+                indent += 1
+            else:
+                connector = "├── " if i < len(self._tool_trace) - 1 else "└── "
+                pfx = "│   " * indent
+                from agent.display import get_tool_emoji
+                emoji = get_tool_emoji(name)
+                lines.append(f"[{dim}]{pfx}{connector}[/]{emoji} [{label}]{name}[/]  {ts}")
+                if preview != name:
+                    short = preview[:60] + "..." if len(preview) > 60 else preview
+                    lines.append(f"[{dim}]{pfx}│   [/][dim {dim}]{short}[/]")
+
+            if delegate_stack and name != "delegate_task":
+                next_is_delegate = (i + 1 < len(self._tool_trace) and
+                                    self._tool_trace[i + 1].get("delegate"))
+                if next_is_delegate or i == len(self._tool_trace) - 1:
+                    if delegate_stack:
+                        indent = delegate_stack.pop()
+
+        total_time = self._tool_trace[-1]["time"] - t0
+        n_calls = len(self._tool_trace)
+        n_delegates = sum(1 for c in self._tool_trace if c.get("delegate"))
+
+        header = f"[bold {accent}]⚡ EXECUTION TREE[/]  [dim {dim}]{n_calls} calls · {n_delegates} delegations · {total_time:.1f}s total[/]"
+        tree_text = header + "\n\n" + "\n".join(lines)
+
+        console.print()
+        console.print(_RPan(
+            tree_text,
+            border_style=_skin_color("banner_border", "#2A2A50"),
+            padding=(1, 2),
+        ))
+        console.print()
+
+    def _handle_zeus_command(self, cmd: str):
+        """Handle /zeus <message> — chat with Zeus or relay instructions to Hermes."""
+        parts = cmd.split(None, 1)
+        message = parts[1].strip() if len(parts) > 1 else ""
+        
+        try:
+            from agent.zeus_overseer import get_overseer
+            overseer = get_overseer()
+        except Exception as e:
+            _cprint(f"  {_DIM}⚡ Zeus unavailable: {e}{_RST}")
+            return
+        
+        if not overseer.enabled:
+            _cprint(f"  {_DIM}⚡ Zeus is not enabled. Set overseer.enabled: true in config.yaml{_RST}")
+            return
+        
+        if not message:
+            # Show Zeus status
+            _cprint(f"  {_DIM}⚡ Zeus Overseer — {overseer.model}{_RST}")
+            _cprint(f"  {_DIM}   Usage: /zeus <message>        — Chat with Zeus{_RST}")
+            _cprint(f"  {_DIM}          /zeus relay <msg>     — Tell Zeus to instruct Hermes{_RST}")
+            _cprint(f"  {_DIM}          /zeus status          — Show current task status{_RST}")
+            return
+        
+        # Get session context from agent's session notes
+        session_context = ""
+        if self.agent and hasattr(self.agent, '_session_notes'):
+            notes = getattr(self.agent, '_session_notes', None)
+            if notes and hasattr(notes, 'notes_file') and notes.notes_file.exists():
+                try:
+                    session_context = notes.notes_file.read_text(encoding="utf-8")[-2000:]
+                except Exception:
+                    pass
+        
+        # Fallback: try to find the latest session notes file
+        if not session_context:
+            try:
+                from hermes_constants import get_hermes_home
+                sessions_dir = get_hermes_home() / "sessions"
+                if sessions_dir.exists():
+                    notes_files = sorted(sessions_dir.glob("notes_*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
+                    if notes_files:
+                        session_context = notes_files[0].read_text(encoding="utf-8")[-2000:]
+            except Exception:
+                pass
+        
+        # Handle subcommands
+        if message.lower() == "status":
+            # Quick status check
+            if not session_context:
+                _cprint(f"  {_DIM}⚡ No active session to evaluate{_RST}")
+                return
+            
+            # Get last user message for context
+            last_task = "Current session"
+            if self.conversation_history:
+                for msg in reversed(self.conversation_history):
+                    if msg.get("role") == "user":
+                        content = msg.get("content", "")
+                        if isinstance(content, str):
+                            last_task = content[:100]
+                        break
+            
+            _cprint(f"  {_DIM}⚡ Zeus is evaluating...{_RST}")
+            result = overseer.evaluate(
+                task=last_task,
+                session_notes=session_context,
+                last_response="",
+            )
+            status = "✓ COMPLETE" if result.complete else "⚡ IN PROGRESS"
+            _cprint(f"  {_DIM}⚡ Status: {status} ({result.confidence:.0%} confident){_RST}")
+            _cprint(f"  {_DIM}   {result.reasoning}{_RST}")
+            if result.nudge:
+                _cprint(f"  {_DIM}   Suggestion: {result.nudge}{_RST}")
+            return
+        
+        if message.lower().startswith("relay "):
+            instruction = message[6:].strip()
+            if instruction:
+                relay_msg = f"[⚡ Zeus commands: {instruction}]"
+                self._pending_input.put(relay_msg)
+                _cprint(f"  {_DIM}⚡ Zeus's instruction queued for Hermes{_RST}")
+            else:
+                _cprint(f"  {_DIM}   Usage: /zeus relay <instruction for Hermes>{_RST}")
+            return
+        
+        # Regular chat with Zeus
+        _cprint(f"  {_DIM}⚡ Consulting Zeus...{_RST}")
+        response = overseer.chat(message, session_context=session_context)
+        _cprint(f"\n  ⚡ Zeus: {response}\n")
+
     def _handle_skin_command(self, cmd: str):
         """Handle /skin [name] — show or change the display skin."""
         try:
@@ -6064,6 +6327,8 @@ class HermesCLI:
         Closes any open streaming boxes (reasoning / response) exactly once,
         then prints a short status line so the user sees activity instead of
         a frozen screen while a large payload (e.g. 45 KB write_file) streams.
+        
+        Shows the assigned god's face and animation when available (Olympus theme).
         """
         if getattr(self, "_stream_box_opened", False):
             self._flush_stream()
@@ -6072,7 +6337,41 @@ class HermesCLI:
 
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚡")
-        _cprint(f"  ┊ {emoji} preparing {tool_name}…")
+        
+        # Try to get god info for this tool from the active skin
+        god_display = ""
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            skin = get_active_skin()
+            if skin:
+                god_name = skin.get_god_for_tool(tool_name)
+                if god_name:
+                    god = skin.get_god_by_name(god_name)
+                    if god:
+                        god_icon = god.get("icon", "✦")
+                        god_face = god.get("face", "")
+                        god_color = god.get("color", "#FFD700")
+                        # Get active animation frame (first frame)
+                        anim = skin.get_god_active_animation(god_name)
+                        anim_frame = anim[0] if anim else ""
+                        # Build god display with color
+                        if god_face:
+                            god_display = f" [{god_color}]{god_icon} {god_face} {god_name.upper()}[/]"
+                            if anim_frame:
+                                god_display += f" [{god_color}]{anim_frame}[/]"
+        except Exception:
+            pass  # Never break the CLI over god display
+        
+        if god_display:
+            # Rich markup for colored god display
+            from rich.console import Console
+            from rich.text import Text
+            console = Console(highlight=False)
+            with console.capture() as capture:
+                console.print(f"  ┊ {emoji} preparing {tool_name}…{god_display}", end="")
+            _cprint(capture.get())
+        else:
+            _cprint(f"  ┊ {emoji} preparing {tool_name}…")
 
     # ====================================================================
     # Tool progress callback (audio cues for voice mode)
@@ -6096,8 +6395,35 @@ class HermesCLI:
             _pl = get_tool_preview_max_len()
             if _pl > 0 and len(label) > _pl:
                 label = label[:_pl - 3] + "..."
-            self._spinner_text = f"{emoji} {label}"
+            
+            # Try to get god info for spinner display
+            god_tag = ""
+            try:
+                from hermes_cli.skin_engine import get_active_skin
+                skin = get_active_skin()
+                if skin:
+                    god_name = skin.get_god_for_tool(function_name)
+                    if god_name:
+                        god = skin.get_god_by_name(god_name)
+                        if god:
+                            god_icon = god.get("icon", "✦")
+                            god_face = god.get("face", "")
+                            god_tag = f" {god_icon}{god_face}" if god_face else f" {god_icon}"
+            except Exception:
+                pass
+            
+            self._spinner_text = f"{emoji} {label}{god_tag}"
             self._invalidate()
+
+            is_delegate = function_name == "delegate_task"
+            delegate_name = function_args.get("specialist", function_args.get("agent_name", "")) if is_delegate else ""
+            self._tool_trace.append({
+                "name": function_name,
+                "preview": preview or function_name,
+                "time": time.time(),
+                "delegate": delegate_name,
+                "god": god_tag.strip() if god_tag else None,
+            })
 
         if not self._voice_mode:
             return
@@ -7244,6 +7570,29 @@ class HermesCLI:
                     ))
 
 
+            # Zeus Overseer nudge — if overseer says task isn't complete, show nudge
+            if result and result.get("overseer_nudge"):
+                overseer_nudge = result["overseer_nudge"]
+                overseer_complete = result.get("overseer_complete", False)
+                overseer_confidence = result.get("overseer_confidence", 0.0)
+                
+                if not overseer_complete:
+                    # Show the nudge in a distinct style
+                    _cprint(f"\n{_DIM}┌─ Zeus Overseer ({'%.0f%%' % (overseer_confidence * 100)} confident) ─┐{_RST}")
+                    _cprint(f"{_DIM}│{_RST} {overseer_nudge}")
+                    _cprint(f"{_DIM}└{'─' * 40}┘{_RST}")
+                    
+                    # Auto-continue if configured (inject nudge as next message)
+                    try:
+                        from hermes_cli.config import load_config as _load_cli_cfg
+                        _cli_cfg = _load_cli_cfg()
+                        if _cli_cfg.get("overseer", {}).get("auto_continue", False):
+                            # Queue the nudge as the next user message
+                            if hasattr(self, '_pending_input'):
+                                self._pending_input.put(f"[Zeus says: {overseer_nudge}] Please continue.")
+                    except Exception:
+                        pass
+
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.
             if self.bell_on_complete:
@@ -7722,8 +8071,11 @@ class HermesCLI:
                     if self.busy_input_mode == "queue":
                         # Queue for the next turn instead of interrupting
                         self._pending_input.put(payload)
+                        queue_size = self._pending_input.qsize()
                         preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
-                        _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
+                        preview_short = preview[:60] + ('...' if len(preview) > 60 else '')
+                        _cprint(f"  {_DIM}📬 Queued #{queue_size}:{_RST} {preview_short}")
+                        event.app.invalidate()  # Refresh status bar to show queue count
                     else:
                         self._interrupt_queue.put(payload)
                         # Debug: log to file when message enters interrupt queue
@@ -8298,7 +8650,25 @@ class HermesCLI:
             txt = cli_ref._spinner_text
             if not txt:
                 return []
-            return [('class:hint', f'  {txt}')]
+            frags = [('class:hint', f'  {txt}')]
+            agent = getattr(cli_ref, 'agent', None)
+            if agent:
+                phase = getattr(agent, 'llm_phase', 'idle')
+                phase_start = getattr(agent, 'llm_phase_start', 0.0)
+                if phase in ("processing", "generating") and phase_start > 0:
+                    elapsed = time.time() - phase_start
+                    if phase == "processing":
+                        label = f"  ⏳ processing prompt {elapsed:.1f}s"
+                    else:
+                        ttft = getattr(agent, 'llm_ttft', 0.0)
+                        tok_s = getattr(agent, 'last_output_tok_s', 0.0)
+                        label = f"  ⚡ generating"
+                        if ttft > 0:
+                            label += f"  ttft {ttft:.2f}s"
+                        if tok_s > 0:
+                            label += f"  {tok_s:.1f} tok/s"
+                    frags.append(('class:status-bar-dim', label))
+            return frags
 
         def get_spinner_height():
             return cli_ref._spinner_widget_height()
@@ -8697,6 +9067,9 @@ class HermesCLI:
                 if self._command_running:
                     self._invalidate(min_interval=0.1)
                     _time.sleep(0.1)
+                elif self._agent_running:
+                    self._invalidate(min_interval=0.5)
+                    _time.sleep(0.5)
                 else:
                     now = _time.monotonic()
                     if now - last_idle_refresh >= 1.0:
@@ -8709,6 +9082,10 @@ class HermesCLI:
         
         # Background thread to process inputs and run agent
         def process_loop():
+            # Track last Zeus queue check time
+            _last_zeus_check = 0.0
+            _ZEUS_CHECK_INTERVAL = 2.0  # Check every 2 seconds
+            
             while not self._should_exit:
                 try:
                     # Check for pending input with timeout
@@ -8718,8 +9095,6 @@ class HermesCLI:
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:
                             self._check_config_mcp_changes()
-                            # Check for background process completion notifications
-                            # while the agent is idle (user hasn't typed anything yet).
                             try:
                                 from tools.process_registry import process_registry
                                 if not process_registry.completion_queue.empty():
@@ -8737,6 +9112,21 @@ class HermesCLI:
                                     self._pending_input.put(_synth)
                             except Exception:
                                 pass
+
+                            import time as _t
+                            _now = _t.time()
+                            if _now - _last_zeus_check >= _ZEUS_CHECK_INTERVAL:
+                                _last_zeus_check = _now
+                                try:
+                                    from hermes_cli.zeus_monitor import pop_queued_message
+                                    zeus_msg = pop_queued_message()
+                                    if zeus_msg:
+                                        msg_content = zeus_msg.get("message", "")
+                                        if msg_content:
+                                            _cprint(f"\n  {_DIM}⚡ Zeus sends:{_RST} {msg_content[:60]}{'...' if len(msg_content) > 60 else ''}")
+                                            self._pending_input.put(msg_content)
+                                except Exception:
+                                    pass
                         continue
                     
                     if not user_input:
@@ -8834,6 +9224,11 @@ class HermesCLI:
                         self._spinner_text = ""
 
                         app.invalidate()  # Refresh status line
+                        
+                        # Notify if there are queued messages waiting
+                        queue_size = self._pending_input.qsize()
+                        if queue_size > 0 and self.busy_input_mode == "queue":
+                            _cprint(f"\n  {_DIM}📬 Processing {queue_size} queued message{'s' if queue_size != 1 else ''}...{_RST}")
 
                         # Continuous voice: auto-restart recording after agent responds.
                         # Dispatch to a daemon thread so play_beep (sd.wait) and

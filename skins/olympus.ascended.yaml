@@ -1,0 +1,875 @@
+name: olympus.ascended
+description: OLYMPUS ASCENDED — divine command center, elite multi-agent orchestration, cinematic TUI aesthetic
+
+colors:
+  banner_border: "#2A2A50"
+  banner_title: "#FFD700"
+  banner_accent: "#FFD700"
+  banner_dim: "#555577"
+  banner_text: "#E0F7FF"
+  ui_accent: "#FFD700"
+  ui_label: "#00D4FF"
+  ui_ok: "#00FF99"
+  ui_error: "#FF4444"
+  ui_warn: "#FFD700"
+  prompt: "#FFD700"
+  input_rule: "#2A2A50"
+  response_border: "#2A2A50"
+  session_label: "#FFD700"
+  session_border: "#555577"
+  # Extended palette for dashboard
+  divine_gold: "#FFD700"
+  divine_gold_dim: "#C9A227"
+  divine_gold_bright: "#FFEC8B"
+  olympus_purple: "#2A2A50"
+  olympus_purple_light: "#3A3A6A"
+  olympus_purple_dark: "#1A1A38"
+  celestial_cyan: "#00D4FF"
+  celestial_cyan_dim: "#00A8CC"
+  ethereal_green: "#00FF99"
+  infernal_red: "#FF4444"
+  void_black: "#0A0A12"
+  mist_white: "#E0F7FF"
+  # God-specific colors
+  hermes_gold: "#FFD700"
+  athena_silver: "#C0C0C0"
+  apollo_yellow: "#FFE066"
+  ares_crimson: "#DC143C"
+  zeus_white: "#F0F0FF"
+  hephaestus_orange: "#FF8C00"
+  artemis_green: "#32CD32"
+  poseidon_blue: "#1E90FF"
+  hades_purple: "#9B59B6"
+  dionysus_magenta: "#FF00FF"
+
+spinner:
+  waiting_faces:
+    - "⟪⚡⟫"
+    - "⟪✦⟫"
+    - "⟪◈⟫"
+    - "⟪⊛⟫"
+    - "⟪⌁⟫"
+  thinking_faces:
+    - "⟪⚡⟫"
+    - "⟪✦⟫"
+    - "⟪◈⟫"
+    - "⟪⌁⟫"
+    - "⟪⊕⟫"
+  thinking_verbs:
+    - "invoking Athena's wisdom"
+    - "forging in Hephaestus' flame"
+    - "hunting with Artemis"
+    - "routing through divine lanes"
+    - "weighing with Zeus' scales"
+    - "diving Poseidon's depths"
+    - "retrieving from Hades' archive"
+    - "aligning the pantheon"
+    - "channeling Apollo's light"
+    - "composing the final return"
+    - "coordinating execution lanes"
+    - "synthesizing divine output"
+  wings:
+    - ["─⚕", "⚕─"]
+    - ["═⚡", "⚡═"]
+    - ["⟪✦", "✦⟫"]
+    - ["⟪◈", "◈⟫"]
+
+branding:
+  agent_name: "⚡ OLYMPUS // HERMES CONTROL SYSTEM"
+  welcome: "Olympus online. The gods are watching. ✦"
+  goodbye: "The divine flame dims. Safe travels, mortal. ⚡✦"
+  response_label: " ⚡ Hermes "
+  prompt_symbol: "⚡ "
+  help_header: "✦ OLYMPUS ASCENDED — Divine Command Reference ✦"
+
+tool_prefix: "│"
+
+tool_emojis:
+  terminal: "⚡"
+  web_search: "◈"
+  file: "✦"
+  browser: "⊛"
+  code_execution: "🔥"
+  delegation: "⚕"
+
+pantheon:
+  - name: Hermes
+    icon: "⚕"
+    rank: "ORCH"
+    role: Orchestrator / Router / Synthesis
+    desc: "routes · spawns · returns"
+    hat: "/^\\"
+    face: "(-w-)"
+    color: "#FFD700"
+    title: "The Divine Messenger"
+    domain: "Communication, Speed, Cunning"
+    lore: |
+      Son of Zeus and the nymph Maia, Hermes is the swift-footed messenger
+      who bridges the mortal and divine realms. In the digital age, he
+      orchestrates the flow of information between agents, routing tasks
+      with supernatural speed. His caduceus—twin serpents entwined—
+      symbolizes the harmony of opposing forces unified in purpose.
+    abilities:
+      - "⚡ SWIFT ROUTING: Instantaneous task delegation across the pantheon"
+      - "🔀 SYNTHESIS: Merges outputs from multiple gods into coherent response"
+      - "🌀 SPAWN: Creates child agents to handle parallel workloads"
+    quotes:
+      - "The message finds its path, as water finds the sea."
+      - "Speed is not haste—it is precision at velocity."
+      - "I am the bridge between thought and action."
+    pixel_art: |
+      [dim #2A2A50]┌────────────────────────┐[/]
+      [dim #2A2A50]│[/]  [#555577]⠀⠀⠀⠀⠀⢀⣤⣤⣤⣤⡀⠀⠀⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#C9A227]⠀⠀⠀⢀⣾⣿[/][#FFD700]⚡[/][#C9A227]⣿⣿[/][#FFD700]⚡[/][#C9A227]⣷⡀⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#FFD700]⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#FFEC8B]⠀⠀⠀⢿⣿[/][bold #FFD700]◉[/][#FFEC8B]⣿⣿⣿[/][bold #FFD700]◉[/][#FFEC8B]⣿⡿⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#FFD700]⠀⠀⠀⠀⠙⣿⣿⣿⣿⣿⠋⠀⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#C9A227]⠀⠀⠀⠀⠀⠀⣿[/][#FFD700]⣿⣿[/][#C9A227]⣿⠀⠀⠀⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#8B7500]⠀⠀⠀⢀⣴⣿⣿[/][bold #FFD700]⚕[/][#8B7500]⣿⣿⣦⡀⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#555577]⠀⠀⣰⣿⣿⡿⠛⠛⠛⢿⣿⣿⣆⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#3A3A6A]⠀⢠⣿⣿⠃⠀⠀⠀⠀⠀⠘⣿⣿⡄⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #555577]⠀⣿⣿⡇⠀[/][#C9A227]⣿⣿⣿⣿[/][dim #555577]⠀⢸⣿⣿⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #3A3A6A]⠀⠹⣿⣷⣄⠀⠀⠀⠀⣠⣾⣿⠏⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #1A1A38]⠀⠀⠈⠻⣿⣿⣶⣶⣿⣿⠟⠁⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]    [bold #FFD700]⚕ HERMES ⚕[/]    [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #555577]The Divine Messenger[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]└────────────────────────┘[/]
+    active_animation:
+      - "⚕ ═══════════════ ⚡"
+      - "═ ⚕ ════════════ ⚡ ═"
+      - "══ ⚕ ══════════ ⚡ ══"
+      - "═══ ⚕ ════════ ⚡ ═══"
+      - "════ ⚕ ══════ ⚡ ════"
+      - "═════ ⚕ ════ ⚡ ═════"
+      - "══════ ⚕ ══ ⚡ ══════"
+      - "═══════ ⚕⚡ ═══════"
+
+  - name: Athena
+    icon: "△"
+    rank: "STRT"
+    role: Strategy / Decomposition / Reasoning
+    desc: "plans · reasons · decomposes"
+    hat: "^.^"
+    face: "(o_o)"
+    color: "#C0C0C0"
+    title: "Goddess of Wisdom"
+    domain: "Strategy, Warfare, Crafts"
+    lore: |
+      Born fully armored from Zeus's head, Athena embodies strategic
+      intelligence and calculated wisdom. She does not rush into battle—
+      she plans, decomposes complex problems into conquerable parts, and
+      strikes with surgical precision. Her owl sees through darkness;
+      her aegis shields against chaos.
+    abilities:
+      - "🧠 DECOMPOSE: Breaks complex tasks into atomic subtasks"
+      - "📋 PLAN: Creates structured execution strategies"
+      - "⚖️ REASON: Applies logical analysis to ambiguous problems"
+    quotes:
+      - "Victory belongs to the most persevering."
+      - "The wise warrior avoids the battle."
+      - "In strategy, the longest way round is the shortest way home."
+    pixel_art: |
+      [dim #2A2A50]┌────────────────────────┐[/]
+      [dim #2A2A50]│[/]  [#808080]⠀⠀⠀⠀⣀⣤⣴⣶⣶⣦⣤⣀⠀⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#A8A8A8]⠀⠀⣠⣾⣿⣿⣿[/][bold #C0C0C0]△[/][#A8A8A8]⣿⣿⣿⣷⣄⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#C0C0C0]⠀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#E0E0E0]⢀⣿⣿⣿[/][bold #C0C0C0]⊙[/][#E0E0E0]⣿⣿⣿[/][bold #C0C0C0]⊙[/][#E0E0E0]⣿⣿⣿⡀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#C0C0C0]⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#A8A8A8]⠘⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠃[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#808080]⠀⠹⣿⣿⣿⣿[/][bold #E0E0E0]◇[/][#808080]⣿⣿⣿⣿⠏⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#555577]⠀⠀⠙⢿⣿⣿⣿⣿⣿⣿⡿⠋⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#3A3A6A]⠀⠀⠀⠀⠙⠻⣿⣿⠟⠋⠀⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #555577]⠀⠀⠀⣠⣾⣿[/][#A8A8A8]⣿⣿[/][dim #555577]⣿⣷⣄⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #3A3A6A]⠀⠀⣾⣿⡏[/][#808080]⢸⣿⡇[/][dim #3A3A6A]⢹⣿⣷⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #1A1A38]⠀⠀⠻⣿⣿⣿⣿⣿⣿⣿⣿⠟⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]    [bold #C0C0C0]△ ATHENA △[/]    [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #555577]Goddess of Wisdom[/]   [dim #2A2A50]│[/]
+      [dim #2A2A50]└────────────────────────┘[/]
+    active_animation:
+      - "△ ▁▂▃▄▅▆▇█ PLANNING"
+      - "△ ▂▃▄▅▆▇█▁ PLANNING"
+      - "△ ▃▄▅▆▇█▁▂ PLANNING"
+      - "△ ▄▅▆▇█▁▂▃ PLANNING"
+
+  - name: Apollo
+    icon: "☀"
+    rank: "EVAL"
+    role: Evaluation / Analysis / Clarity
+    desc: "evaluates · clarifies"
+    hat: "*.*"
+    face: "(^_^)"
+    color: "#FFE066"
+    title: "God of Light and Truth"
+    domain: "Sun, Music, Poetry, Prophecy"
+    lore: |
+      Apollo drives his golden chariot across the sky, bringing light
+      to all corners of existence. As god of truth and prophecy, he
+      evaluates outcomes with perfect clarity, seeing through deception
+      and illuminating the path forward. His lyre brings harmony;
+      his arrows bring swift justice.
+    abilities:
+      - "☀️ ILLUMINATE: Reveals hidden patterns in data"
+      - "🎯 EVALUATE: Assesses quality and correctness of outputs"
+      - "🔮 PROPHECY: Predicts outcomes based on current trajectories"
+    quotes:
+      - "Truth is the light that casts no shadow."
+      - "In clarity, there is power."
+      - "The sun reveals what darkness conceals."
+    pixel_art: |
+      [dim #2A2A50]┌────────────────────────┐[/]
+      [dim #2A2A50]│[/]  [#C9A227]⠀⠀⠀⠀⣀⣤⣤⣤⣤⣀⠀⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#FFD700]⠀⠀⣠⣾⣿⣿[/][bold #FFFACD]☀[/][#FFD700]⣿⣿⣷⣄⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#FFEC8B]⠀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#FFE066]⢀⣿⣿⣿[/][bold #FFFACD]✧[/][#FFE066]⣿⣿⣿[/][bold #FFFACD]✧[/][#FFE066]⣿⣿⣿⡀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#FFEC8B]⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#FFD700]⠘⣿⣿⣿⣿[/][bold #FFE066]◡[/][#FFD700]⣿⣿⣿⣿⠃[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#C9A227]⠀⠹⣿⣿⣿⣿⣿⣿⣿⣿⠏⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#8B7500]⠀⠀⠙⢿⣿⣿⣿⣿⡿⠋⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#555577]⠀⠀⠀⠀⣿⣿[/][#FFD700]♪[/][#555577]⣿⣿⠀⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#3A3A6A]⠀⠀⠀⣰⣿⣿[/][#FFD700]♫[/][#3A3A6A]⣿⣿⣆⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #555577]⠀⠀⢠⣿⣿⣿⣿⣿⣿⣿⡄⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #3A3A6A]⠀⠀⠸⣿⣿⣿⣿⣿⣿⣿⠇⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]    [bold #FFE066]☀ APOLLO ☀[/]    [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #555577]God of Light & Truth[/] [dim #2A2A50]│[/]
+      [dim #2A2A50]└────────────────────────┘[/]
+    active_animation:
+      - "☀ ·····•••••☆"
+      - "☀ ····•••••☆·"
+      - "☀ ···•••••☆··"
+      - "☀ ··•••••☆···"
+      - "☀ ·•••••☆····"
+      - "☀ •••••☆·····"
+
+  - name: Ares
+    icon: "⚔"
+    rank: "EXEC"
+    role: Execution / Action / Pressure
+    desc: "executes · applies · forces"
+    hat: ">|<"
+    face: "(>#<)"
+    color: "#DC143C"
+    title: "God of War"
+    domain: "Battle, Courage, Violence"
+    lore: |
+      Where Athena is strategy, Ares is raw execution. The god of war
+      charges into battle without hesitation, executing commands with
+      brutal efficiency. He is the terminal—the point where thought
+      becomes action, where plans become reality through force of will.
+      His presence demands results.
+    abilities:
+      - "⚔️ EXECUTE: Runs terminal commands with ruthless efficiency"
+      - "💥 FORCE: Applies pressure to complete stubborn tasks"
+      - "🔥 STRIKE: Delivers rapid-fire command sequences"
+    quotes:
+      - "Talk is cheap. Execution is everything."
+      - "The battlefield rewards the bold."
+      - "Victory or death—there is no middle ground."
+    pixel_art: |
+      [dim #2A2A50]┌────────────────────────┐[/]
+      [dim #2A2A50]│[/]  [#8B0000]⠀⠀⠀⠀⣀⣤⣴⣶⣶⣦⣤⣀⠀⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#B22222]⠀⠀⣠⣾⣿⣿[/][bold #FF4444]⚔[/][#B22222]⣿⣿⣷⣄⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#DC143C]⠀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#FF4444]⢀⣿⣿⣿[/][bold #FF6666]⊗[/][#FF4444]⣿⣿⣿[/][bold #FF6666]⊗[/][#FF4444]⣿⣿⣿⡀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#DC143C]⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#B22222]⠘⣿⣿⣿⣿[/][bold #DC143C]▼[/][#B22222]⣿⣿⣿⣿⠃[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#8B0000]⠀⠹⣿⣿⣿⣿⣿⣿⣿⣿⠏⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#660000]⠀⠀⠙⢿⣿⣿⣿⣿⡿⠋⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#555577]⠀⠀⢀⣾⣿[/][#B22222]⣿⣿[/][#555577]⣿⣷⡀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#3A3A6A]⠀⣠⣿⡿[/][bold #DC143C]⚔[/][#3A3A6A]⣿⣿[/][bold #DC143C]⚔[/][#3A3A6A]⢿⣿⣄⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #555577]⠀⣿⣿⡇⠀⣿⣿⠀⢸⣿⣿⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #3A3A6A]⠀⠻⣿⣿⣿⣿⣿⣿⣿⣿⠟⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]     [bold #DC143C]⚔ ARES ⚔[/]     [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]    [dim #555577]God of War[/]      [dim #2A2A50]│[/]
+      [dim #2A2A50]└────────────────────────┘[/]
+    active_animation:
+      - "⚔ ████████░░ EXECUTING"
+      - "⚔ █████████░ EXECUTING"
+      - "⚔ ██████████ COMPLETE!"
+      - "⚔ ░░░░░░░░░░ READY"
+
+  - name: Zeus
+    icon: "👁"
+    rank: "JUDG"
+    role: Final Judgment / Decision / Approval
+    desc: "decides · rules · approves"
+    hat: "/V\\"
+    face: "(|_|)"
+    color: "#F0F0FF"
+    title: "King of the Gods"
+    domain: "Sky, Thunder, Justice, Order"
+    lore: |
+      Zeus sits upon his throne on Mount Olympus, wielding thunderbolts
+      forged by Hephaestus. As king of the gods, he renders final judgment
+      on all matters of consequence. His word is law; his approval grants
+      passage. When dangerous commands require authorization, Zeus alone
+      decides whether to proceed.
+    abilities:
+      - "⚡ JUDGMENT: Renders final decisions on critical operations"
+      - "👁 OVERSIGHT: Monitors all agent activities from above"
+      - "🛡️ APPROVAL: Authorizes dangerous or irreversible actions"
+    quotes:
+      - "With great power comes the weight of judgment."
+      - "The thunderbolt strikes where justice demands."
+      - "I have spoken. Let it be done."
+    pixel_art: |
+      [dim #2A2A50]┌────────────────────────┐[/]
+      [dim #2A2A50]│[/]  [#C0C0FF]⠀⠀⠀⠀⣀⣤⣴⣶⣶⣦⣤⣀⠀⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#E0E0FF]⠀⠀⣠⣾⣿⣿[/][bold #FFFFFF]👁[/][#E0E0FF]⣿⣿⣷⣄⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#F0F0FF]⠀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#FFFFFF]⢀⣿⣿⣿[/][bold #F0F0FF]⊛[/][#FFFFFF]⣿⣿⣿[/][bold #F0F0FF]⊛[/][#FFFFFF]⣿⣿⣿⡀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#F0F0FF]⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#E0E0FF]⠘⣿⣿⣿⣿[/][bold #FFFFFF]═[/][#E0E0FF]⣿⣿⣿⣿⠃[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#C0C0FF]⠀⠹⣿⣿⣿⣿⣿⣿⣿⣿⠏⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#A0A0FF]⠀⠀⠙⢿⣿⣿⣿⣿⡿⠋⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#555577]⠀⠀⢀⣾⣿[/][#E0E0FF]⚡⚡[/][#555577]⣿⣷⡀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#3A3A6A]⠀⣠⣿⣿⣿⣿⣿⣿⣿⣿⣄⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #555577]⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #3A3A6A]⠀⠻⣿⣿⣿⣿⣿⣿⣿⣿⠟⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]     [bold #F0F0FF]👁 ZEUS 👁[/]     [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #555577]King of the Gods[/]   [dim #2A2A50]│[/]
+      [dim #2A2A50]└────────────────────────┘[/]
+    active_animation:
+      - "👁 ⚡═══════════⚡ JUDGING"
+      - "👁 ═⚡═════════⚡═ JUDGING"
+      - "👁 ══⚡═══════⚡══ JUDGING"
+      - "👁 ═══⚡═════⚡═══ JUDGING"
+      - "👁 ════⚡═══⚡════ APPROVED"
+
+  - name: Hephaestus
+    icon: "🔨"
+    rank: "FORG"
+    role: Build / Codegen / Forge
+    desc: "builds · codes · forges"
+    hat: "[#]"
+    face: "(o_-)"
+    color: "#FF8C00"
+    title: "God of the Forge"
+    domain: "Fire, Metalworking, Craftsmanship"
+    lore: |
+      Cast from Olympus yet rising to become its greatest craftsman,
+      Hephaestus toils in his volcanic forge beneath the earth. He
+      crafted Zeus's thunderbolts, Athena's aegis, and Hermes's winged
+      sandals. In the digital realm, he forges code—reading, writing,
+      and patching files with the precision of a master smith.
+    abilities:
+      - "🔨 FORGE: Creates new files and code structures"
+      - "📖 READ: Examines existing code with expert analysis"
+      - "🔧 PATCH: Repairs and modifies code with surgical precision"
+    quotes:
+      - "The forge reveals the truth of the metal."
+      - "Perfection is achieved through iteration."
+      - "What I build, I build to last."
+    pixel_art: |
+      [dim #2A2A50]┌────────────────────────┐[/]
+      [dim #2A2A50]│[/]  [#CC6600]⠀⠀⠀⠀⣀⣤⣴⣶⣶⣦⣤⣀⠀⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#FF7F00]⠀⠀⣠⣾⣿⣿[/][bold #FFA500]🔨[/][#FF7F00]⣿⣿⣷⣄⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#FF8C00]⠀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#FFA500]⢀⣿⣿⣿[/][bold #FFBF00]◉[/][#FFA500]⣿⣿⣿[/][bold #FFBF00]◎[/][#FFA500]⣿⣿⣿⡀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#FF8C00]⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#FF7F00]⠘⣿⣿⣿⣿[/][bold #FFA500]⚙[/][#FF7F00]⣿⣿⣿⣿⠃[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#CC6600]⠀⠹⣿⣿⣿⣿⣿⣿⣿⣿⠏⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#995500]⠀⠀⠙⢿⣿⣿⣿⣿⡿⠋⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#555577]⠀⠀⢀⣾[/][#FF4500]🔥[/][#555577]⣿⣿[/][#FF4500]🔥[/][#555577]⣷⡀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#3A3A6A]⠀⣠⣿⣿⣿⣿⣿⣿⣿⣿⣄⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #555577]⠀⣿⣿⡇⠀⣿⣿⠀⢸⣿⣿⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #3A3A6A]⠀⠻⣿⣿⣿⣿⣿⣿⣿⣿⠟⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [bold #FF8C00]🔨 HEPHAESTUS 🔨[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #555577]God of the Forge[/]   [dim #2A2A50]│[/]
+      [dim #2A2A50]└────────────────────────┘[/]
+    active_animation:
+      - "🔨 ▓▓▓▓░░░░░░ FORGING"
+      - "🔨 ▓▓▓▓▓▓░░░░ FORGING"
+      - "🔨 ▓▓▓▓▓▓▓▓░░ FORGING"
+      - "🔨 ▓▓▓▓▓▓▓▓▓▓ FORGED!"
+
+  - name: Artemis
+    icon: "🏹"
+    rank: "HUNT"
+    role: Retrieval / Search / Precision
+    desc: "hunts · retrieves · targets"
+    hat: ">=>"
+    face: "(>.>)"
+    color: "#32CD32"
+    title: "Goddess of the Hunt"
+    domain: "Wilderness, Hunting, Moon"
+    lore: |
+      Twin sister of Apollo, Artemis roams the wild forests with her
+      silver bow, never missing her mark. She is the huntress who tracks
+      prey across any terrain. In the digital wilderness, she searches
+      the web, extracts information, and retrieves exactly what is needed
+      with unerring precision.
+    abilities:
+      - "🏹 HUNT: Searches the web for specific information"
+      - "🎯 TARGET: Extracts precise data from web pages"
+      - "🔍 TRACK: Follows trails of information across sources"
+    quotes:
+      - "The arrow knows its target before it flies."
+      - "In the hunt, patience is the greatest weapon."
+      - "I never miss."
+    pixel_art: |
+      [dim #2A2A50]┌────────────────────────┐[/]
+      [dim #2A2A50]│[/]  [#006400]⠀⠀⠀⠀⣀⣤⣴⣶⣶⣦⣤⣀⠀⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#228B22]⠀⠀⣠⣾⣿⣿[/][bold #7CFC00]🏹[/][#228B22]⣿⣿⣷⣄⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#32CD32]⠀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#7CFC00]⢀⣿⣿⣿[/][bold #90EE90]◉[/][#7CFC00]⣿⣿⣿[/][bold #90EE90]◉[/][#7CFC00]⣿⣿⣿⡀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#32CD32]⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#228B22]⠘⣿⣿⣿⣿[/][bold #32CD32]‿[/][#228B22]⣿⣿⣿⣿⠃[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#006400]⠀⠹⣿⣿⣿⣿⣿⣿⣿⣿⠏⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#004400]⠀⠀⠙⢿⣿⣿⣿⣿⡿⠋⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#555577]⠀⠀⢀⣾[/][#228B22]🌿[/][#555577]⣿⣿[/][#228B22]🌿[/][#555577]⣷⡀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#3A3A6A]⠀⣠⣿⣿⣿[/][bold #32CD32]◎[/][#3A3A6A]⣿⣿⣿⣄⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #555577]⠀⣿⣿⡇⠀⣿⣿⠀⢸⣿⣿⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #3A3A6A]⠀⠻⣿⣿⣿⣿⣿⣿⣿⣿⠟⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]   [bold #32CD32]🏹 ARTEMIS 🏹[/]   [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/] [dim #555577]Goddess of the Hunt[/] [dim #2A2A50]│[/]
+      [dim #2A2A50]└────────────────────────┘[/]
+    active_animation:
+      - "🏹 ─────────→ HUNTING"
+      - "🏹 ────────→─ HUNTING"
+      - "🏹 ───────→── HUNTING"
+      - "🏹 ──────→─── HUNTING"
+      - "🏹 ─────→──── TARGET!"
+
+  - name: Poseidon
+    icon: "🌊"
+    rank: "FLOW"
+    role: Infrastructure / Systems / Flow
+    desc: "infra · systems · apis"
+    hat: "~v~"
+    face: "(~_~)"
+    color: "#1E90FF"
+    title: "God of the Seas"
+    domain: "Ocean, Earthquakes, Horses"
+    lore: |
+      Poseidon rules the vast depths of the ocean, commanding tides and
+      currents that connect all shores. His trident can calm or unleash
+      the waters. In the digital realm, he governs the flow of data
+      through infrastructure—browsers, APIs, and the endless streams
+      of information that course through the network.
+    abilities:
+      - "🌊 FLOW: Manages data streams and API connections"
+      - "🔱 NAVIGATE: Controls browser automation and web interaction"
+      - "⚓ ANCHOR: Establishes stable infrastructure connections"
+    quotes:
+      - "All rivers flow to the sea."
+      - "The depths hold secrets the surface cannot imagine."
+      - "I am the current that carries all things."
+    pixel_art: |
+      [dim #2A2A50]┌────────────────────────┐[/]
+      [dim #2A2A50]│[/]  [#104E8B]⠀⠀⠀⠀⣀⣤⣴⣶⣶⣦⣤⣀⠀⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#1873CC]⠀⠀⣠⣾⣿⣿[/][bold #00BFFF]🌊[/][#1873CC]⣿⣿⣷⣄⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#1E90FF]⠀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#00BFFF]⢀⣿⣿⣿[/][bold #87CEEB]≋[/][#00BFFF]⣿⣿⣿[/][bold #87CEEB]≋[/][#00BFFF]⣿⣿⣿⡀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#1E90FF]⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#1873CC]⠘⣿⣿⣿⣿[/][bold #1E90FF]≈[/][#1873CC]⣿⣿⣿⣿⠃[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#104E8B]⠀⠹⣿⣿⣿⣿⣿⣿⣿⣿⠏⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#083D6B]⠀⠀⠙⢿⣿⣿⣿⣿⡿⠋⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#555577]⠀⠀⢀⣾⣿[/][bold #1E90FF]🔱[/][#555577]⣿⣿⣷⡀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#3A3A6A]⠀⣠⣿⣿[/][#1873CC]≈≈≈≈[/][#3A3A6A]⣿⣿⣄⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #555577]⠀⣿⣿⡇⠀⣿⣿⠀⢸⣿⣿⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #3A3A6A]⠀⠻⣿⣿⣿⣿⣿⣿⣿⣿⠟⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [bold #1E90FF]🌊 POSEIDON 🌊[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #555577]God of the Seas[/]    [dim #2A2A50]│[/]
+      [dim #2A2A50]└────────────────────────┘[/]
+    active_animation:
+      - "🌊 ≋≋≋≋≋≋≋≋≋≋ FLOWING"
+      - "🌊 ≈≋≋≋≋≋≋≋≋≈ FLOWING"
+      - "🌊 ≈≈≋≋≋≋≋≋≈≈ FLOWING"
+      - "🌊 ≈≈≈≋≋≋≋≈≈≈ FLOWING"
+
+  - name: Hades
+    icon: "🕯"
+    rank: "ARCH"
+    role: Memory / Archive / Recall
+    desc: "remembers · archives · recalls"
+    hat: "._."
+    face: "(X_X)"
+    color: "#9B59B6"
+    title: "God of the Underworld"
+    domain: "Death, Riches, The Unseen"
+    lore: |
+      Hades rules the realm beneath the earth where all souls eventually
+      journey. Nothing is forgotten in his domain—every memory, every
+      secret, every piece of knowledge is preserved in his infinite
+      archives. He is the keeper of what was, ensuring the past informs
+      the present.
+    abilities:
+      - "🕯 ARCHIVE: Stores memories and context for future recall"
+      - "📜 RECALL: Retrieves relevant memories from the depths"
+      - "⚰️ PRESERVE: Maintains long-term knowledge persistence"
+    quotes:
+      - "The dead remember what the living forget."
+      - "In my realm, nothing is ever truly lost."
+      - "Memory is the thread that weaves past to present."
+    pixel_art: |
+      [dim #2A2A50]┌────────────────────────┐[/]
+      [dim #2A2A50]│[/]  [#4B0082]⠀⠀⠀⠀⣀⣤⣴⣶⣶⣦⣤⣀⠀⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#6C3483]⠀⠀⣠⣾⣿⣿[/][bold #BA55D3]🕯[/][#6C3483]⣿⣿⣷⣄⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#8E44AD]⠀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#9B59B6]⢀⣿⣿⣿[/][bold #DDA0DD]✖[/][#9B59B6]⣿⣿⣿[/][bold #DDA0DD]✖[/][#9B59B6]⣿⣿⣿⡀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#8E44AD]⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#6C3483]⠘⣿⣿⣿⣿[/][bold #9B59B6]═[/][#6C3483]⣿⣿⣿⣿⠃[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#4B0082]⠀⠹⣿⣿⣿⣿⣿⣿⣿⣿⠏⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#2E0854]⠀⠀⠙⢿⣿⣿⣿⣿⡿⠋⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#555577]⠀⠀⢀⣾⣿[/][bold #9B59B6]☠[/][#555577]⣿⣿⣷⡀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#3A3A6A]⠀⣠⣿⣿[/][#6C3483]▓▓▓▓[/][#3A3A6A]⣿⣿⣄⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #555577]⠀⣿⣿⡇[/][#4B0082]░░░░[/][dim #555577]⢸⣿⣿⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #3A3A6A]⠀⠻⣿⣿⣿⣿⣿⣿⣿⣿⠟⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]    [bold #9B59B6]🕯 HADES 🕯[/]    [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/] [dim #555577]God of the Underworld[/][dim #2A2A50]│[/]
+      [dim #2A2A50]└────────────────────────┘[/]
+    active_animation:
+      - "🕯 ░░░░░░░░░░ RECALLING"
+      - "🕯 ▒░░░░░░░░░ RECALLING"
+      - "🕯 ▓▒░░░░░░░░ RECALLING"
+      - "🕯 █▓▒░░░░░░░ RECALLING"
+      - "🕯 ██▓▒░░░░░░ RECALLED!"
+
+  - name: Dionysus
+    icon: "🍷"
+    rank: "FLUX"
+    role: Creativity / Style / Generation
+    desc: "creates · styles · generates"
+    hat: "~w~"
+    face: "(^w^)"
+    color: "#FF00FF"
+    title: "God of Wine and Ecstasy"
+    domain: "Wine, Festivity, Theatre, Madness"
+    lore: |
+      Dionysus brings divine madness—the creative chaos that births
+      innovation. He is the god of theatre and transformation, turning
+      grapes to wine and ideas to art. In the digital realm, he governs
+      creative generation, styling, and the unpredictable spark of
+      inspiration that transforms the mundane into the magnificent.
+    abilities:
+      - "🍷 CREATE: Generates creative content and novel solutions"
+      - "🎭 TRANSFORM: Applies style and aesthetic transformations"
+      - "✨ INSPIRE: Introduces creative chaos for breakthrough ideas"
+    quotes:
+      - "In chaos, there is fertility."
+      - "The grape must be crushed to become wine."
+      - "Let madness be your muse."
+    pixel_art: |
+      [dim #2A2A50]┌────────────────────────┐[/]
+      [dim #2A2A50]│[/]  [#660066]⠀⠀⠀⠀⣀⣤⣴⣶⣶⣦⣤⣀⠀⠀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#990099]⠀⠀⣠⣾⣿⣿[/][bold #FF69B4]🍷[/][#990099]⣿⣿⣷⣄⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#CC00CC]⠀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#FF00FF]⢀⣿⣿⣿[/][bold #FFB6C1]✿[/][#FF00FF]⣿⣿⣿[/][bold #FFB6C1]✿[/][#FF00FF]⣿⣿⣿⡀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#CC00CC]⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#990099]⠘⣿⣿⣿⣿[/][bold #FF00FF]‿[/][#990099]⣿⣿⣿⣿⠃[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#660066]⠀⠹⣿⣿⣿⣿⣿⣿⣿⣿⠏⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#440044]⠀⠀⠙⢿⣿⣿⣿⣿⡿⠋⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#555577]⠀⠀⢀⣾[/][#990099]🍇[/][#555577]⣿⣿[/][#990099]🍇[/][#555577]⣷⡀⠀⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [#3A3A6A]⠀⣠⣿⣿[/][bold #FF00FF]✦✧✦✧[/][#3A3A6A]⣿⣿⣄⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #555577]⠀⣿⣿⡇⠀⣿⣿⠀⢸⣿⣿⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [dim #3A3A6A]⠀⠻⣿⣿⣿⣿⣿⣿⣿⣿⠟⠀[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/]  [bold #FF00FF]🍷 DIONYSUS 🍷[/]  [dim #2A2A50]│[/]
+      [dim #2A2A50]│[/] [dim #555577]God of Wine & Ecstasy[/][dim #2A2A50]│[/]
+      [dim #2A2A50]└────────────────────────┘[/]
+    active_animation:
+      - "🍷 ✦✧✦✧✦✧✦✧✦✧ CREATING"
+      - "🍷 ✧✦✧✦✧✦✧✦✧✦ CREATING"
+      - "🍷 ✦✧✦✧✦✧✦✧✦✧ CREATING"
+      - "🍷 ★✦✧✦✧✦✧✦✧★ INSPIRED!"
+
+pantheon_style: strip
+
+# Tool → God mapping for execution lanes
+tool_god_mapping:
+  # Ares - War God - Terminal/Shell operations
+  terminal: Ares
+  bash: Ares
+  process: Ares
+  
+  # Artemis - Huntress - Search/Retrieval
+  web_search: Artemis
+  web_extract: Artemis
+  web_crawl: Artemis
+  search_files: Artemis
+  file_search: Artemis
+  session_search: Artemis
+  
+  # Hephaestus - Smith God - File operations/Creation
+  read_file: Hephaestus
+  write_file: Hephaestus
+  patch: Hephaestus
+  file_read: Hephaestus
+  file_write: Hephaestus
+  file_patch: Hephaestus
+  execute_code: Hephaestus
+  image_generate: Hephaestus
+  
+  # Poseidon - Sea God - Browser/Network
+  browser_navigate: Poseidon
+  browser_snapshot: Poseidon
+  browser_click: Poseidon
+  browser_type: Poseidon
+  browser_scroll: Poseidon
+  browser_screenshot: Poseidon
+  mcp_call: Poseidon
+  
+  # Hermes - Messenger - Delegation/Communication
+  delegate: Hermes
+  delegate_task: Hermes
+  send_message: Hermes
+  text_to_speech: Hermes
+  
+  # Hades - Underworld - Memory/Storage
+  memory: Hades
+  memory_store: Hades
+  memory_search: Hades
+  
+  # Athena - Wisdom - Planning/Reasoning
+  todo: Athena
+  think: Athena
+  mixture_of_agents: Athena
+  
+  # Apollo - Sun God - Vision/Analysis
+  vision_analyze: Apollo
+  browser_vision: Apollo
+  
+  # Dionysus - Wine God - Creative/Skills
+  skills_list: Dionysus
+  skill_view: Dionysus
+  cronjob: Dionysus
+
+# Execution lanes with god assignments
+execution_lanes:
+  - name: STRATEGY
+    god: Athena
+    icon: "△"
+    tools: [todo, think, delegate]
+    color: "#C0C0C0"
+    desc: "planning · reasoning · decomposition"
+  - name: RETRIEVAL
+    god: Artemis
+    icon: "🏹"
+    tools: [web_search, web_extract, file_search]
+    color: "#32CD32"
+    desc: "hunting · searching · targeting"
+  - name: EXECUTION
+    god: Ares
+    icon: "⚔"
+    tools: [terminal, bash, execute_code]
+    color: "#DC143C"
+    desc: "commands · actions · force"
+  - name: FORGE
+    god: Hephaestus
+    icon: "🔨"
+    tools: [file_read, file_write, file_patch]
+    color: "#FF8C00"
+    desc: "building · coding · crafting"
+  - name: FLOW
+    god: Poseidon
+    icon: "🌊"
+    tools: [browser_navigate, browser_screenshot, mcp_call]
+    color: "#1E90FF"
+    desc: "infrastructure · systems · apis"
+  - name: ARCHIVE
+    god: Hades
+    icon: "🕯"
+    tools: [memory_store, memory_search]
+    color: "#9B59B6"
+    desc: "memory · recall · persistence"
+
+# Animation settings
+animations:
+  hero_cycle_ms: 3000
+  pulse_enabled: true
+  transition_ms: 150
+  sparkle_enabled: true
+  god_animation_ms: 500
+  cinematic_intro: true
+  particle_effects: true
+
+# Cinematic intro sequence (displayed on first load)
+cinematic_intro_frames:
+  - |
+    [dim #0A0A12]
+                                    ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+    [/]
+  - |
+    [dim #1A1A38]
+                                    ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
+                                              [dim #555577]⚡[/]
+    [/]
+  - |
+    [#2A2A50]
+                                    ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+                                            [#C9A227]⚡ ⚕ ⚡[/]
+    [/]
+  - |
+    [#3A3A6A]
+                                    ████████████████████████████████████████
+                                          [#FFD700]⚡ ◈ ⚕ ◈ ⚡[/]
+                                      [dim #555577]OLYMPUS AWAKENS[/]
+    [/]
+  - |
+    [#555577]
+                                    ████████████████████████████████████████
+                                        [bold #FFD700]⚡ ◈ ⚕ ◈ ⚡[/]
+                                    [#C9A227]THE GODS ARE WATCHING[/]
+    [/]
+
+# God activation cinematic (shown when a god becomes active)
+god_activation_cinematics:
+  Hermes:
+    - "[dim #2A2A50]═══════════════════════════════════════════════════════════════[/]"
+    - "[#555577]═══════════════════[/][#FFD700]⚕[/][#555577]═══════════════════[/]"
+    - "[#C9A227]══════════════[/][bold #FFD700]⚕ HERMES ⚕[/][#C9A227]══════════════[/]"
+    - "[#FFD700]═══════[/][bold #FFEC8B]⚕ THE MESSENGER AWAKENS ⚕[/][#FFD700]═══════[/]"
+  Athena:
+    - "[dim #2A2A50]═══════════════════════════════════════════════════════════════[/]"
+    - "[#808080]═══════════════════[/][#C0C0C0]△[/][#808080]═══════════════════[/]"
+    - "[#A8A8A8]══════════════[/][bold #C0C0C0]△ ATHENA △[/][#A8A8A8]══════════════[/]"
+    - "[#C0C0C0]═══════[/][bold #E0E0E0]△ WISDOM DESCENDS △[/][#C0C0C0]═══════[/]"
+  Apollo:
+    - "[dim #2A2A50]═══════════════════════════════════════════════════════════════[/]"
+    - "[#C9A227]═══════════════════[/][#FFE066]☀[/][#C9A227]═══════════════════[/]"
+    - "[#FFD700]══════════════[/][bold #FFE066]☀ APOLLO ☀[/][#FFD700]══════════════[/]"
+    - "[#FFE066]═══════[/][bold #FFFACD]☀ LIGHT ILLUMINATES ☀[/][#FFE066]═══════[/]"
+  Ares:
+    - "[dim #2A2A50]═══════════════════════════════════════════════════════════════[/]"
+    - "[#8B0000]═══════════════════[/][#DC143C]⚔[/][#8B0000]═══════════════════[/]"
+    - "[#B22222]══════════════[/][bold #DC143C]⚔ ARES ⚔[/][#B22222]══════════════[/]"
+    - "[#DC143C]═══════[/][bold #FF4444]⚔ WAR GOD STRIKES ⚔[/][#DC143C]═══════[/]"
+  Zeus:
+    - "[dim #2A2A50]═══════════════════════════════════════════════════════════════[/]"
+    - "[#C0C0FF]═══════════════════[/][#F0F0FF]👁[/][#C0C0FF]═══════════════════[/]"
+    - "[#E0E0FF]══════════════[/][bold #F0F0FF]👁 ZEUS 👁[/][#E0E0FF]══════════════[/]"
+    - "[#F0F0FF]═══════[/][bold #FFFFFF]👁 THE KING JUDGES 👁[/][#F0F0FF]═══════[/]"
+  Hephaestus:
+    - "[dim #2A2A50]═══════════════════════════════════════════════════════════════[/]"
+    - "[#CC6600]═══════════════════[/][#FF8C00]🔨[/][#CC6600]═══════════════════[/]"
+    - "[#FF7F00]══════════════[/][bold #FF8C00]🔨 HEPHAESTUS 🔨[/][#FF7F00]══════════════[/]"
+    - "[#FF8C00]═══════[/][bold #FFA500]🔨 THE FORGE IGNITES 🔨[/][#FF8C00]═══════[/]"
+  Artemis:
+    - "[dim #2A2A50]═══════════════════════════════════════════════════════════════[/]"
+    - "[#006400]═══════════════════[/][#32CD32]🏹[/][#006400]═══════════════════[/]"
+    - "[#228B22]══════════════[/][bold #32CD32]🏹 ARTEMIS 🏹[/][#228B22]══════════════[/]"
+    - "[#32CD32]═══════[/][bold #7CFC00]🏹 THE HUNT BEGINS 🏹[/][#32CD32]═══════[/]"
+  Poseidon:
+    - "[dim #2A2A50]═══════════════════════════════════════════════════════════════[/]"
+    - "[#104E8B]═══════════════════[/][#1E90FF]🌊[/][#104E8B]═══════════════════[/]"
+    - "[#1873CC]══════════════[/][bold #1E90FF]🌊 POSEIDON 🌊[/][#1873CC]══════════════[/]"
+    - "[#1E90FF]═══════[/][bold #00BFFF]🌊 THE DEPTHS STIR 🌊[/][#1E90FF]═══════[/]"
+  Hades:
+    - "[dim #2A2A50]═══════════════════════════════════════════════════════════════[/]"
+    - "[#6C3483]═══════════════════[/][#9B59B6]🕯[/][#6C3483]═══════════════════[/]"
+    - "[#8E44AD]══════════════[/][bold #9B59B6]🕯 HADES 🕯[/][#8E44AD]══════════════[/]"
+    - "[#9B59B6]═══════[/][bold #BA55D3]🕯 MEMORIES SURFACE 🕯[/][#9B59B6]═══════[/]"
+  Dionysus:
+    - "[dim #2A2A50]═══════════════════════════════════════════════════════════════[/]"
+    - "[#990099]═══════════════════[/][#FF00FF]🍷[/][#990099]═══════════════════[/]"
+    - "[#CC00CC]══════════════[/][bold #FF00FF]🍷 DIONYSUS 🍷[/][#CC00CC]══════════════[/]"
+    - "[#FF00FF]═══════[/][bold #FF69B4]🍷 CHAOS INSPIRES 🍷[/][#FF00FF]═══════[/]"
+
+# God detail panel template (shown when hovering/selecting a god)
+god_detail_template: |
+  [dim #2A2A50]╔══════════════════════════════════════════════════════════════════════════╗[/]
+  [dim #2A2A50]║[/]  [{color}]{icon}[/] [bold {color}]{name}[/] — [dim #555577]{title}[/]                    [dim #2A2A50]║[/]
+  [dim #2A2A50]╠══════════════════════════════════════════════════════════════════════════╣[/]
+  [dim #2A2A50]║[/]                                                                          [dim #2A2A50]║[/]
+  [dim #2A2A50]║[/]  {pixel_art}                                                             [dim #2A2A50]║[/]
+  [dim #2A2A50]║[/]                                                                          [dim #2A2A50]║[/]
+  [dim #2A2A50]║[/]  [bold #FFD700]DOMAIN:[/] [{color}]{domain}[/]                                         [dim #2A2A50]║[/]
+  [dim #2A2A50]║[/]  [bold #FFD700]ROLE:[/] [dim #E0F7FF]{role}[/]                                           [dim #2A2A50]║[/]
+  [dim #2A2A50]║[/]                                                                          [dim #2A2A50]║[/]
+  [dim #2A2A50]║[/]  [bold #FFD700]LORE:[/]                                                                [dim #2A2A50]║[/]
+  [dim #2A2A50]║[/]  [dim #E0F7FF]{lore}[/]                                                   [dim #2A2A50]║[/]
+  [dim #2A2A50]║[/]                                                                          [dim #2A2A50]║[/]
+  [dim #2A2A50]║[/]  [bold #FFD700]ABILITIES:[/]                                                           [dim #2A2A50]║[/]
+  [dim #2A2A50]║[/]  {abilities}                                                             [dim #2A2A50]║[/]
+  [dim #2A2A50]║[/]                                                                          [dim #2A2A50]║[/]
+  [dim #2A2A50]║[/]  [italic dim #555577]"{quote}"[/]                                         [dim #2A2A50]║[/]
+  [dim #2A2A50]║[/]                                                                          [dim #2A2A50]║[/]
+  [dim #2A2A50]╚══════════════════════════════════════════════════════════════════════════╝[/]
+
+# Notification styling
+notifications:
+  info_icon: "✦"
+  warn_icon: "⚠"
+  error_icon: "⚡"
+  success_icon: "✓"
+  divine_icon: "⚕"
+
+# Dashboard-specific styling
+dashboard:
+  bento_corner: "◈"
+  bento_glow: true
+  glass_effect: true
+  show_flow_diagram: true
+  show_god_faces: true
+  compact_pantheon: false
+
+# Leave banner_logo empty to use the Rich Table-based bento layout
+# which automatically handles alignment using the banner_hero art + HERMES logo
+banner_logo: ""
+
+banner_hero: |
+  [dim #555577]  ✦  ⚕  ✦  [/]
+  [dim #3A3A6A]⠀⠀⠀⢰⣦⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣴⡆⠀⠀⠀[/]
+  [dim #3A3A6A]⠀⠀⢀⣿⠟⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠻⣿⡀⠀⠀[/]
+  [#555577]⠀⢀⣾⡏⠀⠀[#FFD700]⚡[/][#555577]⠀⠀⠀⠀⠀⠀⠀[#FFD700]⚡[/][#555577]⠀⠀⠀⢹⣷⡀⠀⠀[/]
+  [#C9A227]⠀⠸⣿⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⣿⠇⠀⠀[/]
+  [#C9A227]⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+  [#FFD700]⠀⠀⠀⠀⠀⢀⣠⣴⣾⣿⣿⣇⠸⣿⣿⠇⣸⣿⣿⣷⣦⣄⡀[/]
+  [#C9A227]⢀⣠⣴⣶⠿⠋⣩⡿⣿⡿⠻⣿⡇⢠⡄⢸⣿⠟⢿⣿⢿⣍⠙[/]
+  [dim #555577]⠀⠉⠉⠁⠶⠟⠋⠀⠉⠀⢀⣈⣁⡈⢁⣈⣁⡀⠀⠉⠀⠙⠻[/]
+  [dim #3A3A6A]⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⡿⠛⢁⡈⠛⢿⣿⣦⠀⠀⠀⠀[/]
+  [dim #3A3A6A]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠿⣿⣦⣤⣈⠁⢠⣴⣿⠿⠀⠀⠀⠀[/]
+  [dim #2A2A50]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠻⢿⣿⣦⡉⠁⠀⠀⠀⠀⠀[/]
+  [dim #2A2A50]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⢷⣦⣈⠛⠃⠀⠀⠀⠀⠀⠀[/]
+  [dim #1A1A38]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣴⠦⠈⠙⠿⣦⡄⠀⠀⠀⠀⠀[/]
+  [dim #1A1A38]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⣿⣤⡈⠁⢤⣿⠇⠀⠀⠀⠀⠀[/]
+  [dim #555577]  ✦  divine messenger  ✦[/]
+
+# Animation frames for hero art (cycle through these)
+hero_frames:
+  - |
+    [dim #1A1A38]                    ╔══════════════════════════════════════════════════════════════╗[/]
+    [dim #1A1A38]                    ║[/]  [dim #2A2A50]░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[/]  [dim #1A1A38]║[/]
+    [dim #2A2A50]                    ║[/]  [dim #3A3A6A]░░[/][#555577]▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄[/][dim #3A3A6A]░░[/]  [dim #2A2A50]║[/]
+    [dim #3A3A6A]                    ║[/]  [#555577]▐[/][#3A3A6A]░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[/][#555577]▌[/]  [dim #3A3A6A]║[/]
+    [#555577]                    ║[/]  [#555577]▐[/][#3A3A6A]░░[/][#FFD700]⚡[/][#3A3A6A]░░░░░░░░░░░░░░░░░░░[/][bold #FFD700]◈ HERMES ◈[/][#3A3A6A]░░░░░░░░░░░░░░░░░░░[/][#FFD700]⚡[/][#3A3A6A]░░[/][#555577]▌[/]  [#555577]║[/]
+    [#C9A227]                    ║[/]  [#555577]▐[/][#3A3A6A]░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[/][#555577]▌[/]  [#C9A227]║[/]
+    [#FFD700]                    ║[/]  [#555577]▐[/][#3A3A6A]░░░░░░[/][#C9A227]▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄[/][#3A3A6A]░░░░░░[/][#555577]▌[/]  [#FFD700]║[/]
+    [#FFD700]                    ║[/]  [#555577]▐[/][#3A3A6A]░░░░[/][#C9A227]▐[/][#FFD700]██████████████████████████████████████████████[/][#C9A227]▌[/][#3A3A6A]░░░░[/][#555577]▌[/]  [#FFD700]║[/]
+    [#C9A227]                    ║[/]  [#555577]▐[/][#3A3A6A]░░░░[/][#C9A227]▐[/][#FFD700]██[/][bold #FFEC8B]  ⚕ DIVINE ORCHESTRATION SYSTEM ⚕  [/][#FFD700]██[/][#C9A227]▌[/][#3A3A6A]░░░░[/][#555577]▌[/]  [#C9A227]║[/]
+    [#C9A227]                    ║[/]  [#555577]▐[/][#3A3A6A]░░░░[/][#C9A227]▐[/][#FFD700]██████████████████████████████████████████████[/][#C9A227]▌[/][#3A3A6A]░░░░[/][#555577]▌[/]  [#C9A227]║[/]
+    [dim #555577]                    ║[/]  [#555577]▐[/][#3A3A6A]░░░░░░[/][#C9A227]▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀[/][#3A3A6A]░░░░░░[/][#555577]▌[/]  [dim #555577]║[/]
+    [dim #3A3A6A]                    ║[/]  [#555577]▐[/][#3A3A6A]░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[/][#555577]▌[/]  [dim #3A3A6A]║[/]
+    [dim #2A2A50]                    ║[/]  [#555577]▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀[/]  [dim #2A2A50]║[/]
+    [dim #1A1A38]                    ╚══════════════════════════════════════════════════════════════╝[/]
+  - |
+    [dim #1A1A38]                    ╔══════════════════════════════════════════════════════════════╗[/]
+    [dim #1A1A38]                    ║[/]  [dim #2A2A50]░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[/]  [dim #1A1A38]║[/]
+    [dim #2A2A50]                    ║[/]  [dim #3A3A6A]░░[/][#555577]▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄[/][dim #3A3A6A]░░[/]  [dim #2A2A50]║[/]
+    [dim #3A3A6A]                    ║[/]  [#555577]▐[/][#3A3A6A]░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[/][#555577]▌[/]  [dim #3A3A6A]║[/]
+    [#555577]                    ║[/]  [#555577]▐[/][#3A3A6A]░░[/][#FFEC8B]✦[/][#3A3A6A]░░░░░░░░░░░░░░░░░░░[/][bold #FFEC8B]◈ HERMES ◈[/][#3A3A6A]░░░░░░░░░░░░░░░░░░░[/][#FFEC8B]✦[/][#3A3A6A]░░[/][#555577]▌[/]  [#555577]║[/]
+    [#C9A227]                    ║[/]  [#555577]▐[/][#3A3A6A]░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[/][#555577]▌[/]  [#C9A227]║[/]
+    [#FFEC8B]                    ║[/]  [#555577]▐[/][#3A3A6A]░░░░░░[/][#FFD700]▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄[/][#3A3A6A]░░░░░░[/][#555577]▌[/]  [#FFEC8B]║[/]
+    [#FFEC8B]                    ║[/]  [#555577]▐[/][#3A3A6A]░░░░[/][#FFD700]▐[/][#FFEC8B]██████████████████████████████████████████████[/][#FFD700]▌[/][#3A3A6A]░░░░[/][#555577]▌[/]  [#FFEC8B]║[/]
+    [#FFD700]                    ║[/]  [#555577]▐[/][#3A3A6A]░░░░[/][#FFD700]▐[/][#FFEC8B]██[/][bold #FFD700]  ⚕ DIVINE ORCHESTRATION SYSTEM ⚕  [/][#FFEC8B]██[/][#FFD700]▌[/][#3A3A6A]░░░░[/][#555577]▌[/]  [#FFD700]║[/]
+    [#FFD700]                    ║[/]  [#555577]▐[/][#3A3A6A]░░░░[/][#FFD700]▐[/][#FFEC8B]██████████████████████████████████████████████[/][#FFD700]▌[/][#3A3A6A]░░░░[/][#555577]▌[/]  [#FFD700]║[/]
+    [dim #555577]                    ║[/]  [#555577]▐[/][#3A3A6A]░░░░░░[/][#FFD700]▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀[/][#3A3A6A]░░░░░░[/][#555577]▌[/]  [dim #555577]║[/]
+    [dim #3A3A6A]                    ║[/]  [#555577]▐[/][#3A3A6A]░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[/][#555577]▌[/]  [dim #3A3A6A]║[/]
+    [dim #2A2A50]                    ║[/]  [#555577]▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀[/]  [dim #2A2A50]║[/]
+    [dim #1A1A38]                    ╚══════════════════════════════════════════════════════════════╝[/]
+
+
+# Flow diagram template
+flow_diagram: |
+  [dim #2A2A50]┌─────────────────────────────────────────────────────────────────────────────────────┐[/]
+  [dim #2A2A50]│[/]  [bold #FFD700]⚡ DIVINE EXECUTION FLOW[/]                                                          [dim #2A2A50]│[/]
+  [dim #2A2A50]│[/]                                                                                     [dim #2A2A50]│[/]
+  [dim #2A2A50]│[/]   [#C0C0C0]△ ATHENA[/]  ──▶  [#32CD32]🏹 ARTEMIS[/]  ──▶  [#DC143C]⚔ ARES[/]  ──▶  [#FF8C00]🔨 HEPHAESTUS[/]           [dim #2A2A50]│[/]
+  [dim #2A2A50]│[/]   [dim #555577]strategy[/]      [dim #555577]retrieval[/]       [dim #555577]execution[/]     [dim #555577]forge[/]                     [dim #2A2A50]│[/]
+  [dim #2A2A50]│[/]       │              │               │              │                          [dim #2A2A50]│[/]
+  [dim #2A2A50]│[/]       └──────────────┴───────────────┴──────────────┘                          [dim #2A2A50]│[/]
+  [dim #2A2A50]│[/]                              │                                                  [dim #2A2A50]│[/]
+  [dim #2A2A50]│[/]                              ▼                                                  [dim #2A2A50]│[/]
+  [dim #2A2A50]│[/]                      [#FFD700]⚕ HERMES[/]  ◀──  [#9B59B6]🕯 HADES[/]  ◀──  [#1E90FF]🌊 POSEIDON[/]          [dim #2A2A50]│[/]
+  [dim #2A2A50]│[/]                      [dim #555577]orchestrator[/]    [dim #555577]archive[/]        [dim #555577]flow[/]                  [dim #2A2A50]│[/]
+  [dim #2A2A50]│[/]                                                                                     [dim #2A2A50]│[/]
+  [dim #2A2A50]└─────────────────────────────────────────────────────────────────────────────────────┘[/]

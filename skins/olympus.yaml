@@ -1,0 +1,178 @@
+name: olympus
+description: Olympus skin — kawaii cyber-fantasy god command center
+
+colors:
+  banner_border: "#C9A227"
+  banner_title: "#FFD700"
+  banner_accent: "#FFD700"
+  banner_dim: "#5F87D4"
+  banner_text: "#B8E0FF"
+  ui_accent: "#FFD700"
+  ui_label: "#5F87D4"
+  ui_ok: "#7FFFD4"
+  ui_error: "#FF6B8A"
+  ui_warn: "#FFD700"
+  prompt: "#FFD700"
+  input_rule: "#C9A227"
+  response_border: "#C9A227"
+  session_label: "#C9A227"
+  session_border: "#5F87D4"
+
+spinner:
+  waiting_faces:
+    - "(⚡)"
+    - "(✦)"
+    - "(⊛)"
+    - "(◈)"
+    - "(⊕)"
+  thinking_faces:
+    - "(⚡)"
+    - "(✦)"
+    - "(⊛)"
+    - "(⌁)"
+    - "(◈)"
+  thinking_verbs:
+    - "consulting the oracle"
+    - "routing through pantheon"
+    - "reading the omens"
+    - "aligning the gods"
+    - "forging the decree"
+    - "invoking Athena"
+    - "charting the course"
+    - "weighing the fates"
+  wings:
+    - ["⟪⚡", "⚡⟫"]
+    - ["⟪✦", "✦⟫"]
+    - ["⟪◈", "◈⟫"]
+    - ["⟪⊛", "⊛⟫"]
+
+branding:
+  agent_name: "⚡ OLYMPUS ⚡"
+  welcome: "Olympus online. The gods are watching. ✦"
+  goodbye: "Safe travels, mortal. ⚡✦"
+  response_label: " ⚡ Hermes "
+  prompt_symbol: "⚡ "
+  help_header: "✦ Olympus Commands ✦"
+
+tool_prefix: "│"
+
+pantheon:
+  - name: Hermes
+    icon: "~E~"
+    rank: "ORACLE"
+    role: Orchestrator / Router
+    desc: "swift router"
+    hat: "/^\\"
+    face: "(-w-)"
+  - name: Athena
+    icon: ">O<"
+    rank: "STRAT"
+    role: Planner / Strategy
+    desc: "wise planner"
+    hat: "^.^"
+    face: "(o_o)"
+  - name: Hephaestus
+    icon: "[#]"
+    rank: "FORGE"
+    role: Code Forge / Builder
+    desc: "code forger"
+    hat: "[#]"
+    face: "(o_-)"
+  - name: Poseidon
+    icon: "-Y-"
+    rank: "REACH"
+    role: APIs / External
+    desc: "deep reach"
+    hat: "~v~"
+    face: "(~_~)"
+  - name: Artemis
+    icon: "->-"
+    rank: "HUNT"
+    role: Search / Retrieval
+    desc: "never misses"
+    hat: ">=>"
+    face: "(>.>)"
+  - name: Apollo
+    icon: "*O*"
+    rank: "SAGE"
+    role: Oracle / RAG
+    desc: "sees all"
+    hat: "*.*"
+    face: "(^_^)"
+  - name: Ares
+    icon: ">|<"
+    rank: "EXEC"
+    role: Executor / Runner
+    desc: "gets it done"
+    hat: ">|<"
+    face: "(>#<)"
+  - name: Zeus
+    icon: "/|\\"
+    rank: "JUDGE"
+    role: Critic / Validation
+    desc: "final word"
+    hat: "/V\\"
+    face: "(|_|)"
+  - name: Demeter
+    icon: "@.@"
+    rank: "MEM"
+    role: Memory / Storage
+    desc: "holds it all"
+    hat: "w.w"
+    face: "(u_u)"
+  - name: Dionysus
+    icon: "<~>"
+    rank: "FLUX"
+    role: Reflection / Growth
+    desc: "flows & grows"
+    hat: "~w~"
+    face: "(^w^)"
+  - name: Hades
+    icon: "X.X"
+    rank: "WATCH"
+    role: Failure / Recovery
+    desc: "death? a bug."
+    hat: "._."
+    face: "(X_X)"
+
+tool_emojis:
+  terminal: "⚡"
+  web_search: "◈"
+  file: "✦"
+  browser: "⊛"
+
+banner_logo: |
+  [#1A2744]  ✦  ·  ·  ✦  ·  ·  ✦  ·  ·  ✦  ·  ·  ✦  ·  ·  ✦  ·  ·  ✦  ·  ·  ✦  ·  ·  ✦  ·  ·  ✦  ·  ·[/]
+  [#2A3F6F]  ░  ░░ ░✦░  ░░  ░  ░░░░  ░  ░  ░░✦░  ░░  ░  ░░░░  ░✦  ░  ░░░░  ░░  ░  ░░✦░  ░░  ░  ░░░░[/]
+  [#3A5A8A]  ▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░[/]
+  [#4A6FA5]  ▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒[/]
+  [#5F87D4]  ║[/]  [dim #5F87D4]✦[/]                          [bold #FFD700]⚡  O · L · Y · M · P · U · S  ⚡[/]                          [dim #5F87D4]✦[/]  [#5F87D4]║[/]
+  [#C9A227]  ══╦══════════════════════════════════════════════════════════════════════════════════════════╦══[/]
+  [bold #FFD700]  ██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗[/]  [bold #5F87D4]      █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
+  [bold #FFD700]  ██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝[/]  [bold #5F87D4]     ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
+  [bold #FFD700]  ███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗[/][#C9A227]█████╗[/][bold #5F87D4]███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
+  [#FFD700]  ██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║[/][#C9A227]╚════╝[/][#5F87D4]██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
+  [#FFD700]  ██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║[/]  [#5F87D4]     ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
+  [dim #C9A227]  ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝[/]  [dim #5F87D4]     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]
+  [#C9A227]  ══╩══════════════════════════════════════════════════════════════════════════════════════════╩══[/]
+  [#4A6FA5]  ▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒▓▓▒▓▒▓▒▓▓▒[/]
+  [#3A5A8A]  ▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░▒▒░▒░▒░▒▒░[/]
+  [dim #5F87D4]  ✦                Messenger Core  ·  Pantheon Runtime  ·  Oracle-Driven Execution                ✦[/]
+
+banner_hero: |
+  [bold #5F87D4]  ✦       ✦  [/]
+  [bold #C9A227]⠀⠀⠀⢰⣦⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣴⡆⠀⠀⠀[/]
+  [bold #C9A227]⠀⠀⢀⣿⠟⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠻⣿⡀⠀⠀[/]
+  [bold #5F87D4]⠀⢀⣾⡏⠀⠀⚡⠀⠀⠀⠀⠀⠀⠀⚡⠀⠀⠀⢹⣷⡀⠀⠀[/]
+  [bold #FFD700]⠀⠸⣿⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⣿⠇⠀⠀[/]
+  [bold #FFD700]⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+  [bold #FFD700]⠀⠀⠀⠀⠀⢀⣠⣴⣾⣿⣿⣇⠸⣿⣿⠇⣸⣿⣿⣷⣦⣄⡀[/]
+  [bold #5F87D4]⢀⣠⣴⣶⠿⠋⣩⡿⣿⡿⠻⣿⡇⢠⡄⢸⣿⠟⢿⣿⢿⣍⠙[/]
+  [bold #5F87D4]⠀⠉⠉⠁⠶⠟⠋⠀⠉⠀⢀⣈⣁⡈⢁⣈⣁⡀⠀⠉⠀⠙⠻[/]
+  [bold #C9A227]⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⡿⠛⢁⡈⠛⢿⣿⣦⠀⠀⠀⠀[/]
+  [bold #C9A227]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠿⣿⣦⣤⣈⠁⢠⣴⣿⠿⠀⠀⠀⠀[/]
+  [bold #FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠻⢿⣿⣦⡉⠁⠀⠀⠀⠀⠀[/]
+  [bold #FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⢷⣦⣈⠛⠃⠀⠀⠀⠀⠀⠀[/]
+  [bold #C9A227]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣴⠦⠈⠙⠿⣦⡄⠀⠀⠀⠀⠀[/]
+  [bold #C9A227]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⣿⣤⡈⠁⢤⣿⠇⠀⠀⠀⠀⠀[/]
+  [bold #5F87D4]  ✦  divine messenger  ✦[/]

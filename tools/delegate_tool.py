@@ -113,12 +113,15 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
-def _build_child_progress_callback(task_index: int, parent_agent, task_count: int = 1) -> Optional[callable]:
+def _build_child_progress_callback(
+    task_index: int, parent_agent, task_count: int = 1, god_name: str = "",
+) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
-    Two display paths:
-      CLI:     prints tree-view lines above the parent's delegation spinner
-      Gateway: batches tool names and relays to parent's progress callback
+    Three display paths:
+      CLI:          prints tree-view lines above the parent's delegation spinner
+      Gateway:      batches tool names and relays to parent's progress callback
+      FleetMonitor: emits detailed events for dashboard/TUI observability
 
     Returns None if no display mechanism is available, in which case the
     child agent runs with no progress callback (identical to current behavior).
@@ -126,48 +129,100 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
     spinner = getattr(parent_agent, '_delegate_spinner', None)
     parent_cb = getattr(parent_agent, 'tool_progress_callback', None)
 
-    if not spinner and not parent_cb:
+    # Always try to get fleet monitor for observability
+    try:
+        from agent.fleet_monitor import get_fleet_monitor
+        fleet_monitor = get_fleet_monitor()
+    except Exception:
+        fleet_monitor = None
+
+    if not spinner and not parent_cb and not fleet_monitor:
         return None  # No display → no callback → zero behavior change
 
     # Show 1-indexed prefix only in batch mode (multiple tasks)
     prefix = f"[{task_index + 1}] " if task_count > 1 else ""
+    god_name = god_name or ""
+    _DIM = "\033[2m"
+    _CYAN = "\033[36m"
+    _GOLD = "\033[1;33m"
+    _GREEN = "\033[32m"
+    _RST = "\033[0m"
+    _tag = f"{_GOLD}{god_name.upper()}{_RST}" if god_name else ""
 
-    # Gateway: batch tool names, flush periodically
     _BATCH_SIZE = 5
     _batch: List[str] = []
+    _call_count = [0]
+    _tool_start_time = [0.0]
+    _current_tool = [""]
 
     def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
         # event_type is one of: "tool.started", "tool.completed",
         # "reasoning.available", "_thinking", "subagent_progress"
 
-        # "_thinking" / reasoning events
         if event_type in ("_thinking", "reasoning.available"):
             text = preview or tool_name or ""
-            if spinner:
-                short = (text[:55] + "...") if len(text) > 55 else text
+            # Notify fleet monitor of thinking
+            if fleet_monitor and god_name:
                 try:
-                    spinner.print_above(f" {prefix}├─ 💭 \"{short}\"")
+                    fleet_monitor.on_god_thinking(god_name, text)
+                except Exception:
+                    pass
+            if spinner:
+                short = (text[:75] + "...") if len(text) > 75 else text
+                try:
+                    spinner.print_above(
+                        f" {prefix}{_DIM}│{_RST}  💭 {_DIM}{short}{_RST}"
+                        + (f" {_tag}" if _tag else "")
+                    )
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
-            # Don't relay thinking to gateway (too noisy for chat)
             return
 
-        # tool.completed — no display needed here (spinner shows on started)
         if event_type == "tool.completed":
+            # Notify fleet monitor of tool completion
+            if fleet_monitor and god_name and _current_tool[0]:
+                duration = time.time() - _tool_start_time[0] if _tool_start_time[0] else 0.0
+                status = kwargs.get("status", "success")
+                try:
+                    fleet_monitor.on_god_tool_complete(god_name, _current_tool[0], duration, status)
+                except Exception:
+                    pass
+            _current_tool[0] = ""
             return
 
         # tool.started — display and batch for parent relay
+        _call_count[0] += 1
+        _tool_start_time[0] = time.time()
+        _current_tool[0] = tool_name or ""
+
+        # Notify fleet monitor of tool start
+        if fleet_monitor and god_name:
+            try:
+                fleet_monitor.on_god_tool_start(god_name, tool_name or "", preview or "")
+            except Exception:
+                pass
+
         if spinner:
-            short = (preview[:35] + "...") if preview and len(preview) > 35 else (preview or "")
+            short = (preview[:65] + "...") if preview and len(preview) > 65 else (preview or "")
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name or "")
-            line = f" {prefix}├─ {emoji} {tool_name}"
-            if short:
-                line += f"  \"{short}\""
+            tag = f" {_tag}" if _tag else ""
+            line = f" {prefix}{_DIM}├─{_RST} {emoji} {_CYAN}{tool_name}{_RST}{tag}"
+            if short and short != tool_name:
+                line += f"  {_DIM}{short}{_RST}"
             try:
                 spinner.print_above(line)
             except Exception as e:
                 logger.debug("Spinner print_above failed: %s", e)
+            if args and isinstance(args, dict):
+                for k, v in list(args.items())[:3]:
+                    val = str(v)
+                    if len(val) > 60:
+                        val = val[:57] + "..."
+                    try:
+                        spinner.print_above(f" {prefix}{_DIM}│    {k}: {val}{_RST}")
+                    except Exception:
+                        pass
 
         if parent_cb:
             _batch.append(tool_name or "")
@@ -188,8 +243,17 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
             except Exception as e:
                 logger.debug("Parent callback flush failed: %s", e)
             _batch.clear()
+        if spinner and _call_count[0] > 0:
+            tag = f" {_tag}" if _tag else ""
+            try:
+                spinner.print_above(
+                    f" {prefix}{_DIM}└── {_GREEN}✓ {_call_count[0]} calls{_RST}{tag}"
+                )
+            except Exception:
+                pass
 
     _callback._flush = _flush
+    _callback._call_count = _call_count  # expose for progress tracking
     return _callback
 
 
@@ -209,15 +273,17 @@ def _build_child_agent(
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    god_name: str = "",
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
     Returns the constructed child agent without running it.
 
     When override_* params are set (from delegation config), the child uses
-    those credentials instead of inheriting from the parent.  This enables
-    routing subagents to a different provider:model pair (e.g. cheap/fast
-    model on OpenRouter while the parent runs on Nous Portal).
+    those credentials instead of inheriting from the parent for the HTTP
+    endpoint. The **model id always matches the parent** so subagents run
+    the same weights as the orchestrator (``model`` is ignored; kept for
+    call-site compatibility).
     """
     from run_agent import AIAgent
 
@@ -255,8 +321,9 @@ def _build_child_agent(
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
         parent_api_key = parent_agent._client_kwargs.get("api_key")
 
-    # Build progress callback to relay tool calls to parent display
-    child_progress_cb = _build_child_progress_callback(task_index, parent_agent)
+    child_progress_cb = _build_child_progress_callback(
+        task_index, parent_agent, god_name=god_name,
+    )
 
     # Each subagent gets its own iteration budget capped at max_iterations
     # (configurable via delegation.max_iterations, default 50).  This means
@@ -275,8 +342,8 @@ def _build_child_agent(
 
         child_thinking_cb = _child_thinking
 
-    # Resolve effective credentials: config override > parent inherit
-    effective_model = model or parent_agent.model
+    # Subagents always use the parent's model (same harness / same weights).
+    effective_model = getattr(parent_agent, "model", None) or model
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
     effective_api_key = override_api_key or parent_api_key
@@ -348,6 +415,45 @@ def _run_single_child(
     """
     child_start = time.monotonic()
 
+    _god_name = _kwargs.get("god_name", "")
+    _max_iter = getattr(child, 'max_iterations', 50)
+    try:
+        from agent.fleet_monitor import get_fleet_monitor
+        _fm = get_fleet_monitor()
+        _fm.on_god_spawned(
+            name=_god_name or f"Subagent-{task_index + 1}",
+            goal=goal[:60] if goal else "",
+            max_iterations=_max_iter,
+        )
+    except Exception:
+        _fm = None
+
+    _spinner = getattr(parent_agent, '_delegate_spinner', None)
+    if _spinner:
+        _child_model = getattr(child, 'model', 'subagent')
+        _ctx_len = None
+        try:
+            _ctx_len = getattr(child.context_compressor, 'context_length', None)
+        except Exception:
+            pass
+        _ctx_str = f"{_ctx_len // 1024}K" if _ctx_len else "?"
+        _idx_str = f"#{task_index + 1} " if task_index > 0 else ""
+        _label = _god_name.upper() if _god_name else f"SUBAGENT {_idx_str}"
+        _goal_short = (goal[:50] + "...") if len(goal) > 50 else goal
+        _DIM = "\033[2m"
+        _GOLD = "\033[1;33m"
+        _CYAN = "\033[36m"
+        _RST = "\033[0m"
+        try:
+            _spinner.print_above(f" {_DIM}┌{'─' * 60}{_RST}")
+            _spinner.print_above(
+                f" {_DIM}│{_RST} {_GOLD}{_label}{_RST}  {_DIM}{_child_model} · {_ctx_str} ctx{_RST}"
+            )
+            _spinner.print_above(f" {_DIM}│{_RST} {_CYAN}{_goal_short}{_RST}")
+            _spinner.print_above(f" {_DIM}│{_RST}")
+        except Exception:
+            pass
+
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, 'tool_progress_callback', None)
 
@@ -395,6 +501,53 @@ def _run_single_child(
             status = "completed"
         else:
             status = "failed"
+
+        # Emit final progress update and completion to fleet monitor
+        _agent_display = _god_name or f"Subagent-{task_index + 1}"
+        if _fm:
+            try:
+                # Final progress update with token counts
+                _input_tokens_final = getattr(child, "session_prompt_tokens", 0) or 0
+                _output_tokens_final = getattr(child, "session_completion_tokens", 0) or 0
+                _fm.on_god_progress(
+                    _agent_display,
+                    step=api_calls,
+                    api_calls=api_calls,
+                    tokens_in=_input_tokens_final if isinstance(_input_tokens_final, int) else 0,
+                    tokens_out=_output_tokens_final if isinstance(_output_tokens_final, int) else 0,
+                )
+                if status == "completed":
+                    _fm.on_god_complete(_agent_display, result_preview=summary[:80] if summary else "", api_calls=api_calls)
+                else:
+                    _fm.on_god_failed(
+                        _agent_display,
+                        error="interrupted" if interrupted else "no output",
+                    )
+            except Exception:
+                pass
+
+        if _spinner:
+            _elapsed = round(time.monotonic() - child_start)
+            _DIM = "\033[2m"
+            _GREEN = "\033[32m"
+            _RED = "\033[31m"
+            _GOLD = "\033[1;33m"
+            _RST = "\033[0m"
+            _label = _god_name.upper() if _god_name else "SUBAGENT"
+            if status == "completed":
+                _stat = f"{_GREEN}✓ DONE{_RST}"
+            elif status == "interrupted":
+                _stat = f"{_RED}⚡ INTERRUPTED{_RST}"
+            else:
+                _stat = f"{_RED}✗ FAILED{_RST}"
+            try:
+                _spinner.print_above(f" {_DIM}│{_RST}")
+                _spinner.print_above(
+                    f" {_DIM}└─{_RST} {_stat}  {_GOLD}{_label}{_RST}  "
+                    f"{_DIM}{_elapsed}s · {api_calls} calls{_RST}"
+                )
+            except Exception:
+                pass
 
         # Build tool trace from conversation messages (already in memory).
         # Uses tool_call_id to correctly pair parallel tool calls with results.
@@ -515,6 +668,7 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
+    god_name: str = "",
     parent_agent=None,
 ) -> str:
     """
@@ -544,11 +698,10 @@ def delegate_task(
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
+    # Resolve delegation credentials (optional alternate provider / endpoint).
+    # The subagent model id is always the parent's — ``delegation.model`` is not
+    # applied. When delegation.provider or delegation.base_url is set, the
+    # child may use that endpoint with the **parent's** model string.
     try:
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
@@ -591,13 +744,14 @@ def delegate_task(
         for i, t in enumerate(task_list):
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
+                toolsets=t.get("toolsets") or toolsets, model=None,
                 max_iterations=effective_max_iter, parent_agent=parent_agent,
                 override_provider=creds["provider"], override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
                 override_acp_command=t.get("acp_command") or acp_command,
                 override_acp_args=t.get("acp_args") or acp_args,
+                god_name=t.get("god_name", god_name),
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -609,7 +763,9 @@ def delegate_task(
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)
         _i, _t, child = children[0]
-        result = _run_single_child(0, _t["goal"], child, parent_agent)
+        result = _run_single_child(
+            0, _t["goal"], child, parent_agent, god_name=_t.get("god_name", god_name),
+        )
         results.append(result)
     else:
         # Batch -- run in parallel with per-task progress lines
@@ -625,6 +781,7 @@ def delegate_task(
                     goal=t["goal"],
                     child=child,
                     parent_agent=parent_agent,
+                    god_name=t.get("god_name", god_name),
                 )
                 futures[future] = i
 
@@ -724,14 +881,14 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
 
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
-    """Resolve credentials for subagent delegation.
+    """Resolve optional endpoint overrides for subagent delegation.
 
     If ``delegation.base_url`` is configured, subagents use that direct
     OpenAI-compatible endpoint. Otherwise, if ``delegation.provider`` is
     configured, the full credential bundle (base_url, api_key, api_mode,
     provider) is resolved via the runtime provider system — the same path used
-    by CLI/gateway startup. This lets subagents run on a completely different
-    provider:model pair.
+    by CLI/gateway startup. The **model id** is always taken from the parent
+    agent; ``delegation.model`` is ignored for LLM calls.
 
     If neither base_url nor provider is configured, returns None values so the
     child inherits everything from the parent agent.
@@ -817,7 +974,7 @@ def _load_config() -> dict:
 
     Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
     to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
+    ``delegation.provider`` / ``delegation.base_url`` are picked up regardless
     of the entry point (CLI, gateway, cron).
     """
     try:
@@ -917,6 +1074,10 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": "Per-task ACP args override.",
                         },
+                        "god_name": {
+                            "type": "string",
+                            "description": "Per-task pantheon label for fleet tracking / display.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -951,6 +1112,13 @@ DELEGATE_TASK_SCHEMA = {
                     "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
                 ),
             },
+            "god_name": {
+                "type": "string",
+                "description": (
+                    "Optional pantheon label for fleet tracking / CLI display "
+                    "(e.g. Athena, Hephaestus). Pass with single-task delegation."
+                ),
+            },
         },
         "required": [],
     },
@@ -972,6 +1140,7 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
+        god_name=args.get("god_name", ""),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",

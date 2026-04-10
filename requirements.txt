@@ -30,6 +30,9 @@ edge-tts
 # Optional: For cron expression parsing (cronjob scheduling)
 croniter
 
+# Dashboard TUI
+textual>=0.50.0
+
 # Optional: For messaging platform integrations (gateway)
 python-telegram-bot[webhooks]>=22.6
 discord.py>=2.0

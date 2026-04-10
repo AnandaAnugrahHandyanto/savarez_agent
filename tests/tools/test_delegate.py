@@ -709,6 +709,33 @@ class TestDelegationProviderIntegration(unittest.TestCase):
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_delegation_model_config_does_not_replace_parent_model(self, mock_creds, mock_cfg):
+        """Even if resolver returns a different model string, child uses parent.model."""
+        mock_cfg.return_value = {"max_iterations": 45}
+        mock_creds.return_value = {
+            "model": "cheap/mini-model",
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.model = "parent/full-size-model"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Same weights as parent", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "parent/full-size-model")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_config_provider_credentials_reach_child_agent(self, mock_creds, mock_cfg):
         """When delegation.provider is configured, child agent gets resolved credentials."""
         mock_cfg.return_value = {
@@ -735,7 +762,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             delegate_task(goal="Test provider routing", parent_agent=parent)
 
             _, kwargs = MockAgent.call_args
-            self.assertEqual(kwargs["model"], "google/gemini-3-flash-preview")
+            self.assertEqual(kwargs["model"], parent.model)
             self.assertEqual(kwargs["provider"], "openrouter")
             self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
             self.assertEqual(kwargs["api_key"], "sk-or-delegation-key")
@@ -772,7 +799,8 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             delegate_task(goal="Cross-provider test", parent_agent=parent)
 
             _, kwargs = MockAgent.call_args
-            # Child should use OpenRouter, NOT Nous
+            # Child should use OpenRouter, NOT Nous — but same model id as parent
+            self.assertEqual(kwargs["model"], parent.model)
             self.assertEqual(kwargs["provider"], "openrouter")
             self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
             self.assertEqual(kwargs["api_key"], "sk-or-key")
@@ -807,7 +835,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             delegate_task(goal="Direct endpoint test", parent_agent=parent)
 
             _, kwargs = MockAgent.call_args
-            self.assertEqual(kwargs["model"], "qwen2.5-coder")
+            self.assertEqual(kwargs["model"], parent.model)
             self.assertEqual(kwargs["provider"], "custom")
             self.assertEqual(kwargs["base_url"], "http://localhost:1234/v1")
             self.assertEqual(kwargs["api_key"], "local-key")
@@ -890,7 +918,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
 
             self.assertEqual(mock_build.call_count, 2)
             for call in mock_build.call_args_list:
-                self.assertEqual(call.kwargs.get("model"), "meta-llama/llama-4-scout")
+                self.assertIsNone(call.kwargs.get("model"))
                 self.assertEqual(call.kwargs.get("override_provider"), "openrouter")
                 self.assertEqual(call.kwargs.get("override_base_url"), "https://openrouter.ai/api/v1")
                 self.assertEqual(call.kwargs.get("override_api_key"), "sk-or-batch")
@@ -899,7 +927,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_model_only_no_provider_inherits_parent_credentials(self, mock_creds, mock_cfg):
-        """Setting only model (no provider) changes model but keeps parent credentials."""
+        """delegation.model is ignored — child uses parent model and parent credentials."""
         mock_cfg.return_value = {
             "max_iterations": 45,
             "model": "google/gemini-3-flash-preview",
@@ -924,9 +952,9 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             delegate_task(goal="Model only test", parent_agent=parent)
 
             _, kwargs = MockAgent.call_args
-            # Model should be overridden
-            self.assertEqual(kwargs["model"], "google/gemini-3-flash-preview")
-            # But provider/base_url/api_key should inherit from parent
+            # delegation.model is ignored — always parent's model
+            self.assertEqual(kwargs["model"], parent.model)
+            # Provider/base_url/api_key inherit from parent
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["base_url"], parent.base_url)
 
