@@ -59,10 +59,6 @@ def _store() -> "MnemoriaStore":
 _SESSION_ID = str(uuid.uuid4())
 
 
-def _resolve_session(kwargs: dict) -> str:
-    return kwargs.get("session_id") or _SESSION_ID
-
-
 # -----------------------------------------------------------------------
 # Tool schemas — Mnemoria memory tools
 # -----------------------------------------------------------------------
@@ -271,15 +267,8 @@ def _type_sym(fact_type) -> str:
 class MnemoriaMemoryProvider(MemoryProvider):
     """Mnemoria cognitive memory system as a hermes-agent memory provider.
 
-    Benchmarks: 97.2% on cognitive memory suite (vs 87.5% baseline).
-
-    Config env vars:
-        HERMES_MEMORY_MNEMORIA_ENABLED  (bool)  Enable this provider
-        HERMES_MEMORY_MNEMORIA_MODE     (str)   Profile: balanced (default)
-        HERMES_MNEMORIA_DB               (path)  SQLite db path
-
-    Note: tick_unified_memory in the agent loop may need updating to call
-    Mnemoria's tick function instead.
+    Full lifecycle participant: hooks into context compression, delegation,
+    built-in memory mirroring, and session management.
     """
 
     def __init__(self):
@@ -453,7 +442,7 @@ class MnemoriaMemoryProvider(MemoryProvider):
         if not _UM_AVAILABLE:
             return json.dumps({"error": "mnemoria package not available"})
 
-        session_id = _resolve_session(kwargs)
+        session_id = kwargs.get("session_id") or _SESSION_ID
 
         handlers = {
             "mnemoria_write": _handle_write,
