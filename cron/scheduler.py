@@ -810,6 +810,16 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
 
+def _deliver_ockham_notification(notification, target: str, content: str, adapters=None, loop=None) -> Optional[str]:
+    """Deliver an Ockham outbox notification via the existing scheduler path."""
+    pseudo_job = {
+        "id": f"ockham:{notification.id}",
+        "name": f"Ockham {notification.type}",
+        "deliver": target,
+    }
+    return _deliver_result(pseudo_job, content, adapters=adapters, loop=loop)
+
+
 def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     """
     Check and run all due jobs.
@@ -844,12 +854,11 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     try:
         due_jobs = get_due_jobs()
 
-        if verbose and not due_jobs:
-            logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
-            return 0
-
         if verbose:
-            logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
+            if not due_jobs:
+                logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
+            else:
+                logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
         executed = 0
         for job in due_jobs:
@@ -889,6 +898,21 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
             except Exception as e:
                 logger.error("Error processing job %s: %s", job['id'], e)
                 mark_job_run(job["id"], False, str(e))
+
+        try:
+            from cron.ockham_outbox import drain as drain_ockham_outbox
+
+            delivered, drain_errors = drain_ockham_outbox(
+                lambda notification, target, content: _deliver_ockham_notification(
+                    notification, target, content, adapters=adapters, loop=loop
+                )
+            )
+            if verbose and delivered:
+                logger.info("Delivered %d Ockham outbox notification(s)", delivered)
+            for err in drain_errors:
+                logger.warning("Ockham outbox delivery error: %s", err)
+        except Exception as e:
+            logger.debug("Ockham outbox drain error: %s", e)
 
         return executed
     finally:
