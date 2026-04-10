@@ -15,8 +15,8 @@ def _make_voice_cli(**overrides):
     """Create a minimal HermesCLI with only voice-related attrs initialized.
 
     Uses ``__new__()`` to bypass ``__init__`` so no config/env/API setup is
-    needed.  Only the voice state attributes (from __init__ lines 3749-3758)
-    are populated.
+    needed.  Populate the voice state plus any shared CLI state touched by the
+    voice transcription path.
     """
     from cli import HermesCLI
 
@@ -31,6 +31,7 @@ def _make_voice_cli(**overrides):
     cli._voice_tts_done = threading.Event()
     cli._voice_tts_done.set()
     cli._pending_input = queue.Queue()
+    cli._attached_images = []
     cli._app = None
     cli.console = SimpleNamespace(width=80)
     for k, v in overrides.items():
@@ -1098,9 +1099,14 @@ class TestVoiceStopAndTranscribeReal:
     ):
         recorder = MagicMock()
         recorder.stop.return_value = "/tmp/test.wav"
-        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+        cli = _make_voice_cli(
+            _voice_recording=True,
+            _voice_recorder=recorder,
+            _attached_images=["/tmp/example.png"],
+        )
         cli._voice_stop_and_transcribe()
         assert cli._pending_input.get_nowait() == "hello world"
+        assert cli._attached_images == []
 
     @patch("cli._cprint")
     @patch("cli.os.unlink")
