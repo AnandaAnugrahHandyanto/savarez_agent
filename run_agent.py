@@ -1281,6 +1281,15 @@ class AIAgent:
             provider=self.provider,
         )
         self.compression_enabled = compression_enabled
+
+        # ── Context-aware tool result budgeting ──────────────────────
+        _budget_cfg = _agent_cfg.get("tool_budgets", {})
+        from agent.tool_budget import ToolBudget
+        self._tool_budget = ToolBudget(
+            context_length=self.context_compressor.context_length,
+            config=_budget_cfg,
+        )
+
         self._subdirectory_hints = SubdirectoryHintTracker(
             working_dir=os.getenv("TERMINAL_CWD") or None,
         )
@@ -6226,6 +6235,43 @@ class AIAgent:
             if messages and messages[-1].get("_flush_sentinel") == _sentinel:
                 messages.pop()
 
+    def _estimate_current_tokens(self, messages: list) -> int:
+        """Rough token estimate for the current message list (~4 chars/token)."""
+        return sum(len(json.dumps(m)) for m in messages) // 4
+
+    def _apply_tool_budget(
+        self, result: str, tool_use_id: str, messages: list,
+        system_message: str = None, task_id: str = "default",
+    ) -> str:
+        """Apply context-aware budget to a tool result, compacting if needed."""
+        current_tokens = self._estimate_current_tokens(messages)
+        budget = self._tool_budget
+
+        if len(result) <= budget.effective_budget_chars(current_tokens):
+            return result
+
+        if budget.should_compact_first(len(result), current_tokens):
+            if not self.quiet_mode:
+                logger.info(
+                    "Tool result (%d chars) exceeds available budget; "
+                    "compacting context first...", len(result),
+                )
+            try:
+                messages[:], _ = self._compress_context(
+                    messages, system_message or "", task_id=task_id,
+                )
+            except Exception:
+                logger.warning("Compaction before spill failed", exc_info=True)
+            current_tokens = self._estimate_current_tokens(messages)
+
+        budgeted, spilled = budget.apply(result, tool_use_id, current_tokens)
+        if spilled and not self.quiet_mode:
+            logger.info(
+                "Tool result spilled to disk (%d -> %d chars)",
+                len(result), len(budgeted),
+            )
+        return budgeted
+
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default") -> tuple:
         """Compress conversation context and split the session in SQLite.
 
@@ -6613,6 +6659,11 @@ class AIAgent:
                 except Exception as cb_err:
                     logging.debug(f"Tool complete callback error: {cb_err}")
 
+            function_result = self._apply_tool_budget(
+                function_result, tc.id, messages,
+                task_id=effective_task_id,
+            )
+
             function_result = maybe_persist_tool_result(
                 content=function_result,
                 tool_name=name,
@@ -6635,7 +6686,12 @@ class AIAgent:
         num_tools = len(parsed_calls)
         if num_tools > 0:
             turn_tool_msgs = messages[-num_tools:]
-            enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id))
+            from tools.budget_config import BudgetConfig
+            _dynamic_turn_budget = BudgetConfig(
+                default_result_size=self._tool_budget.baseline_chars,
+                turn_budget=self._tool_budget.turn_budget_chars,
+            )
+            enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id), config=_dynamic_turn_budget)
 
         # ── Budget pressure injection ────────────────────────────────────
         budget_warning = self._get_budget_warning(api_call_count)
@@ -6921,6 +6977,11 @@ class AIAgent:
                 except Exception as cb_err:
                     logging.debug(f"Tool complete callback error: {cb_err}")
 
+            function_result = self._apply_tool_budget(
+                function_result, tool_call.id, messages,
+                task_id=effective_task_id,
+            )
+
             function_result = maybe_persist_tool_result(
                 content=function_result,
                 tool_name=function_name,
@@ -6967,7 +7028,12 @@ class AIAgent:
         # ── Per-turn aggregate budget enforcement ─────────────────────────
         num_tools_seq = len(assistant_message.tool_calls)
         if num_tools_seq > 0:
-            enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id))
+            from tools.budget_config import BudgetConfig
+            _dynamic_turn_budget = BudgetConfig(
+                default_result_size=self._tool_budget.baseline_chars,
+                turn_budget=self._tool_budget.turn_budget_chars,
+            )
+            enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id), config=_dynamic_turn_budget)
 
         # ── Budget pressure injection ─────────────────────────────────
         # After all tool calls in this turn are processed, check if we're

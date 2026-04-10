@@ -8,10 +8,11 @@ from dataclasses import dataclass, field
 from typing import Dict
 
 # Tools whose thresholds must never be overridden.
-# read_file=inf prevents infinite persist->read->persist loops.
-PINNED_THRESHOLDS: Dict[str, float] = {
-    "read_file": float("inf"),
-}
+# Previously read_file was pinned to infinity to prevent persist->read->persist
+# loops.  The context-aware budget layer (agent/tool_budget.py) now caps
+# read_file output before the persistence layer sees it, making the exemption
+# unnecessary.
+PINNED_THRESHOLDS: Dict[str, float] = {}
 
 # Defaults matching the current hardcoded values in tool_result_storage.py.
 # Kept here as the single source of truth; tool_result_storage.py imports these.
