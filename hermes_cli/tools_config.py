@@ -239,6 +239,14 @@ TOOL_CATEGORIES = {
                 ],
             },
             {
+                "name": "Ollama Cloud",
+                "tag": "Web search and fetch (included with Ollama subscription)",
+                "web_backend": "ollama",
+                "env_vars": [
+                    {"key": "OLLAMA_API_KEY", "prompt": "Ollama API key", "url": "https://ollama.com"},
+                ],
+            },
+            {
                 "name": "Firecrawl Self-Hosted",
                 "tag": "Free - run your own instance",
                 "web_backend": "firecrawl",
