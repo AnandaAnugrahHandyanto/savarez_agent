@@ -172,9 +172,10 @@ class TestDispatchCompleteness:
         "newproduct", "subscriptions", "cancelsub", "webhooks", "portal",
         "coupon", "reconcile", "history", "search", "receipt", "ltv",
         "duplicate", "aging", "bulk-refund", "churn",
+        "sync-tiers", "bulklink",
     }
 
-    def test_dispatch_has_27_commands(self):
+    def test_dispatch_has_all_commands(self):
         # We can't easily call main() dispatch, but we can verify the set
         # by counting subparsers in the source
         import inspect
@@ -240,6 +241,56 @@ class TestPrintResult:
         captured = capsys.readouterr()
         assert "$1234.56 USD" in captured.out
         assert "TEST" in captured.out
+
+
+class TestTierConfig:
+    def test_load_tier_config(self):
+        config = sp._load_tier_config()
+        assert isinstance(config, dict)
+        assert "ICEMAG 3" in config
+        assert "tiers" in config["ICEMAG 3"]
+        assert "MOQ" in config["ICEMAG 3"]["tiers"]
+        assert "D" in config["ICEMAG 3"]["tiers"]
+
+    def test_tier_has_required_fields(self):
+        config = sp._load_tier_config()
+        for product_name, product in config.items():
+            assert "product_id" in product, f"{product_name} missing product_id"
+            assert "moq" in product, f"{product_name} missing moq"
+            assert "tiers" in product, f"{product_name} missing tiers"
+            for tier_name, tier in product["tiers"].items():
+                assert "price_id" in tier, f"{product_name}/{tier_name} missing price_id"
+                assert "min" in tier, f"{product_name}/{tier_name} missing min"
+                assert "max" in tier, f"{product_name}/{tier_name} missing max"
+                assert "unit_amount" in tier, f"{product_name}/{tier_name} missing unit_amount"
+
+    def test_tier_ranges_dont_overlap(self):
+        config = sp._load_tier_config()
+        for product_name, product in config.items():
+            tiers = product["tiers"]
+            # MOQ should have the lowest min
+            moq_min = tiers["MOQ"]["min"]
+            assert moq_min >= 1, f"{product_name} MOQ min should be >= 1"
+            # D should have the highest min
+            d_min = tiers["D"]["min"]
+            assert d_min >= 1000, f"{product_name} D tier min should be >= 1000"
+
+    def test_moq_enforced(self):
+        """MOQ should be > 1 for physical products."""
+        config = sp._load_tier_config()
+        for product_name, product in config.items():
+            moq = product["moq"]
+            assert moq >= 10, f"{product_name} MOQ ({moq}) should be >= 10 for physical goods"
+
+    def test_bulklink_product_not_found(self):
+        result = sp.cmd_bulklink("Nonexistent Product", tier="MOQ")
+        assert "error" in result
+        assert "not found" in result["error"]
+
+    def test_bulklink_tier_not_found(self):
+        result = sp.cmd_bulklink("ICEMAG 3", tier="X")
+        assert "error" in result
+        assert "not found" in result["error"]
 
 
 if __name__ == "__main__":

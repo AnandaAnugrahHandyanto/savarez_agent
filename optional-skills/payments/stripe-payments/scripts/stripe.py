@@ -31,6 +31,8 @@ Commands:
   aging
   bulk-refund <csv_path> [--dry-run|--live]
   churn
+  sync-tiers
+  bulklink <product> --tier MOQ|A|B|C|D [--email X]
 
 Stripe API key loaded from ~/.hermes/.env (STRIPE_API_KEY)
 """
@@ -931,6 +933,143 @@ def cmd_churn():
     }
 
 
+# ── Tier Config & Bulk Links ────────────────────────────────────────────
+
+TIER_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tiers.json")
+
+def _load_tier_config():
+    if not os.path.exists(TIER_CONFIG_PATH):
+        return {}
+    with open(TIER_CONFIG_PATH) as f:
+        return json.load(f)
+
+def cmd_sync_tiers():
+    """Sync tiers.json from Stripe price nicknames."""
+    products = _paginate("/v1/products", limit=100)
+    config = {}
+
+    for prod in products:
+        prod_name = prod.get("name", "")
+        prod_id = prod["id"]
+        prices = _get("/v1/prices", {"product": prod_id, "limit": 100})
+        price_list = prices.get("data", [])
+
+        # Group by nickname pattern: "Product - RANGE units"
+        tiers = {}
+        moq = 30  # default
+        for p in price_list:
+            nickname = p.get("nickname", "")
+            if not nickname or " - " not in nickname:
+                continue
+            # Parse: "Product Name - 100-199 units" or "Product Name - 1000+ units"
+            parts = nickname.split(" - ", 1)
+            if len(parts) != 2:
+                continue
+            range_part = parts[1].replace(" units", "").strip()
+
+            # Determine min/max from range
+            if range_part.endswith("+"):
+                min_qty = int(range_part[:-1])
+                max_qty = 9999
+            elif "-" in range_part:
+                rmin, rmax = range_part.split("-", 1)
+                min_qty = int(rmin)
+                max_qty = int(rmax)
+            else:
+                continue
+
+            # Map range to tier label
+            if min_qty == 1:
+                label = "MOQ"
+                moq = 30  # will be overridden if we find a specific MOQ
+            elif min_qty == 10:
+                label = "MOQ"
+                moq = 10
+            elif min_qty == 50 and max_qty == 99:
+                label = "MOQ"
+                moq = 50
+            elif min_qty == 30 and max_qty == 99:
+                label = "MOQ"
+                moq = 30
+            elif min_qty == 100:
+                label = "A"
+            elif min_qty == 200:
+                label = "B"
+            elif min_qty == 500:
+                label = "C"
+            elif min_qty == 1000:
+                label = "D"
+            else:
+                continue
+
+            tiers[label] = {
+                "price_id": p["id"],
+                "min": min_qty,
+                "max": max_qty,
+                "unit_amount": p.get("unit_amount", 0),
+            }
+
+        if tiers:
+            config[prod_name] = {
+                "product_id": prod_id,
+                "moq": moq,
+                "tiers": tiers,
+            }
+
+    with open(TIER_CONFIG_PATH, "w") as f:
+        json.dump(config, f, indent=2)
+
+    return {
+        "type": "sync_tiers",
+        "products": len(config),
+        "total_tiers": sum(len(p["tiers"]) for p in config.values()),
+        "config_path": TIER_CONFIG_PATH,
+    }
+
+def cmd_bulklink(product, tier, customer_email=None):
+    """Create a Checkout Session with enforced quantity range for a product tier."""
+    config = _load_tier_config()
+    if product not in config:
+        available = ", ".join(sorted(config.keys()))
+        return {"error": f"Product '{product}' not found. Available: {available}"}
+
+    product_config = config[product]
+    if tier not in product_config["tiers"]:
+        available = ", ".join(sorted(product_config["tiers"].keys()))
+        return {"error": f"Tier '{tier}' not found for {product}. Available: {available}"}
+
+    tier_config = product_config["tiers"][tier]
+    data = {
+        "mode": "payment",
+        "line_items[0][price]": tier_config["price_id"],
+        "line_items[0][adjustable_quantity][enabled]": "true",
+        "line_items[0][adjustable_quantity][minimum]": str(tier_config["min"]),
+        "line_items[0][adjustable_quantity][maximum]": str(tier_config["max"]),
+        "success_url": "https://dashboard.stripe.com/payments",
+        "cancel_url": "https://dashboard.stripe.com/payments",
+        "metadata[source]": "hermes-bulklink",
+        "metadata[product]": product,
+        "metadata[tier]": tier,
+    }
+    if customer_email:
+        _validate_email(customer_email)
+        data["customer_email"] = customer_email
+
+    session = _post("/v1/checkout/sessions", data=data)
+
+    return {
+        "type": "bulk_link",
+        "url": session["url"],
+        "session_id": session["id"],
+        "product": product,
+        "tier": tier,
+        "unit_price_cents": tier_config["unit_amount"],
+        "min_qty": tier_config["min"],
+        "max_qty": tier_config["max"],
+        "customer_email": customer_email or "",
+        "mode": MODE,
+    }
+
 
 # ── Pretty-print ────────────────────────────────────────────────────────
 
@@ -1159,6 +1298,19 @@ def _print_result(result):
         for p in result["payments"]:
             print("  %s...  %s  %s" % (p.get("id", "")[:16], _fmt_cents(p.get("amount_cents", 0)), p.get("status", "")))
 
+    elif rtype == "sync_tiers":
+        print("Tiers synced: %d products, %d total tiers" % (result["products"], result["total_tiers"]))
+        print("Config: %s" % result["config_path"])
+
+    elif rtype == "bulk_link":
+        print("Bulk Link: %s" % result["url"])
+        print("Product: %s" % result["product"])
+        print("Tier: %s (%d-%d units)" % (result["tier"], result["min_qty"], result["max_qty"]))
+        print("Price: %s/unit" % _fmt_cents(result["unit_price_cents"]))
+        if result.get("customer_email"):
+            print("Customer: %s" % result["customer_email"])
+        print("Mode: %s" % result["mode"])
+
     else:
         print(json.dumps(result, indent=2, default=str))
 
@@ -1282,6 +1434,13 @@ def main():
 
     sub.add_parser("churn", help="Subscription churn analysis")
 
+    sub.add_parser("sync-tiers", help="Sync tiers.json from Stripe price nicknames")
+
+    p = sub.add_parser("bulklink", help="Checkout session with enforced quantity range")
+    p.add_argument("product", help="Product name")
+    p.add_argument("--tier", required=True, choices=["MOQ", "A", "B", "C", "D"], help="Pricing tier")
+    p.add_argument("--email", help="Customer email")
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -1315,6 +1474,8 @@ def main():
         "aging": cmd_aging,
         "bulk-refund": lambda: cmd_bulk_refund(args.csv_path, dry_run=not args.live),
         "churn": cmd_churn,
+        "sync-tiers": cmd_sync_tiers,
+        "bulklink": lambda: cmd_bulklink(args.product, tier=args.tier, customer_email=args.email),
     }
 
     fn = dispatch.get(args.command)
