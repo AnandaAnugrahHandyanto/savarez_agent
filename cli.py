@@ -1365,13 +1365,18 @@ def _looks_like_slash_command(text: str) -> bool:
 # ============================================================================
 
 from agent.skill_commands import (
-    scan_skill_commands,
+    get_skill_commands,
     build_skill_invocation_message,
     build_plan_path,
     build_preloaded_skills_prompt,
 )
 
-_skill_commands = scan_skill_commands()
+_skill_commands = None
+
+
+def _current_skill_commands() -> dict:
+    """Return live skill commands unless a test/override has patched them in."""
+    return _skill_commands if _skill_commands is not None else get_skill_commands()
 
 
 def _get_plugin_cmd_handler_names() -> set:
@@ -3518,9 +3523,10 @@ class HermesCLI:
                     f"    [bold {_accent_hex()}]{'/' + name:<22}[/] [dim]-[/] {_escape(desc)}"
                 )
 
-        if _skill_commands:
-            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(_skill_commands)} installed):")
-            for cmd, info in sorted(_skill_commands.items()):
+        skill_commands = _current_skill_commands()
+        if skill_commands:
+            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(skill_commands)} installed):")
+            for cmd, info in sorted(skill_commands.items()):
                 ChatConsole().print(
                     f"    [bold {_accent_hex()}]{cmd:<22}[/] [dim]-[/] {_escape(info['description'])}"
                 )
@@ -4823,10 +4829,12 @@ class HermesCLI:
             resolve_cli_slash_command,
         )
 
+        skill_commands = _current_skill_commands()
+
         resolution = resolve_cli_slash_command(
             cmd_original,
             config=getattr(self, "config", {}),
-            skill_commands=_skill_commands,
+            skill_commands=skill_commands,
             plugin_commands=get_plugin_command_specs(),
         )
 
@@ -4896,7 +4904,7 @@ class HermesCLI:
                 task_id=self.session_id,
             )
             if msg:
-                skill_name = _skill_commands[entry.slash_name]["name"]
+                skill_name = skill_commands[entry.slash_name]["name"]
                 print(f"\n⚡ Loading skill: {skill_name}")
                 if hasattr(self, '_pending_input'):
                     self._pending_input.put(msg)
@@ -8172,7 +8180,7 @@ class HermesCLI:
                 return {}
 
         _completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: _skill_commands,
+            skill_commands_provider=_current_skill_commands,
             plugin_commands_provider=_plugin_commands_provider,
             command_filter=cli_ref._command_available,
         )
