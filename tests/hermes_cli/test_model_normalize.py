@@ -54,20 +54,21 @@ class TestAnthropicDotToHyphen:
 
 # ── OpenCode Zen regression ────────────────────────────────────────────
 
-class TestOpenCodeZenDotToHyphen:
-    """OpenCode Zen follows Anthropic convention (dots→hyphens)."""
+class TestOpenCodeZenDotPreservation:
+    """OpenCode Zen preserves dots in model names."""
 
     @pytest.mark.parametrize("model,expected", [
-        ("claude-sonnet-4.6", "claude-sonnet-4-6"),
-        ("glm-4.5", "glm-4-5"),
+        ("minimax-m2.5-free", "minimax-m2.5-free"),
+        ("claude-sonnet-4.6", "claude-sonnet-4.6"),
+        ("glm-4.5", "glm-4.5"),
     ])
-    def test_zen_converts_dots(self, model, expected):
+    def test_zen_preserves_dots(self, model, expected):
         result = normalize_model_for_provider(model, "opencode-zen")
         assert result == expected
 
-    def test_zen_strips_vendor_prefix(self):
+    def test_zen_strips_matching_vendor_prefix(self):
         result = normalize_model_for_provider("opencode-zen/claude-sonnet-4.6", "opencode-zen")
-        assert result == "claude-sonnet-4-6"
+        assert result == "claude-sonnet-4.6"
 
 
 # ── Copilot dot preservation (regression) ──────────────────────────────

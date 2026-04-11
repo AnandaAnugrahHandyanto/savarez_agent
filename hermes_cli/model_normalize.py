@@ -8,8 +8,7 @@ Different LLM providers expect model identifiers in different formats:
   hyphens: ``claude-sonnet-4-6``.
 - **Copilot** expects bare names *with* dots preserved:
   ``claude-sonnet-4.6``.
-- **OpenCode Zen** follows the same dot-to-hyphen convention as
-  Anthropic: ``claude-sonnet-4-6``.
+- **OpenCode Zen** preserves dots in model names: ``minimax-m2.5``.
 - **OpenCode Go** preserves dots in model names: ``minimax-m2.7``.
 - **DeepSeek** only accepts two model identifiers:
   ``deepseek-chat`` and ``deepseek-reasoner``.
@@ -67,7 +66,6 @@ _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
 # Providers that want bare names with dots replaced by hyphens.
 _DOT_TO_HYPHEN_PROVIDERS: frozenset[str] = frozenset({
     "anthropic",
-    "opencode-zen",
 })
 
 # Providers that want bare names with dots preserved.
@@ -92,6 +90,7 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "minimax-cn",
     "alibaba",
     "qwen-oauth",
+    "opencode-zen",
     "custom",
 })
 
@@ -325,8 +324,8 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         >>> normalize_model_for_provider("openai/gpt-5.4", "copilot")
         'gpt-5.4'
 
-        >>> normalize_model_for_provider("claude-sonnet-4.6", "opencode-zen")
-        'claude-sonnet-4-6'
+        >>> normalize_model_for_provider("minimax-m2.5", "opencode-zen")
+        'minimax-m2.5'
 
         >>> normalize_model_for_provider("deepseek-v3", "deepseek")
         'deepseek-chat'
