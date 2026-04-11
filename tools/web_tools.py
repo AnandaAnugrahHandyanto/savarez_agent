@@ -1331,8 +1331,14 @@ async def web_extract_tool(
             elif backend == "brave":
                 # Brave Search doesn't have an extract endpoint, fall back to Firecrawl
                 logger.info("Brave backend selected - using Firecrawl for extraction (%d URL(s))", len(safe_urls))
-                # Fall through to Firecrawl extraction below
-            else:
+                # Set backend to firecrawl so the extraction code below runs
+                backend = "firecrawl"
+
+            # Initialize results list before processing
+            results: List[Dict[str, Any]] = []
+
+            # Firecrawl extraction for brave (fallback), firecrawl, or unrecognized backends
+            if backend not in ("parallel", "exa", "tavily"):
                 # Determine requested formats for Firecrawl v2
                 formats: List[str] = []
                 if format == "markdown":
@@ -1342,10 +1348,6 @@ async def web_extract_tool(
                 else:
                     # Default: request markdown for LLM-readiness and include html as backup
                     formats = ["markdown", "html"]
-
-                # Always use individual scraping for simplicity and reliability
-                # Batch scraping adds complexity without much benefit for small numbers of URLs
-                results: List[Dict[str, Any]] = []
 
                 from tools.interrupt import is_interrupted as _is_interrupted
                 for url in safe_urls:
