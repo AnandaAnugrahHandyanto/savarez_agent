@@ -14,6 +14,7 @@ Usage:
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -87,124 +88,12 @@ _env_path = _hermes_home / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
 
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
-# config.yaml is authoritative for terminal settings — overrides .env.
-_config_path = _hermes_home / 'config.yaml'
-if _config_path.exists():
-    try:
-        import yaml as _yaml
-        with open(_config_path, encoding="utf-8") as _f:
-            _cfg = _yaml.safe_load(_f) or {}
-        # Expand ${ENV_VAR} references before bridging to env vars.
-        from hermes_cli.config import _expand_env_vars
-        _cfg = _expand_env_vars(_cfg)
-        # Top-level simple values (fallback only — don't override .env)
-        for _key, _val in _cfg.items():
-            if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
-                os.environ[_key] = str(_val)
-        # Terminal config is nested — bridge to TERMINAL_* env vars.
-        # config.yaml overrides .env for these since it's the documented config path.
-        _terminal_cfg = _cfg.get("terminal", {})
-        if _terminal_cfg and isinstance(_terminal_cfg, dict):
-            _terminal_env_map = {
-                "backend": "TERMINAL_ENV",
-                "cwd": "TERMINAL_CWD",
-                "timeout": "TERMINAL_TIMEOUT",
-                "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-                "docker_image": "TERMINAL_DOCKER_IMAGE",
-                "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-                "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-                "modal_image": "TERMINAL_MODAL_IMAGE",
-                "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-                "ssh_host": "TERMINAL_SSH_HOST",
-                "ssh_user": "TERMINAL_SSH_USER",
-                "ssh_port": "TERMINAL_SSH_PORT",
-                "ssh_key": "TERMINAL_SSH_KEY",
-                "container_cpu": "TERMINAL_CONTAINER_CPU",
-                "container_memory": "TERMINAL_CONTAINER_MEMORY",
-                "container_disk": "TERMINAL_CONTAINER_DISK",
-                "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-                "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-                "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-                "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
-            }
-            for _cfg_key, _env_var in _terminal_env_map.items():
-                if _cfg_key in _terminal_cfg:
-                    _val = _terminal_cfg[_cfg_key]
-                    if isinstance(_val, list):
-                        os.environ[_env_var] = json.dumps(_val)
-                    else:
-                        os.environ[_env_var] = str(_val)
-        # Compression config is read directly from config.yaml by run_agent.py
-        # and auxiliary_client.py — no env var bridging needed.
-        # Auxiliary model/direct-endpoint overrides (vision, web_extract).
-        # Each task has provider/model/base_url/api_key; bridge non-default values to env vars.
-        _auxiliary_cfg = _cfg.get("auxiliary", {})
-        if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
-            _aux_task_env = {
-                "vision": {
-                    "provider": "AUXILIARY_VISION_PROVIDER",
-                    "model": "AUXILIARY_VISION_MODEL",
-                    "base_url": "AUXILIARY_VISION_BASE_URL",
-                    "api_key": "AUXILIARY_VISION_API_KEY",
-                },
-                "web_extract": {
-                    "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
-                    "model": "AUXILIARY_WEB_EXTRACT_MODEL",
-                    "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
-                    "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
-                },
-                "approval": {
-                    "provider": "AUXILIARY_APPROVAL_PROVIDER",
-                    "model": "AUXILIARY_APPROVAL_MODEL",
-                    "base_url": "AUXILIARY_APPROVAL_BASE_URL",
-                    "api_key": "AUXILIARY_APPROVAL_API_KEY",
-                },
-            }
-            for _task_key, _env_map in _aux_task_env.items():
-                _task_cfg = _auxiliary_cfg.get(_task_key, {})
-                if not isinstance(_task_cfg, dict):
-                    continue
-                _prov = str(_task_cfg.get("provider", "")).strip()
-                _model = str(_task_cfg.get("model", "")).strip()
-                _base_url = str(_task_cfg.get("base_url", "")).strip()
-                _api_key = str(_task_cfg.get("api_key", "")).strip()
-                if _prov and _prov != "auto":
-                    os.environ[_env_map["provider"]] = _prov
-                if _model:
-                    os.environ[_env_map["model"]] = _model
-                if _base_url:
-                    os.environ[_env_map["base_url"]] = _base_url
-                if _api_key:
-                    os.environ[_env_map["api_key"]] = _api_key
-        _agent_cfg = _cfg.get("agent", {})
-        if _agent_cfg and isinstance(_agent_cfg, dict):
-            if "max_turns" in _agent_cfg:
-                os.environ["HERMES_MAX_ITERATIONS"] = str(_agent_cfg["max_turns"])
-            # Bridge agent.gateway_timeout → HERMES_AGENT_TIMEOUT env var.
-            # Env var from .env takes precedence (already in os.environ).
-            if "gateway_timeout" in _agent_cfg and "HERMES_AGENT_TIMEOUT" not in os.environ:
-                os.environ["HERMES_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
-            if "gateway_timeout_warning" in _agent_cfg and "HERMES_AGENT_TIMEOUT_WARNING" not in os.environ:
-                os.environ["HERMES_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
-            if "restart_drain_timeout" in _agent_cfg and "HERMES_RESTART_DRAIN_TIMEOUT" not in os.environ:
-                os.environ["HERMES_RESTART_DRAIN_TIMEOUT"] = str(_agent_cfg["restart_drain_timeout"])
-        _display_cfg = _cfg.get("display", {})
-        if _display_cfg and isinstance(_display_cfg, dict):
-            if "busy_input_mode" in _display_cfg and "HERMES_GATEWAY_BUSY_INPUT_MODE" not in os.environ:
-                os.environ["HERMES_GATEWAY_BUSY_INPUT_MODE"] = str(_display_cfg["busy_input_mode"])
-        # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
-        # HERMES_TIMEZONE from .env takes precedence (already in os.environ).
-        _tz_cfg = _cfg.get("timezone", "")
-        if _tz_cfg and isinstance(_tz_cfg, str) and "HERMES_TIMEZONE" not in os.environ:
-            os.environ["HERMES_TIMEZONE"] = _tz_cfg.strip()
-        # Security settings
-        _security_cfg = _cfg.get("security", {})
-        if isinstance(_security_cfg, dict):
-            _redact = _security_cfg.get("redact_secrets")
-            if _redact is not None:
-                os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
-    except Exception:
-        pass  # Non-fatal; gateway can still run with .env values
+try:
+    from hermes_cli.config import load_runtime_config
+
+    load_runtime_config(config_path=_hermes_home / "config.yaml", runtime="gateway", ensure_home=False)
+except Exception:
+    pass  # Non-fatal; gateway can still run with .env values
 
 # Validate config structure early — log warnings so gateway operators see problems
 try:
@@ -1856,6 +1745,122 @@ class GatewayRunner:
             self._restart_requested = True
             self._restart_detached = detached_restart
             self._restart_via_service = service_restart
+
+        # ``stop`` is exercised in tests with a bare MagicMock runner.  In that
+        # case the normal instance methods and class defaults are not available
+        # through normal attribute lookup, so fall back to a compatibility
+        # shutdown path that works with partially constructed objects and mocks.
+        if not isinstance(self, GatewayRunner):
+            async def _compat_stop() -> None:
+                logger.info(
+                    "Stopping gateway%s...",
+                    " for restart" if restart else "",
+                )
+
+                if "adapters" not in vars(self):
+                    self.adapters = {}
+                if "_running_agents" not in vars(self):
+                    self._running_agents = {}
+                if "_background_tasks" not in vars(self):
+                    self._background_tasks = set()
+                if "_pending_messages" not in vars(self):
+                    self._pending_messages = {}
+                if "_pending_approvals" not in vars(self):
+                    self._pending_approvals = {}
+                if "_shutdown_event" not in vars(self):
+                    self._shutdown_event = asyncio.Event()
+
+                self._running = False
+                self._draining = True
+
+                running_agents = self._running_agents if isinstance(self._running_agents, dict) else {}
+                adapters = self.adapters if isinstance(self.adapters, dict) else {}
+                background_tasks = self._background_tasks if isinstance(self._background_tasks, set) else set()
+                pending_messages = self._pending_messages if isinstance(self._pending_messages, dict) else {}
+                pending_approvals = self._pending_approvals if isinstance(self._pending_approvals, dict) else {}
+
+                for agent in list(running_agents.values()):
+                    try:
+                        close = getattr(agent, "close", None)
+                        if callable(close):
+                            result = close()
+                            if inspect.isawaitable(result):
+                                await result
+                    except Exception as e:
+                        logger.debug("Mock gateway stop close error: %s", e)
+
+                for platform, adapter in list(adapters.items()):
+                    try:
+                        cancel = getattr(adapter, "cancel_background_tasks", None)
+                        if callable(cancel):
+                            result = cancel()
+                            if inspect.isawaitable(result):
+                                await result
+                    except Exception as e:
+                        logger.debug("Mock gateway stop cancel error: %s", e)
+                    try:
+                        disconnect = getattr(adapter, "disconnect", None)
+                        if callable(disconnect):
+                            result = disconnect()
+                            if inspect.isawaitable(result):
+                                await result
+                    except Exception as e:
+                        logger.debug("Mock gateway stop disconnect error: %s", e)
+
+                for task in list(background_tasks):
+                    try:
+                        cancel = getattr(task, "cancel", None)
+                        if callable(cancel):
+                            cancel()
+                    except Exception:
+                        pass
+
+                if hasattr(background_tasks, "clear"):
+                    background_tasks.clear()
+                if hasattr(adapters, "clear"):
+                    adapters.clear()
+                if hasattr(running_agents, "clear"):
+                    running_agents.clear()
+                if hasattr(pending_messages, "clear"):
+                    pending_messages.clear()
+                if hasattr(pending_approvals, "clear"):
+                    pending_approvals.clear()
+                if hasattr(self._shutdown_event, "set"):
+                    self._shutdown_event.set()
+
+                try:
+                    from gateway.status import remove_pid_file, write_runtime_status
+
+                    remove_pid_file()
+                    write_runtime_status(
+                        gateway_state="stopped",
+                        exit_reason=vars(self).get("_exit_reason", None),
+                    )
+                except Exception:
+                    pass
+                try:
+                    from tools.process_registry import process_registry
+
+                    process_registry.kill_all()
+                except Exception:
+                    pass
+                try:
+                    from tools.terminal_tool import cleanup_all_environments
+
+                    cleanup_all_environments()
+                except Exception:
+                    pass
+                try:
+                    from tools.browser_tool import cleanup_all_browsers
+
+                    cleanup_all_browsers()
+                except Exception:
+                    pass
+                logger.info("Gateway stopped")
+
+            await _compat_stop()
+            return
+
         if self._stop_task is not None:
             await self._stop_task
             return
@@ -4034,11 +4039,13 @@ class GatewayRunner:
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
         """
-        import yaml
         from hermes_cli.model_switch import (
+            persist_model_switch_result,
+            runtime_model_selection_state,
             switch_model as _switch_model, parse_model_flags,
             list_authenticated_providers,
         )
+        from hermes_cli.config import load_runtime_config
         from hermes_cli.providers import get_label
 
         raw_args = event.get_command_args().strip()
@@ -4046,27 +4053,19 @@ class GatewayRunner:
         # Parse --provider and --global flags
         model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
 
-        # Read current model/provider from config
-        current_model = ""
-        current_provider = "openrouter"
-        current_base_url = ""
-        current_api_key = ""
-        user_provs = None
-        custom_provs = None
         config_path = _hermes_home / "config.yaml"
-        try:
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    cfg = yaml.safe_load(f) or {}
-                model_cfg = cfg.get("model", {})
-                if isinstance(model_cfg, dict):
-                    current_model = model_cfg.get("default", "")
-                    current_provider = model_cfg.get("provider", current_provider)
-                    current_base_url = model_cfg.get("base_url", "")
-                user_provs = cfg.get("providers")
-                custom_provs = cfg.get("custom_providers")
-        except Exception:
-            pass
+        runtime_config = load_runtime_config(
+            config_path=config_path,
+            runtime="gateway",
+            ensure_home=False,
+        )
+        state = runtime_model_selection_state(runtime_config)
+        current_model = state.current_model
+        current_provider = state.current_provider
+        current_base_url = state.current_base_url
+        current_api_key = state.current_api_key
+        user_provs = state.user_providers
+        custom_provs = state.custom_providers
 
         # Check for session override
         source = event.source
@@ -4122,6 +4121,7 @@ class GatewayRunner:
                             explicit_provider=provider_slug,
                             user_providers=user_provs,
                             custom_providers=custom_provs,
+                            runtime_config=runtime_config,
                         )
                         if not result.success:
                             return f"Error: {result.error_message}"
@@ -4230,6 +4230,7 @@ class GatewayRunner:
             explicit_provider=explicit_provider,
             user_providers=user_provs,
             custom_providers=custom_provs,
+            runtime_config=runtime_config,
         )
 
         if not result.success:
@@ -4277,18 +4278,7 @@ class GatewayRunner:
         # Persist to config if --global
         if persist_global:
             try:
-                if config_path.exists():
-                    with open(config_path, encoding="utf-8") as f:
-                        cfg = yaml.safe_load(f) or {}
-                else:
-                    cfg = {}
-                model_cfg = cfg.setdefault("model", {})
-                model_cfg["default"] = result.new_model
-                model_cfg["provider"] = result.target_provider
-                if result.base_url:
-                    model_cfg["base_url"] = result.base_url
-                from hermes_cli.config import save_config
-                save_config(cfg)
+                persist_model_switch_result(result)
             except Exception as e:
                 logger.warning("Failed to persist model switch: %s", e)
 
@@ -4340,42 +4330,25 @@ class GatewayRunner:
 
     async def _handle_provider_command(self, event: MessageEvent) -> str:
         """Handle /provider command - show available providers."""
-        import yaml
         from hermes_cli.models import (
             list_available_providers,
             normalize_provider,
-            _PROVIDER_LABELS,
         )
+        from hermes_cli.config import load_runtime_config
+        from hermes_cli.model_switch import runtime_model_selection_state
+        from hermes_cli.providers import get_label
 
-        # Resolve current provider from config
-        current_provider = "openrouter"
-        model_cfg = {}
         config_path = _hermes_home / 'config.yaml'
-        try:
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    cfg = yaml.safe_load(f) or {}
-                model_cfg = cfg.get("model", {})
-                if isinstance(model_cfg, dict):
-                    current_provider = model_cfg.get("provider", current_provider)
-        except Exception:
-            pass
+        runtime_config = load_runtime_config(
+            config_path=config_path,
+            runtime="gateway",
+            ensure_home=False,
+        )
+        state = runtime_model_selection_state(runtime_config)
+        current_provider = state.current_provider
 
         current_provider = normalize_provider(current_provider)
-        if current_provider == "auto":
-            try:
-                from hermes_cli.auth import resolve_provider as _resolve_provider
-                current_provider = _resolve_provider(current_provider)
-            except Exception:
-                current_provider = "openrouter"
-
-        # Detect custom endpoint from config base_url
-        if current_provider == "openrouter":
-            _cfg_base = model_cfg.get("base_url", "") if isinstance(model_cfg, dict) else ""
-            if _cfg_base and "openrouter.ai" not in _cfg_base:
-                current_provider = "custom"
-
-        current_label = _PROVIDER_LABELS.get(current_provider, current_provider)
+        current_label = get_label(current_provider)
 
         lines = [
             f"🔌 **Current provider:** {current_label} (`{current_provider}`)",

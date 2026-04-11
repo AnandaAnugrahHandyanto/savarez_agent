@@ -998,7 +998,17 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
         pass
 
     from agent.anthropic_adapter import _is_oauth_token
-    is_oauth = _is_oauth_token(token)
+    env_oauth_tokens = {
+        os.getenv("ANTHROPIC_TOKEN", "").strip(),
+        os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip(),
+    }
+    token_lower = (token or "").strip().lower()
+    is_oauth = (
+        token in env_oauth_tokens
+        or _is_oauth_token(token)
+        or "oauth" in token_lower
+        or "jwt" in token_lower
+    )
     model = _API_KEY_PROVIDER_AUX_MODELS.get("anthropic", "claude-haiku-4-5-20251001")
     logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
     try:

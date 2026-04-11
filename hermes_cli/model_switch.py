@@ -29,6 +29,7 @@ from hermes_cli.providers import (
     determine_api_mode,
     get_label,
     is_aggregator,
+    normalize_provider,
     resolve_provider_full,
 )
 from hermes_cli.model_normalize import (
@@ -228,6 +229,126 @@ class CustomAutoResult:
     error_message: str = ""
 
 
+@dataclass(frozen=True)
+class RuntimeModelSelectionState:
+    """Current runtime model/provider state derived from a loaded runtime config."""
+
+    current_model: str
+    current_provider: str
+    current_base_url: str
+    current_api_key: str
+    user_providers: dict | None
+    custom_providers: list | None
+
+
+def runtime_model_selection_state(config: dict | None) -> RuntimeModelSelectionState:
+    """Extract the active model/provider selection from a loaded runtime config."""
+    from hermes_cli.auth import resolve_provider
+
+    cfg = config if isinstance(config, dict) else {}
+    model_cfg = cfg.get("model")
+    current_model = ""
+    current_provider = "openrouter"
+    current_base_url = ""
+    current_api_key = ""
+
+    if isinstance(model_cfg, dict):
+        current_model = str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
+        current_provider = str(model_cfg.get("provider") or current_provider).strip() or current_provider
+        current_base_url = str(model_cfg.get("base_url") or "").strip()
+        current_api_key = str(model_cfg.get("api_key") or "").strip()
+    elif isinstance(model_cfg, str):
+        current_model = model_cfg.strip()
+        current_provider = str(cfg.get("provider") or current_provider).strip() or current_provider
+        current_base_url = str(cfg.get("base_url") or "").strip()
+
+    current_provider = normalize_provider(current_provider.lower() or "openrouter")
+    if current_provider == "auto":
+        try:
+            current_provider = resolve_provider("auto")
+        except Exception:
+            current_provider = "openrouter"
+
+    if current_provider == "openrouter" and current_base_url and "openrouter.ai" not in current_base_url:
+        current_provider = "custom"
+
+    user_providers = cfg.get("providers")
+    custom_providers = cfg.get("custom_providers")
+    return RuntimeModelSelectionState(
+        current_model=current_model,
+        current_provider=current_provider,
+        current_base_url=current_base_url,
+        current_api_key=current_api_key,
+        user_providers=user_providers if isinstance(user_providers, dict) else None,
+        custom_providers=custom_providers if isinstance(custom_providers, list) else None,
+    )
+
+
+def persist_model_switch_result(result: ModelSwitchResult) -> None:
+    """Persist a model switch through one provider-aware save path."""
+    from hermes_cli.auth import (
+        _save_model_choice,
+        _update_config_for_provider,
+        deactivate_provider,
+    )
+    from hermes_cli.config import load_config, save_config
+
+    oauth_providers = {"nous", "openai-codex", "qwen-oauth"}
+    if result.target_provider in oauth_providers:
+        _update_config_for_provider(
+            result.target_provider,
+            result.base_url,
+            default_model=result.new_model,
+        )
+        _save_model_choice(result.new_model)
+        return
+
+    cfg = load_config()
+    model_cfg = cfg.get("model")
+    if isinstance(model_cfg, dict):
+        model_section = dict(model_cfg)
+    elif isinstance(model_cfg, str) and model_cfg.strip():
+        model_section = {"default": model_cfg.strip()}
+    else:
+        model_section = {}
+
+    model_section["default"] = result.new_model
+    model_section["provider"] = result.target_provider
+    if result.base_url:
+        model_section["base_url"] = result.base_url.rstrip("/")
+    else:
+        model_section.pop("base_url", None)
+    if result.api_mode:
+        model_section["api_mode"] = result.api_mode
+    else:
+        model_section.pop("api_mode", None)
+    model_section.pop("api_key", None)
+    cfg["model"] = model_section
+
+    providers_cfg = cfg.get("providers")
+    if isinstance(providers_cfg, dict):
+        target_key = str(result.target_provider).strip().lower()
+        for provider_key, provider_entry in providers_cfg.items():
+            if str(provider_key).strip().lower() != target_key:
+                continue
+            if isinstance(provider_entry, dict):
+                provider_entry["default_model"] = result.new_model
+            break
+
+    custom_cfg = cfg.get("custom_providers")
+    if isinstance(custom_cfg, list) and result.target_provider.startswith("custom:"):
+        for entry in custom_cfg:
+            if not isinstance(entry, dict):
+                continue
+            display_name = str(entry.get("name") or "").strip()
+            if display_name and custom_provider_slug(display_name) == result.target_provider:
+                entry["model"] = result.new_model
+                break
+
+    save_config(cfg)
+    deactivate_provider()
+
+
 # ---------------------------------------------------------------------------
 # Flag parsing
 # ---------------------------------------------------------------------------
@@ -387,6 +508,8 @@ def switch_model(
     explicit_provider: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
+    skip_validation: bool = False,
+    runtime_config: dict | None = None,
 ) -> ModelSwitchResult:
     """Core model-switching pipeline shared between CLI and gateway.
 
@@ -432,6 +555,7 @@ def switch_model(
     )
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
+    pdef = None
     resolved_alias = ""
     new_model = raw_input.strip()
     target_provider = current_provider
@@ -615,25 +739,43 @@ def switch_model(
     api_mode = ""
 
     if provider_changed or explicit_provider:
-        try:
-            runtime = resolve_runtime_provider(requested=target_provider)
-            api_key = runtime.get("api_key", "")
-            base_url = runtime.get("base_url", "")
-            api_mode = runtime.get("api_mode", "")
-        except Exception as e:
-            return ModelSwitchResult(
-                success=False,
-                target_provider=target_provider,
-                provider_label=provider_label,
-                is_global=is_global,
-                error_message=(
-                    f"Could not resolve credentials for provider "
-                    f"'{provider_label}': {e}"
-                ),
-            )
+        if pdef is not None and pdef.source == "user-config":
+            base_url = pdef.base_url.rstrip("/")
+            api_mode = determine_api_mode(target_provider, base_url)
+            api_key = ""
+            for env_var in pdef.api_key_env_vars:
+                value = os.getenv(env_var, "").strip()
+                if value:
+                    api_key = value
+                    break
+            if not api_key and str(target_provider).startswith("custom:"):
+                api_key = "no-key-required"
+        else:
+            try:
+                try:
+                    runtime = resolve_runtime_provider(requested=target_provider, config=runtime_config)
+                except TypeError:
+                    runtime = resolve_runtime_provider(requested=target_provider)
+                api_key = runtime.get("api_key", "")
+                base_url = runtime.get("base_url", "")
+                api_mode = runtime.get("api_mode", "")
+            except Exception as e:
+                return ModelSwitchResult(
+                    success=False,
+                    target_provider=target_provider,
+                    provider_label=provider_label,
+                    is_global=is_global,
+                    error_message=(
+                        f"Could not resolve credentials for provider "
+                        f"'{provider_label}': {e}"
+                    ),
+                )
     else:
         try:
-            runtime = resolve_runtime_provider(requested=current_provider)
+            try:
+                runtime = resolve_runtime_provider(requested=current_provider, config=runtime_config)
+            except TypeError:
+                runtime = resolve_runtime_provider(requested=current_provider)
             api_key = runtime.get("api_key", "")
             base_url = runtime.get("base_url", "")
             api_mode = runtime.get("api_mode", "")
@@ -653,20 +795,28 @@ def switch_model(
     new_model = normalize_model_for_provider(new_model, target_provider)
 
     # --- Validate ---
-    try:
-        validation = validate_requested_model(
-            new_model,
-            target_provider,
-            api_key=api_key,
-            base_url=base_url,
-        )
-    except Exception:
+    if skip_validation:
         validation = {
             "accepted": True,
             "persist": True,
-            "recognized": False,
+            "recognized": True,
             "message": None,
         }
+    else:
+        try:
+            validation = validate_requested_model(
+                new_model,
+                target_provider,
+                api_key=api_key,
+                base_url=base_url,
+            )
+        except Exception:
+            validation = {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": None,
+            }
 
     if not validation.get("accepted"):
         msg = validation.get("message", "Invalid model")
@@ -940,5 +1090,3 @@ def list_authenticated_providers(
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
-
-

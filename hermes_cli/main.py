@@ -877,30 +877,32 @@ def select_provider_and_model(args=None):
     provider picker, credential prompting, model selection, and config
     persistence.
     """
-    from hermes_cli.auth import (
-        resolve_provider, AuthError, format_auth_error,
+    from hermes_cli.auth import AuthError, format_auth_error, resolve_provider
+    from hermes_cli.config import get_config_path, load_config, load_runtime_config
+    from hermes_cli.model_switch import (
+        persist_model_switch_result,
+        runtime_model_selection_state,
+        switch_model,
     )
-    from hermes_cli.config import load_config, get_env_value
+    from hermes_cli.providers import get_label
 
-    config = load_config()
-    current_model = config.get("model")
-    if isinstance(current_model, dict):
-        current_model = current_model.get("default", "")
-    current_model = current_model or "(not set)"
-
-    # Read effective provider the same way the CLI does at startup:
-    # config.yaml model.provider > env var > auto-detect
+    config_path = get_config_path()
+    fallback_paths = [PROJECT_ROOT / "cli-config.yaml"]
+    if config_path.exists() or any(path.exists() for path in fallback_paths):
+        config = load_runtime_config(
+            config_path=config_path,
+            fallback_paths=fallback_paths,
+            runtime="cli",
+        )
+    else:
+        config = load_config()
+    state = runtime_model_selection_state(config)
+    current_model = state.current_model or "(not set)"
     import os
-    config_provider = None
-    model_cfg = config.get("model")
-    if isinstance(model_cfg, dict):
-        config_provider = model_cfg.get("provider")
 
-    effective_provider = (
-        config_provider
-        or os.getenv("HERMES_INFERENCE_PROVIDER")
-        or "auto"
-    )
+    model_cfg = config.get("model")
+    configured_provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
+    effective_provider = configured_provider or os.getenv("HERMES_INFERENCE_PROVIDER") or "auto"
     try:
         active = resolve_provider(effective_provider)
     except AuthError as exc:
@@ -909,68 +911,19 @@ def select_provider_and_model(args=None):
         try:
             active = resolve_provider("auto")
         except AuthError:
-            active = None  # no provider yet; default to first in list
-
-    # Detect custom endpoint
-    if active == "openrouter" and get_env_value("OPENAI_BASE_URL"):
+            active = state.current_provider or "openrouter"
+    if active == "openrouter" and state.current_base_url and "openrouter.ai" not in state.current_base_url:
         active = "custom"
-
-    provider_labels = {
-        "openrouter": "OpenRouter",
-        "nous": "Nous Portal",
-        "openai-codex": "OpenAI Codex",
-        "qwen-oauth": "Qwen OAuth",
-        "copilot-acp": "GitHub Copilot ACP",
-        "copilot": "GitHub Copilot",
-        "anthropic": "Anthropic",
-        "gemini": "Google AI Studio",
-        "zai": "Z.AI / GLM",
-        "kimi-coding": "Kimi / Moonshot",
-        "minimax": "MiniMax",
-        "minimax-cn": "MiniMax (China)",
-        "opencode-zen": "OpenCode Zen",
-        "opencode-go": "OpenCode Go",
-        "ai-gateway": "AI Gateway",
-        "kilocode": "Kilo Code",
-        "alibaba": "Alibaba Cloud (DashScope)",
-        "huggingface": "Hugging Face",
-        "xiaomi": "Xiaomi MiMo",
-        "custom": "Custom endpoint",
-    }
-    active_label = provider_labels.get(active, active) if active else "none"
+    active_label = get_label(active) if active else "none"
 
     print()
     print(f"  Current model:    {current_model}")
     print(f"  Active provider:  {active_label}")
     print()
 
-    # Step 1: Provider selection — top providers shown first, rest behind "More..."
-    top_providers = [
-        ("nous", "Nous Portal (Nous Research subscription)"),
-        ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
-        ("anthropic", "Anthropic (Claude models — API key or Claude Code)"),
-        ("openai-codex", "OpenAI Codex"),
-        ("qwen-oauth", "Qwen OAuth (reuses local Qwen CLI login)"),
-        ("copilot", "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
-        ("huggingface", "Hugging Face Inference Providers (20+ open models)"),
-    ]
-
-    extended_providers = [
-        ("copilot-acp", "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
-        ("gemini", "Google AI Studio (Gemini models — OpenAI-compatible endpoint)"),
-        ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
-        ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
-        ("minimax", "MiniMax (global direct API)"),
-        ("minimax-cn", "MiniMax China (domestic direct API)"),
-        ("kilocode", "Kilo Code (Kilo Gateway API)"),
-        ("opencode-zen", "OpenCode Zen (35+ curated models, pay-as-you-go)"),
-        ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
-        ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
-        ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
-        ("xiaomi", "Xiaomi MiMo (MiMo-V2 models — pro, omni, flash)"),
-    ]
-
     def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
+        from hermes_cli.providers import custom_provider_slug
+
         custom_providers_cfg = cfg.get("custom_providers") or []
         custom_provider_map = {}
         if not isinstance(custom_providers_cfg, list):
@@ -982,7 +935,7 @@ def select_provider_and_model(args=None):
             base_url = (entry.get("base_url") or "").strip()
             if not name or not base_url:
                 continue
-            key = "custom:" + name.lower().replace(" ", "-")
+            key = custom_provider_slug(name)
             custom_provider_map[key] = {
                 "name": name,
                 "base_url": base_url,
@@ -993,61 +946,126 @@ def select_provider_and_model(args=None):
 
     # Add user-defined custom providers from config.yaml
     _custom_provider_map = _named_custom_provider_map(config)  # key → {name, base_url, api_key}
-    for key, provider_info in _custom_provider_map.items():
-        name = provider_info["name"]
-        base_url = provider_info["base_url"]
-        short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")
-        saved_model = provider_info.get("model", "")
-        model_hint = f" — {saved_model}" if saved_model else ""
-        top_providers.append((key, f"{name} ({short_url}){model_hint}"))
 
-    top_keys = {k for k, _ in top_providers}
-    extended_keys = {k for k, _ in extended_providers}
+    def _with_status(label: str, status_label: str = "") -> str:
+        return f"{label}  [{status_label}]" if status_label else label
 
-    # If the active provider is in the extended list, promote it into top
-    if active and active in extended_keys:
-        promoted = [(k, l) for k, l in extended_providers if k == active]
-        extended_providers = [(k, l) for k, l in extended_providers if k != active]
-        top_providers = promoted + top_providers
-        top_keys.add(active)
+    def _selection_choice_label(item) -> str:
+        from hermes_cli.model_selection import selection_item_meta_text
 
-    # Build the primary menu
-    ordered = []
-    default_idx = 0
-    for key, label in top_providers:
-        if active and key == active:
-            ordered.append((key, f"{label}  ← currently active"))
-            default_idx = len(ordered) - 1
-        else:
-            ordered.append((key, label))
+        meta = selection_item_meta_text(item)
+        return f"{item.label} — {meta}" if meta else item.label
 
-    ordered.append(("more", "More providers..."))
-    ordered.append(("cancel", "Cancel"))
+    from hermes_cli.model_selection import build_model_selection_tree, ModelSelectionController
 
-    provider_idx = _prompt_provider_choice(
-        [label for _, label in ordered], default=default_idx,
+    tree = build_model_selection_tree(
+        current_provider=state.current_provider,
+        current_model="" if current_model == "(not set)" else current_model,
+        user_providers=state.user_providers,
+        custom_providers=state.custom_providers,
     )
-    if provider_idx is None or ordered[provider_idx][0] == "cancel":
+    root_ordered: list[tuple[str, str]] = [
+        (f"source:{source.id}", _with_status(source.label, source.status_label))
+        for source in tree.sources
+    ]
+    if active:
+        current_source_key = f"source:{'openrouter' if active == 'openrouter' else ('oauth' if active in {'openai-codex', 'nous', 'qwen-oauth'} else 'other')}"
+        source_items = [item for item in root_ordered if item[0].startswith("source:")]
+        source_items.sort(key=lambda item: (item[0] != current_source_key, item[0]))
+        root_ordered = source_items
+    root_ordered.append(("custom", "Custom endpoint (enter URL manually)"))
+    if _custom_provider_map:
+        root_ordered.append(("remove-custom", "Remove a saved custom provider"))
+    root_ordered.append(("cancel", "Cancel"))
+
+    default_root_idx = next(
+        (idx for idx, (key, _label) in enumerate(root_ordered) if key == "source:other"),
+        0,
+    )
+    for idx, (key, _label) in enumerate(root_ordered):
+        if key == "source:openrouter" and active == "openrouter":
+            default_root_idx = idx
+        elif key == "source:oauth" and active in {"openai-codex", "nous", "qwen-oauth"}:
+            default_root_idx = idx
+        elif key == "source:other" and active not in {"openrouter", "openai-codex", "nous", "qwen-oauth"} and active:
+            default_root_idx = idx
+
+    root_idx = _prompt_provider_choice(
+        [label for _, label in root_ordered],
+        default=default_root_idx,
+    )
+    if root_idx is None or root_ordered[root_idx][0] == "cancel":
         print("No change.")
         return
 
-    selected_provider = ordered[provider_idx][0]
+    selected_root = root_ordered[root_idx][0]
+    selected_provider = ""
+    selected_request = None
 
-    # "More providers..." — show the extended list
-    if selected_provider == "more":
-        ext_ordered = list(extended_providers)
-        ext_ordered.append(("custom", "Custom endpoint (enter URL manually)"))
-        if _custom_provider_map:
-            ext_ordered.append(("remove-custom", "Remove a saved custom provider"))
-        ext_ordered.append(("cancel", "Cancel"))
-
-        ext_idx = _prompt_provider_choice(
-            [label for _, label in ext_ordered], default=0,
-        )
-        if ext_idx is None or ext_ordered[ext_idx][0] == "cancel":
+    if selected_root.startswith("source:"):
+        source_id = selected_root.split(":", 1)[1]
+        provider_nodes = list(tree.providers(source_id))
+        provider_nodes.sort(key=lambda node: (not node.current, node.label))
+        provider_choices = [
+            _with_status(node.label, node.status_label)
+            for node in provider_nodes
+        ]
+        provider_choices.append("Cancel")
+        default_provider_idx = 0
+        for idx, node in enumerate(provider_nodes):
+            if node.current:
+                default_provider_idx = idx
+                break
+        provider_idx = _prompt_provider_choice(provider_choices, default=default_provider_idx)
+        if provider_idx is None or provider_idx >= len(provider_nodes):
             print("No change.")
             return
-        selected_provider = ext_ordered[ext_idx][0]
+        selected_provider_node = provider_nodes[provider_idx]
+        selected_provider = selected_provider_node.provider_slug
+
+        controller = ModelSelectionController(tree)
+        controller.set_provider(selected_provider_node.id)
+        model_view = controller.current_view()
+        if model_view.items and any(item.enabled for item in model_view.items):
+            model_choices = [
+                _selection_choice_label(item)
+                for item in model_view.items
+            ]
+            model_choices.append("Cancel")
+            model_idx = _prompt_provider_choice(
+                model_choices,
+                default=model_view.default_cursor(),
+            )
+            if model_idx is None or model_idx >= len(model_view.items):
+                print("No change.")
+                return
+            selected_request = controller.activate_index(model_idx)
+            if selected_request is None:
+                print("No change.")
+                return
+    else:
+        selected_provider = selected_root
+
+    if selected_request is not None:
+        current_model_value = "" if current_model == "(not set)" else current_model
+        result = switch_model(
+            raw_input=selected_request.model_id,
+            current_provider=state.current_provider,
+            current_model=current_model_value,
+            current_base_url=state.current_base_url,
+            current_api_key=state.current_api_key,
+            explicit_provider=selected_request.provider_slug,
+            user_providers=state.user_providers,
+            custom_providers=state.custom_providers,
+            runtime_config=config,
+        )
+        if not result.success:
+            print(f"Could not switch model: {result.error_message}")
+            return
+        _persist_selected_model_result(result)
+        provider_label = result.provider_label or result.target_provider
+        print(f"Default model set to: {result.new_model} (via {provider_label})")
+        return
 
     # Step 2: Provider-specific setup + model selection
     if selected_provider == "openrouter":
@@ -1065,7 +1083,15 @@ def select_provider_and_model(args=None):
     elif selected_provider == "custom":
         _model_flow_custom(config)
     elif selected_provider.startswith("custom:"):
-        provider_info = _named_custom_provider_map(load_config()).get(selected_provider)
+        if config_path.exists() or any(path.exists() for path in fallback_paths):
+            current_config = load_runtime_config(
+                config_path=config_path,
+                fallback_paths=fallback_paths,
+                runtime="cli",
+            )
+        else:
+            current_config = load_config()
+        provider_info = _named_custom_provider_map(current_config).get(selected_provider)
         if provider_info is None:
             print(
                 "Warning: the selected saved custom provider is no longer available. "
@@ -1079,8 +1105,34 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi"):
+    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "deepseek", "xai", "xiaomi"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
+    elif selected_provider:
+        current_model_value = "" if current_model == "(not set)" else current_model
+        result = switch_model(
+            raw_input="",
+            current_provider=state.current_provider,
+            current_model=current_model_value,
+            current_base_url=state.current_base_url,
+            current_api_key=state.current_api_key,
+            explicit_provider=selected_provider,
+            user_providers=state.user_providers,
+            custom_providers=state.custom_providers,
+            runtime_config=config,
+        )
+        if not result.success:
+            print(f"Could not switch model: {result.error_message}")
+            return
+        _persist_selected_model_result(result)
+        provider_label = result.provider_label or result.target_provider
+        print(f"Default model set to: {result.new_model} (via {provider_label})")
+
+
+def _persist_selected_model_result(result) -> None:
+    """Persist a model switch result using the same provider semantics as setup flows."""
+    from hermes_cli.model_switch import persist_model_switch_result
+
+    persist_model_switch_result(result)
 
     # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────
     # When the user switches to a named provider (anything except "custom"),
@@ -4485,7 +4537,7 @@ For more help on a command:
     gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
     
     # gateway run (default)
-    gateway_run = gateway_subparsers.add_parser("run", help="Run gateway in foreground (recommended for WSL, Docker, Termux)")
+    gateway_run = gateway_subparsers.add_parser("run", help="Run gateway in foreground")
     gateway_run.add_argument("-v", "--verbose", action="count", default=0,
                              help="Increase stderr log verbosity (-v=INFO, -vv=DEBUG)")
     gateway_run.add_argument("-q", "--quiet", action="store_true",
@@ -4494,7 +4546,7 @@ For more help on a command:
                              help="Replace any existing gateway instance (useful for systemd)")
     
     # gateway start
-    gateway_start = gateway_subparsers.add_parser("start", help="Start the installed systemd/launchd background service")
+    gateway_start = gateway_subparsers.add_parser("start", help="Start gateway service")
     gateway_start.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
     
     # gateway stop
@@ -4512,7 +4564,7 @@ For more help on a command:
     gateway_status.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
     
     # gateway install
-    gateway_install = gateway_subparsers.add_parser("install", help="Install gateway as a systemd/launchd background service")
+    gateway_install = gateway_subparsers.add_parser("install", help="Install gateway as service")
     gateway_install.add_argument("--force", action="store_true", help="Force reinstall")
     gateway_install.add_argument("--system", action="store_true", help="Install as a Linux system-level service (starts at boot)")
     gateway_install.add_argument("--run-as-user", dest="run_as_user", help="User account the Linux system service should run as")

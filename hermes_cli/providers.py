@@ -70,7 +70,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="acp://copilot",
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
-    "github-copilot": HermesOverlay(
+    "copilot": HermesOverlay(
         transport="openai_chat",
         extra_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN"),
     ),
@@ -83,7 +83,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
         base_url_env_var="GLM_BASE_URL",
     ),
-    "kimi-for-coding": HermesOverlay(
+    "kimi-coding": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="KIMI_BASE_URL",
     ),
@@ -103,11 +103,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="DASHSCOPE_BASE_URL",
     ),
-    "vercel": HermesOverlay(
+    "ai-gateway": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
     ),
-    "opencode": HermesOverlay(
+    "opencode-zen": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
         base_url_env_var="OPENCODE_ZEN_BASE_URL",
@@ -117,7 +117,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="OPENCODE_GO_BASE_URL",
     ),
-    "kilo": HermesOverlay(
+    "kilocode": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
         base_url_env_var="KILOCODE_BASE_URL",
@@ -166,6 +166,11 @@ ALIASES: Dict[str, str] = {
     # openrouter
     "openai": "openrouter",     # bare "openai" → route through aggregator
 
+    # gemini
+    "google": "gemini",
+    "google-gemini": "gemini",
+    "google-ai-studio": "gemini",
+
     # zai
     "glm": "zai",
     "z-ai": "zai",
@@ -176,10 +181,10 @@ ALIASES: Dict[str, str] = {
     "x-ai": "xai",
     "x.ai": "xai",
 
-    # kimi-for-coding (models.dev ID)
-    "kimi": "kimi-for-coding",
-    "kimi-coding": "kimi-for-coding",
-    "moonshot": "kimi-for-coding",
+    # kimi-coding
+    "kimi": "kimi-coding",
+    "kimi-for-coding": "kimi-coding",
+    "moonshot": "kimi-coding",
 
     # minimax-cn
     "minimax-china": "minimax-cn",
@@ -189,28 +194,31 @@ ALIASES: Dict[str, str] = {
     "claude": "anthropic",
     "claude-code": "anthropic",
 
-    # github-copilot (models.dev ID)
-    "copilot": "github-copilot",
-    "github": "github-copilot",
+    # copilot
+    "github": "copilot",
+    "github-copilot": "copilot",
+    "github-models": "copilot",
+    "github-model": "copilot",
     "github-copilot-acp": "copilot-acp",
+    "copilot-acp-agent": "copilot-acp",
 
-    # vercel (models.dev ID for AI Gateway)
-    "ai-gateway": "vercel",
-    "aigateway": "vercel",
-    "vercel-ai-gateway": "vercel",
+    # ai-gateway
+    "aigateway": "ai-gateway",
+    "vercel": "ai-gateway",
+    "vercel-ai-gateway": "ai-gateway",
 
-    # opencode (models.dev ID for OpenCode Zen)
-    "opencode-zen": "opencode",
-    "zen": "opencode",
+    # opencode-zen
+    "opencode": "opencode-zen",
+    "zen": "opencode-zen",
 
     # opencode-go
     "go": "opencode-go",
     "opencode-go-sub": "opencode-go",
 
-    # kilo (models.dev ID for KiloCode)
-    "kilocode": "kilo",
-    "kilo-code": "kilo",
-    "kilo-gateway": "kilo",
+    # kilocode
+    "kilo": "kilocode",
+    "kilo-code": "kilocode",
+    "kilo-gateway": "kilocode",
 
     # deepseek
     "deep-seek": "deepseek",
@@ -220,6 +228,8 @@ ALIASES: Dict[str, str] = {
     "aliyun": "alibaba",
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
+    "qwen-portal": "qwen-oauth",
+    "qwen-cli": "qwen-oauth",
 
     # huggingface
     "hf": "huggingface",
@@ -230,7 +240,7 @@ ALIASES: Dict[str, str] = {
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
 
-    # Local server aliases → virtual "local" concept (resolved via user config)
+    # Local server aliases → preserve Hermes-facing IDs for /model flows
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
     "lm_studio": "lmstudio",
@@ -249,9 +259,28 @@ ALIASES: Dict[str, str] = {
 _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
+    "copilot": "GitHub Copilot",
     "copilot-acp": "GitHub Copilot ACP",
     "xiaomi": "Xiaomi MiMo",
-    "local": "Local endpoint",
+    "gemini": "Google AI Studio",
+    "zai": "Z.AI / GLM",
+    "kimi-coding": "Kimi / Moonshot",
+    "minimax": "MiniMax",
+    "minimax-cn": "MiniMax (China)",
+    "anthropic": "Anthropic",
+    "deepseek": "DeepSeek",
+    "lmstudio": "LM Studio",
+    "ollama-cloud": "Ollama",
+    "local": "Local OpenAI-Compatible",
+    "opencode-zen": "OpenCode Zen",
+    "opencode-go": "OpenCode Go",
+    "ai-gateway": "AI Gateway",
+    "kilocode": "Kilo Code",
+    "alibaba": "Alibaba Cloud (DashScope)",
+    "qwen-oauth": "Qwen OAuth (Portal)",
+    "huggingface": "Hugging Face",
+    "custom": "Custom endpoint",
+    "local": "Local OpenAI-Compatible",
 }
 
 
@@ -405,11 +434,19 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
         return None
 
     entry = user_config.get(name)
+    resolved_name = name
+    if not isinstance(entry, dict):
+        lowered_name = str(name or "").strip().lower()
+        for key, candidate in user_config.items():
+            if str(key).strip().lower() == lowered_name:
+                entry = candidate
+                resolved_name = str(key)
+                break
     if not isinstance(entry, dict):
         return None
 
     # Extract fields
-    display_name = entry.get("name", "") or name
+    display_name = entry.get("name", "") or resolved_name
     api_url = entry.get("api", "") or entry.get("url", "") or entry.get("base_url", "") or ""
     key_env = entry.get("key_env", "") or ""
     transport = entry.get("transport", "openai_chat") or "openai_chat"
@@ -419,7 +456,7 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
         env_vars.append(key_env)
 
     return ProviderDef(
-        id=name,
+        id=str(resolved_name).strip().lower(),
         name=display_name,
         transport=transport,
         api_key_env_vars=tuple(env_vars),
