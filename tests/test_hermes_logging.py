@@ -35,6 +35,8 @@ def _reset_logging_state():
             h.close()
         else:
             pre_existing.append(h)
+    # Ensure the record factory is installed (it's idempotent).
+    hermes_logging._install_session_record_factory()
     yield
     # Restore — remove any handlers added during the test.
     for h in list(root.handlers):
@@ -222,18 +224,16 @@ class TestSetupLogging:
         ]
         assert agent_handlers[0].level == logging.WARNING
 
-    def test_session_filter_on_handlers(self, hermes_home):
-        """setup_logging() adds a _SessionFilter to each file handler."""
+    def test_record_factory_installed(self, hermes_home):
+        """The custom record factory injects session_tag on all records."""
         hermes_logging.setup_logging(hermes_home=hermes_home)
-        root = logging.getLogger()
-        for h in root.handlers:
-            if isinstance(h, RotatingFileHandler):
-                session_filters = [f for f in h.filters
-                                   if isinstance(f, hermes_logging._SessionFilter)]
-                assert len(session_filters) == 1, (
-                    f"Handler for {getattr(h, 'baseFilename', '?')} "
-                    f"should have exactly one _SessionFilter"
-                )
+        factory = logging.getLogRecordFactory()
+        assert getattr(factory, "_hermes_session_injector", False), (
+            "Record factory should have _hermes_session_injector marker"
+        )
+        # Verify session_tag exists on a fresh record
+        record = factory("test", logging.INFO, "", 0, "msg", (), None)
+        assert hasattr(record, "session_tag")
 
 
 class TestGatewayMode:
@@ -403,33 +403,49 @@ class TestSessionContext:
                 assert "[thread_a_session]" not in line
 
 
-class TestSessionFilter:
-    """Unit tests for _SessionFilter."""
+class TestRecordFactory:
+    """Unit tests for the custom LogRecord factory."""
 
-    def test_always_returns_true(self):
-        f = hermes_logging._SessionFilter()
-        record = logging.LogRecord(
-            "test", logging.INFO, "", 0, "msg", (), None
-        )
-        assert f.filter(record) is True
+    def test_record_has_session_tag(self):
+        """Every record gets a session_tag attribute."""
+        factory = logging.getLogRecordFactory()
+        record = factory("test", logging.INFO, "", 0, "msg", (), None)
+        assert hasattr(record, "session_tag")
 
-    def test_sets_empty_tag_without_context(self):
+    def test_empty_tag_without_context(self):
         hermes_logging.clear_session_context()
-        f = hermes_logging._SessionFilter()
-        record = logging.LogRecord(
-            "test", logging.INFO, "", 0, "msg", (), None
-        )
-        f.filter(record)
+        factory = logging.getLogRecordFactory()
+        record = factory("test", logging.INFO, "", 0, "msg", (), None)
         assert record.session_tag == ""
 
-    def test_sets_tag_with_context(self):
+    def test_tag_with_context(self):
         hermes_logging.set_session_context("sess_42")
-        f = hermes_logging._SessionFilter()
-        record = logging.LogRecord(
-            "test", logging.INFO, "", 0, "msg", (), None
-        )
-        f.filter(record)
+        factory = logging.getLogRecordFactory()
+        record = factory("test", logging.INFO, "", 0, "msg", (), None)
         assert record.session_tag == " [sess_42]"
+
+    def test_idempotent_install(self):
+        """Calling _install_session_record_factory() twice doesn't double-wrap."""
+        hermes_logging._install_session_record_factory()
+        factory_a = logging.getLogRecordFactory()
+        hermes_logging._install_session_record_factory()
+        factory_b = logging.getLogRecordFactory()
+        assert factory_a is factory_b
+
+    def test_works_with_any_handler(self):
+        """A handler using %(session_tag)s works even without _SessionFilter."""
+        hermes_logging.set_session_context("any_handler_test")
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(session_tag)s %(message)s"))
+
+        logger = logging.getLogger("_test_any_handler")
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
+        try:
+            # Should not raise KeyError
+            logger.info("hello")
+        finally:
+            logger.removeHandler(handler)
 
 
 class TestComponentFilter:
@@ -582,18 +598,48 @@ class TestAddRotatingHandler:
         log_path = tmp_path / "filtered.log"
         logger = logging.getLogger("_test_rotating_filter")
         formatter = logging.Formatter("%(message)s")
-        test_filter = hermes_logging._ComponentFilter(("test",))
+        component_filter = hermes_logging._ComponentFilter(("test",))
 
         hermes_logging._add_rotating_handler(
             logger, log_path,
             level=logging.INFO, max_bytes=1024, backup_count=1,
             formatter=formatter,
-            log_filter=test_filter,
+            log_filter=component_filter,
         )
 
         handlers = [h for h in logger.handlers if isinstance(h, RotatingFileHandler)]
         assert len(handlers) == 1
-        assert test_filter in handlers[0].filters
+        assert component_filter in handlers[0].filters
+        # Clean up
+        for h in list(logger.handlers):
+            if isinstance(h, RotatingFileHandler):
+                logger.removeHandler(h)
+                h.close()
+
+    def test_no_session_filter_on_handler(self, tmp_path):
+        """Handlers rely on record factory, not per-handler _SessionFilter."""
+        log_path = tmp_path / "no_session_filter.log"
+        logger = logging.getLogger("_test_no_session_filter")
+        formatter = logging.Formatter("%(session_tag)s%(message)s")
+
+        hermes_logging._add_rotating_handler(
+            logger, log_path,
+            level=logging.INFO, max_bytes=1024, backup_count=1,
+            formatter=formatter,
+        )
+
+        handlers = [h for h in logger.handlers if isinstance(h, RotatingFileHandler)]
+        assert len(handlers) == 1
+        # No _SessionFilter on the handler — record factory handles it
+        assert len(handlers[0].filters) == 0
+
+        # But session_tag still works (via record factory)
+        hermes_logging.set_session_context("factory_test")
+        logger.info("test msg")
+        handlers[0].flush()
+        content = log_path.read_text()
+        assert "[factory_test]" in content
+
         # Clean up
         for h in list(logger.handlers):
             if isinstance(h, RotatingFileHandler):

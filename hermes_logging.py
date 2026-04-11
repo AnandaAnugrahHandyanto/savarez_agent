@@ -41,8 +41,8 @@ _logging_initialized = False
 _session_context = threading.local()
 
 # Default log format — includes timestamp, level, optional session tag,
-# logger name, and message.  The ``%(session_tag)s`` field is injected by
-# ``_SessionFilter`` (always returns True, just enriches the record).
+# logger name, and message.  The ``%(session_tag)s`` field is guaranteed to
+# exist on every LogRecord via _install_session_record_factory() below.
 _LOG_FORMAT = "%(asctime)s %(levelname)s%(session_tag)s %(name)s: %(message)s"
 _LOG_FORMAT_VERBOSE = "%(asctime)s - %(name)s - %(levelname)s%(session_tag)s - %(message)s"
 
@@ -89,22 +89,44 @@ def clear_session_context() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Filters
+# Record factory — injects session_tag into every LogRecord at creation
 # ---------------------------------------------------------------------------
 
-class _SessionFilter(logging.Filter):
-    """Enrich every log record with a ``session_tag`` attribute.
+def _install_session_record_factory() -> None:
+    """Replace the global LogRecord factory with one that adds ``session_tag``.
 
-    Reads the session ID from thread-local storage.  If set, produces
-    ``" [session_id]"``; otherwise ``""``.  Always returns True — this
-    filter enriches records, never blocks them.
+    Unlike a ``logging.Filter`` on a handler or logger, the record factory
+    runs for EVERY record in the process — including records that propagate
+    from child loggers and records handled by third-party handlers.  This
+    guarantees ``%(session_tag)s`` is always available in format strings,
+    eliminating the KeyError that would occur if a handler used our format
+    without having a ``_SessionFilter`` attached.
+
+    Idempotent — checks for a marker attribute to avoid double-wrapping if
+    the module is reloaded.
     """
+    current_factory = logging.getLogRecordFactory()
+    if getattr(current_factory, "_hermes_session_injector", False):
+        return  # already installed
 
-    def filter(self, record: logging.LogRecord) -> bool:
+    def _session_record_factory(*args, **kwargs):
+        record = current_factory(*args, **kwargs)
         sid = getattr(_session_context, "session_id", None)
         record.session_tag = f" [{sid}]" if sid else ""  # type: ignore[attr-defined]
-        return True
+        return record
 
+    _session_record_factory._hermes_session_injector = True  # type: ignore[attr-defined]
+    logging.setLogRecordFactory(_session_record_factory)
+
+
+# Install immediately on import — session_tag is available on all records
+# from this point forward, even before setup_logging() is called.
+_install_session_record_factory()
+
+
+# ---------------------------------------------------------------------------
+# Filters
+# ---------------------------------------------------------------------------
 
 class _ComponentFilter(logging.Filter):
     """Only pass records whose logger name starts with one of *prefixes*.
@@ -261,7 +283,6 @@ def setup_verbose_logging() -> None:
     handler = logging.StreamHandler()
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(RedactingFormatter(_LOG_FORMAT_VERBOSE, datefmt="%H:%M:%S"))
-    handler.addFilter(_SessionFilter())
     handler._hermes_verbose = True  # type: ignore[attr-defined]
     root.addHandler(handler)
 
@@ -345,10 +366,6 @@ def _add_rotating_handler(
     )
     handler.setLevel(level)
     handler.setFormatter(formatter)
-    # Session enrichment filter — injects %(session_tag)s for every record.
-    # Attached per-handler (not on root logger) because propagated records
-    # from child loggers bypass logger-level filters.
-    handler.addFilter(_SessionFilter())
     if log_filter is not None:
         handler.addFilter(log_filter)
     logger.addHandler(handler)
