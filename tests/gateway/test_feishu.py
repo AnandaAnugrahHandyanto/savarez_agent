@@ -505,6 +505,134 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_stream_message_uses_interactive_card_payload(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        async def _fake_send_with_retry(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_card"))
+
+        adapter._client = object()
+        adapter._feishu_send_with_retry = AsyncMock(side_effect=_fake_send_with_retry)
+
+        result = asyncio.run(
+            adapter.send_stream_message(
+                chat_id="oc_chat",
+                content="Streaming answer",
+                metadata={"source_message_id": "om_source"},
+            )
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_card")
+        self.assertEqual(captured["msg_type"], "interactive")
+        card = json.loads(captured["payload"])
+        self.assertEqual(card["header"]["title"]["content"], "Hermes")
+        self.assertIn("Streaming answer", card["elements"][0]["content"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_edit_stream_message_patches_interactive_card_content(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def patch(self, request):
+                captured["request"] = request
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.edit_stream_message(
+                    chat_id="oc_chat",
+                    message_id="om_card",
+                    content="Streaming answer updated",
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_card")
+        self.assertFalse(hasattr(captured["request"].request_body, "msg_type"))
+        card = json.loads(captured["request"].request_body.content)
+        self.assertEqual(card["config"]["update_multi"], True)
+        self.assertIn("Streaming answer updated", card["elements"][0]["content"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_stream_message_falls_back_to_plain_send_with_reply_to(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = object()
+        adapter._feishu_send_with_retry = AsyncMock(return_value=SimpleNamespace(success=lambda: False, code=230099, msg="card failed"))
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="om_plain"))
+
+        result = asyncio.run(
+            adapter.send_stream_message(
+                chat_id="oc_chat",
+                content="Streaming answer",
+                metadata={"source_message_id": "om_source"},
+            )
+        )
+
+        self.assertTrue(result.success)
+        adapter.send.assert_awaited_once_with(
+            chat_id="oc_chat",
+            content="Streaming answer",
+            reply_to="om_source",
+            metadata={"source_message_id": "om_source"},
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_update_approval_card_patches_interactive_card_content(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def patch(self, request):
+                captured["request"] = request
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            asyncio.run(adapter._update_approval_card("om_card", "Approved permanently", "Alice", "always"))
+
+        card = json.loads(captured["request"].request_body.content)
+        self.assertEqual(card["config"]["update_multi"], True)
+        self.assertIn("Approved permanently", card["header"]["title"]["content"])
+        self.assertIn("Alice", card["elements"][0]["content"])
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

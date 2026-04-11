@@ -63,6 +63,8 @@ try:
         GetMessageRequest,
         GetMessageResourceRequest,
         P2ImMessageMessageReadV1,
+        PatchMessageRequest,
+        PatchMessageRequestBody,
         ReplyMessageRequest,
         ReplyMessageRequestBody,
         UpdateMessageRequest,
@@ -1015,6 +1017,12 @@ def check_feishu_requirements() -> bool:
 class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
 
+    STREAMING_CURSOR = ""
+    # Feishu interactive card patches are rate limited to ~5 QPS per message,
+    # so keep the default cadence comfortably below that ceiling.
+    STREAMING_EDIT_INTERVAL = 0.25
+    STREAMING_BUFFER_THRESHOLD = 8
+
     MAX_MESSAGE_LENGTH = 8000
     # Threshold for detecting Feishu client-side message splits.
     # When a chunk is near the ~4096-char practical limit, a continuation
@@ -1321,6 +1329,83 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound — send / edit / send_image / send_voice / …
     # =========================================================================
 
+    def _build_streaming_card(self, content: str) -> Dict[str, Any]:
+        formatted = self.format_message(content).strip()
+        return {
+            "config": {"wide_screen_mode": True, "update_multi": True},
+            "header": {
+                "title": {"content": "Hermes", "tag": "plain_text"},
+                "template": "blue",
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": formatted or "…",
+                }
+            ],
+        }
+
+    async def send_stream_message(
+        self,
+        chat_id: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send the first Feishu streaming frame as an interactive card.
+
+        Falls back to the normal text/post send path if card delivery fails.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            payload = json.dumps(self._build_streaming_card(content), ensure_ascii=False)
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=(metadata or {}).get("source_message_id"),
+                metadata=metadata,
+            )
+            result = self._finalize_send_result(response, "stream send failed")
+            if result.success:
+                return result
+            logger.warning("[Feishu] Stream card send failed; falling back to plain send: %s", result.error)
+        except Exception as exc:
+            logger.warning("[Feishu] Stream card send failed; falling back to plain send: %s", exc)
+
+        return await self.send(
+            chat_id=chat_id,
+            content=content,
+            reply_to=(metadata or {}).get("source_message_id"),
+            metadata=metadata,
+        )
+
+    async def edit_stream_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+    ) -> SendResult:
+        """Edit a Feishu streaming card in place, with fallback to normal message edit."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            payload = json.dumps(self._build_streaming_card(content), ensure_ascii=False)
+            body = self._build_patch_message_body(content=payload)
+            request = self._build_patch_message_request(message_id=message_id, request_body=body)
+            response = await asyncio.to_thread(self._client.im.v1.message.patch, request)
+            result = self._finalize_send_result(response, "stream update failed")
+            if result.success:
+                result.message_id = message_id
+                return result
+            logger.warning("[Feishu] Stream card update failed; falling back to normal edit: %s", result.error)
+        except Exception as exc:
+            logger.warning("[Feishu] Stream card update failed; falling back to normal edit: %s", exc)
+
+        return await self.edit_message(chat_id=chat_id, message_id=message_id, content=content)
+
     async def send(
         self,
         chat_id: str,
@@ -1437,7 +1522,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 }
 
             card = {
-                "config": {"wide_screen_mode": True},
+                "config": {"wide_screen_mode": True, "update_multi": True},
                 "header": {
                     "title": {"content": "⚠️ Command Approval Required", "tag": "plain_text"},
                     "template": "orange",
@@ -1488,7 +1573,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         icon = "❌" if choice == "deny" else "✅"
         card = {
-            "config": {"wide_screen_mode": True},
+            "config": {"wide_screen_mode": True, "update_multi": True},
             "header": {
                 "title": {"content": f"{icon} {label}", "tag": "plain_text"},
                 "template": "red" if choice == "deny" else "green",
@@ -1502,9 +1587,9 @@ class FeishuAdapter(BasePlatformAdapter):
         }
         try:
             payload = json.dumps(card, ensure_ascii=False)
-            body = self._build_update_message_body(msg_type="interactive", content=payload)
-            request = self._build_update_message_request(message_id=message_id, request_body=body)
-            await asyncio.to_thread(self._client.im.v1.message.update, request)
+            body = self._build_patch_message_body(content=payload)
+            request = self._build_patch_message_request(message_id=message_id, request_body=body)
+            await asyncio.to_thread(self._client.im.v1.message.patch, request)
         except Exception as exc:
             logger.warning("[Feishu] Failed to update approval card %s: %s", message_id, exc)
 
@@ -3519,6 +3604,23 @@ class FeishuAdapter(BasePlatformAdapter):
         if "UpdateMessageRequest" in globals():
             return (
                 UpdateMessageRequest.builder()
+                .message_id(message_id)
+                .request_body(request_body)
+                .build()
+            )
+        return SimpleNamespace(message_id=message_id, request_body=request_body)
+
+    @staticmethod
+    def _build_patch_message_body(*, content: str) -> Any:
+        if "PatchMessageRequestBody" in globals():
+            return PatchMessageRequestBody.builder().content(content).build()
+        return SimpleNamespace(content=content)
+
+    @staticmethod
+    def _build_patch_message_request(message_id: str, request_body: Any) -> Any:
+        if "PatchMessageRequest" in globals():
+            return (
+                PatchMessageRequest.builder()
                 .message_id(message_id)
                 .request_body(request_body)
                 .build()

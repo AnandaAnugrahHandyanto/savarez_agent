@@ -66,6 +66,9 @@ class GatewayStreamConsumer:
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
+        self.cfg.edit_interval = float(getattr(adapter, "STREAMING_EDIT_INTERVAL", self.cfg.edit_interval))
+        self.cfg.buffer_threshold = int(getattr(adapter, "STREAMING_BUFFER_THRESHOLD", self.cfg.buffer_threshold))
+        self.cfg.cursor = getattr(adapter, "STREAMING_CURSOR", self.cfg.cursor)
         self.metadata = metadata
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
@@ -370,6 +373,18 @@ class GatewayStreamConsumer:
         self._last_sent_text = chunks[-1]
         self._fallback_prefix = ""
 
+    async def _send_stream_message(self, text: str):
+        sender = getattr(self.adapter, "send_stream_message", None)
+        if callable(sender):
+            return await sender(chat_id=self.chat_id, content=text, metadata=self.metadata)
+        return await self.adapter.send(chat_id=self.chat_id, content=text, metadata=self.metadata)
+
+    async def _edit_stream_message(self, text: str):
+        editor = getattr(self.adapter, "edit_stream_message", None)
+        if callable(editor):
+            return await editor(chat_id=self.chat_id, message_id=self._message_id, content=text)
+        return await self.adapter.edit_message(chat_id=self.chat_id, message_id=self._message_id, content=text)
+
     async def _send_or_edit(self, text: str) -> None:
         """Send or edit the streaming message."""
         # Strip MEDIA: directives so they don't appear as visible text.
@@ -385,11 +400,7 @@ class GatewayStreamConsumer:
                     if text == self._last_sent_text:
                         return
                     # Edit existing message
-                    result = await self.adapter.edit_message(
-                        chat_id=self.chat_id,
-                        message_id=self._message_id,
-                        content=text,
-                    )
+                    result = await self._edit_stream_message(text)
                     if result.success:
                         self._already_sent = True
                         self._last_sent_text = text
@@ -408,11 +419,7 @@ class GatewayStreamConsumer:
                     pass
             else:
                 # First message — send new
-                result = await self.adapter.send(
-                    chat_id=self.chat_id,
-                    content=text,
-                    metadata=self.metadata,
-                )
+                result = await self._send_stream_message(text)
                 if result.success and result.message_id:
                     self._message_id = result.message_id
                     self._already_sent = True
