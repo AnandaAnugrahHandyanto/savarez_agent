@@ -382,6 +382,18 @@ class TestPlanSkillHelpers:
 
         assert path == Path(".hermes") / "plans" / "2026-03-15_093045-implement-oauth-login-refresh-tokens.md"
 
+    def test_build_plan_path_whitespace_newlines_no_index_error(self):
+        path = build_plan_path("  \n  ")
+        assert str(path).endswith("conversation-plan.md")
+
+    def test_build_plan_path_spaces_only_no_index_error(self):
+        path = build_plan_path("   ")
+        assert str(path).endswith("conversation-plan.md")
+
+    def test_build_plan_path_empty_string(self):
+        path = build_plan_path("")
+        assert str(path).endswith("conversation-plan.md")
+
     def test_plan_skill_message_can_include_runtime_save_path_note(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
