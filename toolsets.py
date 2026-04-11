@@ -493,7 +493,6 @@ def get_toolset_names() -> List[str]:
     names = set(TOOLSETS.keys())
     for toolset_name in _get_registry_toolset_names():
         if toolset_name.startswith("mcp-"):
-            names.add(toolset_name)
             alias = toolset_name[4:]
             if (
                 alias
@@ -502,6 +501,8 @@ def get_toolset_names() -> List[str]:
                 and alias not in _get_registry_toolset_names()
             ):
                 names.add(alias)
+            else:
+                names.add(toolset_name)
             continue
         names.add(toolset_name)
     return sorted(names)

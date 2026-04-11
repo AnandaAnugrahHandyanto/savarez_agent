@@ -180,11 +180,11 @@ _last_resolved_tool_names: List[str] = []
 
 def _resolve_requested_toolset(name: str) -> Tuple[List[str], Optional[str]]:
     """Resolve a requested toolset or legacy alias to concrete tool names."""
-    if validate_toolset(name):
-        return resolve_toolset(name), "toolset"
-
     if is_legacy_toolset(name):
         return resolve_legacy_toolset(name), "legacy"
+
+    if validate_toolset(name):
+        return resolve_toolset(name), "toolset"
 
     return [], None
 
