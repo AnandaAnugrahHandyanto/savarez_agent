@@ -45,6 +45,7 @@ import logging
 import os
 import re
 import asyncio
+import time
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 import httpx  # noqa: F401 — kept at module top so tests can patch tools.web_tools.httpx
 # After the web-provider plugin migration (PR #25182), the Firecrawl SDK
@@ -237,12 +238,206 @@ def _ddgs_package_importable() -> bool:
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
-# ─── Firecrawl Client ────────────────────────────────────────────────────────
-# After PR #25182, the firecrawl client, lazy SDK proxy, dual-auth config
-# resolution, response normalizers, and check_firecrawl_api_key() all live
-# in plugins.web.firecrawl.provider and are re-exported at the top of this
-# module so external callers (integration tests, tool-registry gating) and
-# unit tests that patch tools.web_tools.<name> continue to work.
+_firecrawl_client = None
+_firecrawl_client_config = None
+
+
+def _get_direct_firecrawl_config() -> Optional[tuple[Dict[str, str], tuple[str, Optional[str], Optional[str]]]]:
+    """Return explicit direct Firecrawl kwargs + cache key, or None when unset."""
+    api_key = os.getenv("FIRECRAWL_API_KEY", "").strip()
+    api_url = os.getenv("FIRECRAWL_API_URL", "").strip().rstrip("/")
+
+    if not api_key and not api_url:
+        return None
+
+    kwargs: Dict[str, str] = {}
+    if api_key:
+        kwargs["api_key"] = api_key
+    if api_url:
+        kwargs["api_url"] = api_url
+
+    return kwargs, ("direct", api_url or None, api_key or None)
+
+
+def _normalize_firecrawl_api_url(api_url: str) -> str:
+    normalized = str(api_url or "").strip().rstrip("/")
+    if normalized.endswith("/v1") or normalized.endswith("/v2"):
+        normalized = normalized.rsplit("/", 1)[0]
+    return normalized
+
+
+def _camelize_firecrawl_payload(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_camelize_firecrawl_payload(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    alias_map = {
+        "scrape_options": "scrapeOptions",
+        "include_paths": "includePaths",
+        "exclude_paths": "excludePaths",
+        "max_depth": "maxDepth",
+        "max_discovery_depth": "maxDiscoveryDepth",
+        "crawl_entire_domain": "crawlEntireDomain",
+        "allow_backward_links": "allowBackwardLinks",
+        "allow_external_links": "allowExternalLinks",
+        "ignore_sitemap": "ignoreSitemap",
+        "deduplicate_similar_urls": "deduplicateSimilarURLs",
+        "ignore_query_parameters": "ignoreQueryParameters",
+        "regex_on_full_url": "regexOnFullURL",
+        "allow_subdomains": "allowSubdomains",
+        "max_concurrency": "maxConcurrency",
+        "zero_data_retention": "zeroDataRetention",
+    }
+    return {
+        alias_map.get(key, key): _camelize_firecrawl_payload(val)
+        for key, val in value.items()
+        if val is not None
+    }
+
+
+class _FirecrawlHTTPCompatClient:
+    """Small Firecrawl-compatible client using plain HTTP requests.
+
+    This keeps Hermes web tools usable when the firecrawl SDK is unavailable
+    (for example on Chaquopy/Android, where its pydantic v2 dependency chain is
+    not currently wheel-safe).
+    """
+
+    def __init__(self, *, api_key: str, api_url: str):
+        self.api_key = api_key
+        self.api_url = _normalize_firecrawl_api_url(api_url)
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+
+    def _request_timeout(self, payload: dict[str, Any] | None = None, default: float = 30.0) -> float:
+        if isinstance(payload, dict):
+            timeout_ms = payload.get("timeout")
+            if isinstance(timeout_ms, (int, float)) and timeout_ms > 0:
+                return float(timeout_ms) / 1000.0 + 5.0
+        return default
+
+    def _post_json(self, path: str, payload: dict[str, Any], *, default_timeout: float = 30.0) -> dict[str, Any]:
+        timeout = self._request_timeout(payload, default=default_timeout)
+        url = f"{self.api_url}{path}"
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            response = client.post(url, headers=self._headers(), json=payload)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(f"Firecrawl request failed ({path}): {exc.response.text[:300]}") from exc
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise RuntimeError(f"Firecrawl request returned non-JSON for {path}") from exc
+
+    def _get_json(self, url_or_path: str, *, default_timeout: float = 30.0) -> dict[str, Any]:
+        url = url_or_path if url_or_path.startswith("http") else f"{self.api_url}{url_or_path}"
+        with httpx.Client(timeout=default_timeout, follow_redirects=True) as client:
+            response = client.get(url, headers=self._headers())
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(f"Firecrawl request failed ({url_or_path}): {exc.response.text[:300]}") from exc
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise RuntimeError(f"Firecrawl request returned non-JSON for {url_or_path}") from exc
+
+    def search(self, *, query: str, limit: int = 5, **kwargs):
+        payload = {"query": query, "limit": limit, "origin": "hermes-agent"}
+        payload.update(_camelize_firecrawl_payload(kwargs))
+        return self._post_json("/v1/search", payload)
+
+    def scrape(self, *, url: str, formats: Optional[list[str]] = None, **kwargs):
+        payload = {"url": url, "origin": "hermes-agent"}
+        if formats is not None:
+            payload["formats"] = formats
+        payload.update(_camelize_firecrawl_payload(kwargs))
+        return self._post_json("/v1/scrape", payload, default_timeout=65.0)
+
+    def crawl(self, *, url: str, **kwargs):
+        payload = _camelize_firecrawl_payload(kwargs)
+        payload["url"] = url
+        payload.setdefault("origin", "hermes-agent")
+        start = self._post_json("/v1/crawl", payload, default_timeout=30.0)
+        job_id = start.get("id") or start.get("jobId")
+        if not job_id:
+            raise RuntimeError(f"Firecrawl crawl response did not include a job id: {start}")
+        return self._wait_for_crawl(job_id)
+
+    def _wait_for_crawl(self, job_id: str, *, poll_interval: float = 2.0, timeout: float = 180.0) -> dict[str, Any]:
+        deadline = time.monotonic() + timeout
+        status_data: dict[str, Any] = {}
+        while time.monotonic() < deadline:
+            status_data = self._get_json(f"/v1/crawl/{job_id}", default_timeout=30.0)
+            status = str(status_data.get("status") or "").lower()
+            if status == "completed":
+                data = list(status_data.get("data") or [])
+                next_url = status_data.get("next")
+                while next_url:
+                    next_page = self._get_json(str(next_url), default_timeout=30.0)
+                    data.extend(list(next_page.get("data") or []))
+                    next_url = next_page.get("next")
+                status_data["data"] = data
+                return status_data
+            if status in {"failed", "cancelled", "error"}:
+                raise RuntimeError(
+                    f"Firecrawl crawl failed with status '{status}': "
+                    f"{status_data.get('error') or status_data}"
+                )
+            time.sleep(poll_interval)
+        raise TimeoutError(f"Firecrawl crawl {job_id} did not finish within {timeout:.0f}s")
+
+
+def _load_firecrawl_client_class():
+    if Firecrawl is not None:
+        return Firecrawl
+    logger.debug("firecrawl SDK unavailable, falling back to HTTP client")
+    return None
+
+
+def _get_firecrawl_gateway_url() -> str:
+    """Return configured Firecrawl gateway URL."""
+    return build_vendor_gateway_url("firecrawl")
+
+
+def _is_tool_gateway_ready() -> bool:
+    """Return True when gateway URL and a Nous Subscriber token are available."""
+    return resolve_managed_tool_gateway("firecrawl", token_reader=_read_nous_access_token) is not None
+
+
+def _has_direct_firecrawl_config() -> bool:
+    """Return True when direct Firecrawl config is explicitly configured."""
+    return _get_direct_firecrawl_config() is not None
+
+
+def _raise_web_backend_configuration_error() -> None:
+    """Raise a clear error for unsupported web backend configuration."""
+    message = (
+        "Web tools are not configured. "
+        "Set FIRECRAWL_API_KEY for cloud Firecrawl or set FIRECRAWL_API_URL for a self-hosted Firecrawl instance."
+    )
+    if managed_nous_tools_enabled():
+        message += (
+            " With your Nous subscription you can also use the Tool Gateway — "
+            "run `hermes tools` and select Nous Subscription as the web provider."
+        )
+    raise ValueError(message)
+
+
+def _firecrawl_backend_help_suffix() -> str:
+    """Return optional managed-gateway guidance for Firecrawl help text."""
+    if not managed_nous_tools_enabled():
+        return ""
+    return (
+        ", or use the Nous Tool Gateway via your subscription "
+        "(FIRECRAWL_GATEWAY_URL or TOOL_GATEWAY_DOMAIN)"
+    )
 
 
 def _web_requires_env() -> list[str]:
@@ -270,17 +465,264 @@ def _web_requires_env() -> list[str]:
     ]
 
 
-# ─── Parallel / Tavily / Firecrawl helpers — moved into plugins ──────────────
-# After PR #25182, the per-vendor client construction, request helpers, and
-# response normalizers all live in plugins.web.<vendor>.provider:
-#   - parallel: plugins/web/parallel/provider.py
-#   - tavily:   plugins/web/tavily/provider.py
-#   - firecrawl: plugins/web/firecrawl/provider.py
-# The names from the firecrawl plugin (Firecrawl proxy, _get_firecrawl_client,
-# _to_plain_object, _normalize_result_list, _extract_web_search_results,
-# _extract_scrape_payload, _is_tool_gateway_ready, etc.) are re-exported at
-# the top of this module for backward-compat with integration tests and
-# unit-test patches.
+def _get_firecrawl_client():
+    """Get or create Firecrawl client.
+
+    When ``web.use_gateway`` is set in config, the Tool Gateway is preferred
+    even if direct Firecrawl credentials are present.  Otherwise direct
+    Firecrawl takes precedence when explicitly configured.
+    """
+    global _firecrawl_client, _firecrawl_client_config
+
+    direct_config = _get_direct_firecrawl_config()
+    if direct_config is not None and not prefers_gateway("web"):
+        kwargs, client_config = direct_config
+    else:
+        managed_gateway = resolve_managed_tool_gateway(
+            "firecrawl",
+            token_reader=_read_nous_access_token,
+        )
+        if managed_gateway is None:
+            logger.error("Firecrawl client initialization failed: missing direct config and tool-gateway auth.")
+            _raise_web_backend_configuration_error()
+
+        kwargs = {
+            "api_key": managed_gateway.nous_user_token,
+            "api_url": managed_gateway.gateway_origin,
+        }
+        client_config = (
+            "tool-gateway",
+            kwargs["api_url"],
+            managed_gateway.nous_user_token,
+        )
+
+    if _firecrawl_client is not None and _firecrawl_client_config == client_config:
+        return _firecrawl_client
+
+    firecrawl_cls = _load_firecrawl_client_class()
+    if firecrawl_cls is not None:
+        _firecrawl_client = firecrawl_cls(**kwargs)
+    else:
+        _firecrawl_client = _FirecrawlHTTPCompatClient(**kwargs)
+    _firecrawl_client_config = client_config
+    return _firecrawl_client
+
+# ─── Parallel Client ─────────────────────────────────────────────────────────
+
+_parallel_client = None
+_async_parallel_client = None
+
+def _get_parallel_client():
+    """Get or create the Parallel sync client (lazy initialization).
+
+    Requires PARALLEL_API_KEY environment variable.
+    """
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("search.parallel", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
+    from parallel import Parallel
+    global _parallel_client
+    if _parallel_client is None:
+        api_key = os.getenv("PARALLEL_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "PARALLEL_API_KEY environment variable not set. "
+                "Get your API key at https://parallel.ai"
+            )
+        _parallel_client = Parallel(api_key=api_key)
+    return _parallel_client
+
+
+def _get_async_parallel_client():
+    """Get or create the Parallel async client (lazy initialization).
+
+    Requires PARALLEL_API_KEY environment variable.
+    """
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("search.parallel", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
+    from parallel import AsyncParallel
+    global _async_parallel_client
+    if _async_parallel_client is None:
+        api_key = os.getenv("PARALLEL_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "PARALLEL_API_KEY environment variable not set. "
+                "Get your API key at https://parallel.ai"
+            )
+        _async_parallel_client = AsyncParallel(api_key=api_key)
+    return _async_parallel_client
+
+# ─── Tavily Client ───────────────────────────────────────────────────────────
+
+_TAVILY_BASE_URL = os.getenv("TAVILY_BASE_URL", "https://api.tavily.com")
+
+
+def _tavily_request(endpoint: str, payload: dict) -> dict:
+    """Send a POST request to the Tavily API.
+
+    Auth is provided via ``api_key`` in the JSON body (no header-based auth).
+    Raises ``ValueError`` if ``TAVILY_API_KEY`` is not set.
+    """
+    api_key = os.getenv("TAVILY_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "TAVILY_API_KEY environment variable not set. "
+            "Get your API key at https://app.tavily.com/home"
+        )
+    payload["api_key"] = api_key
+    url = f"{_TAVILY_BASE_URL}/{endpoint.lstrip('/')}"
+    logger.info("Tavily %s request to %s", endpoint, url)
+    # Tavily /crawl requires Bearer auth in header (body-only auth returns 401)
+    headers = {"Authorization": f"Bearer {api_key}"} if endpoint.strip("/") == "crawl" else {}
+    response = httpx.post(url, json=payload, headers=headers, timeout=60)
+    response.raise_for_status()
+    return response.json()
+
+
+def _normalize_tavily_search_results(response: dict) -> dict:
+    """Normalize Tavily /search response to the standard web search format.
+
+    Tavily returns ``{results: [{title, url, content, score, ...}]}``.
+    We map to ``{success, data: {web: [{title, url, description, position}]}}``.
+    """
+    web_results = []
+    for i, result in enumerate(response.get("results", [])):
+        web_results.append({
+            "title": result.get("title", ""),
+            "url": result.get("url", ""),
+            "description": result.get("content", ""),
+            "position": i + 1,
+        })
+    return {"success": True, "data": {"web": web_results}}
+
+
+def _normalize_tavily_documents(response: dict, fallback_url: str = "") -> List[Dict[str, Any]]:
+    """Normalize Tavily /extract or /crawl response to the standard document format.
+
+    Maps results to ``{url, title, content, raw_content, metadata}`` and
+    includes any ``failed_results`` / ``failed_urls`` as error entries.
+    """
+    documents: List[Dict[str, Any]] = []
+    for result in response.get("results", []):
+        url = result.get("url", fallback_url)
+        raw = result.get("raw_content", "") or result.get("content", "")
+        documents.append({
+            "url": url,
+            "title": result.get("title", ""),
+            "content": raw,
+            "raw_content": raw,
+            "metadata": {"sourceURL": url, "title": result.get("title", "")},
+        })
+    # Handle failed results
+    for fail in response.get("failed_results", []):
+        documents.append({
+            "url": fail.get("url", fallback_url),
+            "title": "",
+            "content": "",
+            "raw_content": "",
+            "error": fail.get("error", "extraction failed"),
+            "metadata": {"sourceURL": fail.get("url", fallback_url)},
+        })
+    for fail_url in response.get("failed_urls", []):
+        url_str = fail_url if isinstance(fail_url, str) else str(fail_url)
+        documents.append({
+            "url": url_str,
+            "title": "",
+            "content": "",
+            "raw_content": "",
+            "error": "extraction failed",
+            "metadata": {"sourceURL": url_str},
+        })
+    return documents
+
+
+def _to_plain_object(value: Any) -> Any:
+    """Convert SDK objects to plain python data structures when possible."""
+    if value is None:
+        return None
+
+    if isinstance(value, (dict, list, str, int, float, bool)):
+        return value
+
+    if hasattr(value, "model_dump"):
+        try:
+            return value.model_dump()
+        except Exception:
+            pass
+
+    if hasattr(value, "__dict__"):
+        try:
+            return {k: v for k, v in value.__dict__.items() if not k.startswith("_")}
+        except Exception:
+            pass
+
+    return value
+
+
+def _normalize_result_list(values: Any) -> List[Dict[str, Any]]:
+    """Normalize mixed SDK/list payloads into a list of dicts."""
+    if not isinstance(values, list):
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    for item in values:
+        plain = _to_plain_object(item)
+        if isinstance(plain, dict):
+            normalized.append(plain)
+    return normalized
+
+
+def _extract_web_search_results(response: Any) -> List[Dict[str, Any]]:
+    """Extract Firecrawl search results across SDK/direct/gateway response shapes."""
+    response_plain = _to_plain_object(response)
+
+    if isinstance(response_plain, dict):
+        data = response_plain.get("data")
+        if isinstance(data, list):
+            return _normalize_result_list(data)
+
+        if isinstance(data, dict):
+            data_web = _normalize_result_list(data.get("web"))
+            if data_web:
+                return data_web
+            data_results = _normalize_result_list(data.get("results"))
+            if data_results:
+                return data_results
+
+        top_web = _normalize_result_list(response_plain.get("web"))
+        if top_web:
+            return top_web
+
+        top_results = _normalize_result_list(response_plain.get("results"))
+        if top_results:
+            return top_results
+
+    if hasattr(response, "web"):
+        return _normalize_result_list(getattr(response, "web", []))
+
+    return []
+
+
+def _extract_scrape_payload(scrape_result: Any) -> Dict[str, Any]:
+    """Normalize Firecrawl scrape payload shape across SDK and gateway variants."""
+    result_plain = _to_plain_object(scrape_result)
+    if not isinstance(result_plain, dict):
+        return {}
+
+    nested = result_plain.get("data")
+    if isinstance(nested, dict):
+        return nested
+
+    return result_plain
 
 
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
