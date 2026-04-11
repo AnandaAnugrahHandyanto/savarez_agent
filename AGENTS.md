@@ -14,7 +14,7 @@ source venv/bin/activate  # ALWAYS activate before running Python
 hermes-agent/
 ├── run_agent.py          # AIAgent class — core conversation loop
 ├── model_tools.py        # Tool orchestration, _discover_tools(), handle_function_call()
-├── toolsets.py           # Toolset definitions, _HERMES_CORE_TOOLS list
+├── toolsets.py           # Toolset bundle definitions, legacy aliases, default bundle helpers
 ├── cli.py                # HermesCLI class — interactive CLI orchestrator
 ├── hermes_state.py       # SessionDB — SQLite session store (FTS5 search)
 ├── agent/                # Agent internals
@@ -129,7 +129,7 @@ Messages follow OpenAI format: `{"role": "system/user/assistant/tool", ...}`. Re
 
 - **Rich** for banner/panels, **prompt_toolkit** for input with autocomplete
 - **KawaiiSpinner** (`agent/display.py`) — animated faces during API calls, `┊` activity feed for tool results
-- `load_cli_config()` in cli.py merges hardcoded defaults + user config YAML
+- `load_cli_config()` in cli.py is the CLI startup wrapper around `hermes_cli.config.load_runtime_config()`
 - **Skin engine** (`hermes_cli/skin_engine.py`) — data-driven CLI theming; initialized from `display.skin` config key at startup; skins customize banner colors, spinner faces/verbs/wings, tool prefix, response box, branding text
 - `process_command()` is a method on `HermesCLI` — dispatches on canonical command name resolved via `resolve_command()` from the central registry
 - Skill slash commands: `agent/skill_commands.py` scans `~/.hermes/skills/`, injects as **user message** (not system prompt) to preserve prompt caching
@@ -181,7 +181,7 @@ if canonical == "mycommand":
 
 ## Adding New Tools
 
-Requires changes in **3 files**:
+Requires changes in **2 places**:
 
 **1. Create `tools/your_tool.py`:**
 ```python
@@ -204,9 +204,9 @@ registry.register(
 )
 ```
 
-**2. Add import** in `model_tools.py` `_discover_tools()` list.
+**2. Update `toolsets.py`** — either use an existing toolset name in `registry.register(... toolset=...)`, or add a new toolset/bundle there when the capability needs a new grouping or default bundle membership.
 
-**3. Add to `toolsets.py`** — either `_HERMES_CORE_TOOLS` (all platforms) or a new toolset.
+There is **no manual import step** in `model_tools.py` anymore. Built-in tool modules are discovered automatically by `tools.registry.discover_builtin_tools()` when the file contains a `registry.register(...)` call.
 
 The registry handles schema collection, dispatch, availability checking, and error wrapping. All handlers MUST return a JSON string.
 
@@ -236,13 +236,14 @@ The registry handles schema collection, dispatch, availability checking, and err
 },
 ```
 
-### Config loaders (two separate systems):
+### Config loaders
 
 | Loader | Used by | Location |
 |--------|---------|----------|
-| `load_cli_config()` | CLI mode | `cli.py` |
-| `load_config()` | `hermes tools`, `hermes setup` | `hermes_cli/config.py` |
-| Direct YAML load | Gateway | `gateway/run.py` |
+| `load_runtime_config()` | Runtime entrypoints and live runtime flows (CLI startup, gateway startup, `/model` flows) | `hermes_cli/config.py` |
+| `load_cli_config()` | Thin CLI startup wrapper around `load_runtime_config()` | `cli.py` |
+| `load_config()` | Non-runtime config consumers such as `hermes tools` and `hermes setup` | `hermes_cli/config.py` |
+| `read_raw_config()` | Raw YAML reads without merged defaults | `hermes_cli/config.py` |
 
 ---
 

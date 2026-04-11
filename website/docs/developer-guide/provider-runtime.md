@@ -173,7 +173,7 @@ Hermes supports a configured fallback model/provider pair, allowing runtime fail
 
 4. **Config flow**:
    - CLI: `cli.py` reads `CLI_CONFIG["fallback_model"]` → passes to `AIAgent(fallback_model=...)`
-   - Gateway: `gateway/run.py._load_fallback_model()` reads `config.yaml` → passes to `AIAgent`
+   - Gateway: `gateway/run.py._load_fallback_model()` reads the shared runtime config via `load_runtime_config()` → passes to `AIAgent`
    - Validation: both `provider` and `model` keys must be non-empty, or fallback is disabled
 
 ### What does NOT support fallback

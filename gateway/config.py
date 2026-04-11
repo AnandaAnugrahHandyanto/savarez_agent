@@ -799,15 +799,16 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
 
     # Mattermost
     mattermost_token = os.getenv("MATTERMOST_TOKEN")
-    if mattermost_token:
-        mattermost_url = os.getenv("MATTERMOST_URL", "")
-        if not mattermost_url:
-            logger.warning("MATTERMOST_TOKEN set but MATTERMOST_URL is missing")
-        if Platform.MATTERMOST not in config.platforms:
-            config.platforms[Platform.MATTERMOST] = PlatformConfig()
-        config.platforms[Platform.MATTERMOST].enabled = True
-        config.platforms[Platform.MATTERMOST].token = mattermost_token
-        config.platforms[Platform.MATTERMOST].extra["url"] = mattermost_url
+    mattermost_url = os.getenv("MATTERMOST_URL", "")
+    if mattermost_token or mattermost_url:
+        if not (mattermost_token and mattermost_url):
+            logger.warning("Mattermost config is partial; both MATTERMOST_TOKEN and MATTERMOST_URL are required")
+        else:
+            if Platform.MATTERMOST not in config.platforms:
+                config.platforms[Platform.MATTERMOST] = PlatformConfig()
+            config.platforms[Platform.MATTERMOST].enabled = True
+            config.platforms[Platform.MATTERMOST].token = mattermost_token
+            config.platforms[Platform.MATTERMOST].extra["url"] = mattermost_url
     mattermost_home = os.getenv("MATTERMOST_HOME_CHANNEL")
     if mattermost_home and Platform.MATTERMOST in config.platforms:
         config.platforms[Platform.MATTERMOST].home_channel = HomeChannel(
@@ -819,26 +820,27 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # Matrix
     matrix_token = os.getenv("MATRIX_ACCESS_TOKEN")
     matrix_homeserver = os.getenv("MATRIX_HOMESERVER", "")
-    if matrix_token or os.getenv("MATRIX_PASSWORD"):
-        if not matrix_homeserver:
-            logger.warning("MATRIX_ACCESS_TOKEN/MATRIX_PASSWORD set but MATRIX_HOMESERVER is missing")
-        if Platform.MATRIX not in config.platforms:
-            config.platforms[Platform.MATRIX] = PlatformConfig()
-        config.platforms[Platform.MATRIX].enabled = True
-        if matrix_token:
-            config.platforms[Platform.MATRIX].token = matrix_token
-        config.platforms[Platform.MATRIX].extra["homeserver"] = matrix_homeserver
-        matrix_user = os.getenv("MATRIX_USER_ID", "")
-        if matrix_user:
-            config.platforms[Platform.MATRIX].extra["user_id"] = matrix_user
-        matrix_password = os.getenv("MATRIX_PASSWORD", "")
-        if matrix_password:
-            config.platforms[Platform.MATRIX].extra["password"] = matrix_password
-        matrix_e2ee = os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes")
-        config.platforms[Platform.MATRIX].extra["encryption"] = matrix_e2ee
-        matrix_device_id = os.getenv("MATRIX_DEVICE_ID", "")
-        if matrix_device_id:
-            config.platforms[Platform.MATRIX].extra["device_id"] = matrix_device_id
+    matrix_password = os.getenv("MATRIX_PASSWORD", "")
+    if matrix_token or matrix_password or matrix_homeserver:
+        if not (matrix_homeserver and (matrix_token or matrix_password)):
+            logger.warning("Matrix config is partial; MATRIX_HOMESERVER plus MATRIX_ACCESS_TOKEN or MATRIX_PASSWORD are required")
+        else:
+            if Platform.MATRIX not in config.platforms:
+                config.platforms[Platform.MATRIX] = PlatformConfig()
+            config.platforms[Platform.MATRIX].enabled = True
+            if matrix_token:
+                config.platforms[Platform.MATRIX].token = matrix_token
+            config.platforms[Platform.MATRIX].extra["homeserver"] = matrix_homeserver
+            matrix_user = os.getenv("MATRIX_USER_ID", "")
+            if matrix_user:
+                config.platforms[Platform.MATRIX].extra["user_id"] = matrix_user
+            if matrix_password:
+                config.platforms[Platform.MATRIX].extra["password"] = matrix_password
+            matrix_e2ee = os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes")
+            config.platforms[Platform.MATRIX].extra["encryption"] = matrix_e2ee
+            matrix_device_id = os.getenv("MATRIX_DEVICE_ID", "")
+            if matrix_device_id:
+                config.platforms[Platform.MATRIX].extra["device_id"] = matrix_device_id
     matrix_home = os.getenv("MATRIX_HOME_ROOM")
     if matrix_home and Platform.MATRIX in config.platforms:
         config.platforms[Platform.MATRIX].home_channel = HomeChannel(
@@ -849,13 +851,15 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
 
     # Home Assistant
     hass_token = os.getenv("HASS_TOKEN")
-    if hass_token:
-        if Platform.HOMEASSISTANT not in config.platforms:
-            config.platforms[Platform.HOMEASSISTANT] = PlatformConfig()
-        config.platforms[Platform.HOMEASSISTANT].enabled = True
-        config.platforms[Platform.HOMEASSISTANT].token = hass_token
-        hass_url = os.getenv("HASS_URL")
-        if hass_url:
+    hass_url = os.getenv("HASS_URL")
+    if hass_token or hass_url:
+        if not (hass_token and hass_url):
+            logger.warning("Home Assistant config is partial; both HASS_TOKEN and HASS_URL are required")
+        else:
+            if Platform.HOMEASSISTANT not in config.platforms:
+                config.platforms[Platform.HOMEASSISTANT] = PlatformConfig()
+            config.platforms[Platform.HOMEASSISTANT].enabled = True
+            config.platforms[Platform.HOMEASSISTANT].token = hass_token
             config.platforms[Platform.HOMEASSISTANT].extra["url"] = hass_url
 
     # Email
