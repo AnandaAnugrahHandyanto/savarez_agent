@@ -3,7 +3,11 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
+from agent.context_compressor import (
+    ContextCompressor,
+    SUMMARY_PREFIX,
+    _PRUNED_TOOL_PLACEHOLDER,
+)
 
 
 @pytest.fixture()
@@ -171,6 +175,42 @@ class TestNonStringContent:
         # None content → empty string → standardized compaction handoff prefix added
         assert summary is not None
         assert summary == SUMMARY_PREFIX
+
+    def test_multimodal_list_content_is_serialized_readably(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "hello"},
+                {"type": "image_url", "image_url": {"url": "http://x"}},
+                {"type": "input_image", "url": "http://y"},
+                {"type": "input_audio"},
+                {"type": "image", "source": {"media_type": "image/png"}},
+            ]},
+        ]
+
+        serialized = c._serialize_for_summary(messages)
+        assert "hello" in serialized
+        assert "[image:http://x]" in serialized
+        assert "[image:http://y]" in serialized
+        assert "[audio]" in serialized
+        assert "[image:image/png]" in serialized
+        assert "{'type': 'text'" not in serialized
+
+    def test_prune_old_tool_results_handles_multimodal_content(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "tool", "content": [{"type": "text", "text": "x" * 250}], "tool_call_id": "call_1"},
+            {"role": "user", "content": "recent"},
+            {"role": "assistant", "content": "reply"},
+        ]
+
+        result, pruned = c._prune_old_tool_results(messages, protect_tail_count=2)
+        assert pruned == 1
+        assert result[0]["content"] == _PRUNED_TOOL_PLACEHOLDER
 
     def test_summary_call_does_not_force_temperature(self):
         mock_response = MagicMock()
@@ -428,6 +468,40 @@ class TestCompressWithClient:
         first_tail = [m for m in result if "msg 6" in (m.get("content") or "")]
         assert len(first_tail) == 1
         assert "summary text" in first_tail[0]["content"]
+
+    def test_double_collision_merges_summary_into_multimodal_tail(self):
+        """Regression: merge-into-tail must handle multimodal list content."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=2)
+
+        msgs = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": [
+                {"type": "text", "text": "msg 5"},
+                {"type": "image_url", "image_url": {"url": "http://x"}},
+            ]},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        first_tail = [m for m in result if isinstance(m.get("content"), list)]
+        assert len(first_tail) == 1
+        content = first_tail[0]["content"]
+        assert content[0]["type"] == "text"
+        assert "summary text" in content[0]["text"]
+        assert content[0]["text"].endswith("\n\n")
+        assert content[1:] == msgs[5]["content"]
 
     def test_double_collision_user_head_assistant_tail(self):
         """Reverse double collision: head ends with 'user', tail starts with 'assistant'.
