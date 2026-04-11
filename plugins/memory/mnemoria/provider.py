@@ -6,6 +6,7 @@ memory provider. Uses threading.local() for per-thread store instances.
 
 import logging
 import os
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -32,6 +33,8 @@ _MnemoriaConfig = None
 try:
     from mnemoria.store import MnemoriaStore
     from mnemoria.config import MnemoriaConfig
+    from mnemoria.observers import all_observers
+    from mnemoria import events
     _UM_AVAILABLE = True
     _MnemoriaStore = MnemoriaStore
     _MnemoriaConfig = MnemoriaConfig
@@ -282,7 +285,8 @@ class MnemoriaMemoryProvider(MemoryProvider):
         self._prefetch_result = None
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
-        self._write_thread: Optional[threading.Thread] = None
+        self._observers = []
+        self._seen_user_hashes: set = set()
 
     @property
     def name(self) -> str:
@@ -319,6 +323,13 @@ class MnemoriaMemoryProvider(MemoryProvider):
             logger.info("MnemoriaMemoryProvider initialized (session=%s, read_only=%s)", session_id, self._read_only)
         except Exception as exc:
             logger.error("MnemoriaMemoryProvider init failed: %s", exc)
+
+        if not self._read_only:
+            try:
+                self._observers = all_observers()
+            except Exception as exc:
+                logger.debug("Failed to init observers: %s", exc)
+                self._observers = []
 
     def system_prompt_block(self) -> str:
         """Return usage hint + identity facts (Constraints and Decisions)."""
@@ -425,11 +436,66 @@ class MnemoriaMemoryProvider(MemoryProvider):
         )
         self._prefetch_thread.start()
 
+    _SIGNAL_RE = re.compile(r"https?://|/[\w./_+-]+\.\w+|\b(?:always|never|prefer|don't)\b", re.I)
+
+    def _observe_and_store(self, event: dict) -> int:
+        """Run observers on an event, store results via store_pending. Returns fact count."""
+        count = 0
+        s = _store()
+        for obs in self._observers:
+            try:
+                for fact in obs.observe(event):
+                    s.store_pending(
+                        content=fact.content,
+                        source=fact.source,
+                        fact_type=fact.type,
+                        target=fact.target,
+                        session_id=event.get("session_id", self._session_id),
+                        provenance=fact.provenance,
+                    )
+                    count += 1
+            except Exception as exc:
+                logger.debug("Observer %s failed on %s event: %s",
+                             getattr(obs, 'name', type(obs).__name__),
+                             event.get('kind', '?'), exc)
+        return count
+
+    def _extract_from_messages(self, messages) -> None:
+        """Iterate unprocessed messages, build events, run observers."""
+        if not messages:
+            return
+        for i in range(self._last_extracted_msg_index, len(messages)):
+            msg = messages[i]
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if not content or not isinstance(content, str):
+                continue
+            if role == "tool":
+                event = events.tool_result(content, session_id=self._session_id)
+                self._observe_and_store(event)
+            elif role == "user":
+                if hash(content) in self._seen_user_hashes:
+                    continue
+                event = events.user_message(content, session_id=self._session_id)
+                self._observe_and_store(event)
+        self._last_extracted_msg_index = len(messages)
+
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Store a conversation turn. Delegated to tick_unified_memory in the agent loop."""
-        # No-op: the agent loop calls tick_unified_memory() which auto-extracts facts.
-        # This follows BuiltinMemoryProvider.sync_turn pattern (also a no-op).
-        pass
+        """Extract user preferences from the current turn's user message."""
+        if self._read_only or not _UM_AVAILABLE:
+            return
+        if not user_content or len(user_content.strip()) < 15:
+            if not self._SIGNAL_RE.search(user_content or ""):
+                return
+        h = hash(user_content)
+        if h in self._seen_user_hashes:
+            return
+        sid = session_id or self._session_id
+        event = events.user_message(user_content, session_id=sid)
+        self._observe_and_store(event)
+        self._seen_user_hashes.add(h)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """Return the 8 Mnemoria memory tool schemas."""
@@ -467,98 +533,63 @@ class MnemoriaMemoryProvider(MemoryProvider):
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
         """Mirror built-in memory writes as typed Mnemoria facts."""
-        if self._read_only:
+        if self._read_only or not _UM_AVAILABLE:
             return
         if action not in ("add", "replace") or not content or not content.strip():
             return
-        if not _UM_AVAILABLE:
-            return
-        from .extract import content_slug
-        slug = content_slug(content)
-        if target == "user":
-            spec = f"V[user.{slug}]: {content.strip()}"
-        else:
-            spec = f"V[memory.{slug}]: {content.strip()}"
-        def _run():
-            try:
-                _store().store(spec)
-            except Exception as exc:
-                logger.debug("on_memory_write failed: %s", exc)
-        if self._write_thread and self._write_thread.is_alive():
-            self._write_thread.join(timeout=2.0)
-        self._write_thread = threading.Thread(target=_run, daemon=True, name="mnemoria-memory-write")
-        self._write_thread.start()
+        event = events.memory_write(action, target, content, session_id=self._session_id)
+        self._observe_and_store(event)
 
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
         """Store delegation outcomes and extract facts from subagent results."""
         if self._read_only or not _UM_AVAILABLE:
             return
-        try:
-            s = _store()
-            task_short = (task or "")[:200].strip()
-            result_short = (result or "")[:200].strip()
-            if task_short or result_short:
-                s.store(f"D[delegation]: {task_short} -> {result_short}")
-            if result:
-                from .extract import extract_from_text
-                facts = extract_from_text(result, source="tool_result")
-                scope = f"delegation:{child_session_id}" if child_session_id else "global"
-                for fact in facts:
-                    s.store(fact.content, scope=scope)
-        except Exception as exc:
-            logger.debug("on_delegation failed: %s", exc)
+        event = events.delegation(
+            task, result,
+            child_session_id=child_session_id,
+            tool_trace=kwargs.get("tool_trace"),
+            session_id=self._session_id,
+        )
+        self._observe_and_store(event)
 
     def on_pre_compress(self, messages) -> str:
         """Extract facts from messages before context compression discards them."""
-        if self._read_only:
+        if self._read_only or not _UM_AVAILABLE:
             return ""
         try:
-            from .extract import extract_from_messages
-            facts, new_index = extract_from_messages(messages, start_index=self._last_extracted_msg_index)
-            self._last_extracted_msg_index = new_index
-            if facts and _UM_AVAILABLE:
-                s = _store()
-                for fact in facts:
-                    try:
-                        s.store(fact.content)
-                    except Exception as exc:
-                        logger.debug("on_pre_compress store failed: %s", exc)
-                logger.info("on_pre_compress extracted %d facts", len(facts))
+            self._extract_from_messages(messages)
         except Exception as exc:
             self._last_extracted_msg_index = len(messages) if messages else 0
             logger.debug("on_pre_compress failed: %s", exc)
         return ""
 
     def on_session_end(self, messages) -> None:
-        """Extract remaining facts and run consolidation at session end."""
+        """Extract remaining facts, flush pending, and run consolidation."""
         if not _UM_AVAILABLE:
             return
-        try:
-            s = _store()
-            if not self._read_only and messages:
-                from .extract import extract_from_messages
-                facts, new_index = extract_from_messages(messages, start_index=self._last_extracted_msg_index)
-                self._last_extracted_msg_index = new_index
-                for fact in facts:
-                    try:
-                        s.store(fact.content)
-                    except Exception:
-                        pass
-                if facts:
-                    logger.info("on_session_end extracted %d facts", len(facts))
+        s = _store()
+        if not self._read_only and messages:
             try:
-                report = s.consolidate()
-                logger.info("on_session_end consolidation: promoted=%d demoted=%d pruned=%d",
-                    report.get("promoted", 0), report.get("demoted", 0), report.get("pruned", 0))
+                self._extract_from_messages(messages)
             except Exception as exc:
-                logger.debug("on_session_end consolidation failed: %s", exc)
+                logger.debug("on_session_end extraction failed: %s", exc)
+
+        try:
+            s.flush_pending()
         except Exception as exc:
-            logger.debug("on_session_end failed: %s", exc)
+            logger.debug("on_session_end flush_pending failed: %s", exc)
+
+        try:
+            report = s.consolidate()
+            logger.info("on_session_end consolidation: promoted=%d demoted=%d pruned=%d",
+                report.get("promoted", 0), report.get("demoted", 0), report.get("pruned", 0))
+        except Exception as exc:
+            logger.debug("on_session_end consolidation failed: %s", exc)
 
     def shutdown(self) -> None:
-        for t in (self._prefetch_thread, self._write_thread):
-            if t and t.is_alive():
-                t.join(timeout=5.0)
+        """Wait for background threads and close store."""
+        if self._prefetch_thread and self._prefetch_thread.is_alive():
+            self._prefetch_thread.join(timeout=5.0)
         try:
             store = getattr(_local, "store", None)
             if store is not None:
@@ -566,7 +597,7 @@ class MnemoriaMemoryProvider(MemoryProvider):
                 _local.store = None
             logger.info("MnemoriaMemoryProvider shutdown complete")
         except Exception as exc:
-            logger.warning("MnemoriaMemoryProvider shutdown error: %s", exc)
+            logger.debug("shutdown failed: %s", exc)
 
 
 # -----------------------------------------------------------------------

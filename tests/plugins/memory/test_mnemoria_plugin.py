@@ -1,4 +1,5 @@
 import json
+from unittest.mock import MagicMock, patch
 
 from plugins.memory import discover_memory_providers, load_memory_provider
 from plugins.memory.mnemoria import provider as mnemoria_provider_module
@@ -49,7 +50,6 @@ def test_mnemoria_is_discoverable_in_memory_provider_list():
 
 def test_prefetch_returns_cached_result_from_queue(monkeypatch):
     provider = MnemoriaMemoryProvider()
-    from unittest.mock import MagicMock
     mock_fact = MagicMock()
     mock_fact.fact.fact_type = "V"
     mock_fact.fact.target = "test"
@@ -122,7 +122,109 @@ def test_initialize_stores_profile_and_user_id():
     assert provider._platform == "telegram"
 
 
-# Task 8: on_memory_write
+# --- sync_turn ---
+
+def test_sync_turn_extracts_user_preferences():
+    """sync_turn calls _observe_and_store for sufficiently long user messages."""
+    provider = MnemoriaMemoryProvider()
+    provider._read_only = False
+    provider._session_id = "test-session"
+    provider._observers = []  # no observers = no facts, but should not raise
+
+    # Should not raise even with no observers
+    provider.sync_turn("I always prefer dark mode for everything", "OK noted")
+
+
+def test_sync_turn_skips_short_messages_without_signal():
+    """sync_turn skips messages under 15 chars with no signal words."""
+    provider = MnemoriaMemoryProvider()
+    provider._read_only = False
+    provider._session_id = "test-session"
+
+    mock_store = MagicMock()
+    with patch.object(mnemoria_provider_module, "_store", return_value=mock_store):
+        provider._observers = [MagicMock()]
+        provider.sync_turn("hi", "hello")
+        # Observer should not be called for short content with no signal
+        provider._observers[0].observe.assert_not_called()
+
+
+def test_sync_turn_accepts_short_message_with_signal():
+    """sync_turn processes short messages that contain signal patterns (URLs, paths, directives)."""
+    provider = MnemoriaMemoryProvider()
+    provider._read_only = False
+    provider._session_id = "test-session"
+
+    mock_obs = MagicMock()
+    mock_obs.observe.return_value = []
+    provider._observers = [mock_obs]
+
+    mock_store = MagicMock()
+    with patch.object(mnemoria_provider_module, "_store", return_value=mock_store):
+        provider.sync_turn("always use tabs", "OK")
+        mock_obs.observe.assert_called_once()
+
+
+def test_sync_turn_is_noop_when_read_only():
+    provider = MnemoriaMemoryProvider()
+    provider._read_only = True
+    provider._session_id = "test-session"
+    mock_obs = MagicMock()
+    provider._observers = [mock_obs]
+    provider.sync_turn("I always prefer dark mode for everything", "OK")
+    mock_obs.observe.assert_not_called()
+
+
+def test_sync_turn_deduplicates_user_content():
+    """sync_turn skips duplicate user messages via _seen_user_hashes."""
+    provider = MnemoriaMemoryProvider()
+    provider._read_only = False
+    provider._session_id = "test-session"
+
+    mock_obs = MagicMock()
+    mock_obs.observe.return_value = []
+    provider._observers = [mock_obs]
+
+    mock_store = MagicMock()
+    with patch.object(mnemoria_provider_module, "_store", return_value=mock_store):
+        msg = "I always prefer dark mode for everything"
+        provider.sync_turn(msg, "OK")
+        provider.sync_turn(msg, "Sure")
+        # Should only be called once due to dedup
+        assert mock_obs.observe.call_count == 1
+
+
+# --- _observe_and_store ---
+
+def test_observe_and_store_isolates_observer_errors():
+    """A failing observer does not prevent other observers from running."""
+    provider = MnemoriaMemoryProvider()
+    provider._session_id = "test-session"
+
+    bad_obs = MagicMock()
+    bad_obs.observe.side_effect = RuntimeError("broken")
+    bad_obs.name = "bad"
+
+    good_obs = MagicMock()
+    good_fact = MagicMock()
+    good_fact.content = "found"
+    good_fact.source = "test"
+    good_fact.type = "V"
+    good_fact.target = "t"
+    good_fact.provenance = None
+    good_obs.observe.return_value = [good_fact]
+    good_obs.name = "good"
+
+    provider._observers = [bad_obs, good_obs]
+
+    mock_store = MagicMock()
+    with patch.object(mnemoria_provider_module, "_store", return_value=mock_store):
+        count = provider._observe_and_store({"kind": "test", "session_id": "s"})
+        assert count == 1
+        mock_store.store_pending.assert_called_once()
+
+
+# --- on_memory_write ---
 
 def test_on_memory_write_is_noop_when_read_only():
     provider = MnemoriaMemoryProvider()
@@ -136,7 +238,19 @@ def test_on_memory_write_skips_remove_action():
     provider.on_memory_write("remove", "user", "some content")
 
 
-# Task 9: on_delegation
+def test_on_memory_write_calls_observe_and_store():
+    provider = MnemoriaMemoryProvider()
+    provider._read_only = False
+    provider._session_id = "test-session"
+    provider._observers = []
+
+    mock_store = MagicMock()
+    with patch.object(mnemoria_provider_module, "_store", return_value=mock_store):
+        provider.on_memory_write("add", "user", "dark mode preferred")
+        # With no observers, store_pending is not called, but no error raised
+
+
+# --- on_delegation ---
 
 def test_on_delegation_is_noop_when_read_only():
     provider = MnemoriaMemoryProvider()
@@ -151,7 +265,7 @@ def test_on_delegation_does_not_raise_without_store(monkeypatch):
     provider.on_delegation("do research", "found nothing", child_session_id="child-1")
 
 
-# Task 10: on_pre_compress
+# --- on_pre_compress ---
 
 def test_on_pre_compress_is_noop_when_read_only():
     provider = MnemoriaMemoryProvider()
@@ -163,18 +277,21 @@ def test_on_pre_compress_is_noop_when_read_only():
 def test_on_pre_compress_returns_empty_string():
     provider = MnemoriaMemoryProvider()
     provider._read_only = False
+    provider._observers = []
     assert provider.on_pre_compress([]) == ""
 
 
 def test_on_pre_compress_advances_message_index():
     provider = MnemoriaMemoryProvider()
     provider._read_only = False
+    provider._session_id = "test-session"
+    provider._observers = []
     provider._last_extracted_msg_index = 0
     provider.on_pre_compress([{"role": "user", "content": "hello"}, {"role": "tool", "content": "ok"}])
     assert provider._last_extracted_msg_index == 2
 
 
-# Task 11: on_session_end
+# --- on_session_end ---
 
 def test_on_session_end_does_not_raise_without_store(monkeypatch):
     monkeypatch.setattr(mnemoria_provider_module, "_UM_AVAILABLE", False)
@@ -182,6 +299,25 @@ def test_on_session_end_does_not_raise_without_store(monkeypatch):
     provider._read_only = False
     provider.on_session_end([{"role": "user", "content": "bye"}])
 
+
+def test_on_session_end_flushes_before_consolidate():
+    """on_session_end calls flush_pending before consolidate."""
+    provider = MnemoriaMemoryProvider()
+    provider._read_only = False
+    provider._session_id = "test-session"
+    provider._observers = []
+
+    call_order = []
+    mock_store = MagicMock()
+    mock_store.flush_pending.side_effect = lambda: call_order.append("flush") or {}
+    mock_store.consolidate.side_effect = lambda: call_order.append("consolidate") or {"promoted": 0, "demoted": 0, "pruned": 0}
+
+    with patch.object(mnemoria_provider_module, "_store", return_value=mock_store):
+        provider.on_session_end([{"role": "user", "content": "bye"}])
+        assert call_order == ["flush", "consolidate"]
+
+
+# --- full lifecycle ---
 
 def test_full_lifecycle_smoke():
     """Smoke test: provider can be instantiated and all hook methods exist."""
