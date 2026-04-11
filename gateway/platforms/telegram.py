@@ -66,6 +66,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
+    resolve_proxy_url,
 )
 from gateway.platforms.telegram_network import (
     TelegramFallbackTransport,
@@ -552,10 +553,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
             }
 
-            proxy_configured = any(
-                (os.getenv(k) or "").strip()
-                for k in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")
-            )
+            proxy_url = resolve_proxy_url(platform_env_var="TELEGRAM_PROXY")
+            proxy_configured = bool(proxy_url)
+            if proxy_url:
+                request_kwargs["proxy"] = proxy_url
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in ("1", "true", "yes", "on"))
             fallback_ips = self._fallback_ips()
             if not fallback_ips:
