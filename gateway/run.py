@@ -2916,6 +2916,18 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "model":
                 return "Agent is running — wait or /stop first, then switch models."
 
+            # Commands that require an idle agent should bypass the adapter guard
+            # but still reject here with a helpful message instead of silently
+            # interrupting the current run.
+            _REJECT_IF_RUNNING = frozenset({
+                "retry", "undo", "title", "branch",
+                "compress", "rollback", "resume",
+                "reasoning", "fast", "personality",
+                "update", "reload-mcp",
+            })
+            if _cmd_def_inner and _cmd_def_inner.name in _REJECT_IF_RUNNING:
+                return "Agent is running — wait or /stop first."
+
             # /approve and /deny must bypass the running-agent interrupt path.
             # The agent thread is blocked on a threading.Event inside
             # tools/approval.py — sending an interrupt won't unblock it.
@@ -2930,7 +2942,20 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
-            if event.message_type == MessageType.PHOTO:
+            # Informational/config commands should execute immediately without
+            # interrupting the active run. Let normal command dispatch below
+            # handle them.
+            _EXECUTE_IMMEDIATELY = frozenset({
+                "help", "commands", "profile", "provider",
+                "usage", "insights", "sethome", "voice",
+                "yolo", "btw",
+            })
+            if _cmd_def_inner and _cmd_def_inner.name in _EXECUTE_IMMEDIATELY:
+                logger.debug(
+                    "Busy session %s: executing '/%s' without interrupt",
+                    _quick_key[:20], _cmd_def_inner.name,
+                )
+            elif event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
                 adapter = self.adapters.get(source.platform)
                 if adapter:
@@ -2991,13 +3016,16 @@ class GatewayRunner:
                     if self._queue_during_drain_enabled()
                     else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
                 )
-            logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
-            running_agent.interrupt(event.text)
-            if _quick_key in self._pending_messages:
-                self._pending_messages[_quick_key] += "\n" + event.text
+            if _cmd_def_inner and _cmd_def_inner.name in _EXECUTE_IMMEDIATELY:
+                pass
             else:
-                self._pending_messages[_quick_key] = event.text
-            return None
+                logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
+                running_agent.interrupt(event.text)
+                if _quick_key in self._pending_messages:
+                    self._pending_messages[_quick_key] += "\n" + event.text
+                else:
+                    self._pending_messages[_quick_key] = event.text
+                return None
 
         # Check for commands
         command = event.get_command()

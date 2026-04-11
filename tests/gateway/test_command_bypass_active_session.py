@@ -327,3 +327,63 @@ class TestBypassWithBotnameSuffix:
 
         assert sk not in adapter._pending_messages
         assert any("handled:new" in r for r in adapter.sent_responses)
+
+
+# ---------------------------------------------------------------------------
+# Tests: expanded busy-session bypass coverage
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteImmediatelyCommands:
+    """Commands that should bypass and execute even while agent is running."""
+
+    EXEC_IMMEDIATE = [
+        "help", "commands", "profile", "provider",
+        "usage", "insights", "sethome", "set-home",
+        "voice", "yolo", "btw", "queue",
+        "model", "bg",
+    ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cmd", EXEC_IMMEDIATE)
+    async def test_exec_immediate_bypasses_guard(self, cmd):
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        payload = f"/{cmd} test payload" if cmd in {"queue", "q", "bg"} else f"/{cmd}"
+        await adapter.handle_message(_make_event(payload))
+
+        assert sk not in adapter._pending_messages, (
+            f"/{cmd} was queued as pending instead of being dispatched"
+        )
+        assert any(f"handled:{cmd}" in r for r in adapter.sent_responses), (
+            f"/{cmd} response was not sent back to the user"
+        )
+
+
+class TestRejectWithMessageCommands:
+    """Commands that should bypass the adapter guard even though the runner will reject them."""
+
+    REJECT_COMMANDS = [
+        "retry", "undo", "title", "branch", "fork",
+        "compress", "rollback", "resume",
+        "reasoning", "fast", "personality",
+        "update", "reload-mcp", "reload_mcp",
+    ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cmd", REJECT_COMMANDS)
+    async def test_reject_command_bypasses_guard(self, cmd):
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event(f"/{cmd}"))
+
+        assert sk not in adapter._pending_messages, (
+            f"/{cmd} was queued as pending instead of being dispatched"
+        )
+        assert any(f"handled:{cmd}" in r for r in adapter.sent_responses), (
+            f"/{cmd} response was not sent back to the user"
+        )
