@@ -577,6 +577,16 @@ def _get_platform_tools(
         and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
     }
     # Allow "no_mcp" sentinel to opt out of all MCP servers for this platform
+    legacy_named_mcp_servers = {
+        ts[4:]
+        for ts in explicit_passthrough
+        if ts.startswith("mcp-") and ts[4:] in enabled_mcp_servers
+    }
+    explicit_passthrough = {
+        ts
+        for ts in explicit_passthrough
+        if not ts.startswith("mcp-")
+    } | legacy_named_mcp_servers
     if "no_mcp" in toolset_names:
         explicit_mcp_servers = set()
         enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers - {"no_mcp"})

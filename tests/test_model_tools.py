@@ -9,10 +9,15 @@ from model_tools import (
     handle_function_call,
     get_all_tool_names,
     get_toolset_for_tool,
+    get_legacy_toolset_map_snapshot,
+    get_tool_to_toolset_map_snapshot,
+    get_toolset_requirements_snapshot,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
     TOOL_TO_TOOLSET_MAP,
+    TOOLSET_REQUIREMENTS,
 )
+from tools.registry import registry
 
 
 # =========================================================================
@@ -137,3 +142,48 @@ class TestBackwardCompat:
     def test_tool_to_toolset_map(self):
         assert isinstance(TOOL_TO_TOOLSET_MAP, dict)
         assert len(TOOL_TO_TOOLSET_MAP) > 0
+
+    def test_snapshot_helpers_update_with_registration(self):
+        registry.register(
+            name="test_live_model_tools_mapping",
+            toolset="test-live-model-tools",
+            schema={
+                "name": "test_live_model_tools_mapping",
+                "description": "Live test tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+        try:
+            tool_map = get_tool_to_toolset_map_snapshot()
+            requirements = get_toolset_requirements_snapshot()
+            assert tool_map["test_live_model_tools_mapping"] == "test-live-model-tools"
+            assert "test-live-model-tools" in requirements
+            assert requirements["test-live-model-tools"]["tools"] == ["test_live_model_tools_mapping"]
+        finally:
+            registry.deregister("test_live_model_tools_mapping")
+
+        assert "test_live_model_tools_mapping" not in get_tool_to_toolset_map_snapshot()
+        assert "test-live-model-tools" not in get_toolset_requirements_snapshot()
+
+    def test_legacy_toolset_snapshot_helper(self):
+        assert get_legacy_toolset_map_snapshot()["browser_tools"]
+
+    def test_compatibility_globals_refresh_on_registry_update(self):
+        registry.register(
+            name="test_live_compat_mapping",
+            toolset="test-live-compat",
+            schema={
+                "name": "test_live_compat_mapping",
+                "description": "Compat test",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+        try:
+            assert TOOL_TO_TOOLSET_MAP["test_live_compat_mapping"] == "test-live-compat"
+            assert "test-live-compat" in TOOLSET_REQUIREMENTS
+        finally:
+            registry.deregister("test_live_compat_mapping")
+
+        assert "test_live_compat_mapping" not in TOOL_TO_TOOLSET_MAP
