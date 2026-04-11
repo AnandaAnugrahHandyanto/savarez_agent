@@ -1400,11 +1400,9 @@ def normalize_anthropic_response(
 
     return (
         SimpleNamespace(
-            content="\n".join(text_parts) if text_parts else None,
-            tool_calls=tool_calls or None,
-            reasoning="\n\n".join(reasoning_parts) if reasoning_parts else None,
-            reasoning_content=None,
-            reasoning_details=reasoning_details or None,
-        ),
-        finish_reason,
-    )
+    content="\n".join(text_parts) or None,
+    tool_calls=tool_calls or None,
+    reasoning="\n\n".join(reasoning_parts) or None,
+    reasoning_content=None,
+    reasoning_details=reasoning_details or None,
+), finish_reason
