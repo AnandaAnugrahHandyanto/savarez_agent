@@ -2274,7 +2274,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 thread_list = thread_list[-self._MAX_TRACKED_THREADS:]
                 self._bot_participated_threads = set(thread_list)
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(thread_list), encoding="utf-8")
+            _tmp = path.with_suffix(".tmp")
+            _tmp.write_text(json.dumps(thread_list), encoding="utf-8")
+            _tmp.replace(path)
         except Exception as e:
             logger.debug("Could not save discord thread state: %s", e)
 
