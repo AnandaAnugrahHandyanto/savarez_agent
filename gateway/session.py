@@ -809,7 +809,7 @@ class SessionStore:
         """
         import time as _time
 
-        cutoff = _time.time() - max_age_seconds
+        cutoff = datetime.fromtimestamp(_time.time() - max_age_seconds)
         count = 0
         with self._lock:
             self._ensure_loaded_locked()
