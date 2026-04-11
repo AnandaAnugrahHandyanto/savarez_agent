@@ -100,6 +100,23 @@ _SANE_PATH = (
 )
 
 
+def _split_path_entries(path_value: str) -> list[str]:
+    """Split PATH using the current platform's separator."""
+    return [p for p in (path_value or "").split(os.pathsep) if p]
+
+
+def _join_path_entries(parts: list[str]) -> str:
+    """Join PATH entries using the current platform's separator."""
+    return os.pathsep.join(parts)
+
+
+def _iter_sane_path_dirs() -> list[str]:
+    """Return sane default PATH directories for the current platform."""
+    if os.name == "nt":
+        return []
+    return [p for p in _SANE_PATH.split(":") if p]
+
+
 def _discover_homebrew_node_dirs() -> list[str]:
     """Find Homebrew versioned Node.js bin directories (e.g. node@20, node@24).
 
@@ -802,11 +819,35 @@ def _find_agent_browser() -> str:
         if which_result:
             return which_result
 
-    # Check local node_modules/.bin/ (npm install in repo root)
     repo_root = Path(__file__).parent.parent
-    local_bin = repo_root / "node_modules" / ".bin" / "agent-browser"
-    if local_bin.exists():
-        return str(local_bin)
+
+    # On Windows, prefer the package's native .exe over npm shims. The shim
+    # chain (.cmd -> node -> bin/agent-browser.js -> native exe) can still fail
+    # in some embedded shells/environment setups, while the native executable is
+    # the most direct and reliable launch target.
+    if os.name == "nt":
+        native_win_bin = repo_root / "node_modules" / "agent-browser" / "bin" / "agent-browser-win32-x64.exe"
+        if native_win_bin.exists():
+            return str(native_win_bin)
+
+    # Check local node_modules/.bin/ (npm install in repo root)
+    local_bin_dir = repo_root / "node_modules" / ".bin"
+    local_bin_candidates = (
+        [
+            local_bin_dir / "agent-browser.cmd",
+            local_bin_dir / "agent-browser.ps1",
+            local_bin_dir / "agent-browser",
+        ]
+        if os.name == "nt"
+        else [
+            local_bin_dir / "agent-browser",
+            local_bin_dir / "agent-browser.cmd",
+            local_bin_dir / "agent-browser.ps1",
+        ]
+    )
+    for local_bin in local_bin_candidates:
+        if local_bin.exists():
+            return str(local_bin)
     
     # Check common npx locations (also search extended dirs)
     npx_path = shutil.which("npx")
@@ -842,6 +883,36 @@ def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
                 return path
 
     return None
+
+
+def _build_browser_cmd_prefix(browser_cmd: str) -> list[str]:
+    """Build the subprocess argv prefix for the resolved agent-browser command.
+
+    On Windows, ``agent-browser`` may be discovered as a ``.cmd`` or ``.ps1``
+    launcher script under ``node_modules/.bin``. Those wrappers cannot be passed
+    directly to ``subprocess.Popen([...])`` because they are not native Win32
+    executables and commonly fail with WinError 193. Wrap them explicitly in the
+    appropriate host process.
+    """
+    browser_cmd_lower = browser_cmd.lower()
+
+    if browser_cmd == "npx agent-browser":
+        return ["npx", "agent-browser"]
+
+    if os.name == "nt":
+        if browser_cmd_lower.endswith(".cmd") or browser_cmd_lower.endswith(".bat"):
+            return ["cmd.exe", "/d", "/s", "/c", browser_cmd]
+        if browser_cmd_lower.endswith(".ps1"):
+            return [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                browser_cmd,
+            ]
+
+    return [browser_cmd]
 
 
 def _run_browser_command(
@@ -904,8 +975,8 @@ def _run_browser_command(
         backend_args = ["--session", session_info["session_name"]]
 
     # Keep concrete executable paths intact, even when they contain spaces.
-    # Only the synthetic npx fallback needs to expand into multiple argv items.
-    cmd_prefix = ["npx", "agent-browser"] if browser_cmd == "npx agent-browser" else [browser_cmd]
+    # On Windows, wrap .cmd/.ps1 launchers in their host shell to avoid WinError 193.
+    cmd_prefix = _build_browser_cmd_prefix(browser_cmd)
 
     cmd_parts = cmd_prefix + backend_args + [
         "--json",
@@ -932,18 +1003,18 @@ def _run_browser_command(
         hermes_node_bin = str(hermes_home / "node" / "bin")
 
         existing_path = browser_env.get("PATH", "")
-        path_parts = [p for p in existing_path.split(":") if p]
+        path_parts = _split_path_entries(existing_path)
         candidate_dirs = (
             [hermes_node_bin]
             + _discover_homebrew_node_dirs()
-            + [p for p in _SANE_PATH.split(":") if p]
+            + _iter_sane_path_dirs()
         )
 
         for part in reversed(candidate_dirs):
             if os.path.isdir(part) and part not in path_parts:
                 path_parts.insert(0, part)
 
-        browser_env["PATH"] = ":".join(path_parts)
+        browser_env["PATH"] = _join_path_entries(path_parts)
         browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
         
         # Use temp files for stdout/stderr instead of pipes.

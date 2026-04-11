@@ -9,6 +9,7 @@ from unittest.mock import patch, MagicMock, mock_open
 import pytest
 
 from tools.browser_tool import (
+    _build_browser_cmd_prefix,
     _discover_homebrew_node_dirs,
     _find_agent_browser,
     _run_browser_command,
@@ -43,15 +44,16 @@ class TestDiscoverHomebrewNodeDirs:
     def test_finds_versioned_node_dirs(self):
         """Should discover node@20/bin, node@24/bin etc."""
         entries = ["node@20", "node@24", "openssl", "node", "python@3.12"]
+        expected_dirs = {
+            os.path.join("/opt/homebrew/opt", "node@20", "bin"),
+            os.path.join("/opt/homebrew/opt", "node@24", "bin"),
+        }
 
         def mock_isdir(p):
             if p == "/opt/homebrew/opt":
                 return True
             # node@20/bin and node@24/bin exist
-            if p in (
-                "/opt/homebrew/opt/node@20/bin",
-                "/opt/homebrew/opt/node@24/bin",
-            ):
+            if p in expected_dirs:
                 return True
             return False
 
@@ -60,8 +62,8 @@ class TestDiscoverHomebrewNodeDirs:
             result = _discover_homebrew_node_dirs()
 
         assert len(result) == 2
-        assert "/opt/homebrew/opt/node@20/bin" in result
-        assert "/opt/homebrew/opt/node@24/bin" in result
+        assert os.path.join("/opt/homebrew/opt", "node@20", "bin") in result
+        assert os.path.join("/opt/homebrew/opt", "node@24", "bin") in result
 
     def test_excludes_plain_node(self):
         """'node' (unversioned) should be excluded — covered by /opt/homebrew/bin."""
@@ -149,6 +151,32 @@ class TestFindAgentBrowser:
             with pytest.raises(FileNotFoundError, match="agent-browser CLI not found"):
                 _find_agent_browser()
 
+    def test_windows_prefers_native_exe_before_npm_shims(self, monkeypatch):
+        """Windows should prefer the packaged native exe over .cmd/.ps1 shims."""
+        original_path_exists = Path.exists
+
+        def mock_path_exists(self):
+            path_str = str(self)
+            if path_str.endswith("agent-browser-win32-x64.exe"):
+                return True
+            if path_str.endswith("agent-browser.cmd") or path_str.endswith("agent-browser.ps1"):
+                return True
+            if "node_modules" in path_str and "agent-browser" in path_str:
+                return False
+            return original_path_exists(self)
+
+        monkeypatch.setattr("tools.browser_tool.os.name", "nt")
+
+        with patch("shutil.which", return_value=None), \
+             patch("os.path.isdir", return_value=False), \
+             patch.object(Path, "exists", mock_path_exists), \
+             patch(
+                 "tools.browser_tool._discover_homebrew_node_dirs",
+                 return_value=[],
+             ):
+            result = _find_agent_browser()
+            assert result.endswith("node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe")
+
 
 class TestBrowserRequirements:
     def test_termux_requires_real_agent_browser_install_not_npx_fallback(self, monkeypatch):
@@ -177,6 +205,36 @@ class TestRunBrowserCommandTermuxFallback:
 
 class TestRunBrowserCommandPathConstruction:
     """Verify _run_browser_command() includes Homebrew node dirs in subprocess PATH."""
+
+    def test_build_browser_cmd_prefix_keeps_npx_fallback_split(self):
+        assert _build_browser_cmd_prefix("npx agent-browser") == ["npx", "agent-browser"]
+
+    def test_build_browser_cmd_prefix_wraps_windows_cmd(self, monkeypatch):
+        monkeypatch.setattr("tools.browser_tool.os.name", "nt")
+        result = _build_browser_cmd_prefix(r"C:\\repo\\node_modules\\.bin\\agent-browser.cmd")
+        assert result == [
+            "cmd.exe",
+            "/d",
+            "/s",
+            "/c",
+            r"C:\\repo\\node_modules\\.bin\\agent-browser.cmd",
+        ]
+
+    def test_build_browser_cmd_prefix_wraps_windows_powershell_script(self, monkeypatch):
+        monkeypatch.setattr("tools.browser_tool.os.name", "nt")
+        result = _build_browser_cmd_prefix(r"C:\\repo\\node_modules\\.bin\\agent-browser.ps1")
+        assert result == [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            r"C:\\repo\\node_modules\\.bin\\agent-browser.ps1",
+        ]
+
+    def test_build_browser_cmd_prefix_keeps_executable_path_with_spaces(self):
+        browser_path = "/Users/test/Library/Application Support/hermes/node_modules/.bin/agent-browser"
+        assert _build_browser_cmd_prefix(browser_path) == [browser_path]
 
     def test_subprocess_preserves_executable_path_with_spaces(self, tmp_path):
         """A local agent-browser path containing spaces must stay one argv entry."""
@@ -224,6 +282,125 @@ class TestRunBrowserCommandPathConstruction:
         assert captured_cmd is not None
         assert captured_cmd[0] == browser_path
         assert captured_cmd[1:5] == [
+            "--session",
+            "test-session",
+            "--json",
+            "navigate",
+        ]
+
+    def test_subprocess_wraps_windows_cmd_launcher(self, tmp_path, monkeypatch):
+        captured_cmd = None
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+
+        def capture_popen(cmd, **kwargs):
+            nonlocal captured_cmd
+            captured_cmd = cmd
+            return mock_proc
+
+        fake_session = {
+            "session_name": "test-session",
+            "session_id": "test-id",
+            "cdp_url": None,
+        }
+        fake_json = json.dumps({"success": True})
+        hermes_home = str(tmp_path / "hermes-home")
+        browser_path = r"C:\\repo\\node_modules\\.bin\\agent-browser.cmd"
+
+        monkeypatch.setattr("tools.browser_tool.os.name", "nt")
+
+        with patch("tools.browser_tool._find_agent_browser", return_value=browser_path), \
+             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
+             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+             patch("hermes_constants.Path.home", return_value=tmp_path), \
+             patch("subprocess.Popen", side_effect=capture_popen), \
+             patch("os.open", return_value=99), \
+             patch("os.close"), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.dict(
+                 os.environ,
+                 {
+                     "PATH": r"C:\\Windows\\System32;C:\\Program Files\\nodejs",
+                     "HOME": r"C:\\Users\\test",
+                     "HERMES_HOME": hermes_home,
+                 },
+                 clear=True,
+             ):
+            with patch("builtins.open", mock_open(read_data=fake_json)):
+                _run_browser_command("test-task", "navigate", ["https://example.com"])
+
+        assert captured_cmd is not None
+        assert captured_cmd[:5] == [
+            "cmd.exe",
+            "/d",
+            "/s",
+            "/c",
+            browser_path,
+        ]
+        assert captured_cmd[5:9] == [
+            "--session",
+            "test-session",
+            "--json",
+            "navigate",
+        ]
+
+    def test_subprocess_wraps_windows_powershell_launcher(self, tmp_path, monkeypatch):
+        captured_cmd = None
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+
+        def capture_popen(cmd, **kwargs):
+            nonlocal captured_cmd
+            captured_cmd = cmd
+            return mock_proc
+
+        fake_session = {
+            "session_name": "test-session",
+            "session_id": "test-id",
+            "cdp_url": None,
+        }
+        fake_json = json.dumps({"success": True})
+        hermes_home = str(tmp_path / "hermes-home")
+        browser_path = r"C:\\repo\\node_modules\\.bin\\agent-browser.ps1"
+
+        monkeypatch.setattr("tools.browser_tool.os.name", "nt")
+
+        with patch("tools.browser_tool._find_agent_browser", return_value=browser_path), \
+             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
+             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+             patch("hermes_constants.Path.home", return_value=tmp_path), \
+             patch("subprocess.Popen", side_effect=capture_popen), \
+             patch("os.open", return_value=99), \
+             patch("os.close"), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.dict(
+                 os.environ,
+                 {
+                     "PATH": r"C:\\Windows\\System32;C:\\Program Files\\nodejs",
+                     "HOME": r"C:\\Users\\test",
+                     "HERMES_HOME": hermes_home,
+                 },
+                 clear=True,
+             ):
+            with patch("builtins.open", mock_open(read_data=fake_json)):
+                _run_browser_command("test-task", "navigate", ["https://example.com"])
+
+        assert captured_cmd is not None
+        assert captured_cmd[:6] == [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            browser_path,
+        ]
+        assert captured_cmd[6:10] == [
             "--session",
             "test-session",
             "--json",
@@ -310,28 +487,37 @@ class TestRunBrowserCommandPathConstruction:
             "/opt/homebrew/opt/node@24/bin",
             "/opt/homebrew/opt/node@20/bin",
         ]
+        sane_dirs = ["/opt/homebrew/bin", "/opt/homebrew/sbin"]
+        hermes_home = str(tmp_path / ".hermes")
 
         # We need os.path.isdir to return True for our fake dirs
         # but we also need real isdir for tmp_path operations
         real_isdir = os.path.isdir
 
         def selective_isdir(p):
-            if p in fake_homebrew_dirs or p.startswith(str(tmp_path)):
+            if p in fake_homebrew_dirs or p in sane_dirs or p.startswith(str(tmp_path)):
                 return True
-            if "/opt/homebrew/" in p:
-                return True  # _SANE_PATH dirs
             return real_isdir(p)
 
         with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
              patch("tools.browser_tool._get_session_info", return_value=fake_session), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=fake_homebrew_dirs), \
+             patch("tools.browser_tool._iter_sane_path_dirs", return_value=sane_dirs), \
              patch("os.path.isdir", side_effect=selective_isdir), \
              patch("subprocess.Popen", side_effect=capture_popen), \
              patch("os.open", return_value=99), \
              patch("os.close"), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
+             patch.dict(
+                 os.environ,
+                 {
+                     "PATH": "/usr/bin:/bin",
+                     "HOME": "/home/test",
+                     "HERMES_HOME": hermes_home,
+                 },
+                 clear=True,
+             ):
             # The function reads from temp files for stdout/stderr
             with patch("builtins.open", mock_open(read_data=fake_json)):
                 _run_browser_command("test-task", "navigate", ["https://example.com"])
@@ -362,11 +548,11 @@ class TestRunBrowserCommandPathConstruction:
 
         fake_json = json.dumps({"success": True})
         real_isdir = os.path.isdir
+        sane_dirs = ["/opt/homebrew/bin", "/opt/homebrew/sbin"]
+        hermes_home = str(tmp_path / ".hermes")
 
         def selective_isdir(p):
-            if "/opt/homebrew/" in p:
-                return True
-            if p.startswith(str(tmp_path)):
+            if p in sane_dirs or p.startswith(str(tmp_path)):
                 return True
             return real_isdir(p)
 
@@ -374,12 +560,21 @@ class TestRunBrowserCommandPathConstruction:
              patch("tools.browser_tool._get_session_info", return_value=fake_session), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+             patch("tools.browser_tool._iter_sane_path_dirs", return_value=sane_dirs), \
              patch("os.path.isdir", side_effect=selective_isdir), \
              patch("subprocess.Popen", side_effect=capture_popen), \
              patch("os.open", return_value=99), \
              patch("os.close"), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
+             patch.dict(
+                 os.environ,
+                 {
+                     "PATH": "/usr/bin:/bin",
+                     "HOME": "/home/test",
+                     "HERMES_HOME": hermes_home,
+                 },
+                 clear=True,
+             ):
             with patch("builtins.open", mock_open(read_data=fake_json)):
                 _run_browser_command("test-task", "navigate", ["https://example.com"])
 

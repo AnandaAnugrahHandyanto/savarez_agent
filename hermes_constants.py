@@ -14,7 +14,10 @@ def get_hermes_home() -> Path:
     Reads HERMES_HOME env var, falls back to ~/.hermes.
     This is the single source of truth — all other copies should import this.
     """
-    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    override = os.getenv("HERMES_HOME", "").strip()
+    if override:
+        return Path(override)
+    return Path.home() / ".hermes"
 
 
 def get_optional_skills_dir(default: Path | None = None) -> Path:
