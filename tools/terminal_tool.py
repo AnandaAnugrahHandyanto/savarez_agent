@@ -1424,7 +1424,7 @@ def terminal_tool(
                     # turn.  CLI mode uses the completion_queue directly.
                     from gateway.session_context import get_session_env as _gse
                     _gw_platform = _gse("HERMES_SESSION_PLATFORM", "")
-                    if _gw_platform and not check_interval:
+                    if _gw_platform:
                         _gw_chat_id = _gse("HERMES_SESSION_CHAT_ID", "")
                         _gw_thread_id = _gse("HERMES_SESSION_THREAD_ID", "")
                         _gw_user_id = _gse("HERMES_SESSION_USER_ID", "")
@@ -1483,6 +1483,7 @@ def terminal_tool(
                         "user_id": watcher_user_id,
                         "user_name": watcher_user_name,
                         "thread_id": watcher_thread_id,
+                        "notify_on_complete": notify_on_complete,
                     })
 
                 return json.dumps(result_data, ensure_ascii=False)

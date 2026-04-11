@@ -282,6 +282,103 @@ class TestTerminalSchema:
 
 
 # =========================================================================
+# Combined notify_on_complete + check_interval watcher registration
+# =========================================================================
+
+class TestNotifyWithCheckInterval:
+    """notify_on_complete=True must survive into the check_interval watcher dict."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_active_envs(self):
+        """Ensure terminal_tool module state is clean before and after each test."""
+        import tools.terminal_tool as tt
+        tt._active_environments.clear()
+        yield
+        tt._active_environments.clear()
+
+    def _fake_gse(self, key, default=""):
+        return {
+            "HERMES_SESSION_PLATFORM": "telegram",
+            "HERMES_SESSION_CHAT_ID": "chat_1",
+            "HERMES_SESSION_THREAD_ID": "",
+            "HERMES_SESSION_USER_ID": "u1",
+            "HERMES_SESSION_USER_NAME": "bob",
+        }.get(key, default)
+
+    def _make_registry(self, sid="proc_combined"):
+        fake_session = MagicMock()
+        fake_session.id = sid
+        fake_session.pid = 99
+        fake_session.notify_on_complete = False
+
+        fake_registry = MagicMock()
+        fake_registry.pending_watchers = []
+        fake_registry.spawn_local.return_value = fake_session
+        return fake_registry
+
+    def test_check_interval_watcher_includes_notify_on_complete(self):
+        """When both notify_on_complete=True and check_interval are set, the
+        check_interval watcher appended to pending_watchers must carry
+        notify_on_complete=True so _run_process_watcher notifies on completion."""
+        from tools.terminal_tool import terminal_tool
+
+        fake_registry = self._make_registry("proc_combined")
+
+        with (
+            patch("tools.terminal_tool._check_all_guards",
+                  return_value={"approved": True}),
+            patch("tools.terminal_tool._create_environment",
+                  return_value=MagicMock()),
+            patch("tools.process_registry.process_registry", fake_registry),
+            patch("tools.approval.get_current_session_key", return_value="sk1"),
+            patch("gateway.session_context.get_session_env", self._fake_gse),
+        ):
+            terminal_tool(
+                command="sleep 60",
+                background=True,
+                notify_on_complete=True,
+                check_interval=30,
+                task_id="t_combined",
+            )
+
+        # Two watcher entries: the fast notify_on_complete watcher (interval=5)
+        # and the user-requested check_interval watcher.
+        assert len(fake_registry.pending_watchers) == 2
+
+        check_interval_watcher = next(
+            w for w in fake_registry.pending_watchers if w["check_interval"] >= 30
+        )
+        assert check_interval_watcher["notify_on_complete"] is True
+
+    def test_notify_only_no_check_interval_watcher_registered(self):
+        """When only notify_on_complete=True (no check_interval), only the fast
+        notify watcher (interval=5) is added — no second watcher."""
+        from tools.terminal_tool import terminal_tool
+
+        fake_registry = self._make_registry("proc_notify_only")
+
+        with (
+            patch("tools.terminal_tool._check_all_guards",
+                  return_value={"approved": True}),
+            patch("tools.terminal_tool._create_environment",
+                  return_value=MagicMock()),
+            patch("tools.process_registry.process_registry", fake_registry),
+            patch("tools.approval.get_current_session_key", return_value="sk1"),
+            patch("gateway.session_context.get_session_env", self._fake_gse),
+        ):
+            terminal_tool(
+                command="sleep 60",
+                background=True,
+                notify_on_complete=True,
+                task_id="t_notify_only",
+            )
+
+        assert len(fake_registry.pending_watchers) == 1
+        assert fake_registry.pending_watchers[0]["notify_on_complete"] is True
+        assert fake_registry.pending_watchers[0]["check_interval"] == 5
+
+
+# =========================================================================
 # Code execution blocked params
 # =========================================================================
 

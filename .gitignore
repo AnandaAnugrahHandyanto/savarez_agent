@@ -58,3 +58,9 @@ mini-swe-agent/
 # Nix
 .direnv/
 result
+config.yaml
+hello_world.py
+hesap_makinesi.py
+hesap_makinesi_gui.py
+sifre_uretici.py
+acp_adapter/_acp_compat.py
