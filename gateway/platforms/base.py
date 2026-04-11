@@ -1509,7 +1509,25 @@ class BasePlatformAdapter(ABC):
             # session lifecycle and its cleanup races with the running task
             # (see PR #4926).
             cmd = event.get_command()
-            if cmd in ("approve", "deny", "status", "stop", "new", "reset", "background", "restart"):
+            from hermes_cli.commands import resolve_command as _resolve_gateway_command
+
+            _cmd_def = _resolve_gateway_command(cmd) if cmd else None
+            canonical = _cmd_def.name if _cmd_def else cmd
+
+            if canonical in (
+                # Session control / state mutation
+                "approve", "deny", "status", "stop", "new",
+                "background", "queue", "restart",
+                # Execute immediately while agent is busy
+                "help", "commands", "profile", "provider",
+                "usage", "insights", "sethome", "voice",
+                "yolo", "btw",
+                # Reject with a helpful message while agent is busy
+                "model", "retry", "undo", "title", "branch",
+                "compress", "rollback", "resume",
+                "reasoning", "fast", "personality",
+                "update", "reload-mcp",
+            ):
                 logger.debug(
                     "[%s] Command '/%s' bypassing active-session guard for %s",
                     self.name, cmd, session_key,
