@@ -1898,21 +1898,33 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             from pathlib import Path
             import yaml
+            from utils import atomic_yaml_write
+
             config_path = Path.home() / ".hermes" / "config.yaml"
             if not config_path.exists():
                 return web.json_response({"error": "config.yaml not found"}, status=404)
             body = await request.json()
-            config_data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            if not isinstance(body, dict):
+                return web.json_response({"error": "PATCH body must be a JSON object"}, status=400)
+
+            config_data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            if not isinstance(config_data, dict):
+                return web.json_response({"error": "config.yaml must contain a top-level mapping"}, status=500)
+
             # Shallow merge allowed top-level keys
-            ALLOWED_PATCH_KEYS = {"model", "display", "memory", "terminal", "voice", "tts", "stt"}
+            allowed_patch_keys = {"model", "display", "memory", "terminal", "voice", "tts", "stt"}
+            updated_keys = []
             for key, value in body.items():
-                if key in ALLOWED_PATCH_KEYS:
-                    if isinstance(config_data.get(key), dict) and isinstance(value, dict):
-                        config_data[key].update(value)
-                    else:
-                        config_data[key] = value
-            config_path.write_text(yaml.dump(config_data, default_flow_style=False), encoding="utf-8")
-            return web.json_response({"ok": True, "updated_keys": [k for k in body if k in ALLOWED_PATCH_KEYS]})
+                if key not in allowed_patch_keys:
+                    continue
+                if isinstance(config_data.get(key), dict) and isinstance(value, dict):
+                    config_data[key].update(value)
+                else:
+                    config_data[key] = value
+                updated_keys.append(key)
+
+            atomic_yaml_write(config_path, config_data, default_flow_style=False, sort_keys=False)
+            return web.json_response({"ok": True, "updated_keys": updated_keys})
         except Exception as e:
             logger.error("[api_server] patch_config error: %s", e)
             return web.json_response({"error": str(e)}, status=500)
