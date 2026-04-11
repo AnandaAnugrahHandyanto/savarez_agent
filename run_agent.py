@@ -7189,6 +7189,35 @@ class AIAgent:
 
     # ── Per-turn primary restoration ─────────────────────────────────────
 
+    def check_provider_health(self) -> bool:
+        """Probe the primary provider to check if it's reachable.
+
+        Makes a lightweight API call (models.list) to verify connectivity.
+        Returns True if the provider responds, False otherwise.
+        """
+        try:
+            self.client.models.list()
+            return True
+        except Exception:
+            return False
+
+    def try_recover_primary(self) -> bool:
+        """Attempt to recover the primary provider if currently on fallback.
+
+        Called periodically (e.g., from _restore_primary_runtime) to
+        check if the primary has recovered. If healthy, triggers a full
+        restore.
+
+        Returns True if primary was recovered, False otherwise.
+        """
+        if not self._fallback_activated:
+            return True  # Already on primary
+
+        if self.check_provider_health():
+            return self._restore_primary_runtime()
+
+        return False
+
     def _restore_primary_runtime(self) -> bool:
         """Restore the primary runtime at the start of a new turn.
 
@@ -9619,10 +9648,11 @@ class AIAgent:
         from hermes_logging import set_session_context
         set_session_context(self.session_id)
 
-        # If the previous turn activated fallback, restore the primary
-        # runtime so this turn gets a fresh attempt with the preferred model.
+        # If the previous turn activated fallback, attempt to recover the
+        # primary provider. Uses try_recover_primary which first probes
+        # provider health before attempting a full restore.
         # No-op when _fallback_activated is False (gateway, first turn, etc.).
-        self._restore_primary_runtime()
+        self.try_recover_primary()
 
         # Sanitize surrogate characters from user input.  Clipboard paste from
         # rich-text editors (Google Docs, Word, etc.) can inject lone surrogates
