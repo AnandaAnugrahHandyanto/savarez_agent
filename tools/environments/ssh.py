@@ -1,6 +1,7 @@
 """SSH remote execution environment with ControlMaster connection persistence."""
 
 import logging
+import os
 import shlex
 import shutil
 import subprocess
@@ -50,6 +51,7 @@ class SSHEnvironment(BaseEnvironment):
             get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
             upload_fn=self._scp_upload,
             delete_fn=self._ssh_delete,
+            bulk_upload_fn=self._ssh_bulk_upload,
         )
         self._sync_manager.sync(force=True)
 
@@ -130,6 +132,73 @@ class SSHEnvironment(BaseEnvironment):
         result = subprocess.run(scp_cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             raise RuntimeError(f"scp failed: {result.stderr.strip()}")
+
+    def _ssh_bulk_upload(self, files: list[tuple[str, str]]) -> None:
+        """Upload many files in a single SSH stream via tar pipe.
+
+        Creates a temporary staging directory mirroring the remote path
+        layout, tars it, and pipes through ``ssh tar xf -`` on the remote.
+        Single TCP stream, single subprocess pair — avoids per-file scp
+        round-trips (~581 files goes from minutes to seconds).
+        """
+        if not files:
+            return
+
+        with tempfile.TemporaryDirectory(prefix="hermes-ssh-bulk-") as staging:
+            # Stage files into a directory tree matching their remote paths.
+            # All remote paths are absolute (e.g. /home/user/.hermes/...),
+            # so we strip the leading '/' and recreate relative to staging.
+            for host_path, remote_path in files:
+                rel = remote_path.lstrip("/")
+                staged = os.path.join(staging, rel)
+                os.makedirs(os.path.dirname(staged), exist_ok=True)
+                shutil.copy2(host_path, staged)
+
+            # Pre-create all unique parent directories on remote in one call
+            parents = sorted({str(Path(rp).parent) for _, rp in files})
+            mkdir_cmd = self._build_ssh_command()
+            mkdir_cmd.append(
+                "mkdir -p " + " ".join(shlex.quote(p) for p in parents)
+            )
+            mkdir_result = subprocess.run(
+                mkdir_cmd, capture_output=True, text=True, timeout=30,
+            )
+            if mkdir_result.returncode != 0:
+                raise RuntimeError(
+                    f"SSH mkdir failed: {mkdir_result.stderr.strip()}"
+                )
+
+            # Pipe: tar cf - -C staging . | ssh tar xf - -C /
+            tar_create = subprocess.Popen(
+                ["tar", "cf", "-", "-C", staging, "."],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            ssh_cmd = self._build_ssh_command()
+            ssh_cmd.extend(["tar", "xf", "-", "-C", "/"])
+            tar_extract = subprocess.Popen(
+                ssh_cmd,
+                stdin=tar_create.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            # Allow tar_create to receive SIGPIPE if ssh process exits early
+            tar_create.stdout.close()
+
+            _, extract_stderr = tar_extract.communicate(timeout=120)
+            tar_create.wait(timeout=10)
+
+            if tar_create.returncode != 0:
+                create_err = tar_create.stderr.read() if tar_create.stderr else b""
+                logger.warning(
+                    "SSH bulk upload: local tar failed (rc=%d): %s",
+                    tar_create.returncode,
+                    create_err.decode("utf-8", errors="replace").strip(),
+                )
+
+            if tar_extract.returncode != 0:
+                err = extract_stderr.decode("utf-8", errors="replace").strip()
+                raise RuntimeError(f"SSH bulk upload failed: {err}")
 
     def _ssh_delete(self, remote_paths: list[str]) -> None:
         """Batch-delete remote files in one SSH call."""

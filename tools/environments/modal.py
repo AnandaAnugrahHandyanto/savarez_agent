@@ -5,8 +5,11 @@ wrapper, while preserving Hermes' persistent snapshot behavior across sessions.
 """
 
 import asyncio
+import base64
+import io
 import logging
 import shlex
+import tarfile
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -259,13 +262,13 @@ class ModalEnvironment(BaseEnvironment):
             get_files_fn=lambda: iter_sync_files("/root/.hermes"),
             upload_fn=self._modal_upload,
             delete_fn=self._modal_delete,
+            bulk_upload_fn=self._modal_bulk_upload,
         )
         self._sync_manager.sync(force=True)
         self.init_session()
 
     def _modal_upload(self, host_path: str, remote_path: str) -> None:
         """Upload a single file via base64-over-exec."""
-        import base64
         content = Path(host_path).read_bytes()
         b64 = base64.b64encode(content).decode("ascii")
         container_dir = str(Path(remote_path).parent)
@@ -279,6 +282,45 @@ class ModalEnvironment(BaseEnvironment):
             await proc.wait.aio()
 
         self._worker.run_coroutine(_write(), timeout=15)
+
+    def _modal_bulk_upload(self, files: list[tuple[str, str]]) -> None:
+        """Upload many files in a single exec call via tar archive.
+
+        Creates a tar archive in memory containing all files with their
+        remote paths, base64-encodes it, and decodes+extracts in one
+        ``exec`` call.  Avoids per-file exec+encoding overhead (~581 files
+        goes from minutes to seconds).
+        """
+        if not files:
+            return
+
+        # Build a tar archive in memory with files at their remote paths
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            for host_path, remote_path in files:
+                # Store with absolute path stripped of leading '/' so
+                # extracting at '/' recreates the full path
+                arcname = remote_path.lstrip("/")
+                tar.add(host_path, arcname=arcname)
+        payload = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        # Pre-create all unique parent directories in one call
+        parents = sorted({str(Path(rp).parent) for _, rp in files})
+        mkdir_part = "mkdir -p " + " ".join(shlex.quote(p) for p in parents)
+
+        # Decode and extract in one exec: echo <b64> | base64 -d | tar xzf - -C /
+        cmd = f"{mkdir_part} && echo {shlex.quote(payload)} | base64 -d | tar xzf - -C /"
+        sandbox = self._sandbox
+
+        async def _bulk():
+            proc = await sandbox.exec.aio("bash", "-c", cmd)
+            exit_code = await proc.wait.aio()
+            if exit_code != 0:
+                raise RuntimeError(
+                    f"Modal bulk upload failed (exit {exit_code})"
+                )
+
+        self._worker.run_coroutine(_bulk(), timeout=120)
 
     def _modal_delete(self, remote_paths: list[str]) -> None:
         """Batch-delete remote files via exec."""
