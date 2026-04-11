@@ -745,8 +745,20 @@ def resolve_runtime_provider(
 
     # Anthropic (native Messages API)
     if provider == "anthropic":
+        # Check config.yaml for a directly set api_key first (#7579).
+        # This lets users who set model.provider=anthropic and model.api_key=sk-...
+        # in config.yaml authenticate without setting an environment variable.
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_api_key = ""
+        if cfg_provider == "anthropic":
+            for k in ("api_key", "api"):
+                v = model_cfg.get(k)
+                if isinstance(v, str) and v.strip():
+                    cfg_api_key = v.strip()
+                    break
+
         from agent.anthropic_adapter import resolve_anthropic_token
-        token = resolve_anthropic_token()
+        token = cfg_api_key or resolve_anthropic_token()
         if not token:
             raise AuthError(
                 "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
@@ -755,7 +767,6 @@ def resolve_runtime_provider(
         # Allow base URL override from config.yaml model.base_url, but only
         # when the configured provider is anthropic — otherwise a non-Anthropic
         # base_url (e.g. Codex endpoint) would leak into Anthropic requests.
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = ""
         if cfg_provider == "anthropic":
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
@@ -765,7 +776,7 @@ def resolve_runtime_provider(
             "api_mode": "anthropic_messages",
             "base_url": base_url,
             "api_key": token,
-            "source": "env",
+            "source": "config" if cfg_api_key else "env",
             "requested_provider": requested_provider,
         }
 

@@ -935,6 +935,17 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
     if custom_mode == "codex_responses":
         real_client = OpenAI(api_key=custom_key, base_url=custom_base)
         return CodexAuxiliaryClient(real_client, model), model
+    if custom_mode == "anthropic_messages":
+        # Honor api_mode: anthropic_messages for custom auxiliary endpoints (#7661).
+        # Use AnthropicAuxiliaryClient so that Anthropic-compatible endpoints
+        # (e.g. local Ollama with /anthropic, corporate proxies) receive the
+        # native Messages API format instead of OpenAI chat completions.
+        try:
+            import anthropic as _anthropic
+            real_client = _anthropic.Anthropic(api_key=custom_key, base_url=custom_base)
+            return AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base), model
+        except Exception as exc:
+            logger.warning("Auxiliary: failed to init Anthropic client for custom endpoint, falling back to OpenAI compat: %s", exc)
     return OpenAI(api_key=custom_key, base_url=custom_base), model
 
 
