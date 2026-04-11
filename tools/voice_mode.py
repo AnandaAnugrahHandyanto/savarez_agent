@@ -424,6 +424,10 @@ class AudioRecorder:
         return time.monotonic() - self._start_time
 
     @property
+    def is_recording(self) -> bool:
+        return self._recording
+
+    @property
     def current_rms(self) -> int:
         """Current audio input RMS level (0-32767). Updated each audio chunk."""
         return self._current_rms
