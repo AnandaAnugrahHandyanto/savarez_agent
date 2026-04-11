@@ -25,5 +25,5 @@ WORKDIR /opt/hermes
 RUN chmod +x /opt/hermes/docker/entrypoint.sh
 
 ENV HERMES_HOME=/opt/data
-VOLUME [ "/opt/data" ]
+VOLUME [ "https://docs.railway.com/reference/volumes" ]
 ENTRYPOINT [ "/opt/hermes/docker/entrypoint.sh" ]
