@@ -454,6 +454,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
+        skip_context_files: bool = False,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -494,6 +495,7 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
+            skip_context_files=skip_context_files,
         )
         return agent
 
@@ -504,6 +506,32 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "hermes-agent"})
+
+    async def _handle_fc_rag_log(self, request: "web.Request") -> "web.Response":
+        """POST /api/fc-rag-log — Append FC-RAG query log entry (NDJSON)."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(
+                {"error": {"message": "Invalid JSON", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        log_dir = os.path.join(os.path.expanduser("~"), ".hermes", "logs")
+        log_file = os.path.join(log_dir, "fc-rag-queries.jsonl")
+
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(body, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.warning("Failed to write fc-rag log: %s", e)
+
+        return web.json_response({"status": "ok"}, status=202)
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
         """GET /v1/models — return hermes-agent as an available model."""
@@ -546,6 +574,7 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         stream = body.get("stream", False)
+        skip_context_files = bool(body.get("skip_context_files", False))
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
@@ -686,6 +715,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
+                skip_context_files=skip_context_files,
             ))
 
             return await self._write_sse_chat_completion(
@@ -700,6 +730,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                skip_context_files=skip_context_files,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1416,6 +1447,7 @@ class APIServerAdapter(BasePlatformAdapter):
         stream_delta_callback=None,
         tool_progress_callback=None,
         agent_ref: Optional[list] = None,
+        skip_context_files: bool = False,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -1436,6 +1468,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 stream_delta_callback=stream_delta_callback,
                 tool_progress_callback=tool_progress_callback,
+                skip_context_files=skip_context_files,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
@@ -1749,6 +1782,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+            # FC-RAG log ingestion
+            self._app.router.add_post("/api/fc-rag-log", self._handle_fc_rag_log)
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
