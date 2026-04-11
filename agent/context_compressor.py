@@ -486,9 +486,17 @@ class ContextCompressor(ContextEngine):
                     # V4A patch mode: extract paths from patch argument
                     if name == "patch" and not path and args.get("patch"):
                         import re as _re_cp
+                        patch_text = args["patch"]
+                        # Unified diff headers: +++ b/path or --- a/path
                         for pm in _re_cp.finditer(r'^(?:\+\+\+|---)\s+[ab]/(.+)$',
-                                                   args["patch"], _re_cp.MULTILINE):
+                                                   patch_text, _re_cp.MULTILINE):
                             fpath = pm.group(1)
+                            if fpath != "/dev/null" and fpath not in modified_files:
+                                modified_files.append(fpath)
+                        # V4A patch headers: *** Update File: path or *** Add/Delete File: path
+                        for pm in _re_cp.finditer(r'^\*\*\* (?:Update|Add|Delete) File: (.+)$',
+                                                   patch_text, _re_cp.MULTILINE):
+                            fpath = pm.group(1).strip()
                             if fpath != "/dev/null" and fpath not in modified_files:
                                 modified_files.append(fpath)
                 if tool_call_id and tool_call_id in following_tools:

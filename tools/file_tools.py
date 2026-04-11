@@ -753,7 +753,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
-                preview_lines: int = 3, task_id: str = "default") -> str:
+                preview_lines: int = 2, task_id: str = "default") -> str:
     """Search for content or files."""
     try:
         # Track searches to detect *consecutive* repeated search loops.
@@ -891,7 +891,7 @@ PATCH_SCHEMA = {
 
 SEARCH_FILES_SCHEMA = {
     "name": "search_files",
-    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts. Each result includes a numbered snippet preview around the match (default 3 lines context). Set preview_lines=0 to disable previews.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
+    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts. Each result includes a numbered snippet preview around the match (default 2 lines context). Set preview_lines=0 to disable previews.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -903,7 +903,7 @@ SEARCH_FILES_SCHEMA = {
             "offset": {"type": "integer", "description": "Skip first N results for pagination (default: 0)", "default": 0},
             "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file", "default": "content"},
             "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0},
-            "preview_lines": {"type": "integer", "description": "Number of context lines to preview around each match (default: 3). Set to 0 to disable previews.", "default": 3, "minimum": 0}
+            "preview_lines": {"type": "integer", "description": "Number of context lines to preview around each match (default: 2). Set to 0 to disable previews.", "default": 2, "minimum": 0}
         },
         "required": ["pattern"]
     }
@@ -937,7 +937,7 @@ def _handle_search_files(args, **kw):
         pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0),
-        preview_lines=args.get("preview_lines", 3), task_id=tid)
+        preview_lines=args.get("preview_lines", 2), task_id=tid)
 
 
 registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=float('inf'))

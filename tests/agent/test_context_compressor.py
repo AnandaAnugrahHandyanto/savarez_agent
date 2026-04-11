@@ -900,3 +900,65 @@ class TestTaskCheckpoint:
         assert len(payload["r"]) == 1
         assert payload["r"][0].startswith("terminal:FAILED tests/test_docs.py::test_architect")
 
+    def test_build_task_checkpoint_skips_failed_write_results(self, compressor):
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "write_fail",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": json.dumps({"path": "src/bad.py", "content": "x"}),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "write_fail",
+                "content": json.dumps({"error": "permission denied"}),
+            },
+        ]
+
+        checkpoint = compressor._build_task_checkpoint(messages, messages)
+        assert checkpoint is None or checkpoint.recently_modified_files == []
+
+    def test_build_task_checkpoint_extracts_v4a_patch_paths(self, compressor):
+        patch_text = """*** Begin Patch
+*** Update File: src/a.py
+@@
+-old
++new
+*** Update File: tests/test_a.py
+@@
+-old
++new
+*** End Patch"""
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "patch_multi",
+                        "type": "function",
+                        "function": {
+                            "name": "patch",
+                            "arguments": json.dumps({"mode": "patch", "patch": patch_text}),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "patch_multi",
+                "content": json.dumps({"status": "ok", "operations": 2}),
+            },
+        ]
+
+        checkpoint = compressor._build_task_checkpoint(messages, messages)
+        assert checkpoint is not None
+        assert "src/a.py" in checkpoint.recently_modified_files
+        assert "tests/test_a.py" in checkpoint.recently_modified_files
+

@@ -6,6 +6,7 @@ handling without requiring a running terminal environment.
 
 import json
 import logging
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.file_tools import (
@@ -14,6 +15,7 @@ from tools.file_tools import (
     WRITE_FILE_SCHEMA,
     PATCH_SCHEMA,
     SEARCH_FILES_SCHEMA,
+    _discover_related_paths,
 )
 
 
@@ -179,6 +181,40 @@ class TestPatchHandler:
         assert "Unknown mode" in result["error"]
 
 
+class TestRelatedPaths:
+    def test_discovers_absolute_imports_and_mirrored_tests(self, tmp_path, monkeypatch):
+        repo = tmp_path
+        (repo / "tools").mkdir()
+        (repo / "tests" / "tools").mkdir(parents=True)
+        (repo / "agent").mkdir()
+
+        target = repo / "tools" / "file_tools.py"
+        target.write_text("from tools.file_operations import ShellFileOperations\nfrom agent.redact import redact_sensitive_text\n")
+        (repo / "tools" / "file_operations.py").write_text("class ShellFileOperations: ...\n")
+        (repo / "agent" / "redact.py").write_text("def redact_sensitive_text(x): return x\n")
+        (repo / "tests" / "tools" / "test_file_tools.py").write_text("def test_ok(): pass\n")
+        (repo / "tools" / "__init__.py").write_text("")
+
+        monkeypatch.chdir(repo)
+        hints = _discover_related_paths("tools/file_tools.py", target.read_text())
+        hint_paths = {h["path"] for h in hints}
+
+        assert "tools/file_operations.py" in hint_paths
+        assert "agent/redact.py" in hint_paths
+        assert "tests/tools/test_file_tools.py" in hint_paths
+
+    def test_only_returns_existing_files(self, tmp_path, monkeypatch):
+        repo = tmp_path
+        (repo / "pkg").mkdir()
+        target = repo / "pkg" / "module.py"
+        target.write_text("from pkg.missing import nope\n")
+
+        monkeypatch.chdir(repo)
+        hints = _discover_related_paths("pkg/module.py", target.read_text())
+
+        assert hints == []
+
+
 class TestSearchHandler:
     @patch("tools.file_tools._get_file_ops")
     def test_search_calls_file_ops(self, mock_get):
@@ -207,7 +243,7 @@ class TestSearchHandler:
         mock_ops.search.assert_called_once_with(
             pattern="class", path="/src", target="files", file_glob="*.py",
             limit=10, offset=5, output_mode="count", context=2,
-            preview_lines=3,
+            preview_lines=2,
         )
 
     @patch("tools.file_tools._get_file_ops")
