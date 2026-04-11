@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import os
 import re
+import sys
+import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
-
 # prompt_toolkit is an optional CLI dependency — only needed for
 # SlashCommandCompleter and SlashCommandAutoSuggest.  Gateway and test
 # environments that lack it must still be able to import this module
@@ -833,8 +834,50 @@ class SlashCommandCompleter(Completer):
                     count += 1
                 return
 
-        # Bare @ or @partial — show matching files/folders from cwd
+        # Bare @ or @partial — recursive search via Spotlight (macOS) or fallback to cwd
         query = word[1:]  # strip the @
+        query_lower = query.lower() if query else ""
+
+        # Try macOS Spotlight search first (fast, recursive, indexes all files)
+        if sys.platform == "darwin":
+            try:
+                # Build mdfind query: -name searches filename, -onlyin limits to cwd
+                if query_lower:
+                    cmd = ["mdfind", "-onlyin", os.getcwd(), "-name", query_lower]
+                else:
+                    # Empty query: list all files (not directories) in cwd tree
+                    cmd = ["mdfind", "-onlyin", os.getcwd(), "kMDItemContentType != public.folder"]
+
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=2.0)
+                if result.returncode == 0 and result.stdout:
+                    files = result.stdout.strip().split("\n")
+                    count = 0
+                    for full_path in files:
+                        if count >= limit:
+                            break
+                        if not os.path.isfile(full_path):
+                            continue
+                        entry = os.path.basename(full_path)
+                        # Filter by prefix match if query provided
+                        if query_lower and not entry.lower().startswith(query_lower):
+                            continue
+                        if entry.startswith("."):
+                            continue
+                        display_path = os.path.relpath(full_path)
+                        meta = _file_size_label(full_path)
+                        completion = f"@file:{display_path}"
+                        yield Completion(
+                            completion,
+                            start_position=-len(word),
+                            display=entry,
+                            display_meta=meta,
+                        )
+                        count += 1
+                    return  # Spotlight succeeded, skip fallback
+            except Exception:
+                pass  # Fall through to directory listing fallback
+
+        # Fallback: single directory listing (original behavior)
         if not query:
             search_dir, match_prefix = ".", ""
         else:
