@@ -13,6 +13,13 @@ def _has_value(value: str) -> bool:
     return bool(str(value or "").strip())
 
 
+def _is_truthy_enabled(value: str) -> bool:
+    lowered = str(value or "").strip().lower()
+    if not lowered:
+        return False
+    return lowered not in {"0", "false", "no", "off", "disabled"}
+
+
 @dataclass(frozen=True)
 class PlatformSpec:
     key: str
@@ -21,6 +28,7 @@ class PlatformSpec:
     default_toolset: str
     configured_any_of: tuple[str, ...] = ()
     configured_all_of: tuple[str, ...] = ()
+    configured_truthy_any_of: tuple[str, ...] = ()
     home_channel_env: str = ""
     include_in_tools: bool = True
     include_in_skills: bool = True
@@ -38,6 +46,8 @@ class PlatformSpec:
 
     @property
     def primary_config_env(self) -> str:
+        if self.configured_truthy_any_of:
+            return self.configured_truthy_any_of[0]
         if self.configured_any_of:
             return self.configured_any_of[0]
         if self.configured_all_of:
@@ -49,6 +59,8 @@ class PlatformSpec:
             return True
         if self.configured_all_of and not all(_has_value(get_env_value(var)) for var in self.configured_all_of):
             return False
+        if self.configured_truthy_any_of:
+            return any(_is_truthy_enabled(get_env_value(var)) for var in self.configured_truthy_any_of)
         if self.configured_any_of:
             return any(_has_value(get_env_value(var)) for var in self.configured_any_of)
         return bool(self.configured_all_of)
@@ -59,7 +71,7 @@ _PLATFORM_SPECS: tuple[PlatformSpec, ...] = (
     PlatformSpec("telegram", "Telegram", "📱", "hermes-telegram", configured_any_of=("TELEGRAM_BOT_TOKEN",), home_channel_env="TELEGRAM_HOME_CHANNEL", include_in_setup=True, warn_missing_home=True),
     PlatformSpec("discord", "Discord", "💬", "hermes-discord", configured_any_of=("DISCORD_BOT_TOKEN",), home_channel_env="DISCORD_HOME_CHANNEL", include_in_setup=True, warn_missing_home=True),
     PlatformSpec("slack", "Slack", "💼", "hermes-slack", configured_any_of=("SLACK_BOT_TOKEN",), home_channel_env="SLACK_HOME_CHANNEL", include_in_setup=True, warn_missing_home=True),
-    PlatformSpec("whatsapp", "WhatsApp", "📱", "hermes-whatsapp", configured_any_of=("WHATSAPP_ENABLED",), include_in_setup=True),
+    PlatformSpec("whatsapp", "WhatsApp", "📱", "hermes-whatsapp", configured_truthy_any_of=("WHATSAPP_ENABLED",), include_in_setup=True),
     PlatformSpec("signal", "Signal", "📡", "hermes-signal", configured_all_of=("SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT")),
     PlatformSpec("bluebubbles", "BlueBubbles", "💙", "hermes-bluebubbles", configured_any_of=("BLUEBUBBLES_SERVER_URL",), home_channel_env="BLUEBUBBLES_HOME_CHANNEL", include_in_setup=True, setup_label="BlueBubbles (iMessage)", warn_missing_home=True),
     PlatformSpec("homeassistant", "Home Assistant", "🏠", "hermes-homeassistant", configured_all_of=("HASS_TOKEN", "HASS_URL")),
@@ -69,9 +81,9 @@ _PLATFORM_SPECS: tuple[PlatformSpec, ...] = (
     PlatformSpec("feishu", "Feishu", "🪽", "hermes-feishu", configured_any_of=("FEISHU_APP_ID",)),
     PlatformSpec("wecom", "WeCom", "💬", "hermes-wecom", configured_any_of=("WECOM_BOT_ID",)),
     PlatformSpec("weixin", "Weixin", "💬", "hermes-weixin", configured_any_of=("WEIXIN_ACCOUNT_ID",), include_in_setup=True, setup_label="Weixin (WeChat)"),
-    PlatformSpec("api_server", "API Server", "🌐", "hermes-api-server", configured_any_of=("API_SERVER_ENABLED", "API_SERVER_KEY"), include_in_skills=False),
+    PlatformSpec("api_server", "API Server", "🌐", "hermes-api-server", configured_truthy_any_of=("API_SERVER_ENABLED",), configured_any_of=("API_SERVER_KEY",), include_in_skills=False),
     PlatformSpec("mattermost", "Mattermost", "💬", "hermes-mattermost", configured_any_of=("MATTERMOST_TOKEN",), include_in_setup=True),
-    PlatformSpec("webhook", "Webhook", "🔗", "hermes-webhook", configured_any_of=("WEBHOOK_ENABLED",), include_in_setup=True, setup_label="Webhooks (GitHub, GitLab, etc.)"),
+    PlatformSpec("webhook", "Webhook", "🔗", "hermes-webhook", configured_truthy_any_of=("WEBHOOK_ENABLED",), include_in_setup=True, setup_label="Webhooks (GitHub, GitLab, etc.)"),
 )
 
 _PLATFORM_BY_KEY: Dict[str, PlatformSpec] = {spec.key: spec for spec in _PLATFORM_SPECS}

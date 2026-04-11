@@ -42,6 +42,18 @@ def test_configured_platform_keys_use_catalog_logic():
     assert "telegram" not in keys
 
 
+def test_falsey_enable_flags_do_not_count_as_configured():
+    env = {
+        "WHATSAPP_ENABLED": "false",
+        "WEBHOOK_ENABLED": "off",
+        "API_SERVER_ENABLED": "0",
+    }
+    keys = configured_platform_keys(lambda name: env.get(name, ""))
+    assert "whatsapp" not in keys
+    assert "webhook" not in keys
+    assert "api_server" not in keys
+
+
 def test_get_platform_spec_exposes_home_channel_metadata():
     spec = get_platform_spec("telegram")
     assert spec is not None
