@@ -211,7 +211,7 @@ _LEGACY_TOOLSET_MAP = {
     "browser_tools": [
         "browser_navigate", "browser_snapshot", "browser_click",
         "browser_type", "browser_scroll", "browser_back",
-        "browser_press", "browser_close", "browser_get_images",
+        "browser_press", "browser_get_images",
         "browser_vision", "browser_console"
     ],
     "cronjob_tools": ["cronjob"],
@@ -460,6 +460,8 @@ def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],
     task_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    session_id: Optional[str] = None,
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
 ) -> str:
@@ -497,7 +499,14 @@ def handle_function_call(
 
         try:
             from hermes_cli.plugins import invoke_hook
-            invoke_hook("pre_tool_call", tool_name=function_name, args=function_args, task_id=task_id or "")
+            invoke_hook(
+                "pre_tool_call",
+                tool_name=function_name,
+                args=function_args,
+                task_id=task_id or "",
+                session_id=session_id or "",
+                tool_call_id=tool_call_id or "",
+            )
         except Exception:
             pass
 
@@ -519,7 +528,15 @@ def handle_function_call(
 
         try:
             from hermes_cli.plugins import invoke_hook
-            invoke_hook("post_tool_call", tool_name=function_name, args=function_args, result=result, task_id=task_id or "")
+            invoke_hook(
+                "post_tool_call",
+                tool_name=function_name,
+                args=function_args,
+                result=result,
+                task_id=task_id or "",
+                session_id=session_id or "",
+                tool_call_id=tool_call_id or "",
+            )
         except Exception:
             pass
 
