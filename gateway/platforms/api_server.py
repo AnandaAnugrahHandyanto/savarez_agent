@@ -25,7 +25,6 @@ import hmac
 import json
 import logging
 import os
-import socket as _socket
 import re
 import sqlite3
 import time
@@ -34,6 +33,7 @@ from typing import Any, Dict, List, Optional
 
 try:
     from aiohttp import web
+
     AIOHTTP_AVAILABLE = True
 except ImportError:
     AIOHTTP_AVAILABLE = False
@@ -43,7 +43,6 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
-    is_network_accessible,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,7 +52,6 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
-CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 
 
 def check_api_server_requirements() -> bool:
@@ -78,6 +76,7 @@ class ResponseStore:
         if db_path is None:
             try:
                 from hermes_cli.config import get_hermes_home
+
                 db_path = str(get_hermes_home() / "response_store.db")
             except Exception:
                 db_path = ":memory:"
@@ -109,6 +108,7 @@ class ResponseStore:
         if row is None:
             return None
         import time
+
         self._conn.execute(
             "UPDATE responses SET accessed_at = ? WHERE response_id = ?",
             (time.time(), response_id),
@@ -119,6 +119,7 @@ class ResponseStore:
     def put(self, response_id: str, data: Dict[str, Any]) -> None:
         """Store a response, evicting the oldest if at capacity."""
         import time
+
         self._conn.execute(
             "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
             (response_id, json.dumps(data, default=str), time.time()),
@@ -179,6 +180,7 @@ _CORS_HEADERS = {
 
 
 if AIOHTTP_AVAILABLE:
+
     @web.middleware
     async def cors_middleware(request, handler):
         """Add CORS headers for explicitly allowed origins; handle OPTIONS preflight."""
@@ -203,7 +205,12 @@ else:
     cors_middleware = None  # type: ignore[assignment]
 
 
-def _openai_error(message: str, err_type: str = "invalid_request_error", param: str = None, code: str = None) -> Dict[str, Any]:
+def _openai_error(
+    message: str,
+    err_type: str = "invalid_request_error",
+    param: str = None,
+    code: str = None,
+) -> Dict[str, Any]:
     """OpenAI-style error envelope."""
     return {
         "error": {
@@ -215,7 +222,98 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
+def _normalize_chat_content(
+    content: Any, max_depth: int = 10, current_depth: int = 0
+) -> str:
+    """Normalize chat-completions message content into plain text.
+
+    Supports both legacy string content and array-based content parts used by
+    some OpenAI-compatible clients.
+
+    Security constraints:
+    - max_depth: prevent recursion depth attacks (default: 10)
+    - MAX_NORMALIZED_TEXT_LENGTH: limit total output size (64KB)
+    - MAX_LIST_SIZE: limit list processing (1000 items)
+    """
+    # Security: prevent recursion depth attacks
+    if current_depth > max_depth:
+        return ""
+
+    if content is None:
+        return ""
+
+    if isinstance(content, str):
+        MAX_NORMALIZED_TEXT_LENGTH = 65536
+        if len(content) > MAX_NORMALIZED_TEXT_LENGTH:
+            return content[:MAX_NORMALIZED_TEXT_LENGTH]
+        return content
+
+    if isinstance(content, list):
+        text_parts: List[str] = []
+        MAX_LIST_SIZE = 1000
+        MAX_NORMALIZED_TEXT_LENGTH = 65536  # 64KB
+
+        # Security: limit list size to prevent memory exhaustion
+        limited_content = (
+            content[:MAX_LIST_SIZE] if len(content) > MAX_LIST_SIZE else content
+        )
+
+        for part in limited_content:
+            # Security: check accumulated length to prevent oversized output
+            current_length = len("\n".join(text_parts))
+            if current_length >= MAX_NORMALIZED_TEXT_LENGTH:
+                break
+
+            if isinstance(part, str):
+                if part:
+                    # Security: limit individual string length
+                    if len(part) > MAX_NORMALIZED_TEXT_LENGTH:
+                        part = part[:MAX_NORMALIZED_TEXT_LENGTH]
+                    text_parts.append(part)
+                continue
+
+            if isinstance(part, dict):
+                part_type = str(part.get("type") or "").strip().lower()
+                if part_type in {"text", "input_text", "output_text"}:
+                    text = part.get("text", "")
+                    if text:
+                        # Security: safe string conversion
+                        try:
+                            text_str = str(text)
+                            # Security: limit individual text length
+                            if len(text_str) > MAX_NORMALIZED_TEXT_LENGTH:
+                                text_str = text_str[:MAX_NORMALIZED_TEXT_LENGTH]
+                            text_parts.append(text_str)
+                        except Exception:
+                            # Security: ignore conversion errors
+                            pass
+            elif isinstance(part, (list, dict)):
+                # Security: handle nested structures with depth limit
+                nested_text = _normalize_chat_content(
+                    part, max_depth, current_depth + 1
+                )
+                if nested_text:
+                    text_parts.append(nested_text)
+
+        result = "\n".join(text_parts)
+        # Security: final length check
+        if len(result) > MAX_NORMALIZED_TEXT_LENGTH:
+            result = result[:MAX_NORMALIZED_TEXT_LENGTH]
+        return result
+
+    # Security: safe conversion for other types
+    try:
+        result = str(content)
+        MAX_NORMALIZED_TEXT_LENGTH = 65536
+        if len(result) > MAX_NORMALIZED_TEXT_LENGTH:
+            result = result[:MAX_NORMALIZED_TEXT_LENGTH]
+        return result
+    except Exception:
+        return ""
+
+
 if AIOHTTP_AVAILABLE:
+
     @web.middleware
     async def body_limit_middleware(request, handler):
         """Reject overly large request bodies early based on Content-Length."""
@@ -224,9 +322,20 @@ if AIOHTTP_AVAILABLE:
             if cl is not None:
                 try:
                     if int(cl) > MAX_REQUEST_BYTES:
-                        return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
+                        return web.json_response(
+                            _openai_error(
+                                "Request body too large.", code="body_too_large"
+                            ),
+                            status=413,
+                        )
                 except ValueError:
-                    return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
+                    return web.json_response(
+                        _openai_error(
+                            "Invalid Content-Length header.",
+                            code="invalid_content_length",
+                        ),
+                        status=400,
+                    )
         return await handler(request)
 else:
     body_limit_middleware = None  # type: ignore[assignment]
@@ -238,6 +347,7 @@ _SECURITY_HEADERS = {
 
 
 if AIOHTTP_AVAILABLE:
+
     @web.middleware
     async def security_headers_middleware(request, handler):
         """Add security headers to all responses (including errors)."""
@@ -251,14 +361,17 @@ else:
 
 class _IdempotencyCache:
     """In-memory idempotency cache with TTL and basic LRU semantics."""
+
     def __init__(self, max_items: int = 1000, ttl_seconds: int = 300):
         from collections import OrderedDict
+
         self._store = OrderedDict()
         self._ttl = ttl_seconds
         self._max = max_items
 
     def _purge(self):
         import time as _t
+
         now = _t.time()
         expired = [k for k, v in self._store.items() if now - v["ts"] > self._ttl]
         for k in expired:
@@ -273,6 +386,7 @@ class _IdempotencyCache:
             return item["resp"]
         resp = await compute_coro()
         import time as _t
+
         self._store[key] = {"resp": resp, "fp": fingerprint, "ts": _t.time()}
         self._purge()
         return resp
@@ -283,6 +397,7 @@ _idem_cache = _IdempotencyCache()
 
 def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
     from hashlib import sha256
+
     subset = {k: body.get(k) for k in keys}
     return sha256(repr(subset).encode("utf-8")).hexdigest()
 
@@ -317,7 +432,9 @@ class APIServerAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.API_SERVER)
         extra = config.extra or {}
         self._host: str = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
-        self._port: int = int(extra.get("port", os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))))
+        self._port: int = int(
+            extra.get("port", os.getenv("API_SERVER_PORT", str(DEFAULT_PORT)))
+        )
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
@@ -333,7 +450,9 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
         self._run_streams_created: Dict[str, float] = {}
-        self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._session_db: Optional[Any] = (
+            None  # Lazy-init SessionDB for session continuity
+        )
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -363,6 +482,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return explicit.strip()
         try:
             from hermes_cli.profiles import get_active_profile_name
+
             profile = get_active_profile_name()
             if profile and profile not in ("default", "custom"):
                 return profile
@@ -409,8 +529,7 @@ class APIServerAdapter(BasePlatformAdapter):
         Validate Bearer token from Authorization header.
 
         Returns None if auth is OK, or a 401 web.Response on failure.
-        If no API key is configured, all requests are allowed (only when API
-        server is local).
+        If no API key is configured, all requests are allowed.
         """
         if not self._api_key:
             return None  # No key configured — allow all (local-only use)
@@ -422,7 +541,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 return None  # Auth OK
 
         return web.json_response(
-            {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
+            {
+                "error": {
+                    "message": "Invalid API key",
+                    "type": "invalid_request_error",
+                    "code": "invalid_api_key",
+                }
+            },
             status=401,
         )
 
@@ -439,6 +564,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if self._session_db is None:
             try:
                 from hermes_state import SessionDB
+
                 self._session_db = SessionDB()
             except Exception as e:
                 logger.debug("SessionDB unavailable for API server: %s", e)
@@ -464,7 +590,11 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway platforms), falling back to the hermes-api-server default.
         """
         from run_agent import AIAgent
-        from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
+        from gateway.run import (
+            _resolve_runtime_agent_kwargs,
+            _resolve_gateway_model,
+            _load_gateway_config,
+        )
         from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
@@ -478,6 +608,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # Load fallback provider chain so the API server platform has the
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
         from gateway.run import GatewayRunner
+
         fallback_model = GatewayRunner._load_fallback_model()
 
         agent = AIAgent(
@@ -511,20 +642,22 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
-        return web.json_response({
-            "object": "list",
-            "data": [
-                {
-                    "id": self._model_name,
-                    "object": "model",
-                    "created": int(time.time()),
-                    "owned_by": "hermes",
-                    "permission": [],
-                    "root": self._model_name,
-                    "parent": None,
-                }
-            ],
-        })
+        return web.json_response(
+            {
+                "object": "list",
+                "data": [
+                    {
+                        "id": self._model_name,
+                        "object": "model",
+                        "created": int(time.time()),
+                        "owned_by": "hermes",
+                        "permission": [],
+                        "root": self._model_name,
+                        "parent": None,
+                    }
+                ],
+            }
+        )
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
@@ -536,12 +669,19 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             body = await request.json()
         except (json.JSONDecodeError, Exception):
-            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+            return web.json_response(
+                _openai_error("Invalid JSON in request body"), status=400
+            )
 
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
             return web.json_response(
-                {"error": {"message": "Missing or invalid 'messages' field", "type": "invalid_request_error"}},
+                {
+                    "error": {
+                        "message": "Missing or invalid 'messages' field",
+                        "type": "invalid_request_error",
+                    }
+                },
                 status=400,
             )
 
@@ -553,7 +693,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         for msg in messages:
             role = msg.get("role", "")
-            content = msg.get("content", "")
+            content = _normalize_chat_content(msg.get("content", ""))
             if role == "system":
                 # Accumulate system messages
                 if system_prompt is None:
@@ -572,7 +712,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         if not user_message:
             return web.json_response(
-                {"error": {"message": "No user message found in messages", "type": "invalid_request_error"}},
+                {
+                    "error": {
+                        "message": "No user message found in messages",
+                        "type": "invalid_request_error",
+                    }
+                },
                 status=400,
             )
 
@@ -599,9 +744,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=403,
                 )
             # Sanitize: reject control characters that could enable header injection.
-            if re.search(r'[\r\n\x00]', provided_session_id):
+            if re.search(r"[\r\n\x00]", provided_session_id):
                 return web.json_response(
-                    {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
+                    {
+                        "error": {
+                            "message": "Invalid session ID",
+                            "type": "invalid_request_error",
+                        }
+                    },
                     status=400,
                 )
             session_id = provided_session_id
@@ -610,7 +760,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 if db is not None:
                     history = db.get_messages_as_conversation(session_id)
             except Exception as e:
-                logger.warning("Failed to load session history for %s: %s", session_id, e)
+                logger.warning(
+                    "Failed to load session history for %s: %s", session_id, e
+                )
                 history = []
         else:
             # Derive a stable session ID from the conversation fingerprint so
@@ -631,6 +783,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         if stream:
             import queue as _q
+
             _stream_q: _q.Queue = _q.Queue()
 
             def _on_delta(delta):
@@ -645,52 +798,41 @@ class APIServerAdapter(BasePlatformAdapter):
                     _stream_q.put(delta)
 
             def _on_tool_progress(event_type, name, preview, args, **kwargs):
-                """Send tool progress as a separate SSE event.
-
-                Previously, progress markers like ``⏰ list`` were injected
-                directly into ``delta.content``.  OpenAI-compatible frontends
-                (Open WebUI, LobeChat, …) store ``delta.content`` verbatim as
-                the assistant message and send it back on subsequent requests.
-                After enough turns the model learns to *emit* the markers as
-                plain text instead of issuing real tool calls — silently
-                hallucinating tool results.  See #6972.
-
-                The fix: push a tagged tuple ``("__tool_progress__", payload)``
-                onto the stream queue.  The SSE writer emits it as a custom
-                ``event: hermes.tool.progress`` line that compliant frontends
-                can render for UX but will *not* persist into conversation
-                history.  Clients that don't understand the custom event type
-                silently ignore it per the SSE specification.
-                """
+                """Inject tool progress into the SSE stream for Open WebUI."""
                 if event_type != "tool.started":
-                    return
+                    return  # Only show tool start events in chat stream
                 if name.startswith("_"):
-                    return
+                    return  # Skip internal events (_thinking)
                 from agent.display import get_tool_emoji
+
                 emoji = get_tool_emoji(name)
                 label = preview or name
-                _stream_q.put(("__tool_progress__", {
-                    "tool": name,
-                    "emoji": emoji,
-                    "label": label,
-                }))
+                _stream_q.put(f"\n`{emoji} {label}`\n")
 
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             agent_ref = [None]
-            agent_task = asyncio.ensure_future(self._run_agent(
-                user_message=user_message,
-                conversation_history=history,
-                ephemeral_system_prompt=system_prompt,
-                session_id=session_id,
-                stream_delta_callback=_on_delta,
-                tool_progress_callback=_on_tool_progress,
-                agent_ref=agent_ref,
-            ))
+            agent_task = asyncio.ensure_future(
+                self._run_agent(
+                    user_message=user_message,
+                    conversation_history=history,
+                    ephemeral_system_prompt=system_prompt,
+                    session_id=session_id,
+                    stream_delta_callback=_on_delta,
+                    tool_progress_callback=_on_tool_progress,
+                    agent_ref=agent_ref,
+                )
+            )
 
             return await self._write_sse_chat_completion(
-                request, completion_id, model_name, created, _stream_q,
-                agent_task, agent_ref, session_id=session_id,
+                request,
+                completion_id,
+                model_name,
+                created,
+                _stream_q,
+                agent_task,
+                agent_ref,
+                session_id=session_id,
             )
 
         # Non-streaming: run the agent (with optional Idempotency-Key)
@@ -704,22 +846,34 @@ class APIServerAdapter(BasePlatformAdapter):
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            fp = _make_request_fingerprint(
+                body, keys=["model", "messages", "tools", "tool_choice", "stream"]
+            )
             try:
-                result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
+                result, usage = await _idem_cache.get_or_set(
+                    idempotency_key, fp, _compute_completion
+                )
             except Exception as e:
-                logger.error("Error running agent for chat completions: %s", e, exc_info=True)
+                logger.error(
+                    "Error running agent for chat completions: %s", e, exc_info=True
+                )
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(
+                        f"Internal server error: {e}", err_type="server_error"
+                    ),
                     status=500,
                 )
         else:
             try:
                 result, usage = await _compute_completion()
             except Exception as e:
-                logger.error("Error running agent for chat completions: %s", e, exc_info=True)
+                logger.error(
+                    "Error running agent for chat completions: %s", e, exc_info=True
+                )
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(
+                        f"Internal server error: {e}", err_type="server_error"
+                    ),
                     status=500,
                 )
 
@@ -749,11 +903,20 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         }
 
-        return web.json_response(response_data, headers={"X-Hermes-Session-Id": session_id})
+        return web.json_response(
+            response_data, headers={"X-Hermes-Session-Id": session_id}
+        )
 
     async def _write_sse_chat_completion(
-        self, request: "web.Request", completion_id: str, model: str,
-        created: int, stream_q, agent_task, agent_ref=None, session_id: str = None,
+        self,
+        request: "web.Request",
+        completion_id: str,
+        model: str,
+        created: int,
+        stream_q,
+        agent_task,
+        agent_ref=None,
+        session_id: str = None,
     ) -> "web.StreamResponse":
         """Write real streaming SSE from agent's stream_delta_callback queue.
 
@@ -763,11 +926,7 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         import queue as _q
 
-        sse_headers = {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        }
+        sse_headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache"}
         # CORS middleware can't inject headers into StreamResponse after
         # prepare() flushes them, so resolve CORS headers up front.
         origin = request.headers.get("Origin", "")
@@ -780,46 +939,25 @@ class APIServerAdapter(BasePlatformAdapter):
         await response.prepare(request)
 
         try:
-            last_activity = time.monotonic()
-
             # Role chunk
             role_chunk = {
-                "id": completion_id, "object": "chat.completion.chunk",
-                "created": created, "model": model,
-                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [
+                    {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
+                ],
             }
             await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
-            last_activity = time.monotonic()
-
-            # Helper — route a queue item to the correct SSE event.
-            async def _emit(item):
-                """Write a single queue item to the SSE stream.
-
-                Plain strings are sent as normal ``delta.content`` chunks.
-                Tagged tuples ``("__tool_progress__", payload)`` are sent
-                as a custom ``event: hermes.tool.progress`` SSE event so
-                frontends can display them without storing the markers in
-                conversation history.  See #6972.
-                """
-                if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
-                    event_data = json.dumps(item[1])
-                    await response.write(
-                        f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
-                    )
-                else:
-                    content_chunk = {
-                        "id": completion_id, "object": "chat.completion.chunk",
-                        "created": created, "model": model,
-                        "choices": [{"index": 0, "delta": {"content": item}, "finish_reason": None}],
-                    }
-                    await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
-                return time.monotonic()
 
             # Stream content chunks as they arrive from the agent
             loop = asyncio.get_event_loop()
             while True:
                 try:
-                    delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
+                    delta = await loop.run_in_executor(
+                        None, lambda: stream_q.get(timeout=0.5)
+                    )
                 except _q.Empty:
                     if agent_task.done():
                         # Drain any remaining items
@@ -828,19 +966,40 @@ class APIServerAdapter(BasePlatformAdapter):
                                 delta = stream_q.get_nowait()
                                 if delta is None:
                                     break
-                                last_activity = await _emit(delta)
+                                content_chunk = {
+                                    "id": completion_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": created,
+                                    "model": model,
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "delta": {"content": delta},
+                                            "finish_reason": None,
+                                        }
+                                    ],
+                                }
+                                await response.write(
+                                    f"data: {json.dumps(content_chunk)}\n\n".encode()
+                                )
                             except _q.Empty:
                                 break
                         break
-                    if time.monotonic() - last_activity >= CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS:
-                        await response.write(b": keepalive\n\n")
-                        last_activity = time.monotonic()
                     continue
 
                 if delta is None:  # End of stream sentinel
                     break
 
-                last_activity = await _emit(delta)
+                content_chunk = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model,
+                    "choices": [
+                        {"index": 0, "delta": {"content": delta}, "finish_reason": None}
+                    ],
+                }
+                await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
 
             # Get usage from completed agent
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
@@ -852,8 +1011,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
             # Finish chunk
             finish_chunk = {
-                "id": completion_id, "object": "chat.completion.chunk",
-                "created": created, "model": model,
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                 "usage": {
                     "prompt_tokens": usage.get("input_tokens", 0),
@@ -879,7 +1040,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     await agent_task
                 except (asyncio.CancelledError, Exception):
                     pass
-            logger.info("SSE client disconnected; interrupted agent task %s", completion_id)
+            logger.info(
+                "SSE client disconnected; interrupted agent task %s", completion_id
+            )
 
         return response
 
@@ -894,7 +1057,12 @@ class APIServerAdapter(BasePlatformAdapter):
             body = await request.json()
         except (json.JSONDecodeError, Exception):
             return web.json_response(
-                {"error": {"message": "Invalid JSON in request body", "type": "invalid_request_error"}},
+                {
+                    "error": {
+                        "message": "Invalid JSON in request body",
+                        "type": "invalid_request_error",
+                    }
+                },
                 status=400,
             )
 
@@ -909,7 +1077,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # conversation and previous_response_id are mutually exclusive
         if conversation and previous_response_id:
-            return web.json_response(_openai_error("Cannot use both 'conversation' and 'previous_response_id'"), status=400)
+            return web.json_response(
+                _openai_error(
+                    "Cannot use both 'conversation' and 'previous_response_id'"
+                ),
+                status=400,
+            )
 
         # Resolve conversation name to latest response_id
         if conversation:
@@ -931,16 +1104,24 @@ class APIServerAdapter(BasePlatformAdapter):
                     if isinstance(content, list):
                         text_parts = []
                         for part in content:
-                            if isinstance(part, dict) and part.get("type") == "input_text":
+                            if (
+                                isinstance(part, dict)
+                                and part.get("type") == "input_text"
+                            ):
                                 text_parts.append(part.get("text", ""))
-                            elif isinstance(part, dict) and part.get("type") == "output_text":
+                            elif (
+                                isinstance(part, dict)
+                                and part.get("type") == "output_text"
+                            ):
                                 text_parts.append(part.get("text", ""))
                             elif isinstance(part, str):
                                 text_parts.append(part)
                         content = "\n".join(text_parts)
                     input_messages.append({"role": role, "content": content})
         else:
-            return web.json_response(_openai_error("'input' must be a string or array"), status=400)
+            return web.json_response(
+                _openai_error("'input' must be a string or array"), status=400
+            )
 
         # Accept explicit conversation_history from the request body.
         # This lets stateless clients supply their own history instead of
@@ -951,23 +1132,40 @@ class APIServerAdapter(BasePlatformAdapter):
         if raw_history:
             if not isinstance(raw_history, list):
                 return web.json_response(
-                    _openai_error("'conversation_history' must be an array of message objects"),
+                    _openai_error(
+                        "'conversation_history' must be an array of message objects"
+                    ),
                     status=400,
                 )
             for i, entry in enumerate(raw_history):
-                if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
+                if (
+                    not isinstance(entry, dict)
+                    or "role" not in entry
+                    or "content" not in entry
+                ):
                     return web.json_response(
-                        _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
+                        _openai_error(
+                            f"conversation_history[{i}] must have 'role' and 'content' fields"
+                        ),
                         status=400,
                     )
-                conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+                conversation_history.append(
+                    {"role": str(entry["role"]), "content": str(entry["content"])}
+                )
             if previous_response_id:
-                logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
+                logger.debug(
+                    "Both conversation_history and previous_response_id provided; using conversation_history"
+                )
 
         if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored is None:
-                return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
+                return web.json_response(
+                    _openai_error(
+                        f"Previous response not found: {previous_response_id}"
+                    ),
+                    status=404,
+                )
             conversation_history = list(stored.get("conversation_history", []))
             # If no instructions provided, carry forward from previous
             if instructions is None:
@@ -980,7 +1178,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # Last input message is the user_message
         user_message = input_messages[-1].get("content", "") if input_messages else ""
         if not user_message:
-            return web.json_response(_openai_error("No user message found in input"), status=400)
+            return web.json_response(
+                _openai_error("No user message found in input"), status=400
+            )
 
         # Truncation support
         if body.get("truncation") == "auto" and len(conversation_history) > 100:
@@ -1001,14 +1201,25 @@ class APIServerAdapter(BasePlatformAdapter):
         if idempotency_key:
             fp = _make_request_fingerprint(
                 body,
-                keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],
+                keys=[
+                    "input",
+                    "instructions",
+                    "previous_response_id",
+                    "conversation",
+                    "model",
+                    "tools",
+                ],
             )
             try:
-                result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
+                result, usage = await _idem_cache.get_or_set(
+                    idempotency_key, fp, _compute_response
+                )
             except Exception as e:
                 logger.error("Error running agent for responses: %s", e, exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(
+                        f"Internal server error: {e}", err_type="server_error"
+                    ),
                     status=500,
                 )
         else:
@@ -1017,7 +1228,9 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.error("Error running agent for responses: %s", e, exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(
+                        f"Internal server error: {e}", err_type="server_error"
+                    ),
                     status=500,
                 )
 
@@ -1058,11 +1271,14 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Store the complete response object for future chaining / GET retrieval
         if store:
-            self._response_store.put(response_id, {
-                "response": response_data,
-                "conversation_history": full_history,
-                "instructions": instructions,
-            })
+            self._response_store.put(
+                response_id,
+                {
+                    "response": response_data,
+                    "conversation_history": full_history,
+                    "instructions": instructions,
+                },
+            )
             # Update conversation mapping so the next request with the same
             # conversation name automatically chains to this response
             if conversation:
@@ -1083,7 +1299,9 @@ class APIServerAdapter(BasePlatformAdapter):
         response_id = request.match_info["response_id"]
         stored = self._response_store.get(response_id)
         if stored is None:
-            return web.json_response(_openai_error(f"Response not found: {response_id}"), status=404)
+            return web.json_response(
+                _openai_error(f"Response not found: {response_id}"), status=404
+            )
 
         return web.json_response(stored["response"])
 
@@ -1096,13 +1314,17 @@ class APIServerAdapter(BasePlatformAdapter):
         response_id = request.match_info["response_id"]
         deleted = self._response_store.delete(response_id)
         if not deleted:
-            return web.json_response(_openai_error(f"Response not found: {response_id}"), status=404)
+            return web.json_response(
+                _openai_error(f"Response not found: {response_id}"), status=404
+            )
 
-        return web.json_response({
-            "id": response_id,
-            "object": "response",
-            "deleted": True,
-        })
+        return web.json_response(
+            {
+                "id": response_id,
+                "object": "response",
+                "deleted": True,
+            }
+        )
 
     # ------------------------------------------------------------------
     # Cron jobs API
@@ -1121,6 +1343,7 @@ class APIServerAdapter(BasePlatformAdapter):
             resume_job as _cron_resume,
             trigger_job as _cron_trigger,
         )
+
         # Wrap as staticmethod to prevent descriptor binding — these are plain
         # module functions, not instance methods.  Without this, self._cron_*()
         # injects ``self`` as the first positional argument and every call
@@ -1139,7 +1362,16 @@ class APIServerAdapter(BasePlatformAdapter):
 
     _JOB_ID_RE = __import__("re").compile(r"[a-f0-9]{12}")
     # Allowed fields for update — prevents clients injecting arbitrary keys
-    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled"}
+    _UPDATE_ALLOWED_FIELDS = {
+        "name",
+        "schedule",
+        "prompt",
+        "deliver",
+        "skills",
+        "skill",
+        "repeat",
+        "enabled",
+    }
     _MAX_NAME_LENGTH = 200
     _MAX_PROMPT_LENGTH = 5000
 
@@ -1147,7 +1379,8 @@ class APIServerAdapter(BasePlatformAdapter):
         """Return error response if cron module isn't available."""
         if not self._CRON_AVAILABLE:
             return web.json_response(
-                {"error": "Cron module not available"}, status=501,
+                {"error": "Cron module not available"},
+                status=501,
             )
         return None
 
@@ -1156,7 +1389,8 @@ class APIServerAdapter(BasePlatformAdapter):
         job_id = request.match_info["job_id"]
         if not self._JOB_ID_RE.fullmatch(job_id):
             return job_id, web.json_response(
-                {"error": "Invalid job ID format"}, status=400,
+                {"error": "Invalid job ID format"},
+                status=400,
             )
         return job_id, None
 
@@ -1169,7 +1403,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if cron_err:
             return cron_err
         try:
-            include_disabled = request.query.get("include_disabled", "").lower() in ("true", "1")
+            include_disabled = request.query.get("include_disabled", "").lower() in (
+                "true",
+                "1",
+            )
             jobs = self._cron_list(include_disabled=include_disabled)
             return web.json_response({"jobs": jobs})
         except Exception as e:
@@ -1196,16 +1433,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Name is required"}, status=400)
             if len(name) > self._MAX_NAME_LENGTH:
                 return web.json_response(
-                    {"error": f"Name must be ≤ {self._MAX_NAME_LENGTH} characters"}, status=400,
+                    {"error": f"Name must be ≤ {self._MAX_NAME_LENGTH} characters"},
+                    status=400,
                 )
             if not schedule:
                 return web.json_response({"error": "Schedule is required"}, status=400)
             if len(prompt) > self._MAX_PROMPT_LENGTH:
                 return web.json_response(
-                    {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
+                    {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"},
+                    status=400,
                 )
             if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
-                return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
+                return web.json_response(
+                    {"error": "Repeat must be a positive integer"}, status=400
+                )
 
             kwargs = {
                 "prompt": prompt,
@@ -1256,17 +1497,26 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             body = await request.json()
             # Whitelist allowed fields to prevent arbitrary key injection
-            sanitized = {k: v for k, v in body.items() if k in self._UPDATE_ALLOWED_FIELDS}
+            sanitized = {
+                k: v for k, v in body.items() if k in self._UPDATE_ALLOWED_FIELDS
+            }
             if not sanitized:
-                return web.json_response({"error": "No valid fields to update"}, status=400)
+                return web.json_response(
+                    {"error": "No valid fields to update"}, status=400
+                )
             # Validate lengths if present
             if "name" in sanitized and len(sanitized["name"]) > self._MAX_NAME_LENGTH:
                 return web.json_response(
-                    {"error": f"Name must be ≤ {self._MAX_NAME_LENGTH} characters"}, status=400,
+                    {"error": f"Name must be ≤ {self._MAX_NAME_LENGTH} characters"},
+                    status=400,
                 )
-            if "prompt" in sanitized and len(sanitized["prompt"]) > self._MAX_PROMPT_LENGTH:
+            if (
+                "prompt" in sanitized
+                and len(sanitized["prompt"]) > self._MAX_PROMPT_LENGTH
+            ):
                 return web.json_response(
-                    {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
+                    {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"},
+                    status=400,
                 )
             job = self._cron_update(job_id, sanitized)
             if not job:
@@ -1373,34 +1623,40 @@ class APIServerAdapter(BasePlatformAdapter):
             if role == "assistant" and msg.get("tool_calls"):
                 for tc in msg["tool_calls"]:
                     func = tc.get("function", {})
-                    items.append({
-                        "type": "function_call",
-                        "name": func.get("name", ""),
-                        "arguments": func.get("arguments", ""),
-                        "call_id": tc.get("id", ""),
-                    })
+                    items.append(
+                        {
+                            "type": "function_call",
+                            "name": func.get("name", ""),
+                            "arguments": func.get("arguments", ""),
+                            "call_id": tc.get("id", ""),
+                        }
+                    )
             elif role == "tool":
-                items.append({
-                    "type": "function_call_output",
-                    "call_id": msg.get("tool_call_id", ""),
-                    "output": msg.get("content", ""),
-                })
+                items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": msg.get("tool_call_id", ""),
+                        "output": msg.get("content", ""),
+                    }
+                )
 
         # Final assistant message
         final = result.get("final_response", "")
         if not final:
             final = result.get("error", "(No response generated)")
 
-        items.append({
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {
-                    "type": "output_text",
-                    "text": final,
-                }
-            ],
-        })
+        items.append(
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": final,
+                    }
+                ],
+            }
+        )
         return items
 
     # ------------------------------------------------------------------
@@ -1462,6 +1718,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
+
         def _push(event: Dict[str, Any]) -> None:
             q = self._run_streams.get(run_id)
             if q is None:
@@ -1471,32 +1728,44 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
-        def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
+        def _callback(
+            event_type: str,
+            tool_name: str = None,
+            preview: str = None,
+            args=None,
+            **kwargs,
+        ):
             ts = time.time()
             if event_type == "tool.started":
-                _push({
-                    "event": "tool.started",
-                    "run_id": run_id,
-                    "timestamp": ts,
-                    "tool": tool_name,
-                    "preview": preview,
-                })
+                _push(
+                    {
+                        "event": "tool.started",
+                        "run_id": run_id,
+                        "timestamp": ts,
+                        "tool": tool_name,
+                        "preview": preview,
+                    }
+                )
             elif event_type == "tool.completed":
-                _push({
-                    "event": "tool.completed",
-                    "run_id": run_id,
-                    "timestamp": ts,
-                    "tool": tool_name,
-                    "duration": round(kwargs.get("duration", 0), 3),
-                    "error": kwargs.get("is_error", False),
-                })
+                _push(
+                    {
+                        "event": "tool.completed",
+                        "run_id": run_id,
+                        "timestamp": ts,
+                        "tool": tool_name,
+                        "duration": round(kwargs.get("duration", 0), 3),
+                        "error": kwargs.get("is_error", False),
+                    }
+                )
             elif event_type == "reasoning.available":
-                _push({
-                    "event": "reasoning.available",
-                    "run_id": run_id,
-                    "timestamp": ts,
-                    "text": preview or "",
-                })
+                _push(
+                    {
+                        "event": "reasoning.available",
+                        "run_id": run_id,
+                        "timestamp": ts,
+                        "text": preview or "",
+                    }
+                )
             # _thinking and subagent_progress are intentionally not forwarded
 
         return _callback
@@ -1510,7 +1779,10 @@ class APIServerAdapter(BasePlatformAdapter):
         # Enforce concurrency limit
         if len(self._run_streams) >= self._MAX_CONCURRENT_RUNS:
             return web.json_response(
-                _openai_error(f"Too many concurrent runs (max {self._MAX_CONCURRENT_RUNS})", code="rate_limit_exceeded"),
+                _openai_error(
+                    f"Too many concurrent runs (max {self._MAX_CONCURRENT_RUNS})",
+                    code="rate_limit_exceeded",
+                ),
                 status=429,
             )
 
@@ -1523,9 +1795,17 @@ class APIServerAdapter(BasePlatformAdapter):
         if not raw_input:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
 
-        user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
+        user_message = (
+            raw_input
+            if isinstance(raw_input, str)
+            else (
+                raw_input[-1].get("content", "") if isinstance(raw_input, list) else ""
+            )
+        )
         if not user_message:
-            return web.json_response(_openai_error("No user message found in input"), status=400)
+            return web.json_response(
+                _openai_error("No user message found in input"), status=400
+            )
 
         run_id = f"run_{uuid.uuid4().hex}"
         loop = asyncio.get_running_loop()
@@ -1540,12 +1820,15 @@ class APIServerAdapter(BasePlatformAdapter):
             if delta is None:
                 return
             try:
-                loop.call_soon_threadsafe(q.put_nowait, {
-                    "event": "message.delta",
-                    "run_id": run_id,
-                    "timestamp": time.time(),
-                    "delta": delta,
-                })
+                loop.call_soon_threadsafe(
+                    q.put_nowait,
+                    {
+                        "event": "message.delta",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "delta": delta,
+                    },
+                )
             except Exception:
                 pass
 
@@ -1559,18 +1842,30 @@ class APIServerAdapter(BasePlatformAdapter):
         if raw_history:
             if not isinstance(raw_history, list):
                 return web.json_response(
-                    _openai_error("'conversation_history' must be an array of message objects"),
+                    _openai_error(
+                        "'conversation_history' must be an array of message objects"
+                    ),
                     status=400,
                 )
             for i, entry in enumerate(raw_history):
-                if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
+                if (
+                    not isinstance(entry, dict)
+                    or "role" not in entry
+                    or "content" not in entry
+                ):
                     return web.json_response(
-                        _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
+                        _openai_error(
+                            f"conversation_history[{i}] must have 'role' and 'content' fields"
+                        ),
                         status=400,
                     )
-                conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+                conversation_history.append(
+                    {"role": str(entry["role"]), "content": str(entry["content"])}
+                )
             if previous_response_id:
-                logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
+                logger.debug(
+                    "Both conversation_history and previous_response_id provided; using conversation_history"
+                )
 
         if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
@@ -1582,17 +1877,24 @@ class APIServerAdapter(BasePlatformAdapter):
         # When input is a multi-message array, extract all but the last
         # message as conversation history (the last becomes user_message).
         # Only fires when no explicit history was provided.
-        if not conversation_history and isinstance(raw_input, list) and len(raw_input) > 1:
+        if (
+            not conversation_history
+            and isinstance(raw_input, list)
+            and len(raw_input) > 1
+        ):
             for msg in raw_input[:-1]:
                 if isinstance(msg, dict) and msg.get("role") and msg.get("content"):
                     content = msg["content"]
                     if isinstance(content, list):
                         # Flatten multi-part content blocks to text
                         content = " ".join(
-                            part.get("text", "") for part in content
+                            part.get("text", "")
+                            for part in content
                             if isinstance(part, dict) and part.get("type") == "text"
                         )
-                    conversation_history.append({"role": msg["role"], "content": str(content)})
+                    conversation_history.append(
+                        {"role": msg["role"], "content": str(content)}
+                    )
 
         session_id = body.get("session_id") or run_id
         ephemeral_system_prompt = instructions
@@ -1605,6 +1907,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
                 )
+
                 def _run_sync():
                     r = agent.run_conversation(
                         user_message=user_message,
@@ -1613,29 +1916,38 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                     u = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                        "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                        "output_tokens": getattr(agent, "session_completion_tokens", 0)
+                        or 0,
                         "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
                     }
                     return r, u
 
-                result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
-                final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                q.put_nowait({
-                    "event": "run.completed",
-                    "run_id": run_id,
-                    "timestamp": time.time(),
-                    "output": final_response,
-                    "usage": usage,
-                })
+                result, usage = await asyncio.get_running_loop().run_in_executor(
+                    None, _run_sync
+                )
+                final_response = (
+                    result.get("final_response", "") if isinstance(result, dict) else ""
+                )
+                q.put_nowait(
+                    {
+                        "event": "run.completed",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "output": final_response,
+                        "usage": usage,
+                    }
+                )
             except Exception as exc:
                 logger.exception("[api_server] run %s failed", run_id)
                 try:
-                    q.put_nowait({
-                        "event": "run.failed",
-                        "run_id": run_id,
-                        "timestamp": time.time(),
-                        "error": str(exc),
-                    })
+                    q.put_nowait(
+                        {
+                            "event": "run.failed",
+                            "run_id": run_id,
+                            "timestamp": time.time(),
+                            "error": str(exc),
+                        }
+                    )
                 except Exception:
                     pass
             finally:
@@ -1669,7 +1981,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 break
             await asyncio.sleep(0.05)
         else:
-            return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
 
         q = self._run_streams[run_id]
 
@@ -1730,28 +2045,48 @@ class APIServerAdapter(BasePlatformAdapter):
             return False
 
         try:
-            mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
+            mws = [
+                mw
+                for mw in (
+                    cors_middleware,
+                    body_limit_middleware,
+                    security_headers_middleware,
+                )
+                if mw is not None
+            ]
             self._app = web.Application(middlewares=mws)
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
-            self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
+            self._app.router.add_post(
+                "/v1/chat/completions", self._handle_chat_completions
+            )
             self._app.router.add_post("/v1/responses", self._handle_responses)
-            self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
-            self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+            self._app.router.add_get(
+                "/v1/responses/{response_id}", self._handle_get_response
+            )
+            self._app.router.add_delete(
+                "/v1/responses/{response_id}", self._handle_delete_response
+            )
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)
             self._app.router.add_get("/api/jobs/{job_id}", self._handle_get_job)
             self._app.router.add_patch("/api/jobs/{job_id}", self._handle_update_job)
             self._app.router.add_delete("/api/jobs/{job_id}", self._handle_delete_job)
-            self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
-            self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
+            self._app.router.add_post(
+                "/api/jobs/{job_id}/pause", self._handle_pause_job
+            )
+            self._app.router.add_post(
+                "/api/jobs/{job_id}/resume", self._handle_resume_job
+            )
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
-            self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
+            self._app.router.add_get(
+                "/v1/runs/{run_id}/events", self._handle_run_events
+            )
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:
@@ -1761,21 +2096,18 @@ class APIServerAdapter(BasePlatformAdapter):
             if hasattr(sweep_task, "add_done_callback"):
                 sweep_task.add_done_callback(self._background_tasks.discard)
 
-            # Refuse to start network-accessible without authentication
-            if is_network_accessible(self._host) and not self._api_key:
-                logger.error(
-                    "[%s] Refusing to start: binding to %s requires API_SERVER_KEY. "
-                    "Set API_SERVER_KEY or use the default 127.0.0.1.",
-                    self.name, self._host,
-                )
-                return False
-
             # Port conflict detection — fail fast if port is already in use
+            import socket as _socket
+
             try:
                 with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
                     _s.settimeout(1)
-                    _s.connect(('127.0.0.1', self._port))
-                logger.error('[%s] Port %d already in use. Set a different port in config.yaml: platforms.api_server.port', self.name, self._port)
+                    _s.connect(("127.0.0.1", self._port))
+                logger.error(
+                    "[%s] Port %d already in use. Set a different port in config.yaml: platforms.api_server.port",
+                    self.name,
+                    self._port,
+                )
                 return False
             except (ConnectionRefusedError, OSError):
                 pass  # port is free
@@ -1796,7 +2128,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
             logger.info(
                 "[%s] API server listening on http://%s:%d (model: %s)",
-                self.name, self._host, self._port, self._model_name,
+                self.name,
+                self._host,
+                self._port,
+                self._model_name,
             )
             return True
 
@@ -1826,7 +2161,9 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         Not used — HTTP request/response cycle handles delivery directly.
         """
-        return SendResult(success=False, error="API server uses HTTP request/response, not send()")
+        return SendResult(
+            success=False, error="API server uses HTTP request/response, not send()"
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the API server."""
