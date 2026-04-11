@@ -90,9 +90,11 @@ class WebhookAdapter(BasePlatformAdapter):
         # Reference to gateway runner for cross-platform delivery (set externally)
         self.gateway_runner = None
 
-        # Idempotency: TTL cache of recently processed delivery IDs.
-        # Prevents duplicate agent runs when webhook providers retry.
-        self._seen_deliveries: Dict[str, float] = {}
+        # Idempotency: TTL cache of recently processed (route, delivery) keys.
+        # Prevents duplicate agent runs when webhook providers retry the same
+        # route, while still allowing intentional fan-out of one provider
+        # delivery across multiple configured webhook routes.
+        self._seen_deliveries: Dict[tuple[str, str], float] = {}
         self._idempotency_ttl: int = 3600  # 1 hour
 
         # Rate limiting: per-route timestamps in a fixed window.
@@ -401,23 +403,26 @@ class WebhookAdapter(BasePlatformAdapter):
         )
 
         # ── Idempotency ─────────────────────────────────────────
-        # Skip duplicate deliveries (webhook retries).
+        # Skip duplicate deliveries (webhook retries) per route.
         now = time.time()
+        dedup_key = (route_name, delivery_id)
         # Prune expired entries
         self._seen_deliveries = {
             k: v
             for k, v in self._seen_deliveries.items()
             if now - v < self._idempotency_ttl
         }
-        if delivery_id in self._seen_deliveries:
+        if dedup_key in self._seen_deliveries:
             logger.info(
-                "[webhook] Skipping duplicate delivery %s", delivery_id
+                "[webhook] Skipping duplicate delivery %s on route %s",
+                delivery_id,
+                route_name,
             )
             return web.json_response(
                 {"status": "duplicate", "delivery_id": delivery_id},
                 status=200,
             )
-        self._seen_deliveries[delivery_id] = now
+        self._seen_deliveries[dedup_key] = now
 
         # Use delivery_id in session key so concurrent webhooks on the
         # same route get independent agent runs (not queued/interrupted).

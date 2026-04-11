@@ -412,6 +412,29 @@ class TestIdempotency:
             assert data["status"] == "duplicate"
 
     @pytest.mark.asyncio
+    async def test_same_delivery_id_on_different_routes_is_accepted(self):
+        """The same provider delivery may fan out to multiple configured routes."""
+        routes = {
+            "route_a": {"secret": _INSECURE_NO_AUTH, "prompt": "route a"},
+            "route_b": {"secret": _INSECURE_NO_AUTH, "prompt": "route b"},
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            headers = {"X-GitHub-Delivery": "delivery-shared"}
+
+            resp1 = await cli.post("/webhooks/route_a", json={"x": 1}, headers=headers)
+            resp2 = await cli.post("/webhooks/route_b", json={"x": 1}, headers=headers)
+
+            assert resp1.status == 202
+            assert resp2.status == 202
+            assert adapter.handle_message.await_count == 2
+            assert adapter.handle_message.await_args_list[0].args[0].source.chat_id == "webhook:route_a:delivery-shared"
+            assert adapter.handle_message.await_args_list[1].args[0].source.chat_id == "webhook:route_b:delivery-shared"
+
+    @pytest.mark.asyncio
     async def test_expired_delivery_id_allows_reprocess(self):
         """After TTL expires, the same delivery ID is accepted again."""
         routes = {"idem": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
@@ -427,7 +450,7 @@ class TestIdempotency:
             assert resp1.status == 202
 
             # Backdate the cache entry so it appears expired
-            adapter._seen_deliveries["delivery-456"] = time.time() - 3700
+            adapter._seen_deliveries[("idem", "delivery-456")] = time.time() - 3700
 
             resp2 = await cli.post("/webhooks/idem", json={"x": 1}, headers=headers)
             assert resp2.status == 202  # re-accepted
