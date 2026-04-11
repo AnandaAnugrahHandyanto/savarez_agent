@@ -2,68 +2,46 @@ package com.nousresearch.hermesagent.ui.portal
 
 import android.app.Application
 import android.content.Intent
-import android.graphics.Bitmap
 import android.net.Uri
-import android.view.ViewGroup
-import android.webkit.CookieManager
 import android.webkit.WebChromeClient
-import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material3.Button
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.chaquo.python.Python
-import com.nousresearch.hermesagent.R
-import com.nousresearch.hermesagent.backend.HermesRuntimeManager
-import com.nousresearch.hermesagent.data.AppSettingsStore
-import com.nousresearch.hermesagent.ui.i18n.AppLanguage
-import com.nousresearch.hermesagent.ui.i18n.LocalHermesStrings
-import com.nousresearch.hermesagent.ui.i18n.hermesStringsFor
-import com.nousresearch.hermesagent.ui.shell.ShellActionItem
-import kotlinx.coroutines.Dispatchers
+import com.chaquo.python.android.AndroidPlatform
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 private const val DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com"
-private const val PORTAL_EMBED_USER_AGENT = "Mozilla/5.0 (Linux; Android 15; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
 
 data class NousPortalUiState(
     val portalUrl: String = DEFAULT_NOUS_PORTAL_URL,
@@ -73,34 +51,38 @@ data class NousPortalUiState(
 )
 
 class NousPortalViewModel(application: Application) : AndroidViewModel(application) {
-    private fun currentStrings() = hermesStringsFor(AppLanguage.fromTag(AppSettingsStore(getApplication()).load().languageTag))
-
     private val _uiState = MutableStateFlow(NousPortalUiState())
     val uiState: StateFlow<NousPortalUiState> = _uiState.asStateFlow()
 
+    init {
+        refresh()
+    }
+
     fun refresh() {
         viewModelScope.launch {
-            val strings = currentStrings()
             _uiState.value = runCatching {
-                val payload = withContext(Dispatchers.IO) {
-                    HermesRuntimeManager.ensurePythonStarted(getApplication())
-                    Python.getInstance()
-                        .getModule("hermes_android.nous_portal_bridge")
-                        .callAttr("read_nous_portal_state_json")
-                        .toString()
+                if (!Python.isStarted()) {
+                    Python.start(AndroidPlatform(getApplication()))
                 }
+                val payload = Python.getInstance()
+                    .getModule("hermes_android.nous_portal_bridge")
+                    .callAttr("read_nous_portal_state_json")
+                    .toString()
                 val json = JSONObject(payload)
-                val loggedIn = json.optBoolean("logged_in", false)
                 NousPortalUiState(
                     portalUrl = json.optString("portal_url").ifBlank { DEFAULT_NOUS_PORTAL_URL },
-                    loggedIn = loggedIn,
+                    loggedIn = json.optBoolean("logged_in", false),
                     inferenceUrl = json.optString("inference_url").orEmpty(),
-                    status = strings.portalLoadingStatus(loggedIn),
+                    status = if (json.optBoolean("logged_in", false)) {
+                        "Signed in to Nous Portal"
+                    } else {
+                        "Browsing Nous Portal"
+                    },
                 )
             }.getOrElse { error ->
                 NousPortalUiState(
                     portalUrl = DEFAULT_NOUS_PORTAL_URL,
-                    status = strings.portalFallbackStatus(error.message ?: error.javaClass.simpleName),
+                    status = "Using default Nous Portal URL (${error.message ?: error.javaClass.simpleName})",
                 )
             }
         }
@@ -111,222 +93,99 @@ class NousPortalViewModel(application: Application) : AndroidViewModel(applicati
 fun NousPortalScreen(
     modifier: Modifier = Modifier,
     viewModel: NousPortalViewModel = viewModel(),
-    extraBottomSpacing: Dp = 0.dp,
-    onContextActionsChanged: (List<ShellActionItem>) -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    val strings = LocalHermesStrings.current
     val context = LocalContext.current
     var isLoading by remember { mutableStateOf(true) }
-
-    LaunchedEffect(strings.language) {
-        viewModel.refresh()
-    }
     var pageError by remember { mutableStateOf<String?>(null) }
-    var webViewRef by remember { mutableStateOf<WebView?>(null) }
-    var isFullscreen by rememberSaveable { mutableStateOf(false) }
 
-    SideEffect {
-        onContextActionsChanged(
-            listOf(
-                // label = "Refresh portal"
-                ShellActionItem(
-                    label = strings.refreshPortal.ifBlank { "Refresh portal" },
-                    description = "Reload the embedded Nous Portal page.",
-                    iconRes = R.drawable.ic_action_refresh,
-                    onClick = {
-                        isLoading = true
-                        pageError = null
-                        viewModel.refresh()
-                        webViewRef?.reload()
-                    },
-                ),
-                ShellActionItem(
-                    label = if (isFullscreen) strings.minimizePortal.ifBlank { "Minimize portal" } else strings.fullScreenPortal.ifBlank { "Full screen portal" },
-                    description = "Resize the embedded portal preview without leaving the app.",
-                    iconRes = if (isFullscreen) R.drawable.ic_action_minimize else R.drawable.ic_action_fullscreen,
-                    onClick = { isFullscreen = !isFullscreen },
-                ),
-                // label = "Open externally"
-                ShellActionItem(
-                    label = strings.openExternally.ifBlank { "Open externally" },
-                    description = "Open the full portal in your browser if the embed is limited.",
-                    iconRes = R.drawable.ic_action_external,
-                    onClick = {
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uiState.portalUrl))
-                        context.startActivity(intent)
-                    },
-                ),
-            )
-        )
+    LaunchedEffect(uiState.portalUrl) {
+        isLoading = true
+        pageError = null
     }
 
     MaterialTheme {
         Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-                Column(
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text("Nous Portal", style = MaterialTheme.typography.headlineSmall)
+                Text(uiState.status, style = MaterialTheme.typography.bodyMedium)
+                Text(uiState.portalUrl, style = MaterialTheme.typography.bodySmall)
+                if (uiState.inferenceUrl.isNotBlank()) {
+                    Text("Inference: ${uiState.inferenceUrl}", style = MaterialTheme.typography.bodySmall)
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Button(onClick = viewModel::refresh) {
+                        Text("Refresh")
+                    }
+                    Button(onClick = {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uiState.portalUrl))
+                        context.startActivity(intent)
+                    }) {
+                        Text("Open externally")
+                    }
+                }
+
+                if (isLoading) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+                if (!pageError.isNullOrBlank()) {
+                    Text(
+                        text = pageError.orEmpty(),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+
+                AndroidView(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .widthIn(max = if (isFullscreen) 1200.dp else 920.dp)
-                        .fillMaxSize()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    if (!isFullscreen) {
-                        PortalGuidanceCard(
-                            status = uiState.status,
-                            inferenceUrl = uiState.inferenceUrl,
-                            pageError = pageError,
-                        )
-                    }
-                    if (isLoading) {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    }
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                            .padding(bottom = if (isFullscreen) 8.dp else extraBottomSpacing),
-                    ) {
-                        Surface(
-                            modifier = Modifier.fillMaxSize(),
-                            shape = RoundedCornerShape(if (isFullscreen) 18.dp else 24.dp),
-                            tonalElevation = 2.dp,
-                        ) {
-                            Box(modifier = Modifier.fillMaxSize()) {
-                                AndroidView(
-                                    modifier = Modifier.fillMaxSize(),
-                                    factory = { androidContext ->
-                                        WebView(androidContext).apply {
-                                            webViewRef = this
-                                            layoutParams = ViewGroup.LayoutParams(
-                                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                            )
-                                            val cookieManager = CookieManager.getInstance()
-                                            cookieManager.setAcceptCookie(true)
-                                            cookieManager.setAcceptThirdPartyCookies(this, true)
-                                            settings.javaScriptEnabled = true
-                                            settings.domStorageEnabled = true
-                                            settings.loadsImagesAutomatically = true
-                                            settings.javaScriptCanOpenWindowsAutomatically = true
-                                            settings.setSupportMultipleWindows(true)
-                                            settings.loadWithOverviewMode = true
-                                            settings.useWideViewPort = true
-                                            settings.builtInZoomControls = false
-                                            settings.displayZoomControls = false
-                                            settings.userAgentString = PORTAL_EMBED_USER_AGENT
-                                            webChromeClient = WebChromeClient()
-                                            webViewClient = object : WebViewClient() {
-                                                override fun shouldOverrideUrlLoading(
-                                                    view: WebView?,
-                                                    request: WebResourceRequest?,
-                                                ): Boolean = false
+                        .weight(1f),
+                    factory = { androidContext ->
+                        WebView(androidContext).apply {
+                            settings.javaScriptEnabled = true
+                            settings.domStorageEnabled = true
+                            webChromeClient = WebChromeClient()
+                            webViewClient = object : WebViewClient() {
+                                override fun shouldOverrideUrlLoading(
+                                    view: WebView?,
+                                    request: WebResourceRequest?,
+                                ): Boolean = false
 
-                                                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                                                    isLoading = true
-                                                    pageError = null
-                                                }
+                                override fun onPageFinished(view: WebView?, url: String?) {
+                                    isLoading = false
+                                    pageError = null
+                                }
 
-                                                override fun onPageFinished(view: WebView?, url: String?) {
-                                                    isLoading = false
-                                                    pageError = null
-                                                }
-
-                                                override fun onReceivedError(
-                                                    view: WebView?,
-                                                    request: WebResourceRequest?,
-                                                    error: WebResourceError?,
-                                                ) {
-                                                    if (request?.isForMainFrame != false) {
-                                                        isLoading = false
-                                                        pageError = error?.description?.toString() ?: "Failed to load Nous Portal"
-                                                    }
-                                                }
-
-                                                override fun onReceivedHttpError(
-                                                    view: WebView?,
-                                                    request: WebResourceRequest?,
-                                                    errorResponse: WebResourceResponse?,
-                                                ) {
-                                                    if (request?.isForMainFrame != false) {
-                                                        isLoading = false
-                                                        pageError = "Nous Portal returned HTTP ${errorResponse?.statusCode ?: "error"}"
-                                                    }
-                                                }
-                                            }
-                                            loadUrl(uiState.portalUrl)
-                                        }
-                                    },
-                                    update = { webView ->
-                                        webViewRef = webView
-                                        if (webView.url != uiState.portalUrl) {
-                                            isLoading = true
-                                            pageError = null
-                                            webView.loadUrl(uiState.portalUrl)
-                                        }
-                                    },
-                                )
-                                Row(
-                                    modifier = Modifier
-                                        .align(Alignment.TopEnd)
-                                        .padding(12.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                override fun onReceivedError(
+                                    view: WebView?,
+                                    request: WebResourceRequest?,
+                                    error: android.webkit.WebResourceError?,
                                 ) {
-                                    Surface(
-                                        shape = RoundedCornerShape(999.dp),
-                                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
-                                    ) {
-                                        IconButton(onClick = { isFullscreen = !isFullscreen }) {
-                                            Icon(
-                                                painter = painterResource(id = if (isFullscreen) R.drawable.ic_action_minimize else R.drawable.ic_action_fullscreen),
-                                                contentDescription = if (isFullscreen) strings.minimizePortal.ifBlank { "Minimize portal" } else strings.fullScreenPortal.ifBlank { "Full screen portal" },
-                                                tint = MaterialTheme.colorScheme.primary,
-                                            )
-                                        }
+                                    if (request?.isForMainFrame != false) {
+                                        isLoading = false
+                                        pageError = error?.description?.toString() ?: "Failed to load Nous Portal"
                                     }
                                 }
                             }
+                            loadUrl(uiState.portalUrl)
                         }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PortalGuidanceCard(
-    status: String,
-    inferenceUrl: String,
-    pageError: String?,
-) {
-    val strings = LocalHermesStrings.current
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        shape = MaterialTheme.shapes.large,
-        tonalElevation = 2.dp,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(strings.portalTitle.ifBlank { "Nous Portal" }, style = MaterialTheme.typography.titleMedium)
-            Text(status, style = MaterialTheme.typography.bodySmall)
-            Text(
-                strings.portalEmbeddedDescription.ifBlank {
-                    "The embedded portal now auto-loads on this page. Use the top-right full screen button to maximize or minimize the preview, or fall back to the browser if verification gets stuck."
-                },
-                style = MaterialTheme.typography.bodySmall,
-            )
-            if (inferenceUrl.isNotBlank()) {
-                Text("Inference: $inferenceUrl", style = MaterialTheme.typography.labelMedium)
-            }
-            if (!pageError.isNullOrBlank()) {
-                Text(pageError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    },
+                    update = { webView ->
+                        if (webView.url != uiState.portalUrl) {
+                            webView.loadUrl(uiState.portalUrl)
+                        }
+                    },
+                )
             }
         }
     }
