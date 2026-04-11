@@ -732,6 +732,32 @@ def _split_delivery_units_for_weixin(content: str) -> List[str]:
     return [unit for unit in units if unit]
 
 
+def _looks_like_chatty_line_for_weixin(line: str) -> bool:
+    """Return True when a line looks like a standalone chat utterance."""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if len(stripped) > 48:
+        return False
+    if line.startswith((" ", "\t")):
+        return False
+    if stripped.startswith((">", "-", "*", "【")):
+        return False
+    if re.match(r"^\*\*[^*]+\*\*$", stripped):
+        return False
+    if re.match(r"^\d+\.\s", stripped):
+        return False
+    return True
+
+
+def _should_split_short_chat_block_for_weixin(block: str) -> bool:
+    """Split only short, chat-like multiline blocks into separate bubbles."""
+    lines = [line for line in block.splitlines() if line.strip()]
+    if not 2 <= len(lines) <= 3:
+        return False
+    return all(_looks_like_chatty_line_for_weixin(line) for line in lines)
+
+
 def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]:
     if len(content) <= max_length:
         return [content]
@@ -766,11 +792,17 @@ def _split_text_for_weixin_delivery(content: str, max_length: int) -> List[str]:
         return [content]
 
     chunks: List[str] = []
-    for unit in _split_delivery_units_for_weixin(content):
-        if len(unit) <= max_length:
-            chunks.append(unit)
-            continue
-        chunks.extend(_pack_markdown_blocks_for_weixin(unit, max_length))
+    for block in _split_markdown_blocks(content):
+        units = (
+            _split_delivery_units_for_weixin(block)
+            if _should_split_short_chat_block_for_weixin(block)
+            else [block]
+        )
+        for unit in units:
+            if len(unit) <= max_length:
+                chunks.append(unit)
+                continue
+            chunks.extend(_pack_markdown_blocks_for_weixin(unit, max_length))
     return chunks or [content]
 
 

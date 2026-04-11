@@ -70,7 +70,7 @@ class TestWeixinChunking:
 
         assert chunks == ["第一行", "第二行", "第三行"]
 
-    def test_split_text_keeps_indented_followup_with_previous_line(self):
+    def test_split_text_keeps_structured_table_block_together(self):
         adapter = _make_adapter()
 
         content = adapter.format_message(
@@ -81,10 +81,28 @@ class TestWeixinChunking:
         )
         chunks = adapter._split_text(content)
 
-        assert chunks == [
-            "- Setting: Timeout\n  Value: 30s",
-            "- Setting: Retries\n  Value: 3",
-        ]
+        assert chunks == ["- Setting: Timeout\n  Value: 30s\n- Setting: Retries\n  Value: 3"]
+
+    def test_split_text_keeps_four_line_structured_blocks_together(self):
+        adapter = _make_adapter()
+
+        content = adapter.format_message(
+            "今天结论：\n"
+            "- 留存下降 3%\n"
+            "- 转化上涨 8%\n"
+            "- 主要问题在首日激活"
+        )
+        chunks = adapter._split_text(content)
+
+        assert chunks == ["今天结论：\n- 留存下降 3%\n- 转化上涨 8%\n- 主要问题在首日激活"]
+
+    def test_split_text_keeps_heading_with_body_together(self):
+        adapter = _make_adapter()
+
+        content = adapter.format_message("## 结论\n这是正文")
+        chunks = adapter._split_text(content)
+
+        assert chunks == ["**结论**\n这是正文"]
 
     def test_split_text_keeps_complete_code_block_together_when_possible(self):
         adapter = _make_adapter()
