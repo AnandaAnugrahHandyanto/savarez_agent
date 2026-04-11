@@ -1037,9 +1037,30 @@ def estimate_tokens_rough(text: str) -> int:
     return len(text) // 4
 
 
+_IMAGE_TOKEN_ESTIMATE = 2000  # Approximate tokens for a high-detail image
+
+
+def _message_chars_for_estimate(msg: Dict[str, Any]) -> int:
+    """Count characters in a message, using a fixed estimate for image blocks."""
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if isinstance(content, list):
+        chars = 0
+        for part in content:
+            if isinstance(part, dict) and part.get("type") in ("image_url", "input_image"):
+                chars += _IMAGE_TOKEN_ESTIMATE * 4  # Convert tokens→chars
+            else:
+                chars += len(str(part))
+        # Add non-content keys (role, name, tool_calls, etc.)
+        for k, v in msg.items():
+            if k != "content":
+                chars += len(str(k)) + len(str(v))
+        return chars
+    return len(str(msg))
+
+
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     """Rough token estimate for a message list (pre-flight only)."""
-    total_chars = sum(len(str(msg)) for msg in messages)
+    total_chars = sum(_message_chars_for_estimate(msg) for msg in messages)
     return total_chars // 4
 
 
@@ -1060,7 +1081,7 @@ def estimate_request_tokens_rough(
     if system_prompt:
         total_chars += len(system_prompt)
     if messages:
-        total_chars += sum(len(str(msg)) for msg in messages)
+        total_chars += sum(_message_chars_for_estimate(msg) for msg in messages)
     if tools:
         total_chars += len(str(tools))
     return total_chars // 4
