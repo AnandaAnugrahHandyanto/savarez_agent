@@ -462,6 +462,10 @@ class DiscordAdapter(BasePlatformAdapter):
         self._seen_messages: Dict[str, float] = {}
         self._SEEN_TTL = 300   # 5 minutes
         self._SEEN_MAX = 2000  # prune threshold
+        # Hash of the last successfully synced slash command set.  Used to
+        # skip redundant tree.sync() calls on reconnect when commands haven't
+        # changed, avoiding Discord's 200 sync/day rate limit (error 30034).
+        self._last_synced_commands_hash: Optional[str] = None
         # Reply threading mode: "off" (no replies), "first" (reply on first
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
@@ -558,10 +562,35 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
 
-                # Sync slash commands with Discord
+                # Sync slash commands with Discord — but only when the
+                # registered command set has actually changed.  Discord
+                # enforces a hard limit of 200 application-command syncs
+                # per day (error 30034); syncing unconditionally on every
+                # reconnect burns through that quota quickly when the
+                # gateway reconnects frequently (e.g. due to rate limits or
+                # network instability).
                 try:
-                    synced = await adapter_self._client.tree.sync()
-                    logger.info("[%s] Synced %d slash command(s)", adapter_self.name, len(synced))
+                    import hashlib, json as _json
+                    current_commands = [
+                        {"name": cmd.name, "description": getattr(cmd, "description", "")}
+                        for cmd in adapter_self._client.tree.get_commands()
+                    ]
+                    current_hash = hashlib.md5(
+                        _json.dumps(current_commands, sort_keys=True).encode()
+                    ).hexdigest()
+
+                    if current_hash != adapter_self._last_synced_commands_hash:
+                        synced = await adapter_self._client.tree.sync()
+                        adapter_self._last_synced_commands_hash = current_hash
+                        logger.info(
+                            "[%s] Synced %d slash command(s) (commands changed)",
+                            adapter_self.name, len(synced),
+                        )
+                    else:
+                        logger.info(
+                            "[%s] Skipped slash command sync (commands unchanged)",
+                            adapter_self.name,
+                        )
                 except Exception as e:  # pragma: no cover - defensive logging
                     logger.warning("[%s] Slash command sync failed: %s", adapter_self.name, e, exc_info=True)
                 adapter_self._ready_event.set()
