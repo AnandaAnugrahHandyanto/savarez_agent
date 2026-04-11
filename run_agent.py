@@ -3064,7 +3064,7 @@ class AIAgent:
         if platform_key in PLATFORM_HINTS:
             prompt_parts.append(PLATFORM_HINTS[platform_key])
 
-        return "\n\n".join(prompt_parts)
+        return "\n\n".join(p.strip() for p in prompt_parts if p.strip())
 
     # =========================================================================
     # Pre/post-call guardrails (inspired by PR #1321 — @alireza78a)
@@ -7823,6 +7823,28 @@ class AIAgent:
             # gated on context_compressor — so orphans from session loading or
             # manual message manipulation are always caught.
             api_messages = self._sanitize_api_messages(api_messages)
+
+            # --- START LLAMA.CPP CACHE SANITIZATION ---
+            # Standardize whitespace to prevent "Common part" mismatch
+            for am in api_messages:
+                if isinstance(am.get("content"), str):
+                    # Force let the llama-server Jinja template handle all newlines
+                    am["content"] = am["content"].strip()
+            
+            # Standardize tool call JSON to be bit-perfect across turns
+            for am in api_messages:
+                if am.get("tool_calls"):
+                    for tc in am["tool_calls"]:
+                        if isinstance(tc, dict) and "function" in tc:
+                            try:
+                                # Remove spaces in JSON and sort keys alphabetically
+                                args_obj = json.loads(tc["function"]["arguments"])
+                                tc["function"]["arguments"] = json.dumps(
+                                    args_obj, separators=(',', ':'), sort_keys=True
+                                )
+                            except Exception:
+                                pass # Keep original if malformed
+            # --- END LLAMA.CPP CACHE SANITIZATION ---
 
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)
