@@ -352,6 +352,25 @@ def _build_media_placeholder(event) -> str:
     return "\n".join(parts)
 
 
+def _format_relative_time(dt) -> str:
+    """Return a human-readable relative time string."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    diff = now - dt.replace(tzinfo=None)
+    total_seconds = diff.total_seconds()
+    if total_seconds < 60:
+        return "just now"
+    elif total_seconds < 3600:
+        mins = int(total_seconds / 60)
+        return f"{mins}m ago"
+    elif total_seconds < 86400:
+        hours = int(total_seconds / 3600)
+        return f"{hours}h ago"
+    else:
+        days = int(total_seconds / 86400)
+        return f"{days}d ago"
+
+
 def _dequeue_pending_text(adapter, session_key: str) -> str | None:
     """Consume and return the text of a pending queued message.
 
@@ -583,6 +602,11 @@ class GatewayRunner:
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
+
+        # Sessions list cache for /sessions command — ephemeral, per-chat
+        # Key: session_key -> {index_str: session_id}
+        # Separate _ts_{session_key} -> float timestamp for expiry
+        self._sessions_list_cache: Dict[str, Any] = {}
 
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
@@ -2468,6 +2492,45 @@ class GatewayRunner:
                 self._pending_messages[_quick_key] = event.text
             return None
 
+        # Intercept numeric replies to /sessions list
+        import time as _time
+        if _quick_key in self._sessions_list_cache:
+            ts_key = f"_ts_{_quick_key}"
+            ts = self._sessions_list_cache.get(ts_key, 0)
+            if _time.time() - ts < 300:  # 5-minute window
+                text = (event.text or "").strip()
+                if text.isdigit() and 1 <= int(text) <= 10:
+                    cache = self._sessions_list_cache[_quick_key]
+                    target_id = cache.get(text)
+                    if target_id:
+                        # Flush and switch
+                        current_entry = self.session_store.get_or_create_session(source)
+                        if current_entry.session_id == target_id:
+                            result = f"Already on that session."
+                        else:
+                            try:
+                                _flush_task = asyncio.create_task(
+                                    self._async_flush_memories(current_entry.session_id)
+                                )
+                                self._background_tasks.add(_flush_task)
+                                _flush_task.add_done_callback(self._background_tasks.discard)
+                            except Exception:
+                                pass
+                            if _quick_key in self._running_agents:
+                                del self._running_agents[_quick_key]
+                            new_entry = self.session_store.switch_session(_quick_key, target_id)
+                            history = self.session_store.load_transcript(target_id)
+                            msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
+                            title = self._session_db.get_session_title(target_id) if self._session_db else None
+                            name = title or "switched session"
+                            result = f"Switched to session (was on #{len(history) if history else 0} messages back). Conversing in: {name}."
+                        del self._sessions_list_cache[_quick_key]
+                        del self._sessions_list_cache[ts_key]
+                        return result
+            # Expired or invalid — clear
+            self._sessions_list_cache.pop(_quick_key, None)
+            self._sessions_list_cache.pop(f"_ts_{_quick_key}", None)
+
         # Check for commands
         command = event.get_command()
         
@@ -2589,6 +2652,9 @@ class GatewayRunner:
 
         if canonical == "branch":
             return await self._handle_branch_command(event)
+
+        if canonical == "sessions":
+            return await self._handle_sessions_command(event)
 
         if canonical == "rollback":
             return await self._handle_rollback_command(event)
@@ -5784,6 +5850,51 @@ class GatewayRunner:
         msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
 
         return f"↻ Resumed session **{title}**{msg_part}. Conversation restored."
+
+    async def _handle_sessions_command(self, event: MessageEvent) -> str:
+        """Handle /sessions — show recent sessions as a numbered list to switch between them."""
+        if not self._session_db:
+            return "Session database not available."
+
+        source = event.source
+        user_source = source.platform.value if source.platform else None
+        session_key = self._session_key_for_source(source)
+
+        try:
+            sessions = self._session_db.list_sessions_rich(
+                source=user_source, limit=10, include_children=False
+            )
+        except Exception as e:
+            return f"Could not list sessions: {e}"
+
+        if not sessions:
+            return "No recent sessions found."
+
+        # Store sessions list for this chat so we can intercept numeric replies
+        import time as _time
+        self._sessions_list_cache[session_key] = {
+            str(i): s["id"] for i, s in enumerate(sessions)
+        }
+        # Also store the timestamp so we can expire this after 5 minutes
+        self._sessions_list_cache[f"_ts_{session_key}"] = _time.time()
+
+        lines = ["📋 **Recent Sessions** (reply with a number to switch)\n"]
+        for i, s in enumerate(sessions):
+            title = s.get("title") or "Untitled"
+            preview = (s.get("preview") or "—")[:55]
+            last_active = s.get("last_active", s.get("started_at", ""))
+            try:
+                from datetime import datetime
+                dt = datetime.fromisoformat(last_active.replace("Z", "+00:00"))
+                age = _format_relative_time(dt)
+            except Exception:
+                age = ""
+            age_str = f" ({age})" if age else ""
+            lines.append(f"{i+1}. **{title}**{age_str}")
+            lines.append(f"   {preview}")
+
+        lines.append("\nReply with a number (1-10) to switch.")
+        return "\n".join(lines)
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:
         """Handle /branch [name] — fork the current session into a new independent copy.

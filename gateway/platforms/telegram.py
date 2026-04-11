@@ -2426,8 +2426,39 @@ class TelegramAdapter(BasePlatformAdapter):
                     mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                     ext = mime_to_ext.get(doc.mime_type, "")
 
-                # Check if supported
-                if ext not in SUPPORTED_DOCUMENT_TYPES:
+                # If it's an audio file sent as a document, cache it as audio for STT
+                AUDIO_EXTS = {".wav", ".mp3", ".ogg", ".aac", ".flac", ".m4a", ".opus"}
+                if ext in AUDIO_EXTS:
+                    # Check file size before downloading (Telegram Bot API limit: 20 MB)
+                    MAX_DOC_BYTES = 20 * 1024 * 1024
+                    if not doc.file_size or doc.file_size > MAX_DOC_BYTES:
+                        event.text = (
+                            "The audio file is too large or its size could not be verified. "
+                            "Maximum: 20 MB."
+                        )
+                        logger.info("[Telegram] Audio document too large: %s bytes", doc.file_size)
+                        await self.handle_message(event)
+                        return
+                    file_obj = await doc.get_file()
+                    audio_bytes = await file_obj.download_as_bytearray()
+                    audio_ext = ext if ext else ".wav"
+                    cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=audio_ext)
+                    event.media_urls = [cached_path]
+                    audio_mime_types = {
+                        ".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg",
+                        ".aac": "audio/aac", ".flac": "audio/flac", ".m4a": "audio/mp4",
+                        ".opus": "audio/opus",
+                    }
+                    event.media_types = [audio_mime_types.get(audio_ext, "audio/wav")]
+                    logger.info("[Telegram] Cached audio document (%s) at %s", ext, cached_path)
+                    # Audio path is complete — skip document handling below
+                    if mediagroup_id:=getattr(msg, "media_group_id", None):
+                        await self._queue_media_group_event(str(mediagroup_id), event)
+                        return
+                    await self.handle_message(event)
+                    return
+                # Non-audio document: check if supported
+                elif ext not in SUPPORTED_DOCUMENT_TYPES:
                     supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
                     event.text = (
                         f"Unsupported document type '{ext or 'unknown'}'. "

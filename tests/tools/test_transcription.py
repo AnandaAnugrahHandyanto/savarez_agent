@@ -184,6 +184,47 @@ class TestTranscribeOpenAI:
 
 
 # ---------------------------------------------------------------------------
+# Model normalization (OpenAI/GroQ → local faster-whisper)
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeLocalCommandModel:
+    """_normalize_local_command_model() maps cloud model IDs to faster-whisper names."""
+
+    def _call_normalize(self, model_name):
+        from tools.transcription_tools import _normalize_local_command_model
+        return _normalize_local_command_model(model_name)
+
+    def test_whisper_1_returns_base(self):
+        assert self._call_normalize("whisper-1") == "base"
+
+    def test_gpt_4o_mini_transcribe_returns_base(self):
+        assert self._call_normalize("gpt-4o-mini-transcribe") == "base"
+
+    def test_gpt_4o_transcribe_returns_base(self):
+        assert self._call_normalize("gpt-4o-transcribe") == "base"
+
+    def test_groq_whisper_large_v3_returns_base(self):
+        assert self._call_normalize("whisper-large-v3") == "base"
+
+    def test_groq_whisper_large_v3_turbo_returns_base(self):
+        assert self._call_normalize("whisper-large-v3-turbo") == "base"
+
+    def test_groq_distil_whisper_returns_base(self):
+        assert self._call_normalize("distil-whisper-large-v3-en") == "base"
+
+    def test_local_model_name_passed_through(self):
+        assert self._call_normalize("medium") == "medium"
+        assert self._call_normalize("large-v3") == "large-v3"
+
+    def test_none_returns_base(self):
+        assert self._call_normalize(None) == "base"
+
+    def test_empty_string_returns_base(self):
+        assert self._call_normalize("") == "base"
+
+
+# ---------------------------------------------------------------------------
 # Main transcribe_audio() dispatch
 # ---------------------------------------------------------------------------
 

@@ -187,6 +187,12 @@ def _has_local_command() -> bool:
 
 def _normalize_local_command_model(model_name: Optional[str]) -> str:
     if not model_name or model_name in OPENAI_MODELS or model_name in GROQ_MODELS:
+        if model_name and model_name not in (None, ""):
+            logger.info(
+                "Normalizing STT model '%s' to '%s' (OpenAI/GroQ model not supported "
+                "by faster-whisper — see stt.local.model in config to set a faster-whisper model name).",
+                model_name, DEFAULT_LOCAL_MODEL,
+            )
         return DEFAULT_LOCAL_MODEL
     return model_name
 
@@ -316,6 +322,9 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
 
     if not _HAS_FASTER_WHISPER:
         return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
+
+    # Normalize OpenAI/GroQ model identifiers to faster-whisper model names
+    model_name = _normalize_local_command_model(model_name)
 
     try:
         from faster_whisper import WhisperModel
