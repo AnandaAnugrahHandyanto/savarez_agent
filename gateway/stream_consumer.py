@@ -62,6 +62,7 @@ class GatewayStreamConsumer:
         chat_id: str,
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
+        code_block_split_callback: Optional[callable] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
@@ -76,6 +77,8 @@ class GatewayStreamConsumer:
         self._last_sent_text = ""   # Track last-sent text to skip redundant edits
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        self._code_block_split_callback = code_block_split_callback
+        self._in_code_block = False  # Track if we're inside a code block
 
     @property
     def already_sent(self) -> bool:
@@ -120,6 +123,12 @@ class GatewayStreamConsumer:
                             got_segment_break = True
                             break
                         self._accumulated += item
+                        # Track code block state by counting fence markers
+                        # This is a simple heuristic - count lines starting with ```
+                        for line in item.split('\n'):
+                            stripped = line.strip()
+                            if stripped.startswith('```'):
+                                self._in_code_block = not self._in_code_block
                     except queue.Empty:
                         break
 
@@ -149,8 +158,19 @@ class GatewayStreamConsumer:
                         chunks = self.adapter.truncate_message(
                             self._accumulated, _safe_limit
                         )
-                        for chunk in chunks:
+                        for i, chunk in enumerate(chunks):
                             await self._send_new_chunk(chunk, self._message_id)
+                            # Check if this chunk closed a code block that was open
+                            # (truncate_message adds closing fence when splitting mid-block)
+                            if self._in_code_block and chunk.rstrip().endswith("```"):
+                                # Code block was closed by truncate
+                                if i < len(chunks) - 1:  # Not the last chunk
+                                    self._in_code_block = False
+                                    if self._code_block_split_callback:
+                                        try:
+                                            self._code_block_split_callback()
+                                        except Exception:
+                                            pass
                         self._accumulated = ""
                         self._last_sent_text = ""
                         self._last_edit_time = time.monotonic()
@@ -203,6 +223,12 @@ class GatewayStreamConsumer:
                             await self._send_or_edit(self._accumulated)
                         elif not self._already_sent:
                             await self._send_or_edit(self._accumulated)
+                    # Add completion reaction to the final message
+                    if self._message_id and hasattr(self.adapter, '_add_completion_reaction'):
+                        try:
+                            await self.adapter._add_completion_reaction(self._message_id)
+                        except Exception as e:
+                            logger.debug("Failed to add completion reaction: %s", e)
                     return
 
                 # Tool boundary: reset message state so the next text chunk

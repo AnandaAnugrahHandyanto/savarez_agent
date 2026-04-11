@@ -6755,6 +6755,11 @@ class GatewayRunner:
             pr = self._provider_routing
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
+            
+            # Track reasoning code block state for streaming (must be defined before StreamConsumer)
+            _reasoning_started_holder = [False]  # Track if we've started reasoning
+            _reasoning_block_open = [False]  # Track if reasoning code block is currently open
+            
             # Set up streaming consumer if enabled
             _stream_consumer = None
             _stream_delta_cb = None
@@ -6773,11 +6778,17 @@ class GatewayRunner:
                             buffer_threshold=_scfg.buffer_threshold,
                             cursor=_scfg.cursor,
                         )
+                        
+                        # Callback to notify Gateway when truncate closes a code block
+                        def _on_code_block_split():
+                            _reasoning_block_open[0] = False
+                        
                         _stream_consumer = GatewayStreamConsumer(
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
                             metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                            code_block_split_callback=_on_code_block_split,
                         )
                         _stream_delta_cb = _stream_consumer.on_delta
                         stream_consumer_holder[0] = _stream_consumer
@@ -6842,7 +6853,7 @@ class GatewayRunner:
 
             # Set up reasoning callback for streaming reasoning display
             # This allows reasoning content to be streamed to the platform in real-time
-            _reasoning_started_holder = [False]  # Track if we've started reasoning
+            # Note: _reasoning_started_holder and _reasoning_block_open defined earlier (before StreamConsumer)
             _reasoning_delta_cb = None
             _wrapped_stream_delta_cb = None
 
@@ -6854,16 +6865,20 @@ class GatewayRunner:
                     # Add reasoning prefix on first chunk
                     if not _reasoning_started_holder[0]:
                         _reasoning_started_holder[0] = True
+                        _reasoning_block_open[0] = True  # Block is now open
                         prefix = "💭 **Reasoning:**\n```\n"
                         _stream_delta_cb(prefix)
+                    # If block was closed (by truncate_message split), reopen it
+                    elif not _reasoning_block_open[0]:
+                        _reasoning_block_open[0] = True
+                        _stream_delta_cb("```\n")
                     _stream_delta_cb(text)
 
                 def _wrapped_stream_delta_cb(text: str) -> None:
                     """Wrap stream delta to close reasoning block before regular content."""
-                    # If reasoning was shown and this is the first regular content,
-                    # close the reasoning code block first
-                    if _reasoning_started_holder[0]:
-                        _reasoning_started_holder[0] = False  # Reset for next turn
+                    # If reasoning block is still open, close it first
+                    if _reasoning_block_open[0]:
+                        _reasoning_block_open[0] = False
                         close_block = "\n```\n\n"
                         _stream_delta_cb(close_block)
                     _stream_delta_cb(text)
@@ -7052,6 +7067,12 @@ class GatewayRunner:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
+
+            # Close reasoning block if still open (no regular content followed reasoning)
+            if _reasoning_started_holder and _reasoning_started_holder[0]:
+                _reasoning_started_holder[0] = False
+                if _stream_delta_cb:
+                    _stream_delta_cb("\n```\n\n")
 
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:

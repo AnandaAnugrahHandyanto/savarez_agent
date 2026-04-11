@@ -1682,6 +1682,16 @@ class AIAgent:
             if assistant_message.reasoning_content not in reasoning_parts:
                 reasoning_parts.append(assistant_message.reasoning_content)
         
+        # Check thinking_content field (Baidu Qianfan, some Chinese providers)
+        if hasattr(assistant_message, 'thinking_content') and assistant_message.thinking_content:
+            if assistant_message.thinking_content not in reasoning_parts:
+                reasoning_parts.append(assistant_message.thinking_content)
+        
+        # Check thinking field (some providers)
+        if hasattr(assistant_message, 'thinking') and assistant_message.thinking:
+            if assistant_message.thinking not in reasoning_parts:
+                reasoning_parts.append(assistant_message.thinking)
+        
         # Check reasoning_details array (OpenRouter unified format)
         # Format: [{"type": "reasoning.summary", "summary": "...", ...}, ...]
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
@@ -4533,7 +4543,14 @@ class AIAgent:
                     model_name = chunk.model
 
                 # Accumulate reasoning content
-                reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                # Check multiple fields: reasoning_content (Moonshot, Novita), reasoning (DeepSeek, Qwen),
+                # thinking_content (Baidu Qianfan, some Chinese providers), thinking (some providers)
+                reasoning_text = (
+                    getattr(delta, "reasoning_content", None) or
+                    getattr(delta, "reasoning", None) or
+                    getattr(delta, "thinking_content", None) or
+                    getattr(delta, "thinking", None)
+                )
                 if reasoning_text:
                     reasoning_parts.append(reasoning_text)
                     _fire_first_delta()
