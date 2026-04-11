@@ -2291,6 +2291,8 @@ async def async_call_llm(
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
         base_url=resolved_base_url)
 
+    # Handle max_tokens vs max_completion_tokens retry, then payment fallback.
+    # Mirrors the sync call_llm() logic above for feature parity.
     try:
         return await client.chat.completions.create(**kwargs)
     except Exception as first_err:
@@ -2298,5 +2300,27 @@ async def async_call_llm(
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
-            return await client.chat.completions.create(**kwargs)
+            try:
+                return await client.chat.completions.create(**kwargs)
+            except Exception as retry_err:
+                if not _is_payment_error(retry_err):
+                    raise
+                first_err = retry_err
+
+        # ── Payment / credit exhaustion fallback (async parity) ──────
+        if _is_payment_error(first_err):
+            fb_client, fb_model, fb_label = _try_payment_fallback(
+                resolved_provider, task)
+            if fb_client is not None:
+                fb_kwargs = _build_call_kwargs(
+                    fb_label, fb_model, messages,
+                    temperature=temperature, max_tokens=max_tokens,
+                    tools=tools, timeout=effective_timeout,
+                    extra_body=extra_body)
+                try:
+                    return await fb_client.chat.completions.create(**fb_kwargs)
+                except Exception as fb_err:
+                    logger.warning("Async auxiliary %s: payment fallback %s failed: %s",
+                                   task or "call", fb_label, fb_err)
+                    raise
         raise

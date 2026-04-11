@@ -338,6 +338,9 @@ class _WriteQueue:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         # Thread-local connection cache — one connection per thread, reused.
         self._local = threading.local()
+        # Track all connections so shutdown() can close them.
+        self._all_conns: list[sqlite3.Connection] = []
+        self._conns_lock = threading.Lock()
         self._init_db()
         self._thread.start()
         # Replay any rows left from a previous crash
@@ -351,6 +354,8 @@ class _WriteQueue:
             conn = sqlite3.connect(str(self._db_path), timeout=30)
             conn.row_factory = sqlite3.Row
             self._local.conn = conn
+            with self._conns_lock:
+                self._all_conns.append(conn)
         return conn
 
     def _init_db(self) -> None:
@@ -405,6 +410,14 @@ class _WriteQueue:
     def shutdown(self) -> None:
         self._q.put(_ASYNC_SHUTDOWN)
         self._thread.join(timeout=10)
+        # Close all cached SQLite connections to avoid file descriptor leaks.
+        with self._conns_lock:
+            for conn in self._all_conns:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._all_conns.clear()
 
 
 # ---------------------------------------------------------------------------

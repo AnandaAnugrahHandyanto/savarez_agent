@@ -7588,28 +7588,31 @@ class AIAgent:
                     )
                 # May need multiple passes for very large sessions with small
                 # context windows (each pass summarises the middle N turns).
-                for _pass in range(3):
-                    _orig_len = len(messages)
-                    messages, active_system_prompt = self._compress_context(
-                        messages, system_message, approx_tokens=_preflight_tokens,
-                        task_id=effective_task_id,
-                    )
-                    if len(messages) >= _orig_len:
-                        break  # Cannot compress further
-                    # Compression created a new session — clear the history
-                    # reference so _flush_messages_to_session_db writes ALL
-                    # compressed messages to the new session's SQLite, not
-                    # skipping them because conversation_history is still the
-                    # pre-compression length.
-                    conversation_history = None
-                    # Re-estimate after compression
-                    _preflight_tokens = estimate_request_tokens_rough(
-                        messages,
-                        system_prompt=active_system_prompt or "",
-                        tools=self.tools or None,
-                    )
-                    if _preflight_tokens < self.context_compressor.threshold_tokens:
-                        break  # Under threshold
+                try:
+                    for _pass in range(3):
+                        _orig_len = len(messages)
+                        messages, active_system_prompt = self._compress_context(
+                            messages, system_message, approx_tokens=_preflight_tokens,
+                            task_id=effective_task_id,
+                        )
+                        if len(messages) >= _orig_len:
+                            break  # Cannot compress further
+                        # Compression created a new session — clear the history
+                        # reference so _flush_messages_to_session_db writes ALL
+                        # compressed messages to the new session's SQLite, not
+                        # skipping them because conversation_history is still the
+                        # pre-compression length.
+                        conversation_history = None
+                        # Re-estimate after compression
+                        _preflight_tokens = estimate_request_tokens_rough(
+                            messages,
+                            system_prompt=active_system_prompt or "",
+                            tools=self.tools or None,
+                        )
+                        if _preflight_tokens < self.context_compressor.threshold_tokens:
+                            break  # Under threshold
+                except Exception as comp_err:
+                    logger.warning("Preflight compression failed, proceeding with uncompressed context: %s", comp_err)
 
         # Plugin hook: pre_llm_call
         # Fired once per turn before the tool-calling loop.  Plugins can
