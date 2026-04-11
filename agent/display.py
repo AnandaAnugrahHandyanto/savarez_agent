@@ -779,29 +779,53 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     if result is None:
         return False, ""
 
+    def _error_from_structured_payload(data: dict, *, strict_status: bool = True) -> tuple[bool, str]:
+        """Enforce optional status/error contract for structured tool output."""
+        status = data.get("status")
+        if strict_status and status is not None:
+            status_str = str(status)
+            if status_str.lower() != "ok":
+                return True, f" [status={status_str}]"
+
+        err = data.get("error")
+        if err is not None and str(err).strip():
+            return True, " [error]"
+        return False, ""
+
     if tool_name == "terminal":
         try:
             data = json.loads(result)
+            if isinstance(data, dict):
+                is_error, suffix = _error_from_structured_payload(data)
+                if is_error:
+                    return True, suffix
             exit_code = data.get("exit_code")
             if exit_code is not None and exit_code != 0:
                 return True, f" [exit {exit_code}]"
         except (json.JSONDecodeError, TypeError, AttributeError):
-            logger.debug("Could not parse terminal result as JSON for exit code check")
-        return False, ""
+            logger.debug("Could not parse terminal result as JSON for status/exit check")
 
     # Memory-specific: distinguish "full" from real errors
     if tool_name == "memory":
         try:
             data = json.loads(result)
-            if data.get("success") is False and "exceed the limit" in data.get("error", ""):
+            if isinstance(data, dict) and data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
         except (json.JSONDecodeError, TypeError, AttributeError):
             logger.debug("Could not parse memory result as JSON for capacity check")
 
-    # Generic heuristic for non-terminal tools
+    # Generic heuristic for non-terminal tools (and fallback for non-JSON outputs)
     lower = result[:500].lower()
-    if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
+    if result.startswith("Error") or '"error"' in lower or '"failed"' in lower:
         return True, " [error]"
+    try:
+        data = json.loads(result)
+        if isinstance(data, dict):
+            is_error, suffix = _error_from_structured_payload(data, strict_status=True)
+            if is_error:
+                return True, suffix
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        logger.debug("Could not parse result as JSON for structured tool-failure check")
 
     return False, ""
 

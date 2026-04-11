@@ -502,14 +502,42 @@ def _run_single_child(
                         if tc_id:
                             trace_by_id[tc_id] = entry_t
                 elif msg.get("role") == "tool":
-                    content = msg.get("content", "")
-                    is_error = bool(
-                        content and "error" in content[:80].lower()
-                    )
+                    raw_content = msg.get("content", "")
+                    content = raw_content if isinstance(raw_content, str) else str(raw_content)
+                    reason = None
+
+                    def _classify_tool_result(value: str) -> tuple[str, str | None]:
+                        if not value:
+                            return "ok", None
+                        try:
+                            payload = json.loads(value)
+                        except (json.JSONDecodeError, TypeError):
+                            payload = None
+
+                        if isinstance(payload, dict):
+                            status = payload.get("status")
+                            if status is not None and str(status).lower() != "ok":
+                                return "error", f"tool status {status!r}"
+
+                            err = payload.get("error")
+                            if err is not None and str(err).strip():
+                                return "error", str(err)
+
+                        if "error" in value[:80].lower():
+                            return "error", "tool result contains error marker"
+                        if "failed" in value[:80].lower():
+                            return "error", "tool result contains failure marker"
+                        if value.startswith("Error"):
+                            return "error", "tool result starts with Error"
+                        return "ok", None
+
+                    status, reason = _classify_tool_result(content)
                     result_meta = {
                         "result_bytes": len(content),
-                        "status": "error" if is_error else "ok",
+                        "status": status,
                     }
+                    if reason:
+                        result_meta["error"] = reason
                     # Match by tool_call_id for parallel calls
                     tc_id = msg.get("tool_call_id")
                     target = trace_by_id.get(tc_id) if tc_id else None
