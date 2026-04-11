@@ -14,11 +14,10 @@ Make it a **Tool** when it requires end-to-end integration with API keys, custom
 
 ## Overview
 
-Adding a tool touches **3 files**:
+Adding a tool usually touches **2 places**:
 
 1. **`tools/your_tool.py`** — handler, schema, check function, `registry.register()` call
-2. **`toolsets.py`** — add tool name to `_HERMES_CORE_TOOLS` (or a specific toolset)
-3. **`model_tools.py`** — add `"tools.your_tool"` to the `_discover_tools()` list
+2. **`toolsets.py`** — add a new toolset or bundle membership if the tool needs a new grouping/default bundle
 
 ## Step 1: Create the Tool File
 
@@ -105,38 +104,30 @@ registry.register(
 - The `handler` receives `(args: dict, **kwargs)` where `args` is the LLM's tool call arguments
 :::
 
-## Step 2: Add to a Toolset
+## Step 2: Add to a Toolset or Bundle
 
 In `toolsets.py`, add the tool name:
 
 ```python
-# If it should be available on all platforms (CLI + messaging):
-_HERMES_CORE_TOOLS = [
-    ...
-    "weather",  # <-- add here
-]
-
-# Or create a new standalone toolset:
+# Create a new standalone toolset:
 "weather": {
     "description": "Weather lookup tools",
     "tools": ["weather"],
     "includes": []
 },
+
+# Or, if you want a new toolset included in the default Hermes bundles:
+_HERMES_CORE_TOOLSETS = [
+    ...,
+    "weather",
+]
 ```
 
-## Step 3: Add Discovery Import
+## Step 3: Discovery Is Automatic
 
-In `model_tools.py`, add the module to the `_discover_tools()` list:
-
-```python
-def _discover_tools():
-    _modules = [
-        ...
-        "tools.weather_tool",  # <-- add here
-    ]
-```
-
-This import triggers the `registry.register()` call at the bottom of your tool file.
+Built-in tool modules no longer need a manual import in `model_tools.py`.
+`tools.registry.discover_builtin_tools()` scans `tools/*.py` for modules that
+contain `registry.register(...)` and imports them automatically.
 
 ## Async Handlers
 

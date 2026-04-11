@@ -139,7 +139,10 @@ The gateway reads configuration from multiple sources:
 | `~/.hermes/config.yaml` | Model settings, tool configuration, display options |
 | Environment variables | Override any of the above |
 
-Unlike the CLI (which uses `load_cli_config()` with hardcoded defaults), the gateway reads `config.yaml` directly via YAML loader. This means config keys that exist in the CLI's defaults dict but not in the user's config file may behave differently between CLI and gateway.
+The gateway now uses the same runtime config authority as the CLI startup path:
+`hermes_cli.config.load_runtime_config()`. That means merged defaults and
+runtime env bridging are shared across CLI and gateway entrypoints instead of
+being loaded through separate YAML-only paths.
 
 ## Platform Adapters
 
