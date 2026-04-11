@@ -38,10 +38,15 @@ LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
 # Minimum tokens for the summary output
 _MIN_SUMMARY_TOKENS = 2000
+# Lower floor for the more aggressive repeated-compaction handoff.
+_MIN_HEAVY_SUMMARY_TOKENS = 1000
 # Proportion of compressed content to allocate for summary
 _SUMMARY_RATIO = 0.20
+_HEAVY_SUMMARY_RATIO = 0.12
 # Absolute ceiling for summary tokens (even on very large context windows)
 _SUMMARY_TOKENS_CEILING = 12_000
+_HEAVY_REPEAT_THRESHOLD = 2
+_HEAVY_SEVERE_PRESSURE_RATIO = 1.35
 
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
@@ -95,6 +100,7 @@ class ContextCompressor(ContextEngine):
         threshold_percent: float = 0.50,
         protect_first_n: int = 3,
         protect_last_n: int = 20,
+        protect_recent_n: int = 3,
         summary_target_ratio: float = 0.20,
         quiet_mode: bool = False,
         summary_model_override: str = None,
@@ -110,6 +116,7 @@ class ContextCompressor(ContextEngine):
         self.threshold_percent = threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
+        self.protect_recent_n = max(3, protect_recent_n)
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
 
@@ -191,12 +198,7 @@ class ContextCompressor(ContextEngine):
             min_protect = min(protect_tail_count, len(result) - 1)
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
-                content_len = len(msg.get("content") or "")
-                msg_tokens = content_len // _CHARS_PER_TOKEN + 10
-                for tc in msg.get("tool_calls") or []:
-                    if isinstance(tc, dict):
-                        args = tc.get("function", {}).get("arguments", "")
-                        msg_tokens += len(args) // _CHARS_PER_TOKEN
+                msg_tokens = self._estimate_message_tokens(msg)
                 if accumulated + msg_tokens > protect_tail_tokens and (len(result) - i) >= min_protect:
                     boundary = i
                     break
@@ -224,7 +226,9 @@ class ContextCompressor(ContextEngine):
     # Summarization
     # ------------------------------------------------------------------
 
-    def _compute_summary_budget(self, turns_to_summarize: List[Dict[str, Any]]) -> int:
+    def _compute_summary_budget(
+        self, turns_to_summarize: List[Dict[str, Any]], *, heavy_mode: bool = False,
+    ) -> int:
         """Scale summary token budget with the amount of content being compressed.
 
         The maximum scales with the model's context window (5% of context,
@@ -232,17 +236,64 @@ class ContextCompressor(ContextEngine):
         richer summaries instead of being hard-capped at 8K tokens.
         """
         content_tokens = estimate_messages_tokens_rough(turns_to_summarize)
+        if heavy_mode:
+            budget = int(content_tokens * _HEAVY_SUMMARY_RATIO)
+            max_budget = max(_MIN_HEAVY_SUMMARY_TOKENS, int(self.max_summary_tokens * 0.60))
+            return max(_MIN_HEAVY_SUMMARY_TOKENS, min(budget, max_budget))
         budget = int(content_tokens * _SUMMARY_RATIO)
         return max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
 
-    # Truncation limits for the summarizer input.  These bound how much of
-    # each message the summary model sees — the budget is the *summary*
+    def _should_use_heavy_compaction(self, current_tokens: int | None = None) -> bool:
+        """Escalate to a shorter Layer-3 handoff after repeated or severe pressure."""
+        if self.compression_count >= _HEAVY_REPEAT_THRESHOLD:
+            return True
+        if current_tokens is None or self.threshold_tokens <= 0:
+            return False
+        severe_threshold = min(
+            int(self.context_length * 0.90),
+            int(self.threshold_tokens * _HEAVY_SEVERE_PRESSURE_RATIO),
+        )
+        return current_tokens >= severe_threshold
+
+    # Truncation limits for summarizer input. The budget is for the summary
     # model's context window, not the main model's.
     _CONTENT_MAX = 6000       # total chars per message body
     _CONTENT_HEAD = 4000      # chars kept from the start
     _CONTENT_TAIL = 1500      # chars kept from the end
     _TOOL_ARGS_MAX = 1500     # tool call argument chars
     _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
+
+    def _truncate_summary_text(
+        self,
+        text: str,
+        *,
+        limit: int = _CONTENT_MAX,
+        head: int = _CONTENT_HEAD,
+        tail: int = _CONTENT_TAIL,
+    ) -> str:
+        """Keep enough leading and trailing text for summary generation."""
+        if len(text) <= limit:
+            return text
+        return text[:head] + "\n...[truncated]...\n" + text[-tail:]
+
+    @staticmethod
+    def _estimate_tool_call_tokens(tool_calls: list[Any]) -> int:
+        """Estimate the serialized size of tool-call arguments."""
+        tokens = 0
+        for tc in tool_calls or []:
+            if isinstance(tc, dict):
+                args = tc.get("function", {}).get("arguments", "")
+                tokens += len(args) // _CHARS_PER_TOKEN
+        return tokens
+
+    def _estimate_message_tokens(self, msg: Dict[str, Any]) -> int:
+        """Estimate message size for pruning and tail-budget decisions."""
+        content = msg.get("content") or ""
+        return (
+            len(content) // _CHARS_PER_TOKEN
+            + 10
+            + self._estimate_tool_call_tokens(msg.get("tool_calls"))
+        )
 
     def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
         """Serialize conversation turns into labeled text for the summarizer.
@@ -259,15 +310,13 @@ class ContextCompressor(ContextEngine):
             # Tool results: keep enough content for the summarizer
             if role == "tool":
                 tool_id = msg.get("tool_call_id", "")
-                if len(content) > self._CONTENT_MAX:
-                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+                content = self._truncate_summary_text(content)
                 parts.append(f"[TOOL RESULT {tool_id}]: {content}")
                 continue
 
             # Assistant messages: include tool call names AND arguments
             if role == "assistant":
-                if len(content) > self._CONTENT_MAX:
-                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+                content = self._truncate_summary_text(content)
                 tool_calls = msg.get("tool_calls", [])
                 if tool_calls:
                     tc_parts = []
@@ -276,7 +325,6 @@ class ContextCompressor(ContextEngine):
                             fn = tc.get("function", {})
                             name = fn.get("name", "?")
                             args = fn.get("arguments", "")
-                            # Truncate long arguments but keep enough for context
                             if len(args) > self._TOOL_ARGS_MAX:
                                 args = args[:self._TOOL_ARGS_HEAD] + "..."
                             tc_parts.append(f"  {name}({args})")
@@ -289,13 +337,14 @@ class ContextCompressor(ContextEngine):
                 continue
 
             # User and other roles
-            if len(content) > self._CONTENT_MAX:
-                content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+            content = self._truncate_summary_text(content)
             parts.append(f"[{role.upper()}]: {content}")
 
         return "\n\n".join(parts)
 
-    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]]) -> Optional[str]:
+    def _generate_summary(
+        self, turns_to_summarize: List[Dict[str, Any]], *, heavy_mode: bool = False,
+    ) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
         Uses a structured template (Goal, Progress, Decisions, Files, Next Steps)
@@ -314,10 +363,86 @@ class ContextCompressor(ContextEngine):
             )
             return None
 
-        summary_budget = self._compute_summary_budget(turns_to_summarize)
+        summary_budget = self._compute_summary_budget(
+            turns_to_summarize,
+            heavy_mode=heavy_mode,
+        )
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
 
-        if self._previous_summary:
+        if heavy_mode and self._previous_summary:
+            prompt = f"""Create a shorter, higher-level handoff summary for a later assistant. This conversation has already been compacted multiple times, so compress aggressively.
+
+PREVIOUS SUMMARY:
+{self._previous_summary}
+
+NEW TURNS TO INCORPORATE:
+{content_to_summarize}
+
+Rewrite everything into a concise durable handoff. Keep only the current goal, current state, constraints, key decisions, important files, open risks, next steps, and critical values. Do NOT preserve turn-by-turn chronology, exhaustive tool logs, or transcript-like detail unless it is necessary to continue correctly.
+
+Use this exact structure:
+
+## Goal
+[What the user is trying to accomplish now]
+
+## Current State
+[Current implementation/work status after the repeated compactions]
+
+## Constraints & Preferences
+[Durable user constraints, preferences, and non-negotiables]
+
+## Key Decisions
+[Important technical decisions and why they matter]
+
+## Relevant Files
+[Only the files that still matter, with brief notes]
+
+## Open Risks
+[Active risks, blockers, or uncertainties]
+
+## Next Steps
+[What should happen next]
+
+## Critical Data
+[Specific values, error messages, commands, IDs, or config details that must not be lost]
+
+Target ~{summary_budget} tokens. Prefer durable state over chronology. Write only the summary body. Do not include any preamble or prefix."""
+        elif heavy_mode:
+            prompt = f"""Create a shorter, higher-level handoff summary for a later assistant. This conversation is being compacted aggressively to recover context space.
+
+TURNS TO SUMMARIZE:
+{content_to_summarize}
+
+Keep only durable information needed to continue correctly. Do NOT preserve turn-by-turn chronology, exhaustive tool logs, or transcript-like detail unless it is necessary to continue the work safely.
+
+Use this exact structure:
+
+## Goal
+[What the user is trying to accomplish now]
+
+## Current State
+[Current implementation/work status]
+
+## Constraints & Preferences
+[Durable user constraints, preferences, and non-negotiables]
+
+## Key Decisions
+[Important technical decisions and why they matter]
+
+## Relevant Files
+[Only the files that still matter, with brief notes]
+
+## Open Risks
+[Active risks, blockers, or uncertainties]
+
+## Next Steps
+[What should happen next]
+
+## Critical Data
+[Specific values, error messages, commands, IDs, or config details that must not be lost]
+
+Target ~{summary_budget} tokens. Prefer durable state over chronology. Write only the summary body. Do not include any preamble or prefix."""
+        elif self._previous_summary:
             # Iterative update: preserve existing info, add new progress
             prompt = f"""You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
 
@@ -569,32 +694,27 @@ Write only the summary body. Do not include any preamble or prefix."""
         derived from ``summary_target_ratio * context_length``, so it
         scales automatically with the model's context window.
 
-        Token budget is the primary criterion.  A hard minimum of 3 messages
-        is always protected, but the budget is allowed to exceed by up to
-        1.5x to avoid cutting inside an oversized message (tool output, file
-        read, etc.).  If even the minimum 3 messages exceed 1.5x the budget
-        the cut is placed right after the head so compression still runs.
+        Token budget is the primary criterion.  A hard minimum of
+        ``self.protect_recent_n`` recent messages is always protected, but the
+        budget is allowed to exceed by up to 1.5x to avoid cutting inside an
+        oversized message (tool output, file read, etc.).  If even that minimum
+        tail exceeds 1.5x the budget the cut is placed right after the head so
+        compression still runs.
 
         Never cuts inside a tool_call/result group.
         """
         if token_budget is None:
             token_budget = self.tail_token_budget
         n = len(messages)
-        # Hard minimum: always keep at least 3 messages in the tail
-        min_tail = min(3, n - head_end - 1) if n - head_end > 1 else 0
+        # Hard minimum: always keep at least protect_recent_n messages in the tail
+        min_tail = min(self.protect_recent_n, n - head_end - 1) if n - head_end > 1 else 0
         soft_ceiling = int(token_budget * 1.5)
         accumulated = 0
         cut_idx = n  # start from beyond the end
 
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
-            content = msg.get("content") or ""
-            msg_tokens = len(content) // _CHARS_PER_TOKEN + 10  # +10 for role/metadata
-            # Include tool call arguments in estimate
-            for tc in msg.get("tool_calls") or []:
-                if isinstance(tc, dict):
-                    args = tc.get("function", {}).get("arguments", "")
-                    msg_tokens += len(args) // _CHARS_PER_TOKEN
+            msg_tokens = self._estimate_message_tokens(msg)
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
                 break
@@ -634,8 +754,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         up so the API never receives mismatched IDs.
         """
         n_messages = len(messages)
-        # Only need head + 3 tail messages minimum (token budget decides the real tail size)
-        _min_for_compress = self.protect_first_n + 3 + 1
+        # Only need head + the protected recent tail + 1 middle message.
+        # The token budget still decides the real tail size beyond this floor.
+        _min_for_compress = self.protect_first_n + self.protect_recent_n + 1
         if n_messages <= _min_for_compress:
             if not self.quiet_mode:
                 logger.warning(
@@ -645,11 +766,15 @@ Write only the summary body. Do not include any preamble or prefix."""
             return messages
 
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
+        heavy_mode = self._should_use_heavy_compaction(current_tokens=display_tokens)
+        prune_tail_count = self.protect_recent_n if heavy_mode else self.protect_last_n
+        prune_tail_tokens = None if heavy_mode else self.tail_token_budget
+        tail_token_budget = 0 if heavy_mode else self.tail_token_budget
 
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
-            messages, protect_tail_count=self.protect_last_n,
-            protect_tail_tokens=self.tail_token_budget,
+            messages, protect_tail_count=prune_tail_count,
+            protect_tail_tokens=prune_tail_tokens,
         )
         if pruned_count and not self.quiet_mode:
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
@@ -659,7 +784,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         compress_start = self._align_boundary_forward(messages, compress_start)
 
         # Use token-budget tail protection instead of fixed message count
-        compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        compress_end = self._find_tail_cut_by_tokens(
+            messages,
+            compress_start,
+            token_budget=tail_token_budget,
+        )
 
         if compress_start >= compress_end:
             return messages
@@ -680,16 +809,17 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
             tail_msgs = n_messages - compress_end
             logger.info(
-                "Summarizing turns %d-%d (%d turns), protecting %d head + %d tail messages",
+                "Summarizing turns %d-%d (%d turns), protecting %d head + %d tail messages%s",
                 compress_start + 1,
                 compress_end,
                 len(turns_to_summarize),
                 compress_start,
                 tail_msgs,
+                " [heavy]" if heavy_mode else "",
             )
 
         # Phase 3: Generate structured summary
-        summary = self._generate_summary(turns_to_summarize)
+        summary = self._generate_summary(turns_to_summarize, heavy_mode=heavy_mode)
 
         # Phase 4: Assemble compressed message list
         compressed = []
