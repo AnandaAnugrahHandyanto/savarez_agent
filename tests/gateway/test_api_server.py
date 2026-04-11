@@ -1570,21 +1570,28 @@ class TestRunEventsCORS:
         test_event = {"event": "message.delta", "delta": "hello world"}
         q.put_nowait(test_event)
 
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get(
-                f"/v1/runs/{run_id}/events",
-                headers={
-                    "Authorization": "Bearer sk-secret",
-                    "Origin": "http://localhost:3000",
-                    "Accept": "text/event-stream",
-                },
-            )
-            assert resp.status == 200
-            body = await resp.text()
-            assert f"data: {json.dumps(test_event)}\n\n" in body
-
-            # Signal end of stream
+        async def close_stream():
+            # Give the SSE handler time to write the event, then signal stream end
+            await asyncio.sleep(0.1)
             q.put_nowait(None)
+
+        async with TestClient(TestServer(app)) as cli:
+            # Start stream close task before reading to avoid deadlock
+            close_task = asyncio.create_task(close_stream())
+            try:
+                resp = await cli.get(
+                    f"/v1/runs/{run_id}/events",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "Origin": "http://localhost:3000",
+                        "Accept": "text/event-stream",
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert f"data: {json.dumps(test_event)}\n\n" in body
+            finally:
+                await close_task
 
 
 # ---------------------------------------------------------------------------
