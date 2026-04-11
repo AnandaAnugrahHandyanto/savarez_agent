@@ -132,10 +132,6 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.x.ai/v1",
         base_url_env_var="XAI_BASE_URL",
     ),
-    "xiaomi": HermesOverlay(
-        transport="openai_chat",
-        base_url_env_var="XIAOMI_BASE_URL",
-    ),
 }
 
 
@@ -226,9 +222,11 @@ ALIASES: Dict[str, str] = {
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
 
-    # xiaomi
-    "mimo": "xiaomi",
-    "xiaomi-mimo": "xiaomi",
+    # bedrock
+    "aws": "amazon-bedrock",
+    "aws-bedrock": "amazon-bedrock",
+    "amazon": "amazon-bedrock",
+    "bedrock": "amazon-bedrock",
 
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
@@ -250,8 +248,9 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
-    "xiaomi": "Xiaomi MiMo",
     "local": "Local endpoint",
+    "bedrock": "AWS Bedrock",
+    "amazon-bedrock": "AWS Bedrock",
 }
 
 
@@ -261,6 +260,7 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "openai_chat": "chat_completions",
     "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
+    "bedrock_converse": "bedrock_converse",
 }
 
 
@@ -385,6 +385,8 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
             return "anthropic_messages"
         if "api.openai.com" in url_lower:
             return "codex_responses"
+        if "bedrock-runtime" in url_lower and "amazonaws.com" in url_lower:
+            return "bedrock_converse"
 
     return "chat_completions"
 

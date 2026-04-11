@@ -642,7 +642,7 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
-        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
+        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
@@ -657,6 +657,9 @@ class AIAgent:
             # use a URL convention ending in /anthropic. Auto-detect these so the
             # Anthropic Messages API adapter is used instead of chat completions.
             self.api_mode = "anthropic_messages"
+        elif self.provider == "bedrock" or "bedrock-runtime" in self._base_url_lower:
+            # AWS Bedrock — auto-detect from provider name or base URL.
+            self.api_mode = "bedrock_converse"
         else:
             self.api_mode = "chat_completions"
 
@@ -671,14 +674,10 @@ class AIAgent:
         except Exception:
             pass
 
-        # GPT-5.x models require the Responses API path — they are rejected
-        # on /v1/chat/completions by both OpenAI and OpenRouter.  Also
-        # auto-upgrade for direct OpenAI URLs (api.openai.com) since all
-        # newer tool-calling models prefer Responses there.
-        if self.api_mode == "chat_completions" and (
-            self._is_direct_openai_url()
-            or self._model_requires_responses_api(self.model)
-        ):
+        # Direct OpenAI sessions use the Responses API path.  GPT-5.x tool
+        # calls with reasoning are rejected on /v1/chat/completions, and
+        # Hermes is a tool-using client by default.
+        if self.api_mode == "chat_completions" and self._is_direct_openai_url():
             self.api_mode = "codex_responses"
 
         # Pre-warm OpenRouter model metadata cache in a background thread.
@@ -850,6 +849,33 @@ class AIAgent:
                 print(f"🤖 AI Agent initialized with model: {self.model} (Anthropic native)")
                 if effective_key and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+        elif self.api_mode == "bedrock_converse":
+            # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
+            # Region is extracted from the base_url or defaults to us-east-1.
+            import re as _re
+            _region_match = _re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
+            self._bedrock_region = _region_match.group(1) if _region_match else "us-east-1"
+            # Guardrail config — read from config.yaml at init time.
+            self._bedrock_guardrail_config = None
+            try:
+                from hermes_cli.config import load_config as _load_br_cfg
+                _gr = _load_br_cfg().get("bedrock", {}).get("guardrail", {})
+                if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
+                    self._bedrock_guardrail_config = {
+                        "guardrailIdentifier": _gr["guardrail_identifier"],
+                        "guardrailVersion": _gr["guardrail_version"],
+                    }
+                    if _gr.get("stream_processing_mode"):
+                        self._bedrock_guardrail_config["streamProcessingMode"] = _gr["stream_processing_mode"]
+                    if _gr.get("trace"):
+                        self._bedrock_guardrail_config["trace"] = _gr["trace"]
+            except Exception:
+                pass
+            self.client = None
+            self._client_kwargs = {}
+            if not self.quiet_mode:
+                _gr_label = " + Guardrails" if self._bedrock_guardrail_config else ""
+                print(f"🤖 AI Agent initialized with model: {self.model} (AWS Bedrock, {self._bedrock_region}{_gr_label})")
         else:
             if api_key and base_url:
                 # Explicit credentials from CLI/gateway — construct directly.
@@ -1400,12 +1426,6 @@ class AIAgent:
             else:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (auto-compression disabled)")
 
-        # Check immediately so CLI users see the warning at startup.
-        # Gateway status_callback is not yet wired, so any warning is stored
-        # in _compression_warning and replayed in the first run_conversation().
-        self._compression_warning = None
-        self._check_compression_model_feasibility()
-
         # Snapshot primary runtime for per-turn restoration.  When fallback
         # activates during a turn, the next turn restores these values so the
         # preferred model gets a fresh attempt each time.  Uses a single dict
@@ -1817,21 +1837,6 @@ class AIAgent:
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
         return "openrouter" in self._base_url_lower
-
-    @staticmethod
-    def _model_requires_responses_api(model: str) -> bool:
-        """Return True for models that require the Responses API path.
-
-        GPT-5.x models are rejected on /v1/chat/completions by both
-        OpenAI and OpenRouter (error: ``unsupported_api_for_model``).
-        Detect these so the correct api_mode is set regardless of
-        which provider is serving the model.
-        """
-        m = model.lower()
-        # Strip vendor prefix (e.g. "openai/gpt-5.4" → "gpt-5.4")
-        if "/" in m:
-            m = m.rsplit("/", 1)[-1]
-        return m.startswith("gpt-5")
 
     def _max_tokens_param(self, value: int) -> dict:
         """Return the correct max tokens kwarg for the current provider.
@@ -4703,6 +4708,19 @@ class AIAgent:
                     )
                 elif self.api_mode == "anthropic_messages":
                     result["response"] = self._anthropic_messages_create(api_kwargs)
+                elif self.api_mode == "bedrock_converse":
+                    # Bedrock uses boto3 directly — no OpenAI client needed.
+                    # api_kwargs already contains Converse-format params from
+                    # build_converse_kwargs() in _build_api_kwargs().
+                    from agent.bedrock_adapter import (
+                        _get_bedrock_runtime_client,
+                        normalize_converse_response,
+                    )
+                    region = api_kwargs.pop("__bedrock_region__", "us-east-1")
+                    api_kwargs.pop("__bedrock_converse__", None)
+                    client = _get_bedrock_runtime_client(region)
+                    raw_response = client.converse(**api_kwargs)
+                    result["response"] = normalize_converse_response(raw_response)
                 else:
                     request_client_holder["client"] = self._create_request_openai_client(reason="chat_completion_request")
                     result["response"] = request_client_holder["client"].chat.completions.create(**api_kwargs)
@@ -4865,6 +4883,65 @@ class AIAgent:
                 return self._interruptible_api_call(api_kwargs)
             finally:
                 self._codex_on_first_delta = None
+
+        # Bedrock Converse uses boto3's converse_stream() with real-time delta
+        # callbacks — same UX as Anthropic and chat_completions streaming.
+        if self.api_mode == "bedrock_converse":
+            result = {"response": None, "error": None}
+            first_delta_fired = {"done": False}
+            deltas_were_sent = {"yes": False}
+
+            def _fire_first():
+                if not first_delta_fired["done"] and on_first_delta:
+                    first_delta_fired["done"] = True
+                    try:
+                        on_first_delta()
+                    except Exception:
+                        pass
+
+            def _bedrock_call():
+                try:
+                    from agent.bedrock_adapter import (
+                        _get_bedrock_runtime_client,
+                        stream_converse_with_callbacks,
+                    )
+                    region = api_kwargs.pop("__bedrock_region__", "us-east-1")
+                    api_kwargs.pop("__bedrock_converse__", None)
+                    client = _get_bedrock_runtime_client(region)
+                    raw_response = client.converse_stream(**api_kwargs)
+
+                    def _on_text(text):
+                        _fire_first()
+                        self._fire_stream_delta(text)
+                        deltas_were_sent["yes"] = True
+
+                    def _on_tool(name):
+                        _fire_first()
+                        self._fire_tool_gen_started(name)
+
+                    def _on_reasoning(text):
+                        _fire_first()
+                        self._fire_reasoning_delta(text)
+
+                    result["response"] = stream_converse_with_callbacks(
+                        raw_response,
+                        on_text_delta=_on_text if self._has_stream_consumers() else None,
+                        on_tool_start=_on_tool,
+                        on_reasoning_delta=_on_reasoning if self.reasoning_callback or self.stream_delta_callback else None,
+                        on_interrupt_check=lambda: self._interrupt_requested,
+                    )
+                except Exception as e:
+                    result["error"] = e
+
+            t = threading.Thread(target=_bedrock_call, daemon=True)
+            t.start()
+            while t.is_alive():
+                t.join(timeout=0.3)
+                if self._interrupt_requested:
+                    raise InterruptedError("Agent interrupted during Bedrock API call")
+            if result["error"] is not None:
+                raise result["error"]
+            return result["response"]
 
         result = {"response": None, "error": None}
         request_client_holder = {"client": None}
@@ -5449,7 +5526,7 @@ class AIAgent:
             except Exception:
                 pass
 
-            # Determine api_mode from provider / base URL / model
+            # Determine api_mode from provider / base URL
             fb_api_mode = "chat_completions"
             fb_base_url = str(fb_client.base_url)
             if fb_provider == "openai-codex":
@@ -5457,10 +5534,6 @@ class AIAgent:
             elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
                 fb_api_mode = "anthropic_messages"
             elif self._is_direct_openai_url(fb_base_url):
-                fb_api_mode = "codex_responses"
-            elif self._model_requires_responses_api(fb_model):
-                # GPT-5.x models need Responses API on every provider
-                # (OpenRouter, Copilot, direct OpenAI, etc.)
                 fb_api_mode = "codex_responses"
 
             old_model = self.model
@@ -5550,8 +5623,8 @@ class AIAgent:
         to the fallback provider for every subsequent turn.  Calling this at
         the top of ``run_conversation()`` makes fallback turn-scoped.
 
-        The gateway caches agents across messages (``_agent_cache`` in
-        ``gateway/run.py``), so this restoration IS needed there too.
+        The gateway creates a fresh agent per message so this is a no-op
+        there (``_fallback_activated`` is always False at turn start).
         """
         if not self._fallback_activated:
             return False
@@ -5939,6 +6012,25 @@ class AIAgent:
                 base_url=getattr(self, "_anthropic_base_url", None),
                 fast_mode=(self.request_overrides or {}).get("speed") == "fast",
             )
+
+        # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
+        # The adapter handles message/tool conversion and boto3 calls directly.
+        if self.api_mode == "bedrock_converse":
+            from agent.bedrock_adapter import build_converse_kwargs
+            region = getattr(self, "_bedrock_region", None) or "us-east-1"
+            guardrail = getattr(self, "_bedrock_guardrail_config", None)
+            return {
+                "__bedrock_converse__": True,
+                "__bedrock_region__": region,
+                **build_converse_kwargs(
+                    model=self.model,
+                    messages=api_messages,
+                    tools=self.tools,
+                    max_tokens=self.max_tokens or 4096,
+                    temperature=None,  # Let the model use its default
+                    guardrail_config=guardrail,
+                ),
+            }
 
         if self.api_mode == "codex_responses":
             instructions = ""
@@ -7606,12 +7698,6 @@ class AIAgent:
                     )
             except Exception:
                 pass
-        # Replay compression warning through status_callback for gateway
-        # platforms (the callback was not wired during __init__).
-        if self._compression_warning:
-            self._replay_compression_warning()
-            self._compression_warning = None  # send once
-
         # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
         # They are initialized in __init__ and must persist across run_conversation
         # calls so that nudge logic accumulates correctly in CLI mode.
@@ -8337,7 +8423,7 @@ class AIAgent:
                         # targeted error instead of wasting 3 API calls.
                         _trunc_content = None
                         _trunc_has_tool_calls = False
-                        if self.api_mode == "chat_completions":
+                        if self.api_mode in ("chat_completions", "bedrock_converse"):
                             _trunc_msg = response.choices[0].message if (hasattr(response, "choices") and response.choices) else None
                             _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
                             _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
@@ -8406,7 +8492,7 @@ class AIAgent:
                                 "error": _exhaust_error,
                             }
 
-                        if self.api_mode == "chat_completions":
+                        if self.api_mode in ("chat_completions", "bedrock_converse"):
                             assistant_message = response.choices[0].message
                             if not assistant_message.tool_calls:
                                 length_continue_retries += 1
@@ -8446,7 +8532,7 @@ class AIAgent:
                                     "error": "Response remained truncated after 3 continuation attempts",
                                 }
 
-                        if self.api_mode == "chat_completions":
+                        if self.api_mode in ("chat_completions", "bedrock_converse"):
                             assistant_message = response.choices[0].message
                             if assistant_message.tool_calls:
                                 if truncated_tool_call_retries < 1:

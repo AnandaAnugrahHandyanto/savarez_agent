@@ -32,6 +32,7 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EXTRA_ENV_KEYS = frozenset({
     "OPENAI_API_KEY", "OPENAI_BASE_URL",
     "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
+    "AUXILIARY_VISION_MODEL",
     "DISCORD_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL",
     "SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL",
     "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
@@ -432,6 +433,27 @@ DEFAULT_CONFIG = {
         "summary_provider": "auto",
         "summary_base_url": None,
     },
+
+    # AWS Bedrock provider configuration.
+    # Only used when model.provider is "bedrock".
+    "bedrock": {
+        "region": "",  # AWS region for Bedrock API calls (empty = AWS_REGION env var → us-east-1)
+        "discovery": {
+            "enabled": True,           # Auto-discover models via ListFoundationModels
+            "provider_filter": [],     # Only show models from these providers (e.g. ["anthropic", "amazon"])
+            "refresh_interval": 3600,  # Cache discovery results for this many seconds
+        },
+        "guardrail": {
+            # Amazon Bedrock Guardrails — content filtering and safety policies.
+            # Create a guardrail in the Bedrock console, then set the ID and version here.
+            # See: https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html
+            "guardrail_identifier": "",  # e.g. "abc123def456"
+            "guardrail_version": "",     # e.g. "1" or "DRAFT"
+            "stream_processing_mode": "async",  # "sync" or "async"
+            "trace": "disabled",         # "enabled", "disabled", or "enabled_full"
+        },
+    },
+
     "smart_model_routing": {
         "enabled": False,
         "max_simple_chars": 160,
@@ -451,7 +473,7 @@ DEFAULT_CONFIG = {
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
             "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
             "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
-            "timeout": 120,        # seconds — LLM API call timeout; vision payloads need generous timeout
+            "timeout": 30,         # seconds — LLM API call timeout; increase for slow local vision models
             "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
         },
         "web_extract": {
@@ -948,17 +970,21 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
-    "XIAOMI_API_KEY": {
-        "description": "Xiaomi MiMo API key for MiMo models (mimo-v2-pro, mimo-v2-omni, mimo-v2-flash)",
-        "prompt": "Xiaomi MiMo API Key",
-        "url": "https://platform.xiaomimimo.com",
-        "password": True,
+    # AWS Bedrock — auth is handled by the boto3 default credential chain,
+    # not by a single API key.  These env vars are documented here so
+    # `hermes setup` and `hermes doctor` can detect and display them.
+    "AWS_REGION": {
+        "description": "AWS region for Bedrock API calls (default: us-east-1)",
+        "prompt": "AWS Region (leave empty for us-east-1)",
+        "url": "https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html",
+        "password": False,
         "category": "provider",
+        "advanced": True,
     },
-    "XIAOMI_BASE_URL": {
-        "description": "Xiaomi MiMo base URL override (default: https://api.xiaomimimo.com/v1)",
-        "prompt": "Xiaomi base URL (leave empty for default)",
-        "url": None,
+    "AWS_PROFILE": {
+        "description": "AWS named profile for Bedrock authentication (SSO, assume-role, etc.)",
+        "prompt": "AWS Profile (leave empty for default)",
+        "url": "https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-profiles.html",
         "password": False,
         "category": "provider",
         "advanced": True,
@@ -2299,6 +2325,7 @@ _FALLBACK_COMMENT = """
 #   openrouter   (OPENROUTER_API_KEY)  — routes to any model
 #   openai-codex (OAuth — hermes auth) — OpenAI Codex
 #   nous         (OAuth — hermes auth) — Nous Portal
+#   bedrock      (AWS IAM / boto3)     — AWS Bedrock (Converse API)
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
@@ -2342,6 +2369,7 @@ _COMMENTED_SECTIONS = """
 #   openrouter   (OPENROUTER_API_KEY)  — routes to any model
 #   openai-codex (OAuth — hermes auth) — OpenAI Codex
 #   nous         (OAuth — hermes auth) — Nous Portal
+#   bedrock      (AWS IAM / boto3)     — AWS Bedrock (Converse API)
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
 #   minimax      (MINIMAX_API_KEY)     — MiniMax

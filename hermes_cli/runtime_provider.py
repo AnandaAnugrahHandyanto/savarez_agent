@@ -782,6 +782,61 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
+    # AWS Bedrock (native Converse API via boto3)
+    if provider == "bedrock":
+        from agent.bedrock_adapter import (
+            has_aws_credentials,
+            resolve_aws_auth_env_var,
+            resolve_bedrock_region,
+        )
+        # When the user explicitly selected bedrock (not auto-detected),
+        # trust boto3's credential chain — it handles IMDS, ECS task roles,
+        # Lambda execution roles, SSO, and other implicit sources that our
+        # env-var check can't detect.  Only block when auto-detected AND
+        # no credentials are found (prevents confusing errors for users who
+        # never intended to use Bedrock).
+        # See: OpenClaw PR #62673 for the same class of issue.
+        is_explicit = requested_provider in ("bedrock", "aws", "aws-bedrock", "amazon-bedrock", "amazon")
+        if not is_explicit and not has_aws_credentials():
+            raise AuthError(
+                "No AWS credentials found for Bedrock. Configure one of:\n"
+                "  - AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY\n"
+                "  - AWS_PROFILE (for SSO / named profiles)\n"
+                "  - IAM instance role (EC2, ECS, Lambda)\n"
+                "Or run 'aws configure' to set up credentials.",
+                code="no_aws_credentials",
+            )
+        # Read bedrock-specific config from config.yaml
+        from hermes_cli.config import load_config as _load_bedrock_config
+        _bedrock_cfg = _load_bedrock_config().get("bedrock", {})
+        # Region priority: config.yaml bedrock.region → env var → us-east-1
+        region = (_bedrock_cfg.get("region") or "").strip() or resolve_bedrock_region()
+        auth_source = resolve_aws_auth_env_var() or "aws-sdk-default-chain"
+        # Build guardrail config if configured
+        _gr = _bedrock_cfg.get("guardrail", {})
+        guardrail_config = None
+        if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
+            guardrail_config = {
+                "guardrailIdentifier": _gr["guardrail_identifier"],
+                "guardrailVersion": _gr["guardrail_version"],
+            }
+            if _gr.get("stream_processing_mode"):
+                guardrail_config["streamProcessingMode"] = _gr["stream_processing_mode"]
+            if _gr.get("trace"):
+                guardrail_config["trace"] = _gr["trace"]
+        runtime = {
+            "provider": "bedrock",
+            "api_mode": "bedrock_converse",
+            "base_url": f"https://bedrock-runtime.{region}.amazonaws.com",
+            "api_key": "aws-sdk",  # Placeholder — boto3 handles real auth
+            "source": auth_source,
+            "region": region,
+            "requested_provider": requested_provider,
+        }
+        if guardrail_config:
+            runtime["guardrail_config"] = guardrail_config
+        return runtime
+
     # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":

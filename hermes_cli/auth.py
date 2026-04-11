@@ -250,13 +250,17 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("HF_TOKEN",),
         base_url_env_var="HF_BASE_URL",
     ),
-    "xiaomi": ProviderConfig(
-        id="xiaomi",
-        name="Xiaomi MiMo",
-        auth_type="api_key",
-        inference_base_url="https://api.xiaomimimo.com/v1",
-        api_key_env_vars=("XIAOMI_API_KEY",),
-        base_url_env_var="XIAOMI_BASE_URL",
+    # AWS Bedrock — uses the native Converse API via boto3, not the OpenAI-
+    # compatible endpoint.  Auth is handled by the AWS SDK default credential
+    # chain (env vars → profile → instance role), so no api_key_env_vars.
+    # The base_url is the bedrock-runtime endpoint, region-dependent.
+    "bedrock": ProviderConfig(
+        id="bedrock",
+        name="AWS Bedrock",
+        auth_type="aws_sdk",
+        inference_base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+        api_key_env_vars=(),
+        base_url_env_var="BEDROCK_BASE_URL",
     ),
 }
 
@@ -938,13 +942,15 @@ def resolve_provider(
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
-        "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         # Local server aliases — route through the generic custom provider
         "lmstudio": "custom", "lm-studio": "custom", "lm_studio": "custom",
         "ollama": "custom", "vllm": "custom", "llamacpp": "custom",
         "llama.cpp": "custom", "llama-cpp": "custom",
+        # AWS Bedrock aliases
+        "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock",
+        "amazon": "bedrock",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 
@@ -994,6 +1000,15 @@ def resolve_provider(
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
                 return pid
+
+    # Auto-detect AWS Bedrock via the default credential chain.
+    # This runs after API-key providers so explicit keys always win.
+    try:
+        from agent.bedrock_adapter import has_aws_credentials
+        if has_aws_credentials():
+            return "bedrock"
+    except ImportError:
+        pass  # boto3 not installed — skip Bedrock auto-detection
 
     raise AuthError(
         "No inference provider configured. Run 'hermes model' to choose a "

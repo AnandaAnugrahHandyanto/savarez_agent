@@ -56,18 +56,6 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 
-
-def _codex_curated_models() -> list[str]:
-    """Derive the openai-codex curated list from codex_models.py.
-
-    Single source of truth: DEFAULT_CODEX_MODELS + forward-compat synthesis.
-    This keeps the gateway /model picker in sync with the CLI `hermes model`
-    flow without maintaining a separate static list.
-    """
-    from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, _add_forward_compat_models
-    return _add_forward_compat_models(list(DEFAULT_CODEX_MODELS))
-
-
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
         "anthropic/claude-opus-4.6",
@@ -98,7 +86,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-5.4-pro",
         "openai/gpt-5.4-nano",
     ],
-    "openai-codex": _codex_curated_models(),
+    "openai-codex": [
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex",
+        "gpt-5.2-codex",
+        "gpt-5.1-codex-mini",
+        "gpt-5.1-codex-max",
+    ],
     "copilot-acp": [
         "copilot-acp",
     ],
@@ -187,11 +182,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "deepseek": [
         "deepseek-chat",
         "deepseek-reasoner",
-    ],
-    "xiaomi": [
-        "mimo-v2-pro",
-        "mimo-v2-omni",
-        "mimo-v2-flash",
     ],
     "opencode-zen": [
         "gpt-5.4-pro",
@@ -285,6 +275,20 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "zai-org/GLM-5",
         "XiaomiMiMo/MiMo-V2-Flash",
         "moonshotai/Kimi-K2-Thinking",
+    ],
+    # AWS Bedrock — static fallback list used when dynamic discovery is
+    # unavailable (no boto3, no credentials, or API error).  The agent
+    # prefers live discovery via ListFoundationModels + ListInferenceProfiles.
+    "bedrock": [
+        "anthropic.claude-opus-4-6-20250514-v1:0",
+        "anthropic.claude-sonnet-4-6-20250514-v1:0",
+        "anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "anthropic.claude-haiku-4-5-20251001-v1:0",
+        "amazon.nova-pro-v1:0",
+        "amazon.nova-lite-v1:0",
+        "amazon.nova-micro-v1:0",
+        "meta.llama4-maverick-17b-instruct-v1:0",
+        "meta.llama4-scout-17b-instruct-v1:0",
     ],
 }
 
@@ -498,7 +502,7 @@ _PROVIDER_LABELS = {
     "alibaba": "Alibaba Cloud (DashScope)",
     "qwen-oauth": "Qwen OAuth (Portal)",
     "huggingface": "Hugging Face",
-    "xiaomi": "Xiaomi MiMo",
+    "bedrock": "AWS Bedrock",
     "custom": "Custom endpoint",
 }
 
@@ -541,8 +545,10 @@ _PROVIDER_ALIASES = {
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
-    "mimo": "xiaomi",
-    "xiaomi-mimo": "xiaomi",
+    "aws": "bedrock",
+    "aws-bedrock": "bedrock",
+    "amazon-bedrock": "bedrock",
+    "amazon": "bedrock",
 }
 
 
@@ -841,7 +847,7 @@ def list_available_providers() -> list[dict[str, str]]:
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
         "gemini", "huggingface",
         "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
-        "qwen-oauth", "xiaomi",
+        "qwen-oauth",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
     ]
@@ -1887,6 +1893,42 @@ def validate_requested_model(
 
     # api_models is None — couldn't reach API.  Accept and persist,
     # but warn so typos don't silently break things.
+
+    # Bedrock: use our own discovery instead of HTTP /models endpoint.
+    # Bedrock's bedrock-runtime URL doesn't support /models — it uses the
+    # AWS SDK control plane (ListFoundationModels + ListInferenceProfiles).
+    if normalized == "bedrock":
+        try:
+            from agent.bedrock_adapter import discover_bedrock_models, resolve_bedrock_region
+            region = resolve_bedrock_region()
+            discovered = discover_bedrock_models(region)
+            discovered_ids = {m["id"] for m in discovered}
+            if requested in discovered_ids:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            # Not in discovered list — still accept (user may have custom
+            # inference profiles or cross-account access), but warn.
+            suggestions = get_close_matches(requested, list(discovered_ids), n=3, cutoff=0.4)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in Bedrock model discovery for {region}. "
+                    f"It may still work with custom inference profiles or cross-account access."
+                    f"{suggestion_text}"
+                ),
+            }
+        except Exception:
+            pass  # Fall through to generic warning
+
     provider_label = _PROVIDER_LABELS.get(normalized, normalized)
     return {
         "accepted": True,
