@@ -1036,6 +1036,7 @@ def select_provider_and_model(args=None):
         ext_ordered = list(extended_providers)
         ext_ordered.append(("custom", "Custom endpoint (enter URL manually)"))
         if _custom_provider_map:
+            ext_ordered.append(("edit-custom", "Edit a saved custom provider"))
             ext_ordered.append(("remove-custom", "Remove a saved custom provider"))
         ext_ordered.append(("cancel", "Cancel"))
 
@@ -1071,6 +1072,8 @@ def select_provider_and_model(args=None):
             )
             return
         _model_flow_named_custom(config, provider_info)
+    elif selected_provider == "edit-custom":
+        _edit_custom_provider(config)
     elif selected_provider == "remove-custom":
         _remove_custom_provider(config)
     elif selected_provider == "anthropic":
@@ -1676,17 +1679,19 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None):
     print(f"  💾 Saved to custom providers as \"{name}\" (edit in config.yaml)")
 
 
-def _remove_custom_provider(config):
-    """Let the user remove a saved custom provider from config.yaml."""
-    from hermes_cli.config import load_config, save_config
+def _select_custom_provider(title, cursor_color="fg_yellow"):
+    """Show a menu to pick one saved custom provider.
+
+    Returns ``(index, providers_list, config_dict)`` on selection, or
+    ``None`` if the user cancels or no providers exist.
+    """
+    from hermes_cli.config import load_config
 
     cfg = load_config()
     providers = cfg.get("custom_providers") or []
     if not isinstance(providers, list) or not providers:
         print("No custom providers configured.")
-        return
-
-    print("Remove a custom provider:\n")
+        return None
 
     choices = []
     for entry in providers:
@@ -1703,10 +1708,10 @@ def _remove_custom_provider(config):
         from simple_term_menu import TerminalMenu
         menu = TerminalMenu(
             [f"  {c}" for c in choices], cursor_index=0,
-            menu_cursor="-> ", menu_cursor_style=("fg_red", "bold"),
-            menu_highlight_style=("fg_red",),
+            menu_cursor="-> ", menu_cursor_style=(cursor_color, "bold"),
+            menu_highlight_style=(cursor_color,),
             cycle_cursor=True, clear_screen=False,
-            title="Select provider to remove:",
+            title=title,
         )
         idx = menu.show()
         from hermes_cli.curses_ui import flush_stdin
@@ -1724,13 +1729,150 @@ def _remove_custom_provider(config):
 
     if idx is None or idx >= len(providers):
         print("No change.")
+        return None
+
+    return idx, providers, cfg
+
+
+def _get_context_length(models_dict, model_name):
+    """Read context_length for *model_name* from a provider's ``models`` dict."""
+    if not isinstance(models_dict, dict) or not model_name:
+        return None
+    info = models_dict.get(model_name)
+    return info.get("context_length") if isinstance(info, dict) else None
+
+
+def _parse_context_length_input(raw, fallback=None):
+    """Parse a human-entered context-length string (e.g. ``"128k"``, ``"32,768"``).
+
+    Returns an ``int`` on success, *fallback* on empty/invalid input.
+    """
+    if not raw:
+        return fallback
+    try:
+        value = int(raw.replace(",", "").replace("k", "000").replace("K", "000"))
+        return value if value > 0 else fallback
+    except ValueError:
+        print(f"Invalid context length: {raw} — keeping previous value.")
+        return fallback
+
+
+def _verify_changed_endpoint(api_key, base_url):
+    """Probe an endpoint and print verification results.
+
+    Returns the (possibly corrected) base URL.
+    """
+    from hermes_cli.models import probe_api_models
+
+    print("\nVerifying new endpoint...")
+    probe = probe_api_models(api_key, base_url)
+
+    if probe.get("used_fallback") and probe.get("resolved_base_url"):
+        print(
+            f"  Endpoint verification worked at {probe['resolved_base_url']}/models. "
+            f"Saving the working base URL."
+        )
+        return probe["resolved_base_url"]
+
+    if probe.get("models") is not None:
+        print(f"  Verified endpoint ({len(probe.get('models') or [])} model(s) visible)")
+        return base_url
+
+    print(
+        f"  Warning: could not verify endpoint via {probe.get('probed_url')}. "
+        f"Saving anyway."
+    )
+    suggested = probe.get("suggested_base_url")
+    if suggested:
+        if suggested.endswith("/v1"):
+            print(f"  Tip: try base URL: {suggested}")
+        else:
+            print(f"  Tip: if /v1 should not be in the URL, try: {suggested}")
+    return base_url
+
+
+def _edit_custom_provider(config):
+    """Let the user edit a saved custom provider in config.yaml."""
+    from hermes_cli.config import save_config
+
+    print("Edit a custom provider:\n")
+    selection = _select_custom_provider("Select provider to edit:", cursor_color="fg_yellow")
+    if selection is None:
         return
+    idx, providers, cfg = selection
+
+    entry = providers[idx]
+    if not isinstance(entry, dict):
+        print("Invalid provider entry. No change.")
+        return
+
+    old_name = entry.get("name", "")
+    old_base_url = entry.get("base_url", "")
+    old_api_key = entry.get("api_key", "")
+    old_model = entry.get("model", "")
+    old_context_length = _get_context_length(entry.get("models"), old_model)
+
+    print(f"Editing: {old_name}")
+    print("Press Enter to keep current value, or type a new value.\n")
+
+    try:
+        import getpass
+        new_name = input(f"  Name [{old_name}]: ").strip() or old_name
+        new_base_url = input(f"  Base URL [{old_base_url}]: ").strip() or old_base_url
+        key_display = old_api_key[:8] + "..." if old_api_key else "none"
+        new_api_key = getpass.getpass(f"  API key [{key_display}]: ").strip() or old_api_key
+        new_model = input(f"  Model [{old_model or 'none'}]: ").strip() or old_model
+        ctx_display = str(old_context_length) if old_context_length else "auto-detect"
+        raw_context = input(f"  Context length [{ctx_display}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    if not new_base_url.startswith(("http://", "https://")):
+        print(f"Invalid URL: {new_base_url} (must start with http:// or https://)")
+        return
+
+    new_context_length = _parse_context_length_input(raw_context, fallback=old_context_length)
+
+    if new_base_url.rstrip("/") != old_base_url.rstrip("/"):
+        new_base_url = _verify_changed_endpoint(new_api_key, new_base_url)
+
+    entry["name"] = new_name
+    entry["base_url"] = new_base_url
+    if new_api_key:
+        entry["api_key"] = new_api_key
+    entry["model"] = new_model
+
+    models_dict = entry.get("models") if isinstance(entry.get("models"), dict) else {}
+    if old_model and new_model != old_model and old_model in models_dict:
+        del models_dict[old_model]
+    if new_model and new_context_length:
+        models_dict[new_model] = {"context_length": new_context_length}
+    if models_dict:
+        entry["models"] = models_dict
+    else:
+        entry.pop("models", None)
+
+    cfg["custom_providers"] = providers
+    save_config(cfg)
+    print(f'\nUpdated "{new_name}" in custom providers.')
+
+
+def _remove_custom_provider(config):
+    """Let the user remove a saved custom provider from config.yaml."""
+    from hermes_cli.config import save_config
+
+    print("Remove a custom provider:\n")
+    selection = _select_custom_provider("Select provider to remove:", cursor_color="fg_red")
+    if selection is None:
+        return
+    idx, providers, cfg = selection
 
     removed = providers.pop(idx)
     cfg["custom_providers"] = providers
     save_config(cfg)
     removed_name = removed.get("name", "unnamed") if isinstance(removed, dict) else str(removed)
-    print(f"✅ Removed \"{removed_name}\" from custom providers.")
+    print(f"Removed \"{removed_name}\" from custom providers.")
 
 
 def _model_flow_named_custom(config, provider_info):
