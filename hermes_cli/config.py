@@ -1518,9 +1518,9 @@ def _normalize_runtime_config(config: Dict[str, Any], raw_config: Optional[Dict[
 
     if isinstance(raw_model, dict):
         if "provider" not in raw_model and "provider" in raw_config:
-            runtime_config["model"]["provider"] = "auto"
+            runtime_config["model"]["provider"] = str(raw_config.get("provider") or "").strip() or "auto"
         if "base_url" not in raw_model and "base_url" in raw_config:
-            runtime_config["model"]["base_url"] = ""
+            runtime_config["model"]["base_url"] = str(raw_config.get("base_url") or "").strip()
 
     raw_terminal = raw_config.get("terminal")
     raw_terminal = raw_terminal if isinstance(raw_terminal, dict) else {}
@@ -1558,12 +1558,16 @@ def _bridge_runtime_section(
     env_map: Dict[str, str],
     *,
     overwrite_existing: bool,
+    explicit_keys: Optional[set[str]] = None,
 ) -> None:
     for config_key, env_var in env_map.items():
         if config_key not in section_config:
             continue
-        if not overwrite_existing and env_var in os.environ:
-            continue
+        if env_var in os.environ:
+            if not overwrite_existing:
+                continue
+            if explicit_keys is not None and config_key not in explicit_keys:
+                continue
         os.environ[env_var] = _serialize_runtime_env_value(section_config[config_key])
 
 
@@ -1576,15 +1580,18 @@ def apply_runtime_config_env(
     """Bridge runtime config values into env vars for env-driven subsystems."""
     raw_config = raw_config or {}
 
-    terminal_authoritative = (
-        "terminal" in raw_config
-        or "backend" in raw_config
-        or "cwd" in raw_config
-    )
+    raw_terminal = raw_config.get("terminal")
+    explicit_terminal_keys = set(raw_terminal) if isinstance(raw_terminal, dict) else set()
+    if "backend" in raw_config:
+        explicit_terminal_keys.add("backend")
+    if "cwd" in raw_config:
+        explicit_terminal_keys.add("cwd")
+    terminal_authoritative = bool(explicit_terminal_keys)
     _bridge_runtime_section(
         dict(config.get("terminal") or {}),
         RUNTIME_CONFIG_ENV_BRIDGE["terminal"],
         overwrite_existing=terminal_authoritative,
+        explicit_keys=explicit_terminal_keys if explicit_terminal_keys else None,
     )
 
     raw_browser = raw_config.get("browser")
@@ -1592,6 +1599,7 @@ def apply_runtime_config_env(
         dict(config.get("browser") or {}),
         RUNTIME_CONFIG_ENV_BRIDGE["browser"],
         overwrite_existing=isinstance(raw_browser, dict),
+        explicit_keys=set(raw_browser) if isinstance(raw_browser, dict) else None,
     )
 
     raw_agent = raw_config.get("agent")
@@ -1599,6 +1607,7 @@ def apply_runtime_config_env(
         dict(config.get("agent") or {}),
         RUNTIME_CONFIG_ENV_BRIDGE["agent"],
         overwrite_existing=isinstance(raw_agent, dict),
+        explicit_keys=set(raw_agent) if isinstance(raw_agent, dict) else None,
     )
 
     if runtime == "gateway":
@@ -1607,6 +1616,7 @@ def apply_runtime_config_env(
             dict(config.get("display") or {}),
             RUNTIME_CONFIG_ENV_BRIDGE["display"],
             overwrite_existing=isinstance(raw_display, dict),
+            explicit_keys=set(raw_display) if isinstance(raw_display, dict) else None,
         )
 
         timezone = config.get("timezone", "")
@@ -1620,6 +1630,7 @@ def apply_runtime_config_env(
         dict(config.get("security") or {}),
         RUNTIME_CONFIG_ENV_BRIDGE["security"],
         overwrite_existing=isinstance(raw_security, dict),
+        explicit_keys=set(raw_security) if isinstance(raw_security, dict) else None,
     )
 
     auxiliary_config = config.get("auxiliary")

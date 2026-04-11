@@ -89,6 +89,32 @@ class TestRuntimeConfigAuthority:
             assert config["display"]["streaming"] == DEFAULT_CONFIG["display"]["streaming"]
             assert config["delegation"]["max_iterations"] == DEFAULT_CONFIG["delegation"]["max_iterations"]
 
+    def test_runtime_loader_preserves_legacy_root_provider_and_base_url(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text(
+                "model:\n  default: gpt-5.4\nprovider: anthropic\nbase_url: https://example.test/v1\n",
+                encoding="utf-8",
+            )
+
+            config = load_runtime_config(runtime="cli")
+            assert config["model"]["provider"] == "anthropic"
+            assert config["model"]["base_url"] == "https://example.test/v1"
+
+    def test_runtime_loader_only_bridges_explicit_agent_keys(self, tmp_path):
+        with patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(tmp_path), "HERMES_MAX_ITERATIONS": "42"},
+            clear=False,
+        ):
+            (tmp_path / "config.yaml").write_text(
+                "agent:\n  service_tier: priority\n",
+                encoding="utf-8",
+            )
+
+            config = load_runtime_config(runtime="cli")
+            assert config["agent"]["service_tier"] == "priority"
+            assert os.environ["HERMES_MAX_ITERATIONS"] == "42"
+
 
 class TestMissingConfigFields:
     def test_missing_fields_come_from_raw_user_config_not_merged_defaults(self, tmp_path):
