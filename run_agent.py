@@ -9136,6 +9136,40 @@ class AIAgent:
                     else:
                         assistant_message.content = str(raw)
 
+                # ── Fallback: parse tool calls from text content ──────────
+                # Some models (Qwen3-Coder, Hermes-format models served via
+                # endpoints without server-side tool call extraction) emit
+                # tool calls as XML tags inside the content field instead of
+                # the structured tool_calls API field.  Detect and parse them
+                # so the CLI can execute them normally.
+                if (
+                    not assistant_message.tool_calls
+                    and assistant_message.content
+                    and self.tools
+                ):
+                    _content = assistant_message.content
+                    _has_markers = "<tool_call>" in _content or "<function=" in _content
+                    if _has_markers:
+                        try:
+                            from environments.tool_call_parsers import get_parser
+                            _model_lower = (self.model or "").lower()
+                            if "qwen3" in _model_lower and "coder" in _model_lower:
+                                _parser_name = "qwen3_coder"
+                            else:
+                                _parser_name = "hermes"
+                            _parser = get_parser(_parser_name)
+                            _parsed_content, _parsed_calls = _parser.parse(_content)
+                            if _parsed_calls:
+                                assistant_message.tool_calls = _parsed_calls
+                                if _parsed_content is not None:
+                                    assistant_message.content = _parsed_content
+                                logger.info(
+                                    "Fallback %s parser extracted %d tool call(s) from text content",
+                                    _parser_name, len(_parsed_calls),
+                                )
+                        except Exception:
+                            pass  # Fall through — treat as plain text
+
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook
                     _assistant_tool_calls = getattr(assistant_message, "tool_calls", None) or []
