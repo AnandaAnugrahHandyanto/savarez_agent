@@ -262,46 +262,104 @@ _CONFIG_LOCK = threading.RLock()
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({
-    "OPENAI_API_KEY", "OPENAI_BASE_URL",
-    "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
-    "DISCORD_HOME_CHANNEL", "DISCORD_HOME_CHANNEL_NAME",
-    "TELEGRAM_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL_NAME",
-    "SLACK_HOME_CHANNEL", "SLACK_HOME_CHANNEL_NAME",
-    "SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL",
-    "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
-    "SIGNAL_HOME_CHANNEL", "SIGNAL_HOME_CHANNEL_NAME",
-    "SMS_HOME_CHANNEL", "SMS_HOME_CHANNEL_NAME",
-    "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET",
-    "DINGTALK_HOME_CHANNEL", "DINGTALK_HOME_CHANNEL_NAME",
-    "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN",
-    "FEISHU_HOME_CHANNEL", "FEISHU_HOME_CHANNEL_NAME",
-    "YUANBAO_HOME_CHANNEL", "YUANBAO_HOME_CHANNEL_NAME",
-    "WECOM_BOT_ID", "WECOM_SECRET",
-    "WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET", "WECOM_CALLBACK_AGENT_ID",
-    "WECOM_CALLBACK_TOKEN", "WECOM_CALLBACK_ENCODING_AES_KEY",
-    "WECOM_CALLBACK_HOST", "WECOM_CALLBACK_PORT",
-    "WECOM_HOME_CHANNEL", "WECOM_HOME_CHANNEL_NAME",
-    "WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN", "WEIXIN_BASE_URL", "WEIXIN_CDN_BASE_URL",
-    "WEIXIN_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL_NAME", "WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY",
-    "WEIXIN_ALLOWED_USERS", "WEIXIN_GROUP_ALLOWED_USERS", "WEIXIN_ALLOW_ALL_USERS",
-    "BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD",
-    "BLUEBUBBLES_HOME_CHANNEL", "BLUEBUBBLES_HOME_CHANNEL_NAME",
-    "QQ_APP_ID", "QQ_CLIENT_SECRET", "QQBOT_HOME_CHANNEL", "QQBOT_HOME_CHANNEL_NAME",
-    "QQ_HOME_CHANNEL", "QQ_HOME_CHANNEL_NAME",  # legacy aliases (pre-rename, still read for back-compat)
-    "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS", "QQ_ALLOW_ALL_USERS", "QQ_MARKDOWN_SUPPORT",
-    "QQ_STT_API_KEY", "QQ_STT_BASE_URL", "QQ_STT_MODEL",
-    "IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
-    "IRC_USE_TLS", "IRC_SERVER_PASSWORD", "IRC_NICKSERV_PASSWORD",
-    "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_TOKEN",
+    "DISCORD_HOME_CHANNEL",
+    "DISCORD_HOME_CHANNEL_NAME",
+    "TELEGRAM_HOME_CHANNEL",
+    "TELEGRAM_HOME_CHANNEL_NAME",
+    "SLACK_HOME_CHANNEL",
+    "SLACK_HOME_CHANNEL_NAME",
+    "SIGNAL_ACCOUNT",
+    "SIGNAL_HTTP_URL",
+    "SIGNAL_ALLOWED_USERS",
+    "SIGNAL_GROUP_ALLOWED_USERS",
+    "SIGNAL_HOME_CHANNEL",
+    "SIGNAL_HOME_CHANNEL_NAME",
+    "SMS_HOME_CHANNEL",
+    "SMS_HOME_CHANNEL_NAME",
+    "DINGTALK_CLIENT_ID",
+    "DINGTALK_CLIENT_SECRET",
+    "DINGTALK_HOME_CHANNEL",
+    "DINGTALK_HOME_CHANNEL_NAME",
+    "FEISHU_APP_ID",
+    "FEISHU_APP_SECRET",
+    "FEISHU_ENCRYPT_KEY",
+    "FEISHU_VERIFICATION_TOKEN",
+    "FEISHU_HOME_CHANNEL",
+    "FEISHU_HOME_CHANNEL_NAME",
+    "YUANBAO_HOME_CHANNEL",
+    "YUANBAO_HOME_CHANNEL_NAME",
+    "WECOM_BOT_ID",
+    "WECOM_SECRET",
+    "WECOM_CALLBACK_CORP_ID",
+    "WECOM_CALLBACK_CORP_SECRET",
+    "WECOM_CALLBACK_AGENT_ID",
+    "WECOM_CALLBACK_TOKEN",
+    "WECOM_CALLBACK_ENCODING_AES_KEY",
+    "WECOM_CALLBACK_HOST",
+    "WECOM_CALLBACK_PORT",
+    "WECOM_HOME_CHANNEL",
+    "WECOM_HOME_CHANNEL_NAME",
+    "WEIXIN_ACCOUNT_ID",
+    "WEIXIN_TOKEN",
+    "WEIXIN_BASE_URL",
+    "WEIXIN_CDN_BASE_URL",
+    "WEIXIN_HOME_CHANNEL",
+    "WEIXIN_HOME_CHANNEL_NAME",
+    "WEIXIN_DM_POLICY",
+    "WEIXIN_GROUP_POLICY",
+    "WEIXIN_ALLOWED_USERS",
+    "WEIXIN_GROUP_ALLOWED_USERS",
+    "WEIXIN_ALLOW_ALL_USERS",
+    "BLUEBUBBLES_SERVER_URL",
+    "BLUEBUBBLES_PASSWORD",
+    "BLUEBUBBLES_HOME_CHANNEL",
+    "BLUEBUBBLES_HOME_CHANNEL_NAME",
+    "QQ_APP_ID",
+    "QQ_CLIENT_SECRET",
+    "QQBOT_HOME_CHANNEL",
+    "QQBOT_HOME_CHANNEL_NAME",
+    "QQ_HOME_CHANNEL",
+    "QQ_HOME_CHANNEL_NAME",  # legacy aliases (pre-rename, still read for back-compat)
+    "QQ_ALLOWED_USERS",
+    "QQ_GROUP_ALLOWED_USERS",
+    "QQ_ALLOW_ALL_USERS",
+    "QQ_MARKDOWN_SUPPORT",
+    "QQ_STT_API_KEY",
+    "QQ_STT_BASE_URL",
+    "QQ_STT_MODEL",
+    "IRC_SERVER",
+    "IRC_PORT",
+    "IRC_NICKNAME",
+    "IRC_CHANNEL",
+    "IRC_USE_TLS",
+    "IRC_SERVER_PASSWORD",
+    "IRC_NICKSERV_PASSWORD",
+    "TERMINAL_ENV",
+    "TERMINAL_SSH_KEY",
+    "TERMINAL_SSH_PORT",
     # Deprecated tool-progress env vars — replaced by display.tool_progress in
     # config.yaml. Kept known here so .env sanitization/reload still handle
     # them for existing users (gateway reads them as a back-compat fallback),
     # without surfacing them in user-facing OPTIONAL_ENV_VARS listings.
-    "HERMES_TOOL_PROGRESS", "HERMES_TOOL_PROGRESS_MODE",
-    "WHATSAPP_MODE", "WHATSAPP_ENABLED",
-    "MATTERMOST_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL_NAME", "MATTERMOST_REPLY_MODE",
-    "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
-    "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD", "MATRIX_DM_AUTO_THREAD",
+    "HERMES_TOOL_PROGRESS",
+    "HERMES_TOOL_PROGRESS_MODE",
+    "WHATSAPP_MODE",
+    "WHATSAPP_ENABLED",
+    "MATTERMOST_HOME_CHANNEL",
+    "MATTERMOST_HOME_CHANNEL_NAME",
+    "MATTERMOST_REPLY_MODE",
+    "MATRIX_PASSWORD",
+    "MATRIX_ENCRYPTION",
+    "MATRIX_DEVICE_ID",
+    "MATRIX_HOME_ROOM",
+    "MATRIX_REQUIRE_MENTION",
+    "MATRIX_FREE_RESPONSE_ROOMS",
+    "MATRIX_AUTO_THREAD",
+    "MATRIX_DM_AUTO_THREAD",
     "MATRIX_RECOVERY_KEY",
     # Langfuse observability plugin — optional tuning keys + standard SDK vars.
     # Activation is via plugins.enabled (opt-in through `hermes plugins enable
@@ -1141,6 +1199,10 @@ DEFAULT_CONFIG = {
         "delete_orphans": True,
         "min_interval_hours": 24,
     },
+    # Maximum characters loaded from a single automatic context file such as
+    # SOUL.md, AGENTS.md, CLAUDE.md, .hermes.md, or .cursorrules before Hermes
+    # applies head/tail truncation. This is separate from read_file tool limits.
+    "context_file_max_chars": 20_000,
     # Maximum characters returned by a single read_file call.  Reads that
     # exceed this are rejected with guidance to use offset+limit.
     # 100K chars ≈ 25–35K tokens across typical tokenisers.
@@ -1475,7 +1537,7 @@ DEFAULT_CONFIG = {
         # clarify) into scrollback so the question and decision survive the
         # panel repaint. Set false to keep scrollback untouched.
         "persist_prompts": True,
-        "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
+        "inline_diffs": True,  # Show inline diff previews for write actions (write_file, patch, skill_manage)
         # File-mutation verifier footer.  When true (default), the agent
         # appends a one-line advisory to its final response whenever a
         # write_file / patch call failed during the turn and was never
@@ -1798,12 +1860,12 @@ DEFAULT_CONFIG = {
         # Set to false for strict intersection.
         "inherit_mcp_toolsets": True,
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
-                               # independent of the parent's max_iterations)
+        # independent of the parent's max_iterations)
         "child_timeout_seconds": 0,  # optional wall-clock cap per child agent. 0 (default)
-                                     # = no timeout: children fail only from real errors
-                                     # (API, tools, iteration budget), never a delegation
-                                     # stopwatch. Set a positive number of seconds
-                                     # (floor 30s) to enforce a hard cap.
+        # = no timeout: children fail only from real errors
+        # (API, tools, iteration budget), never a delegation
+        # stopwatch. Set a positive number of seconds
+        # (floor 30s) to enforce a hard cap.
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
         # "low", "minimal", "none" (empty = inherit parent's level)
         "max_concurrent_children": 3,  # max parallel children per batch; floor of 1 enforced, no ceiling
@@ -2009,11 +2071,11 @@ DEFAULT_CONFIG = {
     },
     # Telegram platform settings (gateway mode)
     "telegram": {
-        "reactions": False,            # Add 👀/✅/❌ reactions to messages during processing
-        "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
-        "allowed_chats": "",           # If set, bot ONLY responds in these group/supergroup chat IDs (whitelist)
+        "reactions": False,  # Add 👀/✅/❌ reactions to messages during processing
+        "channel_prompts": {},  # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
+        "allowed_chats": "",  # If set, bot ONLY responds in these group/supergroup chat IDs (whitelist)
         "extra": {
-            "rich_messages": True,      # Bot API 10.1 rich messages (tables/task lists/details/math) render natively; set False to force legacy MarkdownV2
+            "rich_messages": True,  # Bot API 10.1 rich messages (tables/task lists/details/math) render natively; set False to force legacy MarkdownV2
         },
     },
     # Mattermost platform settings (gateway mode)
@@ -4147,11 +4209,27 @@ def check_config_version() -> Tuple[int, int]:
 
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
-    "_config_version", "model", "providers", "fallback_model",
-    "fallback_providers", "credential_pool_strategies", "toolsets",
-    "agent", "terminal", "display", "compression", "delegation",
-    "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming", "updates", "mcp_servers",
+    "_config_version",
+    "model",
+    "providers",
+    "fallback_model",
+    "fallback_providers",
+    "credential_pool_strategies",
+    "toolsets",
+    "agent",
+    "terminal",
+    "display",
+    "compression",
+    "delegation",
+    "auxiliary",
+    "custom_providers",
+    "context",
+    "memory",
+    "gateway",
+    "sessions",
+    "streaming",
+    "updates",
+    "mcp_servers",
 }
 
 # Valid fields inside a custom_providers list entry
@@ -4994,7 +5072,9 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     raw_mcp_servers = config.get("mcp_servers")
     if isinstance(raw_mcp_servers, dict):
         try:
-            from hermes_cli.mcp_security import validate_mcp_server_entry as _validate_mcp_server_entry
+            from hermes_cli.mcp_security import (
+                validate_mcp_server_entry as _validate_mcp_server_entry,
+            )
         except Exception:
             _validate_mcp_server_entry = None
         if _validate_mcp_server_entry:
