@@ -1467,6 +1467,7 @@ class AIAgent:
             self._fallback_chain = []
         self._fallback_index = 0
         self._fallback_activated = False
+        self._fallback_restore_fail_count = 0
         # Legacy attribute kept for backward compat (tests, external callers)
         self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
         if self._fallback_chain and not self.quiet_mode:
@@ -7253,18 +7254,28 @@ class AIAgent:
                 provider=rt["compressor_provider"],
             )
 
-            # ── Reset fallback chain for the new turn ──
-            self._fallback_activated = False
-            self._fallback_index = 0
-
             logging.info(
                 "Primary runtime restored for new turn: %s (%s)",
                 self.model, self.provider,
             )
-            return True
         except Exception as e:
             logging.warning("Failed to restore primary runtime: %s", e)
+            # Track consecutive restore failures
+            self._fallback_restore_fail_count += 1
+            if self._fallback_restore_fail_count >= 3 and not self.quiet_mode:
+                self._vprint(
+                    f"{self.log_prefix}⚠️  Primary provider unavailable after "
+                    f"{self._fallback_restore_fail_count} attempts — using fallback. "
+                    f"Check your API key and network connection.",
+                    force=True,
+                )
             return False
+
+        # Success — reset all fallback state outside the try block
+        self._fallback_activated = False
+        self._fallback_index = 0
+        self._fallback_restore_fail_count = 0
+        return True
 
     # Which error types indicate a transient transport failure worth
     # one more attempt with a rebuilt client / connection pool.
