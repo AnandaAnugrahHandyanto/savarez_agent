@@ -64,7 +64,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Literal, Optional, Sequence
+from typing import Any, Dict, List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -225,17 +225,7 @@ _APPROVAL_LABEL_MAP: Dict[str, str] = {
 }
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
-
-# Feishu reactions render as prominent badges, unlike Discord/Telegram's
-# small footer emoji — a success badge on every message would add noise, so
-# we only mark start (Typing) and failure (CrossMark); the reply itself is
-# the success signal.
-_FEISHU_REACTION_IN_PROGRESS = "Typing"
-_FEISHU_REACTION_FAILURE = "CrossMark"
-# Bound on the (message_id → reaction_id) handle cache. Happy-path entries
-# drain on completion; the cap is a safeguard against unbounded growth from
-# delete-failures, not a capacity plan.
-_FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
+_FEISHU_ACK_EMOJI = "OK"
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -4629,9 +4619,6 @@ def probe_bot(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
 
     Uses lark_oapi SDK when available, falls back to raw HTTP otherwise.
     Returns {"bot_name": ..., "bot_open_id": ...} on success, None on failure.
-
-    Note: ``bot_open_id`` here is the bot's app-scoped open_id — the same ID
-    that Feishu puts in @mention payloads.  It is NOT the app_id.
     """
     if FEISHU_AVAILABLE:
         return _probe_bot_sdk(app_id, app_secret, domain)
@@ -4652,12 +4639,12 @@ def _build_onboard_client(app_id: str, app_secret: str, domain: str) -> Any:
 
 
 def _parse_bot_response(data: dict) -> Optional[dict]:
-    # /bot/v3/info returns bot.app_name; legacy paths used bot_name — accept both.
+    """Extract bot_name and bot_open_id from a /bot/v3/info response."""
     if data.get("code") != 0:
         return None
     bot = data.get("bot") or data.get("data", {}).get("bot") or {}
     return {
-        "bot_name": bot.get("app_name") or bot.get("bot_name"),
+        "bot_name": bot.get("bot_name"),
         "bot_open_id": bot.get("open_id"),
     }
 
@@ -4666,18 +4653,13 @@ def _probe_bot_sdk(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
     """Probe bot info using lark_oapi SDK."""
     try:
         client = _build_onboard_client(app_id, app_secret, domain)
-        req = (
-            BaseRequest.builder()
-            .http_method(HttpMethod.GET)
-            .uri("/open-apis/bot/v3/info")
-            .token_types({AccessTokenType.TENANT})
-            .build()
+        resp = client.request(
+            method="GET",
+            url="/open-apis/bot/v3/info",
+            body=None,
+            raw_response=True,
         )
-        resp = client.request(req)
-        content = getattr(getattr(resp, "raw", None), "content", None)
-        if content is None:
-            return None
-        return _parse_bot_response(json.loads(content))
+        return _parse_bot_response(json.loads(resp.content))
     except Exception as exc:
         logger.debug("[Feishu onboard] SDK probe failed: %s", exc)
         return None
