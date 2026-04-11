@@ -140,11 +140,14 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
         session_key="agent:main:telegram:group:-1001:17585",
     )
 
+    from agent.display import get_tool_emoji
+    expected_terminal = get_tool_emoji("terminal", default="⚙️")
+
     assert result["final_response"] == "done"
     assert adapter.sent == [
         {
             "chat_id": "-1001",
-            "content": '⚙️ terminal: "pwd"',
+            "content": f'{expected_terminal} terminal: "pwd"',
             "reply_to": None,
             "metadata": {"thread_id": "17585"},
         }
