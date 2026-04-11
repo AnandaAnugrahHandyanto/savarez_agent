@@ -76,6 +76,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
+from hermes_cli.platform_catalog import get_platform_spec
 from utils import atomic_yaml_write
 _hermes_home = get_hermes_home()
 
@@ -3076,7 +3077,8 @@ class GatewayRunner:
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
-            env_key = f"{platform_name.upper()}_HOME_CHANNEL"
+            spec = get_platform_spec(platform_name)
+            env_key = spec.home_channel_env if spec and spec.home_channel_env else f"{platform_name.upper()}_HOME_CHANNEL"
             if not os.getenv(env_key):
                 adapter = self.adapters.get(source.platform)
                 if adapter:
@@ -4434,7 +4436,8 @@ class GatewayRunner:
         chat_id = source.chat_id
         chat_name = source.chat_name or chat_id
         
-        env_key = f"{platform_name.upper()}_HOME_CHANNEL"
+        spec = get_platform_spec(platform_name)
+        env_key = spec.home_channel_env if spec and spec.home_channel_env else f"{platform_name.upper()}_HOME_CHANNEL"
         
         # Save to config.yaml
         try:

@@ -16,6 +16,7 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
 from hermes_cli.models import provider_label
 from hermes_cli.nous_subscription import get_nous_subscription_features
+from hermes_cli.platform_catalog import get_platform_spec
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_constants import OPENROUTER_MODELS_URL
 from tools.tool_backend_helpers import managed_nous_tools_enabled
@@ -307,6 +308,8 @@ def show_status(args):
         "WeCom": ("WECOM_BOT_ID", "WECOM_HOME_CHANNEL"),
         "Weixin": ("WEIXIN_ACCOUNT_ID", "WEIXIN_HOME_CHANNEL"),
         "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"),
+        "Matrix": ("MATRIX_ACCESS_TOKEN", get_platform_spec("matrix").home_channel_env),
+        "Mattermost": ("MATTERMOST_TOKEN", get_platform_spec("mattermost").home_channel_env),
     }
     
     for name, (token_var, home_var) in platforms.items():

@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from hermes_cli.config import get_hermes_home, get_env_path, get_project_root, load_config
+from hermes_cli.platform_catalog import configured_platform_keys
 from hermes_constants import display_hermes_home
 
 
@@ -105,23 +106,7 @@ def _cron_summary(hermes_home: Path) -> str:
 
 def _configured_platforms() -> list[str]:
     """Return list of configured messaging platform names."""
-    checks = {
-        "telegram": "TELEGRAM_BOT_TOKEN",
-        "discord": "DISCORD_BOT_TOKEN",
-        "slack": "SLACK_BOT_TOKEN",
-        "whatsapp": "WHATSAPP_ENABLED",
-        "signal": "SIGNAL_HTTP_URL",
-        "email": "EMAIL_ADDRESS",
-        "sms": "TWILIO_ACCOUNT_SID",
-        "matrix": "MATRIX_HOMESERVER_URL",
-        "mattermost": "MATTERMOST_URL",
-        "homeassistant": "HASS_TOKEN",
-        "dingtalk": "DINGTALK_CLIENT_ID",
-        "feishu": "FEISHU_APP_ID",
-        "wecom": "WECOM_BOT_ID",
-        "weixin": "WEIXIN_ACCOUNT_ID",
-    }
-    return [name for name, env in checks.items() if os.getenv(env)]
+    return configured_platform_keys(lambda name: os.getenv(name, ""), include_cli=False)
 
 
 def _memory_provider(config: dict) -> str:
