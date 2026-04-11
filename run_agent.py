@@ -519,6 +519,12 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+# OpenRouter model registry cache for vision capability lookup
+_OPENROUTER_MODELS_CACHE: Dict[str, Any] = {}
+_OPENROUTER_MODELS_CACHE_TIME: float = 0
+_OPENROUTER_CACHE_TTL: int = 3600
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -5502,6 +5508,123 @@ class AIAgent:
         return False
 
     @staticmethod
+    def _fetch_openrouter_vision_support(model: str) -> Optional[bool]:
+        """Query OpenRouter /api/v1/models for vision support. Returns True/False or None on failure."""
+        global _OPENROUTER_MODELS_CACHE, _OPENROUTER_MODELS_CACHE_TIME
+        import time
+        now = time.time()
+        if not _OPENROUTER_MODELS_CACHE or (now - _OPENROUTER_MODELS_CACHE_TIME) > _OPENROUTER_CACHE_TTL:
+            try:
+                import requests
+                from utils import atomic_json_write
+                resp = requests.get("https://openrouter.ai/api/v1/models", timeout=15)
+                resp.raise_for_status()
+                data = resp.json()
+                if isinstance(data, dict) and "data" in data:
+                    _OPENROUTER_MODELS_CACHE = {
+                        m["id"]: m for m in data["data"] if isinstance(m, dict) and "id" in m
+                    }
+                    _OPENROUTER_MODELS_CACHE_TIME = now
+                    cache_path = get_hermes_home() / "openrouter_models_cache.json"
+                    atomic_json_write(cache_path, _OPENROUTER_MODELS_CACHE, indent=None, separators=(",", ":"))
+            except Exception:
+                # Fallback to disk cache with a short TTL so we retry network soon
+                try:
+                    cache_path = get_hermes_home() / "openrouter_models_cache.json"
+                    if cache_path.exists():
+                        with open(cache_path, "r", encoding="utf-8") as f:
+                            _OPENROUTER_MODELS_CACHE = json.load(f)
+                            _OPENROUTER_MODELS_CACHE_TIME = now - _OPENROUTER_CACHE_TTL + 300
+                except Exception:
+                    pass
+
+        entry = _OPENROUTER_MODELS_CACHE.get(model)
+        if not isinstance(entry, dict):
+            return None
+        arch = entry.get("architecture")
+        if isinstance(arch, dict):
+            inputs = arch.get("input_modalities", [])
+            if isinstance(inputs, list):
+                return "image" in inputs
+        return None
+
+    @staticmethod
+    def _load_user_vision_native_models() -> List[str]:
+        """Load user-configured vision-native model overrides from config.yaml."""
+        try:
+            import yaml
+            config_path = get_hermes_home() / "config.yaml"
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                models = cfg.get("agent", {}).get("vision_native_models", [])
+                if isinstance(models, list):
+                    return [m.lower() for m in models if isinstance(m, str)]
+        except Exception:
+            pass
+        return []
+
+    @staticmethod
+    def _check_native_vision_support(model: str, provider: str, api_mode: str) -> bool:
+        """Static helper: return True when the model+provider can receive image_url content parts directly."""
+        import os
+        env_override = os.getenv("VISION_NATIVE_PASSTHROUGH", "").strip().lower()
+        if env_override == "true":
+            return True
+        if env_override == "false":
+            return False
+
+        if api_mode == "anthropic_messages":
+            return False
+
+        model_id = (model or "").lower()
+        provider_id = (provider or "").lower()
+
+        # 1. User config override (exact substring match, case-insensitive)
+        user_models = AIAgent._load_user_vision_native_models()
+        if any(m in model_id for m in user_models):
+            return True
+
+        # 2. OpenRouter official API (most authoritative for openrouter models)
+        if provider_id == "openrouter" or model_id.startswith("openrouter/"):
+            or_model = model_id.split("/", 1)[1] if model_id.startswith("openrouter/") else model
+            or_result = AIAgent._fetch_openrouter_vision_support(or_model)
+            if or_result is not None:
+                return or_result
+
+        # 3. models.dev community registry (broad coverage)
+        try:
+            from agent.models_dev import get_model_capabilities
+            caps = get_model_capabilities(provider_id, model)
+            if caps is not None:
+                return caps.supports_vision
+        except Exception:
+            pass
+
+        # 4. Hardcoded emergency fallback for well-known families
+        vision_models = (
+            "kimi-for-coding", "kimi-k2", "kimi-k2.5", "kimi-vision",
+            "gpt-4", "gpt-4o", "gpt-5",
+            "claude-3", "claude-sonnet-4", "claude-opus-4",
+            "gemini", "glm-4v", "glm-4.5v", "glm-4.6v",
+            "qwen-vl", "qwen2.5-vl", "qwen3-vl",
+        )
+        return any(m in model_id for m in vision_models)
+
+    def model_supports_native_vision(self) -> bool:
+        """Return True when the current model+provider can receive image_url content parts directly.
+
+        Resolution order:
+          1. VISION_NATIVE_PASSTHROUGH env override
+          2. User config agent.vision_native_models
+          3. OpenRouter official API (for openrouter models)
+          4. models.dev registry (broad provider coverage)
+          5. Conservative hardcoded whitelist (emergency fallback)
+        Anthropic messages API is excluded from native passthrough.
+        """
+        return self._check_native_vision_support(self.model, self.provider, self.api_mode)
+
+    @staticmethod
     def _materialize_data_url_for_vision(image_url: str) -> tuple[str, Optional[Path]]:
         header, _, data = str(image_url or "").partition(",")
         mime = "image/jpeg"
@@ -7376,12 +7499,13 @@ class AIAgent:
         task_id: str = None,
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
+        user_message_content: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
 
         Args:
-            user_message (str): The user's message/question
+            user_message (str): The user's message/question (used for logging/display)
             system_message (str): Custom system message (optional, overrides ephemeral_system_prompt if provided)
             conversation_history (List[Dict]): Previous conversation messages (optional)
             task_id (str): Unique identifier for this task to isolate VMs between concurrent tasks (optional, auto-generated if not provided)
@@ -7391,7 +7515,8 @@ class AIAgent:
             persist_user_message: Optional clean user message to store in
                 transcripts/history when user_message contains API-only
                 synthetic prefixes.
-                    or queuing follow-up prefetch work.
+            user_message_content: Optional list of content parts to send to the API
+                instead of a plain-text user_message. Used for native multimodal passthrough.
 
         Returns:
             Dict: Complete conversation result with final response and message history
@@ -7412,6 +7537,11 @@ class AIAgent:
             user_message = _sanitize_surrogates(user_message)
         if isinstance(persist_user_message, str):
             persist_user_message = _sanitize_surrogates(persist_user_message)
+
+        # When native multimodal content parts are used, ensure the plain-text
+        # version is persisted to history/transcripts instead of heavy base64.
+        if user_message_content is not None and persist_user_message is None:
+            persist_user_message = user_message
 
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback
@@ -7500,8 +7630,11 @@ class AIAgent:
                 _should_review_memory = True
                 self._turns_since_memory = 0
 
-        # Add user message
-        user_msg = {"role": "user", "content": user_message}
+        # Add user message (use native multimodal content parts when provided)
+        if user_message_content is not None:
+            user_msg = {"role": "user", "content": user_message_content}
+        else:
+            user_msg = {"role": "user", "content": user_message}
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx

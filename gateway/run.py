@@ -3206,6 +3206,7 @@ class GatewayRunner:
         if _is_shared_thread and source.user_name:
             message_text = f"[{source.user_name}] {message_text}"
 
+        message_content = None
         if event.media_urls:
             image_paths = []
             for i, path in enumerate(event.media_urls):
@@ -3218,9 +3219,57 @@ class GatewayRunner:
                 if is_image:
                     image_paths.append(path)
             if image_paths:
-                message_text = await self._enrich_message_with_vision(
-                    message_text, image_paths
-                )
+                # Decide whether to passthrough images natively or pre-describe them
+                try:
+                    from run_agent import AIAgent
+                    _gw_cfg = _load_gateway_config()
+                    _model, _runtime = self._resolve_session_agent_runtime(
+                        source=source, session_key=session_key, user_config=_gw_cfg
+                    )
+                    _provider = _runtime.get("provider") or (""
+                        if "/" not in _model else _model.split("/", 1)[0])
+                    _api_mode = _runtime.get("api_mode") or "chat_completions"
+                    _supports_native = AIAgent._check_native_vision_support(
+                        _model, _provider, _api_mode
+                    )
+                except Exception:
+                    _supports_native = False
+
+                if _supports_native:
+                    _parts = []
+                    if message_text:
+                        _parts.append({"type": "text", "text": message_text})
+                    for _img_path in image_paths:
+                        try:
+                            import base64
+                            from pathlib import Path
+                            _img_data = Path(_img_path).read_bytes()
+                            _b64 = base64.b64encode(_img_data).decode("ascii")
+                            # Infer mime type from extension; default to jpeg
+                            _suffix = Path(_img_path).suffix.lower()
+                            _mime = {
+                                ".png": "image/png",
+                                ".gif": "image/gif",
+                                ".webp": "image/webp",
+                                ".bmp": "image/bmp",
+                            }.get(_suffix, "image/jpeg")
+                            _parts.append({
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{_mime};base64,{_b64}"},
+                            })
+                        except Exception as _img_err:
+                            logger.warning("Failed to encode image for native vision: %s", _img_err)
+                    if len(_parts) > 1 or (_parts and _parts[0].get("type") == "image_url"):
+                        message_content = _parts
+                    else:
+                        # Fallback to text enrichment if encoding failed
+                        message_text = await self._enrich_message_with_vision(
+                            message_text, image_paths
+                        )
+                else:
+                    message_text = await self._enrich_message_with_vision(
+                        message_text, image_paths
+                    )
         
         # -----------------------------------------------------------------
         # Auto-transcribe voice/audio messages sent by the user
@@ -3375,6 +3424,7 @@ class GatewayRunner:
                 session_id=session_entry.session_id,
                 session_key=session_key,
                 event_message_id=event.message_id,
+                message_content=message_content,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -7017,6 +7067,7 @@ class GatewayRunner:
         session_key: str = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        message_content: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -7646,7 +7697,12 @@ class GatewayRunner:
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
             try:
-                result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
+                result = agent.run_conversation(
+                    message,
+                    conversation_history=agent_history,
+                    task_id=session_id,
+                    user_message_content=message_content,
+                )
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)

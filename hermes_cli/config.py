@@ -285,6 +285,11 @@ DEFAULT_CONFIG = {
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
         "gateway_timeout_warning": 900,
+        # User overrides for native vision passthrough. Each entry is a model
+        # ID substring matched case-insensitively. These take precedence over
+        # automatic detection (OpenRouter API, models.dev) but not the
+        # VISION_NATIVE_PASSTHROUGH env variable.
+        "vision_native_models": [],
     },
     
     "terminal": {
@@ -636,7 +641,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 14,
+    "_config_version": 15,
 }
 
 # =============================================================================
