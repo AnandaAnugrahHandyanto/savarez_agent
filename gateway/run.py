@@ -7431,8 +7431,14 @@ class GatewayRunner:
                         _cur_tool = _act.get("current_tool")
                         _iter_n = _act.get("api_call_count", 0)
                         _iter_max = _act.get("max_iterations", 0)
+                        _parts = [f"iteration {_iter_n}/{_iter_max}"]
                         if _cur_tool:
-                            _status_detail = f" — iteration {_iter_n}/{_iter_max}, running: {_cur_tool}"
+                            _parts.append(f"running: {_cur_tool}")
+                        else:
+                            _last_desc = _act.get("last_activity_desc")
+                            if _last_desc:
+                                _parts.append(_last_desc)
+                        _status_detail = " — " + ", ".join(_parts)
                     except Exception:
                         pass
                 try:
