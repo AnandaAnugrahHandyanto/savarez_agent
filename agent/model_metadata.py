@@ -27,12 +27,14 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "gemini", "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
+    "xiaomi",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
     "github-models", "kimi", "moonshot", "claude", "deep-seek",
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
+    "mimo", "xiaomi-mimo",
     "qwen-portal",
 })
 
@@ -113,7 +115,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek": 128000,
     # Meta
     "llama": 131072,
-    # Qwen
+    # Qwen — specific model families before the catch-all.
+    # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
+    "qwen3-coder-plus": 1000000,  # 1M context
+    "qwen3-coder": 262144,        # 256K context
     "qwen": 131072,
     # MiniMax — official docs: 204,800 context for all models
     # https://platform.minimax.io/docs/api-reference/text-anthropic-api
@@ -146,9 +151,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     "moonshotai/Kimi-K2.5": 262144,
     "moonshotai/Kimi-K2-Thinking": 262144,
     "MiniMaxAI/MiniMax-M2.5": 204800,
-    "XiaomiMiMo/MiMo-V2-Flash": 32768,
-    "mimo-v2-pro": 1048576,
-    "mimo-v2-omni": 1048576,
+    "XiaomiMiMo/MiMo-V2-Flash": 256000,
+    "mimo-v2-pro": 1000000,
+    "mimo-v2-omni": 256000,
+    "mimo-v2-flash": 256000,
     "zai-org/GLM-5": 202752,
 }
 
@@ -208,6 +214,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.fireworks.ai": "fireworks",
     "opencode.ai": "opencode-go",
     "api.x.ai": "xai",
+    "api.xiaomimimo.com": "xiaomi",
+    "xiaomimimo.com": "xiaomi",
 }
 
 
