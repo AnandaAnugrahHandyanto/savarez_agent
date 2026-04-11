@@ -36,6 +36,7 @@ import sys
 import tempfile
 import time
 import threading
+from dataclasses import dataclass
 from types import SimpleNamespace
 import urllib.request
 import uuid
@@ -812,6 +813,31 @@ def _qwen_portal_headers() -> dict:
         "X-DashScope-UserAgent": _ua,
         "X-DashScope-AuthType": "qwen-oauth",
     }
+
+
+@dataclass
+class ContextUsageReport:
+    """Telemetry snapshot of context window utilization."""
+
+    used_tokens: int
+    total_tokens: int
+    message_count: int
+
+    @property
+    def percentage(self) -> float:
+        if self.total_tokens <= 0:
+            return 0.0
+        return (self.used_tokens / self.total_tokens) * 100
+
+    def is_warning(self, threshold_percent: float = 85.0) -> bool:
+        return self.percentage >= threshold_percent
+
+    def summary(self) -> str:
+        pct = self.percentage
+        return (
+            f"Context: {self.used_tokens:,}/{self.total_tokens:,} tokens "
+            f"({pct:.1f}%) — {self.message_count} messages"
+        )
 
 
 class AIAgent:
@@ -10205,7 +10231,22 @@ class AIAgent:
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)
             approx_tokens = estimate_messages_tokens_rough(api_messages)
-            
+
+            # ── Context window usage telemetry ──
+            _compressor = getattr(self, "context_compressor", None)
+            _ctx_limit = getattr(_compressor, "context_length", None) if _compressor else None
+            if _ctx_limit:
+                _usage = ContextUsageReport(
+                    used_tokens=approx_tokens,
+                    total_tokens=_ctx_limit,
+                    message_count=len(api_messages),
+                )
+                if _usage.is_warning(threshold_percent=85):
+                    self._vprint(
+                        f"{self.log_prefix}⚠️  {_usage.summary()}",
+                        force=True,
+                    )
+
             # Thinking spinner for quiet mode (animated during API call)
             thinking_spinner = None
             
