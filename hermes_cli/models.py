@@ -14,6 +14,10 @@ import urllib.error
 from difflib import get_close_matches
 from typing import Any, Optional
 
+from hermes_cli.providers import ALIASES as PROVIDER_ALIASES
+from hermes_cli.providers import get_label as get_provider_label
+from hermes_cli.providers import normalize_provider as normalize_provider_id
+
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
 COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
 COPILOT_EDITOR_VERSION = "vscode/1.104.1"
@@ -478,72 +482,36 @@ def check_nous_free_tier() -> bool:
         return False  # default to paid on error — don't block users
 
 
-_PROVIDER_LABELS = {
-    "openrouter": "OpenRouter",
-    "openai-codex": "OpenAI Codex",
-    "copilot-acp": "GitHub Copilot ACP",
-    "nous": "Nous Portal",
-    "copilot": "GitHub Copilot",
-    "gemini": "Google AI Studio",
-    "zai": "Z.AI / GLM",
-    "kimi-coding": "Kimi / Moonshot",
-    "minimax": "MiniMax",
-    "minimax-cn": "MiniMax (China)",
-    "anthropic": "Anthropic",
-    "deepseek": "DeepSeek",
-    "opencode-zen": "OpenCode Zen",
-    "opencode-go": "OpenCode Go",
-    "ai-gateway": "AI Gateway",
-    "kilocode": "Kilo Code",
-    "alibaba": "Alibaba Cloud (DashScope)",
-    "qwen-oauth": "Qwen OAuth (Portal)",
-    "huggingface": "Hugging Face",
-    "xiaomi": "Xiaomi MiMo",
-    "custom": "Custom endpoint",
+_CANONICAL_PROVIDER_IDS = {
+    "openrouter",
+    "openai-codex",
+    "copilot-acp",
+    "nous",
+    "copilot",
+    "gemini",
+    "zai",
+    "kimi-coding",
+    "minimax",
+    "minimax-cn",
+    "anthropic",
+    "deepseek",
+    "opencode-zen",
+    "opencode-go",
+    "ai-gateway",
+    "kilocode",
+    "alibaba",
+    "qwen-oauth",
+    "huggingface",
+    "xiaomi",
+    "custom",
 }
 
-_PROVIDER_ALIASES = {
-    "glm": "zai",
-    "z-ai": "zai",
-    "z.ai": "zai",
-    "zhipu": "zai",
-    "github": "copilot",
-    "github-copilot": "copilot",
-    "github-models": "copilot",
-    "github-model": "copilot",
-    "github-copilot-acp": "copilot-acp",
-    "copilot-acp-agent": "copilot-acp",
-    "google": "gemini",
-    "google-gemini": "gemini",
-    "google-ai-studio": "gemini",
-    "kimi": "kimi-coding",
-    "moonshot": "kimi-coding",
-    "minimax-china": "minimax-cn",
-    "minimax_cn": "minimax-cn",
-    "claude": "anthropic",
-    "claude-code": "anthropic",
-    "deep-seek": "deepseek",
-    "opencode": "opencode-zen",
-    "zen": "opencode-zen",
-    "go": "opencode-go",
-    "opencode-go-sub": "opencode-go",
-    "aigateway": "ai-gateway",
-    "vercel": "ai-gateway",
-    "vercel-ai-gateway": "ai-gateway",
-    "kilo": "kilocode",
-    "kilo-code": "kilocode",
-    "kilo-gateway": "kilocode",
-    "dashscope": "alibaba",
-    "aliyun": "alibaba",
-    "qwen": "alibaba",
-    "alibaba-cloud": "alibaba",
-    "qwen-portal": "qwen-oauth",
-    "hf": "huggingface",
-    "hugging-face": "huggingface",
-    "huggingface-hub": "huggingface",
-    "mimo": "xiaomi",
-    "xiaomi-mimo": "xiaomi",
+_PROVIDER_LABELS = {
+    provider_id: (get_provider_label(provider_id) or provider_id)
+    for provider_id in _CANONICAL_PROVIDER_IDS
 }
+
+_PROVIDER_ALIASES = dict(PROVIDER_ALIASES)
 
 
 def _openrouter_model_is_free(pricing: Any) -> bool:
@@ -810,7 +778,7 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
 
 # All provider IDs and aliases that are valid for the provider:model syntax.
 _KNOWN_PROVIDER_NAMES: set[str] = (
-    set(_PROVIDER_LABELS.keys())
+    set(_CANONICAL_PROVIDER_IDS)
     | set(_PROVIDER_ALIASES.keys())
     | {"openrouter", "custom"}
 )
@@ -838,7 +806,7 @@ def list_available_providers() -> list[dict[str, str]]:
 
     result = []
     for pid in _PROVIDER_ORDER:
-        label = _PROVIDER_LABELS.get(pid, pid)
+        label = get_provider_label(pid) or pid
         alias_list = aliases_for.get(pid, [])
         # Check if this provider has credentials available
         has_creds = False
@@ -964,11 +932,11 @@ def detect_provider_for_model(
     # provider switch and pick the first model from that provider's catalog.
     # Skip "custom" and "openrouter" — custom has no model catalog, and
     # openrouter requires an explicit model name to be useful.
-    resolved_provider = _PROVIDER_ALIASES.get(name_lower, name_lower)
+    resolved_provider = normalize_provider(name_lower)
     if resolved_provider not in {"custom", "openrouter"}:
         default_models = _PROVIDER_MODELS.get(resolved_provider, [])
         if (
-            resolved_provider in _PROVIDER_LABELS
+            resolved_provider in _CANONICAL_PROVIDER_IDS
             and default_models
             and resolved_provider != normalize_provider(current_provider)
         ):
@@ -1066,7 +1034,7 @@ def normalize_provider(provider: Optional[str]) -> str:
     provider based on credentials and environment.
     """
     normalized = (provider or "openrouter").strip().lower()
-    return _PROVIDER_ALIASES.get(normalized, normalized)
+    return normalize_provider_id(normalized)
 
 
 def provider_label(provider: Optional[str]) -> str:
@@ -1076,7 +1044,8 @@ def provider_label(provider: Optional[str]) -> str:
     if normalized == "auto":
         return "Auto"
     normalized = normalize_provider(normalized)
-    return _PROVIDER_LABELS.get(normalized, original or "OpenRouter")
+    label = get_provider_label(normalized)
+    return label or original or "OpenRouter"
 
 
 # Models that support OpenAI Priority Processing (service_tier="priority").
@@ -1844,7 +1813,7 @@ def validate_requested_model(
 
     # api_models is None — couldn't reach API.  Accept and persist,
     # but warn so typos don't silently break things.
-    provider_label = _PROVIDER_LABELS.get(normalized, normalized)
+    provider_label = get_provider_label(normalized) or normalized
     return {
         "accepted": True,
         "persist": True,

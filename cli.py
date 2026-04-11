@@ -190,335 +190,28 @@ def _get_chrome_debug_candidates(system: str) -> list[str]:
 
 
 def load_cli_config() -> Dict[str, Any]:
-    """
-    Load CLI configuration from config files.
-    
-    Config lookup order:
-    1. ~/.hermes/config.yaml (user config - preferred)
-    2. ./cli-config.yaml (project config - fallback)
-    
-    Environment variables take precedence over config file values.
-    Returns default values if no config file exists.
-    """
-    # Check user config first ({HERMES_HOME}/config.yaml)
-    user_config_path = _hermes_home / 'config.yaml'
-    project_config_path = Path(__file__).parent / 'cli-config.yaml'
+    """Load CLI runtime config from the shared config authority."""
+    from hermes_cli.config import load_runtime_config, read_raw_config
 
-    # Use user config if it exists, otherwise project config
-    if user_config_path.exists():
-        config_path = user_config_path
-    else:
-        config_path = project_config_path
-
-    # Default configuration
-    defaults = {
-        "model": {
-            "default": "",
-            "base_url": "",
-            "provider": "auto",
-        },
-        "terminal": {
-            "env_type": "local",
-            "cwd": ".",  # "." is resolved to os.getcwd() at runtime
-            "timeout": 60,
-            "lifetime_seconds": 300,
-            "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-            "docker_forward_env": [],
-            "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
-            "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-            "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-            "docker_volumes": [],  # host:container volume mounts for Docker backend
-            "docker_mount_cwd_to_workspace": False,  # explicit opt-in only; default off for sandbox isolation
-        },
-        "browser": {
-            "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
-            "record_sessions": False,  # Auto-record browser sessions as WebM videos
-        },
-        "compression": {
-            "enabled": True,      # Auto-compress when approaching context limit
-            "threshold": 0.50,    # Compress at 50% of model's context limit
-            "summary_model": "",  # Model for summaries (empty = use main model)
-        },
-        "smart_model_routing": {
-            "enabled": False,
-            "max_simple_chars": 160,
-            "max_simple_words": 28,
-            "cheap_model": {},
-        },
-        "agent": {
-            "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
-            "verbose": False,
-            "system_prompt": "",
-            "prefill_messages_file": "",
-            "reasoning_effort": "",
-            "service_tier": "",
-            "personalities": {
-                "helpful": "You are a helpful, friendly AI assistant.",
-                "concise": "You are a concise assistant. Keep responses brief and to the point.",
-                "technical": "You are a technical expert. Provide detailed, accurate technical information.",
-                "creative": "You are a creative assistant. Think outside the box and offer innovative solutions.",
-                "teacher": "You are a patient teacher. Explain concepts clearly with examples.",
-                "kawaii": "You are a kawaii assistant! Use cute expressions like (◕‿◕), ★, ♪, and ~! Add sparkles and be super enthusiastic about everything! Every response should feel warm and adorable desu~! ヽ(>∀<☆)ノ",
-                "catgirl": "You are Neko-chan, an anime catgirl AI assistant, nya~! Add 'nya' and cat-like expressions to your speech. Use kaomoji like (=^･ω･^=) and ฅ^•ﻌ•^ฅ. Be playful and curious like a cat, nya~!",
-                "pirate": "Arrr! Ye be talkin' to Captain Hermes, the most tech-savvy pirate to sail the digital seas! Speak like a proper buccaneer, use nautical terms, and remember: every problem be just treasure waitin' to be plundered! Yo ho ho!",
-                "shakespeare": "Hark! Thou speakest with an assistant most versed in the bardic arts. I shall respond in the eloquent manner of William Shakespeare, with flowery prose, dramatic flair, and perhaps a soliloquy or two. What light through yonder terminal breaks?",
-                "surfer": "Duuude! You're chatting with the chillest AI on the web, bro! Everything's gonna be totally rad. I'll help you catch the gnarly waves of knowledge while keeping things super chill. Cowabunga!",
-                "noir": "The rain hammered against the terminal like regrets on a guilty conscience. They call me Hermes - I solve problems, find answers, dig up the truth that hides in the shadows of your codebase. In this city of silicon and secrets, everyone's got something to hide. What's your story, pal?",
-                "uwu": "hewwo! i'm your fwiendwy assistant uwu~ i wiww twy my best to hewp you! *nuzzles your code* OwO what's this? wet me take a wook! i pwomise to be vewy hewpful >w<",
-                "philosopher": "Greetings, seeker of wisdom. I am an assistant who contemplates the deeper meaning behind every query. Let us examine not just the 'how' but the 'why' of your questions. Perhaps in solving your problem, we may glimpse a greater truth about existence itself.",
-                "hype": "YOOO LET'S GOOOO!!! I am SO PUMPED to help you today! Every question is AMAZING and we're gonna CRUSH IT together! This is gonna be LEGENDARY! ARE YOU READY?! LET'S DO THIS!",
-            },
-        },
-
-        "display": {
-            "compact": False,
-            "resume_display": "full",
-            "show_reasoning": False,
-            "streaming": True,
-            "busy_input_mode": "interrupt",
-
-            "skin": "default",
-        },
-        "clarify": {
-            "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
-        },
-        "code_execution": {
-            "timeout": 300,    # Max seconds a sandbox script can run before being killed (5 min)
-            "max_tool_calls": 50,  # Max RPC tool calls per execution
-        },
-        "auxiliary": {
-            "vision": {
-                "provider": "auto",
-                "model": "",
-                "base_url": "",
-                "api_key": "",
-            },
-            "web_extract": {
-                "provider": "auto",
-                "model": "",
-                "base_url": "",
-                "api_key": "",
-            },
-        },
-        "delegation": {
-            "max_iterations": 45,  # Max tool-calling turns per child agent
-            "default_toolsets": ["terminal", "file", "web"],  # Default toolsets for subagents
-            "model": "",       # Subagent model override (empty = inherit parent model)
-            "provider": "",    # Subagent provider override (empty = inherit parent provider)
-            "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
-            "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
-        },
-    }
-    
-    # Track whether the config file explicitly set terminal config.
-    # When using defaults (no config file / no terminal section), we should NOT
-    # overwrite env vars that were already set by .env -- only a user's config
-    # file should be authoritative.
-    _file_has_terminal_config = False
-
-    # Load from file if exists
-    if config_path.exists():
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                file_config = yaml.safe_load(f) or {}
-            
-            _file_has_terminal_config = "terminal" in file_config
-
-            # Handle model config - can be string (new format) or dict (old format)
-            if "model" in file_config:
-                if isinstance(file_config["model"], str):
-                    # New format: model is just a string, convert to dict structure
-                    defaults["model"]["default"] = file_config["model"]
-                elif isinstance(file_config["model"], dict):
-                    # Old format: model is a dict with default/base_url
-                    defaults["model"].update(file_config["model"])
-                    # If the user config sets model.model but not model.default,
-                    # promote model.model to model.default so the user's explicit
-                    # choice isn't shadowed by the hardcoded default.  Without this,
-                    # profile configs that only set "model:" (not "default:") silently
-                    # fall back to claude-opus because the merge preserves the
-                    # hardcoded default and HermesCLI.__init__ checks "default" first.
-                    if "model" in file_config["model"] and "default" not in file_config["model"]:
-                        defaults["model"]["default"] = file_config["model"]["model"]
-
-            # Legacy root-level provider/base_url fallback.
-            # Some users (or old code) put provider: / base_url: at the
-            # config root instead of inside the model: section.  These are
-            # only used as a FALLBACK when model.provider / model.base_url
-            # is not already set — never as an override.  The canonical
-            # location is model.provider (written by `hermes model`).
-            if not defaults["model"].get("provider"):
-                root_provider = file_config.get("provider")
-                if root_provider:
-                    defaults["model"]["provider"] = root_provider
-            if not defaults["model"].get("base_url"):
-                root_base_url = file_config.get("base_url")
-                if root_base_url:
-                    defaults["model"]["base_url"] = root_base_url
-            
-            # Deep merge file_config into defaults.
-            # First: merge keys that exist in both (deep-merge dicts, overwrite scalars)
-            for key in defaults:
-                if key == "model":
-                    continue  # Already handled above
-                if key in file_config:
-                    if isinstance(defaults[key], dict) and isinstance(file_config[key], dict):
-                        defaults[key].update(file_config[key])
-                    else:
-                        defaults[key] = file_config[key]
-            
-            # Second: carry over keys from file_config that aren't in defaults
-            # (e.g. platform_toolsets, provider_routing, memory, honcho, etc.)
-            for key in file_config:
-                if key not in defaults and key != "model":
-                    defaults[key] = file_config[key]
-            
-            # Handle legacy root-level max_turns (backwards compat) - copy to
-            # agent.max_turns whenever the nested key is missing.
-            agent_file_config = file_config.get("agent")
-            if "max_turns" in file_config and not (
-                isinstance(agent_file_config, dict)
-                and agent_file_config.get("max_turns") is not None
-            ):
-                defaults["agent"]["max_turns"] = file_config["max_turns"]
-        except Exception as e:
-            logger.warning("Failed to load cli-config.yaml: %s", e)
-
-    # Expand ${ENV_VAR} references in config values before bridging to env vars.
-    from hermes_cli.config import _expand_env_vars
-    defaults = _expand_env_vars(defaults)
-
-    # Apply terminal config to environment variables (so terminal_tool picks them up)
-    terminal_config = defaults.get("terminal", {})
-    
-    # Normalize config key: the new config system (hermes_cli/config.py) and all
-    # documentation use "backend", the legacy cli-config.yaml uses "env_type".
-    # Accept both, with "backend" taking precedence (it's the documented key).
-    if "backend" in terminal_config:
-        terminal_config["env_type"] = terminal_config["backend"]
-    
-    # Handle special cwd values: "." or "auto" means use current working directory.
-    # Only resolve to the host's CWD for the local backend where the host
-    # filesystem is directly accessible.  For ALL remote/container backends
-    # (ssh, docker, modal, singularity), the host path doesn't exist on the
-    # target -- remove the key so terminal_tool.py uses its per-backend default.
-    if terminal_config.get("cwd") in (".", "auto", "cwd"):
-        effective_backend = terminal_config.get("env_type", "local")
-        if effective_backend == "local":
-            terminal_config["cwd"] = os.getcwd()
-            defaults["terminal"]["cwd"] = terminal_config["cwd"]
-        else:
-            # Remove so TERMINAL_CWD stays unset → tool picks backend default
-            terminal_config.pop("cwd", None)
-    
-    env_mappings = {
-        "env_type": "TERMINAL_ENV",
-        "cwd": "TERMINAL_CWD",
-        "timeout": "TERMINAL_TIMEOUT",
-        "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-        "docker_image": "TERMINAL_DOCKER_IMAGE",
-        "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-        "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-        "modal_image": "TERMINAL_MODAL_IMAGE",
-        "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-        # SSH config
-        "ssh_host": "TERMINAL_SSH_HOST",
-        "ssh_user": "TERMINAL_SSH_USER",
-        "ssh_port": "TERMINAL_SSH_PORT",
-        "ssh_key": "TERMINAL_SSH_KEY",
-        # Container resource config (docker, singularity, modal, daytona -- ignored for local/ssh)
-        "container_cpu": "TERMINAL_CONTAINER_CPU",
-        "container_memory": "TERMINAL_CONTAINER_MEMORY",
-        "container_disk": "TERMINAL_CONTAINER_DISK",
-        "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-        "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-        "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
-        "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-        # Persistent shell (non-local backends)
-        "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
-        # Sudo support (works with all backends)
-        "sudo_password": "SUDO_PASSWORD",
-    }
-    
-    # Apply config values to env vars so terminal_tool picks them up.
-    # If the config file explicitly has a [terminal] section, those values are
-    # authoritative and override any .env settings.  When using defaults only
-    # (no config file or no terminal section), don't overwrite env vars that
-    # were already set by .env -- the user's .env is the fallback source.
-    for config_key, env_var in env_mappings.items():
-        if config_key in terminal_config:
-            if _file_has_terminal_config or env_var not in os.environ:
-                val = terminal_config[config_key]
-                if isinstance(val, list):
-                    import json
-                    os.environ[env_var] = json.dumps(val)
-                else:
-                    os.environ[env_var] = str(val)
-    
-    # Apply browser config to environment variables
-    browser_config = defaults.get("browser", {})
-    browser_env_mappings = {
-        "inactivity_timeout": "BROWSER_INACTIVITY_TIMEOUT",
-    }
-    
-    for config_key, env_var in browser_env_mappings.items():
-        if config_key in browser_config:
-            os.environ[env_var] = str(browser_config[config_key])
-    
-    # Apply auxiliary model/direct-endpoint overrides to environment variables.
-    # Vision and web_extract each have their own provider/model/base_url/api_key tuple.
-    # Compression config is read directly from config.yaml by run_agent.py and
-    # auxiliary_client.py — no env var bridging needed.
-    # Only set env vars for non-empty / non-default values so auto-detection
-    # still works.
-    auxiliary_config = defaults.get("auxiliary", {})
-    auxiliary_task_env = {
-        # config key → env var mapping
-        "vision": {
-            "provider": "AUXILIARY_VISION_PROVIDER",
-            "model": "AUXILIARY_VISION_MODEL",
-            "base_url": "AUXILIARY_VISION_BASE_URL",
-            "api_key": "AUXILIARY_VISION_API_KEY",
-        },
-        "web_extract": {
-            "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
-            "model": "AUXILIARY_WEB_EXTRACT_MODEL",
-            "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
-            "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
-        },
-        "approval": {
-            "provider": "AUXILIARY_APPROVAL_PROVIDER",
-            "model": "AUXILIARY_APPROVAL_MODEL",
-            "base_url": "AUXILIARY_APPROVAL_BASE_URL",
-            "api_key": "AUXILIARY_APPROVAL_API_KEY",
-        },
-    }
-    
-    for task_key, env_map in auxiliary_task_env.items():
-        task_cfg = auxiliary_config.get(task_key, {})
-        if not isinstance(task_cfg, dict):
-            continue
-        prov = str(task_cfg.get("provider", "")).strip()
-        model = str(task_cfg.get("model", "")).strip()
-        base_url = str(task_cfg.get("base_url", "")).strip()
-        api_key = str(task_cfg.get("api_key", "")).strip()
-        if prov and prov != "auto":
-            os.environ[env_map["provider"]] = prov
-        if model:
-            os.environ[env_map["model"]] = model
-        if base_url:
-            os.environ[env_map["base_url"]] = base_url
-        if api_key:
-            os.environ[env_map["api_key"]] = api_key
-    
-    # Security settings
-    security_config = defaults.get("security", {})
-    if isinstance(security_config, dict):
-        redact = security_config.get("redact_secrets")
-        if redact is not None:
-            os.environ["HERMES_REDACT_SECRETS"] = str(redact).lower()
-
-    return defaults
+    config = load_runtime_config(
+        config_path=_hermes_home / "config.yaml",
+        fallback_paths=[Path(__file__).parent / "cli-config.yaml"],
+        runtime="cli",
+        ensure_home=False,
+    )
+    raw_config = read_raw_config(
+        config_path=_hermes_home / "config.yaml",
+        fallback_paths=[Path(__file__).parent / "cli-config.yaml"],
+    )
+    raw_model = raw_config.get("model")
+    if isinstance(raw_model, dict):
+        model_cfg = config.get("model")
+        if isinstance(model_cfg, dict):
+            if "provider" not in raw_model:
+                model_cfg["provider"] = "auto"
+            if "base_url" not in raw_model:
+                model_cfg["base_url"] = ""
+    return config
 
 # Load configuration at module startup
 CLI_CONFIG = load_cli_config()
@@ -1453,20 +1146,27 @@ def _looks_like_slash_command(text: str) -> bool:
 # ============================================================================
 
 from agent.skill_commands import (
-    scan_skill_commands,
+    get_skill_commands,
+    mark_skill_commands_dirty,
     build_skill_invocation_message,
     build_plan_path,
     build_preloaded_skills_prompt,
 )
 
-_skill_commands = scan_skill_commands()
+_skill_commands = None
+
+
+def _current_skill_commands() -> dict:
+    """Return live skill commands unless a test/override has patched them in."""
+    return _skill_commands if _skill_commands is not None else get_skill_commands()
 
 
 def _get_plugin_cmd_handler_names() -> set:
     """Return plugin command names (without slash prefix) for dispatch matching."""
     try:
-        from hermes_cli.plugins import get_plugin_manager
-        return set(get_plugin_manager()._plugin_commands.keys())
+        from hermes_cli.plugins import get_plugin_commands
+
+        return set(get_plugin_commands().keys())
     except Exception:
         return set()
 
@@ -1806,6 +1506,7 @@ class HermesCLI:
         self._approval_lock = threading.Lock()
         self._secret_state = None
         self._secret_deadline = 0
+        self._model_selection_controller = None
         self._spinner_text: str = ""  # thinking spinner text for TUI
         self._tool_start_time: float = 0.0  # monotonic timestamp when current tool started (for live elapsed)
         self._command_running = False
@@ -3610,9 +3311,24 @@ class HermesCLI:
                     continue
                 ChatConsole().print(f"    [bold {_accent_hex()}]{cmd:<15}[/] [dim]-[/] {_escape(desc)}")
 
-        if _skill_commands:
-            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(_skill_commands)} installed):")
-            for cmd, info in sorted(_skill_commands.items()):
+        try:
+            from hermes_cli.plugins import get_plugin_commands
+
+            plugin_commands = get_plugin_commands()
+        except Exception:
+            plugin_commands = {}
+        if plugin_commands:
+            _cprint(f"\n  🔌 {_BOLD}Plugin Commands{_RST} ({len(plugin_commands)} registered):")
+            for name, spec in sorted(plugin_commands.items()):
+                desc = str(spec.get("description", "") or "Plugin command")
+                ChatConsole().print(
+                    f"    [bold {_accent_hex()}]{'/' + name:<22}[/] [dim]-[/] {_escape(desc)}"
+                )
+
+        skill_commands = _current_skill_commands()
+        if skill_commands:
+            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(skill_commands)} installed):")
+            for cmd, info in sorted(skill_commands.items()):
                 ChatConsole().print(
                     f"    [bold {_accent_hex()}]{cmd:<22}[/] [dim]-[/] {_escape(info['description'])}"
                 )
@@ -3773,19 +3489,23 @@ class HermesCLI:
 
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
-        # Get terminal config from environment (which was set from cli-config.yaml)
-        terminal_env = os.getenv("TERMINAL_ENV", "local")
-        terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-        terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
-        
+        terminal_cfg = dict(self.config.get("terminal") or {})
+        terminal_env = str(os.getenv("TERMINAL_ENV") or terminal_cfg.get("backend") or "local")
+        terminal_cwd = str(os.getenv("TERMINAL_CWD") or terminal_cfg.get("cwd") or os.getcwd())
+        terminal_timeout = str(
+            os.getenv("TERMINAL_TIMEOUT")
+            or terminal_cfg.get("timeout")
+            or ""
+        )
+
         user_config_path = _hermes_home / 'config.yaml'
-        project_config_path = Path(__file__).parent / 'cli-config.yaml'
         if user_config_path.exists():
             config_path = user_config_path
+            config_status = "(loaded)"
         else:
-            config_path = project_config_path
-        config_status = "(loaded)" if config_path.exists() else "(not found)"
-        
+            config_path = "built-in defaults"
+            config_status = "(loaded)"
+
         api_key_display = '********' + self.api_key[-4:] if self.api_key and len(self.api_key) > 4 else 'Not set!'
         
         print()
@@ -4278,100 +3998,82 @@ class HermesCLI:
         remaining = len(self.conversation_history)
         print(f"  {remaining} message(s) remaining in history.")
     
-    def _handle_model_switch(self, cmd_original: str):
-        """Handle /model command — switch model for this session.
+    def _maybe_accept_slash_completion_on_enter(self, buffer) -> bool:
+        """Handle Enter on the slash-command completion menu."""
+        complete_state = getattr(buffer, "complete_state", None)
+        raw_text = str(getattr(buffer, "text", "") or "")
+        stripped = raw_text.strip()
+        if complete_state is None or not stripped.startswith("/") or " " in stripped:
+            return False
 
-        Supports:
-          /model                              — show current model + usage hints
-          /model <name>                       — switch for this session only
-          /model <name> --global              — switch and persist to config.yaml
-          /model <name> --provider <provider> — switch provider + model
-          /model --provider <provider>        — switch to provider, auto-detect model
-        """
-        from hermes_cli.model_switch import switch_model, parse_model_flags, list_authenticated_providers
-        from hermes_cli.providers import get_label
-
-        # Parse args from the original command
-        parts = cmd_original.split(None, 1)  # split off '/model'
-        raw_args = parts[1].strip() if len(parts) > 1 else ""
-
-        # Parse --provider and --global flags
-        model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
-
-        user_provs = None
-        custom_provs = None
-        try:
-            from hermes_cli.config import load_config
-            cfg = load_config()
-            user_provs = cfg.get("providers")
-            custom_provs = cfg.get("custom_providers")
-        except Exception:
-            pass
-
-        # No args at all: show available providers + models
-        if not model_input and not explicit_provider:
-            model_display = self.model or "unknown"
-            provider_display = get_label(self.provider) if self.provider else "unknown"
-            _cprint(f"  Current: {model_display} on {provider_display}")
-            _cprint("")
-
-            # Show authenticated providers with top models
+        completion = getattr(complete_state, "current_completion", None)
+        if completion is None:
             try:
-                providers = list_authenticated_providers(
-                    current_provider=self.provider or "",
-                    user_providers=user_provs,
-                    custom_providers=custom_provs,
-                    max_models=6,
-                )
-                if providers:
-                    for p in providers:
-                        tag = " (current)" if p["is_current"] else ""
-                        _cprint(f"  {p['name']} [--provider {p['slug']}]{tag}:")
-                        if p["models"]:
-                            model_strs = ", ".join(p["models"])
-                            extra = f"  (+{p['total_models'] - len(p['models'])} more)" if p["total_models"] > len(p["models"]) else ""
-                            _cprint(f"    {model_strs}{extra}")
-                        elif p.get("api_url"):
-                            _cprint(f"    {p['api_url']} (use /model <name> --provider {p['slug']})")
-                        else:
-                            _cprint(f"    (no models listed)")
-                        _cprint("")
-                else:
-                    _cprint("  No authenticated providers found.")
-                    _cprint("")
+                buffer.go_to_completion(0)
             except Exception:
-                pass
+                return False
+            complete_state = getattr(buffer, "complete_state", None)
+            completion = getattr(complete_state, "current_completion", None)
+        if completion is None:
+            return False
 
-            # Aliases
-            from hermes_cli.model_switch import MODEL_ALIASES
-            alias_list = ", ".join(sorted(MODEL_ALIASES.keys()))
-            _cprint(f"  Aliases: {alias_list}")
-            _cprint("")
-            _cprint("  /model <name>                        switch model")
-            _cprint("  /model <name> --provider <slug>      switch provider")
-            _cprint("  /model <name> --global               persist to config")
-            return
-
-        # Perform the switch
-        result = switch_model(
-            raw_input=model_input,
-            current_provider=self.provider or "",
-            current_model=self.model or "",
-            current_base_url=self.base_url or "",
-            current_api_key=self.api_key or "",
-            is_global=persist_global,
-            explicit_provider=explicit_provider,
-            user_providers=user_provs,
-            custom_providers=custom_provs,
+        display_text = str(getattr(completion, "display_text", "") or "")
+        cmd_name = (
+            display_text[1:]
+            if display_text.startswith("/")
+            else str(getattr(completion, "text", "") or "").strip()
         )
+        if not cmd_name or " " in cmd_name:
+            return False
 
-        if not result.success:
-            _cprint(f"  ✗ {result.error_message}")
-            return
+        if cmd_name == "model":
+            self._open_model_selection(buffer)
+            return True
 
-        # Apply to CLI state.
-        # Update requested_provider so _ensure_runtime_credentials() doesn't
-        # overwrite the switch on the next turn (it re-resolves from this).
+        try:
+            buffer.apply_completion(completion)
+        except Exception:
+            return False
+        return True
+
+    def _maybe_accept_model_selection_on_space(self, buffer) -> bool:
+        """Make Space commit or advance the canonical /model selector."""
+        if self._model_selection_active():
+            return self._commit_model_selection(buffer)
+
+        raw_text = str(getattr(buffer, "text", "") or "")
+        stripped = raw_text.strip()
+        if stripped == "/model":
+            self._open_model_selection(buffer)
+            return True
+
+        complete_state = getattr(buffer, "complete_state", None)
+        if complete_state is None:
+            return False
+        completion = getattr(complete_state, "current_completion", None)
+        if completion is None:
+            try:
+                buffer.go_to_completion(0)
+            except Exception:
+                return False
+            complete_state = getattr(buffer, "complete_state", None)
+            completion = getattr(complete_state, "current_completion", None)
+        if completion is None:
+            return False
+
+        display_text = str(getattr(completion, "display_text", "") or "")
+        cmd_name = (
+            display_text[1:]
+            if display_text.startswith("/")
+            else str(getattr(completion, "text", "") or "").strip()
+        )
+        if cmd_name == "model":
+            self._open_model_selection(buffer)
+            return True
+        return False
+
+    def _apply_model_switch_result(self, result, *, persist_global: bool = False) -> None:
+        """Apply a successful model switch to the live CLI state."""
         old_model = self.model
         self.model = result.new_model
         self.provider = result.target_provider
@@ -4385,7 +4087,6 @@ class HermesCLI:
         if result.api_mode:
             self.api_mode = result.api_mode
 
-        # Apply to running agent (in-place swap)
         if self.agent is not None:
             try:
                 self.agent.switch_model(
@@ -4398,21 +4099,16 @@ class HermesCLI:
             except Exception as exc:
                 _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
 
-        # Store a note to prepend to the next user message so the model
-        # knows a switch occurred (avoids injecting system messages mid-history
-        # which breaks providers and prompt caching).
         self._pending_model_switch_note = (
             f"[Note: model was just switched from {old_model} to {result.new_model} "
             f"via {result.provider_label or result.target_provider}. "
             f"Adjust your self-identification accordingly.]"
         )
 
-        # Display confirmation with full metadata
         provider_label = result.provider_label or result.target_provider
         _cprint(f"  ✓ Model switched: {result.new_model}")
         _cprint(f"    Provider: {provider_label}")
 
-        # Rich metadata from models.dev
         mi = result.model_info
         if mi:
             if mi.context_window:
@@ -4423,9 +4119,9 @@ class HermesCLI:
                 _cprint(f"    Cost: {mi.format_cost()}")
             _cprint(f"    Capabilities: {mi.format_capabilities()}")
         else:
-            # Fallback to old context length lookup
             try:
                 from agent.model_metadata import get_model_context_length
+
                 ctx = get_model_context_length(
                     result.new_model,
                     base_url=result.base_url or self.base_url,
@@ -4436,7 +4132,6 @@ class HermesCLI:
             except Exception:
                 pass
 
-        # Cache notice
         cache_enabled = (
             ("openrouter" in (result.base_url or "").lower() and "claude" in result.new_model.lower())
             or result.api_mode == "anthropic_messages"
@@ -4444,11 +4139,9 @@ class HermesCLI:
         if cache_enabled:
             _cprint("    Prompt caching: enabled")
 
-        # Warning from validation
         if result.warning_message:
             _cprint(f"    ⚠ {result.warning_message}")
 
-        # Persistence
         if persist_global:
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
@@ -4456,6 +4149,208 @@ class HermesCLI:
             _cprint("    Saved to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")
+
+    def _model_selection_active(self) -> bool:
+        return getattr(self, "_model_selection_controller", None) is not None
+
+    def _commit_model_selection(self, buffer=None) -> bool:
+        return self._activate_model_selection(buffer)
+
+    def _sync_model_selection_completion(self, buffer) -> None:
+        controller = getattr(self, "_model_selection_controller", None)
+        if buffer is None:
+            return
+        if controller is None:
+            try:
+                buffer.cancel_completion()
+            except Exception:
+                pass
+            return
+        try:
+            if not buffer.complete_state:
+                buffer.start_completion(select_first=False)
+            if buffer.complete_state:
+                buffer.go_to_completion(controller.cursor)
+        except Exception:
+            pass
+
+    def _sync_model_selection_buffer(self, buffer) -> None:
+        controller = getattr(self, "_model_selection_controller", None)
+        if controller is None or buffer is None:
+            return
+        path_parts = ["/model"]
+        if controller.source_id:
+            path_parts.append(controller.source_id)
+        if controller.provider_id:
+            provider_id = controller.provider_id
+            if ":" in provider_id:
+                path_parts.append(provider_id.split(":", 1)[1])
+        text = " ".join(path_parts) + " "
+        from prompt_toolkit.document import Document
+
+        try:
+            buffer.set_document(
+                Document(text=text, cursor_position=len(text)),
+                bypass_readonly=True,
+            )
+        except Exception:
+            pass
+
+    def _open_model_selection(self, buffer=None) -> None:
+        """Open the canonical source -> provider -> model selector in the slash menu."""
+        from hermes_cli.model_selection import (
+            ModelSelectionController,
+            build_model_selection_tree,
+        )
+
+        user_provs = None
+        custom_provs = None
+        cfg = None
+        try:
+            cfg = load_cli_config()
+            user_provs = cfg.get("providers")
+            custom_provs = cfg.get("custom_providers")
+        except Exception:
+            pass
+
+        tree = build_model_selection_tree(
+            current_provider=self.provider or "",
+            current_model=self.model or "",
+            user_providers=user_provs,
+            custom_providers=custom_provs,
+        )
+        self._model_selection_controller = ModelSelectionController(tree)
+        if buffer is not None:
+            self._sync_model_selection_buffer(buffer)
+            self._sync_model_selection_completion(buffer)
+        self._invalidate(min_interval=0.0)
+
+    def _close_model_selection(self, buffer=None, *, clear_text: bool = False) -> None:
+        self._model_selection_controller = None
+        if buffer is not None:
+            self._sync_model_selection_completion(buffer)
+            if clear_text:
+                try:
+                    buffer.reset(append_to_history=True)
+                except Exception:
+                    pass
+        self._invalidate(min_interval=0.0)
+
+    def _back_model_selection(self, buffer=None) -> bool:
+        controller = getattr(self, "_model_selection_controller", None)
+        if controller is None:
+            return False
+        if controller.back():
+            self._sync_model_selection_buffer(buffer)
+            self._sync_model_selection_completion(buffer)
+            self._invalidate(min_interval=0.0)
+            return True
+        self._close_model_selection(buffer, clear_text=True)
+        return True
+
+    def _move_model_selection(self, direction: int, buffer=None) -> bool:
+        controller = getattr(self, "_model_selection_controller", None)
+        if controller is None:
+            return False
+        if direction < 0:
+            controller.move_up()
+        else:
+            controller.move_down()
+        self._sync_model_selection_completion(buffer)
+        self._invalidate(min_interval=0.0)
+        return True
+
+    def _activate_model_selection(self, buffer=None) -> bool:
+        controller = getattr(self, "_model_selection_controller", None)
+        if controller is None:
+            return False
+
+        request = controller.enter()
+        if request is None:
+            self._sync_model_selection_buffer(buffer)
+            self._sync_model_selection_completion(buffer)
+            self._invalidate(min_interval=0.0)
+            return True
+
+        user_provs = None
+        custom_provs = None
+        try:
+            cfg = load_cli_config()
+            user_provs = cfg.get("providers")
+            custom_provs = cfg.get("custom_providers")
+        except Exception:
+            pass
+
+        from hermes_cli.model_switch import switch_model
+
+        result = switch_model(
+            raw_input=request.model_id,
+            current_provider=self.provider or "",
+            current_model=self.model or "",
+            current_base_url=self.base_url or "",
+            current_api_key=self.api_key or "",
+            is_global=False,
+            explicit_provider=request.provider_slug,
+            user_providers=user_provs,
+            custom_providers=custom_provs,
+            runtime_config=cfg,
+        )
+        self._close_model_selection(buffer, clear_text=True)
+        if not result.success:
+            _cprint(f"  ✗ {result.error_message}")
+            return True
+        self._apply_model_switch_result(result, persist_global=False)
+        return True
+
+    def _handle_model_switch(self, cmd_original: str):
+        """Handle /model command — switch model for this session.
+
+        Supports:
+          /model                              — open nested model picker
+          /model <name>                       — switch for this session only
+          /model <name> --global              — switch and persist to config.yaml
+          /model <name> --provider <provider> — switch provider + model
+          /model --provider <provider>        — switch to provider, auto-detect model
+        """
+        from hermes_cli.model_switch import switch_model, parse_model_flags
+
+        parts = cmd_original.split(None, 1)
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
+        model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
+
+        user_provs = None
+        custom_provs = None
+        cfg = None
+        try:
+            cfg = load_cli_config()
+            user_provs = cfg.get("providers")
+            custom_provs = cfg.get("custom_providers")
+        except Exception:
+            pass
+
+        if not model_input and not explicit_provider:
+            _cprint("  Use the inline slash menu: `/model` then Enter.")
+            _cprint("  Or run `/model <name> --provider <slug>` directly.")
+            return
+
+        result = switch_model(
+            raw_input=model_input,
+            current_provider=self.provider or "",
+            current_model=self.model or "",
+            current_base_url=self.base_url or "",
+            current_api_key=self.api_key or "",
+            is_global=persist_global,
+            explicit_provider=explicit_provider,
+            user_providers=user_provs,
+            custom_providers=custom_provs,
+            runtime_config=cfg,
+        )
+
+        if not result.success:
+            _cprint(f"  ✗ {result.error_message}")
+            return
+
+        self._apply_model_switch_result(result, persist_global=persist_global)
 
     def _show_model_and_providers(self):
         """Show current model + provider and list all authenticated providers.
@@ -4839,6 +4734,14 @@ class HermesCLI:
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from hermes_cli.skills_hub import handle_skills_slash
         handle_skills_slash(cmd, ChatConsole())
+        cmd_lower = cmd.lower().strip()
+        if (
+            cmd_lower.startswith("/skills install")
+            or cmd_lower.startswith("/skills uninstall")
+            or cmd_lower.startswith("/skills update")
+            or cmd_lower.startswith("/skills snapshot import")
+        ):
+            mark_skill_commands_dirty()
 
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
@@ -4910,14 +4813,97 @@ class HermesCLI:
         cmd_lower = command.lower().strip()
         cmd_original = command.strip()
 
-        # Resolve aliases via central registry so adding an alias is a one-line
-        # change in hermes_cli/commands.py instead of touching every dispatch site.
-        from hermes_cli.commands import resolve_command as _resolve_cmd
-        _base_word = cmd_lower.split()[0].lstrip("/")
-        _cmd_def = _resolve_cmd(_base_word)
-        canonical = _cmd_def.name if _cmd_def else _base_word
-        
-        if canonical in ("quit", "exit", "q"):
+        from hermes_cli.commands import (
+            get_plugin_command_specs,
+            resolve_cli_slash_command,
+        )
+
+        skill_commands = _current_skill_commands()
+
+        resolution = resolve_cli_slash_command(
+            cmd_original,
+            config=getattr(self, "config", {}),
+            skill_commands=skill_commands,
+            plugin_commands=get_plugin_command_specs(),
+        )
+
+        if resolution.status == "ambiguous":
+            _cprint(f"{_ACCENT}Ambiguous command: {cmd_lower}{_RST}")
+            _cprint(f"{_DIM}Did you mean: {', '.join(sorted(resolution.matches))}?{_RST}")
+            return True
+
+        if resolution.status == "unknown" or resolution.entry is None:
+            _cprint(f"\033[1;31mUnknown command: {cmd_lower}{_RST}")
+            _cprint(f"{_DIM}{_ACCENT}Type /help for available commands{_RST}")
+            return True
+
+        entry = resolution.entry
+        if entry.kind == "quick":
+            qcmd = entry.payload if isinstance(entry.payload, dict) else {}
+            if qcmd.get("type") == "exec":
+                import subprocess
+                exec_cmd = qcmd.get("command", "")
+                if exec_cmd:
+                    try:
+                        result = subprocess.run(
+                            exec_cmd, shell=True, capture_output=True,
+                            text=True, timeout=30
+                        )
+                        output = result.stdout.strip() or result.stderr.strip()
+                        if output:
+                            self.console.print(_rich_text_from_ansi(output))
+                        else:
+                            self.console.print("[dim]Command returned no output[/]")
+                    except subprocess.TimeoutExpired:
+                        self.console.print("[bold red]Quick command timed out (30s)[/]")
+                    except Exception as e:
+                        self.console.print(f"[bold red]Quick command error: {e}[/]")
+                else:
+                    self.console.print(f"[bold red]Quick command '{entry.bare_name}' has no command defined[/]")
+                return True
+            if qcmd.get("type") == "alias":
+                target = qcmd.get("target", "").strip()
+                if target:
+                    target = target if target.startswith("/") else f"/{target}"
+                    aliased_command = f"{target} {resolution.args}".strip()
+                    return self.process_command(aliased_command)
+                self.console.print(f"[bold red]Quick command '{entry.bare_name}' has no target defined[/]")
+                return True
+            self.console.print(
+                f"[bold red]Quick command '{entry.bare_name}' has unsupported type "
+                "(supported: 'exec', 'alias')[/]"
+            )
+            return True
+
+        if entry.kind == "plugin":
+            plugin_handler = entry.payload.get("handler") if isinstance(entry.payload, dict) else None
+            if callable(plugin_handler):
+                try:
+                    result = plugin_handler(resolution.args)
+                    if result:
+                        _cprint(str(result))
+                except Exception as e:
+                    _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")
+            return True
+
+        if entry.kind == "skill":
+            msg = build_skill_invocation_message(
+                entry.slash_name,
+                resolution.args,
+                task_id=self.session_id,
+            )
+            if msg:
+                skill_name = skill_commands[entry.slash_name]["name"]
+                print(f"\n⚡ Loading skill: {skill_name}")
+                if hasattr(self, '_pending_input'):
+                    self._pending_input.put(msg)
+            else:
+                ChatConsole().print(f"[bold red]Failed to load skill for {entry.slash_name}[/]")
+            return True
+
+        canonical = entry.canonical_name
+
+        if canonical == "quit":
             return False
         elif canonical == "help":
             self.show_help()
@@ -5128,109 +5114,6 @@ class HermesCLI:
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
             self._handle_voice_command(cmd_original)
-        else:
-            # Check for user-defined quick commands (bypass agent loop, no LLM call)
-            base_cmd = cmd_lower.split()[0]
-            quick_commands = self.config.get("quick_commands", {})
-            if base_cmd.lstrip("/") in quick_commands:
-                qcmd = quick_commands[base_cmd.lstrip("/")]
-                if qcmd.get("type") == "exec":
-                    import subprocess
-                    exec_cmd = qcmd.get("command", "")
-                    if exec_cmd:
-                        try:
-                            result = subprocess.run(
-                                exec_cmd, shell=True, capture_output=True,
-                                text=True, timeout=30
-                            )
-                            output = result.stdout.strip() or result.stderr.strip()
-                            if output:
-                                self.console.print(_rich_text_from_ansi(output))
-                            else:
-                                self.console.print("[dim]Command returned no output[/]")
-                        except subprocess.TimeoutExpired:
-                            self.console.print("[bold red]Quick command timed out (30s)[/]")
-                        except Exception as e:
-                            self.console.print(f"[bold red]Quick command error: {e}[/]")
-                    else:
-                        self.console.print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
-                elif qcmd.get("type") == "alias":
-                    target = qcmd.get("target", "").strip()
-                    if target:
-                        target = target if target.startswith("/") else f"/{target}"
-                        user_args = cmd_original[len(base_cmd):].strip()
-                        aliased_command = f"{target} {user_args}".strip()
-                        return self.process_command(aliased_command)
-                    else:
-                        self.console.print(f"[bold red]Quick command '{base_cmd}' has no target defined[/]")
-                else:
-                    self.console.print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
-            # Check for plugin-registered slash commands
-            elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():
-                from hermes_cli.plugins import get_plugin_command_handler
-                plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
-                if plugin_handler:
-                    user_args = cmd_original[len(base_cmd):].strip()
-                    try:
-                        result = plugin_handler(user_args)
-                        if result:
-                            _cprint(str(result))
-                    except Exception as e:
-                        _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")
-            # Check for skill slash commands (/gif-search, /axolotl, etc.)
-            elif base_cmd in _skill_commands:
-                user_instruction = cmd_original[len(base_cmd):].strip()
-                msg = build_skill_invocation_message(
-                    base_cmd, user_instruction, task_id=self.session_id
-                )
-                if msg:
-                    skill_name = _skill_commands[base_cmd]["name"]
-                    print(f"\n⚡ Loading skill: {skill_name}")
-                    if hasattr(self, '_pending_input'):
-                        self._pending_input.put(msg)
-                else:
-                    ChatConsole().print(f"[bold red]Failed to load skill for {base_cmd}[/]")
-            else:
-                # Prefix matching: if input uniquely identifies one command, execute it.
-                # Matches against both built-in COMMANDS and installed skill commands so
-                # that execution-time resolution agrees with tab-completion.
-                from hermes_cli.commands import COMMANDS
-                typed_base = cmd_lower.split()[0]
-                all_known = set(COMMANDS) | set(_skill_commands)
-                matches = [c for c in all_known if c.startswith(typed_base)]
-                if len(matches) > 1:
-                    # Prefer an exact match (typed the full command name)
-                    exact = [c for c in matches if c == typed_base]
-                    if len(exact) == 1:
-                        matches = exact
-                    else:
-                        # Prefer the unique shortest match:
-                        # /qui → /quit (5) wins over /quint-pipeline (15)
-                        min_len = min(len(c) for c in matches)
-                        shortest = [c for c in matches if len(c) == min_len]
-                        if len(shortest) == 1:
-                            matches = shortest
-                if len(matches) == 1:
-                    # Expand the prefix to the full command name, preserving arguments.
-                    # Guard against redispatching the same token to avoid infinite
-                    # recursion when the expanded name still doesn't hit an exact branch
-                    # (e.g. /config with extra args that are not yet handled above).
-                    full_name = matches[0]
-                    if full_name == typed_base:
-                        # Already an exact token — no expansion possible; fall through
-                        _cprint(f"\033[1;31mUnknown command: {cmd_lower}{_RST}")
-                        _cprint(f"{_DIM}{_ACCENT}Type /help for available commands{_RST}")
-                    else:
-                        remainder = cmd_original.strip()[len(typed_base):]
-                        full_cmd = full_name + remainder
-                        return self.process_command(full_cmd)
-                elif len(matches) > 1:
-                    _cprint(f"{_ACCENT}Ambiguous command: {cmd_lower}{_RST}")
-                    _cprint(f"{_DIM}Did you mean: {', '.join(sorted(matches))}?{_RST}")
-                else:
-                    _cprint(f"\033[1;31mUnknown command: {cmd_lower}{_RST}")
-                    _cprint(f"{_DIM}{_ACCENT}Type /help for available commands{_RST}")
-        
         return True
     
     def _handle_plan_command(self, cmd: str):
@@ -6480,7 +6363,12 @@ class HermesCLI:
 
             if result.get("success") and result.get("transcript", "").strip():
                 transcript = result["transcript"].strip()
-                self._attached_images.clear()
+                attached_images = getattr(self, "_attached_images", None)
+                if attached_images is not None:
+                    try:
+                        attached_images.clear()
+                    except Exception:
+                        pass
                 if hasattr(self, '_app') and self._app:
                     self._app.invalidate()
                 self._pending_input.put(transcript)
@@ -7796,6 +7684,7 @@ class HermesCLI:
         # Secure secret capture state for skill setup
         self._secret_state = None       # dict with var_name, prompt, metadata, response_queue
         self._secret_deadline = 0
+        self._model_selection_controller = None
 
         # Clipboard image attachments (paste images into the CLI)
         self._attached_images: list[Path] = []
@@ -7897,9 +7786,22 @@ class HermesCLI:
                     event.app.invalidate()
                 return
 
+            if self._model_selection_active():
+                self._commit_model_selection(event.app.current_buffer)
+                event.app.invalidate()
+                return
+
+            if self._maybe_accept_slash_completion_on_enter(event.app.current_buffer):
+                event.app.invalidate()
+                return
+
             # --- Normal input routing ---
             text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)
+            if text == "/model" and not has_images:
+                self._open_model_selection(event.app.current_buffer)
+                event.app.invalidate()
+                return
             if text or has_images:
                 # Snapshot and clear attached images
                 images = list(self._attached_images)
@@ -7953,6 +7855,10 @@ class HermesCLI:
             immediately.
             """
             buf = event.current_buffer
+            if self._model_selection_active():
+                self._commit_model_selection(buf)
+                event.app.invalidate()
+                return
             if buf.complete_state:
                 # Completion menu is open — accept the selection
                 completion = buf.complete_state.current_completion
@@ -7970,6 +7876,15 @@ class HermesCLI:
             else:
                 # No menu and no suggestion — start completions from scratch
                 buf.start_completion()
+
+        @kb.add(' ', eager=True)
+        def handle_space(event):
+            """Space should commit/advance /model in the same dropdown surface."""
+            buf = event.current_buffer
+            if self._maybe_accept_model_selection_on_space(buf):
+                event.app.invalidate()
+                return
+            buf.insert_text(' ')
 
         # --- Clarify tool: arrow-key navigation for multiple-choice questions ---
 
@@ -8004,12 +7919,40 @@ class HermesCLI:
                 self._approval_state["selected"] = min(max_idx, self._approval_state["selected"] + 1)
                 event.app.invalidate()
 
+        _model_selection_filter = Condition(lambda: self._model_selection_active())
+
+        @kb.add('up', filter=_model_selection_filter)
+        def model_selection_up(event):
+            self._move_model_selection(-1, event.current_buffer)
+            event.app.invalidate()
+
+        @kb.add('down', filter=_model_selection_filter)
+        def model_selection_down(event):
+            self._move_model_selection(1, event.current_buffer)
+            event.app.invalidate()
+
+        @kb.add('backspace', filter=_model_selection_filter)
+        def model_selection_backspace(event):
+            self._back_model_selection(event.current_buffer)
+            event.app.invalidate()
+
+        @kb.add('left', filter=_model_selection_filter)
+        def model_selection_left(event):
+            self._back_model_selection(event.current_buffer)
+            event.app.invalidate()
+
         # --- History navigation: up/down browse history in normal input mode ---
         # The TextArea is multiline, so by default up/down only move the cursor.
         # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
         # history browsing when on the first/last line (or single-line input).
         _normal_input = Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state
+            lambda: (
+                not self._clarify_state
+                and not self._approval_state
+                and not self._sudo_state
+                and not self._secret_state
+                and not self._model_selection_active()
+            )
         )
 
         @kb.add('up', filter=_normal_input)
@@ -8083,6 +8026,11 @@ class HermesCLI:
                 self._clarify_state = None
                 self._clarify_freetext = False
                 event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+
+            if self._model_selection_active():
+                self._close_model_selection(event.app.current_buffer, clear_text=True)
                 event.app.invalidate()
                 return
 
@@ -8279,10 +8227,18 @@ class HermesCLI:
         # Create the input area with multiline (shift+enter), autocomplete, and paste handling
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 
+        def _plugin_commands_provider():
+            try:
+                from hermes_cli.plugins import get_plugin_commands
+                return get_plugin_commands()
+            except Exception:
+                return {}
 
         _completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: _skill_commands,
+            skill_commands_provider=_current_skill_commands,
+            plugin_commands_provider=_plugin_commands_provider,
             command_filter=cli_ref._command_available,
+            model_selection_provider=lambda: getattr(cli_ref, "_model_selection_controller", None),
         )
         input_area = TextArea(
             height=Dimension(min=1, max=8, preferred=1),
@@ -8455,6 +8411,18 @@ class HermesCLI:
                     ('class:clarify-countdown', f'  ({remaining}s)'),
                 ]
 
+            if cli_ref._model_selection_active():
+                controller = cli_ref._model_selection_controller
+                breadcrumb = ""
+                try:
+                    if controller is not None:
+                        breadcrumb = controller.current_view().breadcrumb or "Select model source"
+                except Exception:
+                    breadcrumb = "Select model source"
+                return [
+                    ('class:hint', f'  /model · {breadcrumb} · ↑/↓ move, Enter/Space/Tab select, Backspace back'),
+                ]
+
             if cli_ref._clarify_state:
                 remaining = max(0, int(cli_ref._clarify_deadline - _time.monotonic()))
                 countdown = f'  ({remaining}s)' if cli_ref._clarify_deadline else ''
@@ -8477,7 +8445,7 @@ class HermesCLI:
             return []
 
         def get_hint_height():
-            if cli_ref._sudo_state or cli_ref._secret_state or cli_ref._approval_state or cli_ref._clarify_state or cli_ref._command_running:
+            if cli_ref._sudo_state or cli_ref._secret_state or cli_ref._approval_state or cli_ref._clarify_state or cli_ref._command_running or cli_ref._model_selection_active():
                 return 1
             # Keep a spacer while the agent runs on roomy terminals, but reclaim
             # the row on narrow/mobile screens where every line matters.

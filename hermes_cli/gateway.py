@@ -28,6 +28,7 @@ from hermes_cli.config import (
     read_raw_config,
     save_env_value,
 )
+from hermes_cli.platform_catalog import get_platform_spec
 # display_hermes_home is imported lazily at call sites to avoid ImportError
 # when hermes_constants is cached from a pre-update version during `hermes update`.
 from hermes_cli.setup import (
@@ -1858,12 +1859,23 @@ _PLATFORMS = [
 ]
 
 
+for _entry in _PLATFORMS:
+    _spec = get_platform_spec(_entry["key"])
+    if _spec is None:
+        continue
+    _entry["label"] = _spec.label
+    _entry["emoji"] = _spec.emoji
+    if _spec.primary_config_env:
+        _entry["token_var"] = _spec.primary_config_env
+
+
 def _platform_status(platform: dict) -> str:
     """Return a plain-text status string for a platform.
 
     Returns uncolored text so it can safely be embedded in
     simple_term_menu items (ANSI codes break width calculation).
     """
+    spec = get_platform_spec(platform.get("key", ""))
     token_var = platform["token_var"]
     val = get_env_value(token_var)
     if token_var == "WHATSAPP_ENABLED":
@@ -1892,7 +1904,7 @@ def _platform_status(platform: dict) -> str:
     if platform.get("key") == "matrix":
         homeserver = get_env_value("MATRIX_HOMESERVER")
         password = get_env_value("MATRIX_PASSWORD")
-        if (val or password) and homeserver:
+        if spec and spec.is_configured(get_env_value):
             e2ee = get_env_value("MATRIX_ENCRYPTION")
             suffix = " + E2EE" if e2ee and e2ee.lower() in ("true", "1", "yes") else ""
             return f"configured{suffix}"
@@ -1906,6 +1918,13 @@ def _platform_status(platform: dict) -> str:
         if val or token:
             return "partially configured"
         return "not configured"
+    if spec and spec.is_configured(get_env_value):
+        return "configured"
+    if spec and any(
+        get_env_value(env)
+        for env in (*spec.configured_any_of, *spec.configured_all_of, *spec.configured_truthy_any_of)
+    ):
+        return "partially configured"
     if val:
         return "configured"
     return "not configured"

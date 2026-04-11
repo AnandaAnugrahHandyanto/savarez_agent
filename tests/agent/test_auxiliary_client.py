@@ -10,6 +10,7 @@ import pytest
 
 from agent.auxiliary_client import (
     get_text_auxiliary_client,
+    get_vision_auxiliary_client,
     get_available_vision_backends,
     resolve_vision_provider_client,
     resolve_provider_client,
@@ -40,6 +41,9 @@ def _clean_env(monkeypatch):
         "CONTEXT_COMPRESSION_PROVIDER", "CONTEXT_COMPRESSION_MODEL",
     ):
         monkeypatch.delenv(key, raising=False)
+    # Keep this module hermetic even when the developer machine has a real
+    # credential pool. Tests that need a pool patch load_pool explicitly.
+    monkeypatch.setattr("agent.auxiliary_client.load_pool", lambda _provider: None)
 
 
 @pytest.fixture
@@ -816,7 +820,7 @@ class TestAuxiliaryPoolAwareness:
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
             patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="***"),
         ):
-            client, model = get_vision_auxiliary_client()
+            _provider, client, model = resolve_vision_provider_client()
 
         assert client is not None
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"

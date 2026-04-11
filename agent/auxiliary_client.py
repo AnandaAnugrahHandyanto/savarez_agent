@@ -637,31 +637,14 @@ def _nous_base_url() -> str:
 
 def _read_codex_access_token() -> Optional[str]:
     """Read a valid, non-expired Codex OAuth access token from Hermes auth store.
-
-    If a credential pool exists but currently has no selectable runtime entry
-    (for example all pool slots are marked exhausted), fall back to the
-    profile's auth.json token instead of hard-failing. This keeps explicit
-    fallback-to-Codex working when the pool state is stale but the stored OAuth
-    token is still valid.
     """
-    pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        token = _pool_runtime_api_key(entry)
-        if token:
-            return token
-
-    try:
-        from hermes_cli.auth import _read_codex_tokens
-        data = _read_codex_tokens()
-        tokens = data.get("tokens", {})
-        access_token = tokens.get("access_token")
-        if not isinstance(access_token, str) or not access_token.strip():
+    def _validated_token(raw_token: Any) -> Optional[str]:
+        access_token = str(raw_token or "").strip()
+        if not access_token:
             return None
-
-        # Check JWT expiry — expired tokens block the auto chain and
-        # prevent fallback to working providers (e.g. Anthropic).
         try:
             import base64
+
             payload = access_token.split(".")[1]
             payload += "=" * (-len(payload) % 4)
             claims = json.loads(base64.urlsafe_b64decode(payload))
@@ -671,11 +654,19 @@ def _read_codex_access_token() -> Optional[str]:
                 return None
         except Exception:
             pass  # Non-JWT token or decode error — use as-is
+        return access_token
 
-        return access_token.strip()
+    try:
+        from hermes_cli.auth import _read_codex_tokens
+
+        data = _read_codex_tokens()
+        tokens = data.get("tokens", {})
+        token = _validated_token(tokens.get("access_token"))
+        if token:
+            return token
     except Exception as exc:
         logger.debug("Could not read Codex auth for auxiliary client: %s", exc)
-        return None
+    return None
 
 
 def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
@@ -998,7 +989,17 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
         pass
 
     from agent.anthropic_adapter import _is_oauth_token
-    is_oauth = _is_oauth_token(token)
+    env_oauth_tokens = {
+        os.getenv("ANTHROPIC_TOKEN", "").strip(),
+        os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip(),
+    }
+    token_lower = (token or "").strip().lower()
+    is_oauth = (
+        token in env_oauth_tokens
+        or _is_oauth_token(token)
+        or "oauth" in token_lower
+        or "jwt" in token_lower
+    )
     model = _API_KEY_PROVIDER_AUX_MODELS.get("anthropic", "claude-haiku-4-5-20251001")
     logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
     try:
@@ -1009,6 +1010,12 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
         # when _anthropic_sdk is None.  Treat as unavailable.
         return None, None
     return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
+
+
+def get_vision_auxiliary_client() -> Tuple[Optional[Any], Optional[str]]:
+    """Compatibility wrapper for the vision auto-resolution path."""
+    _provider, client, model = resolve_vision_provider_client("auto")
+    return client, model
 
 
 _AUTO_PROVIDER_LABELS = {
@@ -1964,9 +1971,8 @@ def _resolve_task_provider_model(
 
     Priority:
       1. Explicit provider/model/base_url/api_key args (always win)
-      2. Config file (auxiliary.{task}.* or compression.*)
-      3. Env var overrides (backward-compat: AUXILIARY_{TASK}_*, CONTEXT_{TASK}_*)
-      4. "auto" (full auto-detection chain)
+      2. Canonical task-config resolver for auxiliary/compression settings
+      3. "auto" (full auto-detection chain)
 
     Returns (provider, model, base_url, api_key, api_mode) where model may
     be None (use provider default). When base_url is set, provider is forced
@@ -1983,6 +1989,7 @@ def _resolve_task_provider_model(
     if task:
         try:
             from hermes_cli.config import load_config
+
             config = load_config()
         except ImportError:
             config = {}
@@ -1991,15 +1998,15 @@ def _resolve_task_provider_model(
         task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
         if not isinstance(task_config, dict):
             task_config = {}
+
         cfg_provider = str(task_config.get("provider", "")).strip() or None
         cfg_model = str(task_config.get("model", "")).strip() or None
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
-        # Backwards compat: compression section has its own keys.
-        # The auxiliary.compression defaults to provider="auto", so treat
-        # both None and "auto" as "not explicitly configured".
+        # Compatibility layer: compression historically lived under the
+        # top-level compression.summary_* keys and CONTEXT_* env vars.
         if task == "compression" and (not cfg_provider or cfg_provider == "auto"):
             comp = config.get("compression", {}) if isinstance(config, dict) else {}
             if isinstance(comp, dict):
@@ -2008,11 +2015,8 @@ def _resolve_task_provider_model(
                 _sbu = comp.get("summary_base_url") or ""
                 cfg_base_url = cfg_base_url or _sbu.strip() or None
 
-    # Env vars are backward-compat fallback only — config.yaml is primary.
-    env_model = _get_auxiliary_env_override(task, "MODEL") if task else None
-    env_api_mode = _get_auxiliary_env_override(task, "API_MODE") if task else None
-    resolved_model = model or cfg_model or env_model
-    resolved_api_mode = cfg_api_mode or env_api_mode
+    resolved_model = model or cfg_model
+    resolved_api_mode = cfg_api_mode
 
     if base_url:
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
@@ -2026,16 +2030,18 @@ def _resolve_task_provider_model(
         if cfg_provider and cfg_provider != "auto":
             return cfg_provider, resolved_model, None, None, resolved_api_mode
 
-        # Env vars are backward-compat fallback for users who haven't
-        # migrated to config.yaml yet.
+        # Backward-compat env layer stays centralized here instead of being
+        # mixed into every downstream resolution path.
         env_base_url = _get_auxiliary_env_override(task, "BASE_URL")
         env_api_key = _get_auxiliary_env_override(task, "API_KEY")
         if env_base_url:
-            return "custom", resolved_model, env_base_url, env_api_key, resolved_api_mode
+            return "custom", resolved_model or _get_auxiliary_env_override(task, "MODEL"), env_base_url, env_api_key, resolved_api_mode or _get_auxiliary_env_override(task, "API_MODE")
 
         env_provider = _get_auxiliary_provider(task)
         if env_provider != "auto":
-            return env_provider, resolved_model, None, None, resolved_api_mode
+            env_model = _get_auxiliary_env_override(task, "MODEL")
+            env_api_mode = _get_auxiliary_env_override(task, "API_MODE")
+            return env_provider, resolved_model or env_model, None, None, resolved_api_mode or env_api_mode
 
         return "auto", resolved_model, None, None, resolved_api_mode
 
@@ -2051,6 +2057,7 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
         return default
     try:
         from hermes_cli.config import load_config
+
         config = load_config()
     except ImportError:
         return default

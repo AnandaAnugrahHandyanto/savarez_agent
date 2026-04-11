@@ -15,12 +15,9 @@ from typing import List, Optional, Set
 
 from hermes_cli.config import load_config, save_config
 from hermes_cli.colors import Colors, color
-from hermes_cli.platforms import PLATFORMS as _PLATFORMS, platform_label
+from hermes_cli.platform_catalog import iter_skills_platform_specs
 
-# Backward-compatible view: {key: label_string} so existing code that
-# iterates ``PLATFORMS.items()`` or calls ``PLATFORMS.get(key)`` keeps
-# working without changes to every call site.
-PLATFORMS = {k: info.label for k, info in _PLATFORMS.items() if k != "api_server"}
+PLATFORMS = {spec.key: spec.label_with_emoji for spec in iter_skills_platform_specs()}
 
 # ─── Config Helpers ───────────────────────────────────────────────────────────
 

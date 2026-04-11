@@ -121,12 +121,12 @@ class TestBrowserConsoleToolsetWiring:
     """browser_console must be reachable via toolset resolution."""
 
     def test_in_browser_toolset(self):
-        from toolsets import TOOLSETS
-        assert "browser_console" in TOOLSETS["browser"]["tools"]
+        from toolsets import resolve_toolset
+        assert "browser_console" in resolve_toolset("browser")
 
     def test_in_hermes_core_tools(self):
-        from toolsets import _HERMES_CORE_TOOLS
-        assert "browser_console" in _HERMES_CORE_TOOLS
+        from toolsets import get_hermes_core_tools
+        assert "browser_console" in get_hermes_core_tools()
 
     def test_in_legacy_toolset_map(self):
         from model_tools import _LEGACY_TOOLSET_MAP

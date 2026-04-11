@@ -24,6 +24,7 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import mimetypes
@@ -118,6 +119,12 @@ _E2EE_INSTALL_HINT = (
     "Install with: pip install 'mautrix[encryption]'  "
     "(requires libolm C library)"
 )
+
+
+async def _await_if_needed(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 def _check_e2ee_deps() -> bool:
@@ -423,7 +430,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._closing = False
 
         try:
-            sync_data = await client.sync(timeout=10000, full_state=True)
+            sync_data = await _await_if_needed(client.sync(timeout=10000, full_state=True))
             if isinstance(sync_data, dict):
                 rooms_join = sync_data.get("rooms", {}).get("join", {})
                 self._joined_rooms = set(rooms_join.keys())
@@ -431,7 +438,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 # from where the initial sync left off.
                 nb = sync_data.get("next_batch")
                 if nb:
-                    await client.sync_store.put_next_batch(nb)
+                    put_next_batch = getattr(getattr(client, "sync_store", None), "put_next_batch", None)
+                    if callable(put_next_batch):
+                        await _await_if_needed(put_next_batch(nb))
                 logger.info(
                     "Matrix: initial sync complete, joined %d rooms",
                     len(self._joined_rooms),
@@ -824,13 +833,38 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _sync_loop(self) -> None:
         """Continuously sync with the homeserver."""
         client = self._client
-        # Resume from the token stored during the initial sync.
-        next_batch = await client.sync_store.get_next_batch()
+        sync_store = getattr(client, "sync_store", None)
+        # Resume from the token stored during the initial sync when available.
+        next_batch = None
+        if sync_store is not None:
+            getter = getattr(sync_store, "get_next_batch", None)
+            if callable(getter):
+                try:
+                    next_batch = await _await_if_needed(getter())
+                except Exception:
+                    next_batch = None
+        if next_batch is not None and not isinstance(next_batch, str):
+            next_batch = None
         while not self._closing:
             try:
-                sync_data = await client.sync(
-                    since=next_batch, timeout=30000,
-                )
+                sync_kwargs = {"timeout": 30000}
+                if next_batch:
+                    sync_kwargs["since"] = next_batch
+                sync_data = await _await_if_needed(client.sync(**sync_kwargs))
+                if sync_data.__class__.__name__.lower() == "syncerror":
+                    err_str = str(getattr(sync_data, "message", sync_data)).lower()
+                    if (
+                        "m_unknown_token" in err_str
+                        or "401" in err_str
+                        or "403" in err_str
+                        or "unauthorized" in err_str
+                        or "forbidden" in err_str
+                    ):
+                        logger.error("Matrix: permanent auth error: %s — stopping sync", sync_data)
+                        return
+                    logger.warning("Matrix: sync error: %s — retrying in 5s", sync_data)
+                    await asyncio.sleep(5)
+                    continue
                 if isinstance(sync_data, dict):
                     # Update joined rooms from sync response.
                     rooms_join = sync_data.get("rooms", {}).get("join", {})
@@ -842,7 +876,9 @@ class MatrixAdapter(BasePlatformAdapter):
                     nb = sync_data.get("next_batch")
                     if nb:
                         next_batch = nb
-                        await client.sync_store.put_next_batch(nb)
+                        put_next_batch = getattr(sync_store, "put_next_batch", None) if sync_store is not None else None
+                        if callable(put_next_batch):
+                            await _await_if_needed(put_next_batch(nb))
 
                     # Dispatch events to registered handlers so that
                     # _on_room_message / _on_reaction / _on_invite fire.

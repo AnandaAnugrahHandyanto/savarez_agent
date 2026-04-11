@@ -20,6 +20,7 @@ from hermes_cli.config import (
     load_config, save_config, get_env_value, save_env_value,
 )
 from hermes_cli.colors import Colors, color
+from hermes_cli.platform_catalog import configured_platform_keys, iter_tool_platform_specs
 from hermes_cli.nous_subscription import (
     apply_nous_managed_defaults,
     get_nous_subscription_features,
@@ -98,14 +99,12 @@ def _get_plugin_toolset_keys() -> set:
     except Exception:
         return set()
 
-# Platform display config — derived from the canonical registry so every
-# module shares the same data.  Kept as dict-of-dicts for backward
-# compatibility with existing ``PLATFORMS[key]["label"]`` access patterns.
-from hermes_cli.platforms import PLATFORMS as _PLATFORMS_REGISTRY
-
 PLATFORMS = {
-    k: {"label": info.label, "default_toolset": info.default_toolset}
-    for k, info in _PLATFORMS_REGISTRY.items()
+    spec.key: {
+        "label": spec.label_with_emoji,
+        "default_toolset": spec.default_toolset,
+    }
+    for spec in iter_tool_platform_specs()
 }
 
 
@@ -417,16 +416,7 @@ def _run_post_setup(post_setup_key: str):
 
 def _get_enabled_platforms() -> List[str]:
     """Return platform keys that are configured (have tokens or are CLI)."""
-    enabled = ["cli"]
-    if get_env_value("TELEGRAM_BOT_TOKEN"):
-        enabled.append("telegram")
-    if get_env_value("DISCORD_BOT_TOKEN"):
-        enabled.append("discord")
-    if get_env_value("SLACK_BOT_TOKEN"):
-        enabled.append("slack")
-    if get_env_value("WHATSAPP_ENABLED"):
-        enabled.append("whatsapp")
-    return enabled
+    return [key for key in configured_platform_keys(get_env_value) if key in PLATFORMS]
 
 
 def _platform_toolset_summary(config: dict, platforms: Optional[List[str]] = None) -> Dict[str, Set[str]]:
@@ -546,6 +536,16 @@ def _get_platform_tools(
         and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
     }
     # Allow "no_mcp" sentinel to opt out of all MCP servers for this platform
+    legacy_named_mcp_servers = {
+        ts[4:]
+        for ts in explicit_passthrough
+        if ts.startswith("mcp-") and ts[4:] in enabled_mcp_servers
+    }
+    explicit_passthrough = {
+        ts
+        for ts in explicit_passthrough
+        if not ts.startswith("mcp-")
+    } | legacy_named_mcp_servers
     if "no_mcp" in toolset_names:
         explicit_mcp_servers = set()
         enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers - {"no_mcp"})

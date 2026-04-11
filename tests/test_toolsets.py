@@ -2,13 +2,18 @@
 
 import pytest
 
+from tools.registry import registry
 from toolsets import (
+    LEGACY_TOOLSET_ALIASES,
     TOOLSETS,
+    get_legacy_toolset_map,
     get_toolset,
     resolve_toolset,
+    resolve_legacy_toolset,
     resolve_multiple_toolsets,
     get_all_toolsets,
     get_toolset_names,
+    is_legacy_toolset,
     validate_toolset,
     create_custom_toolset,
     get_toolset_info,
@@ -86,6 +91,47 @@ class TestValidateToolset:
     def test_invalid(self):
         assert validate_toolset("nonexistent") is False
 
+    def test_mcp_alias_uses_live_registry(self):
+        registry.register(
+            name="mcp_dynserver_ping",
+            toolset="mcp-dynserver",
+            schema={"name": "mcp_dynserver_ping", "description": "Ping", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+        try:
+            assert validate_toolset("dynserver") is True
+            assert validate_toolset("mcp-dynserver") is True
+            assert "mcp_dynserver_ping" in resolve_toolset("dynserver")
+        finally:
+            registry.deregister("mcp_dynserver_ping")
+
+    def test_mcp_alias_collision_does_not_shadow_existing_toolset(self):
+        registry.register(
+            name="mcp_web_ping",
+            toolset="mcp-web",
+            schema={"name": "mcp_web_ping", "description": "Ping", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+        try:
+            assert get_toolset("web") is not None
+            assert "mcp_web_ping" not in resolve_toolset("web")
+            assert "mcp-web" in get_toolset_names()
+            assert "web" in get_toolset_names()
+        finally:
+            registry.deregister("mcp_web_ping")
+
+    def test_dynamic_toolset_cannot_splice_into_static_bundle(self):
+        registry.register(
+            name="web_dynamic_splice",
+            toolset="web",
+            schema={"name": "web_dynamic_splice", "description": "Dyn", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+        try:
+            assert "web_dynamic_splice" not in resolve_toolset("web")
+        finally:
+            registry.deregister("web_dynamic_splice")
+
 
 class TestGetToolsetInfo:
     def test_leaf(self):
@@ -120,6 +166,50 @@ class TestCreateCustomToolset:
             del TOOLSETS["_test_custom"]
 
 
+class TestRegistryOwnedToolsets:
+    def test_registry_membership_is_live(self):
+        registry.register(
+            name="test_live_toolset_tool",
+            toolset="test-live-toolset",
+            schema={"name": "test_live_toolset_tool", "description": "Live", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+        try:
+            assert validate_toolset("test-live-toolset") is True
+            assert get_toolset("test-live-toolset")["tools"] == ["test_live_toolset_tool"]
+            assert resolve_toolset("test-live-toolset") == ["test_live_toolset_tool"]
+        finally:
+            registry.deregister("test_live_toolset_tool")
+
+
+class TestLegacyToolsets:
+    def test_legacy_aliases_are_owned_by_toolsets(self):
+        assert is_legacy_toolset("web_tools") is True
+        assert is_legacy_toolset("nonexistent_legacy_tools") is False
+        assert LEGACY_TOOLSET_ALIASES["web_tools"] == ["web_search", "web_extract"]
+
+    def test_resolve_legacy_toolset(self):
+        tools = resolve_legacy_toolset("web_tools")
+        assert set(tools) == {"web_search", "web_extract"}
+
+    def test_legacy_toolset_map_is_frozen_to_explicit_compatibility_list(self):
+        registry.register(
+            name="test_live_legacy_file_tool",
+            toolset="file",
+            schema={"name": "test_live_legacy_file_tool", "description": "Live", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+        try:
+            assert "test_live_legacy_file_tool" not in get_legacy_toolset_map()["file_tools"]
+        finally:
+            registry.deregister("test_live_legacy_file_tool")
+
+    def test_legacy_aliases_are_explicit_not_bundle_derived(self):
+        tools = resolve_legacy_toolset("browser_tools")
+        assert "web_search" in tools
+        assert "web_extract" not in tools
+
+
 class TestToolsetConsistency:
     """Verify structural integrity of the built-in TOOLSETS dict."""
 
@@ -137,7 +227,21 @@ class TestToolsetConsistency:
     def test_hermes_platforms_share_core_tools(self):
         """All hermes-* platform toolsets should have the same tools."""
         platforms = ["hermes-cli", "hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant"]
-        tool_sets = [set(TOOLSETS[p]["tools"]) for p in platforms]
+        tool_sets = [set(resolve_toolset(p)) for p in platforms]
         # All platform toolsets should be identical
         for ts in tool_sets[1:]:
             assert ts == tool_sets[0]
+
+    def test_colliding_mcp_toolset_stays_canonical_and_visible(self):
+        registry.register(
+            name="mcp_web_hidden_tool",
+            toolset="mcp-web",
+            schema={"name": "mcp_web_hidden_tool", "description": "Hidden", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+        try:
+            assert "mcp-web" in get_toolset_names()
+            assert "mcp_web_hidden_tool" in resolve_toolset("mcp-web")
+            assert "mcp_web_hidden_tool" in resolve_toolset("all")
+        finally:
+            registry.deregister("mcp_web_hidden_tool")

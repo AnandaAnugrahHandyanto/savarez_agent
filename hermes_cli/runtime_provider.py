@@ -27,6 +27,7 @@ from hermes_cli.auth import (
     has_usable_secret,
 )
 from hermes_cli.config import load_config
+from hermes_cli.providers import normalize_provider as normalize_provider_id
 from hermes_constants import OPENROUTER_BASE_URL
 
 
@@ -67,8 +68,8 @@ def _auto_detect_local_model(base_url: str) -> str:
     return ""
 
 
-def _get_model_config() -> Dict[str, Any]:
-    config = load_config()
+def _get_model_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    config = config or load_config()
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
         cfg = dict(model_cfg)
@@ -97,8 +98,8 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
     persisted mode when the config's provider matches the runtime
     provider (or when no configured provider is recorded).
     """
-    normalized_provider = (provider or "").strip().lower()
-    normalized_configured = (configured_provider or "").strip().lower()
+    normalized_provider = normalize_provider_id((provider or "").strip().lower()) if provider else ""
+    normalized_configured = normalize_provider_id((configured_provider or "").strip().lower()) if configured_provider else ""
     if not normalized_configured:
         return True
     if normalized_provider == "custom":
@@ -107,7 +108,7 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
 
 
 def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
-    configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+    configured_provider = normalize_provider_id(str(model_cfg.get("provider") or "").strip().lower()) if model_cfg.get("provider") else ""
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
     if configured_mode and _provider_supports_explicit_api_mode("copilot", configured_provider):
         return configured_mode
@@ -156,7 +157,7 @@ def _resolve_runtime_from_pool_entry(
         base_url = base_url or DEFAULT_QWEN_BASE_URL
     elif provider == "anthropic":
         api_mode = "anthropic_messages"
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_provider = normalize_provider_id(str(model_cfg.get("provider") or "").strip().lower()) if model_cfg.get("provider") else ""
         cfg_base_url = ""
         if cfg_provider == "anthropic":
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
@@ -168,7 +169,7 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "copilot":
         api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
     else:
-        configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+        configured_provider = normalize_provider_id(str(model_cfg.get("provider") or "").strip().lower()) if model_cfg.get("provider") else ""
         # Honour model.base_url from config.yaml when the configured provider
         # matches this provider — same pattern as the Anthropic branch above.
         # Only override when the pool entry has no explicit base_url (i.e. it
@@ -206,12 +207,15 @@ def _resolve_runtime_from_pool_entry(
     }
 
 
-def resolve_requested_provider(requested: Optional[str] = None) -> str:
+def resolve_requested_provider(requested: Optional[str] = None, *, config: Optional[Dict[str, Any]] = None) -> str:
     """Resolve provider request from explicit arg, config, then env."""
     if requested and requested.strip():
         return requested.strip().lower()
 
-    model_cfg = _get_model_config()
+    try:
+        model_cfg = _get_model_config(config)
+    except TypeError:
+        model_cfg = _get_model_config()
     cfg_provider = model_cfg.get("provider")
     if isinstance(cfg_provider, str) and cfg_provider.strip():
         return cfg_provider.strip().lower()
@@ -256,7 +260,11 @@ def _try_resolve_from_custom_pool(
         return None
 
 
-def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
+def _get_named_custom_provider(
+    requested_provider: str,
+    *,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm or requested_norm == "custom":
         return None
@@ -266,7 +274,8 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     # ``custom:local`` always target the saved custom provider.
     if requested_norm == "auto":
         return None
-    if not requested_norm.startswith("custom:"):
+    local_aliases = {"local", "lmstudio", "ollama-cloud"}
+    if not requested_norm.startswith("custom:") and requested_norm not in local_aliases:
         try:
             auth_mod.resolve_provider(requested_norm)
         except AuthError:
@@ -274,7 +283,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         else:
             return None
 
-    config = load_config()
+    config = config or load_config()
     custom_providers = config.get("custom_providers")
     if not isinstance(custom_providers, list):
         if isinstance(custom_providers, dict):
@@ -317,8 +326,12 @@ def _resolve_named_custom_runtime(
     requested_provider: str,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    custom_provider = _get_named_custom_provider(requested_provider)
+    try:
+        custom_provider = _get_named_custom_provider(requested_provider, config=config)
+    except TypeError:
+        custom_provider = _get_named_custom_provider(requested_provider)
     if not custom_provider:
         return None
 
@@ -368,8 +381,9 @@ def _resolve_openrouter_runtime(
     requested_provider: str,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    model_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    model_cfg = _get_model_config()
+    model_cfg = model_cfg or _get_model_config()
     cfg_base_url = model_cfg.get("base_url") if isinstance(model_cfg.get("base_url"), str) else ""
     cfg_provider = model_cfg.get("provider") if isinstance(model_cfg.get("provider"), str) else ""
     cfg_api_key = ""
@@ -378,8 +392,8 @@ def _resolve_openrouter_runtime(
         if isinstance(v, str) and v.strip():
             cfg_api_key = v.strip()
             break
-    requested_norm = (requested_provider or "").strip().lower()
-    cfg_provider = cfg_provider.strip().lower()
+    requested_norm = normalize_provider_id((requested_provider or "").strip().lower()) if requested_provider else ""
+    cfg_provider = normalize_provider_id(cfg_provider.strip().lower()) if cfg_provider else ""
 
     env_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()
 
@@ -391,7 +405,7 @@ def _resolve_openrouter_runtime(
         if requested_norm == "auto":
             if not cfg_provider or cfg_provider == "auto":
                 use_config_base_url = True
-        elif requested_norm == "custom" and cfg_provider == "custom":
+        elif requested_norm == "custom" and (cfg_provider == "custom" or cfg_provider.startswith("custom:")):
             use_config_base_url = True
 
     base_url = (
@@ -474,7 +488,7 @@ def _resolve_explicit_runtime(
         return None
 
     if provider == "anthropic":
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_provider = normalize_provider_id(str(model_cfg.get("provider") or "").strip().lower()) if model_cfg.get("provider") else ""
         cfg_base_url = ""
         if cfg_provider == "anthropic":
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
@@ -597,14 +611,17 @@ def resolve_runtime_provider(
     requested: Optional[str] = None,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Resolve runtime provider credentials for agent execution."""
-    requested_provider = resolve_requested_provider(requested)
+    runtime_config = config or load_config()
+    requested_provider = resolve_requested_provider(requested, config=runtime_config)
 
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        config=runtime_config,
     )
     if custom_runtime:
         custom_runtime["requested_provider"] = requested_provider
@@ -615,7 +632,10 @@ def resolve_runtime_provider(
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
     )
-    model_cfg = _get_model_config()
+    try:
+        model_cfg = _get_model_config(runtime_config)
+    except TypeError:
+        model_cfg = _get_model_config()
     explicit_runtime = _resolve_explicit_runtime(
         provider=provider,
         requested_provider=requested_provider,
@@ -628,7 +648,7 @@ def resolve_runtime_provider(
 
     should_use_pool = provider != "openrouter"
     if provider == "openrouter":
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_provider = normalize_provider_id(str(model_cfg.get("provider") or "").strip().lower()) if model_cfg.get("provider") else ""
         cfg_base_url = str(model_cfg.get("base_url") or "").strip()
         env_openai_base_url = os.getenv("OPENAI_BASE_URL", "").strip()
         env_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()
@@ -768,7 +788,7 @@ def resolve_runtime_provider(
         # Allow base URL override from config.yaml model.base_url, but only
         # when the configured provider is anthropic — otherwise a non-Anthropic
         # base_url (e.g. Codex endpoint) would leak into Anthropic requests.
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_provider = normalize_provider_id(str(model_cfg.get("provider") or "").strip().lower()) if model_cfg.get("provider") else ""
         cfg_base_url = ""
         if cfg_provider == "anthropic":
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
@@ -790,7 +810,7 @@ def resolve_runtime_provider(
         # matches this provider — mirrors the Anthropic path above.  Without
         # this, users who set model.base_url to e.g. api.minimaxi.com/anthropic
         # (China endpoint) still get the hardcoded api.minimax.io default (#6039).
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_provider = normalize_provider_id(str(model_cfg.get("provider") or "").strip().lower()) if model_cfg.get("provider") else ""
         cfg_base_url = ""
         if cfg_provider == provider:
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
@@ -799,7 +819,7 @@ def resolve_runtime_provider(
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
         else:
-            configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+            configured_provider = normalize_provider_id(str(model_cfg.get("provider") or "").strip().lower()) if model_cfg.get("provider") else ""
             # Only honor persisted api_mode when it belongs to the same provider family.
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
@@ -827,6 +847,7 @@ def resolve_runtime_provider(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        model_cfg=model_cfg,
     )
     runtime["requested_provider"] = requested_provider
     return runtime

@@ -61,8 +61,9 @@ Each line in the file is a self-contained JSON object. There are two variants:
 ```
 
 The `tool_stats` and `tool_error_counts` dictionaries are normalized to include
-ALL possible tools (from `model_tools.TOOL_TO_TOOLSET_MAP`) with zero defaults,
-ensuring consistent schema across entries for HuggingFace dataset loading.
+all possible tools (from `model_tools.get_tool_to_toolset_map_snapshot()`) with
+zero defaults, ensuring consistent schema across entries for HuggingFace dataset
+loading.
 
 
 ## Conversations Array (ShareGPT Format)
