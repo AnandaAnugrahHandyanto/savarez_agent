@@ -2345,6 +2345,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 # If it's an audio file sent as a document, cache it as audio for STT
                 AUDIO_EXTS = {".wav", ".mp3", ".ogg", ".aac", ".flac", ".m4a", ".opus"}
                 if ext in AUDIO_EXTS:
+                    # Check file size before downloading (Telegram Bot API limit: 20 MB)
+                    MAX_DOC_BYTES = 20 * 1024 * 1024
+                    if not doc.file_size or doc.file_size > MAX_DOC_BYTES:
+                        event.text = (
+                            "The audio file is too large or its size could not be verified. "
+                            "Maximum: 20 MB."
+                        )
+                        logger.info("[Telegram] Audio document too large: %s bytes", doc.file_size)
+                        await self.handle_message(event)
+                        return
                     file_obj = await doc.get_file()
                     audio_bytes = await file_obj.download_as_bytearray()
                     audio_ext = ext if ext else ".wav"
@@ -2357,7 +2367,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     }
                     event.media_types = [audio_mime_types.get(audio_ext, "audio/wav")]
                     logger.info("[Telegram] Cached audio document (%s) at %s", ext, cached_path)
-                # Check if supported
+                    # Audio path is complete — skip document handling below
+                    if mediagroup_id:=getattr(msg, "media_group_id", None):
+                        await self._queue_media_group_event(str(mediagroup_id), event)
+                        return
+                    await self.handle_message(event)
+                    return
+                # Non-audio document: check if supported
                 elif ext not in SUPPORTED_DOCUMENT_TYPES:
                     supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
                     event.text = (

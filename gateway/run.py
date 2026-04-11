@@ -2064,13 +2064,13 @@ class GatewayRunner:
 
         # Intercept numeric replies to /sessions list
         import time as _time
-        if session_key in self._sessions_list_cache:
-            ts_key = f"_ts_{session_key}"
+        if _quick_key in self._sessions_list_cache:
+            ts_key = f"_ts_{_quick_key}"
             ts = self._sessions_list_cache.get(ts_key, 0)
             if _time.time() - ts < 300:  # 5-minute window
                 text = (event.text or "").strip()
                 if text.isdigit() and 1 <= int(text) <= 10:
-                    cache = self._sessions_list_cache[session_key]
+                    cache = self._sessions_list_cache[_quick_key]
                     target_id = cache.get(text)
                     if target_id:
                         # Flush and switch
@@ -2086,20 +2086,20 @@ class GatewayRunner:
                                 _flush_task.add_done_callback(self._background_tasks.discard)
                             except Exception:
                                 pass
-                            if session_key in self._running_agents:
-                                del self._running_agents[session_key]
-                            new_entry = self.session_store.switch_session(session_key, target_id)
+                            if _quick_key in self._running_agents:
+                                del self._running_agents[_quick_key]
+                            new_entry = self.session_store.switch_session(_quick_key, target_id)
                             history = self.session_store.load_transcript(target_id)
                             msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
                             title = self._session_db.get_session_title(target_id) if self._session_db else None
                             name = title or "switched session"
                             result = f"Switched to session (was on #{len(history) if history else 0} messages back). Conversing in: {name}."
-                        del self._sessions_list_cache[session_key]
+                        del self._sessions_list_cache[_quick_key]
                         del self._sessions_list_cache[ts_key]
                         return result
             # Expired or invalid — clear
-            self._sessions_list_cache.pop(session_key, None)
-            self._sessions_list_cache.pop(f"_ts_{session_key}", None)
+            self._sessions_list_cache.pop(_quick_key, None)
+            self._sessions_list_cache.pop(f"_ts_{_quick_key}", None)
 
         # Check for commands
         command = event.get_command()

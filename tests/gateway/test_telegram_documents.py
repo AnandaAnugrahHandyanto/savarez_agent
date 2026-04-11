@@ -248,6 +248,71 @@ class TestDocumentDownloadBlock:
         assert event.media_types == ["application/zip"]
 
     @pytest.mark.asyncio
+    async def test_audio_document_wav_routed_to_audio_cache(self, adapter, tmp_path, monkeypatch):
+        """A .wav sent as msg.document is cached with audio/* mime for the STT pipeline."""
+        audio_bytes = b"RIFFfakewavdata"
+        file_obj = _make_file_obj(audio_bytes)
+        doc = _make_document(
+            file_name="recording.wav", mime_type="audio/wav",
+            file_size=len(audio_bytes), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        monkeypatch.setattr(
+            "gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache"
+        )
+        import importlib, gateway.platforms.base as base_mod
+        importlib.reload(base_mod)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls
+        assert event.media_types == ["audio/wav"]
+        assert event.media_urls[0].endswith(".wav")
+
+    @pytest.mark.asyncio
+    async def test_audio_document_oversized_rejected_before_download(self, adapter):
+        """Oversized audio is rejected before download — no network I/O for big files."""
+        oversized_doc = _make_document(
+            file_name="large.mp3", mime_type="audio/mpeg",
+            file_size=25 * 1024 * 1024,
+        )
+        msg = _make_message(document=oversized_doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert "too large" in event.text.lower()
+        # Size check must happen before get_file() is called
+        assert oversized_doc.get_file.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_audio_document_short_circuits_document_cache(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """Audio documents complete in the audio branch and do not reach the document cache."""
+        audio_bytes = b"oggdata"
+        file_obj = _make_file_obj(audio_bytes)
+        doc = _make_document(
+            file_name="voice.ogg", mime_type="audio/ogg",
+            file_size=len(audio_bytes), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        monkeypatch.setattr(
+            "gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache"
+        )
+        import importlib, gateway.platforms.base as base_mod
+        importlib.reload(base_mod)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        # Must have audio mime, not application/octet-stream from generic document path
+        assert event.media_types == ["audio/ogg"]
+
+    @pytest.mark.asyncio
     async def test_oversized_file_rejected(self, adapter):
         doc = _make_document(file_name="huge.pdf", file_size=25 * 1024 * 1024)
         msg = _make_message(document=doc)
