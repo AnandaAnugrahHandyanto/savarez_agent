@@ -1,919 +1,443 @@
+#!/usr/bin/env pwsh
 # ============================================================================
 # Hermes Agent Installer for Windows
 # ============================================================================
-# Installation script for Windows (PowerShell).
-# Uses uv for fast Python provisioning and package management.
+# PowerShell installation script for Windows 10/11.
+# Uses winget for package management and uv for Python environment.
 #
 # Usage:
 #   irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
 #
-# Or download and run with options:
-#   .\install.ps1 -NoVenv -SkipSetup
+# Or with options:
+#   .\install.ps1 -y -Branch main -Dir "$env:USERPROFILE\.hermes\hermes-agent"
 #
+# Issue: https://github.com/NousResearch/hermes-agent/issues/5924
 # ============================================================================
+
+#Requires -Version 5.1
 
 param(
-    [switch]$NoVenv,
-    [switch]$SkipSetup,
-    [string]$Branch = "main",
-    [string]$HermesHome = "$env:LOCALAPPDATA\hermes",
-    [string]$InstallDir = "$env:LOCALAPPDATA\hermes\hermes-agent"
+    [switch]$y,                 # Non-interactive mode
+    [string]$Branch = "main",   # Git branch to install
+    [string]$Dir,               # Installation directory
+    [switch]$SkipPhase1,        # Skip prerequisites check
+    [switch]$SkipPhase2,        # Skip workspace creation
+    [switch]$SkipPhase3,        # Skip Python env setup
+    [switch]$SkipPhase4,        # Skip agent install
+    [switch]$SkipPhase5,        # Skip skills system
+    [switch]$SkipPhase6,        # Skip memory bridge
+    [switch]$SkipPhase7,        # Skip Git config
+    [switch]$SkipPhase8,        # Skip verification
+    [switch]$SkipPhase9,        # Skip first-run prompt
+    [switch]$Help               # Show help
 )
 
-$ErrorActionPreference = "Stop"
-
-# ============================================================================
 # Configuration
-# ============================================================================
-
-$RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
 $RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
-$PythonVersion = "3.11"
-$NodeVersion = "22"
+$RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
+$HermesHome = "$env:USERPROFILE\.hermes"
+if (-not $Dir) { $Dir = "$HermesHome\hermes-agent" }
+$PythonVersion = "3.12"
+$UvVersion = "latest"
 
 # ============================================================================
-# Helper functions
+# Helper Functions
 # ============================================================================
 
-function Write-Banner {
+function Print-Banner {
     Write-Host ""
     Write-Host "┌─────────────────────────────────────────────────────────┐" -ForegroundColor Magenta
     Write-Host "│             ⚕ Hermes Agent Installer                    │" -ForegroundColor Magenta
     Write-Host "├─────────────────────────────────────────────────────────┤" -ForegroundColor Magenta
-    Write-Host "│  An open source AI agent by Nous Research.              │" -ForegroundColor Magenta
+    Write-Host "│  The self-improving AI agent built by Nous Research     │" -ForegroundColor Magenta
+    Write-Host "│  Windows Native Installation                            │" -ForegroundColor Magenta
     Write-Host "└─────────────────────────────────────────────────────────┘" -ForegroundColor Magenta
     Write-Host ""
 }
 
-function Write-Info {
-    param([string]$Message)
-    Write-Host "→ $Message" -ForegroundColor Cyan
+function Log-Info { param($msg) Write-Host "[INFO]  $msg" -ForegroundColor Cyan }
+function Log-Success { param($msg) Write-Host "[OK]    $msg" -ForegroundColor Green }
+function Log-Warn { param($msg) Write-Host "[WARN]  $msg" -ForegroundColor Yellow }
+function Log-Error { param($msg) Write-Host "[ERROR] $msg" -ForegroundColor Red }
+function Log-Phase { param($phase, $msg) Write-Host "[Phase $phase] $msg" -ForegroundColor Blue }
+
+function Show-Help {
+    Write-Host "Hermes Agent Installer for Windows"
+    Write-Host ""
+    Write-Host "Usage: install.ps1 [OPTIONS]"
+    Write-Host ""
+    Write-Host "Options:"
+    Write-Host "  -y              Non-interactive mode (skip prompts)"
+    Write-Host "  -Branch NAME    Git branch to install (default: main)"
+    Write-Host "  -Dir PATH       Installation directory (default: ~/.hermes/hermes-agent)"
+    Write-Host "  -SkipPhase1-9   Skip specific installation phases"
+    Write-Host "  -Help           Show this help message"
+    Write-Host ""
+    Write-Host "Installation Phases:"
+    Write-Host "  Phase 1: Prerequisites check (git, Python, uv, gh)"
+    Write-Host "  Phase 2: Workspace creation"
+    Write-Host "  Phase 3: Python environment setup"
+    Write-Host "  Phase 4: Agent installation"
+    Write-Host "  Phase 5: Skills system setup"
+    Write-Host "  Phase 6: Memory bridge configuration"
+    Write-Host "  Phase 7: Git configuration"
+    Write-Host "  Phase 8: Verification (hermes --version)"
+    Write-Host "  Phase 9: First-run prompt (hermes setup)"
+    exit 0
 }
 
-function Write-Success {
-    param([string]$Message)
-    Write-Host "✓ $Message" -ForegroundColor Green
-}
-
-function Write-Warn {
-    param([string]$Message)
-    Write-Host "⚠ $Message" -ForegroundColor Yellow
-}
-
-function Write-Err {
-    param([string]$Message)
-    Write-Host "✗ $Message" -ForegroundColor Red
-}
-
-# ============================================================================
-# Dependency checks
-# ============================================================================
-
-function Install-Uv {
-    Write-Info "Checking for uv package manager..."
+function Check-WindowsVersion {
+    $osInfo = Get-CimInstance -ClassName Win32_OperatingSystem
+    $version = $osInfo.Version
+    $build = $osInfo.BuildNumber
     
-    # Check if uv is already available
-    if (Get-Command uv -ErrorAction SilentlyContinue) {
-        $version = uv --version
-        $script:UvCmd = "uv"
-        Write-Success "uv found ($version)"
-        return $true
+    Log-Info "Windows Version: $($osInfo.Caption) (Build $build)"
+    
+    # Windows 10 = Build 10240+, Windows 11 = Build 22000+
+    if ($build -lt 10240) {
+        Log-Error "Windows 10 or later is required. Current build: $build"
+        exit 1
     }
     
-    # Check common install locations
-    $uvPaths = @(
-        "$env:USERPROFILE\.local\bin\uv.exe",
-        "$env:USERPROFILE\.cargo\bin\uv.exe"
-    )
-    foreach ($uvPath in $uvPaths) {
-        if (Test-Path $uvPath) {
-            $script:UvCmd = $uvPath
-            $version = & $uvPath --version
-            Write-Success "uv found at $uvPath ($version)"
-            return $true
-        }
+    Log-Success "Windows version check passed"
+}
+
+function Install-WingetPackage {
+    param($PackageId, $PackageName)
+    
+    Log-Info "Checking $PackageName..."
+    
+    $installed = winget list --id $PackageId --exact 2>$null
+    if ($installed -match $PackageId) {
+        Log-Success "$PackageName is already installed"
+        return
     }
     
-    # Install uv
-    Write-Info "Installing uv (fast Python package manager)..."
-    try {
-        powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
-        
-        # Find the installed binary
-        $uvExe = "$env:USERPROFILE\.local\bin\uv.exe"
-        if (-not (Test-Path $uvExe)) {
-            $uvExe = "$env:USERPROFILE\.cargo\bin\uv.exe"
-        }
-        if (-not (Test-Path $uvExe)) {
-            # Refresh PATH and try again
-            $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
-            if (Get-Command uv -ErrorAction SilentlyContinue) {
-                $uvExe = (Get-Command uv).Source
-            }
-        }
-        
-        if (Test-Path $uvExe) {
-            $script:UvCmd = $uvExe
-            $version = & $uvExe --version
-            Write-Success "uv installed ($version)"
-            return $true
-        }
-        
-        Write-Err "uv installed but not found on PATH"
-        Write-Info "Try restarting your terminal and re-running"
-        return $false
-    } catch {
-        Write-Err "Failed to install uv"
-        Write-Info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
-        return $false
+    Log-Info "Installing $PackageName via winget..."
+    winget install --id $PackageId --accept-package-agreements --accept-source-agreements --silent
+    
+    if ($LASTEXITCODE -eq 0) {
+        Log-Success "$PackageName installed successfully"
+    } else {
+        Log-Error "Failed to install $PackageName"
+        exit 1
     }
 }
 
-function Test-Python {
-    Write-Info "Checking Python $PythonVersion..."
+function Check-Prerequisites {
+    Log-Phase 1 "Checking prerequisites..."
     
-    # Let uv find or install Python
-    try {
-        $pythonPath = & $UvCmd python find $PythonVersion 2>$null
-        if ($pythonPath) {
-            $ver = & $pythonPath --version 2>$null
-            Write-Success "Python found: $ver"
-            return $true
-        }
-    } catch { }
+    # Check winget availability
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if (-not $winget) {
+        Log-Error "winget is not available. Please install App Installer from Microsoft Store."
+        exit 1
+    }
     
-    # Python not found — use uv to install it (no admin needed!)
-    Write-Info "Python $PythonVersion not found, installing via uv..."
-    try {
-        $uvOutput = & $UvCmd python install $PythonVersion 2>&1
+    # Install Git
+    Install-WingetPackage "Git.Git" "Git"
+    
+    # Install Python 3.12+
+    Install-WingetPackage "Python.Python.3.12" "Python 3.12"
+    
+    # Install GitHub CLI
+    Install-WingetPackage "GitHub.cli" "GitHub CLI"
+    
+    # Install uv (astral-sh/uv via pip or winget)
+    $uv = Get-Command uv -ErrorAction SilentlyContinue
+    if (-not $uv) {
+        Log-Info "Installing uv (Python package manager)..."
+        pip install uv --quiet
         if ($LASTEXITCODE -eq 0) {
-            $pythonPath = & $UvCmd python find $PythonVersion 2>$null
-            if ($pythonPath) {
-                $ver = & $pythonPath --version 2>$null
-                Write-Success "Python installed: $ver"
-                return $true
-            }
+            Log-Success "uv installed successfully"
         } else {
-            Write-Warn "uv python install output:"
-            Write-Host $uvOutput -ForegroundColor DarkGray
-        }
-    } catch {
-        Write-Warn "uv python install error: $_"
-    }
-
-    # Fallback: check if ANY Python 3.10+ is already available on the system
-    Write-Info "Trying to find any existing Python 3.10+..."
-    foreach ($fallbackVer in @("3.12", "3.13", "3.10")) {
-        try {
-            $pythonPath = & $UvCmd python find $fallbackVer 2>$null
-            if ($pythonPath) {
-                $ver = & $pythonPath --version 2>$null
-                Write-Success "Found fallback: $ver"
-                $script:PythonVersion = $fallbackVer
-                return $true
-            }
-        } catch { }
-    }
-
-    # Fallback: try system python
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        $sysVer = python --version 2>$null
-        if ($sysVer -match "3\.(1[0-9]|[1-9][0-9])") {
-            Write-Success "Using system Python: $sysVer"
-            return $true
-        }
-    }
-    
-    Write-Err "Failed to install Python $PythonVersion"
-    Write-Info "Install Python 3.11 manually, then re-run this script:"
-    Write-Info "  https://www.python.org/downloads/"
-    Write-Info "  Or: winget install Python.Python.3.11"
-    return $false
-}
-
-function Test-Git {
-    Write-Info "Checking Git..."
-    
-    if (Get-Command git -ErrorAction SilentlyContinue) {
-        $version = git --version
-        Write-Success "Git found ($version)"
-        return $true
-    }
-    
-    Write-Err "Git not found"
-    Write-Info "Please install Git from:"
-    Write-Info "  https://git-scm.com/download/win"
-    return $false
-}
-
-function Test-Node {
-    Write-Info "Checking Node.js (for browser tools)..."
-
-    if (Get-Command node -ErrorAction SilentlyContinue) {
-        $version = node --version
-        Write-Success "Node.js $version found"
-        $script:HasNode = $true
-        return $true
-    }
-
-    # Check our own managed install from a previous run
-    $managedNode = "$HermesHome\node\node.exe"
-    if (Test-Path $managedNode) {
-        $version = & $managedNode --version
-        $env:Path = "$HermesHome\node;$env:Path"
-        Write-Success "Node.js $version found (Hermes-managed)"
-        $script:HasNode = $true
-        return $true
-    }
-
-    Write-Info "Node.js not found — installing Node.js $NodeVersion LTS..."
-
-    # Try winget first (cleanest on modern Windows)
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Write-Info "Installing via winget..."
-        try {
-            winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-            # Refresh PATH
-            $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
-            if (Get-Command node -ErrorAction SilentlyContinue) {
-                $version = node --version
-                Write-Success "Node.js $version installed via winget"
-                $script:HasNode = $true
-                return $true
-            }
-        } catch { }
-    }
-
-    # Fallback: download binary zip to ~/.hermes/node/
-    Write-Info "Downloading Node.js $NodeVersion binary..."
-    try {
-        $arch = if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
-        $indexUrl = "https://nodejs.org/dist/latest-v${NodeVersion}.x/"
-        $indexPage = Invoke-WebRequest -Uri $indexUrl -UseBasicParsing
-        $zipName = ($indexPage.Content | Select-String -Pattern "node-v${NodeVersion}\.\d+\.\d+-win-${arch}\.zip" -AllMatches).Matches[0].Value
-
-        if ($zipName) {
-            $downloadUrl = "${indexUrl}${zipName}"
-            $tmpZip = "$env:TEMP\$zipName"
-            $tmpDir = "$env:TEMP\hermes-node-extract"
-
-            Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpZip -UseBasicParsing
-            if (Test-Path $tmpDir) { Remove-Item -Recurse -Force $tmpDir }
-            Expand-Archive -Path $tmpZip -DestinationPath $tmpDir -Force
-
-            $extractedDir = Get-ChildItem $tmpDir -Directory | Select-Object -First 1
-            if ($extractedDir) {
-                if (Test-Path "$HermesHome\node") { Remove-Item -Recurse -Force "$HermesHome\node" }
-                Move-Item $extractedDir.FullName "$HermesHome\node"
-                $env:Path = "$HermesHome\node;$env:Path"
-
-                $version = & "$HermesHome\node\node.exe" --version
-                Write-Success "Node.js $version installed to ~/.hermes/node/"
-                $script:HasNode = $true
-
-                Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
-                Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
-                return $true
-            }
-        }
-    } catch {
-        Write-Warn "Download failed: $_"
-    }
-
-    Write-Warn "Could not auto-install Node.js"
-    Write-Info "Install manually: https://nodejs.org/en/download/"
-    $script:HasNode = $false
-    return $true
-}
-
-function Install-SystemPackages {
-    $script:HasRipgrep = $false
-    $script:HasFfmpeg = $false
-    $needRipgrep = $false
-    $needFfmpeg = $false
-
-    Write-Info "Checking ripgrep (fast file search)..."
-    if (Get-Command rg -ErrorAction SilentlyContinue) {
-        $version = rg --version | Select-Object -First 1
-        Write-Success "$version found"
-        $script:HasRipgrep = $true
-    } else {
-        $needRipgrep = $true
-    }
-
-    Write-Info "Checking ffmpeg (TTS voice messages)..."
-    if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
-        Write-Success "ffmpeg found"
-        $script:HasFfmpeg = $true
-    } else {
-        $needFfmpeg = $true
-    }
-
-    if (-not $needRipgrep -and -not $needFfmpeg) { return }
-
-    # Build description and package lists for each package manager
-    $descParts = @()
-    $wingetPkgs = @()
-    $chocoPkgs = @()
-    $scoopPkgs = @()
-
-    if ($needRipgrep) {
-        $descParts += "ripgrep for faster file search"
-        $wingetPkgs += "BurntSushi.ripgrep.MSVC"
-        $chocoPkgs += "ripgrep"
-        $scoopPkgs += "ripgrep"
-    }
-    if ($needFfmpeg) {
-        $descParts += "ffmpeg for TTS voice messages"
-        $wingetPkgs += "Gyan.FFmpeg"
-        $chocoPkgs += "ffmpeg"
-        $scoopPkgs += "ffmpeg"
-    }
-
-    $description = $descParts -join " and "
-    $hasWinget = Get-Command winget -ErrorAction SilentlyContinue
-    $hasChoco = Get-Command choco -ErrorAction SilentlyContinue
-    $hasScoop = Get-Command scoop -ErrorAction SilentlyContinue
-
-    # Try winget first (most common on modern Windows)
-    if ($hasWinget) {
-        Write-Info "Installing $description via winget..."
-        foreach ($pkg in $wingetPkgs) {
-            try {
-                winget install $pkg --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-            } catch { }
-        }
-        # Refresh PATH and recheck
-        $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
-        if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
-            Write-Success "ripgrep installed"
-            $script:HasRipgrep = $true
-            $needRipgrep = $false
-        }
-        if ($needFfmpeg -and (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
-            Write-Success "ffmpeg installed"
-            $script:HasFfmpeg = $true
-            $needFfmpeg = $false
-        }
-        if (-not $needRipgrep -and -not $needFfmpeg) { return }
-    }
-
-    # Fallback: choco
-    if ($hasChoco -and ($needRipgrep -or $needFfmpeg)) {
-        Write-Info "Trying Chocolatey..."
-        foreach ($pkg in $chocoPkgs) {
-            try { choco install $pkg -y 2>&1 | Out-Null } catch { }
-        }
-        if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
-            Write-Success "ripgrep installed via chocolatey"
-            $script:HasRipgrep = $true
-            $needRipgrep = $false
-        }
-        if ($needFfmpeg -and (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
-            Write-Success "ffmpeg installed via chocolatey"
-            $script:HasFfmpeg = $true
-            $needFfmpeg = $false
-        }
-    }
-
-    # Fallback: scoop
-    if ($hasScoop -and ($needRipgrep -or $needFfmpeg)) {
-        Write-Info "Trying Scoop..."
-        foreach ($pkg in $scoopPkgs) {
-            try { scoop install $pkg 2>&1 | Out-Null } catch { }
-        }
-        if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
-            Write-Success "ripgrep installed via scoop"
-            $script:HasRipgrep = $true
-            $needRipgrep = $false
-        }
-        if ($needFfmpeg -and (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
-            Write-Success "ffmpeg installed via scoop"
-            $script:HasFfmpeg = $true
-            $needFfmpeg = $false
-        }
-    }
-
-    # Show manual instructions for anything still missing
-    if ($needRipgrep) {
-        Write-Warn "ripgrep not installed (file search will use findstr fallback)"
-        Write-Info "  winget install BurntSushi.ripgrep.MSVC"
-    }
-    if ($needFfmpeg) {
-        Write-Warn "ffmpeg not installed (TTS voice messages will be limited)"
-        Write-Info "  winget install Gyan.FFmpeg"
-    }
-}
-
-# ============================================================================
-# Installation
-# ============================================================================
-
-function Install-Repository {
-    Write-Info "Installing to $InstallDir..."
-    
-    if (Test-Path $InstallDir) {
-        if (Test-Path "$InstallDir\.git") {
-            Write-Info "Existing installation found, updating..."
-            Push-Location $InstallDir
-            git -c windows.appendAtomically=false fetch origin
-            git -c windows.appendAtomically=false checkout $Branch
-            git -c windows.appendAtomically=false pull origin $Branch
-            Pop-Location
-        } else {
-            Write-Err "Directory exists but is not a git repository: $InstallDir"
-            Write-Info "Remove it or choose a different directory with -InstallDir"
-            throw "Directory exists but is not a git repository: $InstallDir"
+            Log-Warn "uv installation via pip failed, trying pipx..."
+            pipx install uv
         }
     } else {
-        $cloneSuccess = $false
+        Log-Success "uv is already installed"
+    }
+    
+    Log-Success "Phase 1 complete: All prerequisites installed"
+}
 
-        # Fix Windows git "copy-fd: write returned: Invalid argument" error.
-        # Git for Windows can fail on atomic file operations (hook templates,
-        # config lock files) due to antivirus, OneDrive, or NTFS filter drivers.
-        # The -c flag injects config before any file I/O occurs.
-        Write-Info "Configuring git for Windows compatibility..."
-        $env:GIT_CONFIG_COUNT = "1"
-        $env:GIT_CONFIG_KEY_0 = "windows.appendAtomically"
-        $env:GIT_CONFIG_VALUE_0 = "false"
-        git config --global windows.appendAtomically false 2>$null
+function Create-Workspace {
+    Log-Phase 2 "Creating workspace..."
+    
+    # Create Hermes home directory
+    if (-not (Test-Path $HermesHome)) {
+        New-Item -ItemType Directory -Path $HermesHome -Force | Out-Null
+        Log-Success "Created $HermesHome"
+    } else {
+        Log-Info "$HermesHome already exists"
+    }
+    
+    # Enable Windows long paths (if not already)
+    $longPathsEnabled = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -ErrorAction SilentlyContinue
+    if ($longPathsEnabled.LongPathsEnabled -ne 1) {
+        Log-Warn "Long paths not enabled. Consider running as Admin to enable."
+        Log-Info "To enable manually: fsutil behavior set enablelongpaths 1"
+    }
+    
+    Log-Success "Phase 2 complete: Workspace ready"
+}
 
-        # Try SSH first, then HTTPS, with -c flag for atomic write fix
-        Write-Info "Trying SSH clone..."
-        $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
-        try {
-            git -c windows.appendAtomically=false clone --branch $Branch --recurse-submodules $RepoUrlSsh $InstallDir
-            if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
-        } catch { }
-        $env:GIT_SSH_COMMAND = $null
-        
-        if (-not $cloneSuccess) {
-            if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
-            Write-Info "SSH failed, trying HTTPS..."
-            try {
-                git -c windows.appendAtomically=false clone --branch $Branch --recurse-submodules $RepoUrlHttps $InstallDir
-                if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
-            } catch { }
-        }
-
-        # Fallback: download ZIP archive (bypasses git file I/O issues entirely)
-        if (-not $cloneSuccess) {
-            if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
-            Write-Warn "Git clone failed — downloading ZIP archive instead..."
-            try {
-                $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/heads/$Branch.zip"
-                $zipPath = "$env:TEMP\hermes-agent-$Branch.zip"
-                $extractPath = "$env:TEMP\hermes-agent-extract"
-                
-                Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
-                if (Test-Path $extractPath) { Remove-Item -Recurse -Force $extractPath }
-                Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
-                
-                # GitHub ZIPs extract to repo-branch/ subdirectory
-                $extractedDir = Get-ChildItem $extractPath -Directory | Select-Object -First 1
-                if ($extractedDir) {
-                    New-Item -ItemType Directory -Force -Path (Split-Path $InstallDir) -ErrorAction SilentlyContinue | Out-Null
-                    Move-Item $extractedDir.FullName $InstallDir -Force
-                    Write-Success "Downloaded and extracted"
-                    
-                    # Initialize git repo so updates work later
-                    Push-Location $InstallDir
-                    git -c windows.appendAtomically=false init 2>$null
-                    git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
-                    git remote add origin $RepoUrlHttps 2>$null
-                    Pop-Location
-                    Write-Success "Git repo initialized for future updates"
-                    
-                    $cloneSuccess = $true
-                }
-                
-                # Cleanup temp files
-                Remove-Item -Force $zipPath -ErrorAction SilentlyContinue
-                Remove-Item -Recurse -Force $extractPath -ErrorAction SilentlyContinue
-            } catch {
-                Write-Err "ZIP download also failed: $_"
+function Clone-Repo {
+    Log-Phase 3 "Cloning Hermes Agent repository..."
+    
+    if (Test-Path $Dir) {
+        Log-Info "Installation directory exists: $Dir"
+        if (-not $y) {
+            $response = Read-Host "Remove existing installation and reinstall? [y/N]"
+            if ($response -ne "y") {
+                Log-Info "Using existing installation"
+                return
             }
-        }
-
-        if (-not $cloneSuccess) {
-            throw "Failed to download repository (tried git clone SSH, HTTPS, and ZIP)"
+            Remove-Item -Recurse -Force $Dir
         }
     }
     
-    # Set per-repo config (harmless if it fails)
-    Push-Location $InstallDir
-    git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
-
-    # Ensure submodules are initialized and updated
-    Write-Info "Initializing submodules..."
-    git -c windows.appendAtomically=false submodule update --init --recursive 2>$null
+    # Clone repository
+    Log-Info "Cloning from $RepoUrlHttps (branch: $Branch)..."
+    git clone --branch $Branch $RepoUrlHttps $Dir
+    
     if ($LASTEXITCODE -ne 0) {
-        Write-Warn "Submodule init failed (terminal/RL tools may need manual setup)"
-    } else {
-        Write-Success "Submodules ready"
+        Log-Error "Failed to clone repository"
+        exit 1
     }
-    Pop-Location
     
-    Write-Success "Repository ready"
+    Log-Success "Phase 3 complete: Repository cloned to $Dir"
 }
 
-function Install-Venv {
-    if ($NoVenv) {
-        Write-Info "Skipping virtual environment (-NoVenv)"
-        return
-    }
+function Setup-PythonEnv {
+    Log-Phase 3 "Setting up Python environment..."
     
-    Write-Info "Creating virtual environment with Python $PythonVersion..."
+    Push-Location $Dir
     
-    Push-Location $InstallDir
+    # Create virtual environment with uv
+    Log-Info "Creating virtual environment with uv..."
+    uv venv --python $PythonVersion
     
-    if (Test-Path "venv") {
-        Write-Info "Virtual environment already exists, recreating..."
-        Remove-Item -Recurse -Force "venv"
-    }
-    
-    # uv creates the venv and pins the Python version in one step
-    & $UvCmd venv venv --python $PythonVersion
-    
-    Pop-Location
-    
-    Write-Success "Virtual environment ready (Python $PythonVersion)"
-}
-
-function Install-Dependencies {
-    Write-Info "Installing dependencies..."
-    
-    Push-Location $InstallDir
-    
-    if (-not $NoVenv) {
-        # Tell uv to install into our venv (no activation needed)
-        $env:VIRTUAL_ENV = "$InstallDir\venv"
-    }
-    
-    # Install main package with all extras
-    try {
-        & $UvCmd pip install -e ".[all]" 2>&1 | Out-Null
-    } catch {
-        & $UvCmd pip install -e "." | Out-Null
-    }
-    
-    Write-Success "Main package installed"
-    
-    # Install optional submodules
-    Write-Info "Installing tinker-atropos (RL training backend)..."
-    if (Test-Path "tinker-atropos\pyproject.toml") {
-        try {
-            & $UvCmd pip install -e ".\tinker-atropos" 2>&1 | Out-Null
-            Write-Success "tinker-atropos installed"
-        } catch {
-            Write-Warn "tinker-atropos install failed (RL tools may not work)"
-        }
-    } else {
-        Write-Warn "tinker-atropos not found (run: git submodule update --init)"
-    }
-    
-    Pop-Location
-    
-    Write-Success "All dependencies installed"
-}
-
-function Set-PathVariable {
-    Write-Info "Setting up hermes command..."
-    
-    if ($NoVenv) {
-        $hermesBin = "$InstallDir"
-    } else {
-        $hermesBin = "$InstallDir\venv\Scripts"
-    }
-    
-    # Add the venv Scripts dir to user PATH so hermes is globally available
-    # On Windows, the hermes.exe in venv\Scripts\ has the venv Python baked in
-    $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    
-    if ($currentPath -notlike "*$hermesBin*") {
-        [Environment]::SetEnvironmentVariable(
-            "Path",
-            "$hermesBin;$currentPath",
-            "User"
-        )
-        Write-Success "Added to user PATH: $hermesBin"
-    } else {
-        Write-Info "PATH already configured"
-    }
-    
-    # Set HERMES_HOME so the Python code finds config/data in the right place.
-    # Only needed on Windows where we install to %LOCALAPPDATA%\hermes instead
-    # of the Unix default ~/.hermes
-    $currentHermesHome = [Environment]::GetEnvironmentVariable("HERMES_HOME", "User")
-    if (-not $currentHermesHome -or $currentHermesHome -ne $HermesHome) {
-        [Environment]::SetEnvironmentVariable("HERMES_HOME", $HermesHome, "User")
-        Write-Success "Set HERMES_HOME=$HermesHome"
-    }
-    $env:HERMES_HOME = $HermesHome
-    
-    # Update current session
-    $env:Path = "$hermesBin;$env:Path"
-    
-    Write-Success "hermes command ready"
-}
-
-function Copy-ConfigTemplates {
-    Write-Info "Setting up configuration files..."
-    
-    # Create ~/.hermes directory structure
-    New-Item -ItemType Directory -Force -Path "$HermesHome\cron" | Out-Null
-    New-Item -ItemType Directory -Force -Path "$HermesHome\sessions" | Out-Null
-    New-Item -ItemType Directory -Force -Path "$HermesHome\logs" | Out-Null
-    New-Item -ItemType Directory -Force -Path "$HermesHome\pairing" | Out-Null
-    New-Item -ItemType Directory -Force -Path "$HermesHome\hooks" | Out-Null
-    New-Item -ItemType Directory -Force -Path "$HermesHome\image_cache" | Out-Null
-    New-Item -ItemType Directory -Force -Path "$HermesHome\audio_cache" | Out-Null
-    New-Item -ItemType Directory -Force -Path "$HermesHome\memories" | Out-Null
-    New-Item -ItemType Directory -Force -Path "$HermesHome\skills" | Out-Null
-    New-Item -ItemType Directory -Force -Path "$HermesHome\whatsapp\session" | Out-Null
-    
-    # Create .env
-    $envPath = "$HermesHome\.env"
-    if (-not (Test-Path $envPath)) {
-        $examplePath = "$InstallDir\.env.example"
-        if (Test-Path $examplePath) {
-            Copy-Item $examplePath $envPath
-            Write-Success "Created ~/.hermes/.env from template"
-        } else {
-            New-Item -ItemType File -Force -Path $envPath | Out-Null
-            Write-Success "Created ~/.hermes/.env"
-        }
-    } else {
-        Write-Info "~/.hermes/.env already exists, keeping it"
-    }
-    
-    # Create config.yaml
-    $configPath = "$HermesHome\config.yaml"
-    if (-not (Test-Path $configPath)) {
-        $examplePath = "$InstallDir\cli-config.yaml.example"
-        if (Test-Path $examplePath) {
-            Copy-Item $examplePath $configPath
-            Write-Success "Created ~/.hermes/config.yaml from template"
-        }
-    } else {
-        Write-Info "~/.hermes/config.yaml already exists, keeping it"
-    }
-    
-    # Create SOUL.md if it doesn't exist (global persona file)
-    $soulPath = "$HermesHome\SOUL.md"
-    if (-not (Test-Path $soulPath)) {
-        @"
-# Hermes Agent Persona
-
-<!-- 
-This file defines the agent's personality and tone.
-The agent will embody whatever you write here.
-Edit this to customize how Hermes communicates with you.
-
-Examples:
-  - "You are a warm, playful assistant who uses kaomoji occasionally."
-  - "You are a concise technical expert. No fluff, just facts."
-  - "You speak like a friendly coworker who happens to know everything."
-
-This file is loaded fresh each message -- no restart needed.
-Delete the contents (or this file) to use the default personality.
--->
-"@ | Set-Content -Path $soulPath -Encoding UTF8
-        Write-Success "Created ~/.hermes/SOUL.md (edit to customize personality)"
-    }
-    
-    Write-Success "Configuration directory ready: ~/.hermes/"
-    
-    # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
-    Write-Info "Syncing bundled skills to ~/.hermes/skills/ ..."
-    $pythonExe = "$InstallDir\venv\Scripts\python.exe"
-    if (Test-Path $pythonExe) {
-        try {
-            & $pythonExe "$InstallDir\tools\skills_sync.py" 2>$null
-            Write-Success "Skills synced to ~/.hermes/skills/"
-        } catch {
-            # Fallback: simple directory copy
-            $bundledSkills = "$InstallDir\skills"
-            $userSkills = "$HermesHome\skills"
-            if ((Test-Path $bundledSkills) -and -not (Get-ChildItem $userSkills -Exclude '.bundled_manifest' -ErrorAction SilentlyContinue)) {
-                Copy-Item -Path "$bundledSkills\*" -Destination $userSkills -Recurse -Force -ErrorAction SilentlyContinue
-                Write-Success "Skills copied to ~/.hermes/skills/"
-            }
-        }
-    }
-}
-
-function Install-NodeDeps {
-    if (-not $HasNode) {
-        Write-Info "Skipping Node.js dependencies (Node not installed)"
-        return
-    }
-    
-    Push-Location $InstallDir
-    
-    if (Test-Path "package.json") {
-        Write-Info "Installing Node.js dependencies (browser tools)..."
-        try {
-            npm install --silent 2>&1 | Out-Null
-            Write-Success "Node.js dependencies installed"
-        } catch {
-            Write-Warn "npm install failed (browser tools may not work)"
-        }
-    }
-    
-    # Install WhatsApp bridge dependencies
-    $bridgeDir = "$InstallDir\scripts\whatsapp-bridge"
-    if (Test-Path "$bridgeDir\package.json") {
-        Write-Info "Installing WhatsApp bridge dependencies..."
-        Push-Location $bridgeDir
-        try {
-            npm install --silent 2>&1 | Out-Null
-            Write-Success "WhatsApp bridge dependencies installed"
-        } catch {
-            Write-Warn "WhatsApp bridge npm install failed (WhatsApp may not work)"
-        }
+    if ($LASTEXITCODE -ne 0) {
+        Log-Error "Failed to create virtual environment"
         Pop-Location
+        exit 1
+    }
+    
+    # Activate virtual environment
+    .venv\Scripts\Activate.ps1
+    
+    # Install Hermes Agent with all dependencies
+    Log-Info "Installing Hermes Agent and dependencies..."
+    uv pip install -e ".[all]"
+    
+    if ($LASTEXITCODE -ne 0) {
+        Log-Warn "Full install failed, trying core dependencies..."
+        uv pip install -e "."
     }
     
     Pop-Location
+    Log-Success "Phase 3 complete: Python environment ready"
 }
 
-function Invoke-SetupWizard {
-    if ($SkipSetup) {
-        Write-Info "Skipping setup wizard (-SkipSetup)"
+function Setup-Skills {
+    Log-Phase 5 "Setting up skills system..."
+    
+    Push-Location $Dir
+    
+    # Ensure skills directory exists
+    $skillsDir = "$HermesHome\skills"
+    if (-not (Test-Path $skillsDir)) {
+        New-Item -ItemType Directory -Path $skillsDir -Force | Out-Null
+        Log-Success "Created skills directory: $skillsDir"
+    }
+    
+    # Copy optional skills if available
+    $optionalSkills = "$Dir\optional-skills"
+    if (Test-Path $optionalSkills) {
+        Log-Info "Optional skills available at $optionalSkills"
+    }
+    
+    Pop-Location
+    Log-Success "Phase 5 complete: Skills system ready"
+}
+
+function Setup-MemoryBridge {
+    Log-Phase 6 "Setting up memory bridge..."
+    
+    # Memory bridge for WSL/Windows filesystem access
+    $memoryDir = "$HermesHome\memory"
+    if (-not (Test-Path $memoryDir)) {
+        New-Item -ItemType Directory -Path $memoryDir -Force | Out-Null
+        Log-Success "Created memory directory: $memoryDir"
+    }
+    
+    # Create WSL bridge symlink if WSL is available
+    $wsl = Get-Command wsl -ErrorAction SilentlyContinue
+    if ($wsl) {
+        Log-Info "WSL detected - setting up filesystem bridge..."
+        $wslHermesHome = "/mnt/c$($HermesHome.Replace('\', '/').Replace('C:', ''))"
+        Log-Info "Windows Hermes Home accessible from WSL at: $wslHermesHome"
+    }
+    
+    Log-Success "Phase 6 complete: Memory bridge configured"
+}
+
+function Setup-GitConfig {
+    Log-Phase 7 "Configuring Git..."
+    
+    Push-Location $Dir
+    
+    # Check if user has Git config
+    $gitName = git config --get user.name 2>$null
+    $gitEmail = git config --get user.email 2>$null
+    
+    if (-not $gitName -or -not $gitEmail) {
+        if (-not $y) {
+            Log-Warn "Git user.name or user.email not set"
+            $name = Read-Host "Enter your name for Git commits"
+            $email = Read-Host "Enter your email for Git commits"
+            git config --global user.name $name
+            git config --global user.email $email
+            Log-Success "Git config set globally"
+        } else {
+            Log-Warn "Git config not set (non-interactive mode)"
+        }
+    } else {
+        Log-Success "Git already configured: $gitName <$gitEmail>"
+    }
+    
+    Pop-Location
+    Log-Success "Phase 7 complete: Git configuration done"
+}
+
+function Verify-Installation {
+    Log-Phase 8 "Verifying installation..."
+    
+    # Add to PATH if not already
+    $venvBin = "$Dir\.venv\Scripts"
+    $currentPath = $env:PATH
+    if ($currentPath -notlike "*$venvBin*") {
+        $env:PATH = "$venvBin;$currentPath"
+        Log-Info "Added $venvBin to PATH"
+    }
+    
+    # Check hermes command
+    Push-Location $Dir
+    .venv\Scripts\Activate.ps1
+    
+    $hermes = Get-Command hermes -ErrorAction SilentlyContinue
+    if ($hermes) {
+        $version = hermes --version 2>$null
+        Log-Success "Hermes installed: $version"
+    } else {
+        Log-Warn "hermes command not directly available, use .venv\Scripts\hermes.exe"
+        if (Test-Path ".venv\Scripts\hermes.exe") {
+            Log-Success "Hermes executable found at .venv\Scripts\hermes.exe"
+        }
+    }
+    
+    Pop-Location
+    Log-Success "Phase 8 complete: Installation verified"
+}
+
+function FirstRun-Prompt {
+    Log-Phase 9 "First-run setup..."
+    
+    if ($y) {
+        Log-Info "Skipping interactive setup (non-interactive mode)"
+        Log-Info "Run 'hermes setup' manually to configure your agent"
         return
     }
     
     Write-Host ""
-    Write-Info "Starting setup wizard..."
+    Write-Host "╔─────────────────────────────────────────────────────────╗" -ForegroundColor Cyan
+    Write-Host "║  Hermes Agent is installed!                             ║" -ForegroundColor Cyan
+    Write-Host "╠─────────────────────────────────────────────────────────╣" -ForegroundColor Cyan
+    Write-Host "║  Run 'hermes setup' to configure:                       ║" -ForegroundColor Cyan
+    Write-Host "║    - LLM provider (OpenAI, Anthropic, etc.)             ║" -ForegroundColor Cyan
+    Write-Host "║    - Tools and permissions                              ║" -ForegroundColor Cyan
+    Write-Host "║    - Messaging gateway (Telegram, Discord, etc.)        ║" -ForegroundColor Cyan
+    Write-Host "╚─────────────────────────────────────────────────────────╝" -ForegroundColor Cyan
     Write-Host ""
     
-    Push-Location $InstallDir
-    
-    # Run hermes setup using the venv Python directly (no activation needed)
-    if (-not $NoVenv) {
-        & ".\venv\Scripts\python.exe" -m hermes_cli.main setup
+    $runSetup = Read-Host "Run 'hermes setup' now? [y/N]"
+    if ($runSetup -eq "y") {
+        Push-Location $Dir
+        .venv\Scripts\Activate.ps1
+        hermes setup
+        Pop-Location
     } else {
-        python -m hermes_cli.main setup
+        Log-Info "You can run 'hermes setup' later"
     }
     
-    Pop-Location
+    Log-Success "Phase 9 complete: Installation finished!"
 }
 
-function Start-GatewayIfConfigured {
-    $envPath = "$HermesHome\.env"
-    if (-not (Test-Path $envPath)) { return }
-
-    $hasMessaging = $false
-    $content = Get-Content $envPath -ErrorAction SilentlyContinue
-    foreach ($var in @("TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "WHATSAPP_ENABLED")) {
-        $match = $content | Where-Object { $_ -match "^${var}=.+" -and $_ -notmatch "your-token-here" }
-        if ($match) { $hasMessaging = $true; break }
-    }
-
-    if (-not $hasMessaging) { return }
-
-    $hermesCmd = "$InstallDir\venv\Scripts\hermes.exe"
-    if (-not (Test-Path $hermesCmd)) {
-        $hermesCmd = "hermes"
-    }
-
-    # If WhatsApp is enabled but not yet paired, run foreground for QR scan
-    $whatsappEnabled = $content | Where-Object { $_ -match "^WHATSAPP_ENABLED=true" }
-    $whatsappSession = "$HermesHome\whatsapp\session\creds.json"
-    if ($whatsappEnabled -and -not (Test-Path $whatsappSession)) {
-        Write-Host ""
-        Write-Info "WhatsApp is enabled but not yet paired."
-        Write-Info "Running 'hermes whatsapp' to pair via QR code..."
-        Write-Host ""
-        $response = Read-Host "Pair WhatsApp now? [Y/n]"
-        if ($response -eq "" -or $response -match "^[Yy]") {
-            try {
-                & $hermesCmd whatsapp
-            } catch {
-                # Expected after pairing completes
-            }
-        }
-    }
-
-    Write-Host ""
-    Write-Info "Messaging platform token detected!"
-    Write-Info "The gateway handles messaging platforms and cron job execution."
-    Write-Host ""
-    $response = Read-Host "Would you like to start the gateway now? [Y/n]"
-
-    if ($response -eq "" -or $response -match "^[Yy]") {
-        Write-Info "Starting gateway in background..."
-        try {
-            $logFile = "$HermesHome\logs\gateway.log"
-            Start-Process -FilePath $hermesCmd -ArgumentList "gateway" `
-                -RedirectStandardOutput $logFile `
-                -RedirectStandardError "$HermesHome\logs\gateway-error.log" `
-                -WindowStyle Hidden
-            Write-Success "Gateway started! Your bot is now online."
-            Write-Info "Logs: $logFile"
-            Write-Info "To stop: close the gateway process from Task Manager"
-        } catch {
-            Write-Warn "Failed to start gateway. Run manually: hermes gateway"
-        }
-    } else {
-        Write-Info "Skipped. Start the gateway later with: hermes gateway"
-    }
-}
-
-function Write-Completion {
-    Write-Host ""
-    Write-Host "┌─────────────────────────────────────────────────────────┐" -ForegroundColor Green
-    Write-Host "│              ✓ Installation Complete!                   │" -ForegroundColor Green
-    Write-Host "└─────────────────────────────────────────────────────────┘" -ForegroundColor Green
-    Write-Host ""
+function Add-To-Path {
+    # Add Hermes to user PATH permanently
+    $venvBin = "$Dir\.venv\Scripts"
+    $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
     
-    # Show file locations
-    Write-Host "📁 Your files:" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "   Config:    " -NoNewline -ForegroundColor Yellow
-    Write-Host "$HermesHome\config.yaml"
-    Write-Host "   API Keys:  " -NoNewline -ForegroundColor Yellow
-    Write-Host "$HermesHome\.env"
-    Write-Host "   Data:      " -NoNewline -ForegroundColor Yellow
-    Write-Host "$HermesHome\cron\, sessions\, logs\"
-    Write-Host "   Code:      " -NoNewline -ForegroundColor Yellow
-    Write-Host "$HermesHome\hermes-agent\"
-    Write-Host ""
-    
-    Write-Host "─────────────────────────────────────────────────────────" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "🚀 Commands:" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "   hermes              " -NoNewline -ForegroundColor Green
-    Write-Host "Start chatting"
-    Write-Host "   hermes setup        " -NoNewline -ForegroundColor Green
-    Write-Host "Configure API keys & settings"
-    Write-Host "   hermes config       " -NoNewline -ForegroundColor Green
-    Write-Host "View/edit configuration"
-    Write-Host "   hermes config edit  " -NoNewline -ForegroundColor Green
-    Write-Host "Open config in editor"
-    Write-Host "   hermes gateway      " -NoNewline -ForegroundColor Green
-    Write-Host "Start messaging gateway (Telegram, Discord, etc.)"
-    Write-Host "   hermes update       " -NoNewline -ForegroundColor Green
-    Write-Host "Update to latest version"
-    Write-Host ""
-    
-    Write-Host "─────────────────────────────────────────────────────────" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "⚡ Restart your terminal for PATH changes to take effect" -ForegroundColor Yellow
-    Write-Host ""
-    
-    if (-not $HasNode) {
-        Write-Host "Note: Node.js could not be installed automatically." -ForegroundColor Yellow
-        Write-Host "Browser tools need Node.js. Install manually:" -ForegroundColor Yellow
-        Write-Host "  https://nodejs.org/en/download/" -ForegroundColor Yellow
-        Write-Host ""
-    }
-    
-    if (-not $HasRipgrep) {
-        Write-Host "Note: ripgrep (rg) was not installed. For faster file search:" -ForegroundColor Yellow
-        Write-Host "  winget install BurntSushi.ripgrep.MSVC" -ForegroundColor Yellow
-        Write-Host ""
+    if ($userPath -notlike "*$venvBin*") {
+        [Environment]::SetEnvironmentVariable("PATH", "$venvBin;$userPath", "User")
+        Log-Success "Added Hermes to user PATH permanently"
     }
 }
 
 # ============================================================================
-# Main
+# Main Installation Flow
 # ============================================================================
 
-function Main {
-    Write-Banner
-    
-    if (-not (Install-Uv)) { throw "uv installation failed — cannot continue" }
-    if (-not (Test-Python)) { throw "Python $PythonVersion not available — cannot continue" }
-    if (-not (Test-Git)) { throw "Git not found — install from https://git-scm.com/download/win" }
-    Test-Node              # Auto-installs if missing
-    Install-SystemPackages  # ripgrep + ffmpeg in one step
-    
-    Install-Repository
-    Install-Venv
-    Install-Dependencies
-    Install-NodeDeps
-    Set-PathVariable
-    Copy-ConfigTemplates
-    Invoke-SetupWizard
-    Start-GatewayIfConfigured
-    
-    Write-Completion
+if ($Help) { Show-Help }
+
+Print-Banner
+
+# Phase 1: Prerequisites
+if (-not $SkipPhase1) { Check-Prerequisites }
+
+# Phase 2: Workspace
+if (-not $SkipPhase2) { Create-Workspace }
+
+# Phase 3: Clone & Python Env
+if (-not $SkipPhase3) { 
+    Clone-Repo
+    Setup-PythonEnv 
 }
 
-# Wrap in try/catch so errors don't kill the terminal when run via:
-#   irm https://...install.ps1 | iex
-# (exit/throw inside iex kills the entire PowerShell session)
-try {
-    Main
-} catch {
-    Write-Host ""
-    Write-Err "Installation failed: $_"
-    Write-Host ""
-    Write-Info "If the error is unclear, try downloading and running the script directly:"
-    Write-Host "  Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1' -OutFile install.ps1" -ForegroundColor Yellow
-    Write-Host "  .\install.ps1" -ForegroundColor Yellow
-    Write-Host ""
-}
+# Phase 4: Agent (included in Phase 3 pip install)
+if (-not $SkipPhase4) { Log-Phase 4 "Agent installed during Phase 3" }
+
+# Phase 5: Skills
+if (-not $SkipPhase5) { Setup-Skills }
+
+# Phase 6: Memory Bridge
+if (-not $SkipPhase6) { Setup-MemoryBridge }
+
+# Phase 7: Git Config
+if (-not $SkipPhase7) { Setup-GitConfig }
+
+# Phase 8: Verification
+if (-not $SkipPhase8) { Verify-Installation }
+
+# Add to PATH
+Add-To-Path
+
+# Phase 9: First-run
+if (-not $SkipPhase9) { FirstRun-Prompt }
+
+# ============================================================================
+# Final Summary
+# ============================================================================
+
+Write-Host ""
+Write-Host "╔═════════════════════════════════════════════════════════╗" -ForegroundColor Green
+Write-Host "║            ⚕ Hermes Agent Installation Complete        ║" -ForegroundColor Green
+Write-Host "╠═════════════════════════════════════════════════════════╣" -ForegroundColor Green
+Write-Host "║  Installation Directory: $Dir                          " -ForegroundColor Green
+Write-Host "║  To start: hermes                                        ║" -ForegroundColor Green
+Write-Host "║  To configure: hermes setup                              ║" -ForegroundColor Green
+Write-Host "║  To update: hermes update                                ║" -ForegroundColor Green
+Write-Host "║  Documentation: https://hermes-agent.nousresearch.com   ║" -ForegroundColor Green
+Write-Host "╚═════════════════════════════════════════════════════════╝" -ForegroundColor Green
+Write-Host ""
