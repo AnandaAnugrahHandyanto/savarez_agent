@@ -3078,8 +3078,8 @@ class GatewayRunner:
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
             spec = get_platform_spec(platform_name)
-            env_key = spec.home_channel_env if spec and spec.home_channel_env else f"{platform_name.upper()}_HOME_CHANNEL"
-            if not os.getenv(env_key):
+            env_key = spec.home_channel_env if spec else ""
+            if spec and spec.warn_missing_home and env_key and not os.getenv(env_key):
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     await adapter.send(
@@ -4437,7 +4437,9 @@ class GatewayRunner:
         chat_name = source.chat_name or chat_id
         
         spec = get_platform_spec(platform_name)
-        env_key = spec.home_channel_env if spec and spec.home_channel_env else f"{platform_name.upper()}_HOME_CHANNEL"
+        env_key = spec.home_channel_env if spec and spec.home_channel_env else ""
+        if not env_key:
+            return "This platform does not support a configurable home channel."
         
         # Save to config.yaml
         try:
