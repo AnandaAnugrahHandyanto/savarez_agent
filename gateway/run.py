@@ -3486,6 +3486,27 @@ class GatewayRunner:
             # when already_sent is True, so media files would never be
             # delivered without this.
             if agent_result.get("already_sent"):
+                # Streaming already delivered the response body, but the
+                # 💭 reasoning block was prepended to `response` above and
+                # would be discarded with `return None`.  Send it as a
+                # separate follow-up message so the user still sees it.
+                if getattr(self, "_show_reasoning", False) and agent_result.get("last_reasoning"):
+                    _reason_adapter = self.adapters.get(source.platform)
+                    if _reason_adapter:
+                        _lr = agent_result["last_reasoning"]
+                        _lines = _lr.strip().splitlines()
+                        if len(_lines) > 15:
+                            _disp = "\n".join(_lines[:15])
+                            _disp += f"\n_... ({len(_lines) - 15} more lines)_"
+                        else:
+                            _disp = _lr.strip()
+                        try:
+                            await _reason_adapter.send(
+                                source.chat_id,
+                                f"💭 **Reasoning:**\n```\n{_disp}\n```",
+                            )
+                        except Exception as e:
+                            logger.warning("Failed to send reasoning block: %s", e)
                 if response:
                     _media_adapter = self.adapters.get(source.platform)
                     if _media_adapter:

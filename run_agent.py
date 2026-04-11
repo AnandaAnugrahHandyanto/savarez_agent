@@ -1880,7 +1880,24 @@ class AIAgent:
                     cleaned = block.strip()
                     if cleaned and cleaned not in reasoning_parts:
                         reasoning_parts.append(cleaned)
-        
+
+        # Native Anthropic API returns thinking as content blocks with
+        # type=="thinking" inside the content list.  Walk the list to
+        # extract these blocks when no structured reasoning was found.
+        if not reasoning_parts and isinstance(content, list):
+            for block in content:
+                block_type = (
+                    getattr(block, "type", None)
+                    or (block.get("type") if isinstance(block, dict) else None)
+                )
+                if block_type == "thinking":
+                    thinking = (
+                        getattr(block, "thinking", None)
+                        or (block.get("thinking") if isinstance(block, dict) else None)
+                    )
+                    if thinking and thinking not in reasoning_parts:
+                        reasoning_parts.append(thinking)
+
         # Combine all reasoning parts
         if reasoning_parts:
             return "\n\n".join(reasoning_parts)
