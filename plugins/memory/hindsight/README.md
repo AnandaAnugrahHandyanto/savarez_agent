@@ -131,4 +131,16 @@ Available in `hybrid` and `tools` memory modes:
 
 ## Client Version
 
-Requires `hindsight-client >= 0.4.22`. The plugin auto-upgrades on session start if an older version is detected.
+Different modes require different packages:
+
+| Mode | Package | Minimum Version |
+|------|---------|----------------|
+| `cloud` | `hindsight-client` | `>= 0.4.22` |
+| `local_external` | `hindsight-client` | `>= 0.4.22` |
+| `local_embedded` | `hindsight-all` | `>= 0.5.0` |
+
+The plugin auto-upgrades `hindsight-client` on session start if an older version is detected, but does **not** auto-install `hindsight-all`. If you are using `local_embedded` mode and see `No module named 'hindsight'` errors, run:
+
+```bash
+uv pip install --system hindsight-all
+```
