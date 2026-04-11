@@ -207,7 +207,9 @@ class GatewayStreamConsumer:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
                         elif self._message_id:
-                            await self._send_or_edit(self._accumulated)
+                            delivered = await self._send_or_edit(self._accumulated)
+                            if not delivered:
+                                await self._send_fallback_final(self._accumulated)
                         elif not self._already_sent:
                             await self._send_or_edit(self._accumulated)
                     return
