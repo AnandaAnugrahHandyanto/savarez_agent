@@ -1740,6 +1740,17 @@ class APIServerAdapter(BasePlatformAdapter):
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
+            # Dashboard plugin
+            try:
+                import sys
+                _hermes_home = os.path.expanduser("~/.hermes")
+                if os.path.join(_hermes_home, "dashboard") not in sys.path:
+                    sys.path.insert(0, os.path.join(_hermes_home, "dashboard"))
+                from api import register_dashboard_routes
+                register_dashboard_routes(self._app)
+                logger.info("[%s] Dashboard registered at /dashboard", self.name)
+            except Exception as _dash_err:
+                logger.debug("[%s] Dashboard not loaded: %s", self.name, _dash_err)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:
