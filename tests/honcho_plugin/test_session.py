@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from plugins.memory.honcho.session import (
     HonchoSession,
@@ -364,6 +364,46 @@ class TestToolsModeInitBehavior:
             peer_name=None, user_id="8439114563",
         )
         assert cfg.peer_name == "8439114563"
+
+
+class TestHonchoCronReadOnly:
+    @patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config")
+    @patch("plugins.memory.honcho.client.get_honcho_client")
+    @patch("plugins.memory.honcho.session.HonchoSessionManager")
+    def test_cron_mode_exposes_read_only_tools(self, _mock_manager_cls, _mock_client, mock_cfg):
+        from types import SimpleNamespace
+        mock_cfg.return_value = SimpleNamespace(
+            enabled=True,
+            api_key="***",
+            base_url=None,
+            peer_name=None,
+            recall_mode="hybrid",
+            raw={},
+            write_frequency="async",
+        )
+        provider = HonchoMemoryProvider()
+
+        provider.initialize("cron-test", platform="cron", agent_context="cron")
+
+        assert provider._cron_read_only is True
+        assert provider._cron_skipped is False
+        assert provider._recall_mode == "tools"
+        assert [schema["name"] for schema in provider.get_tool_schemas()] == [
+            "honcho_profile",
+            "honcho_search",
+            "honcho_context",
+        ]
+
+    def test_conclude_blocked_in_cron_read_only_mode(self):
+        provider = HonchoMemoryProvider()
+        provider._cron_read_only = True
+        provider._manager = MagicMock()
+        provider._session_key = "cron-test"
+        provider._session_initialized = True
+
+        result = provider.handle_tool_call("honcho_conclude", {"conclusion": "User prefers dark mode"})
+
+        assert "disabled in cron read-only mode" in result
 
 
 class TestChunkMessage:
