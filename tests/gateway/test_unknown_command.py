@@ -164,3 +164,25 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
     # Whatever /reload_mcp returns, it must not be the unknown-command guard.
     if result is not None:
         assert "Unknown command" not in result
+
+
+@pytest.mark.asyncio
+async def test_reload_builtin_not_flagged(monkeypatch):
+    """/reload should dispatch as a known built-in, not hit the unknown-command guard."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+
+    async def _noop_reload(*_a, **_kw):
+        return "runtime reloaded"
+
+    runner._handle_reload_command = _noop_reload  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/reload"))
+
+    if result is not None:
+        assert "Unknown command" not in result

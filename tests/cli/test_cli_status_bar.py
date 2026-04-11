@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from cli import HermesCLI
+from hermes_cli.skin_engine import set_active_skin, get_prompt_toolkit_style_overrides
 
 
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
@@ -60,6 +61,11 @@ class TestCLIStatusBar:
         assert cli_obj._status_bar_context_style(50) == "class:status-bar-warn"
         assert cli_obj._status_bar_context_style(81) == "class:status-bar-bad"
         assert cli_obj._status_bar_context_style(95) == "class:status-bar-critical"
+
+    def test_context_bar_uses_shorter_default_width(self):
+        cli_obj = _make_cli()
+
+        assert cli_obj._build_context_bar(60) == "[███░░]"
 
     def test_build_status_bar_text_for_wide_terminal(self):
         cli_obj = _attach_agent(
@@ -258,6 +264,18 @@ class TestCLIStatusBar:
         fragments = cli_obj._get_voice_status_fragments(width=50)
 
         assert fragments == [("class:voice-status-recording", " ● REC ")]
+
+    def test_poseidon_statusbar_uses_skin_colors(self):
+        set_active_skin("poseidon")
+
+        styles = get_prompt_toolkit_style_overrides()
+
+        assert styles["status-bar"] == "bg:#1a1a2e #EAF7FF"
+        assert styles["status-bar-strong"] == "bg:#1a1a2e #A9DFFF bold"
+        assert styles["status-bar-dim"] == "bg:#1a1a2e #153C73"
+        assert styles["status-bar-good"] == "bg:#1a1a2e #4caf50 bold"
+        assert styles["status-bar-warn"] == "bg:#1a1a2e #ffa726 bold"
+        assert styles["status-bar-critical"] == "bg:#1a1a2e #ef5350 bold"
 
 
 class TestCLIUsageReport:

@@ -550,6 +550,32 @@ DEFAULT_CONFIG = {
                                  # "low", "minimal", "none" (empty = inherit parent's level)
     },
 
+    # Internal-only delegation policy — keeps all delegated execution on native
+    # Hermes subagents while allowing light task-shape routing between fast and
+    # smart worker classes.
+    "delegation_policy": {
+        "enabled": False,
+        "mode": "internal_only",           # reserved for future expansion
+        "trigger_threshold": 2,
+        "require_compact_results": True,
+        "fast_worker": {
+            "enabled": True,
+            "model": "",
+            "provider": "",
+            "base_url": "",
+            "api_key": "",
+            "toolsets": ["terminal", "file", "web"],
+        },
+        "smart_worker": {
+            "enabled": True,
+            "model": "",
+            "provider": "",
+            "base_url": "",
+            "api_key": "",
+            "toolsets": ["terminal", "file", "web"],
+        },
+    },
+
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.
