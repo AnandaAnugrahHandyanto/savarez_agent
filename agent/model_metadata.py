@@ -34,6 +34,8 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "github-models", "kimi", "moonshot", "claude", "deep-seek",
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
     "qwen-portal",
+    # xAI aliases (added with xAI overlay in 8bcb8b8e)
+    "xai", "x-ai", "x.ai",
 })
 
 
