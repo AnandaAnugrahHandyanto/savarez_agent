@@ -192,6 +192,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "advisor": {
+        "description": "Consult a more capable model for strategic guidance on complex tasks",
+        "tools": ["ask_advisor"],
+        "includes": []
+    },
+
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 

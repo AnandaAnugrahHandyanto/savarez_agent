@@ -170,6 +170,17 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+ADVISOR_GUIDANCE = (
+    "\n## Advisor Tool\n"
+    "You have access to an 'ask_advisor' tool that consults a more capable model "
+    "for strategic guidance. Use it when:\n"
+    "- You're unsure about the best approach for a complex task\n"
+    "- You need help with architectural or design decisions\n"
+    "- You've been stuck or making errors for multiple iterations\n"
+    "The advisor sees your question and provides a concise strategic plan. "
+    "Follow the plan yourself using your available tools.\n"
+)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

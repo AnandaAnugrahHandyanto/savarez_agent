@@ -530,6 +530,19 @@ DEFAULT_CONFIG = {
                                # independent of the parent's max_iterations)
     },
 
+    # Advisor — consult a more capable model for strategic guidance.
+    # The executor model (e.g., local Ollama) calls ask_advisor to get a
+    # concise plan from a stronger model (e.g., Claude Opus) and then
+    # executes the plan using its own tools.
+    "advisor": {
+        "enabled": False,
+        "provider": "",       # e.g. "anthropic", "openrouter", "openai" (empty + no base_url = disabled)
+        "model": "",          # e.g. "claude-sonnet-4-20250514"
+        "base_url": "",       # direct OpenAI-compatible endpoint (takes precedence over provider)
+        "api_key": "",        # API key for base_url or provider auth
+        "max_tokens": 700,    # max tokens for advisor response (400-700 recommended)
+    },
+
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.
@@ -1449,7 +1462,7 @@ def check_config_version() -> Tuple[int, int]:
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
-    "agent", "terminal", "display", "compression", "delegation",
+    "agent", "terminal", "display", "compression", "delegation", "advisor",
     "auxiliary", "custom_providers", "memory", "gateway",
 }
 
