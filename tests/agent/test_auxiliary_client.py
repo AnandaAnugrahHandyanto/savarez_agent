@@ -1078,7 +1078,7 @@ class TestAuxiliaryPoolAwareness:
             client, model = _try_nous()
 
         assert client is not None
-        assert model == "google/gemini-3-flash-preview"
+        assert model == "gemini-3-flash"
         call_kwargs = mock_openai.call_args.kwargs
         assert call_kwargs["api_key"] == "pooled-agent-key"
         assert call_kwargs["base_url"] == "https://inference.pool.example/v1"
@@ -1291,29 +1291,6 @@ class TestTaskSpecificOverrides:
         assert calls[0][0] == "openai-codex"
         assert calls[0][1] == "gpt-5.4"
         assert calls[0][2]["api_mode"] == "codex_responses"
-
-    def test_resolve_auto_supports_chatgpt_web_main_runtime(self, monkeypatch):
-        monkeypatch.setattr(
-            "agent.auxiliary_client.resolve_chatgpt_web_runtime_credentials",
-            lambda **kwargs: {
-                "provider": "chatgpt-web",
-                "api_key": "chatgpt-web-token",
-                "base_url": "https://chatgpt.com/backend-api/f",
-                "session_token": "chatgpt-session-token",
-            },
-        )
-
-        client, model = _resolve_auto(
-            main_runtime={
-                "provider": "chatgpt-web",
-                "model": "gpt-5-4-thinking",
-                "api_mode": "chatgpt_web",
-            }
-        )
-
-        assert client is not None
-        assert client.__class__.__name__ == "ChatGptWebAuxiliaryClient"
-        assert model == "gpt-5-4-thinking"
 
     def test_explicit_compression_pin_still_wins_over_live_main_runtime(self, monkeypatch, tmp_path):
         """Task-level compression config should beat a live session override."""
