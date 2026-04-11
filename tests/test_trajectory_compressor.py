@@ -210,8 +210,10 @@ def _make_compressor(config=None):
     """Create a TrajectoryCompressor with mocked tokenizer and summarizer."""
     if config is None:
         config = CompressionConfig()
-    with patch.object(TrajectoryCompressor, '_init_tokenizer'), \
-         patch.object(TrajectoryCompressor, '_init_summarizer'):
+    with (
+        patch.object(TrajectoryCompressor, "_init_tokenizer"),
+        patch.object(TrajectoryCompressor, "_init_summarizer"),
+    ):
         compressor = TrajectoryCompressor(config)
     # Provide a simple token counter for tests (1 token per 4 chars)
     compressor.tokenizer = MagicMock()
@@ -368,15 +370,15 @@ class TestTokenCounting:
     def test_count_trajectory_tokens(self):
         tc = _make_compressor()
         trajectory = [
-            {"from": "system", "value": "12345678"},   # 2 tokens
-            {"from": "human", "value": "1234567890ab"}, # 3 tokens
+            {"from": "system", "value": "12345678"},  # 2 tokens
+            {"from": "human", "value": "1234567890ab"},  # 3 tokens
         ]
         assert tc.count_trajectory_tokens(trajectory) == 5
 
     def test_count_turn_tokens(self):
         tc = _make_compressor()
         trajectory = [
-            {"from": "system", "value": "1234"},     # 1 token
+            {"from": "system", "value": "1234"},  # 1 token
             {"from": "human", "value": "12345678"},  # 2 tokens
         ]
         result = tc.count_turn_tokens(trajectory)
@@ -417,3 +419,127 @@ class TestGenerateSummary:
         summary = await tc._generate_summary_async("Turn content", metrics)
 
         assert summary == "[CONTEXT SUMMARY]:"
+
+
+# ---------------------------------------------------------------------------
+# TOON Encoding Tests (issue #7110)
+# ---------------------------------------------------------------------------
+
+
+class TestToonEncoding:
+    """Tests for TOON encoding of JSON tool results."""
+
+    def test_is_uniform_json_array_true(self):
+        """Detect uniform JSON arrays for TOON encoding."""
+        tc = _make_compressor()
+        data = [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]
+        result = tc._is_uniform_json_array(json.dumps(data), min_rows=2)
+        assert result is True
+
+    def test_is_uniform_json_array_not_array(self):
+        """Reject non-array JSON."""
+        tc = _make_compressor()
+        result = tc._is_uniform_json_array('{"key": "value"}', min_rows=2)
+        assert result is False
+
+    def test_is_uniform_json_array_too_few_rows(self):
+        """Reject arrays below min_rows threshold."""
+        tc = _make_compressor()
+        data = [{"id": 1, "name": "Alice"}]
+        result = tc._is_uniform_json_array(json.dumps(data), min_rows=2)
+        assert result is False
+
+    def test_is_uniform_json_array_non_uniform_keys(self):
+        """Reject arrays with non-uniform objects."""
+        tc = _make_compressor()
+        data = [{"id": 1, "name": "Alice"}, {"id": 2}]
+        result = tc._is_uniform_json_array(json.dumps(data), min_rows=2)
+        assert result is False
+
+    def test_is_uniform_json_array_non_objects(self):
+        """Reject arrays of primitives."""
+        tc = _make_compressor()
+        result = tc._is_uniform_json_array("[1, 2, 3]", min_rows=2)
+        assert result is False
+
+    def test_is_uniform_json_array_invalid_json(self):
+        """Gracefully handle invalid JSON."""
+        tc = _make_compressor()
+        result = tc._is_uniform_json_array("not json", min_rows=2)
+        assert result is False
+
+    def test_encode_to_toon_success(self):
+        """Encode uniform JSON array to TOON format."""
+        tc = _make_compressor()
+        data = [{"id": 1, "name": "repo1"}, {"id": 2, "name": "repo2"}]
+        result = tc._encode_to_toon(json.dumps(data))
+        assert "---toon_encoded_start---" in result
+        assert "---toon_encoded_end---" in result
+        assert "[2]" in result  # Array length marker
+
+    def test_encode_to_toon_invalid_json_fallback(self):
+        """Fallback to original on invalid JSON."""
+        tc = _make_compressor()
+        result = tc._encode_to_toon("not json")
+        assert result == "not json"
+
+    def test_apply_toon_encoding_skips_non_tool_turns(self):
+        """Only encode tool result turns."""
+        tc = _make_compressor()
+        tc.config.toon_encode = True
+        trajectory = [
+            {"from": "system", "value": "sys"},
+            {"from": "human", "value": "hi"},
+            {"from": "gpt", "value": "hello"},
+            {"from": "tool", "value": json.dumps([{"id": 1}, {"id": 2}, {"id": 3}])},
+        ]
+        result = tc._apply_toon_encoding(trajectory)
+        assert result[0]["value"] == "sys"
+        assert result[1]["value"] == "hi"
+        assert result[2]["value"] == "hello"
+        assert "---toon_encoded" in result[3]["value"]
+        assert result[3].get("_toon_encoded") is True
+
+    def test_apply_toon_encoding_skips_small_arrays(self):
+        """Don't encode arrays below min_rows."""
+        tc = _make_compressor()
+        tc.config.toon_encode = True
+        tc.config.toon_encode_min_rows = 3
+        trajectory = [
+            {"from": "tool", "value": json.dumps([{"id": 1}, {"id": 2}])},
+        ]
+        result = tc._apply_toon_encoding(trajectory)
+        # Should not be encoded (only 2 rows, min is 3)
+        assert "---toon_encoded" not in result[0]["value"]
+        assert "_toon_encoded" not in result[0]
+
+    def test_config_toon_encode_defaults_false(self):
+        """TOON encoding is opt-in by default."""
+        config = CompressionConfig()
+        assert config.toon_encode is False
+        assert config.toon_encode_min_rows == 3
+
+    def test_config_toon_encode_from_yaml(self, tmp_path):
+        """Load TOON config from YAML."""
+        yaml_content = """\
+toon_encoding:
+  enabled: true
+  min_rows: 5
+"""
+        yaml_file = tmp_path / "config.yaml"
+        yaml_file.write_text(yaml_content)
+        config = CompressionConfig.from_yaml(str(yaml_file))
+        assert config.toon_encode is True
+        assert config.toon_encode_min_rows == 5
+
+    def test_toon_encoding_reduces_tokens(self):
+        """Verify TOON encoding reduces token count vs JSON."""
+        tc = _make_compressor()
+        tc.config.toon_encode = True
+        # Create a 10-row uniform array (should benefit from TOON)
+        data = [{"id": i, "name": f"repo{i}", "stars": i * 100} for i in range(10)]
+        json_str = json.dumps(data)
+        trajectory = [{"from": "tool", "value": json_str}]
+        result = tc._apply_toon_encoding(trajectory)
+        # TOON should be shorter than JSON
+        assert len(result[0]["value"]) < len(json_str)
