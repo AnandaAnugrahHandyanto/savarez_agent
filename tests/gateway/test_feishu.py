@@ -497,11 +497,13 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             )
 
         self.assertTrue(result.success)
-        self.assertEqual(captured["calls"][0].request_body.msg_type, "post")
-        self.assertEqual(captured["calls"][1].request_body.msg_type, "text")
+        # New behavior: try interactive first, fall back to post on failure
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "interactive")
+        self.assertEqual(captured["calls"][1].request_body.msg_type, "post")
+        # post fallback preserves markdown in md tag
         self.assertEqual(
             captured["calls"][1].request_body.content,
-            json.dumps({"text": "可以用 粗体 和 斜体。"}, ensure_ascii=False),
+            json.dumps({"zh_cn": {"content": [[{"tag": "md", "text": "可以用 **粗体** 和 *斜体*。"}]]}}, ensure_ascii=False),
         )
 
     @patch.dict(os.environ, {}, clear=True)
@@ -756,6 +758,35 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(reaction_id, "r_typing")
         self.assertEqual(captured["request"].request_body.reaction_type["emoji_type"], "OK")
 
+    @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
+    def test_add_ack_reaction_uses_custom_emoji(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"ack_emoji": "Typing"}))
+        captured = {}
+
+        class _ReactionAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(reaction_id="r_typing"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message_reaction=_ReactionAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            reaction_id = asyncio.run(adapter._add_ack_reaction("om_msg"))
+
+        self.assertEqual(reaction_id, "r_typing")
+        self.assertEqual(captured["request"].request_body.reaction_type["emoji_type"], "Typing")
+
     @patch.dict(os.environ, {}, clear=True)
     def test_add_ack_reaction_logs_warning_on_failure(self):
         from gateway.config import PlatformConfig
@@ -804,6 +835,68 @@ class TestAdapterBehavior(unittest.TestCase):
             adapter._on_reaction_event("im.message.reaction.created_v1", data)
 
         run_threadsafe.assert_not_called()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_handle_message_with_guards_removes_ack_reaction_after_completion(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.types import MessageEvent, MessageType, MessageSource
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._chat_locks["oc_test"] = asyncio.Lock()
+
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=MessageSource(platform="feishu", chat_id="oc_test", user_id="u1", user_name="tester"),
+            raw_message={},
+            message_id="om_msg",
+            timestamp=None,
+        )
+
+        async def _run():
+            with (
+                patch.object(adapter, "_add_ack_reaction", new=AsyncMock(return_value="r_ack")) as add_mock,
+                patch.object(adapter, "_remove_ack_reaction", new=AsyncMock(return_value=True)) as remove_mock,
+                patch.object(adapter, "handle_message", new=AsyncMock()) as handle_mock,
+            ):
+                await adapter._handle_message_with_guards(event)
+                add_mock.assert_awaited_once_with("om_msg")
+                handle_mock.assert_awaited_once_with(event)
+                remove_mock.assert_awaited_once_with("om_msg", "r_ack")
+
+        asyncio.run(_run())
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_handle_message_with_guards_can_keep_ack_reaction(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.types import MessageEvent, MessageType, MessageSource
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"clear_ack_on_complete": False}))
+        adapter._chat_locks["oc_test"] = asyncio.Lock()
+
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=MessageSource(platform="feishu", chat_id="oc_test", user_id="u1", user_name="tester"),
+            raw_message={},
+            message_id="om_msg",
+            timestamp=None,
+        )
+
+        async def _run():
+            with (
+                patch.object(adapter, "_add_ack_reaction", new=AsyncMock(return_value="r_ack")) as add_mock,
+                patch.object(adapter, "_remove_ack_reaction", new=AsyncMock(return_value=True)) as remove_mock,
+                patch.object(adapter, "handle_message", new=AsyncMock()) as handle_mock,
+            ):
+                await adapter._handle_message_with_guards(event)
+                add_mock.assert_awaited_once_with("om_msg")
+                handle_mock.assert_awaited_once_with(event)
+                remove_mock.assert_not_awaited()
+
+        asyncio.run(_run())
 
     @patch.dict(os.environ, {}, clear=True)
     def test_normalize_inbound_text_strips_feishu_mentions(self):

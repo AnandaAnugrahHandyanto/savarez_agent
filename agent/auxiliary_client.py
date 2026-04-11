@@ -79,6 +79,173 @@ _PROVIDER_ALIASES = {
 }
 
 
+def _minimax_vlm_is_provider(provider: str) -> bool:
+    return (provider or "").strip().lower() in {"minimax", "minimax-cn"}
+
+
+def _minimax_vlm_is_model(model: Optional[str]) -> bool:
+    return str(model or "").strip() == "MiniMax-VL-01"
+
+
+def _minimax_vlm_host(*, provider: str, base_url: str = "") -> str:
+    raw = str(base_url or "").strip().rstrip("/")
+    candidates = [raw]
+    if provider == "minimax-cn":
+        candidates.append("https://api.minimaxi.com")
+    else:
+        candidates.append("https://api.minimax.io")
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(candidate)
+            if parsed.scheme and parsed.netloc:
+                return f"{parsed.scheme}://{parsed.netloc}"
+        except Exception:
+            continue
+    return "https://api.minimaxi.com" if provider == "minimax-cn" else "https://api.minimax.io"
+
+
+def _extract_minimax_vlm_prompt_and_image(messages: List[Dict[str, Any]]) -> Tuple[str, str]:
+    prompt_parts: List[str] = []
+    image_data_url = ""
+    for msg in messages or []:
+        if str(msg.get("role") or "").lower() != "user":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            if content.strip():
+                prompt_parts.append(content.strip())
+            continue
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            ptype = str(part.get("type") or "").strip().lower()
+            if ptype == "text":
+                text = str(part.get("text") or "").strip()
+                if text:
+                    prompt_parts.append(text)
+            elif ptype in {"image_url", "input_image"}:
+                image_value = part.get("image_url", "")
+                if isinstance(image_value, dict):
+                    image_value = image_value.get("url", "")
+                image_value = str(image_value or "").strip()
+                if image_value:
+                    image_data_url = image_value
+    prompt = "\n\n".join(p for p in prompt_parts if p).strip()
+    if not prompt:
+        prompt = "Describe this image."
+    if not image_data_url:
+        raise ValueError("MiniMax VLM requires one image input.")
+    if not image_data_url.startswith("data:image/"):
+        raise ValueError("MiniMax VLM requires a base64 data URL image input.")
+    return prompt, image_data_url
+
+
+class _MiniMaxVlmCompletionsAdapter:
+    def __init__(self, *, provider: str, model: str, api_key: str, base_url: str):
+        self._provider = provider
+        self._model = model
+        self._api_key = api_key
+        self._base_url = base_url
+
+    def create(self, **kwargs) -> Any:
+        from urllib import request, error
+
+        messages = kwargs.get("messages", [])
+        prompt, image_data_url = _extract_minimax_vlm_prompt_and_image(messages)
+        body = json.dumps({
+            "model": "MiniMax-VL-01",
+            "prompt": prompt,
+            "image_url": image_data_url,
+        }).encode("utf-8")
+        req = request.Request(
+            f"{self._base_url}/v1/coding_plan/vlm",
+            data=body,
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+                "MM-API-Source": "Hermes",
+            },
+            method="POST",
+        )
+        timeout = float(kwargs.get("timeout") or 60)
+        try:
+            with request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+        except error.HTTPError as exc:
+            body_text = exc.read().decode("utf-8", errors="replace")[:400]
+            raise RuntimeError(f"MiniMax VLM request failed ({exc.code}): {body_text}") from exc
+        except Exception as exc:
+            raise RuntimeError(f"MiniMax VLM request failed: {exc}") from exc
+
+        try:
+            payload = json.loads(raw.decode("utf-8", errors="replace"))
+        except Exception as exc:
+            raise RuntimeError("MiniMax VLM response was not valid JSON.") from exc
+
+        base_resp = payload.get("base_resp") if isinstance(payload, dict) else {}
+        status_code = base_resp.get("status_code") if isinstance(base_resp, dict) else None
+        if status_code not in (0, None):
+            status_msg = str(base_resp.get("status_msg") or "").strip()
+            raise RuntimeError(f"MiniMax VLM API error ({status_code}): {status_msg or 'unknown error'}")
+
+        content = ""
+        if isinstance(payload, dict):
+            content = str(payload.get("content") or "").strip()
+        if not content:
+            raise RuntimeError("MiniMax VLM returned no content.")
+
+        message = SimpleNamespace(role="assistant", content=content)
+        choice = SimpleNamespace(index=0, message=message, finish_reason="stop")
+        return SimpleNamespace(choices=[choice], model=self._model, usage=None)
+
+
+class _MiniMaxVlmChatShim:
+    def __init__(self, adapter: _MiniMaxVlmCompletionsAdapter):
+        self.completions = adapter
+
+
+class MiniMaxVlmAuxiliaryClient:
+    def __init__(self, *, provider: str, model: str, api_key: str, base_url: str):
+        self.chat = _MiniMaxVlmChatShim(
+            _MiniMaxVlmCompletionsAdapter(
+                provider=provider,
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+            )
+        )
+        self.api_key = api_key
+        self.base_url = base_url
+
+
+class _AsyncMiniMaxVlmCompletionsAdapter:
+    def __init__(self, sync_adapter: _MiniMaxVlmCompletionsAdapter):
+        self._sync = sync_adapter
+
+    async def create(self, **kwargs) -> Any:
+        import asyncio
+        return await asyncio.to_thread(self._sync.create, **kwargs)
+
+
+class _AsyncMiniMaxVlmChatShim:
+    def __init__(self, adapter: _AsyncMiniMaxVlmCompletionsAdapter):
+        self.completions = adapter
+
+
+class AsyncMiniMaxVlmAuxiliaryClient:
+    def __init__(self, sync_wrapper: "MiniMaxVlmAuxiliaryClient"):
+        sync_adapter = sync_wrapper.chat.completions
+        async_adapter = _AsyncMiniMaxVlmCompletionsAdapter(sync_adapter)
+        self.chat = _AsyncMiniMaxVlmChatShim(async_adapter)
+        self.api_key = sync_wrapper.api_key
+        self.base_url = sync_wrapper.base_url
+
+
 def _normalize_aux_provider(provider: Optional[str], *, for_vision: bool = False) -> str:
     normalized = (provider or "auto").strip().lower()
     if normalized.startswith("custom:"):
@@ -1208,6 +1375,8 @@ def _to_async_client(sync_client, model: str):
         return AsyncCodexAuxiliaryClient(sync_client), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
+    if isinstance(sync_client, MiniMaxVlmAuxiliaryClient):
+        return AsyncMiniMaxVlmAuxiliaryClient(sync_client), model
 
     async_kwargs = {
         "api_key": sync_client.api_key,
@@ -1458,6 +1627,28 @@ def resolve_provider_client(
         return None, None
 
     if pconfig.auth_type == "api_key":
+        if _minimax_vlm_is_provider(provider) and _minimax_vlm_is_model(model):
+            creds = resolve_api_key_provider_credentials(provider)
+            api_key = str(creds.get("api_key", "")).strip()
+            if not api_key:
+                logger.debug("resolve_provider_client: MiniMax VLM requested but no API key configured")
+                return None, None
+            provider_base = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
+            direct_base = _minimax_vlm_host(provider=provider, base_url=provider_base)
+            client = MiniMaxVlmAuxiliaryClient(
+                provider=provider,
+                model=model,
+                api_key=api_key,
+                base_url=direct_base,
+            )
+            logger.info(
+                "Auxiliary vision: using %s direct VLM (%s) at %s",
+                provider,
+                model,
+                direct_base,
+            )
+            return (_to_async_client(client, model) if async_mode else (client, model))
+
         if provider == "anthropic":
             client, default_model = _try_anthropic()
             if client is None:

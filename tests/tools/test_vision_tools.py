@@ -15,6 +15,8 @@ from tools.vision_tools import (
     _handle_vision_analyze,
     _determine_mime_type,
     _image_to_base64_data_url,
+    _should_use_direct_minimax_vlm,
+    _direct_minimax_vlm_analyze,
     vision_analyze_tool,
     check_vision_requirements,
     get_debug_session_info,
@@ -434,6 +436,52 @@ class TestVisionSafetyGuards:
             await _download_image("https://allowed.test/cat.png", tmp_path / "cat.png", max_retries=1)
 
         assert not (tmp_path / "cat.png").exists()
+
+
+class TestMiniMaxDirectVision:
+    def test_direct_minimax_enabled_with_xiaomi_key(self, monkeypatch):
+        monkeypatch.setenv("XIAOMI_API_KEY", "tp-test-key")
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        assert _should_use_direct_minimax_vlm(
+            vision_cfg={"model": "MiniMax-VL-01"},
+            requested_model=None,
+            image_mime_type="image/jpeg",
+        ) is True
+
+    @pytest.mark.asyncio
+    async def test_direct_minimax_request_ignores_env_proxy(self, monkeypatch):
+        monkeypatch.setenv("XIAOMI_API_KEY", "tp-test-key")
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7897")
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"base_resp": {"status_code": 0}, "content": "ok"}
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                assert kwargs.get("trust_env") is False
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def post(self, *args, **kwargs):
+                return FakeResponse()
+
+        with patch("tools.vision_tools.httpx.AsyncClient", FakeClient):
+            result = await _direct_minimax_vlm_analyze(
+                prompt="describe",
+                image_data_url="data:image/jpeg;base64,abc",
+                timeout=60,
+                vision_cfg={"model": "MiniMax-VL-01"},
+            )
+
+        assert result == "ok"
 
 
 # ---------------------------------------------------------------------------

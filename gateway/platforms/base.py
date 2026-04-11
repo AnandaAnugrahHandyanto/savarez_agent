@@ -56,6 +56,26 @@ def is_network_accessible(host: str) -> bool:
         return True
 
 
+_INTERNAL_REASONING_BLOCK_RE = re.compile(
+    r"<(?:think|reasoning|REASONING_SCRATCHPAD)\b[^>]*>.*?</(?:think|reasoning|REASONING_SCRATCHPAD)>",
+    re.IGNORECASE | re.DOTALL,
+)
+_INTERNAL_REASONING_TAG_RE = re.compile(
+    r"</?(?:think|reasoning|REASONING_SCRATCHPAD)\b[^>]*>",
+    re.IGNORECASE,
+)
+
+
+def _strip_internal_reasoning_blocks(text: str) -> str:
+    """Remove model-emitted reasoning tags from outbound platform messages."""
+    if not text:
+        return text
+    cleaned = _INTERNAL_REASONING_BLOCK_RE.sub("", text)
+    cleaned = _INTERNAL_REASONING_TAG_RE.sub("", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def _detect_macos_system_proxy() -> str | None:
     """Read the macOS system HTTP(S) proxy via ``scutil --proxy``.
 
@@ -1561,6 +1581,10 @@ class BasePlatformAdapter(ABC):
                 local_files, text_content = self.extract_local_files(text_content)
                 if local_files:
                     logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
+
+                # Never leak model-emitted reasoning blocks like <think>...</think>
+                # into user-facing platform messages.
+                text_content = _strip_internal_reasoning_blocks(text_content)
                 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Skipped when the chat has voice mode disabled (/voice off)
