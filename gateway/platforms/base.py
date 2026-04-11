@@ -674,29 +674,29 @@ class SendResult:
 
 
 def merge_pending_message_event(
-    pending_messages: Dict[str, MessageEvent],
+    pending_messages: Dict[str, list[MessageEvent]],
     session_key: str,
     event: MessageEvent,
 ) -> None:
-    """Store or merge a pending event for a session.
+    """Append or merge a pending event into the FIFO queue for a session.
 
     Photo bursts/albums often arrive as multiple near-simultaneous PHOTO
-    events. Merge those into the existing queued event so the next turn sees
-    the whole burst, while non-photo follow-ups still replace the pending
-    event normally.
+    events. Merge those into the *last* queued event so the next turn sees
+    the whole burst, while non-photo follow-ups are appended as separate
+    entries in the FIFO queue.
     """
-    existing = pending_messages.get(session_key)
+    queue = pending_messages.setdefault(session_key, [])
     if (
-        existing
-        and getattr(existing, "message_type", None) == MessageType.PHOTO
+        queue
+        and getattr(queue[-1], "message_type", None) == MessageType.PHOTO
         and event.message_type == MessageType.PHOTO
     ):
-        existing.media_urls.extend(event.media_urls)
-        existing.media_types.extend(event.media_types)
+        queue[-1].media_urls.extend(event.media_urls)
+        queue[-1].media_types.extend(event.media_types)
         if event.text:
-            existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+            queue[-1].text = BasePlatformAdapter._merge_caption(queue[-1].text, event.text)
         return
-    pending_messages[session_key] = event
+    queue.append(event)
 
 
 # Error substrings that indicate a transient *connection* failure worth retrying.
@@ -747,7 +747,7 @@ class BasePlatformAdapter(ABC):
         # Track active message handlers per session for interrupt support
         # Key: session_key (e.g., chat_id), Value: (event, asyncio.Event for interrupt)
         self._active_sessions: Dict[str, asyncio.Event] = {}
-        self._pending_messages: Dict[str, MessageEvent] = {}
+        self._pending_messages: Dict[str, list[MessageEvent]] = {}
         # Background message-processing tasks spawned by handle_message().
         # Gateway shutdown cancels these so an old gateway instance doesn't keep
         # working on a task after --replace or manual restarts.
@@ -1463,7 +1463,7 @@ class BasePlatformAdapter(ABC):
 
             # Default behavior for non-photo follow-ups: interrupt the running agent
             logger.debug("[%s] New message while session %s is active — triggering interrupt", self.name, session_key)
-            self._pending_messages[session_key] = event
+            self._pending_messages.setdefault(session_key, []).append(event)
             # Signal the interrupt (the processing task checks this)
             self._active_sessions[session_key].set()
             return  # Don't process now - will be handled after current task finishes
@@ -1721,9 +1721,12 @@ class BasePlatformAdapter(ABC):
             )
 
             # Check if there's a pending message that was queued during our processing
-            if session_key in self._pending_messages:
-                pending_event = self._pending_messages.pop(session_key)
-                logger.debug("[%s] Processing queued message from interrupt", self.name)
+            if session_key in self._pending_messages and self._pending_messages[session_key]:
+                pending_event = self._pending_messages[session_key].pop(0)
+                # Clean up empty queue
+                if not self._pending_messages[session_key]:
+                    del self._pending_messages[session_key]
+                logger.debug("[%s] Processing queued message from interrupt (%d remaining in queue)", self.name, len(self._pending_messages.get(session_key, [])))
                 # Clean up current session before processing pending
                 if session_key in self._active_sessions:
                     del self._active_sessions[session_key]
@@ -1802,8 +1805,14 @@ class BasePlatformAdapter(ABC):
         return session_key in self._active_sessions and self._active_sessions[session_key].is_set()
     
     def get_pending_message(self, session_key: str) -> Optional[MessageEvent]:
-        """Get and clear any pending message for a session."""
-        return self._pending_messages.pop(session_key, None)
+        """Pop the first pending message from the FIFO queue for a session."""
+        queue = self._pending_messages.get(session_key)
+        if not queue:
+            return None
+        event = queue.pop(0)
+        if not queue:
+            del self._pending_messages[session_key]
+        return event
     
     def build_source(
         self,

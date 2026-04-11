@@ -2366,7 +2366,9 @@ class GatewayRunner:
                 # Force-clean: remove the session lock regardless of agent state
                 adapter = self.adapters.get(source.platform)
                 if adapter and hasattr(adapter, 'get_pending_message'):
-                    adapter.get_pending_message(_quick_key)  # consume and discard
+                    # Drain the entire FIFO queue
+                    while adapter.get_pending_message(_quick_key):
+                        pass
                 self._pending_messages.pop(_quick_key, None)
                 if _quick_key in self._running_agents:
                     del self._running_agents[_quick_key]
@@ -2387,7 +2389,9 @@ class GatewayRunner:
                 # Clear any pending messages so the old text doesn't replay
                 adapter = self.adapters.get(source.platform)
                 if adapter and hasattr(adapter, 'get_pending_message'):
-                    adapter.get_pending_message(_quick_key)  # consume and discard
+                    # Drain the entire FIFO queue
+                    while adapter.get_pending_message(_quick_key):
+                        pass
                 self._pending_messages.pop(_quick_key, None)
                 # Clean up the running agent entry so the reset handler
                 # doesn't think an agent is still active.
@@ -2409,7 +2413,7 @@ class GatewayRunner:
                         source=event.source,
                         message_id=event.message_id,
                     )
-                    adapter._pending_messages[_quick_key] = queued_event
+                    adapter._pending_messages.setdefault(_quick_key, []).append(queued_event)
                 return "Queued for the next turn."
 
             # /model must not be used while the agent is running.
@@ -2450,7 +2454,7 @@ class GatewayRunner:
                 # agent starts.
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    adapter._pending_messages[_quick_key] = event
+                    adapter._pending_messages.setdefault(_quick_key, []).append(event)
                 return None
             if self._draining:
                 if self._queue_during_drain_enabled():
