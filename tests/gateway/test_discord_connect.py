@@ -138,3 +138,124 @@ async def test_connect_releases_token_lock_on_timeout(monkeypatch):
     assert ok is False
     assert released == [("discord-bot-token", "test-token")]
     assert adapter._token_lock_identity is None
+
+
+@pytest.mark.asyncio
+async def test_on_disconnect_triggers_reconnection_when_connected(monkeypatch):
+    """Test that on_disconnect sets fatal error only when adapter was connected."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    created = {}
+
+    def fake_bot_factory(*, command_prefix, intents):
+        created["bot"] = FakeBot(intents=intents)
+        return created["bot"]
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    # Track fatal error notifications
+    fatal_error_calls = []
+    monkeypatch.setattr(adapter, "_set_fatal_error", lambda code, msg, *, retryable: fatal_error_calls.append((code, msg, retryable)))
+    monkeypatch.setattr(adapter, "_notify_fatal_error", AsyncMock())
+
+    ok = await adapter.connect()
+    assert ok is True
+    assert adapter.is_connected  # Adapter should be marked as connected
+
+    # Verify on_disconnect handler is registered
+    assert "on_disconnect" in created["bot"]._events
+
+    # Simulate unexpected disconnect (while still connected)
+    await created["bot"]._events["on_disconnect"]()
+
+    # Verify fatal error was set with retryable=True
+    assert len(fatal_error_calls) == 1
+    assert fatal_error_calls[0][0] == "discord_disconnected"
+    assert "Discord gateway connection closed unexpectedly" in fatal_error_calls[0][1]
+    assert fatal_error_calls[0][2] is True
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_on_disconnect_no_reconnect_when_already_stopped(monkeypatch):
+    """Test that on_disconnect does not trigger reconnection if already stopped."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    created = {}
+
+    def fake_bot_factory(*, command_prefix, intents):
+        created["bot"] = FakeBot(intents=intents)
+        return created["bot"]
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    # Track fatal error notifications
+    fatal_error_calls = []
+    monkeypatch.setattr(adapter, "_set_fatal_error", lambda code, msg, *, retryable: fatal_error_calls.append((code, msg, retryable)))
+    monkeypatch.setattr(adapter, "_notify_fatal_error", AsyncMock())
+
+    ok = await adapter.connect()
+    assert ok is True
+
+    # Manually disconnect first (simulating user-initiated stop)
+    await adapter.disconnect()
+    assert not adapter.is_connected
+    fatal_error_calls.clear()
+
+    # Now simulate disconnect event (should not trigger fatal error)
+    await created["bot"]._events["on_disconnect"]()
+
+    # Verify NO fatal error was set (since adapter was already stopped)
+    assert len(fatal_error_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_on_resumed_marks_connected(monkeypatch):
+    """Test that on_resumed marks the adapter as connected."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    created = {}
+
+    def fake_bot_factory(*, command_prefix, intents):
+        created["bot"] = FakeBot(intents=intents)
+        return created["bot"]
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    ok = await adapter.connect()
+    assert ok is True
+
+    # Verify on_resumed handler is registered
+    assert "on_resumed" in created["bot"]._events
+
+    # First disconnect
+    await created["bot"]._events["on_disconnect"]()
+    assert not adapter.is_connected
+
+    # Then resume
+    await created["bot"]._events["on_resumed"]()
+    assert adapter.is_connected
+
+    await adapter.disconnect()

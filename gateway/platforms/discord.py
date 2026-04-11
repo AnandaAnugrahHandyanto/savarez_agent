@@ -433,6 +433,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
+        self._stopping = False  # True when intentionally disconnecting (avoid reconnect)
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         # Text batching: merge rapid successive messages (Telegram-style)
@@ -639,6 +640,33 @@ class DiscordAdapter(BasePlatformAdapter):
                 await self._handle_message(message)
 
             @self._client.event
+            async def on_disconnect():
+                """Handle Discord disconnect - notify gateway to trigger reconnection.
+
+                Only triggers reconnection if the disconnect was unexpected
+                (i.e., not initiated by calling disconnect()).
+                """
+                logger.warning("[%s] Disconnected from Discord gateway", adapter_self.name)
+
+                # Only treat as fatal error if this was an unexpected disconnect
+                # (_stopping=False means it wasn't user-initiated)
+                if not adapter_self._stopping and adapter_self.is_connected:
+                    adapter_self._set_fatal_error(
+                        'discord_disconnected',
+                        'Discord gateway connection closed unexpectedly',
+                        retryable=True
+                    )
+                    await adapter_self._notify_fatal_error()
+
+                adapter_self._mark_disconnected()
+
+            @self._client.event
+            async def on_resumed():
+                """Handle Discord session resume (after reconnect)."""
+                logger.info("[%s] Discord session resumed", adapter_self.name)
+                adapter_self._mark_connected()
+
+            @self._client.event
             async def on_voice_state_update(member, before, after):
                 """Track voice channel join/leave events."""
                 # Only track channels where the bot is connected
@@ -706,6 +734,9 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
+        # Mark as intentionally stopping to avoid triggering reconnection
+        self._stopping = True
+
         # Clean up all active voice connections before closing the client
         for guild_id in list(self._voice_clients.keys()):
             try:
