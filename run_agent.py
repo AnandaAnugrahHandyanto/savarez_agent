@@ -8602,7 +8602,8 @@ class AIAgent:
                                 "completed": False,
                                 "api_calls": api_call_count,
                                 "error": f"Invalid API response after {max_retries} retries: {_failure_hint}",
-                                "failed": True  # Mark as failure for filtering
+                                "failed": True,  # Mark as failure for filtering
+                                "error_reason": FailoverReason.unknown.value,
                             }
                         
                         # Backoff before retry — jittered exponential: 5s base, 120s cap
@@ -8828,7 +8829,8 @@ class AIAgent:
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "failed": True,
-                                "error": "First response truncated due to output length limit"
+                                "error": "First response truncated due to output length limit",
+                                "error_reason": FailoverReason.unknown.value,
                             }
                     
                     # Track actual token usage from response for context management
@@ -9345,6 +9347,7 @@ class AIAgent:
                                 "api_calls": api_call_count,
                                 "error": f"Request payload too large: max compression attempts ({max_compression_attempts}) reached.",
                                 "partial": True,
+                                "error_reason": FailoverReason.payload_too_large.value,
                                 "failed": True,
                                 "compression_exhausted": True,
                             }
@@ -9376,6 +9379,7 @@ class AIAgent:
                                 "api_calls": api_call_count,
                                 "error": "Request payload too large (413). Cannot compress further.",
                                 "partial": True,
+                                "error_reason": FailoverReason.payload_too_large.value,
                                 "failed": True,
                                 "compression_exhausted": True,
                             }
@@ -9429,6 +9433,7 @@ class AIAgent:
                                     "api_calls": api_call_count,
                                     "error": f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached.",
                                     "partial": True,
+                                    "error_reason": FailoverReason.context_overflow.value,
                                     "failed": True,
                                     "compression_exhausted": True,
                                 }
@@ -9481,6 +9486,7 @@ class AIAgent:
                                 "api_calls": api_call_count,
                                 "error": f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached.",
                                 "partial": True,
+                                "error_reason": FailoverReason.context_overflow.value,
                                 "failed": True,
                                 "compression_exhausted": True,
                             }
@@ -9514,6 +9520,7 @@ class AIAgent:
                                 "api_calls": api_call_count,
                                 "error": f"Context length exceeded ({approx_tokens:,} tokens). Cannot compress further.",
                                 "partial": True,
+                                "error_reason": FailoverReason.context_overflow.value,
                                 "failed": True,
                                 "compression_exhausted": True,
                             }
@@ -9599,6 +9606,7 @@ class AIAgent:
                             "completed": False,
                             "failed": True,
                             "error": str(api_error),
+                            "error_reason": classified.reason.value,
                         }
 
                     if retry_count >= max_retries:
@@ -9682,6 +9690,7 @@ class AIAgent:
                             "completed": False,
                             "failed": True,
                             "error": _final_summary,
+                            "error_reason": classified.reason.value,
                         }
 
                     # For rate limits, respect the Retry-After header if present

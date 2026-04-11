@@ -3870,21 +3870,31 @@ class GatewayRunner:
             if session_key:
                 self._clear_restart_failure_count(session_key)
 
-            # Surface error details when the agent failed silently (final_response=None)
-            if not response and agent_result.get("failed"):
+            _failed_reason = str(agent_result.get("error_reason") or "").strip().lower()
+
+            # Surface error details when the agent produced no direct reply.
+            # This covers failed turns and context-overflow partials, where
+            # run_agent returns structured error metadata without text.
+            if not response and (agent_result.get("failed") or _failed_reason):
                 error_detail = agent_result.get("error", "unknown error")
                 error_str = str(error_detail).lower()
 
-                # Detect context-overflow failures and give specific guidance.
-                # Generic 400 "Error" from Anthropic with large sessions is the
-                # most common cause of this (#1630).
-                _is_ctx_fail = any(p in error_str for p in (
-                    "context", "token", "too large", "too long",
-                    "exceed", "payload",
-                )) or (
-                    "400" in error_str
-                    and len(history) > 50
-                )
+                # Fall back to a narrow text heuristic only when the agent
+                # did not propagate a structured failure reason.
+                _is_ctx_fail = _failed_reason == "context_overflow"
+                if not _is_ctx_fail and not _failed_reason:
+                    _is_ctx_fail = any(p in error_str for p in (
+                        "context",
+                        "token",
+                        "too large",
+                        "too long",
+                        "payload",
+                        "prompt is too long",
+                        "context window",
+                    )) or (
+                        "400" in error_str
+                        and len(history) > 50
+                    )
 
                 if _is_ctx_fail:
                     response = (
@@ -3976,15 +3986,18 @@ class GatewayRunner:
             # intermediate reasoning) so sessions can be resumed with full context
             # and transcripts are useful for debugging and training data.
             #
-            # IMPORTANT: When the agent failed (e.g. context-overflow 400,
-            # compression exhausted), do NOT persist the user's message.
+            # IMPORTANT: When the agent failed due to context overflow, do NOT
+            # persist the user's message.
             # Persisting it would make the session even larger, causing the
-            # same failure on the next attempt — an infinite loop. (#1630, #9893)
-            agent_failed_early = bool(agent_result.get("failed"))
-            if agent_failed_early:
+            # same failure on the next attempt — an infinite loop. (#1630)
+            agent_failed_due_to_context = (
+                not agent_result.get("final_response")
+                and _failed_reason == "context_overflow"
+            )
+            if agent_failed_due_to_context:
                 logger.info(
-                    "Skipping transcript persistence for failed request in "
-                    "session %s to prevent session growth loop.",
+                    "Skipping transcript persistence for context-overflow "
+                    "failure in session %s to prevent session growth loop.",
                     session_entry.session_id,
                 )
 
@@ -4011,7 +4024,7 @@ class GatewayRunner:
             # If this is a fresh session (no history), write the full tool
             # definitions as the first entry so the transcript is self-describing
             # -- the same list of dicts sent as tools=[...] in the API request.
-            if agent_failed_early:
+            if agent_failed_due_to_context:
                 pass  # Skip all transcript writes — don't grow a broken session
             elif not history:
                 tool_defs = agent_result.get("tools", [])
@@ -4030,7 +4043,7 @@ class GatewayRunner:
             # Use the filtered history length (history_offset) that was actually
             # passed to the agent, not len(history) which includes session_meta
             # entries that were stripped before the agent saw them.
-            if not agent_failed_early:
+            if not agent_failed_due_to_context:
                 history_len = agent_result.get("history_offset", len(history))
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
                 
@@ -8719,22 +8732,55 @@ class GatewayRunner:
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
+            # Sync session_id: the agent may have created a new session during
+            # mid-run context compression (_compress_context splits sessions).
+            # If so, update the session store entry so the NEXT message loads
+            # the compressed transcript, not the stale pre-compression one.
+            agent = agent_holder[0]
+            _session_was_split = False
+            if agent and session_key and hasattr(agent, 'session_id') and agent.session_id != session_id:
+                _session_was_split = True
+                logger.info(
+                    "Session split detected: %s → %s (compression)",
+                    session_id, agent.session_id,
+                )
+                entry = self.session_store._entries.get(session_key)
+                if entry:
+                    entry.session_id = agent.session_id
+                    self.session_store._save()
+
+            effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
+
+            # When compression created a new session, the messages list was
+            # shortened.  Using the original history offset would produce an
+            # empty new_messages slice, causing the gateway to write only a
+            # user/assistant pair — losing the compressed summary and tail.
+            # Reset to 0 so the gateway writes ALL compressed messages.
+            _effective_history_offset = 0 if _session_was_split else len(agent_history)
+
             if not final_response:
-                error_msg = f"⚠️ {result['error']}" if result.get("error") else "(No response generated)"
                 return {
-                    "final_response": error_msg,
+                    "final_response": None,
+                    "last_reasoning": result.get("last_reasoning"),
                     "messages": result.get("messages", []),
                     "api_calls": result.get("api_calls", 0),
                     "failed": result.get("failed", False),
                     "compression_exhausted": result.get("compression_exhausted", False),
                     "tools": tools_holder[0] or [],
-                    "history_offset": len(agent_history),
+                    "history_offset": _effective_history_offset,
                     "last_prompt_tokens": _last_prompt_toks,
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
+                    "session_id": effective_session_id,
+                    "completed": result.get("completed"),
+                    "failed": result.get("failed"),
+                    "partial": result.get("partial"),
+                    "error": result.get("error"),
+                    "error_reason": result.get("error_reason"),
+                    "interrupted": result.get("interrupted"),
                 }
-            
+
             # Scan tool results for MEDIA:<path> tags that need to be delivered
             # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
             # in its JSON response, but the model's final text reply usually
@@ -8770,32 +8816,6 @@ class GatewayRunner:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
             
-            # Sync session_id: the agent may have created a new session during
-            # mid-run context compression (_compress_context splits sessions).
-            # If so, update the session store entry so the NEXT message loads
-            # the compressed transcript, not the stale pre-compression one.
-            agent = agent_holder[0]
-            _session_was_split = False
-            if agent and session_key and hasattr(agent, 'session_id') and agent.session_id != session_id:
-                _session_was_split = True
-                logger.info(
-                    "Session split detected: %s → %s (compression)",
-                    session_id, agent.session_id,
-                )
-                entry = self.session_store._entries.get(session_key)
-                if entry:
-                    entry.session_id = agent.session_id
-                    self.session_store._save()
-
-            effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
-
-            # When compression created a new session, the messages list was
-            # shortened.  Using the original history offset would produce an
-            # empty new_messages slice, causing the gateway to write only a
-            # user/assistant pair — losing the compressed summary and tail.
-            # Reset to 0 so the gateway writes ALL compressed messages.
-            _effective_history_offset = 0 if _session_was_split else len(agent_history)
-
             # Auto-generate session title after first exchange (non-blocking)
             if final_response and self._session_db:
                 try:
@@ -8823,6 +8843,12 @@ class GatewayRunner:
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
                 "session_id": effective_session_id,
+                "completed": result.get("completed"),
+                "failed": result.get("failed"),
+                "partial": result.get("partial"),
+                "error": result.get("error"),
+                "error_reason": result.get("error_reason"),
+                "interrupted": result.get("interrupted"),
                 "response_previewed": result.get("response_previewed", False),
             }
         
