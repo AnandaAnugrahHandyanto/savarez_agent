@@ -317,6 +317,9 @@ def supports_systemd_services() -> bool:
         return False
     if is_wsl():
         return _wsl_systemd_operational()
+    # Docker / container environments typically lack systemd
+    if shutil.which("systemctl") is None:
+        return False
     return True
 
 
