@@ -1231,6 +1231,7 @@ class AIAgent:
         compression_summary_model = _compression_cfg.get("summary_model") or None
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+        compression_protect_recent = int(_compression_cfg.get("protect_recent_n", 5))
 
         # Read explicit context_length override from model config
         _model_cfg = _agent_cfg.get("model", {})
@@ -1267,7 +1268,7 @@ class AIAgent:
                                     except (TypeError, ValueError):
                                         pass
                         break
-        
+
         # Select context engine: config-driven (like memory providers).
         # 1. Check config.yaml context.engine setting
         # 2. Check plugins/context_engine/<name>/ directory (repo-shipped)
@@ -1316,6 +1317,7 @@ class AIAgent:
                 threshold_percent=compression_threshold,
                 protect_first_n=3,
                 protect_last_n=compression_protect_last,
+                protect_recent_n=compression_protect_recent,
                 summary_target_ratio=compression_target_ratio,
                 summary_model_override=compression_summary_model,
                 quiet_mode=self.quiet_mode,
@@ -6367,6 +6369,58 @@ class AIAgent:
             if messages and messages[-1].get("_flush_sentinel") == _sentinel:
                 messages.pop()
 
+    def _estimate_request_tokens(self, messages: list, system_prompt: str = "") -> int:
+        """Roughly estimate the next request size including tools and system prompt."""
+        return estimate_request_tokens_rough(
+            messages,
+            system_prompt=system_prompt or "",
+            tools=self.tools or None,
+        )
+
+    def _micro_compact_messages(self, messages: list, *, reason: str) -> tuple[list, int]:
+        """Cheap Layer-1 compaction: prune older tool outputs before a request.
+
+        This keeps assistant/user turns intact, preserves tool call/result pairing,
+        and respects both the pruning tail floor (protect_last_n) and the recent
+        verbatim-retention floor (protect_recent_n).
+        """
+        if not messages or not self.compression_enabled:
+            return messages, 0
+
+        compressor = getattr(self, "context_compressor", None)
+        if compressor is None:
+            return messages, 0
+
+        protect_tail_count = max(compressor.protect_last_n, compressor.protect_recent_n)
+        compacted, pruned_count = compressor._prune_old_tool_results(
+            messages,
+            protect_tail_count=protect_tail_count,
+            protect_tail_tokens=compressor.tail_token_budget,
+        )
+        if pruned_count:
+            logger.info(
+                "micro-compact (%s): pruned %d old tool result(s) "
+                "(tool floor=%d, recent floor=%d, tail budget=%d)",
+                reason,
+                pruned_count,
+                compressor.protect_last_n,
+                compressor.protect_recent_n,
+                compressor.tail_token_budget,
+            )
+        return compacted, pruned_count
+
+    def _prepare_messages_for_request(
+        self,
+        messages: list,
+        system_prompt: str = "",
+        *,
+        reason: str,
+    ) -> tuple[list, int, int]:
+        """Apply micro-compact and return the estimated next request size."""
+        compacted, pruned_count = self._micro_compact_messages(messages, reason=reason)
+        estimated_tokens = self._estimate_request_tokens(compacted, system_prompt)
+        return compacted, pruned_count, estimated_tokens
+
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default") -> tuple:
         """Compress conversation context and split the session in SQLite.
 
@@ -7571,14 +7625,12 @@ class AIAgent:
         if (
             self.compression_enabled
             and len(messages) > self.context_compressor.protect_first_n
-                                + self.context_compressor.protect_last_n + 1
+                                + self.context_compressor.protect_recent_n + 1
         ):
-            # Include tool schema tokens — with many tools these can add
-            # 20-30K+ tokens that the old sys+msg estimate missed entirely.
-            _preflight_tokens = estimate_request_tokens_rough(
+            messages, _preflight_pruned, _preflight_tokens = self._prepare_messages_for_request(
                 messages,
-                system_prompt=active_system_prompt or "",
-                tools=self.tools or None,
+                active_system_prompt or "",
+                reason="preflight",
             )
 
             if _preflight_tokens >= self.context_compressor.threshold_tokens:
@@ -7610,11 +7662,11 @@ class AIAgent:
                     # skipping them because conversation_history is still the
                     # pre-compression length.
                     conversation_history = None
-                    # Re-estimate after compression
-                    _preflight_tokens = estimate_request_tokens_rough(
+                    # Re-run micro-compact + estimate after compression
+                    messages, _preflight_pruned, _preflight_tokens = self._prepare_messages_for_request(
                         messages,
-                        system_prompt=active_system_prompt or "",
-                        tools=self.tools or None,
+                        active_system_prompt or "",
+                        reason=f"preflight-pass-{_pass + 1}",
                     )
                     if _preflight_tokens < self.context_compressor.threshold_tokens:
                         break  # Under threshold
@@ -7741,6 +7793,11 @@ class AIAgent:
             # Note: Reasoning is embedded in content via <think> tags for trajectory storage.
             # However, providers like Moonshot AI require a separate 'reasoning_content' field
             # on assistant messages with tool_calls. We handle both cases here.
+            messages, _turn_pruned, _ = self._prepare_messages_for_request(
+                messages,
+                active_system_prompt or "",
+                reason=f"loop-{api_call_count}",
+            )
             api_messages = []
             for idx, msg in enumerate(messages):
                 api_msg = msg.copy()
@@ -9517,7 +9574,10 @@ class AIAgent:
                             + _compressor.last_completion_tokens
                         )
                     else:
-                        _real_tokens = estimate_messages_tokens_rough(messages)
+                        _real_tokens = self._estimate_request_tokens(
+                            messages,
+                            active_system_prompt or "",
+                        )
 
                     # ── Context pressure warnings (user-facing only) ──────────
                     # Notify the user (NOT the LLM) as context approaches the

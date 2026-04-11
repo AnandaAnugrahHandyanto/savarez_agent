@@ -357,7 +357,8 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
-        "protect_last_n": 20,         # minimum recent messages to keep uncompressed
+        "protect_last_n": 20,         # minimum recent messages protected from tool-result pruning
+        "protect_recent_n": 5,        # minimum newest messages kept verbatim during compaction
         "summary_model": "",          # empty = use main configured model
         "summary_provider": "auto",
         "summary_base_url": None,
@@ -2629,7 +2630,8 @@ def show_config():
     if enabled:
         print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
         print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
-        print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
+        print(f"  Protect last: {compression.get('protect_last_n', 20)} messages (tool pruning floor)")
+        print(f"  Protect recent: {compression.get('protect_recent_n', 5)} messages (kept verbatim)")
         _sm = compression.get('summary_model', '') or '(main model)'
         print(f"  Model:        {_sm}")
         comp_provider = compression.get('summary_provider', 'auto')
