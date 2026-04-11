@@ -83,7 +83,7 @@ _PLATFORM_SPECS: tuple[PlatformSpec, ...] = (
     PlatformSpec("weixin", "Weixin", "💬", "hermes-weixin", configured_all_of=("WEIXIN_TOKEN", "WEIXIN_ACCOUNT_ID"), home_channel_env="WEIXIN_HOME_CHANNEL", include_in_setup=True, setup_label="Weixin (WeChat)"),
     PlatformSpec("api_server", "API Server", "🌐", "hermes-api-server", configured_truthy_any_of=("API_SERVER_ENABLED",), configured_any_of=("API_SERVER_KEY",), include_in_skills=False),
     PlatformSpec("mattermost", "Mattermost", "💬", "hermes-mattermost", configured_all_of=("MATTERMOST_URL", "MATTERMOST_TOKEN"), home_channel_env="MATTERMOST_HOME_CHANNEL", include_in_setup=True),
-    PlatformSpec("sms", "SMS", "📱", "hermes-sms", configured_all_of=("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"), home_channel_env="SMS_HOME_CHANNEL", include_in_setup=False, include_in_skills=False),
+    PlatformSpec("sms", "SMS", "📱", "hermes-sms", configured_all_of=("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"), home_channel_env="SMS_HOME_CHANNEL", include_in_setup=False),
     PlatformSpec("webhook", "Webhook", "🔗", "hermes-webhook", configured_truthy_any_of=("WEBHOOK_ENABLED",), include_in_setup=True, setup_label="Webhooks (GitHub, GitLab, etc.)"),
 )
 
