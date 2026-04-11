@@ -58,3 +58,6 @@ mini-swe-agent/
 # Nix
 .direnv/
 result
+
+# Smart home config files (contain IPs, MACs, device-specific info)
+# These live in ~/.hermes/smart_home/*.yaml at runtime
