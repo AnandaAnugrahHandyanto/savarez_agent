@@ -1560,3 +1560,43 @@ class TestStaleBaseUrlWarning:
 
         assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
             "Warning should not fire a second time"
+
+
+class TestCustomEndpointHeaders:
+    """Tests for provider-specific default_headers on custom endpoints."""
+
+    def test_kimi_custom_endpoint_gets_user_agent_header(self):
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            client, model = resolve_provider_client(
+                "custom",
+                explicit_base_url="https://api.kimi.com/coding/v1",
+                explicit_api_key="kimi-key",
+            )
+            assert client is not None
+            call_kwargs = mock_openai.call_args.kwargs
+            assert call_kwargs["default_headers"] == {"User-Agent": "KimiCLI/1.30.0"}
+
+    def test_copilot_custom_endpoint_gets_editor_headers(self):
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            client, model = resolve_provider_client(
+                "custom",
+                explicit_base_url="https://api.githubcopilot.com",
+                explicit_api_key="gh-token",
+            )
+            assert client is not None
+            call_kwargs = mock_openai.call_args.kwargs
+            assert "Editor-Version" in call_kwargs["default_headers"]
+
+    def test_other_custom_endpoint_gets_no_extra_headers(self):
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            client, model = resolve_provider_client(
+                "custom",
+                explicit_base_url="https://open.bigmodel.cn/api/coding/paas/v4",
+                explicit_api_key="glm-key",
+            )
+            assert client is not None
+            call_kwargs = mock_openai.call_args.kwargs
+            assert "default_headers" not in call_kwargs
