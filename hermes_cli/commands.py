@@ -69,6 +69,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[name]"),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
+    CommandDef("plan", "Write a markdown implementation plan via the bundled plan skill", "Session",
+               args_hint="[request]"),
     CommandDef("compress", "Manually compress conversation context", "Session"),
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
@@ -291,7 +293,7 @@ GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
 )
 
 
-def _resolve_config_gates() -> set[str]:
+def _resolve_config_gates(config: Any = None) -> set[str]:
     """Return canonical names of commands whose ``gateway_config_gate`` is truthy.
 
     Reads ``config.yaml`` and walks the dot-separated key path for each
@@ -301,11 +303,22 @@ def _resolve_config_gates() -> set[str]:
     gated = [c for c in COMMAND_REGISTRY if c.gateway_config_gate]
     if not gated:
         return set()
-    try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config()
-    except Exception:
-        return set()
+    if config is None:
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config()
+        except Exception:
+            return set()
+    elif isinstance(config, dict):
+        cfg = config
+    else:
+        try:
+            cfg = {
+                "display": getattr(config, "display", None),
+                "agent": getattr(config, "agent", None),
+            }
+        except Exception:
+            return set()
     result: set[str] = set()
     for cmd in gated:
         val: Any = cfg
@@ -488,7 +501,8 @@ def _collect_gateway_skill_entries(
             name = sanitize_name(cmd_name) if sanitize_name else cmd_name
             if not name:
                 continue
-            desc = "Plugin command"
+            spec = plugin_cmds.get(cmd_name) or {}
+            desc = str(spec.get("description", "") or "Plugin command")
             if len(desc) > desc_limit:
                 desc = desc[:desc_limit - 3] + "..."
             plugin_pairs.append((name, desc))
@@ -647,9 +661,11 @@ class SlashCommandCompleter(Completer):
     def __init__(
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
+        plugin_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
         command_filter: Callable[[str], bool] | None = None,
     ) -> None:
         self._skill_commands_provider = skill_commands_provider
+        self._plugin_commands_provider = plugin_commands_provider
         self._command_filter = command_filter
 
     def _command_allowed(self, slash_command: str) -> bool:
@@ -665,6 +681,14 @@ class SlashCommandCompleter(Completer):
             return {}
         try:
             return self._skill_commands_provider() or {}
+        except Exception:
+            return {}
+
+    def _iter_plugin_commands(self) -> Mapping[str, dict[str, Any]]:
+        if self._plugin_commands_provider is None:
+            return {}
+        try:
+            return self._plugin_commands_provider() or {}
         except Exception:
             return {}
 
@@ -958,6 +982,17 @@ class SlashCommandCompleter(Completer):
                     start_position=-len(word),
                     display=cmd,
                     display_meta=desc,
+                )
+
+        for cmd_name, spec in self._iter_plugin_commands().items():
+            if cmd_name.startswith(word):
+                description = str(spec.get("description", "Plugin command"))
+                short_desc = description[:50] + ("..." if len(description) > 50 else "")
+                yield Completion(
+                    self._completion_text(cmd_name, word),
+                    start_position=-len(word),
+                    display=f"/{cmd_name}",
+                    display_meta=f"🔌 {short_desc}",
                 )
 
         for cmd, info in self._iter_skill_commands().items():

@@ -377,6 +377,20 @@ class TestSlashCommandCompleter:
         assert completions[0].display_text == "/gif-search"
         assert completions[0].display_meta_text == "⚡ Search for GIFs across providers"
 
+    def test_plugin_commands_are_completed_from_provider(self):
+        completer = SlashCommandCompleter(
+            plugin_commands_provider=lambda: {
+                "design-sync": {"description": "Sync design context"},
+            }
+        )
+
+        completions = _completions(completer, "/des")
+
+        assert len(completions) == 1
+        assert completions[0].text == "design-sync"
+        assert completions[0].display_text == "/design-sync"
+        assert completions[0].display_meta_text == "🔌 Sync design context"
+
     def test_skill_exact_match_adds_trailing_space(self):
         completer = SlashCommandCompleter(
             skill_commands_provider=lambda: {
