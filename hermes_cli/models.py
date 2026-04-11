@@ -266,6 +266,29 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2.5",
     ],
     # Curated HF model list — only agentic models that map to OpenRouter defaults.
+    "synthetic": [
+        # Always-on models (accessed via Synthetic API)
+        "hf:moonshotai/Kimi-K2.5",
+        "hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
+        "hf:nvidia/Kimi-K2.5-NVFP4",
+        "hf:MiniMaxAI/MiniMax-M2.5",
+        "hf:zai-org/GLM-4.7",
+        "hf:zai-org/GLM-4.7-Flash",
+        "hf:zai-org/GLM-5",
+        # Fireworks-hosted (via Synthetic)
+        "hf:deepseek-ai/DeepSeek-V3.2",
+        "hf:MiniMaxAI/MiniMax-M2.1",
+        "hf:moonshotai/Kimi-K2-Instruct-0905",
+        "hf:moonshotai/Kimi-K2-Thinking",
+        "hf:openai/gpt-oss-120b",
+        # Together AI-hosted (via Synthetic)
+        "hf:deepseek-ai/DeepSeek-R1-0528",
+        "hf:deepseek-ai/DeepSeek-V3",
+        "hf:meta-llama/Llama-3.3-70B-Instruct",
+        "hf:Qwen/Qwen3-235B-A22B-Thinking-2507",
+        "hf:Qwen/Qwen3-Coder-480B-A35B-Instruct",
+        "hf:Qwen/Qwen3.5-397B-A17B",
+    ],
     "huggingface": [
         "Qwen/Qwen3.5-397B-A17B",
         "Qwen/Qwen3.5-35B-A3B",
@@ -488,6 +511,7 @@ _PROVIDER_LABELS = {
     "alibaba": "Alibaba Cloud (DashScope)",
     "qwen-oauth": "Qwen OAuth (Portal)",
     "huggingface": "Hugging Face",
+    "synthetic": "Synthetic",
     "custom": "Custom endpoint",
 }
 
@@ -816,7 +840,7 @@ def list_available_providers() -> list[dict[str, str]]:
         "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "qwen-oauth",
         "opencode-zen", "opencode-go",
-        "ai-gateway", "deepseek", "custom",
+        "ai-gateway", "deepseek", "synthetic", "custom",
     ]
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
