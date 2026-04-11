@@ -298,6 +298,81 @@ def _expand_whatsapp_auth_aliases(identifier: str) -> set:
 
 logger = logging.getLogger(__name__)
 
+def _extract_visible_assistant_text(content: Any) -> str:
+    """Normalize assistant content down to user-visible text only."""
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") not in ("text", "output_text", "input_text"):
+                continue
+            text_value = block.get("text")
+            if isinstance(text_value, dict):
+                text_value = text_value.get("value")
+            if text_value:
+                parts.append(str(text_value))
+        text = "\n".join(part.strip() for part in parts if str(part).strip())
+    else:
+        text = ""
+
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(
+        r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>',
+        '',
+        text,
+        flags=re.DOTALL,
+    )
+    text = re.sub(
+        r'</?(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>\s*',
+        '',
+        text,
+        flags=re.IGNORECASE,
+    )
+    return text.strip()
+
+
+def _merge_pretool_text_into_response(
+    response: str,
+    agent_messages: list[dict[str, Any]],
+    history_offset: int,
+    *,
+    final_visible_response: str = "",
+) -> str:
+    """Include visible assistant text from mixed content+tool-call turns.
+
+    Non-streaming gateways only send the final response string. When the model
+    emits visible text in the same assistant turn as tool calls, preserve that
+    text by prepending it to the final response for this turn.
+    """
+    merged_prefixes: list[str] = []
+    final_text = (final_visible_response or response or "").strip()
+
+    current_turn_start = max(history_offset, 0)
+    for idx in range(len(agent_messages) - 1, -1, -1):
+        if agent_messages[idx].get("role") == "user":
+            current_turn_start = max(current_turn_start, idx)
+            break
+
+    for msg in agent_messages[current_turn_start:]:
+        if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+            continue
+        content = _extract_visible_assistant_text(msg.get("content"))
+        if not content:
+            continue
+        if content == final_text:
+            continue
+        if merged_prefixes and merged_prefixes[-1] == content:
+            continue
+        merged_prefixes.append(content)
+
+    if not merged_prefixes:
+        return response
+    if not final_text:
+        return "\n\n".join(merged_prefixes)
+    return "\n\n".join(merged_prefixes + [response])
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -3421,12 +3496,6 @@ class GatewayRunner:
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
-            _resp_len = len(response)
-            logger.info(
-                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
-                _platform_name, source.chat_id or "unknown",
-                _response_time, _api_calls, _resp_len,
-            )
 
             # Surface error details when the agent failed silently (final_response=None)
             if not response and agent_result.get("failed"):
@@ -3461,6 +3530,8 @@ class GatewayRunner:
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 session_entry.session_id = agent_result["session_id"]
 
+            raw_visible_response = response
+
             # Prepend reasoning/thinking if display is enabled
             if getattr(self, "_show_reasoning", False) and response:
                 last_reasoning = agent_result.get("last_reasoning")
@@ -3473,6 +3544,20 @@ class GatewayRunner:
                     else:
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+
+            response = _merge_pretool_text_into_response(
+                response,
+                agent_messages,
+                agent_result.get("history_offset", len(history)),
+                final_visible_response=raw_visible_response,
+            )
+
+            _resp_len = len(response)
+            logger.info(
+                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
+                _platform_name, source.chat_id or "unknown",
+                _response_time, _api_calls, _resp_len,
+            )
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
