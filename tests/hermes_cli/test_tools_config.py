@@ -286,6 +286,42 @@ def test_save_platform_tools_still_preserves_mcp_with_platform_default_present()
     assert "terminal" not in saved
 
 
+def test_save_platform_tools_round_trip_preserves_messaging_toolset():
+    """messaging is a built-in configurable toolset, not a passthrough entry."""
+    config = {
+        "platform_toolsets": {
+            "cli": ["web", "messaging"]
+        }
+    }
+
+    assert "messaging" in _get_platform_tools(config, "cli")
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web", "messaging"})
+
+    saved = config["platform_toolsets"]["cli"]
+    assert "messaging" in saved
+
+    reloaded = _get_platform_tools(config, "cli")
+    assert "messaging" in reloaded
+
+
+def test_save_platform_tools_drops_deselected_messaging_toolset():
+    """messaging must disappear when the user explicitly disables it."""
+    config = {
+        "platform_toolsets": {
+            "cli": ["web", "messaging"]
+        }
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web"})
+
+    saved = config["platform_toolsets"]["cli"]
+    assert "messaging" not in saved
+    assert _get_platform_tools(config, "cli") == {"web"}
+
+
 def test_visible_providers_include_nous_subscription_when_logged_in(monkeypatch):
     monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
     config = {"model": {"provider": "nous"}}
