@@ -5,6 +5,26 @@ set -e
 HERMES_HOME="/opt/data"
 INSTALL_DIR="/opt/hermes"
 
+if [ "$(id -u)" = "0" ]; then
+    if [ -n "$HERMES_UID" -a "$HERMES_UID" != "$(id -u hermes)" ]; then
+        echo "Changing hermes UID to $HERMES_UID"
+        usermod -u "$HERMES_UID" hermes
+    fi
+
+    if [ -n "$HERMES_GID" -a "$HERMES_GID" != "$(id -g hermes)" ]; then
+        echo "Changing hermes GID to $HERMES_GID"
+        groupmod -g "$HERMES_GID" hermes
+    fi
+
+    actual_hermes_uid=$(id -u hermes)
+    if [ "$(stat -c %u $HERMES_HOME)" != "$actual_hermes_uid" ]; then
+        echo "$HERMES_HOME is not owned by $actual_hermes_uid, fixing"
+        chown -R hermes:hermes $HERMES_HOME
+    fi
+    echo "Dropping root privileges"
+    exec gosu hermes $0 "$@"
+fi
+
 source ${INSTALL_DIR}/.venv/bin/activate
 
 npx playwright install chromium --only-shell
