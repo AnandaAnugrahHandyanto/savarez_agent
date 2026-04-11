@@ -7,6 +7,7 @@ Add, remove, or reorder entries here — both `hermes setup` and
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import urllib.request
@@ -86,12 +87,13 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-5.4-pro",
         "openai/gpt-5.4-nano",
     ],
-    "openai-codex": [
-        "gpt-5.3-codex",
-        "gpt-5.2-codex",
-        "gpt-5.1-codex-mini",
-        "gpt-5.1-codex-max",
-    ],
+    # "openai-codex" is populated below from hermes_cli.codex_models to avoid
+    # two sources of truth disagreeing (this list was previously hardcoded and
+    # drifted stale — missing gpt-5.4, gpt-5.4-mini, etc.). The key is
+    # declared here so that iteration order in detect_provider_for_model()
+    # preserves openai-codex's historical priority over copilot for Codex
+    # slugs; its value is filled in right after the dict literal.
+    "openai-codex": [],
     "copilot-acp": [
         "copilot-acp",
     ],
@@ -281,6 +283,39 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "moonshotai/Kimi-K2-Thinking",
     ],
 }
+
+
+@functools.lru_cache(maxsize=1)
+def _get_codex_models_for_registry() -> list[str]:
+    """Return the canonical Codex model list for ``_PROVIDER_MODELS``.
+
+    Routes through :func:`hermes_cli.codex_models.get_codex_model_ids` with no
+    access token so the resolution falls through API → config.toml → cache →
+    ``DEFAULT_CODEX_MODELS`` without any network calls at import time. Cached
+    because this is hit from catalog-lookup hot paths.
+    """
+    try:
+        from hermes_cli.codex_models import (
+            DEFAULT_CODEX_MODELS,
+            get_codex_model_ids,
+        )
+    except Exception:
+        return []
+    try:
+        models = get_codex_model_ids(access_token=None)
+    except Exception:
+        models = list(DEFAULT_CODEX_MODELS)
+    # Defensive: if the resolver somehow returns an empty list, fall back
+    # to the hardcoded defaults so /model <codex-slug> still works.
+    if not models:
+        models = list(DEFAULT_CODEX_MODELS)
+    return list(models)
+
+
+# Populate the openai-codex entry from the canonical source of truth. This
+# runs once at module import; the cached helper makes repeat lookups cheap.
+_PROVIDER_MODELS["openai-codex"] = _get_codex_models_for_registry()
+
 
 # ---------------------------------------------------------------------------
 # Nous Portal free-model filtering

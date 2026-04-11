@@ -189,6 +189,74 @@ class TestDetectProviderForModel:
         assert result[0] not in ("nous",)  # nous has claude models but shouldn't be suggested
 
 
+class TestCodexProviderModels:
+    """Regression tests for the ``openai-codex`` provider model list.
+
+    Previously the entry was hardcoded inside ``_PROVIDER_MODELS`` and drifted
+    stale — missing newer Codex slugs like ``gpt-5.4`` and ``gpt-5.4-mini``.
+    The fix routes it through ``hermes_cli.codex_models.get_codex_model_ids``,
+    which falls back to ``DEFAULT_CODEX_MODELS`` when no access token is
+    available. This guards against the two-sources-of-truth regression.
+    """
+
+    def test_codex_list_matches_default_codex_models(self):
+        from hermes_cli.codex_models import DEFAULT_CODEX_MODELS
+        from hermes_cli.models import _PROVIDER_MODELS
+
+        codex_models = _PROVIDER_MODELS["openai-codex"]
+        # Every canonical default Codex model must be present in the
+        # provider catalog used by auto-detection.
+        for mid in DEFAULT_CODEX_MODELS:
+            assert mid in codex_models, (
+                f"Codex model {mid!r} from DEFAULT_CODEX_MODELS missing from "
+                f"_PROVIDER_MODELS['openai-codex']; regression risk: the two "
+                f"sources of truth have diverged again."
+            )
+
+    def test_codex_list_includes_gpt_5_4_family(self):
+        """Explicit spot-check for the originally reported missing slugs."""
+        from hermes_cli.models import _PROVIDER_MODELS
+
+        codex_models = _PROVIDER_MODELS["openai-codex"]
+        assert "gpt-5.4" in codex_models
+        assert "gpt-5.4-mini" in codex_models
+        assert "gpt-5.3-codex" in codex_models
+        assert "gpt-5.2-codex" in codex_models
+
+    def test_detect_provider_for_gpt_5_4_routes_to_codex(self, monkeypatch):
+        """`/model gpt-5.4` from a non-Codex current provider should auto-
+        detect ``openai-codex`` (not Copilot).
+
+        Iteration order in ``_PROVIDER_MODELS`` is significant: ``openai-codex``
+        is declared before ``copilot`` so the Codex provider wins the first
+        direct match for Codex slugs that appear in both lists. Copilot still
+        wins for its Copilot-only models (e.g. ``gpt-4.1``).
+        """
+        # Make sure no real provider credentials bias the result.
+        for env_var in (
+            "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "COPILOT_TOKEN",
+            "GITHUB_TOKEN", "CODEX_API_KEY",
+        ):
+            monkeypatch.delenv(env_var, raising=False)
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            result = detect_provider_for_model("gpt-5.4", "anthropic")
+        assert result is not None
+        assert result[0] == "openai-codex"
+        assert result[1] == "gpt-5.4"
+
+    def test_detect_provider_for_gpt_5_4_mini_routes_to_codex(self, monkeypatch):
+        for env_var in (
+            "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "COPILOT_TOKEN",
+            "GITHUB_TOKEN", "CODEX_API_KEY",
+        ):
+            monkeypatch.delenv(env_var, raising=False)
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            result = detect_provider_for_model("gpt-5.4-mini", "anthropic")
+        assert result is not None
+        assert result[0] == "openai-codex"
+        assert result[1] == "gpt-5.4-mini"
+
+
 class TestFilterNousFreeModels:
     """Tests for filter_nous_free_models — Nous Portal free-model policy."""
 
