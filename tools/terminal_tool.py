@@ -883,6 +883,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
 
 
 # Environment classes now live in tools/environments/
+from tools.environments.android_linux import AndroidLinuxEnvironment as _AndroidLinuxEnvironment
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
@@ -1019,6 +1020,8 @@ def _get_env_config() -> Dict[str, Any]:
     # else starts in the backend's default root-like cwd.
     if env_type == "local":
         default_cwd = os.getcwd()
+    elif env_type == "android_linux":
+        default_cwd = os.getenv("HERMES_ANDROID_LINUX_HOME", os.getcwd())
     elif env_type == "ssh":
         default_cwd = "~"
     elif env_type == "vercel_sandbox":
@@ -1065,6 +1068,10 @@ def _get_env_config() -> Dict[str, Any]:
         "vercel_runtime": os.getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
+        "android_linux_prefix": os.getenv("HERMES_ANDROID_LINUX_PREFIX", ""),
+        "android_linux_bash": os.getenv("HERMES_ANDROID_LINUX_BASH", ""),
+        "android_linux_home": os.getenv("HERMES_ANDROID_LINUX_HOME", ""),
+        "android_linux_tmp": os.getenv("HERMES_ANDROID_LINUX_TMP", ""),
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
         "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
         "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
@@ -1137,6 +1144,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
+
+    elif env_type == "android_linux":
+        return _AndroidLinuxEnvironment(cwd=cwd, timeout=timeout)
     
     elif env_type == "docker":
         return _DockerEnvironment(
@@ -1250,7 +1260,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', or 'ssh'"
+            f"'android_linux', 'singularity', 'modal', 'daytona', "
+            f"'vercel_sandbox', or 'ssh'"
         )
 
 
@@ -2155,6 +2166,13 @@ def check_terminal_requirements() -> bool:
         if env_type == "local":
             return True
 
+        elif env_type == "android_linux":
+            bash_path = config.get("android_linux_bash", "")
+            prefix_path = config.get("android_linux_prefix", "")
+            return bool(
+                bash_path and prefix_path and os.path.isfile(str(bash_path)) and os.path.isdir(str(prefix_path))
+            )
+
         elif env_type == "docker":
             from tools.environments.docker import find_docker
             docker = find_docker()
@@ -2244,7 +2262,7 @@ def check_terminal_requirements() -> bool:
 
         else:
             logger.error(
-                "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
+                "Unknown TERMINAL_ENV '%s'. Use one of: local, android_linux, docker, singularity, "
                 "modal, daytona, vercel_sandbox, ssh.",
                 env_type,
             )
