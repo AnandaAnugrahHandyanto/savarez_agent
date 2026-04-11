@@ -66,7 +66,6 @@ class TestTerminalRequirements:
             terminal_tool_module,
             "ensure_minisweagent_on_path",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not be called")),
-            raising=False,
         )
         monkeypatch.setitem(
             live_check_fn.__globals__,
