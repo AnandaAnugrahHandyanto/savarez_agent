@@ -277,6 +277,105 @@ def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None)
     return data_url
 
 
+# Maximum base64 payload size for vision APIs (5 MB).
+_MAX_BASE64_BYTES = 5 * 1024 * 1024
+
+
+def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
+                              max_base64_bytes: int = _MAX_BASE64_BYTES) -> str:
+    """Convert an image to a base64 data URL, auto-resizing if too large.
+
+    Tries Pillow first to progressively downscale oversized images.  If Pillow
+    is not installed or resizing still exceeds the limit, falls back to the raw
+    bytes and lets the caller handle the size check.
+
+    Returns the base64 data URL string.
+    """
+    # Quick file-size estimate: base64 expands by ~4/3, plus data URL header.
+    # Skip the expensive full-read + encode if Pillow can resize directly.
+    file_size = image_path.stat().st_size
+    estimated_b64 = (file_size * 4) // 3 + 100  # ~header overhead
+    if estimated_b64 <= max_base64_bytes:
+        # Small enough — just encode directly.
+        data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
+        if len(data_url) <= max_base64_bytes:
+            return data_url
+    else:
+        data_url = None  # defer full encode; try Pillow resize first
+
+    # Attempt auto-resize with Pillow (soft dependency)
+    try:
+        from PIL import Image
+        import io as _io
+    except ImportError:
+        logger.info("Pillow not installed — cannot auto-resize oversized image")
+        if data_url is None:
+            data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
+        return data_url  # caller will raise the size error
+
+    logger.info("Image file is %.1f MB (estimated base64 %.1f MB, limit %.1f MB), auto-resizing...",
+                file_size / (1024 * 1024), estimated_b64 / (1024 * 1024),
+                max_base64_bytes / (1024 * 1024))
+
+    mime = mime_type or _determine_mime_type(image_path)
+    # Choose output format: JPEG for photos (smaller), PNG for transparency
+    pil_format = "PNG" if mime == "image/png" else "JPEG"
+    out_mime = "image/png" if pil_format == "PNG" else "image/jpeg"
+
+    try:
+        img = Image.open(image_path)
+    except Exception as exc:
+        logger.info("Pillow cannot open image for resizing: %s", exc)
+        if data_url is None:
+            data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
+        return data_url  # fall through to size-check in caller
+    # Convert RGBA to RGB for JPEG output
+    if pil_format == "JPEG" and img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+
+    # Strategy: halve dimensions until base64 fits, up to 4 rounds.
+    # For JPEG, also try reducing quality at each size step.
+    # For PNG, quality is irrelevant — only dimension reduction helps.
+    quality_steps = (85, 70, 50) if pil_format == "JPEG" else (None,)
+    prev_dims = (img.width, img.height)
+    candidate = None  # will be set on first loop iteration
+
+    for attempt in range(5):
+        if attempt > 0:
+            new_w = max(img.width // 2, 64)
+            new_h = max(img.height // 2, 64)
+            # Stop if dimensions can't shrink further
+            if (new_w, new_h) == prev_dims:
+                break
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+            prev_dims = (new_w, new_h)
+            logger.info("Resized to %dx%d (attempt %d)", new_w, new_h, attempt)
+
+        for q in quality_steps:
+            buf = _io.BytesIO()
+            save_kwargs = {"format": pil_format}
+            if q is not None:
+                save_kwargs["quality"] = q
+            img.save(buf, **save_kwargs)
+            encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+            candidate = f"data:{out_mime};base64,{encoded}"
+            if len(candidate) <= max_base64_bytes:
+                logger.info("Auto-resized image fits: %.1f MB (quality=%s, %dx%d)",
+                            len(candidate) / (1024 * 1024), q,
+                            img.width, img.height)
+                return candidate
+
+    # If we still can't get it small enough, return the best attempt
+    # and let the caller decide
+    if candidate is not None:
+        logger.warning("Auto-resize could not fit image under %.1f MB (best: %.1f MB)",
+                       max_base64_bytes / (1024 * 1024), len(candidate) / (1024 * 1024))
+        return candidate
+
+    # Shouldn't reach here, but fall back to full encode
+    return data_url or _image_to_base64_data_url(image_path, mime_type=mime_type)
+
+
 async def vision_analyze_tool(
     image_url: str,
     user_prompt: str,
@@ -376,23 +475,21 @@ async def vision_analyze_tool(
         if not detected_mime_type:
             raise ValueError("Only real image files are supported for vision analysis.")
         
-        # Convert image to base64 data URL
+        # Convert image to base64 data URL, auto-resizing if oversized.
         logger.info("Converting image to base64...")
-        image_data_url = _image_to_base64_data_url(temp_image_path, mime_type=detected_mime_type)
+        image_data_url = _resize_image_for_vision(temp_image_path, mime_type=detected_mime_type)
         # Calculate size in KB for better readability
         data_size_kb = len(image_data_url) / 1024
         logger.info("Image converted to base64 (%.1f KB)", data_size_kb)
 
-        # Pre-flight size check: most vision APIs cap base64 payloads at 5 MB.
-        # Reject early with a clear message instead of a cryptic provider 400.
-        _MAX_BASE64_BYTES = 5 * 1024 * 1024  # 5 MB
-        # The data URL includes the header (e.g. "data:image/jpeg;base64,") which
-        # is negligible, but measure the full string to be safe.
+        # Post-resize size check: if Pillow wasn't available or the image is
+        # still too large after resizing, reject with a clear message.
         if len(image_data_url) > _MAX_BASE64_BYTES:
             raise ValueError(
                 f"Image too large for vision API: base64 payload is "
                 f"{len(image_data_url) / (1024 * 1024):.1f} MB (limit 5 MB). "
-                f"Resize or compress the image and try again."
+                f"Install Pillow (`pip install Pillow`) for automatic image "
+                f"resizing, or resize/compress the image manually and try again."
             )
 
         debug_call_data["image_size_bytes"] = image_size_bytes

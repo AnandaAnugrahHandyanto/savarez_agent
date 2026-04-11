@@ -15,6 +15,8 @@ from tools.vision_tools import (
     _handle_vision_analyze,
     _determine_mime_type,
     _image_to_base64_data_url,
+    _resize_image_for_vision,
+    _MAX_BASE64_BYTES,
     vision_analyze_tool,
     check_vision_requirements,
     get_debug_session_info,
@@ -686,3 +688,87 @@ class TestVisionRegistration:
 
         entry = registry._tools.get("vision_analyze")
         assert callable(entry.handler)
+
+
+# ---------------------------------------------------------------------------
+# _resize_image_for_vision — auto-resize oversized images
+# ---------------------------------------------------------------------------
+
+
+class TestResizeImageForVision:
+    """Tests for the auto-resize function."""
+
+    def test_small_image_returned_as_is(self, tmp_path):
+        """Images under the limit should be returned unchanged."""
+        # Create a small 10x10 red PNG
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (10, 10), (255, 0, 0))
+        path = tmp_path / "small.png"
+        img.save(path, "PNG")
+
+        result = _resize_image_for_vision(path, mime_type="image/png")
+        assert result.startswith("data:image/png;base64,")
+        assert len(result) < _MAX_BASE64_BYTES
+
+    def test_large_image_is_resized(self, tmp_path):
+        """Images over the limit should be auto-resized to fit."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        # Create a large image that will exceed 5 MB in base64
+        # A 4000x4000 uncompressed PNG will be large
+        img = Image.new("RGB", (4000, 4000), (128, 200, 50))
+        path = tmp_path / "large.png"
+        img.save(path, "PNG")
+
+        result = _resize_image_for_vision(path, mime_type="image/png")
+        assert result.startswith("data:image/png;base64,")
+        assert len(result) <= _MAX_BASE64_BYTES
+
+    def test_custom_max_bytes(self, tmp_path):
+        """The max_base64_bytes parameter should be respected."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (200, 200), (0, 128, 255))
+        path = tmp_path / "medium.png"
+        img.save(path, "PNG")
+
+        # Set a very low limit to force resizing
+        result = _resize_image_for_vision(path, max_base64_bytes=500)
+        # Should still return a valid data URL
+        assert result.startswith("data:image/")
+
+    def test_jpeg_output_for_non_png(self, tmp_path):
+        """Non-PNG images should be resized as JPEG."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (2000, 2000), (255, 128, 0))
+        path = tmp_path / "photo.jpg"
+        img.save(path, "JPEG", quality=95)
+
+        result = _resize_image_for_vision(path, mime_type="image/jpeg",
+                                           max_base64_bytes=50_000)
+        assert result.startswith("data:image/jpeg;base64,")
+
+    def test_no_pillow_returns_original(self, tmp_path):
+        """Without Pillow, oversized images should be returned as-is."""
+        # Create a dummy file
+        path = tmp_path / "test.png"
+        # Write enough bytes to exceed a tiny limit
+        path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 1000)
+
+        with patch("tools.vision_tools._image_to_base64_data_url") as mock_b64:
+            # Simulate a large base64 result
+            mock_b64.return_value = "data:image/png;base64," + "A" * 200
+            with patch.dict("sys.modules", {"PIL": None, "PIL.Image": None}):
+                result = _resize_image_for_vision(path, max_base64_bytes=100)
+                # Should return the original (oversized) data url
+                assert len(result) > 100

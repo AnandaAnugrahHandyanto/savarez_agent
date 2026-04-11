@@ -1873,10 +1873,9 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 ),
             }, ensure_ascii=False)
         
-        # Read and convert to base64
-        image_data = screenshot_path.read_bytes()
-        image_base64 = base64.b64encode(image_data).decode("ascii")
-        data_url = f"data:image/png;base64,{image_base64}"
+        # Convert screenshot to base64, auto-resizing if oversized.
+        from tools.vision_tools import _resize_image_for_vision
+        data_url = _resize_image_for_vision(screenshot_path, mime_type="image/png")
         
         vision_prompt = (
             f"You are analyzing a screenshot of a web browser.\n\n"
@@ -1890,7 +1889,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         # Use the centralized LLM router
         vision_model = _get_vision_model()
         logger.debug("browser_vision: analysing screenshot (%d bytes)",
-                     len(image_data))
+                     screenshot_path.stat().st_size)
 
         # Read vision timeout from config (auxiliary.vision.timeout), default 120s.
         # Local vision models (llama.cpp, ollama) can take well over 30s for
