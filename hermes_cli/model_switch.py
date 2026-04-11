@@ -326,10 +326,14 @@ def persist_model_switch_result(result: ModelSwitchResult) -> None:
     cfg["model"] = model_section
 
     providers_cfg = cfg.get("providers")
-    if isinstance(providers_cfg, dict) and result.target_provider in providers_cfg:
-        provider_entry = providers_cfg.get(result.target_provider)
-        if isinstance(provider_entry, dict):
-            provider_entry["default_model"] = result.new_model
+    if isinstance(providers_cfg, dict):
+        target_key = str(result.target_provider).strip().lower()
+        for provider_key, provider_entry in providers_cfg.items():
+            if str(provider_key).strip().lower() != target_key:
+                continue
+            if isinstance(provider_entry, dict):
+                provider_entry["default_model"] = result.new_model
+            break
 
     custom_cfg = cfg.get("custom_providers")
     if isinstance(custom_cfg, list) and result.target_provider.startswith("custom:"):

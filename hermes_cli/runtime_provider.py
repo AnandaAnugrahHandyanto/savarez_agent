@@ -392,7 +392,7 @@ def _resolve_openrouter_runtime(
         if requested_norm == "auto":
             if not cfg_provider or cfg_provider == "auto":
                 use_config_base_url = True
-        elif requested_norm == "custom" and cfg_provider == "custom":
+        elif requested_norm == "custom" and (cfg_provider == "custom" or cfg_provider.startswith("custom:")):
             use_config_base_url = True
 
     base_url = (

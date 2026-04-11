@@ -26,7 +26,7 @@ from hermes_cli.auth import (
     get_nous_auth_status,
     get_qwen_auth_status,
 )
-from hermes_cli.codex_models import get_codex_model_ids
+from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
 from hermes_cli.model_normalize import normalize_model_for_provider
 from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS, normalize_provider
 from hermes_cli.providers import custom_provider_slug, get_label
@@ -55,6 +55,12 @@ _OTHER_PROVIDER_ORDER: tuple[str, ...] = (
     "ai-gateway",
     "alibaba",
     "huggingface",
+)
+
+_LOCAL_ALIAS_PROVIDER_ORDER: tuple[str, ...] = (
+    "lmstudio",
+    "ollama-cloud",
+    "local",
 )
 
 _OPENROUTER_VENDOR_LABELS: dict[str, str] = {
@@ -615,7 +621,7 @@ def build_model_selection_tree(
 
     oauth_providers: list[ProviderNode] = []
     oauth_defs = (
-        ("openai", "openai-codex", "OpenAI", lambda configured: get_codex_model_ids(access_token=None) if configured else []),
+        ("openai", "openai-codex", "OpenAI", lambda configured: list(DEFAULT_CODEX_MODELS) if configured else []),
         ("nous", "nous", "Nous", lambda configured: list(_PROVIDER_MODELS.get("nous", ())) if configured else []),
         ("qwen", "qwen-oauth", "Qwen", lambda configured: list(_QWEN_OAUTH_MODELS) if configured else []),
     )
@@ -734,7 +740,33 @@ def build_model_selection_tree(
                 normalized_provider=normalized_provider,
                 current_model=current_model,
             )
-            seen_other_slugs.add(provider_slug)
+        seen_other_slugs.add(provider_slug)
+
+    for provider_slug in _LOCAL_ALIAS_PROVIDER_ORDER:
+        if provider_slug in seen_other_slugs or normalized_provider != provider_slug:
+            continue
+        provider_id = f"other:{provider_slug}"
+        other_providers.append(
+            ProviderNode(
+                id=provider_id,
+                source_id="other",
+                provider_slug=provider_slug,
+                token=_provider_token(provider_slug),
+                label=_provider_display_name(provider_slug),
+                status_label="Configured",
+                status_kind="success",
+                current=True,
+            )
+        )
+        models_by_provider[provider_id] = _provider_model_rows(
+            provider_id=provider_id,
+            provider_slug=provider_slug,
+            model_ids=[current_model] if current_model else [],
+            configured=True,
+            normalized_provider=normalized_provider,
+            current_model=current_model,
+        )
+        seen_other_slugs.add(provider_slug)
 
     if custom_providers and isinstance(custom_providers, list):
         for entry in custom_providers:
