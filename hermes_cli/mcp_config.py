@@ -573,9 +573,26 @@ def cmd_mcp_test(args):
 
 
 def _interpolate_value(value: str) -> str:
-    """Resolve ``${ENV_VAR}`` references in a string."""
+    """Resolve ``${ENV_VAR}`` references in a string.
+
+    Warns when a referenced environment variable is not set, since
+    this typically indicates a misconfiguration that will cause
+    authentication failures at runtime.
+    """
+    import sys
+
     def _replace(m):
-        return os.getenv(m.group(1), "")
+        var_name = m.group(1)
+        resolved = os.getenv(var_name)
+        if resolved is None:
+            print(
+                f"  ⚠️  Environment variable ${var_name} is not set — "
+                f"will resolve to empty string",
+                file=sys.stderr,
+            )
+            return ""
+        return resolved
+
     return re.sub(r"\$\{(\w+)\}", _replace, value)
 
 
