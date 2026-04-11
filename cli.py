@@ -1795,6 +1795,11 @@ class HermesCLI:
         self._interrupt_queue = queue.Queue()
         self._should_exit = False
         self._last_ctrl_c_time = 0
+        self._resume_panel_open: bool = False
+        self._resume_sessions: list = []
+        self._resume_cursor: int = 0
+        self._resume_filter: str = ""
+        self._resume_searching: bool = False
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
@@ -2110,6 +2115,146 @@ class HermesCLI:
             return frags
         except Exception:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]
+
+    def _render_resume_panel(self, sessions: list, cursor: int, width: int) -> list:
+        """Render the interactive session picker panel as prompt_toolkit fragments."""
+        import textwrap as _tw
+
+        filter_text = self._resume_filter
+        preview_lines = CLI_CONFIG.get("display", {}).get("resume_preview_lines", 3)
+        full_preview_len = CLI_CONFIG.get("display", {}).get("resume_full_preview_length", 300)
+
+        def _display_title(s: dict) -> str:
+            return s.get("title") or "—"
+
+        def _search_text(s: dict) -> str:
+            parts = []
+            t = s.get("title") or ""
+            p = s.get("preview") or ""
+            i = s.get("id", "")
+            if t:
+                parts.append(t)
+            if p:
+                parts.append(p)
+            if i:
+                parts.append(i)
+            return " ".join(parts).lower()
+
+        def _fuzzy_match(query: str, text: str) -> bool:
+            it = iter(text)
+            return all(ch in it for ch in query.lower())
+
+        # Filter sessions
+        if filter_text:
+            filtered = [s for s in sessions if _fuzzy_match(filter_text, _search_text(s))]
+        else:
+            filtered = list(sessions)
+
+        if not filtered:
+            header = " No sessions match" if filter_text else " No sessions"
+            box_w = min(len(header) + 4, width)
+            return [
+                ("class:resume-panel-border", "┌" + "─" * (box_w - 2) + "┐\n"),
+                ("class:resume-panel-text", f"│{header}{' ' * (box_w - len(header) - 2)}│\n"),
+                ("class:resume-panel-border", "└" + "─" * (box_w - 2) + "┘"),
+            ]
+
+        from hermes_cli.main import _relative_time
+
+        # Column widths
+        title_w = 30
+        age_w = 12
+        id_w = 24
+        content_w = max(width - title_w - age_w - id_w - 4, 10)
+
+        lines: list = []
+        box_w = width
+
+        # Header
+        header_text = f" Sessions ({len(filtered)})"
+        if filter_text:
+            header_text += f"  /{filter_text}"
+        header_text = header_text.ljust(box_w - 2)
+
+        lines.append(("class:resume-panel-border", "┌" + "─" * (box_w - 2) + "┐\n"))
+        lines.append(("class:resume-panel-header", f"│{header_text}│\n"))
+        lines.append(("class:resume-panel-border", "├" + "─" * (box_w - 2) + "┤\n"))
+
+        # Column header
+        # Page-based navigation — compute before rendering
+        page_size = CLI_CONFIG.get("display", {}).get("resume_page_size", 25)
+        total_pages = max(1, (len(filtered) + page_size - 1) // page_size)
+        current_page = cursor // page_size + 1 if len(filtered) > 0 else 1
+
+        page_start = (current_page - 1) * page_size
+        page_end = min(page_start + page_size, len(filtered))
+        visible = filtered[page_start:page_end]
+
+        # Show range indicator
+        range_text = f"showing {page_start + 1}-{page_end} of {len(filtered)}"
+        if total_pages > 1:
+            range_text += f"  (page {current_page}/{total_pages})"
+
+        # Column header
+        col_hdr = f" {'Title':<{title_w}} {'Preview':<{content_w}} {'Age':<{age_w}} {'ID'}"
+        lines.append(("class:resume-panel-col-header", f"│{col_hdr[:box_w-2]:<{box_w-2}}│\n"))
+        lines.append(("class:resume-panel-border", "├" + "─" * (box_w - 2) + "┤\n"))
+
+        for row_idx, s in enumerate(visible):
+            abs_idx = page_start + row_idx
+            is_selected = abs_idx == cursor
+            title = (_display_title(s))[:title_w]
+            preview = (s.get("preview") or "")[:content_w]
+            age = _relative_time(s.get("last_active"))[:age_w]
+            sid = (s.get("id", "") or "")[:id_w]
+
+            prefix = "▸ " if is_selected else "  "
+            row_text = f"{prefix}{title:<{title_w}} {preview:<{content_w}} {age:<{age_w}} {sid}"
+
+            if is_selected:
+                lines.append(("class:resume-panel-selected", f"│{row_text[:box_w-2]:<{box_w-2}}│\n"))
+            else:
+                lines.append(("class:resume-panel-row", f"│{row_text[:box_w-2]:<{box_w-2}}│\n"))
+
+        # Full preview for selected item
+        if 0 <= cursor < len(filtered):
+            sel = filtered[cursor]
+            full_preview = sel.get("_full_preview") or sel.get("preview") or ""
+            if full_preview and preview_lines > 0:
+                if len(full_preview) > full_preview_len:
+                    full_preview = full_preview[:full_preview_len] + "…"
+                inner_w = box_w - 4
+                preview_label = " Preview"
+                lines.append(("class:resume-panel-border", "├" + "─" * (box_w - 2) + "┤\n"))
+                lines.append(("class:resume-panel-header", f"│{preview_label:<{box_w-2}}│\n"))
+                lines.append(("class:resume-panel-border", "├" + "─" * (box_w - 2) + "┤\n"))
+                wrapped_lines = full_preview.split("\n")
+                shown = 0
+                for wline in wrapped_lines:
+                    if shown >= preview_lines:
+                        break
+                    sub_wrapped = _tw.wrap(wline, width=inner_w)
+                    for sub in sub_wrapped:
+                        if shown >= preview_lines:
+                            break
+                        safe = sub[:inner_w].ljust(inner_w)
+                        lines.append(("class:resume-panel-preview", f"│ {safe} │\n"))
+                        shown += 1
+                if shown == 0 and full_preview:
+                    safe = full_preview[:inner_w].ljust(inner_w)
+                    lines.append(("class:resume-panel-preview", f"│ {safe} │\n"))
+
+        # Footer: range indicator + navigation hints
+        esc_hint = "Esc cancel search" if filter_text else "Esc close"
+        if filter_text:
+            footer_text = f" {range_text}  {esc_hint}  /{filter_text}"
+        else:
+            footer_text = f" {range_text}  Space=n page down  b page back  / search  {esc_hint}"
+        footer_text = footer_text[:box_w - 2].ljust(box_w - 2)
+        lines.append(("class:resume-panel-border", "├" + "─" * (box_w - 2) + "┤\n"))
+        lines.append(("class:resume-panel-header", f"│{footer_text}│\n"))
+        lines.append(("class:resume-panel-border", "└" + "─" * (box_w - 2) + "┘"))
+        return lines
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Normalize provider-specific model IDs and routing."""
@@ -3812,15 +3957,21 @@ class HermesCLI:
         print(f"  Config File: {config_path} {config_status}")
         print()
     
-    def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
+    def _list_recent_sessions(self, limit: int = 10, preview_length: int = None, full_preview_length: int = None) -> list[dict[str, Any]]:
         """Return recent CLI sessions for in-chat browsing/resume affordances."""
         if not self._session_db:
             return []
+        if preview_length is None:
+            preview_length = CLI_CONFIG.get("display", {}).get("resume_preview_length", 80)
+        if full_preview_length is None:
+            full_preview_length = CLI_CONFIG.get("display", {}).get("resume_full_preview_length", 300)
         try:
             sessions = self._session_db.list_sessions_rich(
                 source="cli",
                 exclude_sources=["tool"],
                 limit=limit,
+                preview_length=preview_length,
+                full_preview_length=full_preview_length,
             )
         except Exception:
             return []
@@ -3854,6 +4005,19 @@ class HermesCLI:
         print("  Use /resume <session id or title> to continue where you left off.")
         print()
         return True
+
+    def show_sessions_full(self):
+        """Open the interactive session picker panel."""
+        sessions = self._list_recent_sessions(
+            limit=CLI_CONFIG.get("display", {}).get("resume_session_limit", 2000),
+            preview_length=CLI_CONFIG.get("display", {}).get("resume_preview_length", 80),
+            full_preview_length=CLI_CONFIG.get("display", {}).get("resume_full_preview_length", 300),
+        )
+        self._resume_sessions = sessions
+        self._resume_cursor = 0
+        self._resume_filter = ""
+        self._resume_searching = False
+        self._resume_panel_open = True
 
     def show_history(self):
         """Display conversation history."""
@@ -4004,10 +4168,7 @@ class HermesCLI:
         target = parts[1].strip() if len(parts) > 1 else ""
 
         if not target:
-            _cprint("  Usage: /resume <session_id_or_title>")
-            if self._show_recent_sessions(reason="resume"):
-                return
-            _cprint("  Tip:   Use /history or `hermes sessions list` to find sessions.")
+            self.show_sessions_full()
             return
 
         if not self._session_db:
@@ -7679,6 +7840,7 @@ class HermesCLI:
         input_rule_bot,
         voice_status_bar,
         completions_menu,
+        resume_panel_widget=None,
     ) -> list:
         """Assemble the ordered list of children for the root ``HSplit``.
 
@@ -7686,7 +7848,7 @@ class HermesCLI:
         this method.  Override this only when you need full control over widget
         ordering.
         """
-        return [
+        children = [
             Window(height=0),
             sudo_widget,
             secret_widget,
@@ -7695,6 +7857,10 @@ class HermesCLI:
             spinner_widget,
             spacer,
             *self._get_extra_tui_widgets(),
+        ]
+        if resume_panel_widget is not None:
+            children.append(resume_panel_widget)
+        children.extend([
             status_bar,
             input_rule_top,
             image_bar,
@@ -7702,7 +7868,8 @@ class HermesCLI:
             input_rule_bot,
             voice_status_bar,
             completions_menu,
-        ]
+        ])
+        return children
 
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
@@ -8260,6 +8427,114 @@ class HermesCLI:
                 # No image found — show a hint
                 pass  # silent when no image (avoid noise on accidental press)
 
+        # ── Resume panel keybindings ────────────────────────────────────
+        @kb.add('up', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_up(event):
+            if self._resume_cursor > 0:
+                self._resume_cursor -= 1
+                event.app.invalidate()
+
+        @kb.add('down', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_down(event):
+            if self._resume_cursor < len(self._resume_sessions) - 1:
+                self._resume_cursor += 1
+                event.app.invalidate()
+
+        @kb.add('pageup', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_pgup(event):
+            page = CLI_CONFIG.get("display", {}).get("resume_preview_lines", 3)
+            self._resume_cursor = max(0, self._resume_cursor - page)
+            event.app.invalidate()
+
+        @kb.add('pagedown', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_pgdown(event):
+            page = CLI_CONFIG.get("display", {}).get("resume_preview_lines", 3)
+            self._resume_cursor = min(len(self._resume_sessions) - 1, self._resume_cursor + page)
+            event.app.invalidate()
+
+        @kb.add('space', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_space(event):
+            page_size = CLI_CONFIG.get("display", {}).get("resume_page_size", 25)
+            self._resume_cursor = min(len(self._resume_sessions) - 1, self._resume_cursor + page_size)
+            event.app.invalidate()
+
+        @kb.add('b', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_b(event):
+            page_size = CLI_CONFIG.get("display", {}).get("resume_page_size", 25)
+            self._resume_cursor = max(0, self._resume_cursor - page_size)
+            event.app.invalidate()
+
+        @kb.add('n', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_n(event):
+            page_size = CLI_CONFIG.get("display", {}).get("resume_page_size", 25)
+            self._resume_cursor = min(len(self._resume_sessions) - 1, self._resume_cursor + page_size)
+            event.app.invalidate()
+
+        @kb.add('/', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_search_start(event):
+            self._resume_searching = True
+            self._resume_filter = ""
+            self._resume_cursor = 0
+            event.app.invalidate()
+
+        @kb.add('s', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_search_s(event):
+            self._resume_searching = True
+            self._resume_filter = ""
+            self._resume_cursor = 0
+            event.app.invalidate()
+
+        @kb.add('enter', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_enter(event):
+            if 0 <= self._resume_cursor < len(self._resume_sessions):
+                sel = self._resume_sessions[self._resume_cursor]
+                self._resume_panel_open = False
+                self._resume_filter = ""
+                self._resume_searching = False
+                event.app.invalidate()
+                sid = sel.get("id", "")
+                if sid:
+                    buf = event.app.layout.get_container()
+                    ta = event.app.layout.current_window
+                    # Insert /resume command into the input area
+                    input_area = event.app.layout.focusable_windows[0]
+                    for w in event.app.layout.focusable_windows:
+                        if hasattr(w, 'control') and hasattr(w.control, 'buffer'):
+                            w.control.buffer.text = f"/resume {sid}"
+                            w.control.buffer.cursor_position = len(f"/resume {sid}")
+                            break
+
+        @kb.add('escape', filter=Condition(lambda: self._resume_panel_open))
+        def _resume_esc(event):
+            if self._resume_searching:
+                self._resume_searching = False
+                self._resume_filter = ""
+                self._resume_cursor = 0
+            else:
+                self._resume_panel_open = False
+                self._resume_filter = ""
+                self._resume_searching = False
+            event.app.invalidate()
+
+        # Printable keys during resume search mode
+        def _make_search_handler(ch):
+            def handler(event):
+                self._resume_filter = self._resume_filter + ch
+                self._resume_cursor = 0
+                event.app.invalidate()
+            return handler
+
+        for _ch in "abcdefghijklmnopqrstuvwxyz0123456789_-./ ":
+            _handler = _make_search_handler(_ch)
+            kb.add(_ch, filter=Condition(lambda c=_ch: self._resume_panel_open and self._resume_searching))(_handler)
+
+        @kb.add('backspace', filter=Condition(lambda: self._resume_panel_open and self._resume_searching))
+        def _resume_backspace(event):
+            if self._resume_filter:
+                self._resume_filter = self._resume_filter[:-1]
+                self._resume_cursor = 0
+                event.app.invalidate()
+
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
         cli_ref = self
@@ -8743,6 +9018,26 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._status_bar_visible),
         )
 
+        # Resume panel widget — interactive session picker
+        def _get_resume_panel_fragments():
+            if not cli_ref._resume_panel_open:
+                return []
+            import shutil as _shutil
+            width = _shutil.get_terminal_size().columns
+            return cli_ref._render_resume_panel(
+                cli_ref._resume_sessions,
+                cli_ref._resume_cursor,
+                width,
+            )
+
+        resume_panel_widget = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(_get_resume_panel_fragments),
+                wrap_lines=True,
+            ),
+            filter=Condition(lambda: cli_ref._resume_panel_open),
+        )
+
         # Allow wrapper CLIs to register extra keybindings.
         self._register_extra_tui_keybindings(kb, input_area=input_area)
 
@@ -8767,6 +9062,7 @@ class HermesCLI:
                     input_rule_bot=input_rule_bot,
                     voice_status_bar=voice_status_bar,
                     completions_menu=completions_menu,
+                    resume_panel_widget=resume_panel_widget,
                 )
             )
         )
@@ -8820,6 +9116,14 @@ class HermesCLI:
             'voice-processing': '#FFA500 italic',
             'voice-status': 'bg:#1a1a2e #87CEEB',
             'voice-status-recording': 'bg:#1a1a2e #FF4444 bold',
+            # Resume panel
+            'resume-panel-border': '#CD7F32',
+            'resume-panel-header': 'bg:#1a1a2e #FFD700 bold',
+            'resume-panel-col-header': 'bg:#1a1a2e #AAAAAA',
+            'resume-panel-row': 'bg:#1a1a2e #FFF8DC',
+            'resume-panel-selected': 'bg:#333355 #FFD700 bold',
+            'resume-panel-preview': 'bg:#1a1a2e #AAAAAA italic',
+            'resume-panel-text': 'bg:#1a1a2e #FFF8DC',
         }
         style = PTStyle.from_dict(self._build_tui_style_dict())
         
@@ -9084,6 +9388,9 @@ class HermesCLI:
             loop.default_exception_handler(context)
 
         # Run the application with patch_stdout for proper output handling
+        # Auto-open resume panel if HERMES_OPEN_RESUME env var is set
+        if os.environ.get("HERMES_OPEN_RESUME"):
+            self.show_sessions_full()
         try:
             with patch_stdout():
                 # Set the custom handler on prompt_toolkit's event loop
