@@ -3799,19 +3799,8 @@ class AIAgent:
     @staticmethod
     def _chatgpt_web_answer_only_mode(original_request: str) -> str:
         lowered = str(original_request or "").strip().lower()
-        terminal_output_only = any(
-            phrase in lowered
-            for phrase in (
-                "reply with the exact text it printed",
-                "reply with the exact terminal output",
-                "answer with only the terminal output",
-                "answer with the exact terminal output",
-            )
-        )
-        if "answer only" not in lowered and not terminal_output_only:
+        if "answer only" not in lowered:
             return ""
-        if terminal_output_only:
-            return "result"
         if (("yes/no" in lowered) or ("yes or no" in lowered)) and "matching path" in lowered:
             return "yes_no_path"
         if (
@@ -3932,26 +3921,6 @@ class AIAgent:
         try:
             return json.loads(tool_content)
         except Exception:
-            repaired = re.sub(
-                r'("(?:path|image_url|file|directory)"\s*:\s*")([^"]*)(")',
-                lambda match: (
-                    match.group(1)
-                    + match.group(2).replace("\\", "\\\\")
-                    + match.group(3)
-                ),
-                tool_content,
-            )
-            if repaired != tool_content:
-                try:
-                    return json.loads(repaired)
-                except Exception:
-                    pass
-            repaired = re.sub(r'\\(?!["\\/bfnrtu])', r"\\\\", tool_content)
-            if repaired != tool_content:
-                try:
-                    return json.loads(repaired)
-                except Exception:
-                    return None
             return None
 
     def _chatgpt_web_extract_path_from_tool_payload(self, tool_payload: Any, tool_content: str) -> Optional[str]:
@@ -4126,10 +4095,10 @@ class AIAgent:
         stripped = text.strip()
         candidates: list[str] = []
         for pattern in (
-            r'"((?:[A-Za-z]:[\\/]|~|/)[^"\n]+)"',
-            r"'((?:[A-Za-z]:[\\/]|~|/)[^'\n]+)'",
-            r"`((?:[A-Za-z]:[\\/]|~|/)[^`\n]+)`",
-            r"(?<![A-Za-z0-9_.-])((?:[A-Za-z]:[\\/]|~|/)[A-Za-z0-9_./:\\\\ -]+?)(?=[\s,;!?)]|$)",
+            r'"((?:~|/)[^"\n]+)"',
+            r"'((?:~|/)[^'\n]+)'",
+            r"`((?:~|/)[^`\n]+)`",
+            r"(?<![A-Za-z0-9_.-])((?:~|/)[A-Za-z0-9_./-]+)",
         ):
             for match in re.finditer(pattern, stripped):
                 candidate = match.group(1).strip().rstrip('.,;:!')
@@ -4194,33 +4163,8 @@ class AIAgent:
             f"license: MIT\n"
             f"---\n\n"
             f"# {clean_name}\n\n"
-            f"## Purpose\n"
-            f"{body_desc}\n\n"
-            f"## When To Use\n"
-            f"- Use this skill when the request matches this workflow or description.\n"
-            f"- Prefer this skill over re-deriving the same steps from scratch.\n\n"
-            f"## Inputs\n"
-            f"- Confirm the target files, commands, environment, or system scope before changing anything.\n"
-            f"- Gather any missing prerequisites with Hermes tools before acting.\n\n"
-            f"## Workflow\n"
-            f"1. Restate the concrete goal in one sentence.\n"
-            f"2. Inspect the relevant files, commands, or runtime state before editing or executing.\n"
-            f"3. Make the smallest concrete change that satisfies the request.\n"
-            f"4. Verify the result with the most direct test, command, or inspection available.\n"
-            f"5. Report what changed, what was verified, and any remaining risk.\n\n"
-            f"## Validation\n"
-            f"- Re-run the exact command, test, or inspection that proves the workflow succeeded.\n"
-            f"- If verification is not possible, say precisely what is missing.\n\n"
-            f"## Pitfalls\n"
-            f"- Do not assume paths, dependencies, or credentials without checking them.\n"
-            f"- Update this skill when you discover a better command, a missing step, or a new failure mode.\n"
+            f"{body_desc}\n"
         )
-
-    def _chatgpt_web_enrich_instructions(self, instructions: str) -> str:
-        base = str(instructions or "").strip() or DEFAULT_AGENT_IDENTITY
-        if _CHATGPT_WEB_HERMES_INTRO in base:
-            return base
-        return f"{base}\n\n{_CHATGPT_WEB_HERMES_INTRO}"
 
     @staticmethod
     def _chatgpt_web_default_image_download_dir() -> Path:
@@ -4235,15 +4179,9 @@ class AIAgent:
         lowered = original_request.lower()
         if not any(keyword in lowered for keyword in ("save", "download", "store", "upload")):
             return None
-        explicit_path = re.search(
-            r"\b(?:save|download|store|upload)(?:\s+it)?\s+to\s+(.+?)(?:\.\s*answer only.*|$)",
-            original_request,
-            re.IGNORECASE | re.DOTALL,
-        )
+        explicit_path = re.search(r"\b(?:save|download|store|upload)(?:\s+it)?\s+to\s+([~/][A-Za-z0-9_./-]+)", original_request, re.IGNORECASE)
         if explicit_path:
-            parsed_path = self._chatgpt_web_extract_local_path(explicit_path.group(1))
-            if parsed_path:
-                return Path(os.path.expanduser(parsed_path))
+            return Path(os.path.expanduser(explicit_path.group(1).strip().rstrip('.,;:!')))
         if "downloads" in lowered or "chatgpt-web-images" in lowered or "chatgpt web images" in lowered:
             return self._chatgpt_web_default_image_download_dir()
         return None
@@ -4673,9 +4611,34 @@ class AIAgent:
                 return {"code": f"print({expr})"}
 
         if tool_name == "terminal":
-            command = self._chatgpt_web_infer_terminal_command(user_text)
-            if command:
-                return {"command": command}
+            if "working directory" in lowered or "pwd" in lowered or "current directory" in lowered:
+                return {"command": "pwd"}
+            command_match = re.search(r"\brun\s+(.+?)(?:\.\s*answer only.*|$)", user_text, re.IGNORECASE | re.DOTALL)
+            if not command_match:
+                command_match = re.search(r"`([^`]+)`", user_text)
+            if command_match:
+                command = command_match.group(1).strip().strip('"\'`').rstrip('.')
+                if command:
+                    return {"command": command}
+            if any(
+                keyword in lowered for keyword in (
+                    "platform details",
+                    "platform info",
+                    "platform information",
+                    "system details",
+                    "system info",
+                    "system information",
+                    "what system",
+                    "system you are running on",
+                    "what os",
+                    "operating system",
+                    "kernel",
+                    "uname",
+                )
+            ):
+                return {"command": "uname -a"}
+            if "date" in lowered or re.search(r"\b(?:what time is it|current time|time is it)\b", lowered):
+                return {"command": "date"}
 
         return None
 
