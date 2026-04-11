@@ -69,18 +69,24 @@ _MAX_FILES = 50_000
 # Shadow repo helpers
 # ---------------------------------------------------------------------------
 
+def _normalize_path(path_value: str) -> Path:
+    """Return a canonical absolute path for checkpoint operations."""
+    return Path(path_value).expanduser().resolve()
+
+
 def _shadow_repo_path(working_dir: str) -> Path:
     """Deterministic shadow repo path: sha256(abs_path)[:16]."""
-    abs_path = str(Path(working_dir).resolve())
+    abs_path = str(_normalize_path(working_dir))
     dir_hash = hashlib.sha256(abs_path.encode()).hexdigest()[:16]
     return CHECKPOINT_BASE / dir_hash
 
 
 def _git_env(shadow_repo: Path, working_dir: str) -> dict:
     """Build env dict that redirects git to the shadow repo."""
+    normalized_working_dir = _normalize_path(working_dir)
     env = os.environ.copy()
     env["GIT_DIR"] = str(shadow_repo)
-    env["GIT_WORK_TREE"] = str(Path(working_dir).resolve())
+    env["GIT_WORK_TREE"] = str(normalized_working_dir)
     env.pop("GIT_INDEX_FILE", None)
     env.pop("GIT_NAMESPACE", None)
     env.pop("GIT_ALTERNATE_OBJECT_DIRECTORIES", None)
@@ -100,7 +106,17 @@ def _run_git(
     exits while preserving the normal ``ok = (returncode == 0)`` contract.
     Example: ``git diff --cached --quiet`` returns 1 when changes exist.
     """
-    env = _git_env(shadow_repo, working_dir)
+    normalized_working_dir = _normalize_path(working_dir)
+    if not normalized_working_dir.exists():
+        msg = f"working directory not found: {normalized_working_dir}"
+        logger.error("Git command skipped: %s (%s)", " ".join(["git"] + list(args)), msg)
+        return False, "", msg
+    if not normalized_working_dir.is_dir():
+        msg = f"working directory is not a directory: {normalized_working_dir}"
+        logger.error("Git command skipped: %s (%s)", " ".join(["git"] + list(args)), msg)
+        return False, "", msg
+
+    env = _git_env(shadow_repo, str(normalized_working_dir))
     cmd = ["git"] + list(args)
     allowed_returncodes = allowed_returncodes or set()
     try:
@@ -110,7 +126,7 @@ def _run_git(
             text=True,
             timeout=timeout,
             env=env,
-            cwd=str(Path(working_dir).resolve()),
+            cwd=str(normalized_working_dir),
         )
         ok = result.returncode == 0
         stdout = result.stdout.strip()
@@ -125,9 +141,14 @@ def _run_git(
         msg = f"git timed out after {timeout}s: {' '.join(cmd)}"
         logger.error(msg, exc_info=True)
         return False, "", msg
-    except FileNotFoundError:
-        logger.error("Git executable not found: %s", " ".join(cmd), exc_info=True)
-        return False, "", "git not found"
+    except FileNotFoundError as exc:
+        missing_target = getattr(exc, "filename", None)
+        if missing_target == "git":
+            logger.error("Git executable not found: %s", " ".join(cmd), exc_info=True)
+            return False, "", "git not found"
+        msg = f"working directory not found: {normalized_working_dir}"
+        logger.error("Git command failed before execution: %s (%s)", " ".join(cmd), msg, exc_info=True)
+        return False, "", msg
     except Exception as exc:
         logger.error("Unexpected git error running %s: %s", " ".join(cmd), exc, exc_info=True)
         return False, "", str(exc)
@@ -154,7 +175,7 @@ def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> Optional[str]:
     )
 
     (shadow_repo / "HERMES_WORKDIR").write_text(
-        str(Path(working_dir).resolve()) + "\n", encoding="utf-8"
+        str(_normalize_path(working_dir)) + "\n", encoding="utf-8"
     )
 
     logger.debug("Initialised checkpoint repo at %s for %s", shadow_repo, working_dir)
@@ -229,7 +250,7 @@ class CheckpointManager:
         if not self._git_available:
             return False
 
-        abs_dir = str(Path(working_dir).resolve())
+        abs_dir = str(_normalize_path(working_dir))
 
         # Skip root, home, and other overly broad directories
         if abs_dir in ("/", str(Path.home())):
@@ -254,7 +275,7 @@ class CheckpointManager:
         Returns a list of dicts with keys: hash, short_hash, timestamp, reason,
         files_changed, insertions, deletions.  Most recent first.
         """
-        abs_dir = str(Path(working_dir).resolve())
+        abs_dir = str(_normalize_path(working_dir))
         shadow = _shadow_repo_path(abs_dir)
 
         if not (shadow / "HEAD").exists():
@@ -311,7 +332,7 @@ class CheckpointManager:
 
         Returns dict with success, diff text, and stat summary.
         """
-        abs_dir = str(Path(working_dir).resolve())
+        abs_dir = str(_normalize_path(working_dir))
         shadow = _shadow_repo_path(abs_dir)
 
         if not (shadow / "HEAD").exists():
@@ -364,7 +385,7 @@ class CheckpointManager:
 
         Returns dict with success/error info.
         """
-        abs_dir = str(Path(working_dir).resolve())
+        abs_dir = str(_normalize_path(working_dir))
         shadow = _shadow_repo_path(abs_dir)
 
         if not (shadow / "HEAD").exists():
@@ -413,7 +434,7 @@ class CheckpointManager:
         (directory containing .git, pyproject.toml, package.json, etc.).
         Falls back to the file's parent directory.
         """
-        path = Path(file_path).resolve()
+        path = _normalize_path(file_path)
         if path.is_dir():
             candidate = path
         else:
