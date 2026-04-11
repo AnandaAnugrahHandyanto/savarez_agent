@@ -1,9 +1,16 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
+import json
+
 import pytest
 from unittest.mock import patch, MagicMock
 
-from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
+from agent.context_compressor import (
+    ContextCompressor,
+    SUMMARY_PREFIX,
+    TASK_CHECKPOINT_PREFIX,
+    TaskCheckpoint,
+)
 
 
 @pytest.fixture()
@@ -742,3 +749,154 @@ class TestTokenBudgetTailProtection:
         # Tool at index 2 is outside the protected tail (last 3 = indices 2,3,4)
         # so it might or might not be pruned depending on boundary
         assert isinstance(pruned, int)
+
+class TestTaskCheckpoint:
+    def test_format_for_injection_is_compact_and_parseable(self):
+        checkpoint = TaskCheckpoint(
+            pending_tool_calls=["write_file:docs/architecture.md"],
+            recently_modified_files=["src/parser.py", "docs/architecture.md"],
+            current_plan_step="Write docs/architecture.md then rerun integration tests",
+            last_tool_batch_results=["terminal:FAILED tests/test_docs.py::test_architecture_doc_exists"],
+        )
+
+        text = checkpoint.format_for_injection()
+
+        assert text is not None
+        assert text.startswith(TASK_CHECKPOINT_PREFIX)
+        assert len(text) < 500
+        payload = json.loads(text.split(" ", 1)[1])
+        assert payload["v"] == 1
+        assert payload["p"]
+        assert payload["f"]
+        assert payload["s"]
+        assert payload["r"]
+
+    def test_serialize_for_summary_skips_checkpoint_messages(self, compressor):
+        serialized = compressor._serialize_for_summary([
+            {"role": "user", "content": f'{TASK_CHECKPOINT_PREFIX} {{"v":1,"s":"keep moving"}}'},
+            {"role": "assistant", "content": "Real work stayed here."},
+        ])
+
+        assert TASK_CHECKPOINT_PREFIX not in serialized
+        assert "Real work stayed here." in serialized
+
+    def test_compress_merges_task_checkpoint_into_summary_when_roles_collide(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            compressor = ContextCompressor(
+                model="test/model",
+                quiet_mode=True,
+                protect_first_n=3,
+                protect_last_n=3,
+            )
+
+        messages = [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Finish the parser handoff."},
+            {"role": "assistant", "content": "I'll continue from the current state."},
+            {
+                "role": "assistant",
+                "content": "Updating src/parser.py.",
+                "tool_calls": [
+                    {
+                        "id": "write_done",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": json.dumps({"path": "src/parser.py", "content": "patched"}),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "write_done",
+                "content": json.dumps({"path": "src/parser.py", "status": "updated"}),
+            },
+            {
+                "role": "assistant",
+                "content": "Syncing the todo list.",
+                "tool_calls": [
+                    {
+                        "id": "todo_1",
+                        "type": "function",
+                        "function": {"name": "todo", "arguments": json.dumps({"todos": []})},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "todo_1",
+                "content": json.dumps({
+                    "todos": [
+                        {"id": "docs", "content": "Write docs/architecture.md", "status": "in_progress"},
+                        {"id": "tests", "content": "Rerun integration tests", "status": "pending"},
+                    ]
+                }),
+            },
+            {
+                "role": "assistant",
+                "content": "Running targeted pytest.",
+                "tool_calls": [
+                    {
+                        "id": "pytest_1",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": json.dumps({"command": "pytest tests/test_docs.py -q"}),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "pytest_1",
+                "content": "FAILED tests/test_docs.py::test_architecture_doc_exists - FileNotFoundError: docs/architecture.md",
+            },
+            {
+                "role": "assistant",
+                "content": "I'll write docs/architecture.md now.",
+                "tool_calls": [
+                    {
+                        "id": "pending_write",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": json.dumps({"path": "docs/architecture.md", "content": "draft"}),
+                        },
+                    }
+                ],
+            },
+            {"role": "user", "content": "Continue after the compression point."},
+            {"role": "assistant", "content": "Tail message one."},
+            {"role": "user", "content": "Tail message two."},
+            {"role": "assistant", "content": "Tail message three."},
+        ]
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: compacted handoff"
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = compressor.compress(messages, current_tokens=50_000)
+
+        assert not any(
+            (msg.get("content") or "").startswith(TASK_CHECKPOINT_PREFIX)
+            for msg in result
+        )
+
+        summary_msg = next(
+            msg for msg in result
+            if SUMMARY_PREFIX in (msg.get("content") or "")
+        )
+        checkpoint_line = next(
+            line for line in summary_msg["content"].splitlines()
+            if line.startswith(TASK_CHECKPOINT_PREFIX)
+        )
+        payload = json.loads(checkpoint_line.split(" ", 1)[1])
+
+        assert payload["p"] == ["write_file:docs/architecture.md"]
+        assert payload["f"] == ["src/parser.py"]
+        assert payload["s"] == "Write docs/architecture.md"
+        assert len(payload["r"]) == 1
+        assert payload["r"][0].startswith("terminal:FAILED tests/test_docs.py::test_architect")
+
