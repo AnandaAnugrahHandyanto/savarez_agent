@@ -53,7 +53,7 @@ def discover_builtin_tools(tools_dir: Path | None = None) -> List[str]:
     module_names = [
         f"tools.{path.stem}"
         for path in sorted(tools_path.glob("*.py"))
-        if path.name not in {"__init__.py", "registry.py"}
+        if path.name not in {"__init__.py", "registry.py", "mcp_tool.py"}
         and _module_registers_tools(path)
     ]
 

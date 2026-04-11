@@ -11,8 +11,8 @@ environments consume.
 Public API (signatures preserved from the original 2,400-line version):
     get_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode) -> list
     handle_function_call(function_name, function_args, task_id, user_task) -> str
-    TOOL_TO_TOOLSET_MAP: dict          (for batch_runner.py)
-    TOOLSET_REQUIREMENTS: dict         (for cli.py, doctor.py)
+    get_tool_to_toolset_map_snapshot() -> dict
+    get_toolset_requirements_snapshot() -> dict
     get_all_tool_names() -> list
     get_toolset_for_tool(name) -> str
     get_available_toolsets() -> dict
@@ -20,8 +20,8 @@ Public API (signatures preserved from the original 2,400-line version):
     check_tool_availability(quiet) -> tuple
 """
 
-import json
 import asyncio
+import json
 import logging
 import threading
 from typing import Dict, Any, List, Optional, Tuple
@@ -131,56 +131,6 @@ def _run_async(coro):
     return tool_loop.run_until_complete(coro)
 
 
-class _DynamicDictView(dict):
-    """Live read-through dict for backward-compatible exported mappings."""
-
-    def __init__(self, supplier):
-        super().__init__()
-        self._supplier = supplier
-
-    def _refresh(self) -> None:
-        super().clear()
-        super().update(self._supplier())
-
-    def __getitem__(self, key):
-        self._refresh()
-        return super().__getitem__(key)
-
-    def __contains__(self, key):
-        self._refresh()
-        return super().__contains__(key)
-
-    def __iter__(self):
-        self._refresh()
-        return super().__iter__()
-
-    def __len__(self):
-        self._refresh()
-        return super().__len__()
-
-    def __repr__(self):
-        self._refresh()
-        return super().__repr__()
-
-    def get(self, key, default=None):
-        self._refresh()
-        return super().get(key, default)
-
-    def items(self):
-        self._refresh()
-        return super().items()
-
-    def keys(self):
-        self._refresh()
-        return super().keys()
-
-    def values(self):
-        self._refresh()
-        return super().values()
-
-    def copy(self):
-        self._refresh()
-        return dict(self)
 discover_builtin_tools()
 
 # MCP tool discovery (external MCP servers from config)
@@ -202,11 +152,26 @@ except Exception as e:
 # Backward-compat constants  (live views over the registry)
 # =============================================================================
 
-TOOL_TO_TOOLSET_MAP: Dict[str, str] = _DynamicDictView(registry.get_tool_to_toolset_map)
+def get_tool_to_toolset_map_snapshot() -> Dict[str, str]:
+    """Return a fresh registry-backed ``tool -> toolset`` snapshot."""
+    return registry.get_tool_to_toolset_map()
 
-TOOLSET_REQUIREMENTS: Dict[str, dict] = _DynamicDictView(registry.get_toolset_requirements)
 
-_LEGACY_TOOLSET_MAP = _DynamicDictView(get_legacy_toolset_map)
+def get_toolset_requirements_snapshot() -> Dict[str, dict]:
+    """Return a fresh registry-backed toolset requirements snapshot."""
+    return registry.get_toolset_requirements()
+
+
+def get_legacy_toolset_map_snapshot() -> Dict[str, List[str]]:
+    """Return a fresh resolved snapshot of the legacy alias map."""
+    return get_legacy_toolset_map()
+
+
+TOOL_TO_TOOLSET_MAP: Dict[str, str] = get_tool_to_toolset_map_snapshot()
+
+TOOLSET_REQUIREMENTS: Dict[str, dict] = get_toolset_requirements_snapshot()
+
+_LEGACY_TOOLSET_MAP = get_legacy_toolset_map_snapshot()
 
 # Resolved tool names from the last get_tool_definitions() call.
 # Used by code_execution_tool to know which tools are available in this session.

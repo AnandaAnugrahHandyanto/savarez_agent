@@ -9,6 +9,9 @@ from model_tools import (
     handle_function_call,
     get_all_tool_names,
     get_toolset_for_tool,
+    get_legacy_toolset_map_snapshot,
+    get_tool_to_toolset_map_snapshot,
+    get_toolset_requirements_snapshot,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
     TOOL_TO_TOOLSET_MAP,
@@ -140,7 +143,7 @@ class TestBackwardCompat:
         assert isinstance(TOOL_TO_TOOLSET_MAP, dict)
         assert len(TOOL_TO_TOOLSET_MAP) > 0
 
-    def test_live_registry_views_update_with_registration(self):
+    def test_snapshot_helpers_update_with_registration(self):
         registry.register(
             name="test_live_model_tools_mapping",
             toolset="test-live-model-tools",
@@ -152,11 +155,16 @@ class TestBackwardCompat:
             handler=lambda *_args, **_kwargs: "{}",
         )
         try:
-            assert TOOL_TO_TOOLSET_MAP["test_live_model_tools_mapping"] == "test-live-model-tools"
-            assert "test-live-model-tools" in TOOLSET_REQUIREMENTS
-            assert TOOLSET_REQUIREMENTS["test-live-model-tools"]["tools"] == ["test_live_model_tools_mapping"]
+            tool_map = get_tool_to_toolset_map_snapshot()
+            requirements = get_toolset_requirements_snapshot()
+            assert tool_map["test_live_model_tools_mapping"] == "test-live-model-tools"
+            assert "test-live-model-tools" in requirements
+            assert requirements["test-live-model-tools"]["tools"] == ["test_live_model_tools_mapping"]
         finally:
             registry.deregister("test_live_model_tools_mapping")
 
-        assert "test_live_model_tools_mapping" not in TOOL_TO_TOOLSET_MAP
-        assert "test-live-model-tools" not in TOOLSET_REQUIREMENTS
+        assert "test_live_model_tools_mapping" not in get_tool_to_toolset_map_snapshot()
+        assert "test-live-model-tools" not in get_toolset_requirements_snapshot()
+
+    def test_legacy_toolset_snapshot_helper(self):
+        assert get_legacy_toolset_map_snapshot()["browser_tools"]

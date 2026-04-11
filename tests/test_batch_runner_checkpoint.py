@@ -157,3 +157,35 @@ class TestResumePreservesProgress:
 
         assert checkpoint_data["completed_prompts"] == []
         assert checkpoint_data["run_name"] == "test_run"
+
+
+class TestCombineBatchOutputs:
+    def test_filters_invalid_tool_entries_in_combined_output(self, tmp_path, monkeypatch):
+        runner = BatchRunner.__new__(BatchRunner)
+        runner.output_dir = tmp_path
+
+        (tmp_path / "batch_0.jsonl").write_text(
+            "\n".join([
+                json.dumps({"tool_stats": {"web_search": {"count": 1}}}),
+                json.dumps({"tool_stats": {"totally_fake_tool": {"count": 1}}}),
+                "{broken json",
+            ]) + "\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(
+            "batch_runner.get_tool_to_toolset_map_snapshot",
+            lambda: {"web_search": "web"},
+        )
+
+        stats = runner._combine_batch_outputs()
+
+        combined_file = tmp_path / "trajectories.jsonl"
+        combined_lines = combined_file.read_text(encoding="utf-8").strip().splitlines()
+        assert len(combined_lines) == 1
+        assert json.loads(combined_lines[0])["tool_stats"]["web_search"]["count"] == 1
+        assert stats == {
+            "total_entries": 3,
+            "filtered_entries": 2,
+            "batch_files_found": 1,
+        }

@@ -331,7 +331,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         get_toolset_for_tool: Callable to map tool name -> toolset name.
         context_length: Model's context window size in tokens.
     """
-    from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+    from model_tools import check_tool_availability, get_toolset_requirements_snapshot
     if get_toolset_for_tool is None:
         from model_tools import get_toolset_for_tool
 
@@ -346,7 +346,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     lazy_tools = set()
     for item in unavailable_toolsets:
         toolset_name = item.get("name", "")
-        ts_req = TOOLSET_REQUIREMENTS.get(toolset_name, {})
+        ts_req = get_toolset_requirements_snapshot().get(toolset_name, {})
         tools_in_ts = item.get("tools", [])
         if ts_req.get("check_fn"):
             lazy_tools.update(tools_in_ts)

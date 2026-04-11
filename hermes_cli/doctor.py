@@ -799,13 +799,14 @@ def run_doctor(args):
     try:
         # Add project root to path for imports
         sys.path.insert(0, str(PROJECT_ROOT))
-        from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+        from model_tools import check_tool_availability, get_toolset_requirements_snapshot
         
         available, unavailable = check_tool_availability()
         available, unavailable = _apply_doctor_tool_availability_overrides(available, unavailable)
-        
+        toolset_requirements = get_toolset_requirements_snapshot()
+
         for tid in available:
-            info = TOOLSET_REQUIREMENTS.get(tid, {})
+            info = toolset_requirements.get(tid, {})
             check_ok(info.get("name", tid))
         
         for item in unavailable:

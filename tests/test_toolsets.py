@@ -115,6 +115,8 @@ class TestValidateToolset:
         try:
             assert get_toolset("web") is not None
             assert "mcp_web_ping" not in resolve_toolset("web")
+            assert "mcp-web" in get_toolset_names()
+            assert "web" in get_toolset_names()
         finally:
             registry.deregister("mcp_web_ping")
 
@@ -218,7 +220,7 @@ class TestToolsetConsistency:
         for ts in tool_sets[1:]:
             assert ts == tool_sets[0]
 
-    def test_all_excludes_hidden_mcp_collisions(self):
+    def test_colliding_mcp_toolset_stays_canonical_and_visible(self):
         registry.register(
             name="mcp_web_hidden_tool",
             toolset="mcp-web",
@@ -226,6 +228,8 @@ class TestToolsetConsistency:
             handler=lambda *_args, **_kwargs: "{}",
         )
         try:
-            assert "mcp_web_hidden_tool" not in resolve_toolset("all")
+            assert "mcp-web" in get_toolset_names()
+            assert "mcp_web_hidden_tool" in resolve_toolset("mcp-web")
+            assert "mcp_web_hidden_tool" in resolve_toolset("all")
         finally:
             registry.deregister("mcp_web_hidden_tool")

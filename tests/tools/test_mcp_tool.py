@@ -2936,8 +2936,8 @@ class TestSanitizeMcpNameComponent:
             assert "/" not in name
             assert "." not in name
 
-    def test_slash_in_sync_mcp_toolsets(self):
-        """_sync_mcp_toolsets uses sanitize consistently with _convert_mcp_schema."""
+    def test_slash_in_mcp_toolset_prefix(self):
+        """sanitize_mcp_name_component matches MCP tool prefix generation."""
         from tools.mcp_tool import sanitize_mcp_name_component
 
         # Verify the prefix generation matches what _convert_mcp_schema produces

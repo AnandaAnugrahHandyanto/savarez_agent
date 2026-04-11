@@ -13,38 +13,6 @@ from typing import Any, Dict, List, Optional, Set
 from tools.registry import registry
 
 
-class _ResolvedToolList(list):
-    """Live list view that resolves a toolset on demand."""
-
-    def __init__(self, toolset_name: str):
-        super().__init__()
-        self._toolset_name = toolset_name
-
-    def _refresh(self) -> None:
-        super().clear()
-        super().extend(sorted(resolve_toolset(self._toolset_name)))
-
-    def __contains__(self, item) -> bool:
-        self._refresh()
-        return super().__contains__(item)
-
-    def __iter__(self):
-        self._refresh()
-        return super().__iter__()
-
-    def __len__(self) -> int:
-        self._refresh()
-        return super().__len__()
-
-    def __repr__(self) -> str:
-        self._refresh()
-        return super().__repr__()
-
-    def copy(self):
-        self._refresh()
-        return list(self)
-
-
 _HERMES_CORE_TOOLSETS = [
     "web",
     "terminal",
@@ -365,10 +333,6 @@ TOOLSETS = {
     },
 }
 
-
-_HERMES_CORE_TOOLS = _ResolvedToolList("hermes-cli")
-
-
 def _get_registry_toolset_names() -> Set[str]:
     """Return live toolset names from the registry."""
     try:
@@ -529,8 +493,14 @@ def get_toolset_names() -> List[str]:
     names = set(TOOLSETS.keys())
     for toolset_name in _get_registry_toolset_names():
         if toolset_name.startswith("mcp-"):
+            names.add(toolset_name)
             alias = toolset_name[4:]
-            if alias and alias not in TOOLSETS:
+            if (
+                alias
+                and alias not in TOOLSETS
+                and alias not in LEGACY_TOOLSET_ALIASES
+                and alias not in _get_registry_toolset_names()
+            ):
                 names.add(alias)
             continue
         names.add(toolset_name)
@@ -585,6 +555,14 @@ def get_toolset_info(name: str) -> Dict[str, Any]:
         "tool_count": len(resolved_tools),
         "is_composite": bool(toolset["includes"]),
     }
+
+
+def get_hermes_core_tools() -> List[str]:
+    """Return a snapshot of the default Hermes CLI tool inventory."""
+    return sorted(resolve_toolset("hermes-cli"))
+
+
+_HERMES_CORE_TOOLS = get_hermes_core_tools()
 
 
 if __name__ == "__main__":

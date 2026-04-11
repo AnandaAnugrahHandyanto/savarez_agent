@@ -1525,15 +1525,6 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     }
 
 
-def _sync_mcp_toolsets(server_names: Optional[List[str]] = None) -> None:
-    """Backward-compatible no-op.
-
-    Toolset aliases and memberships now resolve directly from the live
-    registry, so there is no static TOOLSETS state to synchronize.
-    """
-    return None
-
-
 def _build_utility_schemas(server_name: str) -> List[dict]:
     """Build schemas for the MCP utility tools (resources & prompts).
 
@@ -1842,7 +1833,6 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         }
 
     if not new_servers:
-        _sync_mcp_toolsets(list(servers.keys()))
         return _existing_tool_names()
 
     # Start the background event loop for MCP connections
@@ -1872,8 +1862,6 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     # Per-server timeouts are handled inside _discover_and_register_server.
     # The outer timeout is generous: 120s total for parallel discovery.
     _run_on_mcp_loop(_discover_all(), timeout=120)
-
-    _sync_mcp_toolsets(list(servers.keys()))
 
     # Log a summary so ACP callers get visibility into what was registered.
     with _lock:
