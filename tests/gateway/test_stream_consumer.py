@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.platforms.base import SendResult
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
@@ -475,6 +476,69 @@ class TestSegmentBreakOnToolBoundary:
         final_text = adapter.send.call_args_list[1][1]["content"]
         assert "Phase 2" in final_text
         assert "Phase 3" in final_text
+
+
+class _MockWeixinLikeAdapter:
+    MAX_MESSAGE_LENGTH = 4000
+    name = "MockWeixin"
+    supports_stream_edits = False
+    stream_intermediate_only = True
+
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        self.sent.append({
+            "chat_id": chat_id,
+            "content": content,
+            "reply_to": reply_to,
+            "metadata": metadata,
+        })
+        return SendResult(success=True, message_id=f"msg-{len(self.sent)}")
+
+    async def edit_message(self, chat_id, message_id, content):
+        return SendResult(success=False, error="Not supported")
+
+    @staticmethod
+    def truncate_message(content: str, max_length: int = 4096):
+        return [content]
+
+
+@pytest.mark.asyncio
+async def test_no_edit_intermediate_only_stream_sends_only_commentary_segment():
+    adapter = _MockWeixinLikeAdapter()
+    consumer = GatewayStreamConsumer(
+        adapter=adapter,
+        chat_id="wxid_test123",
+        config=StreamConsumerConfig(edit_interval=0.01, buffer_threshold=20, cursor=""),
+        metadata={"_weixin_progress": True},
+    )
+
+    task = asyncio.create_task(consumer.run())
+
+    for piece in [
+        "I’ll inspect README.md",
+        " and pyproject.toml",
+        " to find the docs URL.",
+    ]:
+        consumer.on_delta(piece)
+        await asyncio.sleep(0.02)
+
+    consumer.on_delta(None)
+
+    for piece in [
+        "\n\nDocs URL: https://hermes-agent.nousresearch.com/docs/",
+    ]:
+        consumer.on_delta(piece)
+        await asyncio.sleep(0.02)
+
+    consumer.finish()
+    await task
+
+    assert [m["content"] for m in adapter.sent] == [
+        "I’ll inspect README.md and pyproject.toml to find the docs URL."
+    ]
+    assert consumer.already_sent is True
 
     @pytest.mark.asyncio
     async def test_fallback_final_splits_long_continuation_without_dropping_text(self):

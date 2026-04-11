@@ -88,6 +88,9 @@ RETRY_DELAY_SECONDS = 2
 BACKOFF_DELAY_SECONDS = 30
 SESSION_EXPIRED_ERRCODE = -14
 MESSAGE_DEDUP_TTL_SECONDS = 300
+WEIXIN_REPLY_QUOTA = 10
+WEIXIN_REPLY_WINDOW_SECONDS = 24 * 60 * 60
+WEIXIN_RESERVED_FINAL_SLOTS = 1
 
 MEDIA_IMAGE = 1
 MEDIA_VIDEO = 2
@@ -755,23 +758,33 @@ def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]
     return packed
 
 
-def _split_text_for_weixin_delivery(content: str, max_length: int) -> List[str]:
+def _cap_weixin_delivery_chunks(chunks: List[str], max_length: int, max_chunks: int) -> List[str]:
+    if max_chunks <= 0 or len(chunks) <= max_chunks:
+        return chunks
+
+    notice = "… [微信最多显示前几条，回复“继续”查看剩余内容]"
+    if max_chunks == 1:
+        return [notice[:max_length]]
+
+    capped = chunks[: max_chunks - 1]
+    capped.append(notice if len(notice) <= max_length else notice[:max_length])
+    return capped
+
+
+def _split_text_for_weixin_delivery(content: str, max_length: int, max_chunks: Optional[int] = None) -> List[str]:
     """Split content into sequential Weixin messages.
 
-    Prefer one message per top-level line/markdown unit when the author used
-    explicit line breaks. Oversized units fall back to block-aware packing so
-    long code fences still split safely.
+    Prefer a single message whenever it fits. For longer replies, pack markdown
+    blocks into as few messages as possible so Weixin's practical multi-message
+    limits are not exceeded. Oversized blocks still split safely.
     """
-    if len(content) <= max_length and "\n" not in content:
+    if len(content) <= max_length:
         return [content]
 
-    chunks: List[str] = []
-    for unit in _split_delivery_units_for_weixin(content):
-        if len(unit) <= max_length:
-            chunks.append(unit)
-            continue
-        chunks.extend(_pack_markdown_blocks_for_weixin(unit, max_length))
-    return chunks or [content]
+    chunks = _pack_markdown_blocks_for_weixin(content, max_length) or [content]
+    if max_chunks is not None:
+        return _cap_weixin_delivery_chunks(chunks, max_length, max_chunks)
+    return chunks
 
 
 def _extract_text(item_list: List[Dict[str, Any]]) -> str:
@@ -962,6 +975,9 @@ class WeixinAdapter(BasePlatformAdapter):
     """Native Hermes adapter for Weixin personal accounts."""
 
     MAX_MESSAGE_LENGTH = 4000
+    MAX_OUTBOUND_CHUNKS = 8
+    supports_stream_edits = False
+    stream_intermediate_only = True
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WEIXIN)
@@ -970,6 +986,7 @@ class WeixinAdapter(BasePlatformAdapter):
         self._hermes_home = hermes_home
         self._token_store = ContextTokenStore(hermes_home)
         self._typing_cache = TypingTicketCache()
+        self._outbound_budget: Dict[str, Dict[str, float]] = {}
         self._session: Optional[aiohttp.ClientSession] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._seen_messages: Dict[str, float] = {}
@@ -1172,6 +1189,7 @@ class WeixinAdapter(BasePlatformAdapter):
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
             self._token_store.set(self._account_id, sender_id, context_token)
+        self._reset_reply_budget(effective_chat_id)
         asyncio.create_task(self._maybe_fetch_typing_ticket(sender_id, context_token or None))
 
         item_list = message.get("item_list") or []
@@ -1330,7 +1348,36 @@ class WeixinAdapter(BasePlatformAdapter):
             logger.debug("[%s] getConfig failed for %s: %s", self.name, _safe_id(user_id), exc)
 
     def _split_text(self, content: str) -> List[str]:
-        return _split_text_for_weixin_delivery(content, self.MAX_MESSAGE_LENGTH)
+        return _split_text_for_weixin_delivery(
+            content,
+            self.MAX_MESSAGE_LENGTH,
+            max_chunks=self.MAX_OUTBOUND_CHUNKS,
+        )
+
+    def _reset_reply_budget(self, chat_id: str) -> None:
+        self._outbound_budget[chat_id] = {
+            "remaining": float(WEIXIN_REPLY_QUOTA),
+            "reset_at": time.time() + WEIXIN_REPLY_WINDOW_SECONDS,
+        }
+
+    def _reply_budget_state(self, chat_id: str) -> Optional[Dict[str, float]]:
+        state = self._outbound_budget.get(chat_id)
+        if not state:
+            return None
+        if state.get("reset_at", 0) <= time.time():
+            self._outbound_budget.pop(chat_id, None)
+            return None
+        return state
+
+    def _consume_reply_budget(self, chat_id: str, amount: int) -> None:
+        state = self._reply_budget_state(chat_id)
+        if not state:
+            return
+        state["remaining"] = max(0.0, float(state.get("remaining", 0.0)) - float(amount))
+
+    @staticmethod
+    def _is_progress_update(metadata: Optional[Dict[str, Any]]) -> bool:
+        return bool(metadata and metadata.get("_weixin_progress"))
 
     async def send(
         self,
@@ -1344,7 +1391,44 @@ class WeixinAdapter(BasePlatformAdapter):
         context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
         try:
-            for chunk in self._split_text(self.format_message(content)):
+            formatted_content = self.format_message(content)
+            chunks = self._split_text(formatted_content)
+            is_progress = self._is_progress_update(metadata)
+            budget = self._reply_budget_state(chat_id)
+            if budget is not None:
+                available = int(budget.get("remaining", 0.0))
+                allowed = max(0, available - WEIXIN_RESERVED_FINAL_SLOTS) if is_progress else available
+                if allowed <= 0:
+                    logger.info(
+                        "[%s] suppressing Weixin %s update to=%s quota_remaining=%d",
+                        self.name,
+                        "progress" if is_progress else "final",
+                        _safe_id(chat_id),
+                        available,
+                    )
+                    return SendResult(success=True, raw_response={"suppressed": True, "quota_remaining": available})
+                if len(chunks) > allowed:
+                    if is_progress:
+                        chunks = chunks[:allowed]
+                    else:
+                        chunks = _cap_weixin_delivery_chunks(chunks, self.MAX_MESSAGE_LENGTH, allowed)
+            logger.info(
+                "[%s] delivering %d Weixin chunk(s) to=%s total_chars=%d progress=%s",
+                self.name,
+                len(chunks),
+                _safe_id(chat_id),
+                len(formatted_content),
+                is_progress,
+            )
+            for idx, chunk in enumerate(chunks, start=1):
+                logger.debug(
+                    "[%s] sending chunk %d/%d to=%s len=%d",
+                    self.name,
+                    idx,
+                    len(chunks),
+                    _safe_id(chat_id),
+                    len(chunk),
+                )
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"
                 await _send_message(
                     self._session,
@@ -1356,6 +1440,8 @@ class WeixinAdapter(BasePlatformAdapter):
                     client_id=client_id,
                 )
                 last_message_id = client_id
+            if chunks:
+                self._consume_reply_budget(chat_id, len(chunks))
             return SendResult(success=True, message_id=last_message_id)
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)

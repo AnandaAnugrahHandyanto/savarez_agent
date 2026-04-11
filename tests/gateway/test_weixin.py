@@ -62,15 +62,15 @@ class TestWeixinFormatting:
 
 
 class TestWeixinChunking:
-    def test_split_text_sends_top_level_newlines_as_separate_messages(self):
+    def test_split_text_keeps_short_multiline_content_in_one_message(self):
         adapter = _make_adapter()
 
         content = adapter.format_message("第一行\n第二行\n第三行")
         chunks = adapter._split_text(content)
 
-        assert chunks == ["第一行", "第二行", "第三行"]
+        assert chunks == ["第一行\n第二行\n第三行"]
 
-    def test_split_text_keeps_indented_followup_with_previous_line(self):
+    def test_split_text_packs_transformed_table_rows_together_when_they_fit(self):
         adapter = _make_adapter()
 
         content = adapter.format_message(
@@ -82,8 +82,7 @@ class TestWeixinChunking:
         chunks = adapter._split_text(content)
 
         assert chunks == [
-            "- Setting: Timeout\n  Value: 30s",
-            "- Setting: Retries\n  Value: 3",
+            "- Setting: Timeout\n  Value: 30s\n- Setting: Retries\n  Value: 3"
         ]
 
     def test_split_text_keeps_complete_code_block_together_when_possible(self):
@@ -113,6 +112,42 @@ class TestWeixinChunking:
         assert len(chunks) > 1
         assert all(len(chunk) <= adapter.MAX_MESSAGE_LENGTH for chunk in chunks)
         assert all(chunk.count("```") >= 2 for chunk in chunks)
+
+    def test_split_text_caps_outbound_chunk_count(self):
+        adapter = _make_adapter()
+        adapter.MAX_MESSAGE_LENGTH = 40
+        adapter.MAX_OUTBOUND_CHUNKS = 3
+
+        content = adapter.format_message("\n\n".join(f"第{i}段：" + ("内容" * 20) for i in range(1, 8)))
+        chunks = adapter._split_text(content)
+
+        assert len(chunks) == 3
+        assert chunks[-1] == "… [微信最多显示前几条，回复“继续”查看剩余内容]"
+        assert all(len(chunk) <= adapter.MAX_MESSAGE_LENGTH for chunk in chunks)
+
+
+class TestWeixinQuota:
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_progress_updates_reserve_final_reply_slot(self, send_message_mock):
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._reset_reply_budget("wxid_test123")
+        adapter._consume_reply_budget("wxid_test123", 9)
+
+        progress = asyncio.run(
+            adapter.send(
+                "wxid_test123",
+                "处理中…",
+                metadata={"_weixin_progress": True},
+            )
+        )
+        assert progress.success is True
+        assert progress.raw_response == {"suppressed": True, "quota_remaining": 1}
+        send_message_mock.assert_not_awaited()
+
+        final = asyncio.run(adapter.send("wxid_test123", "最终答复"))
+        assert final.success is True
+        send_message_mock.assert_awaited_once()
 
 
 class TestWeixinConfig:

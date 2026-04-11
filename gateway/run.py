@@ -7065,14 +7065,18 @@ class GatewayRunner:
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        tool_progress_enabled = (
+            progress_mode != "off"
+            and source.platform != Platform.WEBHOOK
+            and source.platform != Platform.WEIXIN
+        )
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
-        
+
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
             if not progress_queue:
@@ -7148,7 +7152,11 @@ class GatewayRunner:
             _progress_thread_id = source.thread_id or event_message_id
         else:
             _progress_thread_id = source.thread_id
-        _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else {}
+        if source.platform == Platform.WEIXIN:
+            _progress_metadata["_weixin_progress"] = True
+        if not _progress_metadata:
+            _progress_metadata = None
 
         async def send_progress_messages():
             if not progress_queue:
@@ -7161,8 +7169,13 @@ class GatewayRunner:
             # Skip tool progress for platforms that don't support message
             # editing (e.g. iMessage/BlueBubbles) — each progress update
             # would become a separate message bubble, which is noisy.
+            #
+            # Exception: Weixin deliberately uses separate progress bubbles, but
+            # the adapter suppresses them once the per-user reply budget gets
+            # close to the final-response reserve.
             from gateway.platforms.base import BasePlatformAdapter as _BaseAdapter
-            if type(adapter).edit_message is _BaseAdapter.edit_message:
+            _supports_edit = type(adapter).edit_message is not _BaseAdapter.edit_message
+            if not _supports_edit and source.platform != Platform.WEIXIN:
                 while not progress_queue.empty():
                     try:
                         progress_queue.get_nowait()
@@ -7172,7 +7185,7 @@ class GatewayRunner:
 
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message to edit
-            can_edit = True          # False once an edit fails (platform doesn't support it)
+            can_edit = _supports_edit  # False once an edit fails (platform doesn't support it)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
@@ -7309,7 +7322,11 @@ class GatewayRunner:
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
-        _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else {}
+        if source.platform == Platform.WEIXIN:
+            _status_thread_metadata["_weixin_progress"] = True
+        if not _status_thread_metadata:
+            _status_thread_metadata = None
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter:
@@ -7386,7 +7403,11 @@ class GatewayRunner:
                 from gateway.config import StreamingConfig
                 _scfg = StreamingConfig()
 
-            if _scfg.enabled and _scfg.transport != "off":
+            _stream_enabled = bool(_scfg.enabled and _scfg.transport != "off")
+            if source.platform == Platform.WEIXIN:
+                _stream_enabled = True
+
+            if _stream_enabled:
                 try:
                     from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
                     _adapter = self.adapters.get(source.platform)
@@ -7464,7 +7485,7 @@ class GatewayRunner:
             agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
-            agent.status_callback = _status_callback_sync
+            agent.status_callback = None if source.platform == Platform.WEIXIN else _status_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides")
@@ -8088,8 +8109,10 @@ class GatewayRunner:
                     # Skip if streaming already delivered it.
                     _sc = stream_consumer_holder[0]
                     _already_streamed = _sc and getattr(_sc, "already_sent", False)
+                    _stream_adapter = self.adapters.get(source.platform) if source.platform else None
+                    _intermediate_only = bool(getattr(_stream_adapter, "stream_intermediate_only", False))
                     first_response = result.get("final_response", "")
-                    if first_response and not _already_streamed:
+                    if first_response and (not _already_streamed or _intermediate_only):
                         try:
                             await adapter.send(source.chat_id, first_response,
                                                metadata=getattr(event, "metadata", None))
@@ -8151,8 +8174,10 @@ class GatewayRunner:
         # message is new content the user hasn't seen, and it must reach
         # them even if streaming had sent earlier partial output.
         _sc = stream_consumer_holder[0]
+        _adapter = self.adapters.get(source.platform) if source.platform else None
+        _intermediate_only = bool(getattr(_adapter, "stream_intermediate_only", False))
         if _sc and _sc.already_sent and isinstance(response, dict):
-            if not response.get("failed"):
+            if not response.get("failed") and not _intermediate_only:
                 response["already_sent"] = True
         
         return response

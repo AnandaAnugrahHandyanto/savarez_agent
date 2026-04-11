@@ -135,6 +135,29 @@ class GatewayStreamConsumer:
                 )
 
                 if should_edit and self._accumulated:
+                    supports_edit = getattr(self.adapter, "supports_stream_edits", self._edit_supported)
+
+                    if not supports_edit:
+                        if got_done and getattr(self.adapter, "stream_intermediate_only", False):
+                            return
+                        if got_done or got_segment_break:
+                            chunks = self.adapter.truncate_message(self._accumulated, _safe_limit)
+                            reply_to_id = self._message_id if self._message_id not in (None, "__no_edit__") else None
+                            for chunk in chunks:
+                                reply_to_id = await self._send_new_chunk(chunk, reply_to_id)
+                            self._accumulated = ""
+                            self._last_sent_text = ""
+                            self._last_edit_time = time.monotonic()
+                            if got_done:
+                                return
+                            if got_segment_break:
+                                self._message_id = None
+                                self._fallback_final_send = False
+                                self._fallback_prefix = ""
+                        else:
+                            await asyncio.sleep(0.05)
+                        continue
+
                     # Split overflow: if accumulated text exceeds the platform
                     # limit, split into properly sized chunks.
                     if (
