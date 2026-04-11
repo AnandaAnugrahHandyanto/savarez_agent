@@ -140,7 +140,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
-        self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
+        # 3.0s default prevents albums split across getUpdates calls from flushing
+        # as separate hallucinated messages.
+        self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "3.0"))
         self._pending_photo_batches: Dict[str, MessageEvent] = {}
         self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
         self._media_group_events: Dict[str, MessageEvent] = {}
