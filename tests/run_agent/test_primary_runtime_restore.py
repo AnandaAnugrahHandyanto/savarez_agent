@@ -9,6 +9,7 @@ Verifies that:
 6. Non-transport errors don't trigger recovery
 """
 
+import json
 import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -212,6 +213,92 @@ class TestRestorePrimaryRuntime:
             result = agent._restore_primary_runtime()
 
         assert result is False
+
+    def test_expired_sticky_cache_is_deleted(self, tmp_path):
+        """Expired sticky cache should be ignored and cleaned up from disk."""
+        cache_path = tmp_path / "sticky_fallback.json"
+        cache_path.write_text(json.dumps({
+            "snapshot": {"provider": "openrouter", "model": "model-a"},
+            "expiry": time.time() - 1,
+        }))
+
+        agent = _make_agent(fallback_model={"provider": "openrouter", "model": "model-a"})
+        with patch.object(AIAgent, "_sticky_cache_path", return_value=str(cache_path)):
+            loaded = agent._load_sticky_fallback()
+
+        assert loaded is None
+        assert not cache_path.exists()
+
+    def test_restore_uses_last_successful_fallback_in_chain(self, tmp_path):
+        """If fallback A fails and B succeeds, the next turn should restore B."""
+        cache_path = tmp_path / "sticky_fallback.json"
+        fbs = [
+            {"provider": "openrouter", "model": "model-a", "base_url": "https://openrouter.ai/api/v1"},
+            {"provider": "zai", "model": "model-b", "base_url": "https://z.ai/api/paas/v4/"},
+        ]
+
+        first_agent = _make_agent(fallback_model=fbs)
+        with patch.object(AIAgent, "_sticky_cache_path", return_value=str(cache_path)), \
+             patch("agent.auxiliary_client.resolve_provider_client") as mock_rpc:
+            mock_rpc.side_effect = [
+                (_mock_resolve(base_url="https://openrouter.ai/api/v1", api_key="key-a"), "model-a"),
+                (_mock_resolve(base_url="https://z.ai/api/paas/v4/", api_key="key-b"), "model-b"),
+            ]
+            assert first_agent._try_activate_fallback() is True
+            assert first_agent.model == "model-a"
+            assert first_agent._try_activate_fallback() is True
+            assert first_agent.model == "model-b"
+            first_agent._maybe_persist_sticky_fallback()
+
+        assert cache_path.exists()
+
+        second_agent = _make_agent(fallback_model=fbs)
+        with patch.object(AIAgent, "_sticky_cache_path", return_value=str(cache_path)), \
+             patch("run_agent.OpenAI", return_value=MagicMock()):
+            restored = second_agent._restore_primary_runtime()
+
+        assert restored is True
+        assert second_agent.model == "model-b"
+        assert second_agent.provider == "zai"
+        assert second_agent._fallback_index == 2
+
+
+class TestStickyFallbackTTLParsing:
+    def test_invalid_ttl_string_falls_back_to_default(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value={"sticky_fallback_ttl": "oops"}),
+        ):
+            agent = AIAgent(
+                api_key="test-key-12345678",
+                base_url="https://my-llm.example.com/v1",
+                provider="custom",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent._sticky_fallback_ttl == 600
+
+    def test_non_positive_ttl_falls_back_to_default(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value={"sticky_fallback_ttl": 0}),
+        ):
+            agent = AIAgent(
+                api_key="test-key-12345678",
+                base_url="https://my-llm.example.com/v1",
+                provider="custom",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent._sticky_fallback_ttl == 600
 
 
 # =============================================================================

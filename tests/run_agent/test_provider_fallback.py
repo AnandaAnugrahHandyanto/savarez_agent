@@ -154,3 +154,33 @@ class TestFallbackChainAdvancement:
             ]
             assert agent._try_activate_fallback() is True
             assert agent.model == "gpt-4o"
+
+
+class TestStickyFallbackPersistence:
+    def test_activation_does_not_persist_sticky_immediately(self):
+        """Switching to fallback alone should not write sticky state yet."""
+        agent = _make_agent(fallback_model={"provider": "openai", "model": "gpt-4o"})
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_client(), "gpt-4o")), \
+             patch.object(agent, "_save_sticky_fallback") as mock_save:
+            assert agent._try_activate_fallback() is True
+
+        mock_save.assert_not_called()
+
+    def test_persists_only_after_successful_fallback_runtime(self):
+        """A successful fallback response should write the sticky snapshot."""
+        agent = _make_agent(fallback_model={"provider": "openai", "model": "gpt-4o"})
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_client(), "gpt-4o")):
+            assert agent._try_activate_fallback() is True
+
+        with patch.object(agent, "_save_sticky_fallback") as mock_save:
+            agent._maybe_persist_sticky_fallback()
+
+        mock_save.assert_called_once_with({"provider": "openai", "model": "gpt-4o"})
+
+    def test_primary_runtime_does_not_persist_sticky(self):
+        """Primary success must not be mistaken for sticky fallback success."""
+        agent = _make_agent(fallback_model={"provider": "openai", "model": "gpt-4o"})
+        with patch.object(agent, "_save_sticky_fallback") as mock_save:
+            agent._maybe_persist_sticky_fallback()
+
+        mock_save.assert_not_called()

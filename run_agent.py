@@ -882,6 +882,25 @@ class AIAgent:
         self._fallback_activated = False
         # Legacy attribute kept for backward compat (tests, external callers)
         self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
+        # ── Sticky fallback state (ttl in seconds, default 10 min) ──────────
+        # Read from config if available, fall back to hardcoded default.
+        _cfg_ttl = None
+        try:
+            from hermes_cli.config import load_config as _lc
+            _raw = _lc()
+            _cfg_ttl = _raw.get("sticky_fallback_ttl") if _raw else None
+        except Exception:
+            pass
+        try:
+            _parsed_ttl = int(_cfg_ttl) if _cfg_ttl is not None else 600
+            if _parsed_ttl <= 0:
+                raise ValueError("sticky_fallback_ttl must be positive")
+        except (TypeError, ValueError):
+            logging.warning("Invalid sticky_fallback_ttl=%r; falling back to 600 seconds", _cfg_ttl)
+            _parsed_ttl = 600
+        self._sticky_fallback_ttl = _parsed_ttl
+        self._sticky_fallback: Optional[Dict[str, Any]] = None  # {provider, model, base_url, api_mode, expiry}
+        self._sticky_cache_loaded = False
         if self._fallback_chain and not self.quiet_mode:
             if len(self._fallback_chain) == 1:
                 fb = self._fallback_chain[0]
@@ -1424,6 +1443,17 @@ class AIAgent:
         # ── Reset fallback state ──
         self._fallback_activated = False
         self._fallback_index = 0
+        # Invalidate sticky cache so a manual /model switch isn't overridden
+        # by a stale sticky entry on the next turn.
+        self._sticky_fallback = None
+        self._sticky_cache_loaded = False
+        cache_path = self._sticky_cache_path()
+        try:
+            os.remove(cache_path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
 
         logging.info(
             "Model switched in-place: %s (%s) -> %s (%s)",
@@ -4919,6 +4949,140 @@ class AIAgent:
             raise result["error"]
         return result["response"]
 
+    # ── Sticky fallback helpers ────────────────────────────────────────────
+
+    @staticmethod
+    def _sticky_cache_path() -> str:
+        """Path to the persistent sticky-fallback cache file."""
+        return os.path.join(os.path.expanduser("~/.hermes"), "sticky_fallback.json")
+
+    def _load_sticky_fallback(self) -> Optional[Dict[str, Any]]:
+        """Load sticky provider from disk cache if it hasn't expired."""
+        cache_path = self._sticky_cache_path()
+        if not os.path.exists(cache_path):
+            return None
+        try:
+            raw = json.loads(open(cache_path).read())
+            snapshot = raw.get("snapshot", {})
+            expiry = raw.get("expiry", 0)
+            if time.time() >= expiry:
+                try:
+                    os.remove(cache_path)
+                except OSError:
+                    pass
+                return None
+            if snapshot.get("model") and snapshot.get("provider"):
+                snapshot["expiry"] = expiry
+                return snapshot
+            return None
+        except Exception:
+            return None
+
+    def _resolve_fallback_runtime(
+        self, provider: str, model: str
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve the full runtime snapshot for a fallback chain entry by provider+model."""
+        provider_lower = provider.strip().lower()
+        for fb in self._fallback_chain:
+            if fb.get("provider", "").strip().lower() == provider_lower and fb.get("model") == model:
+                fb_provider = fb.get("provider", "").strip()
+                fb_model = fb.get("model", "")
+                fb_base_url = fb.get("base_url", "").strip()
+                fb_api_key = fb.get("api_key", "").strip()
+                fb_api_mode = self._determine_api_mode(fb_provider, fb_base_url)
+                return {
+                    "provider": fb_provider,
+                    "model": fb_model,
+                    "base_url": fb_base_url,
+                    "api_mode": fb_api_mode,
+                    "api_key": fb_api_key,
+                    "client_kwargs": {"api_key": fb_api_key, "base_url": fb_base_url},
+                    "use_prompt_caching": False,
+                    "compressor_model": fb_model,
+                    "compressor_base_url": fb_base_url,
+                    "compressor_api_key": fb_api_key,
+                    "compressor_provider": fb_provider,
+                    "compressor_context_length": 0,
+                    "compressor_threshold_tokens": 0,
+                }
+        return None
+
+    def _determine_api_mode(self, provider: str, base_url: str) -> str:
+        """Determine api_mode from provider and base_url."""
+        if provider == "openai-codex":
+            return "codex_responses"
+        if provider == "anthropic":
+            return "anthropic_messages"
+        base_lower = base_url.lower().strip()
+        if base_lower.endswith("/anthropic"):
+            return "anthropic_messages"
+        if "openai-codex" in base_lower:
+            return "codex_responses"
+        return "chat_completions"
+
+    def _save_sticky_fallback(self, fallback_entry: Dict[str, Any]) -> None:
+        """Persist the successful fallback runtime snapshot to disk with expiry timestamp."""
+        try:
+            cache_path = self._sticky_cache_path()
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            # Build full runtime snapshot from current self state at the moment
+            # the fallback has already produced a successful response.
+            _cc = getattr(self, "context_compressor", None)
+            snapshot = {
+                "model": self.model,
+                "provider": self.provider,
+                "base_url": self.base_url,
+                "api_mode": self.api_mode,
+                "api_key": getattr(self, "api_key", ""),
+                "client_kwargs": dict(getattr(self, "_client_kwargs", {})),
+                "use_prompt_caching": getattr(self, "_use_prompt_caching", False),
+                "compressor_model": _cc.model if _cc else self.model,
+                "compressor_base_url": _cc.base_url if _cc else self.base_url,
+                "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
+                "compressor_provider": _cc.provider if _cc else self.provider,
+                "compressor_context_length": getattr(_cc, "context_length", 0) if _cc else 0,
+                "compressor_threshold_tokens": getattr(_cc, "threshold_tokens", 0) if _cc else 0,
+            }
+            if self.api_mode == "anthropic_messages":
+                snapshot.update({
+                    "anthropic_api_key": getattr(self, "_anthropic_api_key", ""),
+                    "anthropic_base_url": getattr(self, "_anthropic_base_url", ""),
+                    "is_anthropic_oauth": getattr(self, "_is_anthropic_oauth", False),
+                })
+            raw = {
+                "snapshot": snapshot,
+                "expiry": time.time() + self._sticky_fallback_ttl,
+            }
+            with open(cache_path, "w") as fh:
+                json.dump(raw, fh)
+            logging.debug("Sticky fallback saved: %s/%s (ttl=%ds)",
+                          self.provider, self.model, self._sticky_fallback_ttl)
+        except Exception as e:
+            logging.warning("Failed to persist sticky fallback: %s", e)
+
+    def _maybe_persist_sticky_fallback(self) -> None:
+        """Persist sticky fallback only after a fallback runtime succeeds.
+
+        Important: fallback activation alone is not proof of success. We only
+        write sticky state after the current runtime has completed a successful
+        API call, and only when the current runtime is actually one of the
+        configured fallback entries (not the original primary).
+        """
+        primary_provider = (self._primary_runtime.get("provider") or "").strip().lower()
+        primary_model = (self._primary_runtime.get("model") or "").strip()
+        current_provider = (self.provider or "").strip().lower()
+        current_model = (self.model or "").strip()
+
+        if current_provider == primary_provider and current_model == primary_model:
+            return
+
+        for fb in self._fallback_chain:
+            fb_provider = (fb.get("provider") or "").strip().lower()
+            fb_model = (fb.get("model") or "").strip()
+            if fb_provider == current_provider and fb_model == current_model:
+                self._save_sticky_fallback({"provider": self.provider, "model": self.model})
+                return
+
     # ── Provider fallback ──────────────────────────────────────────────────
 
     def _try_activate_fallback(self) -> bool:
@@ -5057,61 +5221,117 @@ class AIAgent:
 
     # ── Per-turn primary restoration ─────────────────────────────────────
 
+    def _apply_runtime_snapshot(self, rt: Dict[str, Any]) -> None:
+        """Apply a full runtime snapshot dict to self, rebuilding the client."""
+        self.model = rt.get("model", "")
+        self.provider = rt.get("provider", "")
+        self.base_url = rt.get("base_url", "")
+        self.api_mode = rt.get("api_mode", "chat_completions")
+        self.api_key = rt.get("api_key", "")
+        self._client_kwargs = dict(rt.get("client_kwargs", {}))
+        self._use_prompt_caching = rt.get("use_prompt_caching", False)
+        if self.api_mode == "anthropic_messages":
+            from agent.anthropic_adapter import build_anthropic_client
+            self._anthropic_api_key = rt.get("anthropic_api_key", "")
+            self._anthropic_base_url = rt.get("anthropic_base_url", "")
+            self._anthropic_client = build_anthropic_client(
+                rt.get("anthropic_api_key", ""), rt.get("anthropic_base_url", ""),
+            )
+            self._is_anthropic_oauth = rt.get("is_anthropic_oauth", False)
+            self.client = None
+        else:
+            self.client = self._create_openai_client(
+                dict(rt.get("client_kwargs", {})),
+                reason="restore_primary",
+                shared=True,
+            )
+        # Restore context compressor
+        cc = self.context_compressor
+        cc.model = rt.get("compressor_model", self.model)
+        cc.base_url = rt.get("compressor_base_url", self.base_url)
+        cc.api_key = rt.get("compressor_api_key", "")
+        cc.provider = rt.get("compressor_provider", self.provider)
+        cc.context_length = rt.get("compressor_context_length", 0)
+        cc.threshold_tokens = rt.get("compressor_threshold_tokens", 0)
+
     def _restore_primary_runtime(self) -> bool:
-        """Restore the primary runtime at the start of a new turn.
+        """Restore runtime at the start of each new turn.
 
-        In long-lived CLI sessions a single AIAgent instance spans multiple
-        turns.  Without restoration, one transient failure pins the session
-        to the fallback provider for every subsequent turn.  Calling this at
-        the top of ``run_conversation()`` makes fallback turn-scoped.
+        Sticky mode: when a fallback provider succeeded in the previous turn,
+        it is cached to disk with a TTL (default 10 min).  On the next turn
+        we load that cache and continue from the sticky provider instead of
+        blindly resetting to the primary -- giving sticky providers the same
+        "turn budget" as the primary before they expire.
 
-        The gateway creates a fresh agent per message so this is a no-op
-        there (``_fallback_activated`` is always False at turn start).
+        When no sticky entry exists (or it has expired), falls back to the
+        standard behaviour of restoring the primary model.
         """
-        if not self._fallback_activated:
+        rt_primary = self._primary_runtime
+
+        # Load sticky cache once per turn (avoid repeated disk I/O)
+        if not self._sticky_cache_loaded:
+            self._sticky_fallback = self._load_sticky_fallback()
+            self._sticky_cache_loaded = True
+
+        sticky = self._sticky_fallback
+
+        # Proceed if: either a fallback was activated last turn (normal path),
+        # OR a valid sticky cache exists on disk (proactive sticky — the fix).
+        # Without this OR, proactive sticky is unreachable because _fallback_activated
+        # is reset to False at the end of every run_conversation.
+        if not (self._fallback_activated or (sticky and time.time() < sticky.get("expiry", 0))):
             return False
 
-        rt = self._primary_runtime
-        try:
-            # ── Core runtime state ──
-            self.model = rt["model"]
-            self.provider = rt["provider"]
-            self.base_url = rt["base_url"]           # setter updates _base_url_lower
-            self.api_mode = rt["api_mode"]
-            self.api_key = rt["api_key"]
-            self._client_kwargs = dict(rt["client_kwargs"])
-            self._use_prompt_caching = rt["use_prompt_caching"]
-
-            # ── Rebuild client for the primary provider ──
-            if self.api_mode == "anthropic_messages":
-                from agent.anthropic_adapter import build_anthropic_client
-                self._anthropic_api_key = rt["anthropic_api_key"]
-                self._anthropic_base_url = rt["anthropic_base_url"]
-                self._anthropic_client = build_anthropic_client(
-                    rt["anthropic_api_key"], rt["anthropic_base_url"],
+        if sticky and time.time() < sticky.get("expiry", 0):
+            # If snapshot is incomplete (missing base_url, api_mode, or api_key),
+            # resolve the full runtime from the fallback chain so _apply_runtime_snapshot
+            # has everything it needs and won't crash on missing keys.
+            # Only enrich if at least one critical field is missing.
+            # sticky.update() only overwrites None/empty values, preserving
+            # already-valid fields (e.g. api_mode set by a previous successful save).
+            needs_enrich = not sticky.get("base_url") or not sticky.get("api_mode") or not sticky.get("api_key")
+            if needs_enrich:
+                enriched = self._resolve_fallback_runtime(
+                    sticky.get("provider", ""), sticky.get("model", "")
                 )
-                self._is_anthropic_oauth = rt["is_anthropic_oauth"]
-                self.client = None
+                if enriched:
+                    # Merge: prefer existing non-empty sticky values, fill gaps from resolved.
+                    for k, v in enriched.items():
+                        if not sticky.get(k):
+                            sticky[k] = v
+
+            # Sticky provider still valid: skip past it in the fallback chain
+            # and use it as the "primary" for this turn.
+            sticky_provider = sticky.get("provider", "").strip().lower()
+            sticky_model = sticky.get("model", "")
+            # Advance fallback_index past the sticky entry so we don't
+            # re-try the same failed provider at the top of the chain.
+            for i, fb in enumerate(self._fallback_chain):
+                fb_p = fb.get("provider", "").strip().lower()
+                fb_m = fb.get("model", "")
+                if fb_p == sticky_provider and fb_m == sticky_model:
+                    self._fallback_index = i + 1
+                    break
             else:
-                self.client = self._create_openai_client(
-                    dict(rt["client_kwargs"]),
-                    reason="restore_primary",
-                    shared=True,
-                )
+                # Sticky provider not in our chain — reset index and let
+                # _try_activate_fallback find the right starting point.
+                self._fallback_index = 0
 
-            # ── Restore context compressor state ──
-            cc = self.context_compressor
-            cc.model = rt["compressor_model"]
-            cc.base_url = rt["compressor_base_url"]
-            cc.api_key = rt["compressor_api_key"]
-            cc.provider = rt["compressor_provider"]
-            cc.context_length = rt["compressor_context_length"]
-            cc.threshold_tokens = rt["compressor_threshold_tokens"]
+            # Apply sticky as the new effective primary
+            self._apply_runtime_snapshot(sticky)
+            self._fallback_activated = False
+            logging.info(
+                "Sticky fallback restored for new turn: %s (%s) [ttl remains %.0fs]",
+                self.model, self.provider,
+                sticky.get("expiry", 0) - time.time(),
+            )
+            return True
 
-            # ── Reset fallback chain for the new turn ──
+        # No sticky (expired or never set): restore original primary
+        try:
+            self._apply_runtime_snapshot(rt_primary)
             self._fallback_activated = False
             self._fallback_index = 0
-
             logging.info(
                 "Primary runtime restored for new turn: %s (%s)",
                 self.model, self.provider,
@@ -8060,6 +8280,7 @@ class AIAgent:
                                 self._vprint(f"{self.log_prefix}   💾 Cache: {cached:,}/{prompt:,} tokens ({hit_pct:.0f}% hit, {written:,} written)")
                     
                     has_retried_429 = False  # Reset on success
+                    self._maybe_persist_sticky_fallback()
                     self._touch_activity(f"API call #{api_call_count} completed")
                     break  # Success, exit retry loop
 
