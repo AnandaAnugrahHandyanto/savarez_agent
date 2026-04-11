@@ -66,6 +66,9 @@ WEIXIN_ACCOUNT_ID=your-account-id
 WEIXIN_DM_POLICY=open
 WEIXIN_ALLOWED_USERS=user_id_1,user_id_2
 
+# Optional: restore legacy multiline splitting behavior
+# WEIXIN_SPLIT_MULTILINE_MESSAGES=true
+
 # Optional: home channel for cron/notifications
 WEIXIN_HOME_CHANNEL=chat_id
 WEIXIN_HOME_CHANNEL_NAME=Home
@@ -108,6 +111,7 @@ Set these in `config.yaml` under `platforms.weixin.extra`:
 | `group_policy` | `disabled` | Group access: `open`, `allowlist`, `disabled` |
 | `allow_from` | `[]` | User IDs allowed for DMs (when dm_policy=allowlist) |
 | `group_allow_from` | `[]` | Group IDs allowed (when group_policy=allowlist) |
+| `split_multiline_messages` | `false` | When `true`, split multi-line replies into multiple chat messages (legacy behavior). When `false`, keep multi-line replies as one message unless they exceed the length limit. |
 
 ## Access Policies
 
@@ -211,12 +215,12 @@ WeChat's personal chat does not natively render full Markdown. The adapter refor
 
 ## Message Chunking
 
-Long messages are split intelligently for chat delivery:
+Messages are delivered as a single chat message whenever they fit within the platform limit. Only oversized payloads are split for delivery:
 
 - Maximum message length: **4000 characters**
-- Split points prefer paragraph boundaries and blank lines
-- Code fences are kept intact (never split mid-block)
-- Indented continuation lines (sub-items in reformatted tables/lists) stay with their parent
+- Messages under the limit stay intact even when they contain multiple paragraphs or line breaks
+- Oversized messages split at logical boundaries (paragraphs, blank lines, code fences)
+- Code fences are kept intact whenever possible (never split mid-block unless the fence itself exceeds the limit)
 - Oversized individual blocks fall back to the base adapter's truncation logic
 
 ## Typing Indicators
