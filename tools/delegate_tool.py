@@ -614,14 +614,21 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
+    model: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets)
-      - Batch:  provide tasks array [{goal, context, toolsets}, ...]
+      - Single: provide goal (+ optional context, toolsets, model)
+      - Batch:  provide tasks array [{goal, context, toolsets, model}, ...]
+
+    The optional ``model`` argument (top-level or per-task) overrides the
+    subagent's model on the fly using the same resolution pipeline as the
+    ``/model`` slash command. Per-task ``model`` beats top-level ``model``,
+    which in turn beats ``delegation.model`` in config.yaml, which falls
+    back to inheriting the parent agent's model.
 
     Returns JSON with results array, one entry per task.
     """
@@ -666,7 +673,12 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
+        task_list = [{
+            "goal": goal,
+            "context": context,
+            "toolsets": toolsets,
+            "model": model,
+        }]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -697,13 +709,29 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            # Per-task model override precedence:
+            #   task-level model > top-level `model` arg > delegation.model config
+            # When the LLM passes a model string, resolve it through the same
+            # pipeline as the /model slash command (aliases, direct mappings,
+            # catalog search, credential resolution) and use THOSE credentials
+            # for this subagent — this lets the parent route each subagent to a
+            # different provider:model pair on the fly.
+            raw_task_model = t.get("model") or model
+            if raw_task_model:
+                try:
+                    task_creds = _resolve_model_override(raw_task_model, parent_agent)
+                except ValueError as exc:
+                    return tool_error(str(exc))
+            else:
+                task_creds = creds
+
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
+                toolsets=t.get("toolsets") or toolsets, model=task_creds["model"],
                 max_iterations=effective_max_iter, parent_agent=parent_agent,
-                override_provider=creds["provider"], override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"], override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_acp_command=t.get("acp_command") or acp_command,
                 override_acp_args=t.get("acp_args") or acp_args,
             )
@@ -920,6 +948,80 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     }
 
 
+def _resolve_model_override(model_input: str, parent_agent) -> dict:
+    """Resolve a per-task model override for a subagent.
+
+    Wraps :func:`hermes_cli.model_switch.switch_model` so that the LLM can
+    pass a bare model string (``"sonnet"``, ``"glm-4.7"``, ``"claude-opus-4-6"``,
+    or ``"sonnet --provider anthropic"``) and get back a full credential bundle
+    compatible with :func:`_build_child_agent`'s ``override_*`` parameters.
+
+    Resolution uses the same pipeline as the in-chat ``/model`` slash command:
+    alias lookup → direct alias mapping → provider catalog search →
+    ``detect_provider_for_model`` fallback → credential resolution.
+
+    Returns a dict with keys ``model``, ``provider``, ``base_url``, ``api_key``,
+    ``api_mode`` — same shape as :func:`_resolve_delegation_credentials`.
+
+    Raises ``ValueError`` with a user-friendly message when resolution fails
+    (bad model name, unknown alias, missing credentials, etc.).
+    """
+    raw = (model_input or "").strip()
+    if not raw:
+        raise ValueError("model override is empty")
+
+    try:
+        from hermes_cli.model_switch import switch_model, parse_model_flags
+    except Exception as exc:
+        raise ValueError(
+            f"Cannot import model_switch module for model override: {exc}"
+        ) from exc
+
+    # Support the same flag syntax as /model (e.g. "sonnet --provider anthropic").
+    # `--global` is stripped but intentionally ignored — per-task overrides are
+    # session-scoped and must not persist to config.yaml.
+    model_name, explicit_provider, _ignored_global = parse_model_flags(raw)
+    if not model_name and not explicit_provider:
+        raise ValueError(f"Could not parse model override: {raw!r}")
+
+    # Load user-defined providers from config so custom endpoints resolve.
+    user_provs = None
+    custom_provs = None
+    try:
+        from hermes_cli.config import load_config
+        full_cfg = load_config()
+        user_provs = full_cfg.get("providers")
+        custom_provs = full_cfg.get("custom_providers")
+    except Exception:
+        pass
+
+    result = switch_model(
+        raw_input=model_name,
+        current_provider=getattr(parent_agent, "provider", "") or "",
+        current_model=getattr(parent_agent, "model", "") or "",
+        current_base_url=getattr(parent_agent, "base_url", "") or "",
+        current_api_key=getattr(parent_agent, "api_key", "") or "",
+        is_global=False,
+        explicit_provider=explicit_provider,
+        user_providers=user_provs,
+        custom_providers=custom_provs,
+    )
+
+    if not result.success:
+        raise ValueError(
+            f"Cannot resolve model override {raw!r}: "
+            f"{result.error_message or 'unknown error'}"
+        )
+
+    return {
+        "model": result.new_model,
+        "provider": result.target_provider or None,
+        "base_url": result.base_url or None,
+        "api_key": result.api_key or None,
+        "api_mode": result.api_mode or None,
+    }
+
+
 def _load_config() -> dict:
     """Load delegation config from CLI_CONFIG or persistent config.
 
@@ -955,7 +1057,7 @@ DELEGATE_TASK_SCHEMA = {
         "Only the final summary is returned -- intermediate tool results "
         "never enter your context window.\n\n"
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
-        "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
+        "1. Single task: provide 'goal' (+ optional context, toolsets, model)\n"
         "2. Batch (parallel): provide 'tasks' array with up to 3 items. "
         "All run concurrently and results are returned together.\n\n"
         "WHEN TO USE delegate_task:\n"
@@ -966,6 +1068,12 @@ DELEGATE_TASK_SCHEMA = {
         "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
         "- Single tool call -> just call the tool directly\n"
         "- Tasks needing user interaction -> subagents cannot use clarify\n\n"
+        "MODEL SELECTION:\n"
+        "- Pass 'model' (top-level or per-task) to route a subagent to a "
+        "specific model, using the same syntax as the /model slash command "
+        "('sonnet', 'glm-4.7', 'gpt-5', 'haiku', etc.). Default: inherit "
+        "parent's model. Use this to match model capability to task "
+        "complexity (cheap/fast for simple tasks, strong for reasoning-heavy).\n\n"
         "IMPORTANT:\n"
         "- Subagents have NO memory of your conversation. Pass all relevant "
         "info (file paths, error messages, constraints) via the 'context' field.\n"
@@ -1004,6 +1112,24 @@ DELEGATE_TASK_SCHEMA = {
                     "full-stack tasks."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Override the subagent's model for this delegation. "
+                    "Resolved via the same pipeline as the /model slash command: "
+                    "aliases ('sonnet', 'opus', 'haiku', 'gpt5', 'gemini', 'glm', "
+                    "'kimi', 'grok', 'deepseek', ...), direct mappings "
+                    "('glm-4.7', 'claude-opus-4-6', 'gemini-2.5-pro'), or full "
+                    "provider-qualified model IDs. Provider and credentials are "
+                    "auto-resolved; supports optional '--provider <slug>' flag. "
+                    "Use this to route a subagent to a cheaper/faster/smarter "
+                    "model based on task complexity. Default: inherit parent's "
+                    "model (or the delegation.model config entry if set). "
+                    "In batch mode, prefer setting 'model' per-task inside "
+                    "'tasks'; the top-level 'model' applies only when a task "
+                    "does not specify its own."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -1015,6 +1141,16 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "Toolsets for this specific task. Use 'web' for network access, 'terminal' for shell.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model override for this specific subagent "
+                                "(e.g. 'sonnet', 'glm-4.7', 'gpt-5'). Overrides the "
+                                "top-level 'model' for this task only. Lets you run "
+                                "different subagents on different models in parallel "
+                                "based on their individual complexity/confidence needs."
+                            ),
                         },
                         "acp_command": {
                             "type": "string",
@@ -1082,6 +1218,7 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
+        model=args.get("model"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",
