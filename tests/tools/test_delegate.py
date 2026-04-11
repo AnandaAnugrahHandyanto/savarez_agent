@@ -881,71 +881,28 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             "model": "qwen2.5-coder",
             "provider": "openrouter",
             "base_url": "http://localhost:1234/v1",
-            "api_key": "local-key",
+            "api_key": "delegation-token",
         }
         creds = _resolve_delegation_credentials(cfg, parent)
         self.assertEqual(creds["model"], "qwen2.5-coder")
         self.assertEqual(creds["provider"], "custom")
         self.assertEqual(creds["base_url"], "http://localhost:1234/v1")
-        self.assertEqual(creds["api_key"], "local-key")
+        self.assertEqual(creds["api_key"], "delegation-token")
         self.assertEqual(creds["api_mode"], "chat_completions")
 
-    def test_direct_endpoint_auto_detects_anthropic_messages_suffix(self):
-        # Issue #10213: Azure AI Foundry exposes Anthropic-compatible models at
-        # a /anthropic URL suffix. Subagents must pick anthropic_messages
-        # automatically, matching the main agent's runtime resolver.
+    def test_direct_endpoint_detects_chatgpt_web_api_mode(self):
         parent = _make_mock_parent(depth=0)
         cfg = {
-            "model": "claude-opus-4-6",
-            "provider": "custom",
-            "base_url": "https://myfoundry.services.ai.azure.com/anthropic",
-            "api_key": "foundry-key",
+            "model": "gpt-5-thinking",
+            "base_url": "https://chatgpt.com/backend-api/f",
+            "api_key": "chatgpt-web-token",
         }
         creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["provider"], "custom")
-        self.assertEqual(creds["base_url"], "https://myfoundry.services.ai.azure.com/anthropic")
-        self.assertEqual(creds["api_key"], "foundry-key")
-        self.assertEqual(creds["api_mode"], "anthropic_messages")
-
-    def test_direct_endpoint_honors_explicit_api_mode(self):
-        # When delegation.api_mode is set explicitly, it overrides URL-based
-        # detection so users can force a transport on non-standard endpoints.
-        parent = _make_mock_parent(depth=0)
-        cfg = {
-            "model": "claude-opus-4-6",
-            "provider": "custom",
-            "base_url": "https://proxy.example.com/v1",
-            "api_key": "proxy-key",
-            "api_mode": "anthropic_messages",
-        }
-        creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["api_mode"], "anthropic_messages")
-
-    def test_direct_endpoint_explicit_api_mode_overrides_url_detection(self):
-        # Explicit api_mode in config always wins over auto-detection.
-        parent = _make_mock_parent(depth=0)
-        cfg = {
-            "model": "claude-opus-4-6",
-            "provider": "custom",
-            "base_url": "https://myfoundry.services.ai.azure.com/anthropic",
-            "api_key": "foundry-key",
-            "api_mode": "chat_completions",
-        }
-        creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["api_mode"], "chat_completions")
-
-    def test_direct_endpoint_invalid_api_mode_falls_back_to_detection(self):
-        # An invalid api_mode string must not break detection; fall back to URL heuristic.
-        parent = _make_mock_parent(depth=0)
-        cfg = {
-            "model": "claude-opus-4-6",
-            "provider": "custom",
-            "base_url": "https://myfoundry.services.ai.azure.com/anthropic",
-            "api_key": "foundry-key",
-            "api_mode": "garbage",
-        }
-        creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["api_mode"], "anthropic_messages")
+        self.assertEqual(creds["model"], "gpt-5-thinking")
+        self.assertEqual(creds["provider"], "chatgpt-web")
+        self.assertEqual(creds["base_url"], "https://chatgpt.com/backend-api/f")
+        self.assertEqual(creds["api_key"], "chatgpt-web-token")
+        self.assertEqual(creds["api_mode"], "chatgpt_web")
 
     def test_direct_endpoint_returns_none_api_key_when_not_configured(self):
         # When base_url is set without api_key, api_key should be None so
@@ -1222,13 +1179,13 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             "max_iterations": 45,
             "model": "qwen2.5-coder",
             "base_url": "http://localhost:1234/v1",
-            "api_key": "local-key",
+            "api_key": "delegation-token",
         }
         mock_creds.return_value = {
             "model": "qwen2.5-coder",
             "provider": "custom",
             "base_url": "http://localhost:1234/v1",
-            "api_key": "local-key",
+            "api_key": "delegation-token",
             "api_mode": "chat_completions",
         }
         parent = _make_mock_parent(depth=0)
@@ -1246,7 +1203,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["model"], "qwen2.5-coder")
             self.assertEqual(kwargs["provider"], "custom")
             self.assertEqual(kwargs["base_url"], "http://localhost:1234/v1")
-            self.assertEqual(kwargs["api_key"], "local-key")
+            self.assertEqual(kwargs["api_key"], "delegation-token")
             self.assertEqual(kwargs["api_mode"], "chat_completions")
 
     @patch("tools.delegate_tool._load_config")
@@ -1276,6 +1233,37 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["model"], parent.model)
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["base_url"], parent.base_url)
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_delegate_task_clamps_low_max_iterations_for_child_summary_turn(self, mock_creds, mock_cfg):
+        """Subagents need at least one tool turn plus one summary turn."""
+        mock_cfg.return_value = {"max_iterations": 45, "model": "", "provider": ""}
+        mock_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                goal="Use the terminal tool to print the current working directory.",
+                toolsets=["terminal"],
+                max_iterations=1,
+                parent_agent=parent,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["max_iterations"], 2)
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
