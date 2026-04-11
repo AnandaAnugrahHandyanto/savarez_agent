@@ -159,6 +159,7 @@ def _handle_send(args):
         "feishu": Platform.FEISHU,
         "wecom": Platform.WECOM,
         "weixin": Platform.WEIXIN,
+        "qq": Platform.QQ,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }
@@ -421,6 +422,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.QQ:
+            result = await _send_qq(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
         else:
@@ -936,6 +939,33 @@ async def _send_weixin(pconfig, chat_id, message, media_files=None):
         )
     except Exception as e:
         return _error(f"Weixin send failed: {e}")
+
+
+async def _send_qq(extra, chat_id, message):
+    """Send via QQ using the adapter's WebSocket send pipeline."""
+    try:
+        from gateway.platforms.qq import QQAdapter, check_qq_requirements
+        if not check_qq_requirements():
+            return {"error": "QQ requirements not met. Need aiohttp + httpx."}
+    except ImportError:
+        return {"error": "QQ adapter not available."}
+
+    try:
+        from gateway.config import PlatformConfig
+        pconfig = PlatformConfig(extra=extra)
+        adapter = QQAdapter(pconfig)
+        connected = await adapter.connect()
+        if not connected:
+            return _error(f"QQ: failed to connect - {adapter.fatal_error_message or 'unknown error'}")
+        try:
+            result = await adapter.send(chat_id, message)
+            if not result.success:
+                return _error(f"QQ send failed: {result.error}")
+            return {"success": True, "platform": "qq", "chat_id": chat_id, "message_id": result.message_id}
+        finally:
+            await adapter.disconnect()
+    except Exception as e:
+        return _error(f"QQ send failed: {e}")
 
 
 async def _send_bluebubbles(extra, chat_id, message):

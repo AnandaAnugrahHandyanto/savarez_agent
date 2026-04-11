@@ -238,6 +238,15 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `WEIXIN_HOME_CHANNEL` | Weixin chat ID for cron delivery and notifications |
 | `WEIXIN_HOME_CHANNEL_NAME` | Display name for the Weixin home channel |
 | `WEIXIN_ALLOW_ALL_USERS` | Allow all Weixin users without an allowlist (`true`/`false`) |
+| **QQ Bot (Official API)** | | |
+| `QQ_APP_ID` | QQ Bot App ID from [QQ Bot Console](https://q.qq.com) |
+| `QQ_CLIENT_SECRET` | QQ Bot App Secret |
+| `QQ_ALLOWED_USERS` | Comma-separated QQ user openIDs allowed to interact with the bot |
+| `QQ_GROUP_ALLOWED_USERS` | Comma-separated QQ group openIDs allowed to interact with the bot |
+| `QQ_HOME_CHANNEL` | QQ openID for cron delivery and notifications |
+| `QQ_STT_API_KEY` | Custom STT provider API key (e.g. Zhipu GLM-ASR). Leave empty to use QQ's built-in ASR. |
+| `QQ_STT_BASE_URL` | Custom STT provider base URL (default: `https://open.bigmodel.cn/api/coding/paas/v4`) |
+| `QQ_STT_MODEL` | Custom STT model name (default: `glm-asr`) |
 | `BLUEBUBBLES_SERVER_URL` | BlueBubbles server URL (e.g. `http://192.168.1.10:1234`) |
 | `BLUEBUBBLES_PASSWORD` | BlueBubbles server password |
 | `BLUEBUBBLES_WEBHOOK_HOST` | Webhook listener bind address (default: `127.0.0.1`) |
