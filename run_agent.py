@@ -582,6 +582,7 @@ class AIAgent:
         model: str = "",
         max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
         max_api_retries: int = 3,  # Max retries for failed/rate-limited API calls
+        max_stream_retries: int = 2,  # Max retries for transient stream/connection errors
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -668,6 +669,7 @@ class AIAgent:
         self.model = model
         self.max_iterations = max_iterations
         self.max_api_retries = max_api_retries
+        self.max_stream_retries = max_stream_retries
         # Shared iteration budget — parent creates, children inherit.
         # Consumed by every LLM turn across parent + all subagents.
         self.iteration_budget = iteration_budget or IterationBudget(max_iterations)
@@ -4922,7 +4924,7 @@ class AIAgent:
         def _call():
             import httpx as _httpx
 
-            _max_stream_retries = int(os.getenv("HERMES_STREAM_RETRIES", 2))
+            _max_stream_retries = self.max_stream_retries
 
             try:
                 for _stream_attempt in range(_max_stream_retries + 1):
