@@ -2038,6 +2038,16 @@ class GatewayRunner:
             return FeishuAdapter(config)
 
         elif platform == Platform.WECOM:
+            extra = getattr(config, "extra", {}) or {}
+            if extra.get("mode") == "callback" or extra.get("corp_id") or extra.get("apps"):
+                from gateway.platforms.wecom_callback import (
+                    WecomCallbackAdapter,
+                    check_wecom_callback_requirements,
+                )
+                if not check_wecom_callback_requirements():
+                    logger.warning("WeComCallback: aiohttp/httpx not installed")
+                    return None
+                return WecomCallbackAdapter(config)
             from gateway.platforms.wecom import WeComAdapter, check_wecom_requirements
             if not check_wecom_requirements():
                 logger.warning("WeCom: aiohttp not installed or WECOM_BOT_ID/SECRET not set")
