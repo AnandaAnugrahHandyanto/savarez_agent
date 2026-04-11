@@ -504,7 +504,13 @@ _PROVIDER_LABELS = {
     for provider_id in _CANONICAL_PROVIDER_IDS
 }
 
-_PROVIDER_ALIASES = dict(PROVIDER_ALIASES)
+# Reuse the shared provider alias table, but preserve bare "openai" here.
+# In model/runtime normalization paths, "openai" must remain a direct-provider
+# identifier instead of silently collapsing to the OpenRouter aggregator.
+# Otherwise runtime fallback code rewrites direct OpenAI fallbacks like
+# {provider: "openai", model: "gpt-4o"} into OpenRouter-style slugs
+# ("openai/gpt-4o"), which breaks the existing fallback contract.
+_PROVIDER_ALIASES = {k: v for k, v in PROVIDER_ALIASES.items() if k != "openai"}
 
 
 def _openrouter_model_is_free(pricing: Any) -> bool:
@@ -1025,9 +1031,14 @@ def normalize_provider(provider: Optional[str]) -> str:
     Note: ``"auto"`` passes through unchanged — use
     ``hermes_cli.auth.resolve_provider()`` to resolve it to a concrete
     provider based on credentials and environment.
+
+    Important: keep bare ``openai`` intact in the models/runtime layer.
+    Picker/provider UX may treat it as an OpenRouter-flavoured label, but
+    runtime code paths (fallback chains, direct API routing) still use
+    ``openai`` to mean the direct OpenAI provider.
     """
     normalized = (provider or "openrouter").strip().lower()
-    return normalize_provider_id(normalized)
+    return _PROVIDER_ALIASES.get(normalized, normalized)
 
 
 def provider_label(provider: Optional[str]) -> str:
