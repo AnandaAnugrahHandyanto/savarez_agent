@@ -667,6 +667,21 @@ Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 
 Context compression has its own top-level `compression:` block with `summary_provider`, `summary_model`, and `summary_base_url` — see [Context Compression](#context-compression) above. The fallback model uses a `fallback_model:` block — see [Fallback Model](/docs/integrations/providers#fallback-model). All three follow the same provider/model/base_url pattern.
 :::
 
+### Multimodal Image Input Policy
+
+Use `multimodal.image_input_policy` to control how Hermes handles incoming images before they reach the main model:
+
+```yaml
+multimodal:
+  image_input_policy: fallback   # fallback | auto | strict
+```
+
+- `fallback` — use Hermes' auxiliary vision preprocessing first (or downgrade to text-safe preview) before the main model sees the image
+- `auto` — use native image passthrough when the active runtime safely supports it; otherwise fall back to auxiliary vision preprocessing
+- `strict` — require native image passthrough and fail clearly instead of silently falling back to auxiliary preprocessing
+
+This first slice applies to image input only. Audio, video, and broader file/document multimodal handling are follow-up work.
+
 ### Changing the Vision Model
 
 To use GPT-4o instead of Gemini Flash for image analysis:

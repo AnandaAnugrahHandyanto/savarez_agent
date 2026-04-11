@@ -276,5 +276,6 @@ In Open WebUI, add each as a separate connection. The model dropdown shows `alic
 ## Limitations
 
 - **Response storage** — stored responses (for `previous_response_id`) are persisted in SQLite and survive gateway restarts. Max 100 stored responses (LRU eviction).
-- **No file upload** — vision/document analysis via uploaded files is not yet supported through the API.
+- **No file upload** — raw uploaded files are still not supported through the API server.
+- **Inline image parts only** — multimodal image input currently works through inline `image_url` / `input_image` message content, and follows `multimodal.image_input_policy` (`fallback | auto | strict`), where `fallback` means auxiliary vision preprocessing rather than native passthrough.
 - **Model field is cosmetic** — the `model` field in requests is accepted but the actual LLM model used is configured server-side in config.yaml.

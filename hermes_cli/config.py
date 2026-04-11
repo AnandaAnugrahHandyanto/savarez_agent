@@ -499,6 +499,14 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Multimodal passthrough policy. The first slice is image input only.
+    # fallback = use auxiliary vision preprocessing first (or downgrade to text-safe preview),
+    # auto = passthrough when runtime safely supports it, else auxiliary preprocessing,
+    # strict = require native passthrough and fail when unsupported/unknown.
+    "multimodal": {
+        "image_input_policy": "fallback",  # fallback | auto | strict
+    },
+
     "voice": {
         "record_key": "ctrl+b",
         "max_recording_seconds": 120,

@@ -106,6 +106,11 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
+from agent.multimodal import (
+    chat_content_to_responses_input,
+    preview_text_for_message_content,
+    runtime_supports_native_image_input,
+)
 from utils import atomic_json_write, env_var_enabled
 
 
@@ -3330,7 +3335,7 @@ class AIAgent:
 
             if role in {"user", "assistant"}:
                 content = msg.get("content", "")
-                content_text = str(content) if content is not None else ""
+                converted_content = chat_content_to_responses_input(content)
 
                 if role == "assistant":
                     # Replay encrypted reasoning items from previous turns
@@ -3343,15 +3348,22 @@ class AIAgent:
                                 items.append(ri)
                                 has_codex_reasoning = True
 
-                    if content_text.strip():
-                        items.append({"role": "assistant", "content": content_text})
-                    elif has_codex_reasoning:
-                        # The Responses API requires a following item after each
-                        # reasoning item (otherwise: missing_following_item error).
-                        # When the assistant produced only reasoning with no visible
-                        # content, emit an empty assistant message as the required
-                        # following item.
-                        items.append({"role": "assistant", "content": ""})
+                    if isinstance(converted_content, list):
+                        if converted_content:
+                            items.append({"role": "assistant", "content": converted_content})
+                        elif has_codex_reasoning:
+                            items.append({"role": "assistant", "content": ""})
+                    else:
+                        content_text = str(converted_content or "")
+                        if content_text.strip():
+                            items.append({"role": "assistant", "content": content_text})
+                        elif has_codex_reasoning:
+                            # The Responses API requires a following item after each
+                            # reasoning item (otherwise: missing_following_item error).
+                            # When the assistant produced only reasoning with no visible
+                            # content, emit an empty assistant message as the required
+                            # following item.
+                            items.append({"role": "assistant", "content": ""})
 
                     tool_calls = msg.get("tool_calls")
                     if isinstance(tool_calls, list):
@@ -3396,7 +3408,7 @@ class AIAgent:
                             })
                     continue
 
-                items.append({"role": role, "content": content_text})
+                items.append({"role": role, "content": converted_content})
                 continue
 
             if role == "tool":
@@ -3489,7 +3501,8 @@ class AIAgent:
                 content = item.get("content", "")
                 if content is None:
                     content = ""
-                if not isinstance(content, str):
+                content = chat_content_to_responses_input(content)
+                if not isinstance(content, (str, list)):
                     content = str(content)
 
                 normalized.append({"role": role, "content": content})
@@ -3878,7 +3891,6 @@ class AIAgent:
     def _create_openai_client(self, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
         if self.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
             from agent.copilot_acp_client import CopilotACPClient
-
             client = CopilotACPClient(**client_kwargs)
             logger.info(
                 "Copilot ACP client created (%s, shared=%s) %s",
@@ -5622,6 +5634,15 @@ class AIAgent:
             isinstance(msg, dict) and self._content_has_image_parts(msg.get("content"))
             for msg in api_messages
         ):
+            return api_messages
+
+        native_support = runtime_supports_native_image_input(
+            model=self.model,
+            provider=self.provider,
+            base_url=self.base_url,
+            api_mode=self.api_mode,
+        )
+        if native_support is True:
             return api_messages
 
         transformed = copy.deepcopy(api_messages)
@@ -7413,6 +7434,12 @@ class AIAgent:
         if isinstance(persist_user_message, str):
             persist_user_message = _sanitize_surrogates(persist_user_message)
 
+        user_message_preview = (
+            persist_user_message
+            if isinstance(persist_user_message, str) and persist_user_message.strip()
+            else preview_text_for_message_content(user_message)
+        )
+
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback
         self._persist_user_message_idx = None
@@ -7451,7 +7478,7 @@ class AIAgent:
         self.iteration_budget = IterationBudget(self.max_iterations)
 
         # Log conversation turn start for debugging/observability
-        _msg_preview = (user_message[:80] + "...") if len(user_message) > 80 else user_message
+        _msg_preview = (user_message_preview[:80] + "...") if len(user_message_preview) > 80 else user_message_preview
         _msg_preview = _msg_preview.replace("\n", " ")
         logger.info(
             "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
@@ -7507,7 +7534,9 @@ class AIAgent:
         self._persist_user_message_idx = current_turn_user_idx
         
         if not self.quiet_mode:
-            self._safe_print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
+            self._safe_print(
+                f"💬 Starting conversation: '{user_message_preview[:60]}{'...' if len(user_message_preview) > 60 else ''}'"
+            )
         
         # ── System prompt (cached per session for prefix caching) ──
         # Built once on first call, reused for all subsequent calls.

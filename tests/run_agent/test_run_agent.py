@@ -3891,3 +3891,79 @@ class TestDeadRetryCode:
             f"Expected 2 occurrences of 'if retry_count >= max_retries:' "
             f"but found {occurrences}"
         )
+
+
+class TestNativeMultimodalInput:
+    def test_chat_messages_to_responses_input_preserves_image_parts(self, agent):
+        items = agent._chat_messages_to_responses_input([
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is in this image?"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUFBQQ=="}},
+                ],
+            }
+        ])
+
+        assert items == [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "What is in this image?"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,QUFBQQ=="},
+                ],
+            }
+        ]
+
+    def test_preflight_codex_input_items_preserves_multimodal_user_content(self, agent):
+        normalized = agent._preflight_codex_input_items([
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Look"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUFBQQ=="}},
+                ],
+            }
+        ])
+
+        assert normalized == [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "Look"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,QUFBQQ=="},
+                ],
+            }
+        ]
+
+    def test_build_api_kwargs_preserves_multimodal_user_image_for_anthropic_when_runtime_supports_vision(self, agent):
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"
+        agent.base_url = "https://api.anthropic.com/v1"
+        agent.model = "claude-sonnet-4-20250514"
+        agent.reasoning_config = None
+
+        api_messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Can you see this now?"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
+            ],
+        }]
+
+        with (
+            patch("run_agent.runtime_supports_native_image_input", return_value=True),
+            patch("agent.anthropic_adapter.build_anthropic_kwargs") as mock_build,
+        ):
+            mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": [], "max_tokens": 4096}
+            agent._build_api_kwargs(api_messages)
+
+        kwargs = mock_build.call_args.kwargs or dict(zip(
+            ["model", "messages", "tools", "max_tokens", "reasoning_config"],
+            mock_build.call_args.args,
+        ))
+        transformed = kwargs["messages"]
+        assert isinstance(transformed[0]["content"], list)
+        assert transformed[0]["content"][0]["type"] == "text"
+        assert transformed[0]["content"][1]["type"] == "image_url"
+        assert transformed[0]["content"][1]["image_url"]["url"] == "https://example.com/cat.png"

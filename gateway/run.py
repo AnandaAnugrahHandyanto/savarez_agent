@@ -252,6 +252,16 @@ from gateway.restart import (
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     parse_restart_drain_timeout,
 )
+from agent.multimodal import (
+    MAX_INLINE_IMAGE_BYTES,
+    build_gateway_image_shadow_text,
+    build_native_image_message_content,
+    image_paths_within_inline_limit,
+    prepend_text_to_message_content,
+    preview_text_for_message_content,
+    resolve_image_input_policy,
+    runtime_supports_native_image_input,
+)
 
 
 def _normalize_whatsapp_identifier(value: str) -> str:
@@ -3206,6 +3216,9 @@ class GatewayRunner:
         if _is_shared_thread and source.user_name:
             message_text = f"[{source.user_name}] {message_text}"
 
+        agent_message: Any = message_text
+        persist_user_message: Optional[str] = None
+
         if event.media_urls:
             image_paths = []
             for i, path in enumerate(event.media_urls):
@@ -3218,10 +3231,22 @@ class GatewayRunner:
                 if is_image:
                     image_paths.append(path)
             if image_paths:
-                message_text = await self._enrich_message_with_vision(
-                    message_text, image_paths
+                agent_message, persist_user_message, image_error = await self._resolve_gateway_image_message(
+                    user_text=message_text,
+                    image_paths=image_paths,
+                    source=source,
+                    session_key=session_key,
                 )
-        
+                if image_error:
+                    _adapter = self.adapters.get(source.platform)
+                    if _adapter:
+                        await _adapter.send(
+                            source.chat_id,
+                            image_error,
+                            metadata={"thread_id": source.thread_id} if source.thread_id else None,
+                        )
+                    return
+
         # -----------------------------------------------------------------
         # Auto-transcribe voice/audio messages sent by the user
         # -----------------------------------------------------------------
@@ -3368,13 +3393,14 @@ class GatewayRunner:
 
             # Run the agent
             agent_result = await self._run_agent(
-                message=message_text,
+                message=agent_message,
                 context_prompt=context_prompt,
                 history=history,
                 source=source,
                 session_id=session_entry.session_id,
                 session_key=session_key,
                 event_message_id=event.message_id,
+                persist_user_message=persist_user_message,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -6604,6 +6630,58 @@ class GatewayRunner:
         from gateway.session_context import clear_session_vars
         clear_session_vars(tokens)
     
+    async def _resolve_gateway_image_message(
+        self,
+        *,
+        user_text: str,
+        image_paths: List[str],
+        source: SessionSource,
+        session_key: str,
+    ) -> tuple[Any, Optional[str], Optional[str]]:
+        if not image_paths:
+            return user_text, None, None
+
+        user_config = _load_gateway_config()
+        image_policy = resolve_image_input_policy(user_config)
+        model, runtime_kwargs = self._resolve_session_agent_runtime(
+            source=source,
+            session_key=session_key,
+            user_config=user_config,
+        )
+        turn_route = self._resolve_turn_agent_config(user_text, model, runtime_kwargs)
+        native_support = runtime_supports_native_image_input(
+            model=turn_route.get("model"),
+            provider=(turn_route.get("runtime") or {}).get("provider"),
+            base_url=(turn_route.get("runtime") or {}).get("base_url"),
+            api_mode=(turn_route.get("runtime") or {}).get("api_mode"),
+        )
+        within_limit, oversized = image_paths_within_inline_limit(
+            image_paths,
+            max_inline_bytes=MAX_INLINE_IMAGE_BYTES,
+        )
+
+        if image_policy == "fallback":
+            enriched = await self._enrich_message_with_vision(user_text, image_paths)
+            return enriched, None, None
+
+        if native_support is True and within_limit:
+            return (
+                build_native_image_message_content(user_text, image_paths),
+                build_gateway_image_shadow_text(user_text, image_paths),
+                None,
+            )
+
+        if image_policy == "strict":
+            if native_support is not True:
+                return user_text, None, "❌ Native image passthrough is unavailable for the active runtime in strict multimodal mode."
+            oversized_names = ", ".join(Path(p).name for p in oversized)
+            return user_text, None, (
+                f"❌ Native image passthrough refused in strict multimodal mode because inline images exceed {MAX_INLINE_IMAGE_BYTES} bytes: {oversized_names}"
+            )
+
+        enriched = await self._enrich_message_with_vision(user_text, image_paths)
+        return enriched, None, None
+
     async def _enrich_message_with_vision(
         self,
         user_text: str,
@@ -7004,7 +7082,7 @@ class GatewayRunner:
 
     async def _run_agent(
         self,
-        message: str,
+        message: Any,
         context_prompt: str,
         history: List[Dict[str, Any]],
         source: SessionSource,
@@ -7012,6 +7090,7 @@ class GatewayRunner:
         session_key: str = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        persist_user_message: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -7327,13 +7406,11 @@ class GatewayRunner:
                 logger.debug("status_callback error (%s): %s", event_type, _e)
 
         def run_sync():
-            # The conditional re-assignment of `message` further below
-            # (prepending model-switch notes) makes Python treat it as a
-            # local variable in the entire function.  `nonlocal` lets us
-            # read *and* reassign the outer `_run_agent` parameter without
-            # triggering an UnboundLocalError on the earlier read at
-            # `_resolve_turn_agent_config(message, …)`.
-            nonlocal message
+            # The conditional re-assignment of `message` / `persist_user_message`
+            # further below (prepending model-switch notes) makes Python treat
+            # them as local variables in the entire function. `nonlocal` lets
+            # us read *and* reassign the outer `_run_agent` parameters safely.
+            nonlocal message, persist_user_message
 
             # Pass session_key to process registry via env var so background
             # processes can be mapped back to this gateway session
@@ -7407,7 +7484,8 @@ class GatewayRunner:
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            routing_message = persist_user_message or preview_text_for_message_content(message)
+            turn_route = self._resolve_turn_agent_config(routing_message, model, runtime_kwargs)
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -7635,13 +7713,15 @@ class GatewayRunner:
             _pending_notes = getattr(self, '_pending_model_notes', {})
             _msn = _pending_notes.pop(session_key, None) if session_key else None
             if _msn:
-                message = _msn + "\n\n" + message
+                message = prepend_text_to_message_content(_msn, message)
+                if isinstance(persist_user_message, str) and persist_user_message.strip():
+                    persist_user_message = _msn + "\n\n" + persist_user_message
 
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
             try:
-                result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
+                result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id, persist_user_message=persist_user_message)
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)

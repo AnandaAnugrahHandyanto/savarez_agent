@@ -21,6 +21,16 @@ You can attach multiple images before sending — each gets its own badge. Press
 
 Images are saved to `~/.hermes/images/` as PNG files with timestamped filenames.
 
+## Gateway and API Server Behavior
+
+CLI image paste is only one multimodal entry path. Gateway and API-server requests can now be configured separately from auxiliary vision via `multimodal.image_input_policy`:
+
+- `fallback` — use auxiliary vision preprocessing first, or downgrade to text-safe preview before the main model sees the image
+- `auto` — pass images through natively when the routed runtime safely supports them; otherwise use auxiliary vision preprocessing
+- `strict` — require native image passthrough and fail clearly when unsupported instead of silently using auxiliary vision
+
+This policy currently covers image input only. Audio, video, and broader omni-media support remain follow-up work.
+
 ## Paste Methods
 
 How you attach an image depends on your terminal environment. Not all methods work everywhere — here's the full breakdown:

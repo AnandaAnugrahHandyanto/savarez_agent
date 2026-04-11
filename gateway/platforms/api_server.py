@@ -45,6 +45,12 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from agent.multimodal import (
+    message_content_has_image_parts,
+    preview_text_for_message_content,
+    resolve_image_input_policy,
+    runtime_supports_native_image_input,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -496,6 +502,26 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         return agent
 
+    async def _normalize_request_content(self, content: Any, *, model: str, runtime_kwargs: Dict[str, Any]) -> Any:
+        if not message_content_has_image_parts(content):
+            return content
+
+        from gateway.run import _load_gateway_config
+
+        policy = resolve_image_input_policy(_load_gateway_config())
+        native_support = runtime_supports_native_image_input(
+            model=model,
+            provider=runtime_kwargs.get("provider"),
+            base_url=runtime_kwargs.get("base_url"),
+            api_mode=runtime_kwargs.get("api_mode"),
+        )
+
+        if policy == "strict" and native_support is not True:
+            raise ValueError("Native image passthrough is unavailable for the active runtime in strict multimodal mode.")
+        if policy == "auto" and native_support is True:
+            return content
+        return preview_text_for_message_content(content)
+
     # ------------------------------------------------------------------
     # HTTP Handlers
     # ------------------------------------------------------------------
@@ -544,11 +570,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
+        from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model
+        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        runtime_model = _resolve_gateway_model()
+
         stream = body.get("stream", False)
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
-        conversation_messages: List[Dict[str, str]] = []
+        conversation_messages: List[Dict[str, Any]] = []
 
         for msg in messages:
             role = msg.get("role", "")
@@ -560,6 +590,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 else:
                     system_prompt = system_prompt + "\n" + content
             elif role in ("user", "assistant"):
+                if isinstance(content, list):
+                    try:
+                        content = await self._normalize_request_content(
+                            content,
+                            model=runtime_model,
+                            runtime_kwargs=runtime_kwargs,
+                        )
+                    except ValueError as exc:
+                        return web.json_response(_openai_error(str(exc)), status=400)
                 conversation_messages.append({"role": role, "content": content})
 
         # Extract the last user message as the primary input
@@ -619,7 +658,7 @@ class APIServerAdapter(BasePlatformAdapter):
             first_user = ""
             for cm in conversation_messages:
                 if cm.get("role") == "user":
-                    first_user = cm.get("content", "")
+                    first_user = preview_text_for_message_content(cm.get("content", ""))
                     break
             session_id = _derive_chat_session_id(system_prompt, first_user)
             # history already set from request body above
@@ -904,8 +943,12 @@ class APIServerAdapter(BasePlatformAdapter):
             previous_response_id = self._response_store.get_conversation(conversation)
             # No error if conversation doesn't exist yet — it's a new conversation
 
+        from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model
+        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        runtime_model = _resolve_gateway_model()
+
         # Normalize input to message list
-        input_messages: List[Dict[str, str]] = []
+        input_messages: List[Dict[str, Any]] = []
         if isinstance(raw_input, str):
             input_messages = [{"role": "user", "content": raw_input}]
         elif isinstance(raw_input, list):
@@ -915,17 +958,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 elif isinstance(item, dict):
                     role = item.get("role", "user")
                     content = item.get("content", "")
-                    # Handle content that may be a list of content parts
                     if isinstance(content, list):
-                        text_parts = []
-                        for part in content:
-                            if isinstance(part, dict) and part.get("type") == "input_text":
-                                text_parts.append(part.get("text", ""))
-                            elif isinstance(part, dict) and part.get("type") == "output_text":
-                                text_parts.append(part.get("text", ""))
-                            elif isinstance(part, str):
-                                text_parts.append(part)
-                        content = "\n".join(text_parts)
+                        try:
+                            content = await self._normalize_request_content(
+                                content,
+                                model=runtime_model,
+                                runtime_kwargs=runtime_kwargs,
+                            )
+                        except ValueError as exc:
+                            return web.json_response(_openai_error(str(exc)), status=400)
                     input_messages.append({"role": role, "content": content})
         else:
             return web.json_response(_openai_error("'input' must be a string or array"), status=400)
@@ -934,7 +975,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # This lets stateless clients supply their own history instead of
         # relying on server-side response chaining via previous_response_id.
         # Precedence: explicit conversation_history > previous_response_id.
-        conversation_history: List[Dict[str, str]] = []
+        conversation_history: List[Dict[str, Any]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
             if not isinstance(raw_history, list):
@@ -1397,8 +1438,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _run_agent(
         self,
-        user_message: str,
-        conversation_history: List[Dict[str, str]],
+        user_message: Any,
+        conversation_history: List[Dict[str, Any]],
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
@@ -1542,7 +1583,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
-        conversation_history: List[Dict[str, str]] = []
+        conversation_history: List[Dict[str, Any]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
             if not isinstance(raw_history, list):

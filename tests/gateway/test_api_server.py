@@ -111,7 +111,7 @@ class TestResponseStore:
 
 class TestAdapterInit:
     def test_default_config(self):
-        config = PlatformConfig(enabled=True)
+        config = PlatformConfig(enabled=True, extra={"key": ""})
         adapter = APIServerAdapter(config)
         assert adapter._host == "127.0.0.1"
         assert adapter._port == 8642
@@ -157,7 +157,7 @@ class TestAdapterInit:
 
 class TestAuth:
     def test_no_key_configured_allows_all(self):
-        config = PlatformConfig(enabled=True)
+        config = PlatformConfig(enabled=True, extra={"key": ""})
         adapter = APIServerAdapter(config)
         mock_request = MagicMock()
         mock_request.headers = {}
@@ -205,9 +205,7 @@ class TestAuth:
 
 def _make_adapter(api_key: str = "", cors_origins=None) -> APIServerAdapter:
     """Create an adapter with optional API key."""
-    extra = {}
-    if api_key:
-        extra["key"] = api_key
+    extra = {"key": api_key}
     if cors_origins is not None:
         extra["cors_origins"] = cors_origins
     config = PlatformConfig(enabled=True, extra=extra)
@@ -1830,3 +1828,124 @@ class TestSessionIdHeader:
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["conversation_history"] == []
             assert call_kwargs["session_id"] == "some-session"
+
+
+class TestApiServerMultimodalInputPolicy:
+    @pytest.mark.asyncio
+    async def test_chat_completions_auto_preserves_supported_image_parts(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1", "api_mode": "chat_completions", "api_key": "***"}),
+                patch("gateway.run._resolve_gateway_model", return_value="openai/gpt-5.4"),
+                patch("gateway.run._load_gateway_config", return_value={"multimodal": {"image_input_policy": "auto"}}),
+                patch("gateway.platforms.api_server.runtime_supports_native_image_input", return_value=True),
+                patch.object(adapter, "_run_agent", new=AsyncMock(return_value=({"final_response": "ok", "messages": []}, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}))) as mock_run,
+            ):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "Describe this"},
+                                    {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
+                                ],
+                            }
+                        ]
+                    },
+                )
+
+            assert resp.status == 200
+            assert isinstance(mock_run.call_args.kwargs["user_message"], list)
+            assert mock_run.call_args.kwargs["user_message"][1]["type"] == "image_url"
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_fallback_downgrades_image_parts_to_text(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1", "api_mode": "chat_completions", "api_key": "***"}),
+                patch("gateway.run._resolve_gateway_model", return_value="openai/gpt-5.4"),
+                patch("gateway.run._load_gateway_config", return_value={"multimodal": {"image_input_policy": "fallback"}}),
+                patch.object(adapter, "_run_agent", new=AsyncMock(return_value=({"final_response": "ok", "messages": []}, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}))) as mock_run,
+            ):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "Describe this"},
+                                    {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
+                                ],
+                            }
+                        ]
+                    },
+                )
+
+            assert resp.status == 200
+            assert isinstance(mock_run.call_args.kwargs["user_message"], str)
+            assert "Describe this" in mock_run.call_args.kwargs["user_message"]
+            assert "Attached image" in mock_run.call_args.kwargs["user_message"]
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_strict_rejects_unsupported_image_runtime(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1", "api_mode": "chat_completions", "api_key": "***"}),
+                patch("gateway.run._resolve_gateway_model", return_value="openai/gpt-5.4"),
+                patch("gateway.run._load_gateway_config", return_value={"multimodal": {"image_input_policy": "strict"}}),
+                patch("gateway.platforms.api_server.runtime_supports_native_image_input", return_value=None),
+            ):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "Describe this"},
+                                    {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
+                                ],
+                            }
+                        ]
+                    },
+                )
+
+            assert resp.status == 400
+            payload = await resp.json()
+            assert "strict multimodal mode" in payload["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_responses_auto_preserves_supported_image_parts(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1", "api_mode": "chat_completions", "api_key": "***"}),
+                patch("gateway.run._resolve_gateway_model", return_value="openai/gpt-5.4"),
+                patch("gateway.run._load_gateway_config", return_value={"multimodal": {"image_input_policy": "auto"}}),
+                patch("gateway.platforms.api_server.runtime_supports_native_image_input", return_value=True),
+                patch.object(adapter, "_run_agent", new=AsyncMock(return_value=({"final_response": "ok", "messages": []}, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}))) as mock_run,
+            ):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "input": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "input_text", "text": "Describe this"},
+                                    {"type": "input_image", "image_url": "https://example.com/cat.png"},
+                                ],
+                            }
+                        ]
+                    },
+                )
+
+            assert resp.status == 200
+            assert isinstance(mock_run.call_args.kwargs["user_message"], list)
+            assert mock_run.call_args.kwargs["user_message"][1]["type"] == "input_image"
