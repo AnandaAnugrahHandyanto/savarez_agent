@@ -204,11 +204,11 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     external dirs configured via skills.external_dirs.  Returns
     {"path": Path} or None.
     """
-    from agent.skill_utils import get_all_skills_dirs
+    from agent.skill_utils import get_all_skills_dirs, walk_skill_files
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
-        for skill_md in skills_dir.rglob("SKILL.md"):
+        for skill_md in walk_skill_files(skills_dir, "SKILL.md"):
             if skill_md.parent.name == name:
                 return {"path": skill_md.parent}
     return None

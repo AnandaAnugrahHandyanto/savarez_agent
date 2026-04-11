@@ -529,7 +529,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     Returns:
         List of skill metadata dicts (name, description, category).
     """
-    from agent.skill_utils import get_external_skills_dirs
+    from agent.skill_utils import get_external_skills_dirs, walk_skill_files
 
     skills = []
     seen_names: set = set()
@@ -544,9 +544,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     dirs_to_scan.extend(get_external_skills_dirs())
 
     for scan_dir in dirs_to_scan:
-        for skill_md in scan_dir.rglob("SKILL.md"):
-            if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
-                continue
+        for skill_md in walk_skill_files(scan_dir, "SKILL.md"):
 
             skill_dir = skill_md.parent
 
@@ -671,12 +669,11 @@ def skills_categories(verbose: bool = False, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
 
+        from agent.skill_utils import walk_skill_files as _walk
         category_dirs = {}
         category_counts: Dict[str, int] = {}
         for scan_dir in all_dirs:
-            for skill_md in scan_dir.rglob("SKILL.md"):
-                if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
-                    continue
+            for skill_md in _walk(scan_dir, "SKILL.md"):
 
                 try:
                     frontmatter, _ = _parse_frontmatter(
@@ -832,8 +829,9 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
 
         # Search by directory name across all dirs
         if not skill_md:
+            from agent.skill_utils import walk_skill_files as _walk
             for search_dir in all_dirs:
-                for found_skill_md in search_dir.rglob("SKILL.md"):
+                for found_skill_md in _walk(search_dir, "SKILL.md"):
                     if found_skill_md.parent.name == name:
                         skill_dir = found_skill_md.parent
                         skill_md = found_skill_md
