@@ -29,6 +29,11 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _extract_compact_sections,
+    _normalize_child_summary,
+    _classify_worker_class,
+    _resolve_internal_worker_config,
+    _score_delegation_need,
 )
 
 
@@ -102,11 +107,134 @@ class TestStripBlockedTools(unittest.TestCase):
         self.assertEqual(result, [])
 
 
+class TestCompactSummaryHelpers(unittest.TestCase):
+    def test_extract_compact_sections(self):
+        text = """Status: success\nAnswer:\n- Fixed it\nEvidence:\n- ran pytest\nChanged paths or artifacts:\n- src/app.py\nRisks / unresolved:\n- None\nRecommended next step:\n- None\n"""
+        sections = _extract_compact_sections(text)
+        self.assertEqual(sections["status"], "success")
+        self.assertIn("Fixed it", sections["answer"])
+        self.assertIn("pytest", sections["evidence"])
+        self.assertIn("src/app.py", sections["changed_paths_or_artifacts"])
+
+    def test_normalize_child_summary_from_structured_output(self):
+        text = """Status: success\nAnswer:\n- Fixed it\nEvidence:\n- ran pytest\nChanged paths or artifacts:\n- src/app.py\nRisks / unresolved:\n- None\nRecommended next step:\n- None\n"""
+        normalized = _normalize_child_summary(text, status="completed")
+        self.assertEqual(normalized["status"], "success")
+        self.assertIn("Fixed it", normalized["answer"])
+        self.assertIn("pytest", normalized["evidence"])
+        self.assertEqual(normalized["changed_paths_or_artifacts"], "- src/app.py")
+
+    def test_normalize_child_summary_from_plain_text(self):
+        normalized = _normalize_child_summary("Found the root cause in api.py and validated with pytest", status="completed")
+        self.assertEqual(normalized["status"], "completed")
+        self.assertIn("root cause", normalized["answer"])
+        self.assertEqual(normalized["changed_paths_or_artifacts"], "None")
+
+
+class TestInternalDelegationPolicy(unittest.TestCase):
+    def test_classify_fast_worker(self):
+        self.assertEqual(_classify_worker_class("Research the repo structure"), "fast_worker")
+
+    def test_classify_smart_worker(self):
+        self.assertEqual(_classify_worker_class("Implement the bug fix across multiple files"), "smart_worker")
+
+    def test_score_delegation_need_simple_task(self):
+        scored = _score_delegation_need("Rename this button label")
+        self.assertLess(scored["score"], 2)
+        self.assertIn("small_direct_task", scored["reasons"])
+
+    def test_score_delegation_need_complex_task(self):
+        scored = _score_delegation_need("Audit the repository across config, runtime, tests, and docs")
+        self.assertGreaterEqual(scored["score"], 2)
+        self.assertIn("multi_surface_scope", scored["reasons"])
+
+    @patch("tools.delegate_tool._load_full_config")
+    def test_resolve_internal_worker_config_disabled_policy(self, mock_load):
+        mock_load.return_value = {"delegation_policy": {"enabled": False}}
+        resolved = _resolve_internal_worker_config("Research the issue", None, _make_mock_parent())
+        self.assertEqual(resolved["worker_class"], "default")
+        self.assertIsNone(resolved["toolsets"])
+
+    @patch("tools.delegate_tool._load_full_config")
+    def test_resolve_internal_worker_config_fast_worker(self, mock_load):
+        mock_load.return_value = {
+            "delegation_policy": {
+                "enabled": True,
+                "fast_worker": {
+                    "toolsets": ["web"],
+                    "model": "fast-model",
+                    "provider": "custom-fast",
+                    "base_url": "http://localhost:8317/v1",
+                    "api_key": "sk-fast",
+                },
+                "smart_worker": {
+                    "toolsets": ["terminal", "file"],
+                },
+            }
+        }
+        resolved = _resolve_internal_worker_config("Research the issue", None, _make_mock_parent())
+        self.assertEqual(resolved["worker_class"], "fast_worker")
+        self.assertEqual(resolved["toolsets"], ["web"])
+        self.assertEqual(resolved["model"], "fast-model")
+        self.assertEqual(resolved["provider"], "custom-fast")
+        self.assertEqual(resolved["base_url"], "http://localhost:8317/v1")
+        self.assertEqual(resolved["api_key"], "sk-fast")
+
+
 class TestDelegateTask(unittest.TestCase):
     def test_no_parent_agent(self):
         result = json.loads(delegate_task(goal="test"))
         self.assertIn("error", result)
         self.assertIn("parent agent", result["error"])
+
+    @patch("tools.delegate_tool._load_full_config")
+    def test_declines_low_leverage_single_task_when_policy_enabled(self, mock_load):
+        mock_load.return_value = {
+            "delegation": {"max_iterations": 50},
+            "delegation_policy": {
+                "enabled": True,
+                "trigger_threshold": 2,
+                "fast_worker": {},
+                "smart_worker": {},
+            },
+        }
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(goal="Rename this button label", parent_agent=parent))
+        entry = result["results"][0]
+        self.assertEqual(entry["status"], "declined")
+        self.assertEqual(entry["delegation_decision"], "declined_low_leverage")
+        self.assertLess(entry["delegation_score"], 2)
+
+    @patch("tools.delegate_tool._load_full_config")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_complex_task_delegates_when_policy_enabled(self, mock_run, mock_load):
+        mock_load.return_value = {
+            "delegation": {"max_iterations": 50},
+            "delegation_policy": {
+                "enabled": True,
+                "trigger_threshold": 2,
+                "fast_worker": {"toolsets": ["web"]},
+                "smart_worker": {"toolsets": ["terminal", "file", "web"]},
+            },
+        }
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done!",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+            "worker_class": "smart_worker",
+            "resolved_lane": {"model": "claude-sonnet-4-6"},
+            "delegation_score": 3,
+            "delegation_reasons": ["reasoning_heavy", "multi_surface_scope"],
+            "delegation_decision": "delegated",
+        }
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(goal="Audit the repository across config, runtime, tests, and docs", parent_agent=parent))
+        entry = result["results"][0]
+        self.assertEqual(entry["delegation_decision"], "delegated")
+        self.assertGreaterEqual(entry["delegation_score"], 2)
+        mock_run.assert_called_once()
 
     def test_depth_limit(self):
         parent = _make_mock_parent(depth=2)
@@ -141,6 +269,7 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(len(result["results"]), 1)
         self.assertEqual(result["results"][0]["status"], "completed")
         self.assertEqual(result["results"][0]["summary"], "Done!")
+        self.assertIn("compact_summary", result["results"][0])
         mock_run.assert_called_once()
 
     @patch("tools.delegate_tool._run_single_child")
@@ -432,6 +561,11 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertEqual(entry["exit_reason"], "completed")
             self.assertEqual(entry["tokens"]["input"], 5000)
             self.assertEqual(entry["tokens"]["output"], 1200)
+            self.assertIn("compact_summary", entry)
+            self.assertEqual(entry["compact_summary"]["status"], "completed")
+            self.assertIn("done", entry["compact_summary"]["answer"].lower())
+            self.assertIn("worker_class", entry)
+            self.assertIn("resolved_lane", entry)
 
             # Tool trace
             self.assertEqual(len(entry["tool_trace"]), 1)
@@ -702,7 +836,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
     def test_missing_config_keys_inherit_parent(self):
         """When config dict has no model/provider keys at all, inherits parent."""
         parent = _make_mock_parent(depth=0)
-        cfg = {"max_iterations": 45}
+        cfg = {"max_iterations": 50}
         creds = _resolve_delegation_credentials(cfg, parent)
         self.assertIsNone(creds["model"])
         self.assertIsNone(creds["provider"])
@@ -716,7 +850,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
     def test_config_provider_credentials_reach_child_agent(self, mock_creds, mock_cfg):
         """When delegation.provider is configured, child agent gets resolved credentials."""
         mock_cfg.return_value = {
-            "max_iterations": 45,
+            "max_iterations": 50,
             "model": "google/gemini-3-flash-preview",
             "provider": "openrouter",
         }
@@ -750,7 +884,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
     def test_cross_provider_delegation(self, mock_creds, mock_cfg):
         """Parent on Nous, subagent on OpenRouter — full credential switch."""
         mock_cfg.return_value = {
-            "max_iterations": 45,
+            "max_iterations": 50,
             "model": "google/gemini-3-flash-preview",
             "provider": "openrouter",
         }
@@ -787,7 +921,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
     @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_direct_endpoint_credentials_reach_child_agent(self, mock_creds, mock_cfg):
         mock_cfg.return_value = {
-            "max_iterations": 45,
+            "max_iterations": 50,
             "model": "qwen2.5-coder",
             "base_url": "http://localhost:1234/v1",
             "api_key": "local-key",
@@ -821,7 +955,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
     @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_empty_config_inherits_parent(self, mock_creds, mock_cfg):
         """When delegation config is empty, child inherits parent credentials."""
-        mock_cfg.return_value = {"max_iterations": 45, "model": "", "provider": ""}
+        mock_cfg.return_value = {"max_iterations": 50, "model": "", "provider": ""}
         mock_creds.return_value = {
             "model": None,
             "provider": None,
@@ -865,7 +999,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
     def test_batch_mode_all_children_get_credentials(self, mock_creds, mock_cfg):
         """In batch mode, all children receive the resolved credentials."""
         mock_cfg.return_value = {
-            "max_iterations": 45,
+            "max_iterations": 50,
             "model": "meta-llama/llama-4-scout",
             "provider": "openrouter",
         }
@@ -905,7 +1039,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
     def test_model_only_no_provider_inherits_parent_credentials(self, mock_creds, mock_cfg):
         """Setting only model (no provider) changes model but keeps parent credentials."""
         mock_cfg.return_value = {
-            "max_iterations": 45,
+            "max_iterations": 50,
             "model": "google/gemini-3-flash-preview",
             "provider": "",
         }

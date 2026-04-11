@@ -20,6 +20,7 @@ import json
 import logging
 logger = logging.getLogger(__name__)
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -66,6 +67,14 @@ def _get_max_concurrent_children() -> int:
 DEFAULT_MAX_ITERATIONS = 50
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+_FAST_WORKER_PATTERNS = re.compile(
+    r"\b(read|review|inspect|summari[sz]e|report|research|find|search|grep|list|check|verify|confirm|compare|triage|status|overview)\b",
+    re.I,
+)
+_SMART_WORKER_PATTERNS = re.compile(
+    r"\b(implement|implementation|fix|patch|debug|refactor|architecture|design|build|develop|create|modify|update|delete|multi-file|investigate)\b",
+    re.I,
+)
 
 
 def check_delegate_requirements() -> bool:
@@ -95,15 +104,19 @@ def _build_child_system_prompt(
         )
     parts.append(
         "\nComplete this task using the tools available to you. "
-        "When finished, provide a clear, concise summary of:\n"
-        "- What you did\n"
-        "- What you found or accomplished\n"
-        "- Any files you created or modified\n"
-        "- Any issues encountered\n\n"
+        "Return only a compact proof-oriented result in exactly this structure:\n\n"
+        "Status: <success|partial|blocked>\n"
+        "Answer:\n- <2-6 bullets or a short paragraph>\n"
+        "Evidence:\n- <commands run, files inspected, exact proof items>\n"
+        "Changed paths or artifacts:\n- <explicit paths, URLs, or None>\n"
+        "Risks / unresolved:\n- <only substantive caveats, or None>\n"
+        "Recommended next step:\n- <one concrete next action, or None>\n\n"
+        "Do not include chain-of-thought. Do not paste full logs unless explicitly requested. "
+        "Prefer proof over chatter and bullets over essays.\n\n"
         "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
         "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
         "Be thorough but concise -- your response is returned to the "
-        "parent agent as a summary."
+        "parent agent as a compact summary."
     )
     return "\n".join(parts)
 
@@ -382,6 +395,60 @@ def _build_child_agent(
 
     return child
 
+def _compact_text(value: Any, limit: int = 500) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _extract_compact_sections(summary: str) -> Dict[str, str]:
+    lines = (summary or "").splitlines()
+    sections: Dict[str, List[str]] = {}
+    current: Optional[str] = None
+    heading_map = {
+        "status": "status",
+        "answer": "answer",
+        "evidence": "evidence",
+        "changed paths or artifacts": "changed_paths_or_artifacts",
+        "risks / unresolved": "risks_unresolved",
+        "recommended next step": "recommended_next_step",
+    }
+    heading_re = re.compile(r"^\s*(Status|Answer|Evidence|Changed paths or artifacts|Risks / unresolved|Recommended next step)\s*:\s*(.*)$", re.I)
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        match = heading_re.match(line)
+        if match:
+            current = heading_map[match.group(1).strip().lower()]
+            sections[current] = []
+            tail = match.group(2).strip()
+            if tail:
+                sections[current].append(tail)
+            continue
+        if current is not None:
+            sections[current].append(line)
+    return {key: "\n".join(value).strip() for key, value in sections.items()}
+
+
+def _normalize_child_summary(summary: str, *, status: str, error: Optional[str] = None) -> Dict[str, Any]:
+    text = (summary or "").strip()
+    sections = _extract_compact_sections(text)
+    normalized_status = _compact_text(sections.get("status") or status or ("blocked" if error else "completed"), 80)
+    answer = _compact_text(sections.get("answer") or text or error or "", 700)
+    evidence = _compact_text(sections.get("evidence") or (error or "None"), 700)
+    changed = _compact_text(sections.get("changed_paths_or_artifacts") or "None", 400)
+    risks = _compact_text(sections.get("risks_unresolved") or (error or "None"), 400)
+    next_step = _compact_text(sections.get("recommended_next_step") or "None", 300)
+    return {
+        "status": normalized_status,
+        "answer": answer,
+        "evidence": evidence,
+        "changed_paths_or_artifacts": changed,
+        "risks_unresolved": risks,
+        "recommended_next_step": next_step,
+    }
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
@@ -532,13 +599,26 @@ def _run_single_child(
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
 
+        compact_summary = _normalize_child_summary(summary, status=status)
+        delegate_lane = getattr(child, "_delegate_lane", {}) if child is not None else {}
         entry: Dict[str, Any] = {
             "task_index": task_index,
             "status": status,
             "summary": summary,
+            "compact_summary": compact_summary,
             "api_calls": api_calls,
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
+            "worker_class": getattr(child, "_delegate_worker_class", "default") if child is not None else "default",
+            "resolved_lane": {
+                "model": delegate_lane.get("model") or (_model if isinstance(_model, str) else None),
+                "provider": delegate_lane.get("provider"),
+                "base_url": delegate_lane.get("base_url"),
+                "toolsets": list(delegate_lane.get("toolsets") or []),
+            },
+            "delegation_score": getattr(child, "_delegate_score", None),
+            "delegation_reasons": list(getattr(child, "_delegate_reasons", []) or []),
+            "delegation_decision": getattr(child, "_delegate_decision", "delegated"),
             "exit_reason": exit_reason,
             "tokens": {
                 "input": _input_tokens if isinstance(_input_tokens, (int, float)) else 0,
@@ -554,10 +634,14 @@ def _run_single_child(
     except Exception as exc:
         duration = round(time.monotonic() - child_start, 2)
         logging.exception(f"[subagent-{task_index}] failed")
+        compact_summary = _normalize_child_summary("", status="error", error=str(exc))
         return {
             "task_index": task_index,
             "status": "error",
             "summary": None,
+            "compact_summary": compact_summary,
+            "worker_class": getattr(child, "_delegate_worker_class", "default") if child is not None else "default",
+            "resolved_lane": getattr(child, "_delegate_lane", {}) if child is not None else {},
             "error": str(exc),
             "api_calls": 0,
             "duration_seconds": duration,
@@ -643,6 +727,38 @@ def delegate_task(
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
 
+    worker_overrides = None
+    if goal and isinstance(goal, str) and goal.strip() and not tasks:
+        worker_overrides = _resolve_internal_worker_config(goal, context, parent_agent)
+
+    full_cfg = _load_full_config()
+    delegation_policy = full_cfg.get("delegation_policy", {}) if isinstance(full_cfg, dict) else {}
+    threshold = int(delegation_policy.get("trigger_threshold", 2)) if isinstance(delegation_policy, dict) else 2
+    score_info = _score_delegation_need(goal or "", context, tasks)
+    delegation_decision = "delegated"
+    if not tasks and isinstance(delegation_policy, dict) and delegation_policy.get("enabled"):
+        if score_info["score"] < threshold:
+            delegation_decision = "declined_low_leverage"
+            return json.dumps({
+                "results": [{
+                    "task_index": 0,
+                    "status": "declined",
+                    "summary": None,
+                    "compact_summary": _normalize_child_summary(
+                        "Delegation declined for this task because direct execution is likely cheaper and clearer.",
+                        status="declined",
+                    ),
+                    "worker_class": worker_overrides.get("worker_class", "default") if worker_overrides else "default",
+                    "resolved_lane": worker_overrides or {},
+                    "delegation_score": score_info["score"],
+                    "delegation_reasons": score_info["reasons"],
+                    "delegation_decision": delegation_decision,
+                    "api_calls": 0,
+                    "duration_seconds": 0,
+                }],
+                "total_duration_seconds": 0,
+            }, ensure_ascii=False)
+
     # Resolve delegation credentials (provider:model pair).
     # When delegation.provider is configured, this resolves the full credential
     # bundle (base_url, api_key, api_mode) via the same runtime provider system
@@ -697,18 +813,34 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            per_task_worker = _resolve_internal_worker_config(t["goal"], t.get("context"), parent_agent)
+            effective_toolsets = t.get("toolsets") or toolsets or per_task_worker.get("toolsets")
+            effective_model = per_task_worker.get("model") or creds["model"]
+            effective_provider = per_task_worker.get("provider") or creds["provider"]
+            effective_base_url = per_task_worker.get("base_url") or creds["base_url"]
+            effective_api_key = per_task_worker.get("api_key") or creds["api_key"]
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
+                toolsets=effective_toolsets, model=effective_model,
                 max_iterations=effective_max_iter, parent_agent=parent_agent,
-                override_provider=creds["provider"], override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
+                override_provider=effective_provider, override_base_url=effective_base_url,
+                override_api_key=effective_api_key,
                 override_api_mode=creds["api_mode"],
                 override_acp_command=t.get("acp_command") or acp_command,
                 override_acp_args=t.get("acp_args") or acp_args,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
+            child._delegate_worker_class = per_task_worker.get("worker_class", "default")
+            child._delegate_lane = {
+                "model": effective_model,
+                "provider": effective_provider,
+                "base_url": effective_base_url,
+                "toolsets": list(effective_toolsets or []),
+            }
+            child._delegate_score = score_info.get("score")
+            child._delegate_reasons = list(score_info.get("reasons", []))
+            child._delegate_decision = delegation_decision
             children.append((i, t, child))
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
@@ -718,6 +850,12 @@ def delegate_task(
         # Single task -- run directly (no thread pool overhead)
         _i, _t, child = children[0]
         result = _run_single_child(0, _t["goal"], child, parent_agent)
+        if "compact_summary" not in result:
+            result["compact_summary"] = _normalize_child_summary(
+                result.get("summary", ""),
+                status=result.get("status", "completed"),
+                error=result.get("error"),
+            )
         results.append(result)
     else:
         # Batch -- run in parallel with per-task progress lines
@@ -745,10 +883,17 @@ def delegate_task(
                         "task_index": idx,
                         "status": "error",
                         "summary": None,
+                        "compact_summary": _normalize_child_summary("", status="error", error=str(exc)),
                         "error": str(exc),
                         "api_calls": 0,
                         "duration_seconds": 0,
                     }
+                if "compact_summary" not in entry:
+                    entry["compact_summary"] = _normalize_child_summary(
+                        entry.get("summary", ""),
+                        status=entry.get("status", "completed"),
+                        error=entry.get("error"),
+                    )
                 results.append(entry)
                 completed_count += 1
 
@@ -797,6 +942,82 @@ def delegate_task(
         "results": results,
         "total_duration_seconds": total_duration,
     }, ensure_ascii=False)
+
+
+def _classify_worker_class(goal: str, context: Optional[str] = None) -> str:
+    text = f"{goal or ''}\n{context or ''}".strip()
+    if not text:
+        return "smart_worker"
+    if _SMART_WORKER_PATTERNS.search(text):
+        return "smart_worker"
+    if _FAST_WORKER_PATTERNS.search(text):
+        return "fast_worker"
+    return "smart_worker"
+
+
+def _score_delegation_need(goal: str, context: Optional[str] = None, tasks: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    reasons: List[str] = []
+    score = 0
+    text = f"{goal or ''}\n{context or ''}".strip().lower()
+
+    if tasks and len(tasks) >= 2:
+        score += 2
+        reasons.append("parallel_tasks")
+
+    if _SMART_WORKER_PATTERNS.search(text):
+        score += 1
+        reasons.append("reasoning_heavy")
+
+    if re.search(r"\b(compare|comparison|audit|investigate|multiple files|repo|repository)\b", text):
+        score += 1
+        reasons.append("multi_surface_scope")
+
+    across_hits = sum(1 for token in ["across config", "across runtime", "across tests", "across docs"] if token in text)
+    if across_hits >= 1:
+        score += 1
+        reasons.append("cross_surface_scan")
+
+    if re.search(r"\b(log|logs|search|grep|trace|traceback|docs|documentation|report|summari[sz]e)\b", text):
+        score += 1
+        reasons.append("high_churn_context")
+
+    if re.search(r"\b(rename|change label|wording|copy tweak|single file|one line|exact phrase|style only)\b", text):
+        score -= 2
+        reasons.append("small_direct_task")
+
+    if len((goal or "").split()) <= 10 and not tasks and not _SMART_WORKER_PATTERNS.search(text):
+        score -= 1
+        reasons.append("short_prompt")
+
+    return {
+        "score": score,
+        "reasons": reasons,
+    }
+
+
+def _resolve_internal_worker_config(goal: str, context: Optional[str], parent_agent) -> Dict[str, Any]:
+    cfg = _load_full_config()
+    policy = cfg.get("delegation_policy", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(policy, dict) or not policy.get("enabled"):
+        return {
+            "worker_class": "default",
+            "toolsets": None,
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+        }
+
+    worker_class = _classify_worker_class(goal, context)
+    worker_cfg = policy.get(worker_class, {}) if isinstance(policy.get(worker_class, {}), dict) else {}
+    return {
+        "worker_class": worker_class,
+        "toolsets": worker_cfg.get("toolsets") or None,
+        "model": str(worker_cfg.get("model") or "").strip() or None,
+        "provider": str(worker_cfg.get("provider") or "").strip() or None,
+        "base_url": str(worker_cfg.get("base_url") or "").strip() or None,
+        "api_key": str(worker_cfg.get("api_key") or "").strip() or None,
+    }
 
 
 def _resolve_child_credential_pool(effective_provider: Optional[str], parent_agent):
@@ -920,6 +1141,20 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     }
 
 
+def _load_full_config() -> dict:
+    try:
+        from cli import CLI_CONFIG
+        if CLI_CONFIG:
+            return CLI_CONFIG
+    except Exception:
+        pass
+    try:
+        from hermes_cli.config import load_config
+        return load_config()
+    except Exception:
+        return {}
+
+
 def _load_config() -> dict:
     """Load delegation config from CLI_CONFIG or persistent config.
 
@@ -928,19 +1163,10 @@ def _load_config() -> dict:
     ``delegation.model`` / ``delegation.provider`` are picked up regardless
     of the entry point (CLI, gateway, cron).
     """
-    try:
-        from cli import CLI_CONFIG
-        cfg = CLI_CONFIG.get("delegation", {})
-        if cfg:
-            return cfg
-    except Exception:
-        pass
-    try:
-        from hermes_cli.config import load_config
-        full = load_config()
+    full = _load_full_config()
+    if isinstance(full, dict):
         return full.get("delegation", {})
-    except Exception:
-        return {}
+    return {}
 
 
 # ---------------------------------------------------------------------------

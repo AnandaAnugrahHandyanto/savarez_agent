@@ -2502,6 +2502,9 @@ class GatewayRunner:
         if canonical == "insights":
             return await self._handle_insights_command(event)
 
+        if canonical == "reload":
+            return await self._handle_reload_command(event)
+
         if canonical == "reload-mcp":
             return await self._handle_reload_mcp_command(event)
 
@@ -5909,11 +5912,24 @@ class GatewayRunner:
             logger.error("Insights command error: %s", e, exc_info=True)
             return f"Error generating insights: {e}"
 
+    def _invalidate_cached_agent(self, session_key: str | None) -> None:
+        """Drop the cached AIAgent for one session so the next turn rebuilds it."""
+        if not session_key:
+            return
+        lock = getattr(self, "_agent_cache_lock", None)
+        cache = getattr(self, "_agent_cache", None)
+        if lock and cache is not None:
+            with lock:
+                cache.pop(session_key, None)
+
     async def _handle_reload_mcp_command(self, event: MessageEvent) -> str:
         """Handle /reload-mcp command -- disconnect and reconnect all MCP servers."""
         loop = asyncio.get_event_loop()
         try:
             from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _load_mcp_config, _servers, _lock
+
+            session_key = self._session_key_for_source(event.source)
+            self._invalidate_cached_agent(session_key)
 
             # Capture old server names before shutdown
             with _lock:
@@ -5944,10 +5960,11 @@ class GatewayRunner:
             if not connected_servers:
                 lines.append("No MCP servers connected.")
             else:
-                lines.append(f"\n🔧 {len(new_tools)} tool(s) available from {len(connected_servers)} server(s)")
+                lines.append(f"🔧 {len(new_tools)} tool(s) available from {len(connected_servers)} server(s)")
+            lines.append("🧠 Current chat preserved. A fresh agent/runtime will be used on the next turn.")
 
-            # Inject a message at the END of the session history so the
-            # model knows tools changed on its next turn.  Appended after
+            # Refresh gateway command registry / Telegram menus so command
+
             # all existing messages to preserve prompt-cache for the prefix.
             change_parts = []
             if added:
@@ -5975,6 +5992,45 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("MCP reload failed: %s", e)
             return f"❌ MCP reload failed: {e}"
+
+    async def _handle_reload_command(self, event: MessageEvent) -> str:
+        """Soft-reload gateway runtime state without losing the current chat."""
+        try:
+            source = event.source
+            session_key = self._session_key_for_source(source)
+            self._invalidate_cached_agent(session_key)
+
+            old_config = _load_gateway_config()
+            old_model = _resolve_gateway_model(old_config)
+            old_provider = (old_config.get("model", {}) or {}).get("provider", "auto")
+            old_progress = (old_config.get("display", {}) or {}).get("tool_progress", "all")
+
+            self.config = load_gateway_config()
+
+            mcp_result = await self._handle_reload_mcp_command(event)
+
+            new_config = _load_gateway_config()
+            new_model = _resolve_gateway_model(new_config)
+            new_provider = (new_config.get("model", {}) or {}).get("provider", "auto")
+            new_progress = (new_config.get("display", {}) or {}).get("tool_progress", "all")
+
+            changes = []
+            if old_model != new_model:
+                changes.append(f"model {old_model or 'unset'} → {new_model or 'unset'}")
+            if old_provider != new_provider:
+                changes.append(f"provider {old_provider or 'auto'} → {new_provider or 'auto'}")
+            if old_progress != new_progress:
+                changes.append(f"tool_progress {old_progress!r} → {new_progress!r}")
+            change_summary = ", ".join(changes) if changes else "no visible config deltas"
+
+            return (
+                "🔄 Runtime reloaded in-place. Current chat/session preserved.\n"
+                f"⚙️ Applied: {change_summary}\n\n"
+                f"{mcp_result}"
+            )
+        except Exception as e:
+            logger.error("Reload command error: %s", e, exc_info=True)
+            return f"Error reloading runtime: {e}"
 
     # ------------------------------------------------------------------
     # /approve & /deny — explicit dangerous-command approval

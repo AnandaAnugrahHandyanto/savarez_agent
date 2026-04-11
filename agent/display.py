@@ -893,9 +893,25 @@ def get_cute_tool_message(
         return _wrap(f"┊ 🐍 exec      {_trunc(first_line, 35)}  {dur}")
     if tool_name == "delegate_task":
         tasks = args.get("tasks")
+        lane = None
+        worker_class = None
+        if result:
+            try:
+                payload = json.loads(result) if isinstance(result, str) else result
+                if isinstance(payload, dict):
+                    results = payload.get("results") or []
+                    if len(results) == 1 and isinstance(results[0], dict):
+                        worker_class = results[0].get("worker_class")
+                        lane = (results[0].get("resolved_lane") or {}).get("model")
+            except Exception:
+                pass
+        suffix = ""
+        if worker_class or lane:
+            parts = [p for p in [worker_class, lane] if p]
+            suffix = " → " + _trunc(" / ".join(parts), 28)
         if tasks and isinstance(tasks, list):
-            return _wrap(f"┊ 🔀 delegate  {len(tasks)} parallel tasks  {dur}")
-        return _wrap(f"┊ 🔀 delegate  {_trunc(args.get('goal', ''), 35)}  {dur}")
+            return _wrap(f"┊ 🔀 delegate  {len(tasks)} parallel tasks{suffix}  {dur}")
+        return _wrap(f"┊ 🔀 delegate  {_trunc(args.get('goal', ''), 35)}{suffix}  {dur}")
 
     preview = build_tool_preview(tool_name, args) or ""
     return _wrap(f"┊ ⚡ {tool_name[:9]:9} {_trunc(preview, 35)}  {dur}")

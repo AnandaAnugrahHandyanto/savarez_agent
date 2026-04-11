@@ -18,6 +18,7 @@ import os
 import shutil
 import sys
 import json
+import importlib
 import atexit
 import tempfile
 import time
@@ -301,7 +302,7 @@ def load_cli_config() -> Dict[str, Any]:
             },
         },
         "delegation": {
-            "max_iterations": 45,  # Max tool-calling turns per child agent
+            "max_iterations": 50,  # Max tool-calling turns per child agent
             "default_toolsets": ["terminal", "file", "web"],  # Default toolsets for subagents
             "model": "",       # Subagent model override (empty = inherit parent model)
             "provider": "",    # Subagent provider override (empty = inherit parent provider)
@@ -1764,9 +1765,9 @@ class HermesCLI:
             return "class:status-bar-warn"
         return "class:status-bar-good"
 
-    def _build_context_bar(self, percent_used: Optional[int], width: int = 10) -> str:
+    def _build_context_bar(self, percent_used: Optional[int], width: int = 5) -> str:
         safe_percent = max(0, min(100, percent_used or 0))
-        filled = round((safe_percent / 100) * width)
+        filled = round((safe_percent / 100.0) * width)
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
@@ -2516,6 +2517,8 @@ class HermesCLI:
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
         cmd_lower = command.lower().strip()
+        if cmd_lower == "/reload":
+            return "Reloading config and runtime..."
         if cmd_lower.startswith("/skills search"):
             return "Searching skills..."
         if cmd_lower.startswith("/skills browse"):
@@ -4971,6 +4974,9 @@ class HermesCLI:
             self._handle_paste_command()
         elif canonical == "image":
             self._handle_image_command(cmd_original)
+        elif canonical == "reload":
+            with self._busy_command(self._slow_command_status(cmd_original)):
+                self._reload_runtime()
         elif canonical == "reload-mcp":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._reload_mcp()
@@ -6124,6 +6130,125 @@ class HermesCLI:
 
         except Exception as e:
             print(f"  ❌ MCP reload failed: {e}")
+
+    def _reload_runtime(self):
+        """Soft-reload config/runtime state without leaving the current session."""
+        global CLI_CONFIG
+
+        try:
+            old_model = self.model
+            old_provider = self.requested_provider
+            old_skin = None
+            try:
+                from hermes_cli.skin_engine import get_active_skin_name
+                old_skin = get_active_skin_name()
+            except Exception:
+                pass
+
+            CLI_CONFIG = load_cli_config()
+            self.config = CLI_CONFIG
+
+            display_cfg = CLI_CONFIG.get("display", {}) or {}
+            self.compact = bool(display_cfg.get("compact", False))
+            raw_tp = display_cfg.get("tool_progress", "all")
+            self.tool_progress_mode = "off" if raw_tp is False else str(raw_tp)
+            self.resume_display = display_cfg.get("resume_display", "full")
+            self.bell_on_complete = display_cfg.get("bell_on_complete", False)
+            self.show_reasoning = display_cfg.get("show_reasoning", False)
+            busy_mode = str(display_cfg.get("busy_input_mode", "interrupt")).strip().lower()
+            self.busy_input_mode = "queue" if busy_mode == "queue" else "interrupt"
+            self.verbose = self.tool_progress_mode == "verbose"
+            self.streaming_enabled = display_cfg.get("streaming", False)
+            self._inline_diffs_enabled = display_cfg.get("inline_diffs", True)
+
+            model_cfg = CLI_CONFIG.get("model", {}) or {}
+            config_model = (model_cfg.get("default") or model_cfg.get("model") or "") if isinstance(model_cfg, dict) else (model_cfg or "")
+            if config_model:
+                self.model = config_model
+            self.requested_provider = (
+                model_cfg.get("provider")
+                or os.getenv("HERMES_INFERENCE_PROVIDER")
+                or "auto"
+            )
+            self.provider = self.requested_provider
+            self.base_url = (
+                self._explicit_base_url
+                or model_cfg.get("base_url", "")
+                or os.getenv("OPENROUTER_BASE_URL", "")
+            ) or None
+            if self.base_url and "openrouter.ai" in self.base_url:
+                self.api_key = self._explicit_api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+            else:
+                self.api_key = self._explicit_api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+
+            agent_cfg = CLI_CONFIG.get("agent", {}) or {}
+            self.system_prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "") or agent_cfg.get("system_prompt", "")
+            self.personalities = agent_cfg.get("personalities", {})
+            self.prefill_messages = _load_prefill_messages(agent_cfg.get("prefill_messages_file", ""))
+            self.reasoning_config = _parse_reasoning_config(agent_cfg.get("reasoning_effort", ""))
+
+            pr = CLI_CONFIG.get("provider_routing", {}) or {}
+            self._provider_sort = pr.get("sort")
+            self._providers_only = pr.get("only")
+            self._providers_ignore = pr.get("ignore")
+            self._providers_order = pr.get("order")
+            self._provider_require_params = pr.get("require_parameters", False)
+            self._provider_data_collection = pr.get("data_collection")
+
+            cp_cfg = CLI_CONFIG.get("checkpoints", {})
+            if isinstance(cp_cfg, bool):
+                cp_cfg = {"enabled": cp_cfg}
+            self.checkpoints_enabled = cp_cfg.get("enabled", False)
+            self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 50)
+
+            self._smart_model_routing = CLI_CONFIG.get("smart_model_routing", {}) or {}
+
+            try:
+                import hermes_cli.skin_engine as skin_engine
+                skin_engine = importlib.reload(skin_engine)
+                skin_engine.init_skin_from_config(CLI_CONFIG)
+                skin_name = skin_engine.get_active_skin_name()
+            except Exception:
+                skin_name = old_skin or "unknown"
+            tui_skin_updated = self._apply_tui_skin_style()
+
+            try:
+                from agent.display import set_tool_preview_max_len
+                tpl = display_cfg.get("tool_preview_length", 0)
+                set_tool_preview_max_len(int(tpl) if tpl else 0)
+            except Exception:
+                pass
+
+            self._ensure_runtime_credentials()
+            self._reload_mcp()
+
+            self.agent = None
+            self._active_agent_route_signature = None
+
+            change_parts = []
+            if self.model != old_model:
+                change_parts.append(f"model {old_model or 'unset'} → {self.model or 'unset'}")
+            if self.requested_provider != old_provider:
+                change_parts.append(f"provider {old_provider or 'auto'} → {self.requested_provider or 'auto'}")
+            if old_skin and skin_name != old_skin:
+                change_parts.append(f"skin {old_skin} → {skin_name}")
+            change_summary = "; ".join(change_parts) if change_parts else "no visible config deltas"
+
+            self.conversation_history.append({
+                "role": "user",
+                "content": (
+                    "[SYSTEM: CLI runtime reloaded in-place. The current session and conversation history were preserved. "
+                    f"Applied updates: {change_summary}. Future turns should use the refreshed config, tools, and runtime settings.]"
+                ),
+            })
+
+            print("  🔄 Runtime reloaded — staying in the current session")
+            print(f"  ⚙️  Applied: {change_summary}")
+            if tui_skin_updated:
+                print("  🎨 Prompt + TUI colors updated.")
+            print("  🧠 Agent will be re-initialized on the next turn with refreshed settings.")
+        except Exception as e:
+            print(f"  ❌ Reload failed: {e}")
 
     # ====================================================================
     # Tool-call generation indicator (shown during streaming)

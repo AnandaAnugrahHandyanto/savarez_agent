@@ -38,6 +38,7 @@ import threading
 from types import SimpleNamespace
 import uuid
 from typing import List, Dict, Any, Optional
+from urllib.parse import urlsplit
 from openai import OpenAI
 import fire
 from datetime import datetime
@@ -338,6 +339,8 @@ def _paths_overlap(left: Path, right: Path) -> bool:
 
 
 _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
+_IMAGE_URL_RE = re.compile(r'https?://[^\s<>()\]\["\']+', re.IGNORECASE)
+_DIRECT_IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.svg')
 
 _BUDGET_WARNING_RE = re.compile(
     r"\[BUDGET(?:\s+WARNING)?:\s+Iteration\s+\d+/\d+\..*?\]",
@@ -461,6 +464,54 @@ def _sanitize_messages_non_ascii(messages: list) -> bool:
                                 fn["arguments"] = sanitized
                                 found = True
     return found
+
+
+def _clean_candidate_url(url: str) -> str:
+    """Trim common trailing punctuation without disturbing query strings."""
+    return (url or "").strip().rstrip('.,;:!?)])}>')
+
+
+def _is_direct_image_url(url: str) -> bool:
+    """Return True when the URL path points at a likely raw image asset."""
+    cleaned = _clean_candidate_url(url)
+    if not cleaned:
+        return False
+    try:
+        split = urlsplit(cleaned)
+    except Exception:
+        return False
+    if split.scheme not in {"http", "https"}:
+        return False
+    path = (split.path or "").lower()
+    return any(path.endswith(ext) for ext in _DIRECT_IMAGE_EXTENSIONS)
+
+
+def _find_direct_image_urls(text: str) -> List[str]:
+    """Extract distinct direct image URLs from free-form user text."""
+    if not text:
+        return []
+    seen: set[str] = set()
+    matches: List[str] = []
+    for raw in _IMAGE_URL_RE.findall(text):
+        cleaned = _clean_candidate_url(raw)
+        if cleaned and cleaned not in seen and _is_direct_image_url(cleaned):
+            seen.add(cleaned)
+            matches.append(cleaned)
+    return matches
+
+
+def _build_direct_image_url_hint(user_message: str) -> Optional[str]:
+    """Inject a strong routing hint when the user pasted raw image URLs."""
+    urls = _find_direct_image_urls(user_message)
+    if not urls:
+        return None
+    joined = "\n".join(f"- {url}" for url in urls)
+    return (
+        "[SYSTEM: The user message includes direct image URL(s). Treat these as raw image assets, not webpages. "
+        "For these URL(s), use vision_analyze first. Ignore any ?query or #fragment when deciding whether the URL is an image. "
+        "Only use browser_navigate or web_extract if direct vision fails.]\n"
+        f"Direct image URL(s):\n{joined}"
+    )
 
 
 def _strip_budget_warnings_from_history(messages: list) -> None:
@@ -5519,15 +5570,19 @@ class AIAgent:
         return str(path), path
 
     def _describe_image_for_anthropic_fallback(self, image_url: str, role: str) -> str:
+        role_label = {
+            "assistant": "assistant",
+            "tool": "tool result",
+        }.get(role, "user")
+        return self._build_direct_image_intake_note(image_url, role_label=role_label)
+
+    def _build_direct_image_intake_note(self, image_url: str, role_label: str = "user") -> str:
+        """Centralized direct-image intake note builder for raw image URLs/data URLs."""
         cache_key = hashlib.sha256(str(image_url or "").encode("utf-8")).hexdigest()
         cached = self._anthropic_image_fallback_cache.get(cache_key)
         if cached:
             return cached
 
-        role_label = {
-            "assistant": "assistant",
-            "tool": "tool result",
-        }.get(role, "user")
         analysis_prompt = (
             "Describe everything visible in this image in thorough detail. "
             "Include any text, code, UI, data, objects, people, layout, colors, "
@@ -5560,7 +5615,7 @@ class AIAgent:
         if not description:
             description = "Image analysis failed."
 
-        note = f"[The {role_label} attached an image. Here's what it contains:\n{description}]"
+        note = f"[The {role_label} shared a direct image URL. Here's what it contains:\n{description}]"
         if vision_source and not str(image_url or "").startswith("data:"):
             note += (
                 f"\n[If you need a closer look, use vision_analyze with image_url: {vision_source}]"
@@ -5570,6 +5625,14 @@ class AIAgent:
         return note
 
     def _preprocess_anthropic_content(self, content: Any, role: str) -> Any:
+        direct_image_note = None
+        if isinstance(content, str):
+            direct_urls = _find_direct_image_urls(content)
+            if direct_urls:
+                url_notes = [self._build_direct_image_intake_note(url, role_label=role) for url in direct_urls]
+                direct_image_note = "\n\n".join(note for note in url_notes if note).strip()
+            return f"{direct_image_note}\n\n{content}".strip() if direct_image_note else content
+
         if not self._content_has_image_parts(content):
             return content
 
@@ -6485,6 +6548,19 @@ class AIAgent:
         finally:
             self._executing_tools = False
 
+    def _dispatch_delegate_task(self, function_args: dict) -> str:
+        from tools.delegate_tool import delegate_task as _delegate_task
+        return _delegate_task(
+            goal=function_args.get("goal"),
+            context=function_args.get("context"),
+            toolsets=function_args.get("toolsets"),
+            tasks=function_args.get("tasks"),
+            max_iterations=function_args.get("max_iterations"),
+            acp_command=function_args.get("acp_command"),
+            acp_args=function_args.get("acp_args"),
+            parent_agent=self,
+        )
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None) -> str:
         """Invoke a single tool and return the result string. No display logic.
@@ -6542,15 +6618,7 @@ class AIAgent:
                 callback=self.clarify_callback,
             )
         elif function_name == "delegate_task":
-            from tools.delegate_tool import delegate_task as _delegate_task
-            return _delegate_task(
-                goal=function_args.get("goal"),
-                context=function_args.get("context"),
-                toolsets=function_args.get("toolsets"),
-                tasks=function_args.get("tasks"),
-                max_iterations=function_args.get("max_iterations"),
-                parent_agent=self,
-            )
+            return self._dispatch_delegate_task(function_args)
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
@@ -6924,8 +6992,21 @@ class AIAgent:
                 if tasks_arg and isinstance(tasks_arg, list):
                     spinner_label = f"🔀 delegating {len(tasks_arg)} tasks"
                 else:
-                    goal_preview = (function_args.get("goal") or "")[:30]
+                    goal_text = function_args.get("goal") or ""
+                    try:
+                        from tools.delegate_tool import _resolve_internal_worker_config
+                        _worker_cfg = _resolve_internal_worker_config(goal_text, function_args.get("context"), self)
+                        _worker_class = _worker_cfg.get("worker_class")
+                        _worker_model = _worker_cfg.get("model")
+                    except Exception:
+                        _worker_cfg = {}
+                        _worker_class = None
+                        _worker_model = None
+                    goal_preview = goal_text[:30]
                     spinner_label = f"🔀 {goal_preview}" if goal_preview else "🔀 delegating"
+                    if _worker_class or _worker_model:
+                        _parts = [p for p in [_worker_class, _worker_model] if p]
+                        spinner_label += f" → {' / '.join(_parts)}"
                 spinner = None
                 if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
                     face = random.choice(KawaiiSpinner.KAWAII_WAITING)
@@ -6934,14 +7015,7 @@ class AIAgent:
                 self._delegate_spinner = spinner
                 _delegate_result = None
                 try:
-                    function_result = _delegate_task(
-                        goal=function_args.get("goal"),
-                        context=function_args.get("context"),
-                        toolsets=function_args.get("toolsets"),
-                        tasks=tasks_arg,
-                        max_iterations=function_args.get("max_iterations"),
-                        parent_agent=self,
-                    )
+                    function_result = self._dispatch_delegate_task(function_args)
                     _delegate_result = function_result
                 finally:
                     self._delegate_spinner = None
@@ -7079,15 +7153,34 @@ class AIAgent:
                 env=get_active_env(effective_task_id),
             )
 
-            # Discover subdirectory context files from tool arguments
-            subdir_hints = self._subdirectory_hints.check_tool_call(function_name, function_args)
-            if subdir_hints:
-                function_result += subdir_hints
+            if function_name == "delegate_task":
+                try:
+                    _delegate_payload = json.loads(function_result)
+                except Exception:
+                    _delegate_payload = None
+                if isinstance(_delegate_payload, dict):
+                    _results = _delegate_payload.get("results") or []
+                    if (
+                        len(_results) == 1
+                        and isinstance(_results[0], dict)
+                        and _results[0].get("delegation_decision") == "declined_low_leverage"
+                    ):
+                        _compact = _results[0].get("compact_summary") or {}
+                        _reasons = _results[0].get("delegation_reasons") or []
+                        _reason_text = ", ".join(str(r) for r in _reasons[:4]) or "low leverage"
+                        function_result = json.dumps({
+                            "status": "info",
+                            "message": "Delegation declined; continue directly with normal tools.",
+                            "delegation_decision": "declined_low_leverage",
+                            "delegation_reasons": _reasons,
+                            "compact_summary": _compact,
+                            "next_action": "continue_directly",
+                        }, ensure_ascii=False)
 
             tool_msg = {
                 "role": "tool",
                 "content": function_result,
-                "tool_call_id": tool_call.id
+                "tool_call_id": tool_call.id,
             }
             messages.append(tool_msg)
 
@@ -7487,6 +7580,8 @@ class AIAgent:
                 _should_review_memory = True
                 self._turns_since_memory = 0
 
+        direct_image_hint = _build_direct_image_url_hint(user_message if isinstance(user_message, str) else "")
+
         # Add user message
         user_msg = {"role": "user", "content": user_message}
         messages.append(user_msg)
@@ -7744,6 +7839,8 @@ class AIAgent:
                             _injections.append(_fenced)
                     if _plugin_user_context:
                         _injections.append(_plugin_user_context)
+                    if direct_image_hint:
+                        _injections.insert(0, direct_image_hint)
                     if _injections:
                         _base = api_msg.get("content", "")
                         if isinstance(_base, str):

@@ -182,7 +182,16 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "the task, use them instead of telling the user what you would do.\n"
     "Every response should either (a) contain tool calls that make progress, or "
     "(b) deliver a final result to the user. Responses that only describe intentions "
-    "without acting are not acceptable."
+    "without acting are not acceptable.\n"
+    "\n"
+    "# Delegation guidance\n"
+    "Use `delegate_task` selectively, not automatically. Prefer direct execution for "
+    "small, single-step, or style-sensitive tasks. Prefer `delegate_task` when the task "
+    "is reasoning-heavy, naturally parallel, likely to flood context with search/log output, "
+    "or would benefit from isolated worker execution. As a practical default, delegate when "
+    "at least two of these are true: (1) expected tool count > 5, (2) multiple independent "
+    "branches or comparisons, (3) high search/log/doc volume, (4) intermediate churn is low-value "
+    "to keep in the parent transcript. Keep final synthesis and user-facing judgment on the parent."
 )
 
 # Model name substrings that trigger tool-use enforcement guidance.
@@ -213,6 +222,7 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "- File contents, sizes, line counts → use read_file, search_files, or terminal\n"
     "- Git history, branches, diffs → use terminal\n"
     "- Current facts (weather, news, versions) → use web_search\n"
+    "- If the user shares a direct image URL, use vision_analyze on the image URL first — not browser_navigate or web_extract. Treat the URL path before any ?query or #fragment as authoritative, so foo.jpg?tracking=1 still counts as a direct image URL. Direct image extensions include .jpg, .jpeg, .png, .webp, .gif, .bmp, and .svg. Only fall back to webpage/browser extraction if direct vision fails or the URL is clearly a page rather than an image asset.\n"
     "Your memory and user profile describe the USER, not the system you are "
     "running on. The execution environment may differ from what the user profile "
     "says about their personal setup.\n"
