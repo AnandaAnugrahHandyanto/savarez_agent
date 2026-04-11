@@ -1997,6 +1997,37 @@ def _build_call_kwargs(
     return kwargs
 
 
+def _validate_llm_response(response: Any, task: str = None) -> Any:
+    """Validate that an LLM response has the expected .choices[0].message shape.
+
+    Fails fast with a clear error instead of letting malformed payloads
+    propagate to downstream consumers where they crash with misleading
+    AttributeError (e.g. "'str' object has no attribute 'choices'").
+
+    See #7264.
+    """
+    if response is None:
+        raise RuntimeError(
+            f"Auxiliary {task or 'call'}: LLM returned None response"
+        )
+    # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
+    # AnthropicAuxiliaryClient) — they have .choices[0].message.
+    try:
+        choices = response.choices
+        if not choices or not hasattr(choices[0], "message"):
+            raise AttributeError("missing choices[0].message")
+    except (AttributeError, TypeError, IndexError) as exc:
+        response_type = type(response).__name__
+        response_preview = str(response)[:120]
+        raise RuntimeError(
+            f"Auxiliary {task or 'call'}: LLM returned invalid response "
+            f"(type={response_type}): {response_preview!r}. "
+            f"Expected object with .choices[0].message — check provider "
+            f"adapter or custom endpoint compatibility."
+        ) from exc
+    return response
+
+
 def call_llm(
     task: str = None,
     *,
@@ -2111,14 +2142,16 @@ def call_llm(
 
     # Handle max_tokens vs max_completion_tokens retry, then payment fallback.
     try:
-        return client.chat.completions.create(**kwargs)
+        return _validate_llm_response(
+            client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
         err_str = str(first_err)
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
             try:
-                return client.chat.completions.create(**kwargs)
+                return _validate_llm_response(
+                    client.chat.completions.create(**kwargs), task)
             except Exception as retry_err:
                 # If the max_tokens retry also hits a payment error,
                 # fall through to the payment fallback below.
@@ -2151,7 +2184,8 @@ def call_llm(
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
                     extra_body=extra_body)
-                return fb_client.chat.completions.create(**fb_kwargs)
+                return _validate_llm_response(
+                    fb_client.chat.completions.create(**fb_kwargs), task)
         raise
 
 
@@ -2292,11 +2326,13 @@ async def async_call_llm(
         base_url=resolved_base_url)
 
     try:
-        return await client.chat.completions.create(**kwargs)
+        return _validate_llm_response(
+            await client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
         err_str = str(first_err)
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
-            return await client.chat.completions.create(**kwargs)
+            return _validate_llm_response(
+                await client.chat.completions.create(**kwargs), task)
         raise
