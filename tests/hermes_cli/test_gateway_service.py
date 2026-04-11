@@ -2,6 +2,7 @@
 
 import os
 import pwd
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -597,6 +598,61 @@ class TestDetectVenvDir:
 
         result = gateway_cli._detect_venv_dir()
         assert result is None
+
+
+class TestGetPythonPath:
+    """Tests for get_python_path() interpreter resolution."""
+
+    def _make_venv(self, tmp_path, *names):
+        venv = tmp_path / "venv"
+        bin_dir = venv / "bin"
+        bin_dir.mkdir(parents=True)
+        for name in names:
+            (bin_dir / name).write_text("")
+        return venv
+
+    def test_prefers_bare_python_when_available(self, tmp_path, monkeypatch):
+        venv = self._make_venv(tmp_path, "python", "python3", "python3.11")
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: venv)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+
+        result = gateway_cli.get_python_path()
+        assert result == str(venv / "bin" / "python")
+
+    def test_falls_back_to_python3_when_bare_python_missing(self, tmp_path, monkeypatch):
+        # Reproduces the uv-managed venv layout that broke systemd ExecStart:
+        # no bare ``python`` symlink, only ``python3`` / ``pythonX.Y``.
+        venv = self._make_venv(tmp_path, "python3", "python3.11")
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: venv)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+
+        result = gateway_cli.get_python_path()
+        assert result == str(venv / "bin" / "python3")
+
+    def test_falls_back_to_versioned_python(self, tmp_path, monkeypatch):
+        major_minor = f"python{sys.version_info.major}.{sys.version_info.minor}"
+        venv = self._make_venv(tmp_path, major_minor)
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: venv)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+
+        result = gateway_cli.get_python_path()
+        assert result == str(venv / "bin" / major_minor)
+
+    def test_returns_sys_executable_when_venv_has_no_interpreter(self, tmp_path, monkeypatch):
+        venv = self._make_venv(tmp_path)  # empty bin dir
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: venv)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr("sys.executable", "/opt/fallback/python")
+
+        result = gateway_cli.get_python_path()
+        assert result == "/opt/fallback/python"
+
+    def test_returns_sys_executable_when_no_venv_detected(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: None)
+        monkeypatch.setattr("sys.executable", "/usr/bin/python3")
+
+        result = gateway_cli.get_python_path()
+        assert result == "/usr/bin/python3"
 
 
 class TestSystemUnitHermesHome:

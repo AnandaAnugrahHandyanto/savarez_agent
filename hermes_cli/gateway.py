@@ -720,11 +720,19 @@ def get_python_path() -> str:
     venv = _detect_venv_dir()
     if venv is not None:
         if is_windows():
-            venv_python = venv / "Scripts" / "python.exe"
+            candidates = [venv / "Scripts" / "python.exe"]
         else:
-            venv_python = venv / "bin" / "python"
-        if venv_python.exists():
-            return str(venv_python)
+            major_minor = f"python{sys.version_info.major}.{sys.version_info.minor}"
+            # uv-managed venvs may omit the bare ``python`` symlink, so fall
+            # back to ``python3`` / ``pythonX.Y`` before giving up on the venv.
+            candidates = [
+                venv / "bin" / "python",
+                venv / "bin" / "python3",
+                venv / "bin" / major_minor,
+            ]
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
     return sys.executable
 
 
