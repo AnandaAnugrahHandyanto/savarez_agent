@@ -46,58 +46,12 @@ import os
 import re
 import asyncio
 import time
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
-import httpx  # noqa: F401 — kept at module top so tests can patch tools.web_tools.httpx
-# After the web-provider plugin migration (PR #25182), the Firecrawl SDK
-# proxy, client construction, and response-shape normalizers all live in
-# plugins.web.firecrawl.provider. We re-export the names that external
-# code, integration tests, and unit-test patches reach for so the public
-# surface stays stable.
-if TYPE_CHECKING:
-    from firecrawl import Firecrawl  # noqa: F401 — type hints only
-from plugins.web.firecrawl.provider import (
-    Firecrawl,
-    _FirecrawlProxy,
-    _FIRECRAWL_CLS_CACHE,
-    _extract_scrape_payload,
-    _extract_web_search_results,
-    _firecrawl_backend_help_suffix,
-    _get_direct_firecrawl_config,
-    _get_firecrawl_client,
-    _get_firecrawl_gateway_url,
-    _has_direct_firecrawl_config,
-    _is_tool_gateway_ready,
-    _load_firecrawl_cls,
-    _normalize_result_list,
-    _raise_web_backend_configuration_error,
-    _to_plain_object,
-    check_firecrawl_api_key,
-)
-# Tavily helpers re-exported for backward-compat with existing unit tests
-# (tests/tools/test_web_tools_tavily.py imports these names directly).
-from plugins.web.tavily.provider import (  # noqa: F401 — backward-compat names
-    _normalize_tavily_documents,
-    _normalize_tavily_search_results,
-    _tavily_request,
-)
-# Parallel + Exa clients re-exported for backward-compat with existing
-# unit tests (tests/tools/test_web_tools_config.py imports _get_parallel_client
-# / _get_async_parallel_client / _get_exa_client directly).
-from plugins.web.parallel.provider import (  # noqa: F401 — backward-compat names
-    _get_async_parallel_client,
-    _get_parallel_client,
-)
-from plugins.web.exa.provider import _get_exa_client  # noqa: F401
-
-# Module-level cache slots for the per-vendor clients. The plugins read/write
-# these via tools.web_tools so unit tests that reset
-# ``tools.web_tools._<vendor>_client = None`` between cases keep working.
-_firecrawl_client: Optional[Any] = None
-_firecrawl_client_config: Optional[Any] = None
-_parallel_client: Optional[Any] = None
-_async_parallel_client: Optional[Any] = None
-_exa_client: Optional[Any] = None
-
+from typing import List, Dict, Any, Optional
+import httpx
+try:
+    from firecrawl import Firecrawl
+except Exception:  # pragma: no cover - optional dependency / Android fallback
+    Firecrawl = None
 from agent.auxiliary_client import (
     async_call_llm,
     extract_content_or_reasoning,
