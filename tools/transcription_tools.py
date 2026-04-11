@@ -301,6 +301,9 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
     if not _HAS_FASTER_WHISPER:
         return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
 
+    # Normalize OpenAI/GroQ model identifiers to faster-whisper model names
+    model_name = _normalize_local_command_model(model_name)
+
     try:
         from faster_whisper import WhisperModel
         # Lazy-load the model (downloads on first use, ~150 MB for 'base')

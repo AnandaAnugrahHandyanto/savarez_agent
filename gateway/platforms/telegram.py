@@ -2342,8 +2342,23 @@ class TelegramAdapter(BasePlatformAdapter):
                     mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                     ext = mime_to_ext.get(doc.mime_type, "")
 
+                # If it's an audio file sent as a document, cache it as audio for STT
+                AUDIO_EXTS = {".wav", ".mp3", ".ogg", ".aac", ".flac", ".m4a", ".opus"}
+                if ext in AUDIO_EXTS:
+                    file_obj = await doc.get_file()
+                    audio_bytes = await file_obj.download_as_bytearray()
+                    audio_ext = ext if ext else ".wav"
+                    cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=audio_ext)
+                    event.media_urls = [cached_path]
+                    audio_mime_types = {
+                        ".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg",
+                        ".aac": "audio/aac", ".flac": "audio/flac", ".m4a": "audio/mp4",
+                        ".opus": "audio/opus",
+                    }
+                    event.media_types = [audio_mime_types.get(audio_ext, "audio/wav")]
+                    logger.info("[Telegram] Cached audio document (%s) at %s", ext, cached_path)
                 # Check if supported
-                if ext not in SUPPORTED_DOCUMENT_TYPES:
+                elif ext not in SUPPORTED_DOCUMENT_TYPES:
                     supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
                     event.text = (
                         f"Unsupported document type '{ext or 'unknown'}'. "
