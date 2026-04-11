@@ -493,11 +493,38 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             return json.dumps({"error": "Interrupted", "success": False})
 
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
-        
-        response = _get_firecrawl_client().search(
-            query=query,
-            limit=limit
-        )
+
+        # Try Firecrawl first, fall back to DuckDuckGo
+        if os.getenv("FIRECRAWL_API_KEY"):
+            response = _get_firecrawl_client().search(
+                query=query,
+                limit=limit
+            )
+        elif _check_duckduckgo_available():
+            from duckduckgo_search import DDGS
+            with DDGS() as ddgs:
+                ddg_results = list(ddgs.text(query, max_results=limit))
+            # Convert DuckDuckGo results to Firecrawl-compatible format
+            class _DDGResponse:
+                def __init__(self, results):
+                    self.web = [
+                        type("R", (), {
+                            "model_dump": lambda s=r: {
+                                "title": s.get("title", ""),
+                                "url": s.get("href", ""),
+                                "description": s.get("body", ""),
+                            },
+                            "__dict__": {
+                                "title": r.get("title", ""),
+                                "url": r.get("href", ""),
+                                "description": r.get("body", ""),
+                            }
+                        })()
+                        for r in results
+                    ]
+            response = _DDGResponse(ddg_results)
+        else:
+            raise ValueError("No web search backend: set FIRECRAWL_API_KEY or install duckduckgo-search")
         
         # The response is a SearchData object with web, news, and images attributes
         # When not scraping, the results are directly in these attributes
@@ -1126,14 +1153,23 @@ async def web_crawl_tool(
 
 
 # Convenience function to check if API key is available
+def _check_duckduckgo_available() -> bool:
+    """Check if duckduckgo_search package is installed."""
+    try:
+        from duckduckgo_search import DDGS
+        return True
+    except ImportError:
+        return False
+
+
 def check_firecrawl_api_key() -> bool:
     """
-    Check if the Firecrawl API key is available in environment variables.
-    
+    Check if web search is available (Firecrawl API key OR DuckDuckGo fallback).
+
     Returns:
-        bool: True if API key is set, False otherwise
+        bool: True if any web search backend is available, False otherwise
     """
-    return bool(os.getenv("FIRECRAWL_API_KEY"))
+    return bool(os.getenv("FIRECRAWL_API_KEY")) or _check_duckduckgo_available()
 
 
 def check_auxiliary_model() -> bool:

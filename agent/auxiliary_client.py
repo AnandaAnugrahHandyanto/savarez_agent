@@ -488,10 +488,67 @@ def _resolve_forced_provider(forced: str) -> Tuple[Optional[OpenAI], Optional[st
     return None, None
 
 
+def _try_ollama() -> Tuple[Optional[OpenAI], Optional[str]]:
+    """Try local Ollama as auxiliary client (free, no API key needed)."""
+    ollama_base = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    ollama_model = os.getenv("OLLAMA_AUX_MODEL", "qwen3:8b")
+    try:
+        import httpx
+        resp = httpx.get(f"{ollama_base}/api/tags", timeout=2.0)
+        if resp.status_code == 200:
+            models = [m["name"] for m in resp.json().get("models", [])]
+            if not models:
+                return None, None
+            # Prefer the configured model, fall back to first available
+            if ollama_model not in models:
+                # Try common good models in preference order
+                for candidate in ["qwen3:8b", "llama3.1:8b", "gemma2:9b",
+                                  "mistral:7b", "qwen2.5-coder:7b"]:
+                    if candidate in models:
+                        ollama_model = candidate
+                        break
+                else:
+                    ollama_model = models[0]
+            logger.debug("Auxiliary client: Ollama (%s)", ollama_model)
+            return OpenAI(api_key="ollama", base_url=f"{ollama_base}/v1"), ollama_model
+    except Exception as exc:
+        logger.debug("Ollama not available for auxiliary: %s", exc)
+    return None, None
+
+
+def _try_ollama_vision() -> Tuple[Optional[OpenAI], Optional[str]]:
+    """Try local Ollama with a vision-capable model."""
+    ollama_base = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    ollama_vision_model = os.getenv("OLLAMA_VISION_MODEL", "llava:7b")
+    try:
+        import httpx
+        resp = httpx.get(f"{ollama_base}/api/tags", timeout=2.0)
+        if resp.status_code == 200:
+            models = [m["name"] for m in resp.json().get("models", [])]
+            # Check for vision-capable models
+            vision_candidates = ["llava:7b", "llava:13b", "llava:latest",
+                                 "llava-llama3:8b", "bakllava:7b",
+                                 "moondream:latest", "minicpm-v:8b"]
+            chosen = None
+            if ollama_vision_model in models:
+                chosen = ollama_vision_model
+            else:
+                for candidate in vision_candidates:
+                    if candidate in models:
+                        chosen = candidate
+                        break
+            if chosen:
+                logger.debug("Auxiliary vision client: Ollama (%s)", chosen)
+                return OpenAI(api_key="ollama", base_url=f"{ollama_base}/v1"), chosen
+    except Exception as exc:
+        logger.debug("Ollama vision not available: %s", exc)
+    return None, None
+
+
 def _resolve_auto() -> Tuple[Optional[OpenAI], Optional[str]]:
-    """Full auto-detection chain: OpenRouter → Nous → custom → Codex → API-key → None."""
+    """Full auto-detection chain: OpenRouter → Nous → custom → Codex → API-key → Ollama → None."""
     for try_fn in (_try_openrouter, _try_nous, _try_custom_endpoint,
-                   _try_codex, _resolve_api_key_provider):
+                   _try_codex, _resolve_api_key_provider, _try_ollama):
         client, model = try_fn()
         if client is not None:
             return client, model
@@ -565,7 +622,7 @@ def get_vision_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
     # LLaVA, Pixtral, etc.) support vision — skipping them entirely
     # caused silent failures for local-only users.
     for try_fn in (_try_openrouter, _try_nous, _try_codex,
-                   _try_custom_endpoint):
+                   _try_custom_endpoint, _try_ollama_vision):
         client, model = try_fn()
         if client is not None:
             return client, model

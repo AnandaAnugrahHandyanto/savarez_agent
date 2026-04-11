@@ -370,24 +370,38 @@ class AIAgent:
                 ]:
                     logging.getLogger(quiet_logger).setLevel(logging.ERROR)
         
-        # Initialize OpenAI client - defaults to OpenRouter
+        # Initialize OpenAI client - defaults to OpenRouter, but prefers Nous direct if available
         client_kwargs = {}
-        
-        # Default to OpenRouter if no base_url provided
+
+        # Resolve base_url and api_key together — Nous direct takes priority over OpenRouter
         if base_url:
             client_kwargs["base_url"] = base_url
+        elif os.getenv("HERMES_BASE_URL") and os.getenv("HERMES_API_KEY"):
+            # Nous Research direct endpoint — use when HERMES_API_KEY is set
+            client_kwargs["base_url"] = os.getenv("HERMES_BASE_URL")
         else:
             client_kwargs["base_url"] = OPENROUTER_BASE_URL
-        
-        # Handle API key - OpenRouter is the primary provider
+
+        # Handle API key — match to the resolved endpoint
         if api_key:
             client_kwargs["api_key"] = api_key
+        elif os.getenv("HERMES_API_KEY") and "nousresearch" in client_kwargs.get("base_url", "").lower():
+            # Nous Research direct API key
+            client_kwargs["api_key"] = os.getenv("HERMES_API_KEY")
         else:
             # Primary: OPENROUTER_API_KEY, fallback to direct provider keys
             client_kwargs["api_key"] = os.getenv("OPENROUTER_API_KEY", "")
         
-        # OpenRouter app attribution — shows hermes-agent in rankings/analytics
+        # When using Nous Research direct API, override model to HERMES_MODEL_ID
         effective_base = client_kwargs.get("base_url", "")
+        if "nousresearch" in effective_base.lower():
+            nous_model = os.getenv("HERMES_MODEL_ID", "Hermes-4-70B")
+            if self.model != nous_model:
+                if not self.quiet_mode:
+                    print(f"🔄 Nous Research direct API detected — switching model to {nous_model}")
+                self.model = nous_model
+
+        # OpenRouter app attribution — shows hermes-agent in rankings/analytics
         if "openrouter" in effective_base.lower():
             client_kwargs["default_headers"] = {
                 "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",

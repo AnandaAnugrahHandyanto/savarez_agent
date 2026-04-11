@@ -82,6 +82,19 @@ Responses from models:"""
 
 _debug = DebugSession("moa_tools", env_var="MOA_TOOLS_DEBUG")
 
+# Lazy-initialized Ollama async client for MoA fallback
+_ollama_async_client = None
+
+
+def _get_ollama_moa_client():
+    """Get or create an AsyncOpenAI client pointed at local Ollama."""
+    global _ollama_async_client
+    if _ollama_async_client is None:
+        from openai import AsyncOpenAI
+        base = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        _ollama_async_client = AsyncOpenAI(api_key="ollama", base_url=f"{base}/v1")
+    return _ollama_async_client
+
 
 def _construct_aggregator_prompt(system_prompt: str, responses: List[str]) -> str:
     """
@@ -122,24 +135,32 @@ async def _run_reference_model_safe(
         try:
             logger.info("Querying %s (attempt %s/%s)", model, attempt + 1, max_retries)
             
+            # Determine if this is a local Ollama model (no "/" = local)
+            _is_local = "/" not in model
+
             # Build parameters for the API call
             api_params = {
                 "model": model,
                 "messages": [{"role": "user", "content": user_prompt}],
-                "extra_body": {
-                    "reasoning": {
-                        "enabled": True,
-                        "effort": "xhigh"
-                    }
-                }
             }
-            
+
+            if not _is_local:
+                api_params["extra_body"] = {
+                    "reasoning": {"enabled": True, "effort": "xhigh"}
+                }
+
             # GPT models (especially gpt-4o-mini) don't support custom temperature values
             # Only include temperature for non-GPT models
             if not model.lower().startswith('gpt-'):
                 api_params["temperature"] = temperature
-            
-            response = await _get_openrouter_client().chat.completions.create(**api_params)
+
+            if _is_local:
+                api_params["max_tokens"] = min(max_tokens, 2048)  # Keep local responses compact
+                client = _get_ollama_moa_client()
+            else:
+                client = _get_openrouter_client()
+
+            response = await client.chat.completions.create(**api_params)
             
             content = response.choices[0].message.content.strip()
             logger.info("%s responded (%s characters)", model, len(content))
@@ -185,7 +206,9 @@ async def _run_aggregator_model(
         str: Synthesized final response
     """
     logger.info("Running aggregator model: %s", AGGREGATOR_MODEL)
-    
+
+    _is_local = "/" not in AGGREGATOR_MODEL
+
     # Build parameters for the API call
     api_params = {
         "model": AGGREGATOR_MODEL,
@@ -193,20 +216,25 @@ async def _run_aggregator_model(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        "extra_body": {
-            "reasoning": {
-                "enabled": True,
-                "effort": "xhigh"
-            }
-        }
     }
-    
+
+    if not _is_local:
+        api_params["extra_body"] = {
+            "reasoning": {"enabled": True, "effort": "xhigh"}
+        }
+
     # GPT models (especially gpt-4o-mini) don't support custom temperature values
     # Only include temperature for non-GPT models
     if not AGGREGATOR_MODEL.lower().startswith('gpt-'):
         api_params["temperature"] = temperature
-    
-    response = await _get_openrouter_client().chat.completions.create(**api_params)
+
+    if _is_local:
+        api_params["max_tokens"] = 4096
+        client = _get_ollama_moa_client()
+    else:
+        client = _get_openrouter_client()
+
+    response = await client.chat.completions.create(**api_params)
     
     content = response.choices[0].message.content.strip()
     logger.info("Aggregation complete (%s characters)", len(content))
@@ -279,13 +307,31 @@ async def mixture_of_agents_tool(
         logger.info("Starting Mixture-of-Agents processing...")
         logger.info("Query: %s", user_prompt[:100])
         
-        # Validate API key availability
+        # Determine backend: OpenRouter or local Ollama
+        _use_ollama_moa = False
         if not os.getenv("OPENROUTER_API_KEY"):
-            raise ValueError("OPENROUTER_API_KEY environment variable not set")
-        
+            if _check_ollama_available():
+                _use_ollama_moa = True
+                logger.info("MoA: Using local Ollama models (no OpenRouter key)")
+            else:
+                raise ValueError("No MoA backend: set OPENROUTER_API_KEY or run Ollama locally")
+
         # Use provided models or defaults
-        ref_models = reference_models or REFERENCE_MODELS
-        agg_model = aggregator_model or AGGREGATOR_MODEL
+        if _use_ollama_moa and not reference_models:
+            # Pick diverse local models for MoA
+            import httpx as _hx
+            _resp = _hx.get("http://localhost:11434/api/tags", timeout=2.0)
+            _local_models = [m["name"] for m in _resp.json().get("models", [])]
+            # Prefer larger/diverse models
+            _preferred = ["qwen3:8b", "llama3.1:8b", "gemma2:9b", "mistral:7b",
+                          "deepseek-r1:8b", "qwen2.5-coder:7b", "phi3:latest"]
+            ref_models = [m for m in _preferred if m in _local_models][:3]
+            if len(ref_models) < 2:
+                ref_models = _local_models[:3]
+            agg_model = ref_models[0]  # Use best model as aggregator
+        else:
+            ref_models = reference_models or REFERENCE_MODELS
+            agg_model = aggregator_model or AGGREGATOR_MODEL
         
         logger.info("Using %s reference models in 2-layer MoA architecture", len(ref_models))
         
@@ -389,14 +435,28 @@ async def mixture_of_agents_tool(
         return json.dumps(result, indent=2, ensure_ascii=False)
 
 
+def _check_ollama_available() -> bool:
+    """Check if Ollama is running locally with at least 2 models."""
+    try:
+        import httpx
+        resp = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
+        if resp.status_code == 200:
+            models = resp.json().get("models", [])
+            return len(models) >= 2
+    except Exception:
+        pass
+    return False
+
+
 def check_moa_requirements() -> bool:
     """
     Check if all requirements for MoA tools are met.
-    
+    Supports OpenRouter OR local Ollama with multiple models.
+
     Returns:
         bool: True if requirements are met, False otherwise
     """
-    return check_openrouter_api_key()
+    return check_openrouter_api_key() or _check_ollama_available()
 
 
 def get_debug_session_info() -> Dict[str, Any]:
@@ -539,6 +599,6 @@ registry.register(
     schema=MOA_SCHEMA,
     handler=lambda args, **kw: mixture_of_agents_tool(user_prompt=args.get("user_prompt", "")),
     check_fn=check_moa_requirements,
-    requires_env=["OPENROUTER_API_KEY"],
+    requires_env=[],  # OpenRouter OR local Ollama
     is_async=True,
 )

@@ -33,10 +33,10 @@ import uuid
 _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional
 
-# Availability gate: UDS requires a POSIX OS
+# Availability gate: UDS on POSIX, TCP loopback on Windows
 logger = logging.getLogger(__name__)
 
-SANDBOX_AVAILABLE = sys.platform != "win32"
+SANDBOX_AVAILABLE = True  # Enabled on all platforms (TCP fallback on Windows)
 
 # The 7 tools allowed inside the sandbox. The intersection of this list
 # and the session's enabled tools determines which stubs are generated.
@@ -179,8 +179,14 @@ def retry(fn, max_attempts=3, delay=2):
 def _connect():
     global _sock
     if _sock is None:
-        _sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        _sock.connect(os.environ["HERMES_RPC_SOCKET"])
+        addr = os.environ["HERMES_RPC_SOCKET"]
+        if os.environ.get("HERMES_RPC_TCP") == "1":
+            host, port = addr.rsplit(":", 1)
+            _sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            _sock.connect((host, int(port)))
+        else:
+            _sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            _sock.connect(addr)
         _sock.settimeout(300)
     return _sock
 
@@ -385,11 +391,22 @@ def execute_code(
 
     # --- Set up temp directory with hermes_tools.py and script.py ---
     tmpdir = tempfile.mkdtemp(prefix="hermes_sandbox_")
-    # Use /tmp on macOS to avoid the long /var/folders/... path that pushes
-    # Unix domain socket paths past the 104-byte macOS AF_UNIX limit.
-    # On Linux, tempfile.gettempdir() already returns /tmp.
-    _sock_tmpdir = "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
-    sock_path = os.path.join(_sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
+    # On Windows: use TCP loopback (AF_UNIX not available)
+    # On macOS: use /tmp to avoid long AF_UNIX path limit
+    # On Linux: tempfile.gettempdir() returns /tmp
+    _use_tcp = _IS_WINDOWS
+    sock_path = None
+    _tcp_port = None
+    if _use_tcp:
+        # Find a free TCP port for RPC
+        _probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        _probe.bind(("127.0.0.1", 0))
+        _tcp_port = _probe.getsockname()[1]
+        _probe.close()
+        sock_path = f"127.0.0.1:{_tcp_port}"
+    else:
+        _sock_tmpdir = "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
+        sock_path = os.path.join(_sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
 
     tool_call_log: list = []
     tool_call_counter = [0]  # mutable so the RPC thread can increment
@@ -407,9 +424,14 @@ def execute_code(
         with open(os.path.join(tmpdir, "script.py"), "w") as f:
             f.write(code)
 
-        # --- Start UDS server ---
-        server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server_sock.bind(sock_path)
+        # --- Start RPC server (TCP on Windows, UDS on POSIX) ---
+        if _use_tcp:
+            server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server_sock.bind(("127.0.0.1", _tcp_port))
+        else:
+            server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server_sock.bind(sock_path)
         server_sock.listen(1)
 
         rpc_thread = threading.Thread(
@@ -438,6 +460,8 @@ def execute_code(
             if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
                 child_env[k] = v
         child_env["HERMES_RPC_SOCKET"] = sock_path
+        if _use_tcp:
+            child_env["HERMES_RPC_TCP"] = "1"
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
         # Inject user's configured timezone so datetime.now() in sandboxed
         # code reflects the correct wall-clock time.
