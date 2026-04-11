@@ -306,8 +306,22 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
     elif schedule["kind"] == "cron":
         if not HAS_CRONITER:
             return None
-        cron = croniter(schedule["expr"], now)
+        # Use last_run_at as base if available — this prevents the scheduler
+        # from skipping the next occurrence when it recomputes at a later time.
+        # E.g. cron "0 7 * * 1,3,5" ran Mon 7am. If recomputed Tue evening with
+        # base=now, croniter says "next Fri 7am" — skipping Wed entirely.
+        # With base=last_run (Mon 7am), croniter correctly says "Wed 7am".
+        if last_run_at:
+            base = _ensure_aware(datetime.fromisoformat(last_run_at))
+        else:
+            base = now
+        cron = croniter(schedule["expr"], base)
         next_run = cron.get_next(datetime)
+        # If the computed next_run is in the past (e.g. gateway was down),
+        # fast-forward to the next future occurrence from now.
+        if next_run < now:
+            cron2 = croniter(schedule["expr"], now)
+            next_run = cron2.get_next(datetime)
         return next_run.isoformat()
 
     return None
@@ -645,8 +659,11 @@ def advance_next_run(job_id: str) -> bool:
             kind = job.get("schedule", {}).get("kind")
             if kind not in ("cron", "interval"):
                 return False
-            now = _hermes_now().isoformat()
-            new_next = compute_next_run(job["schedule"], now)
+            # Pass the job's actual last_run_at so compute_next_run calculates
+            # from the last execution, not from "now" (which would skip
+            # occurrences if we're running late or recomputing mid-cycle).
+            last_run = job.get("last_run_at")
+            new_next = compute_next_run(job["schedule"], last_run)
             if new_next and new_next != job.get("next_run_at"):
                 job["next_run_at"] = new_next
                 save_jobs(jobs)
