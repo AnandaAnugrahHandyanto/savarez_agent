@@ -337,16 +337,24 @@ class GitHubSource(SkillSource):
 
         return results[:limit]
 
-    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+    def fetch(self, identifier: str, *, plugin_name: Optional[str] = None) -> Optional[SkillBundle]:
         """
         Download a skill from GitHub.
-        identifier format: "owner/repo/path/to/skill-dir"
+        identifier format: "owner/repo/path/to/skill-dir" or "owner/repo"
+
+        *plugin_name* auto-selects a specific plugin when the repo contains
+        a marketplace.json with multiple plugins (used during updates).
         """
         parts = identifier.split("/", 2)
-        if len(parts) < 3:
+        if len(parts) < 2:
             return None
 
         repo = f"{parts[0]}/{parts[1]}"
+
+        # 2-part identifier: owner/repo → repo-root resolution
+        if len(parts) < 3:
+            return self._resolve_repo_root(repo, plugin_name=plugin_name)
+
         skill_path = parts[2]
 
         files = self._download_directory(repo, skill_path)
@@ -367,10 +375,15 @@ class GitHubSource(SkillSource):
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         """Fetch just the SKILL.md metadata for preview."""
         parts = identifier.split("/", 2)
-        if len(parts) < 3:
+        if len(parts) < 2:
             return None
 
         repo = f"{parts[0]}/{parts[1]}"
+
+        # 2-part identifier: owner/repo
+        if len(parts) < 3:
+            return self._inspect_repo_root(repo, identifier)
+
         skill_path = parts[2].rstrip("/")
         skill_md_path = f"{skill_path}/SKILL.md"
 
@@ -401,6 +414,42 @@ class GitHubSource(SkillSource):
             repo=repo,
             path=skill_path,
             tags=[str(t) for t in tags],
+        )
+
+    def _inspect_repo_root(self, repo: str, identifier: str) -> Optional[SkillMeta]:
+        """Inspect an owner/repo identifier — check marketplace.json."""
+        common = dict(
+            source="github",
+            identifier=identifier,
+            trust_level=self.trust_level_for(identifier),
+            repo=repo,
+            path="",
+        )
+        fallback_name = repo.split("/")[-1]
+
+        plugins = self._fetch_marketplace_json(repo)
+        if not plugins:
+            return None
+
+        # Build a summary of all available plugins
+        plugin_names = [p.get("name", "?") for p in plugins]
+        descriptions = [p.get("description", "") for p in plugins]
+
+        if len(plugins) == 1:
+            name = plugin_names[0]
+            desc = descriptions[0]
+        else:
+            name = fallback_name
+            desc = f"{len(plugins)} plugins available: {', '.join(plugin_names)}"
+
+        return SkillMeta(
+            name=name,
+            description=desc,
+            extra={"plugins": [
+                {"name": p.get("name", "?"), "description": p.get("description", "")}
+                for p in plugins
+            ]},
+            **common,
         )
 
     # -- Internal helpers --
@@ -489,15 +538,16 @@ class GitHubSource(SkillSource):
             return None
 
         # Filter to blobs under our target path and fetch content
-        prefix = f"{path}/"
+        is_root = (path == "")
+        prefix = "" if is_root else f"{path}/"
         files: Dict[str, str] = {}
         for item in tree_data.get("tree", []):
             if item.get("type") != "blob":
                 continue
             item_path = item.get("path", "")
-            if not item_path.startswith(prefix):
+            if not is_root and not item_path.startswith(prefix):
                 continue
-            rel_path = item_path[len(prefix):]
+            rel_path = item_path if is_root else item_path[len(prefix):]
             content = self._fetch_file_content(repo, item_path)
             if content is not None:
                 files[rel_path] = content
@@ -604,6 +654,257 @@ class GitHubSource(SkillSource):
         except httpx.HTTPError as e:
             logger.debug("GitHub contents API fetch failed: %s", e)
         return None
+
+    def _fetch_marketplace_json(self, repo: str) -> list:
+        """Fetch and parse .claude-plugin/marketplace.json from a repo.
+
+        Returns the ``plugins`` list, or an empty list if the file is
+        missing or unparseable.  Results are cached for ``INDEX_CACHE_TTL``.
+        """
+        cache_key = f"marketplace_{repo.replace('/', '_')}"
+        cached = _read_index_cache(cache_key)
+        if cached is not None:
+            return cached
+
+        content = self._fetch_file_content(repo, ".claude-plugin/marketplace.json")
+        if not content:
+            return []
+        try:
+            data = json.loads(content)
+        except (json.JSONDecodeError, ValueError):
+            return []
+        plugins = data.get("plugins", [])
+        result = plugins if isinstance(plugins, list) else []
+        _write_index_cache(cache_key, result)
+        return result
+
+    @staticmethod
+    def _github_url_to_repo(url: str) -> Optional[str]:
+        """Extract ``owner/repo`` from a GitHub URL, or return ``None``."""
+        parsed = urlparse(url)
+        hostname = parsed.hostname or ""
+        if "github.com" not in hostname:
+            logger.debug("Non-GitHub URL not supported: %s", url)
+            return None
+        parts = parsed.path.strip("/").removesuffix(".git").split("/")
+        if len(parts) < 2:
+            return None
+        return f"{parts[0]}/{parts[1]}"
+
+    def _resolve_plugin_source(
+        self, source, marketplace_repo: str
+    ) -> Optional[tuple]:
+        """Resolve a marketplace plugin's ``source`` field to ``(repo, path)``.
+
+        Returns ``None`` for unsupported source types (npm, non-GitHub URLs).
+        """
+        # String source: relative path within the same repo
+        if isinstance(source, str):
+            path = source
+            if path.startswith("./"):
+                path = path[2:]
+            path = path.rstrip("/")
+            return (marketplace_repo, path)
+
+        if not isinstance(source, dict):
+            return None
+
+        source_type = source.get("source", "")
+
+        if source_type == "github":
+            repo = source.get("repo", "")
+            if not repo:
+                return None
+            return (repo, "")
+
+        if source_type == "url":
+            repo = self._github_url_to_repo(source.get("url", ""))
+            if not repo:
+                return None
+            return (repo, "")
+
+        if source_type == "git-subdir":
+            repo = self._github_url_to_repo(source.get("url", ""))
+            if not repo:
+                return None
+            return (repo, source.get("path", ""))
+
+        # npm or unknown
+        logger.debug("Unsupported plugin source type: %s", source_type)
+        return None
+
+    def _resolve_repo_root(
+        self, repo: str, _depth: int = 0,
+        plugin_name: Optional[str] = None,
+    ) -> Optional[SkillBundle]:
+        """Resolve an ``owner/repo`` identifier to a SkillBundle.
+
+        Resolution order:
+        1. .claude-plugin/marketplace.json → plugin discovery (depth 0 only)
+        2. Repo root as plugin (download all files)
+
+        *_depth* prevents infinite recursion: external repos referenced from
+        marketplace.json are fetched at depth 1 which skips step 2.
+
+        *plugin_name* auto-selects a specific plugin from marketplace.json
+        without prompting (used during updates).
+        """
+        repo_name = repo.split("/")[-1]
+        trust = self.trust_level_for(repo)
+
+        # 1. Check marketplace.json (only at depth 0)
+        if _depth == 0:
+            plugins = self._fetch_marketplace_json(repo)
+            if plugins:
+                selected = self._select_plugins(plugins, name_hint=plugin_name)
+                if selected:
+                    bundle = self._fetch_plugin_from_marketplace(
+                        selected[0], repo, _depth,
+                    )
+                    if bundle and len(selected) > 1:
+                        extra_bundles = []
+                        for p in selected[1:]:
+                            b = self._fetch_plugin_from_marketplace(
+                                p, repo, _depth,
+                            )
+                            if b:
+                                extra_bundles.append(b)
+                        if extra_bundles:
+                            bundle.metadata["_extra_bundles"] = extra_bundles
+                    return bundle
+
+        # 3. Fallback: download repo root as plugin
+        files = self._download_directory(repo, "")
+        if not files:
+            return None
+        return SkillBundle(
+            name=repo_name,
+            files=files,
+            source="github",
+            identifier=repo,
+            trust_level=trust,
+        )
+
+    def _select_plugins(
+        self, plugins: list, name_hint: Optional[str] = None,
+    ) -> List[dict]:
+        """Select plugins from a marketplace plugins list.
+
+        Auto-selects if there is only one, or if *name_hint* matches a
+        plugin name (used during updates to avoid re-prompting).
+        Prompts the user interactively otherwise.  Accepts comma-separated
+        numbers or ``all`` to install every plugin.
+        """
+        if not plugins:
+            return []
+        if len(plugins) == 1:
+            return [plugins[0]]
+
+        # Auto-select by name hint (e.g. during updates)
+        if name_hint:
+            for p in plugins:
+                if p.get("name") == name_hint:
+                    return [p]
+
+        print(f"\nFound {len(plugins)} plugins:")
+        for i, p in enumerate(plugins, 1):
+            desc = p.get("description", "")
+            print(f"  [{i}] {p.get('name', '?')} — {desc}")
+
+        try:
+            answer = input(
+                f"\nSelect plugins to install [1-{len(plugins)}, comma-separated, or 'all']: "
+            ).strip()
+            if answer.lower() == "all":
+                return list(plugins)
+            selected = []
+            for part in answer.split(","):
+                idx = int(part.strip()) - 1
+                if 0 <= idx < len(plugins):
+                    selected.append(plugins[idx])
+            return selected
+        except (EOFError, KeyboardInterrupt):
+            logger.debug("Plugin selection cancelled (non-interactive environment?)")
+        except ValueError:
+            pass
+        return []
+
+    def _fetch_plugin_from_marketplace(
+        self, plugin: dict, marketplace_repo: str, depth: int,
+    ) -> Optional[SkillBundle]:
+        """Fetch a single plugin based on its marketplace entry."""
+        source = plugin.get("source", "")
+        resolved = self._resolve_plugin_source(source, marketplace_repo)
+        if resolved is None:
+            logger.debug(
+                "Unsupported source for plugin %s: %s",
+                plugin.get("name", "?"), source,
+            )
+            return None
+
+        target_repo, target_path = resolved
+        plugin_name = plugin.get("name", target_repo.split("/")[-1])
+        trust = self.trust_level_for(target_repo)
+
+        # External repo with no explicit path → repo-root resolution at depth+1
+        if target_repo != marketplace_repo and not target_path:
+            bundle = self._resolve_repo_root(target_repo, _depth=depth + 1)
+            if bundle:
+                bundle.name = plugin_name
+                bundle.metadata["marketplace_plugin"] = plugin_name
+            return bundle
+
+        # If the plugin declares specific skill paths, download only those
+        skill_paths = plugin.get("skills", [])
+        if skill_paths and isinstance(skill_paths, list):
+            files = self._download_plugin_skills(
+                target_repo, target_path, skill_paths,
+            )
+        elif target_path:
+            files = self._download_directory(target_repo, target_path)
+        else:
+            files = self._download_directory(target_repo, "")
+        if not files:
+            return None
+
+        return SkillBundle(
+            name=plugin_name,
+            files=files,
+            source="github",
+            identifier=f"{target_repo}/{target_path}" if target_path else target_repo,
+            trust_level=trust,
+            metadata={"marketplace_plugin": plugin_name},
+        )
+
+    def _download_plugin_skills(
+        self, repo: str, base_path: str, skill_paths: list,
+    ) -> Dict[str, str]:
+        """Download only the skill directories listed in a plugin entry.
+
+        Each path in *skill_paths* is relative to the plugin source root
+        (e.g. ``"./skills/xlsx"``).  The base_path is the resolved plugin
+        source path within the repo.
+        """
+        files: Dict[str, str] = {}
+        for sp in skill_paths:
+            if not isinstance(sp, str):
+                continue
+            # Normalize: strip "./" prefix
+            rel = sp
+            if rel.startswith("./"):
+                rel = rel[2:]
+            # Build full path within repo
+            if base_path:
+                full_path = f"{base_path}/{rel}".rstrip("/")
+            else:
+                full_path = rel.rstrip("/")
+            dir_files = self._download_directory(repo, full_path)
+            if dir_files:
+                for name, content in dir_files.items():
+                    # Prefix with the skill directory name for namespacing
+                    prefixed = f"{rel}/{name}" if rel else name
+                    files[prefixed] = content
+        return files
 
     def _read_cache(self, key: str) -> Optional[list]:
         """Read cached index if not expired."""
@@ -2620,10 +2921,18 @@ def check_for_skill_updates(
         source_name = entry.get("source", "")
         candidate_sources = [src for src in sources if _source_matches(src, source_name)] or sources
 
+        metadata = entry.get("metadata", {}) or {}
+        mp_plugin = metadata.get("marketplace_plugin")
+
         bundle = None
         for src in candidate_sources:
             try:
-                bundle = src.fetch(identifier)
+                bundle = src.fetch(identifier, plugin_name=mp_plugin)
+            except TypeError:
+                try:
+                    bundle = src.fetch(identifier)
+                except Exception:
+                    bundle = None
             except Exception:
                 bundle = None
             if bundle:

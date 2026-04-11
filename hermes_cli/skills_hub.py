@@ -105,7 +105,8 @@ def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
     return lines
 
 
-def _resolve_source_meta_and_bundle(identifier: str, sources):
+def _resolve_source_meta_and_bundle(identifier: str, sources,
+                                    plugin_name: Optional[str] = None):
     """Resolve metadata and bundle for a specific identifier."""
     meta = None
     bundle = None
@@ -120,7 +121,12 @@ def _resolve_source_meta_and_bundle(identifier: str, sources):
             except Exception:
                 meta = None
         try:
-            bundle = src.fetch(identifier)
+            bundle = src.fetch(identifier, plugin_name=plugin_name)
+        except TypeError:
+            try:
+                bundle = src.fetch(identifier)
+            except Exception:
+                bundle = None
         except Exception:
             bundle = None
         if bundle:
@@ -307,9 +313,89 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     c.print("[dim]Tip: 'hermes skills search <query>' searches deeper across all registries[/]\n")
 
 
+def _install_bundle(bundle, meta=None, category: str = "", force: bool = False,
+                    console: Optional[Console] = None, skip_confirm: bool = False) -> bool:
+    """Quarantine, scan, confirm, and install a pre-fetched SkillBundle.
+
+    Returns True on success, False otherwise.
+    """
+    from tools.skills_hub import (
+        quarantine_bundle, install_from_quarantine, HubLockFile,
+        SKILLS_DIR, append_audit_log,
+    )
+    from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
+
+    c = console or _console
+
+    lock = HubLockFile()
+    existing = lock.get_installed(bundle.name)
+    if existing:
+        c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
+        if not force:
+            c.print("Use --force to reinstall.\n")
+            return False
+
+    try:
+        q_path = quarantine_bundle(bundle)
+    except ValueError as exc:
+        c.print(f"[bold red]Installation blocked:[/] {exc}\n")
+        append_audit_log("BLOCKED", bundle.name, bundle.source,
+                         bundle.trust_level, "invalid_path", str(exc))
+        return False
+    c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
+
+    c.print("[bold]Running security scan...[/]")
+    scan_source = getattr(bundle, "identifier", "") or ""
+    result = scan_skill(q_path, source=scan_source)
+    c.print(format_scan_report(result))
+
+    allowed, reason = should_allow_install(result, force=force)
+    if not allowed:
+        c.print(f"\n[bold red]Installation blocked:[/] {reason}")
+        shutil.rmtree(q_path, ignore_errors=True)
+        append_audit_log("BLOCKED", bundle.name, bundle.source,
+                         bundle.trust_level, result.verdict,
+                         f"{len(result.findings)}_findings")
+        return False
+
+    if not force and not skip_confirm:
+        c.print(Panel(
+            "[bold yellow]You are installing a third-party skill at your own risk.[/]\n\n"
+            "External skills can contain instructions that influence agent behavior,\n"
+            "shell commands, and scripts. Even after automated scanning, you should\n"
+            "review the installed files before use.\n\n"
+            f"Files will be at: [cyan]{display_hermes_home()}/skills/{category + '/' if category else ''}{bundle.name}/[/]",
+            title="Disclaimer",
+            border_style="yellow",
+        ))
+        c.print(f"[bold]Install '{bundle.name}'?[/]")
+        try:
+            answer = input("Confirm [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        if answer not in ("y", "yes"):
+            c.print("[dim]Installation cancelled.[/]\n")
+            shutil.rmtree(q_path, ignore_errors=True)
+            return False
+
+    try:
+        install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
+    except ValueError as exc:
+        c.print(f"[bold red]Installation blocked:[/] {exc}\n")
+        shutil.rmtree(q_path, ignore_errors=True)
+        append_audit_log("BLOCKED", bundle.name, bundle.source,
+                         bundle.trust_level, "invalid_path", str(exc))
+        return False
+
+    c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
+    c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
+    return True
+
+
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
-               invalidate_cache: bool = True) -> None:
+               invalidate_cache: bool = True,
+               plugin_name: Optional[str] = None) -> None:
     """Fetch, quarantine, scan, confirm, and install a skill."""
     from tools.skills_hub import (
         GitHubAuth, create_source_router, ensure_hub_dirs,
@@ -332,7 +418,9 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
     c.print(f"\n[bold]Fetching:[/] {identifier}")
 
-    meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
+    meta, bundle, _matched_source = _resolve_source_meta_and_bundle(
+        identifier, sources, plugin_name=plugin_name,
+    )
 
     if not bundle:
         c.print(f"[bold red]Error:[/] Could not fetch '{identifier}' from any source.\n")
@@ -352,6 +440,9 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         if not force:
             c.print("Use --force to reinstall.\n")
             return
+
+    # Pop non-serializable internal metadata before merging
+    extra_bundles = (bundle.metadata or {}).pop("_extra_bundles", [])
 
     extra_metadata = dict(getattr(meta, "extra", {}) or {})
     extra_metadata.update(getattr(bundle, "metadata", {}) or {})
@@ -437,6 +528,14 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
 
+    # Install remaining plugins if multiple were selected from marketplace.json
+    for extra_bundle in extra_bundles:
+        c.print(f"\n[bold]Installing additional plugin:[/] {extra_bundle.name}")
+        _install_bundle(
+            extra_bundle, meta=None, category=category, force=force,
+            console=console, skip_confirm=skip_confirm,
+        )
+
     if invalidate_cache:
         # Invalidate the skills prompt cache so the new skill appears immediately
         try:
@@ -462,7 +561,21 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
         if not identifier:
             return
 
-    meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
+    # For 2-part identifiers (owner/repo), only inspect — don't fetch
+    # to avoid triggering the interactive plugin selection prompt.
+    is_repo_root = identifier.count("/") == 1
+    if is_repo_root:
+        meta = None
+        for src in sources:
+            try:
+                meta = src.inspect(identifier)
+                if meta:
+                    break
+            except Exception:
+                pass
+        bundle = None
+    else:
+        meta, bundle, _ = _resolve_source_meta_and_bundle(identifier, sources)
 
     if not meta:
         c.print(f"[bold red]Error:[/] Could not find '{identifier}' in any source.\n")
@@ -594,8 +707,11 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
     for entry in updates:
         installed = lock.get_installed(entry["name"])
         category = _derive_category_from_install_path(installed.get("install_path", "")) if installed else ""
+        metadata = (installed.get("metadata") or {}) if installed else {}
+        mp_plugin = metadata.get("marketplace_plugin")
         c.print(f"[bold]Updating:[/] {entry['name']}")
-        do_install(entry["identifier"], category=category, force=True, console=c)
+        do_install(entry["identifier"], category=category, force=True,
+                   console=c, plugin_name=mp_plugin)
 
     c.print(f"[bold green]Updated {len(updates)} skill(s).[/]\n")
 
