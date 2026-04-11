@@ -1027,20 +1027,31 @@ def get_model_context_length(
             return local_ctx
 
     # 10. Default fallback — 128K
+    logger.warning(
+        "Could not determine context length for model %s (base_url=%s) "
+        "— falling back to %d tokens. Set context_length in config.yaml "
+        "if this is incorrect.",
+        model, base_url or "default", DEFAULT_FALLBACK_CONTEXT,
+    )
     return DEFAULT_FALLBACK_CONTEXT
 
 
 def estimate_tokens_rough(text: str) -> int:
-    """Rough token estimate (~4 chars/token) for pre-flight checks."""
+    """Rough token estimate (~4 chars/token) for pre-flight checks.
+
+    Uses ceiling division so short texts (1-3 chars) never estimate as
+    0 tokens, which would cause the compressor and pre-flight checks to
+    undercount.
+    """
     if not text:
         return 0
-    return len(text) // 4
+    return (len(text) + 3) // 4
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     """Rough token estimate for a message list (pre-flight only)."""
     total_chars = sum(len(str(msg)) for msg in messages)
-    return total_chars // 4
+    return (total_chars + 3) // 4
 
 
 def estimate_request_tokens_rough(
