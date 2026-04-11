@@ -30,6 +30,7 @@ import os
 import socket as _socket
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -559,6 +560,58 @@ except ImportError:
     _cron_trigger = None
 
 
+class _RateLimiter:
+    """Simple sliding-window rate limiter per API key.
+
+    When max_requests is 0, rate limiting is disabled (all requests allowed).
+    Thread-safe for use with aiohttp's executor threads.
+    """
+
+    def __init__(self, max_requests: int = 0, window_seconds: int = 60):
+        self._max = max_requests
+        self._window = window_seconds
+        self._buckets: dict = {}  # key -> list of timestamps
+        self._lock = threading.Lock()
+
+    def is_allowed(self, key: str) -> bool:
+        """Check if a request from this key is allowed.
+
+        Returns True if allowed, False if rate limited.
+        """
+        if self._max <= 0:
+            return True  # Rate limiting disabled
+
+        import time
+        now = time.time()
+        cutoff = now - self._window
+
+        with self._lock:
+            # Remove expired entries
+            if key in self._buckets:
+                self._buckets[key] = [t for t in self._buckets[key] if t > cutoff]
+            else:
+                self._buckets[key] = []
+
+            # Check limit
+            if len(self._buckets[key]) >= self._max:
+                return False
+
+            # Record this request
+            self._buckets[key].append(now)
+            return True
+
+    def retry_after(self, key: str) -> int:
+        """Return seconds until the oldest request in the window expires."""
+        if self._max <= 0 or key not in self._buckets:
+            return 0
+        import time
+        with self._lock:
+            if not self._buckets[key]:
+                return 0
+            oldest = min(self._buckets[key])
+            return max(1, int(oldest + self._window - time.time()))
+
+
 class APIServerAdapter(BasePlatformAdapter):
     """
     OpenAI-compatible HTTP API server adapter.
@@ -591,6 +644,10 @@ class APIServerAdapter(BasePlatformAdapter):
         self._active_run_agents: Dict[str, Any] = {}
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._rate_limiter = _RateLimiter(
+            max_requests=int(os.environ.get("API_SERVER_RATE_LIMIT_RPM", "0")),
+            window_seconds=60,
+        )
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -676,7 +733,14 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
             if hmac.compare_digest(token, self._api_key):
-                return None  # Auth OK
+                # Auth OK — check rate limit
+                if not self._rate_limiter.is_allowed(token):
+                    return web.json_response(
+                        {"error": {"message": "Rate limit exceeded", "type": "rate_limit_error"}},
+                        status=429,
+                        headers={"Retry-After": str(self._rate_limiter.retry_after(token))},
+                    )
+                return None
 
         return web.json_response(
             {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
