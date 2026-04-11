@@ -934,6 +934,22 @@ def get_model_context_length(
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
 
+    # 0a. Config-driven overrides from custom_providers[].models[].context_length
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        _custom_providers = _cfg.get("custom_providers", []) if isinstance(_cfg, dict) else []
+        for cp in _custom_providers:
+            if not isinstance(cp, dict):
+                continue
+            _models = cp.get("models", {})
+            if isinstance(_models, dict):
+                _ctx = _models.get(model, {}).get("context_length")
+                if isinstance(_ctx, int) and _ctx > 0:
+                    return _ctx
+    except Exception:
+        pass
+
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that
     # local servers actually know about.  Ollama "model:tag" colons are preserved.
