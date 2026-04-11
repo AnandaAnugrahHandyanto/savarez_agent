@@ -11,15 +11,11 @@ import androidx.lifecycle.viewModelScope
 import com.nousresearch.hermesagent.data.DeviceCapabilityStore
 import com.nousresearch.hermesagent.device.DeviceStateWriter
 import com.nousresearch.hermesagent.device.HermesAccessibilityController
-import com.nousresearch.hermesagent.device.HermesAutomationBridge
 import com.nousresearch.hermesagent.device.HermesGlobalAction
-import com.nousresearch.hermesagent.device.HermesLinuxSubsystemBridge
-import com.nousresearch.hermesagent.device.HermesSystemControlBridge
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import org.json.JSONObject
 import java.io.File
 import java.io.IOException
 
@@ -34,51 +30,8 @@ data class DeviceUiState(
     val workspaceFiles: List<WorkspaceFileUi> = emptyList(),
     val sharedFolderLabel: String = "No shared folder granted yet",
     val sharedFolderUri: String = "",
-    val linuxEnabled: Boolean = false,
-    val linuxAndroidAbi: String = "",
-    val linuxTermuxArch: String = "",
-    val linuxPrefixPath: String = "",
-    val linuxBashPath: String = "",
-    val linuxHomePath: String = "",
-    val linuxTmpPath: String = "",
-    val linuxPackageCount: Int = 0,
     val accessibilityEnabled: Boolean = false,
     val accessibilityConnected: Boolean = false,
-    val wifiEnabled: Boolean = false,
-    val activeNetworkLabel: String = "Offline",
-    val airplaneModeEnabled: Boolean = false,
-    val activeNetworkMetered: Boolean = false,
-    val dataSaverEnabled: Boolean = false,
-    val bluetoothSupported: Boolean = false,
-    val bluetoothEnabled: Boolean = false,
-    val bluetoothPermissionGranted: Boolean = false,
-    val pairedBluetoothDevices: List<String> = emptyList(),
-    val usbHostSupported: Boolean = false,
-    val usbDeviceCount: Int = 0,
-    val usbDevices: List<String> = emptyList(),
-    val nfcSupported: Boolean = false,
-    val nfcEnabled: Boolean = false,
-    val overlayPermissionGranted: Boolean = false,
-    val notificationPermissionGranted: Boolean = true,
-    val backgroundPersistenceEnabled: Boolean = false,
-    val runtimeServiceRunning: Boolean = false,
-    val operatorStandbyReady: Boolean = false,
-    val automationCount: Int = 0,
-    val enabledAutomationCount: Int = 0,
-    val externalTriggerCount: Int = 0,
-    val remoteDispatchCount: Int = 0,
-    val recentAutomationRunCount: Int = 0,
-    val lastAutomationRunLabel: String = "",
-    val lastAutomationRunResult: String = "",
-    val lastAutomationRunSuccess: Boolean? = null,
-    val lastDispatchTaskName: String = "",
-    val lastDispatchSource: String = "",
-    val lastDispatchChannel: String = "",
-    val operatorModelProvider: String = "",
-    val operatorModelName: String = "",
-    val operatorVisionCapable: Boolean = false,
-    val resizableWindowSupport: Boolean = true,
-    val freeformWindowSupported: Boolean = false,
     val status: String = "",
 )
 
@@ -183,23 +136,9 @@ class DeviceViewModel(application: Application) : AndroidViewModel(application) 
         )
     }
 
-    fun performSystemAction(action: String) {
-        val context = getApplication<Application>()
-        val result = HermesSystemControlBridge.performAction(context, action)
-        refresh(result.message)
-    }
-
-    fun setBackgroundPersistence(enabled: Boolean) {
-        performSystemAction(if (enabled) "start_background_runtime" else "stop_background_runtime")
-    }
-
     private fun buildState(status: String = ""): DeviceUiState {
         val context = getApplication<Application>()
         val sharedFolder = capabilityStore.load()
-        val linuxState = HermesLinuxSubsystemBridge.readState(context)
-        val systemStatus = HermesSystemControlBridge.readStatus(context)
-        val standbyStatus = automationStandbyStatus(context)
-        val modelRoutingStatus = automationModelRoutingStatus(context)
         val workspace = DeviceStateWriter.workspaceDir(context)
         val workspaceFiles = workspace
             .listFiles()
@@ -220,70 +159,10 @@ class DeviceViewModel(application: Application) : AndroidViewModel(application) 
             workspaceFiles = workspaceFiles,
             sharedFolderLabel = sharedFolder.sharedFolderLabel.ifBlank { "No shared folder granted yet" },
             sharedFolderUri = sharedFolder.sharedFolderUri,
-            linuxEnabled = linuxState?.optBoolean("enabled") == true,
-            linuxAndroidAbi = linuxState?.optString("android_abi").orEmpty(),
-            linuxTermuxArch = linuxState?.optString("termux_arch").orEmpty(),
-            linuxPrefixPath = linuxState?.optString("prefix_path").orEmpty(),
-            linuxBashPath = linuxState?.optString("bash_path").orEmpty(),
-            linuxHomePath = linuxState?.optString("home_path").orEmpty(),
-            linuxTmpPath = linuxState?.optString("tmp_path").orEmpty(),
-            linuxPackageCount = linuxState?.optJSONArray("packages")?.length() ?: 0,
             accessibilityEnabled = HermesAccessibilityController.isServiceEnabled(context),
             accessibilityConnected = HermesAccessibilityController.isServiceConnected(),
-            wifiEnabled = systemStatus.wifiEnabled,
-            activeNetworkLabel = systemStatus.activeNetworkLabel,
-            airplaneModeEnabled = systemStatus.airplaneModeEnabled,
-            activeNetworkMetered = systemStatus.activeNetworkMetered,
-            dataSaverEnabled = systemStatus.dataSaverEnabled,
-            bluetoothSupported = systemStatus.bluetoothSupported,
-            bluetoothEnabled = systemStatus.bluetoothEnabled,
-            bluetoothPermissionGranted = systemStatus.bluetoothPermissionGranted,
-            pairedBluetoothDevices = systemStatus.pairedBluetoothDevices,
-            usbHostSupported = systemStatus.usbHostSupported,
-            usbDeviceCount = systemStatus.usbDeviceCount,
-            usbDevices = systemStatus.usbDevices,
-            nfcSupported = systemStatus.nfcSupported,
-            nfcEnabled = systemStatus.nfcEnabled,
-            overlayPermissionGranted = systemStatus.overlayPermissionGranted,
-            notificationPermissionGranted = systemStatus.notificationPermissionGranted,
-            backgroundPersistenceEnabled = systemStatus.backgroundPersistenceEnabled,
-            runtimeServiceRunning = systemStatus.runtimeServiceRunning,
-            operatorStandbyReady = standbyStatus.optBoolean("ready", false),
-            automationCount = standbyStatus.optInt("automation_count", 0),
-            enabledAutomationCount = standbyStatus.optInt("enabled_automation_count", 0),
-            externalTriggerCount = standbyStatus.optInt("external_trigger_count", 0),
-            remoteDispatchCount = standbyStatus.optInt("remote_dispatch_count", 0),
-            recentAutomationRunCount = standbyStatus.optInt("recent_run_count", 0),
-            lastAutomationRunLabel = standbyStatus.optString("last_run_label"),
-            lastAutomationRunResult = standbyStatus.optString("last_run_result"),
-            lastAutomationRunSuccess = when {
-                standbyStatus.has("last_run_success") && !standbyStatus.isNull("last_run_success") -> standbyStatus.optBoolean("last_run_success")
-                else -> null
-            },
-            lastDispatchTaskName = standbyStatus.optString("last_dispatch_task_name"),
-            lastDispatchSource = standbyStatus.optString("last_dispatch_source"),
-            lastDispatchChannel = standbyStatus.optString("last_dispatch_channel"),
-            operatorModelProvider = modelRoutingStatus.optString("active_provider_label")
-                .ifBlank { modelRoutingStatus.optString("active_provider") },
-            operatorModelName = modelRoutingStatus.optString("active_model"),
-            operatorVisionCapable = modelRoutingStatus.optBoolean("vision_capable", false),
-            resizableWindowSupport = systemStatus.resizableWindowSupport,
-            freeformWindowSupported = systemStatus.freeformWindowSupported,
             status = status,
         )
-    }
-
-    private fun automationStandbyStatus(context: Application): JSONObject {
-        return runCatching {
-            JSONObject(HermesAutomationBridge.operatorStandbyStatusJson(context))
-                .optJSONObject("standby_dispatch") ?: JSONObject()
-        }.getOrDefault(JSONObject())
-    }
-
-    private fun automationModelRoutingStatus(context: Application): JSONObject {
-        return runCatching {
-            JSONObject(HermesAutomationBridge.operatorModelRoutingStatusJson(context))
-        }.getOrDefault(JSONObject())
     }
 
     private fun queryDisplayName(uri: Uri): String {
