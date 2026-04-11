@@ -1230,9 +1230,13 @@ def build_anthropic_kwargs(
     When *base_url* points to a third-party Anthropic-compatible endpoint,
     thinking block signatures are stripped (they are Anthropic-proprietary).
 
-    When *fast_mode* is True, adds ``speed: "fast"`` and the fast-mode beta
-    header for ~2.5x faster output throughput on Opus 4.6.  Currently only
-    supported on native Anthropic endpoints (not third-party compatible ones).
+    When *fast_mode* is True, adds ``speed: "fast"`` via ``extra_body`` plus
+    the fast-mode beta header for ~2.5x faster output throughput on Opus 4.6.
+    Anthropic's stable Python SDK exposes ``extra_body`` for undocumented
+    request params; passing ``speed`` as a top-level kwarg only works on the
+    beta helper surface, not ``client.messages.create()`` / ``.stream()``.
+    Fast mode is currently only supported on native Anthropic endpoints (not
+    third-party compatible ones).
     """
     system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
@@ -1334,10 +1338,15 @@ def build_anthropic_kwargs(
 
     # ── Fast mode (Opus 4.6 only) ────────────────────────────────────
     # Adds speed:"fast" + the fast-mode beta header for ~2.5x output speed.
+    # Route speed through extra_body because Anthropic's stable SDK surface
+    # accepts undocumented request params there, while top-level speed is only
+    # typed on client.beta.messages.* in newer SDK releases.
     # Only for native Anthropic endpoints — third-party providers would
     # reject the unknown beta header and speed parameter.
     if fast_mode and not _is_third_party_anthropic_endpoint(base_url):
-        kwargs["speed"] = "fast"
+        extra_body = dict(kwargs.get("extra_body") or {})
+        extra_body["speed"] = "fast"
+        kwargs["extra_body"] = extra_body
         # Build extra_headers with ALL applicable betas (the per-request
         # extra_headers override the client-level anthropic-beta header).
         betas = list(_common_betas_for_base_url(base_url))

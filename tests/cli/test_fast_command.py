@@ -369,7 +369,8 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
             reasoning_config=None,
             fast_mode=True,
         )
-        assert kwargs.get("speed") == "fast"
+        assert kwargs.get("extra_body", {}).get("speed") == "fast"
+        assert "speed" not in kwargs
         assert "extra_headers" in kwargs
         assert _FAST_MODE_BETA in kwargs["extra_headers"].get("anthropic-beta", "")
 
@@ -385,6 +386,7 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
             fast_mode=False,
         )
         assert "speed" not in kwargs
+        assert "extra_body" not in kwargs
         assert "extra_headers" not in kwargs
 
     def test_fast_mode_skipped_for_third_party_endpoint(self):
@@ -401,6 +403,7 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
         )
         # Third-party endpoints should NOT get speed or fast-mode beta
         assert "speed" not in kwargs
+        assert "extra_body" not in kwargs
         assert "extra_headers" not in kwargs
 
 

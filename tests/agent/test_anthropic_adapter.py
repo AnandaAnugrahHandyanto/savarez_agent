@@ -1076,6 +1076,67 @@ class TestBuildAnthropicKwargs:
         )
         assert kwargs["max_tokens"] == 64_000
 
+    def test_fast_mode_uses_extra_body_not_top_level_speed(self):
+        from agent.anthropic_adapter import _FAST_MODE_BETA
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            fast_mode=True,
+        )
+        assert kwargs["extra_body"] == {"speed": "fast"}
+        assert "speed" not in kwargs
+        assert _FAST_MODE_BETA in kwargs["extra_headers"]["anthropic-beta"]
+
+    def test_fast_mode_kwargs_work_with_current_sdk(self):
+        anthropic = pytest.importorskip("anthropic")
+        httpx = pytest.importorskip("httpx")
+        from agent.anthropic_adapter import _FAST_MODE_BETA
+
+        captured = {}
+
+        def handler(request):
+            captured["url"] = str(request.url)
+            captured["headers"] = dict(request.headers)
+            captured["body"] = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(
+                200,
+                json={
+                    "id": "msg_test",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "model": "claude-opus-4-6",
+                    "stop_reason": "end_turn",
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+                headers={"request-id": "req_test"},
+            )
+
+        client = anthropic.Anthropic(
+            api_key="test",
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=16,
+            reasoning_config=None,
+            fast_mode=True,
+        )
+
+        response = client.messages.create(**kwargs)
+
+        assert response.content[0].text == "ok"
+        assert captured["url"].endswith("/v1/messages")
+        assert captured["body"]["speed"] == "fast"
+        assert _FAST_MODE_BETA in captured["headers"]["anthropic-beta"]
+
 
 # ---------------------------------------------------------------------------
 # Model output limit lookup
