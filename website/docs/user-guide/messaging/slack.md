@@ -54,6 +54,7 @@ Navigate to **Features → OAuth & Permissions** in the sidebar. Scroll to **Sco
 | `im:read` | View basic DM info |
 | `im:write` | Open and manage DMs |
 | `users:read` | Look up user information |
+| `files:read` | Read files (images, audio, documents) |
 | `files:write` | Upload files (images, audio, documents) |
 
 :::caution Missing scopes = missing features
