@@ -1247,6 +1247,9 @@ class GatewayRunner:
 
         # Start background session expiry watcher for proactive memory flushing
         asyncio.create_task(self._session_expiry_watcher())
+        
+        # Start background idle commit watcher for early memory searchability
+        asyncio.create_task(self._idle_commit_watcher())
 
         # Start background reconnection watcher for platforms that failed at startup
         if self._failed_platforms:
@@ -1358,6 +1361,84 @@ class GatewayRunner:
                         )
             except Exception as e:
                 logger.debug("Session expiry watcher error: %s", e)
+            # Sleep in small increments so we can stop quickly
+            for _ in range(interval):
+                if not self._running:
+                    break
+                await asyncio.sleep(1)
+
+    async def _idle_commit_watcher(self, interval: int = 60, idle_seconds: int = 120):
+        """Background task that commits idle sessions for early memory searchability.
+        
+        Runs every `interval` seconds (default 60s). For each session that has been
+        idle for `idle_seconds` (default 120s = 2 min), commits the OpenViking session
+        so memories become searchable before the full session expiry timeout.
+        
+        This allows users to search recent conversations without waiting for the
+        full 2-hour session timeout.
+        """
+        await asyncio.sleep(30)  # initial delay — let the gateway fully start
+        while self._running:
+            try:
+                self.session_store._ensure_loaded()
+                now = datetime.now()
+                _committed_count = 0
+                
+                for key, entry in list(self.session_store._entries.items()):
+                    # Skip if already committed or flushed
+                    if entry.memory_committed or entry.memory_flushed:
+                        continue
+                    
+                    # Check if session has been idle long enough
+                    idle_time = (now - entry.updated_at).total_seconds()
+                    if idle_time < idle_seconds:
+                        continue
+                    
+                    # Commit the OpenViking session directly via API
+                    # This works even if the agent has been cleaned up from _running_agents
+                    try:
+                        import requests
+                        _endpoint = "http://127.0.0.1:1933"
+                        _api_key = None
+                        # Try to get API key from config
+                        config = getattr(self, 'config', None)
+                        if config:
+                            _api_key = getattr(config, 'openviking_api_key', None)
+                        if not _api_key:
+                            _api_key = os.environ.get('OPENVIKING_API_KEY', '')
+                        
+                        _headers = {}
+                        if _api_key:
+                            _headers['Authorization'] = f'Bearer {_api_key}'
+                        
+                        _resp = requests.post(
+                            f"{_endpoint}/api/v1/sessions/{entry.session_id}/commit",
+                            headers=_headers,
+                            timeout=10,
+                        )
+                        if _resp.status_code == 200:
+                            _committed_count += 1
+                            with self.session_store._lock:
+                                entry.memory_committed = True
+                                self.session_store._save()
+                            logger.info(
+                                "Idle commit: session %s committed after %.0fs idle",
+                                entry.session_id, idle_time,
+                            )
+                        else:
+                            logger.debug(
+                                "Idle commit failed for session %s: HTTP %d",
+                                entry.session_id, _resp.status_code,
+                            )
+                    except Exception as e:
+                        logger.debug("Idle commit failed for session %s: %s", entry.session_id, e)
+                
+                if _committed_count:
+                    logger.info("Idle commit watcher: %d session(s) committed", _committed_count)
+                    
+            except Exception as e:
+                logger.debug("Idle commit watcher error: %s", e)
+            
             # Sleep in small increments so we can stop quickly
             for _ in range(interval):
                 if not self._running:

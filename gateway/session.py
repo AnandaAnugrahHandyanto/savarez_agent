@@ -369,6 +369,11 @@ class SessionEntry:
     # set was lost on restart, causing redundant re-flushes).
     memory_flushed: bool = False
     
+    # Set by the idle commit watcher when the session has been idle long
+    # enough to trigger an early memory commit (for searchability).
+    # Reset to False when a new message arrives.
+    memory_committed: bool = False
+    
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -387,6 +392,7 @@ class SessionEntry:
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
             "memory_flushed": self.memory_flushed,
+            "memory_committed": self.memory_committed,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -423,6 +429,7 @@ class SessionEntry:
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
             memory_flushed=data.get("memory_flushed", False),
+            memory_committed=data.get("memory_committed", False),
         )
 
 
@@ -769,6 +776,9 @@ class SessionStore:
                 entry.updated_at = _now()
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
+                # Reset memory_committed flag - user has new activity
+                if entry.memory_committed:
+                    entry.memory_committed = False
                 self._save()
 
     def reset_session(self, session_key: str) -> Optional[SessionEntry]:

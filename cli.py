@@ -3774,9 +3774,18 @@ class HermesCLI:
             except (Exception, KeyboardInterrupt):
                 pass
             self._notify_session_boundary("on_session_finalize")
+            # Commit OpenViking session so memories become searchable
+            try:
+                self.agent.shutdown_memory_provider(self.conversation_history)
+            except Exception:
+                pass
         elif self.agent:
             # First session or empty history — still finalize the old session
             self._notify_session_boundary("on_session_finalize")
+            try:
+                self.agent.shutdown_memory_provider()
+            except Exception:
+                pass
 
         old_session_id = self.session_id
         if self._session_db and old_session_id:
