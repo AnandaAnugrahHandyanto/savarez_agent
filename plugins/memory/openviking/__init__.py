@@ -334,7 +334,38 @@ class OpenVikingMemoryProvider(MemoryProvider):
             )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Return prefetched results from the background thread."""
+        """Search relevant memories for the current query and return results.
+
+        Uses the current question (not the previous turn's) for recall.
+        Falls back to the cached background prefetch result if the synchronous
+        search times out.
+        """
+        if not self._client or not query:
+            return ""
+
+        # Try synchronous search with current query first
+        try:
+            client = _VikingClient(self._endpoint, self._api_key)
+            resp = client.post("/api/v1/search/find", {
+                "query": query,
+                "top_k": 5,
+            })
+            result = resp.get("result", {})
+            parts = []
+            for ctx_type in ("memories", "resources"):
+                items = result.get(ctx_type, [])
+                for item in items[:3]:
+                    uri = item.get("uri", "")
+                    abstract = item.get("abstract", "")
+                    score = item.get("score", 0)
+                    if abstract:
+                        parts.append(f"- [{score:.2f}] {abstract} ({uri})")
+            if parts:
+                return f"## OpenViking Context\n" + "\n".join(parts)
+        except Exception:
+            pass
+
+        # Fallback: try cached background prefetch result
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
