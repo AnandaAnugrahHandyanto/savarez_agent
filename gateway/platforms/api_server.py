@@ -53,7 +53,22 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
-CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
+
+
+def _parse_keepalive_seconds(raw: Any, default: float = 30.0) -> float:
+    """Parse SSE keepalive interval from config/env with safe fallbacks."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    # Avoid pathological configs that disable heartbeat or spam writes.
+    return max(3.0, min(value, 300.0))
+
+
+CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = _parse_keepalive_seconds(
+    os.getenv("API_SERVER_SSE_KEEPALIVE_SECONDS", "30.0"),
+    default=30.0,
+)
 
 
 def check_api_server_requirements() -> bool:
@@ -325,6 +340,12 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_name: str = self._resolve_model_name(
             extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
         )
+        self._tool_progress_stream_mode: str = self._normalize_tool_progress_stream_mode(
+            extra.get(
+                "tool_progress_stream_mode",
+                os.getenv("API_SERVER_TOOL_PROGRESS_STREAM_MODE", "sse"),
+            ),
+        )
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -334,6 +355,28 @@ class APIServerAdapter(BasePlatformAdapter):
         # Creation timestamps for orphaned-run TTL sweep
         self._run_streams_created: Dict[str, float] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+
+    @staticmethod
+    def _normalize_tool_progress_stream_mode(value: Any) -> str:
+        """Normalize how tool progress is emitted on chat-completions SSE.
+
+        Supported values:
+        - ``off``    : no tool progress emitted
+        - ``sse``    : custom ``event: hermes.tool.progress`` only (default)
+        - ``inline`` : inject compact inline text deltas only
+        - ``both``   : emit both SSE event + inline delta
+        """
+        mode = str(value or "").strip().lower()
+        aliases = {
+            "event": "sse",
+            "events": "sse",
+            "custom": "sse",
+            "text": "inline",
+        }
+        mode = aliases.get(mode, mode)
+        if mode in {"off", "sse", "inline", "both"}:
+            return mode
+        return "sse"
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -669,11 +712,17 @@ class APIServerAdapter(BasePlatformAdapter):
                 from agent.display import get_tool_emoji
                 emoji = get_tool_emoji(name)
                 label = preview or name
-                _stream_q.put(("__tool_progress__", {
-                    "tool": name,
-                    "emoji": emoji,
-                    "label": label,
-                }))
+                mode = self._tool_progress_stream_mode
+                if mode in {"sse", "both"}:
+                    _stream_q.put(("__tool_progress__", {
+                        "tool": name,
+                        "emoji": emoji,
+                        "label": label,
+                    }))
+                if mode in {"inline", "both"}:
+                    # Backward-compatible inline marker for frontends that
+                    # ignore custom SSE events (e.g., current Open WebUI).
+                    _stream_q.put(f"`{emoji} {label}`\n")
 
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
