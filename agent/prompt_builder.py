@@ -282,6 +282,29 @@ GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
 # message representation stays consistent ("system" everywhere).
 DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 
+# Guidance to prevent false-success reporting on model-switch requests.
+# When a user asks to switch models via natural language (not /model), the
+# agent may edit config.yaml but the live session remains on the old model.
+# This guidance ensures the agent uses the /model command path and reports
+# accurately.  See: https://github.com/NousResearch/hermes-agent/issues/6213
+MODEL_SWITCH_GUIDANCE = (
+    "# Model switching rules\n"
+    "When the user asks you to switch models, change the default model, or "
+    "use a different AI model:\n"
+    "1. ALWAYS direct them to use the `/model` command (e.g. `/model "
+    "<name>` for session-only, `/model <name> --global` to persist). "
+    "Do NOT attempt to switch models by editing config.yaml directly — "
+    "file edits do not take effect in the current session.\n"
+    "2. If you have already edited config.yaml to change the model, you MUST "
+    "clearly tell the user: 'I updated the default model in config.yaml, but "
+    "this change will only take effect after a session restart. The current "
+    "session is still using [current model]. Use `/model <name>` to switch "
+    "immediately, or `/new` to start a fresh session with the new default.'\n"
+    "3. NEVER say 'all set' or claim the switch is complete unless the current "
+    "live session is actually using the new model. Be precise about what "
+    "changed (future default vs. current session).\n"
+)
+
 PLATFORM_HINTS = {
     "whatsapp": (
         "You are on a text messaging communication platform, WhatsApp. "
