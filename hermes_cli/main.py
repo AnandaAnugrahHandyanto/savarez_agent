@@ -1097,17 +1097,19 @@ def select_provider_and_model(args=None):
         for entry in custom_providers_cfg:
             if not isinstance(entry, dict):
                 continue
-            name = (entry.get("name") or "").strip()
-            base_url = (entry.get("base_url") or "").strip()
+            # Coerce all fields to str — a config.yaml value like `name: 123`
+            # is parsed as int by PyYAML, causing AttributeError on .strip().
+            name = str(entry.get("name") or "").strip()
+            base_url = str(entry.get("base_url") or "").strip()
             if not name or not base_url:
                 continue
             key = "custom:" + name.lower().replace(" ", "-")
             custom_provider_map[key] = {
                 "name": name,
                 "base_url": base_url,
-                "api_key": entry.get("api_key", ""),
-                "model": entry.get("model", ""),
-                "api_mode": entry.get("api_mode", ""),
+                "api_key": str(entry.get("api_key") or ""),
+                "model": str(entry.get("model") or ""),
+                "api_mode": str(entry.get("api_mode") or ""),
             }
         return custom_provider_map
 
