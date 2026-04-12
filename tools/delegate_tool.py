@@ -40,7 +40,7 @@ DELEGATE_BLOCKED_TOOLS = frozenset([
 # Build a description fragment listing toolsets available for subagents.
 # Excludes toolsets where ALL tools are blocked, composite/platform toolsets
 # (hermes-* prefixed), and scenario toolsets.
-_EXCLUDED_TOOLSET_NAMES = frozenset({"debugging", "safe", "delegation"})
+_EXCLUDED_TOOLSET_NAMES = frozenset({"debugging", "safe", "delegation", "moa", "rl"})
 _SUBAGENT_TOOLSETS = sorted(
     name for name, defn in TOOLSETS.items()
     if name not in _EXCLUDED_TOOLSET_NAMES
