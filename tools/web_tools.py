@@ -13,6 +13,7 @@ Available tools:
 - web_crawl_tool: Crawl websites with specific instructions
 
 Backend compatibility:
+- SearXNG: self-hosted metasearch via HTTP JSON API (search only; extraction via ScraperMCP)
 - Exa: https://exa.ai (search, extract)
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
@@ -45,6 +46,7 @@ import logging
 import os
 import re
 import asyncio
+from urllib.parse import urljoin
 from typing import List, Dict, Any, Optional
 import httpx
 from firecrawl import Firecrawl
@@ -88,7 +90,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "searxng"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -99,6 +101,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("searxng", bool((_load_web_config().get("searxng_url") or "").strip()) or _has_env("SEARXNG_API_URL")),
     )
     for backend, available in backend_candidates:
         if available:
@@ -117,7 +120,39 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "searxng":
+        return _has_searxng_config() and _has_scrapermcp_config()
     return False
+
+
+def _get_searxng_url() -> str:
+    """Return configured SearXNG base URL."""
+    config_url = (_load_web_config().get("searxng_url") or "").strip()
+    env_url = os.getenv("SEARXNG_API_URL", "").strip()
+    return (config_url or env_url).rstrip("/")
+
+
+def _has_searxng_config() -> bool:
+    return bool(_get_searxng_url())
+
+
+def _get_scrapermcp_url() -> str:
+    """Return configured ScraperMCP streamable HTTP endpoint."""
+    config_url = (_load_web_config().get("scrapermcp_url") or "").strip()
+    env_url = os.getenv("SCRAPERMCP_URL", "").strip()
+    return config_url or env_url
+
+
+def _has_scrapermcp_config() -> bool:
+    return bool(_get_scrapermcp_url())
+
+
+def _get_scrapermcp_render_js() -> bool:
+    value = _load_web_config().get("scrapermcp_render_js")
+    if isinstance(value, bool):
+        return value
+    env_value = os.getenv("SCRAPERMCP_RENDER_JS", "").strip().lower()
+    return env_value in {"1", "true", "yes", "on"}
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
@@ -161,7 +196,8 @@ def _raise_web_backend_configuration_error() -> None:
     """Raise a clear error for unsupported web backend configuration."""
     message = (
         "Web tools are not configured. "
-        "Set FIRECRAWL_API_KEY for cloud Firecrawl or set FIRECRAWL_API_URL for a self-hosted Firecrawl instance."
+        "Set FIRECRAWL_API_KEY for cloud Firecrawl, FIRECRAWL_API_URL for a self-hosted Firecrawl instance, "
+        "or configure web.searxng_url + web.scrapermcp_url (or SEARXNG_API_URL + SCRAPERMCP_URL) for a SearXNG + ScraperMCP setup."
     )
     if managed_nous_tools_enabled():
         message += (
@@ -189,6 +225,9 @@ def _web_requires_env() -> list[str]:
         "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "SEARXNG_API_URL",
+        "SCRAPERMCP_URL",
+        "SCRAPERMCP_RENDER_JS",
     ]
     if managed_nous_tools_enabled():
         requires.extend(
@@ -358,6 +397,187 @@ def _normalize_tavily_documents(response: dict, fallback_url: str = "") -> List[
             "error": "extraction failed",
             "metadata": {"sourceURL": url_str},
         })
+    return documents
+
+
+def _normalize_searxng_search_results(response: dict, limit: int) -> dict:
+    """Normalize SearXNG JSON response into Hermes's standard search shape."""
+    web_results = []
+    for i, result in enumerate((response or {}).get("results", [])[:limit]):
+        web_results.append({
+            "title": result.get("title", "") or "",
+            "url": result.get("url", "") or "",
+            "description": result.get("content", "") or result.get("snippet", "") or "",
+            "position": i + 1,
+        })
+    return {"success": True, "data": {"web": web_results}}
+
+
+def _searxng_search(query: str, limit: int) -> dict:
+    """Run a search against a SearXNG instance and normalize the result."""
+    base_url = _get_searxng_url()
+    if not base_url:
+        raise ValueError(
+            "SearXNG backend selected but no URL configured. "
+            "Set web.searxng_url in config.yaml or SEARXNG_API_URL."
+        )
+
+    endpoint = urljoin(f"{base_url}/", "search")
+    response = httpx.get(
+        endpoint,
+        params={"q": query, "format": "json"},
+        timeout=30,
+        headers={"Accept": "application/json"},
+        follow_redirects=True,
+    )
+    response.raise_for_status()
+    return _normalize_searxng_search_results(response.json(), limit)
+
+
+async def _call_scrapermcp(urls: List[str], render_js: bool = False) -> dict:
+    """Call the configured ScraperMCP endpoint and return structured JSON."""
+    mcp_url = _get_scrapermcp_url()
+    if not mcp_url:
+        raise ValueError(
+            "SearXNG backend extraction requires ScraperMCP. "
+            "Set web.scrapermcp_url in config.yaml or SCRAPERMCP_URL."
+        )
+
+    try:
+        from mcp.client.streamable_http import streamable_http_client
+        from mcp import ClientSession
+    except ImportError as exc:
+        raise ImportError(
+            "ScraperMCP extraction requires the optional 'mcp' Python package. "
+            "Install it in Hermes's environment (pip install 'mcp>=1.24.0')."
+        ) from exc
+
+    payload = {
+        "urls": urls,
+        "timeout": 30,
+        "max_retries": 3,
+        "include_headers": False,
+        "render_js": render_js,
+    }
+
+    async with streamable_http_client(mcp_url) as streams:
+        read_stream, write_stream, *_ = streams
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            result = await session.call_tool("scrape_url", payload)
+
+    if getattr(result, "isError", False):
+        error_text = ""
+        for block in (getattr(result, "content", None) or []):
+            if hasattr(block, "text"):
+                error_text += block.text
+        raise RuntimeError(error_text or "ScraperMCP returned an error")
+
+    structured = getattr(result, "structuredContent", None)
+    if isinstance(structured, dict):
+        return structured
+
+    text_blob = "\n".join(
+        block.text for block in (getattr(result, "content", None) or []) if hasattr(block, "text")
+    )
+    try:
+        return json.loads(text_blob) if text_blob else {}
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("ScraperMCP returned an unexpected response format") from exc
+
+
+def _normalize_scrapermcp_documents(structured: dict, render_js_used: bool = False) -> List[Dict[str, Any]]:
+    """Normalize ScraperMCP scrape output into Hermes document results."""
+    documents: List[Dict[str, Any]] = []
+    for item in structured.get("results", []) or []:
+        url = item.get("url", "")
+        success = bool(item.get("success"))
+        data = item.get("data") or {}
+        metadata = (data.get("metadata") or {}).copy() if isinstance(data.get("metadata"), dict) else {}
+        page_meta = metadata.get("page_metadata") or {}
+        title = page_meta.get("title", "") if isinstance(page_meta, dict) else ""
+        content = data.get("content", "") if isinstance(data, dict) else ""
+        extraction_info = {
+            "backend": "scrapermcp",
+            "render_js_used": render_js_used,
+            "js_fallback_used": False,
+            "attempt": "initial",
+        }
+
+        if success:
+            documents.append({
+                "url": url,
+                "title": title,
+                "content": content,
+                "raw_content": content,
+                "metadata": {
+                    "sourceURL": url,
+                    "title": title,
+                    "extraction_info": extraction_info,
+                    **metadata,
+                },
+            })
+        else:
+            documents.append({
+                "url": url,
+                "title": title,
+                "content": "",
+                "raw_content": "",
+                "error": item.get("error") or "extraction failed",
+                "metadata": {
+                    "sourceURL": url,
+                    "title": title,
+                    "extraction_info": extraction_info,
+                    **metadata,
+                },
+            })
+
+    return documents
+
+
+async def _scrapermcp_extract(urls: List[str]) -> List[Dict[str, Any]]:
+    """Extract markdown content via ScraperMCP with JS-render retry fallback."""
+    initial_render_js = _get_scrapermcp_render_js()
+    first_pass = await _call_scrapermcp(urls, render_js=initial_render_js)
+    documents = _normalize_scrapermcp_documents(first_pass, render_js_used=initial_render_js)
+
+    retry_urls = []
+    for doc in documents:
+        has_content = bool((doc.get("content") or "").strip())
+        if (doc.get("error") or not has_content) and doc.get("url"):
+            retry_urls.append(doc["url"])
+
+    if retry_urls and not initial_render_js:
+        logger.info(
+            "ScraperMCP initial scrape failed/empty for %d URL(s); retrying with render_js=true: %s",
+            len(retry_urls),
+            ", ".join(retry_urls),
+        )
+        retry_structured = await _call_scrapermcp(retry_urls, render_js=True)
+        retry_docs = {
+            doc.get("url", ""): doc
+            for doc in _normalize_scrapermcp_documents(retry_structured, render_js_used=True)
+        }
+        merged = []
+        for doc in documents:
+            replacement = retry_docs.get(doc.get("url", ""))
+            if replacement:
+                replacement_has_content = bool((replacement.get("content") or "").strip())
+                if replacement_has_content or replacement.get("error") != doc.get("error"):
+                    metadata = replacement.setdefault("metadata", {})
+                    extraction_info = metadata.setdefault("extraction_info", {})
+                    extraction_info["js_fallback_used"] = True
+                    extraction_info["attempt"] = "fallback_js_retry"
+                    logger.info(
+                        "ScraperMCP JS fallback %s for %s",
+                        "succeeded" if replacement_has_content and not replacement.get("error") else "returned updated result",
+                        replacement.get("url", "unknown URL"),
+                    )
+                    merged.append(replacement)
+                    continue
+            merged.append(doc)
+        documents = merged
+
     return documents
 
 
@@ -1117,6 +1337,16 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+        if backend == "searxng":
+            logger.info("SearXNG search: '%s' (limit: %d)", query, limit)
+            response_data = _searxng_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
 
         response = _get_firecrawl_client().search(
@@ -1251,6 +1481,9 @@ async def web_extract_tool(
                     "include_images": False,
                 })
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+            elif backend == "searxng":
+                logger.info("ScraperMCP extract: %d URL(s)", len(safe_urls))
+                results = await _scrapermcp_extract(safe_urls)
             else:
                 # ── Firecrawl extraction ──
                 # Determine requested formats for Firecrawl v2
@@ -1453,6 +1686,7 @@ async def web_extract_tool(
                 "title": r.get("title", ""),
                 "content": r.get("content", ""),
                 "error": r.get("error"),
+                **({"extraction_info": r.get("metadata", {}).get("extraction_info")} if r.get("metadata", {}).get("extraction_info") else {}),
                 **({  "blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {}),
             }
             for r in response.get("results", [])
@@ -1541,6 +1775,12 @@ async def web_crawl_tool(
         effective_model = model or _get_default_summarizer_model()
         auxiliary_available = check_auxiliary_model()
         backend = _get_backend()
+
+        if backend == "searxng":
+            return json.dumps({
+                "error": "web_crawl is not supported with the SearXNG backend. Use web_search to find pages and web_extract (via ScraperMCP) to fetch them.",
+                "success": False,
+            }, ensure_ascii=False)
 
         # Tavily supports crawl via its /crawl endpoint
         if backend == "tavily":
@@ -1921,9 +2161,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "searxng"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng"))
 
 
 def check_auxiliary_model() -> bool:

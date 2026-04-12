@@ -367,6 +367,12 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={"backend": "Tavily"}):
             assert _get_backend() == "tavily"
 
+    def test_config_searxng(self):
+        """web.backend=searxng in config → 'searxng'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}):
+            assert _get_backend() == "searxng"
+
     # ── Fallback (no web.backend in config) ───────────────────────────
 
     def test_fallback_parallel_only_key(self):
@@ -533,6 +539,8 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "SEARXNG_API_URL",
+        "SCRAPERMCP_URL",
     )
 
     def setup_method(self):
@@ -567,6 +575,14 @@ class TestCheckWebApiKey:
 
     def test_tavily_key_only(self):
         with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_searxng_and_scrapermcp_urls_only(self):
+        with patch.dict(os.environ, {
+            "SEARXNG_API_URL": "https://searxng.example.com",
+            "SCRAPERMCP_URL": "http://scraper.local/mcp",
+        }):
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
@@ -610,8 +626,88 @@ class TestCheckWebApiKey:
                     from tools.web_tools import check_web_api_key
                     assert check_web_api_key() is True
 
+    def test_configured_searxng_backend_requires_both_urls(self):
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}):
+            with patch.dict(os.environ, {"SEARXNG_API_URL": "https://searxng.example.com"}, clear=False):
+                from tools.web_tools import check_web_api_key
+                assert check_web_api_key() is False
+
+    def test_configured_searxng_backend_accepts_both_urls(self):
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}):
+            with patch.dict(os.environ, {
+                "SEARXNG_API_URL": "https://searxng.example.com",
+                "SCRAPERMCP_URL": "http://scraper.local/mcp",
+            }, clear=False):
+                from tools.web_tools import check_web_api_key
+                assert check_web_api_key() is True
+
 
 def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+    assert "SEARXNG_API_URL" in _web_requires_env()
+    assert "SCRAPERMCP_URL" in _web_requires_env()
+
+
+@pytest.mark.asyncio
+async def test_scrapermcp_extract_retries_empty_results_with_render_js():
+    from tools.web_tools import _scrapermcp_extract
+
+    first = {
+        "results": [
+            {
+                "url": "https://example.com",
+                "success": True,
+                "data": {"content": "", "metadata": {"page_metadata": {"title": "Example"}}},
+                "error": None,
+            }
+        ]
+    }
+    second = {
+        "results": [
+            {
+                "url": "https://example.com",
+                "success": True,
+                "data": {"content": "rendered content", "metadata": {"page_metadata": {"title": "Example"}}},
+                "error": None,
+            }
+        ]
+    }
+
+    with patch("tools.web_tools._get_scrapermcp_render_js", return_value=False), \
+         patch("tools.web_tools._call_scrapermcp", new=AsyncMock(side_effect=[first, second])) as mock_call:
+        docs = await _scrapermcp_extract(["https://example.com"])
+
+    assert docs[0]["content"] == "rendered content"
+    assert docs[0]["metadata"]["extraction_info"]["render_js_used"] is True
+    assert docs[0]["metadata"]["extraction_info"]["js_fallback_used"] is True
+    assert docs[0]["metadata"]["extraction_info"]["attempt"] == "fallback_js_retry"
+    assert mock_call.await_args_list[0].kwargs["render_js"] is False
+    assert mock_call.await_args_list[1].kwargs["render_js"] is True
+
+
+@pytest.mark.asyncio
+async def test_scrapermcp_extract_keeps_first_pass_when_retry_not_needed():
+    from tools.web_tools import _scrapermcp_extract
+
+    first = {
+        "results": [
+            {
+                "url": "https://example.com",
+                "success": True,
+                "data": {"content": "plain content", "metadata": {"page_metadata": {"title": "Example"}}},
+                "error": None,
+            }
+        ]
+    }
+
+    with patch("tools.web_tools._get_scrapermcp_render_js", return_value=False), \
+         patch("tools.web_tools._call_scrapermcp", new=AsyncMock(return_value=first)) as mock_call:
+        docs = await _scrapermcp_extract(["https://example.com"])
+
+    assert docs[0]["content"] == "plain content"
+    assert docs[0]["metadata"]["extraction_info"]["render_js_used"] is False
+    assert docs[0]["metadata"]["extraction_info"]["js_fallback_used"] is False
+    assert docs[0]["metadata"]["extraction_info"]["attempt"] == "initial"
+    assert mock_call.await_count == 1
