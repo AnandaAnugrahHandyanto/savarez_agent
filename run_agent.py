@@ -6655,14 +6655,16 @@ class AIAgent:
         self.flush_memories(messages, min_turns=0)
 
         # Notify external memory provider before compression discards context
+        _memory_ctx = ""
         if self._memory_manager:
             try:
-                self._memory_manager.on_pre_compress(messages)
+                _memory_ctx = self._memory_manager.on_pre_compress(messages) or ""
             except Exception:
                 pass
 
         compression_result = self.context_compressor.compress(
             messages, current_tokens=approx_tokens, focus_topic=focus_topic,
+            memory_context=_memory_ctx,
         )
         compressed = compression_result.compressed
         distilled_turns = compression_result.distilled_turns

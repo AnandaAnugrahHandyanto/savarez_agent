@@ -341,7 +341,7 @@ class ContextCompressor(ContextEngine):
 
         return "\n\n".join(parts)
 
-    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
+    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None, memory_context: str = "") -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
         Uses a structured template (Goal, Progress, Decisions, Resolved/Pending
@@ -444,6 +444,15 @@ NEW TURNS TO INCORPORATE:
 Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new progress. Move items from "In Progress" to "Done" when completed. Move answered questions to "Resolved Questions". Remove information only if it is clearly obsolete.
 
 {_template_sections}"""
+
+        if memory_context and memory_context.strip():
+            _mem_section = f"""
+
+## Memory Provider Insights
+The following context was extracted by external memory providers (Honcho, Holographic, Mem0, etc.) before compression. Preserve this information verbatim — do not rephrase or summarise it:
+{memory_context.strip()}
+"""
+            prompt += _mem_section
         else:
             # First compaction: summarize from scratch
             prompt = f"""{_summarizer_preamble}
@@ -456,6 +465,15 @@ TURNS TO SUMMARIZE:
 Use this exact structure:
 
 {_template_sections}"""
+
+        if memory_context and memory_context.strip():
+            _mem_section = f"""
+
+## Memory Provider Insights
+The following context was extracted by external memory providers (Honcho, Holographic, Mem0, etc.) before compression. Preserve this information verbatim — do not rephrase or summarise it:
+{memory_context.strip()}
+"""
+            prompt += _mem_section
 
         # Inject focus topic guidance when the user provides one via /compress <focus>.
         # This goes at the end of the prompt so it takes precedence.
@@ -582,6 +600,74 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         return messages
 
+    def _protect_in_flight_tool_calls(
+        self, messages: List[Dict[str, Any]], compress_start: int, compress_end: int,
+    ) -> int:
+        """Extend the tail boundary to protect in-flight tool_call chains.
+
+        Scans ``messages[compress_start:compress_end]`` for assistant messages
+        that contain ``tool_calls`` but whose results are NOT present in the
+        full message list (i.e., the results haven't arrived yet).  If found,
+        the assistant message + its results are moved from the compress range
+        into the tail by advancing ``compress_end`` past the entire chain.
+
+        This prevents pending actions from being summarised away mid-execution.
+        See GitHub issue #7506.
+        """
+        n = len(messages)
+
+        # Scan the compress range for assistant messages with tool_calls.
+        for i in range(compress_start, compress_end):
+            msg = messages[i]
+            if msg.get("role") != "assistant":
+                continue
+            tool_calls = msg.get("tool_calls") or []
+            if not tool_calls:
+                continue
+
+            # Scan the compress range for assistant messages with tool_calls.
+            # For each tool_call, find if its result is inside the compress
+            # range or outside it.  If outside (either before or after), the
+            # entire chain must move to the tail.
+            #
+            # Cases:
+            #  a) Result inside compress range       → normal summarization (OK)
+            #  b) Result before compress_start       → already summarized (OK)
+            #  c) Result after compress_end          → chain must move to tail
+            #  d) No result anywhere (pending chain) → chain must move to tail
+            #
+            # We detect (c) and (d) by checking each tool_call: if its result
+            # position is outside the compress range [compress_start, compress_end),
+            # extend the tail to cover the chain.
+            has_pending_or_external_chain = False
+            for tc in tool_calls:
+                cid = self._get_tool_call_id(tc)
+                if not cid:
+                    continue
+                # Find where (if anywhere) this call's result appears in the full list
+                result_pos = None
+                for ri in range(i + 1, n):
+                    if messages[ri].get("role") == "tool" and messages[ri].get("tool_call_id") == cid:
+                        result_pos = ri
+                        break
+                if result_pos is None or result_pos > compress_end:
+                    # Result is missing or is past the compress boundary →
+                    # this chain must be protected in the tail.
+                    has_pending_or_external_chain = True
+                    break
+
+            if has_pending_or_external_chain:
+                if not self.quiet_mode:
+                    logger.info(
+                        "Compression hygiene: assistant msg %d has tool_call(s) "
+                        "with result outside compress range — excluding from "
+                        "compression (compress_end %d -> %d)",
+                        i, compress_end, i,
+                    )
+                compress_end = i
+
+        return compress_end
+
     def _align_boundary_forward(self, messages: List[Dict[str, Any]], idx: int) -> int:
         """Push a compress-start boundary forward past any orphan tool results.
 
@@ -682,7 +768,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     # Main compression entry point
     # ------------------------------------------------------------------
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None) -> CompressionResult:
+    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None, memory_context: str = "") -> CompressionResult:
         """Compress conversation messages by summarizing middle turns.
 
         Returns:
@@ -706,6 +792,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 provided, the summariser will prioritise preserving information
                 related to this topic and is more aggressive about compressing
                 everything else.  Inspired by Claude Code's ``/compact``.
+            memory_context: Optional text from external memory providers (e.g.
+                Honcho, Holographic, Mem0) to inject into the summarization
+                prompt so provider-extracted insights survive compression.
         """
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
@@ -735,6 +824,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Use token-budget tail protection instead of fixed message count
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
 
+        # Phase 2.5: Protect in-flight tool_call chains.
+        # If an assistant message with tool_calls (whose results have not yet
+        # arrived) falls inside the compress range, extending the tail to cover
+        # the entire chain prevents the pending action from being lost to the
+        # summarizer.  See GitHub issue #7506.
+        compress_end = self._protect_in_flight_tool_calls(messages, compress_start, compress_end)
+
         if compress_start >= compress_end:
             return CompressionResult(compressed=messages, distilled_turns=[])
 
@@ -763,7 +859,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             )
 
         # Phase 3: Generate structured summary
-        summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+        summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic, memory_context=memory_context)
 
         # Phase 4: Assemble compressed message list
         compressed = []
