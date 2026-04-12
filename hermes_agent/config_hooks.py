@@ -231,8 +231,9 @@ class ConfigHookManager:
                 try:
                     return json.loads(stdout.decode('utf-8'))
                 except json.JSONDecodeError:
-                    # Non-JSON output is treated as plain output
-                    return {"output": stdout.decode('utf-8', errors='replace')}
+                    # Non-JSON output is ignored (not merged into context)
+                    logger.debug("Hook produced non-JSON output, ignoring")
+                    return None
 
             return None
 
@@ -321,3 +322,57 @@ def invalidate_hook_cache() -> None:
     """Invalidate the cached hook manager (call after config changes)."""
     global _config_hook_manager
     _config_hook_manager = None
+
+
+def execute_hooks_sync(
+    hook_type: str,
+    context: Dict[str, Any],
+    tool_name: Optional[str] = None,
+    timeout: int = 30,
+) -> Dict[str, Any]:
+    """Synchronous wrapper for hook execution.
+
+    This function safely executes hooks from sync contexts without
+    worrying about event loop conflicts. It uses a thread pool to
+    run the async hook manager.
+
+    Args:
+        hook_type: Type of hook to execute
+        context: Context dict passed to hooks
+        tool_name: Optional tool name for filtering
+        timeout: Maximum time to wait for hooks
+
+    Returns:
+        Potentially modified context dict
+    """
+    hook_mgr = get_config_hook_manager()
+
+    # Fast path: no hooks registered
+    if not hook_mgr.has_hooks(hook_type, tool_name):
+        return context
+
+    # Use thread pool to avoid event loop issues in sync contexts
+    import concurrent.futures
+
+    def run_async_in_thread():
+        """Run async hooks in a separate thread with its own event loop."""
+        # Each thread gets its own event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(
+                hook_mgr.execute(hook_type, context, tool_name)
+            )
+        finally:
+            loop.close()
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(run_async_in_thread)
+            return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        logger.warning("Hooks timed out after %ds", timeout)
+        return context
+    except Exception as e:
+        logger.debug("Hook execution failed: %s", e)
+        return context

@@ -516,21 +516,18 @@ def handle_function_call(
 
         # Config-driven hooks (Claude Code style) - can modify arguments
         try:
-            hook_mgr = get_config_hook_manager()
-            import asyncio
-            modified = asyncio.get_event_loop().run_until_complete(
-                hook_mgr.execute(
-                    "pre_tool_call",
-                    {
-                        "tool": function_name,
-                        "args": function_args,
-                        "task_id": task_id,
-                        "session_id": session_id,
-                        "tool_call_id": tool_call_id,
-                        "user_task": user_task,
-                    },
-                    tool_name=function_name,
-                )
+            from hermes_agent.config_hooks import execute_hooks_sync
+            modified = execute_hooks_sync(
+                "pre_tool_call",
+                {
+                    "tool": function_name,
+                    "args": function_args,
+                    "task_id": task_id,
+                    "session_id": session_id,
+                    "tool_call_id": tool_call_id,
+                    "user_task": user_task,
+                },
+                tool_name=function_name,
             )
             if "args" in modified:
                 function_args = modified["args"]
@@ -555,21 +552,18 @@ def handle_function_call(
 
         # Config-driven post_tool_call hooks - can modify result
         try:
-            hook_mgr = get_config_hook_manager()
-            import asyncio
-            modified = asyncio.get_event_loop().run_until_complete(
-                hook_mgr.execute(
-                    "post_tool_call",
-                    {
-                        "tool": function_name,
-                        "args": function_args,
-                        "result": result,
-                        "task_id": task_id,
-                        "session_id": session_id,
-                        "tool_call_id": tool_call_id,
-                    },
-                    tool_name=function_name,
-                )
+            from hermes_agent.config_hooks import execute_hooks_sync
+            modified = execute_hooks_sync(
+                "post_tool_call",
+                {
+                    "tool": function_name,
+                    "args": function_args,
+                    "result": result,
+                    "task_id": task_id,
+                    "session_id": session_id,
+                    "tool_call_id": tool_call_id,
+                },
+                tool_name=function_name,
             )
             if "result" in modified:
                 result = modified["result"]
