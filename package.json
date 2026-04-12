@@ -19,6 +19,9 @@
     "agent-browser": "^0.13.0",
     "@askjo/camoufox-browser": "^1.0.0"
   },
+  "overrides": {
+    "@appium/logger": "2.0.6"
+  },
   "engines": {
     "node": ">=18.0.0"
   }
