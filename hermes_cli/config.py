@@ -650,6 +650,7 @@ DEFAULT_CONFIG = {
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
+        "generate_thread_titles": False,  # Generate better auto-thread names with the auxiliary model
     },
 
     # WhatsApp platform settings (gateway mode)

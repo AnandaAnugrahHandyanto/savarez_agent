@@ -25,6 +25,7 @@ from typing import Callable, Dict, Optional, Any
 logger = logging.getLogger(__name__)
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
+AUTO_THREAD_TITLE_TIMEOUT_SECONDS = 15.0
 
 try:
     import discord
@@ -42,8 +43,10 @@ import sys
 from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
+from agent.title_generation import async_generate_title_from_message
 from gateway.config import Platform, PlatformConfig
 import re
+from utils import env_var_is_not_false, env_var_is_truthy
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
 from gateway.platforms.base import (
@@ -2020,16 +2023,33 @@ class DiscordAdapter(BasePlatformAdapter):
     # Auto-thread helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _build_auto_thread_name(content: str) -> str:
+        """Build the fallback thread name from message content."""
+        content = (content or "").strip()
+        thread_name = content[:80] if content else "Hermes"
+        if len(content) > 80:
+            thread_name = thread_name[:77] + "..."
+        return thread_name
+
     async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
         """Create a thread from a user message for auto-threading.
 
         Returns the created thread object, or ``None`` on failure.
         """
-        # Build a short thread name from the message
         content = (message.content or "").strip()
-        thread_name = content[:80] if content else "Hermes"
-        if len(content) > 80:
-            thread_name = thread_name[:77] + "..."
+        thread_name = self._build_auto_thread_name(content)
+
+        if env_var_is_truthy("DISCORD_GENERATE_THREAD_TITLES", "false") and content:
+            try:
+                generated_name = await async_generate_title_from_message(
+                    content,
+                    AUTO_THREAD_TITLE_TIMEOUT_SECONDS,
+                )
+                if generated_name:
+                    thread_name = generated_name
+            except Exception as e:
+                logger.debug("[%s] Auto-thread title generation failed: %s", self.name, e)
 
         try:
             thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
@@ -2236,6 +2256,7 @@ class DiscordAdapter(BasePlatformAdapter):
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
         #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
+        #   discord.generate_thread_titles: Generate thread names with the auxiliary model
 
         thread_id = None
         parent_channel_id = None
@@ -2269,7 +2290,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
 
-            require_mention = os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
+            require_mention = env_var_is_not_false("DISCORD_REQUIRE_MENTION", "true")
             is_free_channel = bool(channel_ids & free_channels)
 
             # Skip the mention check if the message is in a thread where
@@ -2293,7 +2314,7 @@ class DiscordAdapter(BasePlatformAdapter):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
             skip_thread = bool(channel_ids & no_thread_channels)
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
+            auto_thread = env_var_is_truthy("DISCORD_AUTO_THREAD", "true")
             if auto_thread and not skip_thread:
                 thread = await self._auto_create_thread(message)
                 if thread:
