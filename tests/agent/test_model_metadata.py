@@ -709,3 +709,100 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+
+class TestCustomProvidersContextLength:
+    """Tests for config-driven context_length overrides in custom_providers."""
+
+    @patch("hermes_cli.config.load_config")
+    def test_match_by_provider_name(self, mock_load_config):
+        mock_load_config.return_value = {
+            "custom_providers": [
+                {
+                    "name": "zai-customize",
+                    "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+                    "models": {
+                        "glm-5.1": {"context_length": 200000},
+                    },
+                }
+            ]
+        }
+        result = get_model_context_length("glm-5.1", provider="zai-customize")
+        assert result == 200000
+
+    @patch("hermes_cli.config.load_config")
+    def test_match_by_base_url(self, mock_load_config):
+        mock_load_config.return_value = {
+            "custom_providers": [
+                {
+                    "name": "zai-customize",
+                    "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+                    "models": {
+                        "glm-5.1": {"context_length": 200000},
+                    },
+                }
+            ]
+        }
+        result = get_model_context_length(
+            "glm-5.1", base_url="https://open.bigmodel.cn/api/coding/paas/v4"
+        )
+        assert result == 200000
+
+    @patch("hermes_cli.config.load_config")
+    def test_unmatched_provider_is_ignored(self, mock_load_config):
+        """A model name in a different custom provider must not leak across."""
+        mock_load_config.return_value = {
+            "custom_providers": [
+                {
+                    "name": "zai-customize",
+                    "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+                    "models": {
+                        "glm-5.1": {"context_length": 200000},
+                    },
+                },
+                {
+                    "name": "other-provider",
+                    "base_url": "https://other.example.com/v1",
+                    "models": {
+                        "glm-5.1": {"context_length": 128000},
+                    },
+                },
+            ]
+        }
+        result = get_model_context_length("glm-5.1", provider="zai-customize")
+        assert result == 200000
+
+    @patch("hermes_cli.config.load_config")
+    def test_single_provider_fallback_when_no_scope(self, mock_load_config):
+        """With only one custom provider, allow matching even without provider/base_url."""
+        mock_load_config.return_value = {
+            "custom_providers": [
+                {
+                    "name": "zai-customize",
+                    "models": {
+                        "glm-5.1": {"context_length": 200000},
+                    },
+                }
+            ]
+        }
+        result = get_model_context_length("glm-5.1")
+        assert result == 200000
+
+    @patch("hermes_cli.config.load_config")
+    def test_ambiguous_multiple_providers_skipped_without_scope(self, mock_load_config):
+        """When multiple providers exist and no scope is given, skip to avoid collisions."""
+        mock_load_config.return_value = {
+            "custom_providers": [
+                {
+                    "name": "zai-customize",
+                    "models": {"glm-5.1": {"context_length": 200000}},
+                },
+                {
+                    "name": "other-provider",
+                    "models": {"glm-5.1": {"context_length": 128000}},
+                },
+            ]
+        }
+        # Must NOT pick either custom provider value because scope is ambiguous
+        result = get_model_context_length("glm-5.1")
+        assert result not in (200000, 128000)

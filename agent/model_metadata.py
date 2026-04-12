@@ -939,6 +939,42 @@ def get_model_context_length(
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
 
+    # 0a. Config-driven overrides from custom_providers[].models[].context_length.
+    # When provider/base_url is known, scope the lookup to the matching custom
+    # provider entry to avoid collisions between identically-named models on
+    # different endpoints. When unknown, allow matching any custom provider.
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        _custom_providers = _cfg.get("custom_providers", []) if isinstance(_cfg, dict) else []
+        if isinstance(_custom_providers, list):
+            _normalized_base_url = base_url.rstrip("/") if isinstance(base_url, str) and base_url else None
+            _active_provider = str(provider).strip().lower() if isinstance(provider, str) and provider.strip() else None
+            _valid_entries = [cp for cp in _custom_providers if isinstance(cp, dict)]
+            for cp in _valid_entries:
+                _cp_base = str(cp.get("base_url", "")).strip().rstrip("/")
+                _cp_name = str(cp.get("name", "")).strip().lower()
+
+                if _normalized_base_url is not None and _cp_base:
+                    if _cp_base != _normalized_base_url:
+                        continue
+                elif _active_provider is not None and _cp_name:
+                    if _cp_name != _active_provider:
+                        continue
+                elif len(_valid_entries) > 1:
+                    # Ambiguous: skip unscoped entries when multiple providers exist
+                    continue
+
+                _models = cp.get("models", {})
+                if isinstance(_models, dict):
+                    _model_entry = _models.get(model, {})
+                    if isinstance(_model_entry, dict):
+                        _ctx = _model_entry.get("context_length")
+                        if isinstance(_ctx, int) and _ctx > 0:
+                            return _ctx
+    except Exception:
+        pass
+
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that
     # local servers actually know about.  Ollama "model:tag" colons are preserved.
