@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
+from agent.redact import RedactingFormatter
 
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
