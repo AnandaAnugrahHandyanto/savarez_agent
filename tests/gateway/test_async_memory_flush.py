@@ -10,9 +10,10 @@ Verifies that:
 import pytest
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 from gateway.config import Platform, GatewayConfig, SessionResetPolicy
+from gateway.run import GatewayRunner
 from gateway.session import SessionSource, SessionStore, SessionEntry
 
 
@@ -114,6 +115,34 @@ class TestIsSessionExpired:
 
 class TestGetOrCreateSessionNoCallback:
     """get_or_create_session should NOT call a sync flush callback."""
+
+    @pytest.mark.asyncio
+    async def test_prepare_auto_reset_boundary_loads_persisted_session_on_cold_start(self, idle_store):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+        )
+        session_key = idle_store._generate_session_key(source)
+        entry = idle_store.get_or_create_session(source)
+        idle_store.append_to_transcript(entry.session_id, {"role": "user", "content": "keep this context"})
+        entry.suspended = True
+        idle_store._save()
+
+        # Simulate a cold-start runner before SessionStore has loaded _entries.
+        idle_store._entries.clear()
+        idle_store._loaded = False
+
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = idle_store
+        runner._async_flush_memories = AsyncMock()
+        runner._agent_cache_lock = None
+        runner._agent_cache = None
+        runner._prepare_auto_reset_boundary = GatewayRunner._prepare_auto_reset_boundary.__get__(runner, GatewayRunner)
+
+        await runner._prepare_auto_reset_boundary(source=source, session_key=session_key)
+
+        runner._async_flush_memories.assert_awaited_once_with(entry.session_id, session_key)
 
     def test_auto_reset_creates_new_session_after_flush(self, idle_store):
         """When a flushed session auto-resets, a new session_id is created."""

@@ -165,6 +165,44 @@ class TestSessionEntryReason:
         assert entry2.was_auto_reset is True
         assert entry2.reset_had_activity is True
 
+    def test_auto_reset_carries_forward_extract_summary(self, tmp_path):
+        store = _make_store(
+            SessionResetPolicy(mode="idle", idle_minutes=1),
+            tmp_path,
+        )
+        source = _make_source()
+
+        entry1 = store.get_or_create_session(source)
+        store.append_to_transcript(entry1.session_id, {"role": "user", "content": "继续刚才那个 PR，别丢上下文"})
+        store.append_to_transcript(entry1.session_id, {"role": "assistant", "content": "好的，我会保留重点并继续处理。"})
+        entry1.updated_at = datetime.now() - timedelta(minutes=5)
+        store._save()
+
+        entry2 = store.get_or_create_session(source)
+
+        assert entry2.was_auto_reset is True
+        assert "Carryover from the previous auto-reset session" in entry2.reset_context_summary
+        assert "继续刚才那个 PR" in entry2.reset_context_summary
+        assert "保留重点并继续处理" in entry2.reset_context_summary
+        assert entry2.reset_had_activity is True
+
+    def test_manual_stop_suspension_starts_fresh_without_carryover_summary(self, tmp_path):
+        store = _make_store(
+            SessionResetPolicy(mode="idle", idle_minutes=1),
+            tmp_path,
+        )
+        source = _make_source()
+
+        entry1 = store.get_or_create_session(source)
+        store.append_to_transcript(entry1.session_id, {"role": "user", "content": "这段上下文有问题，别继续带着它"})
+        store.suspend_session(entry1.session_key, reason="manual_stop")
+
+        entry2 = store.get_or_create_session(source)
+
+        assert entry2.was_auto_reset is True
+        assert entry2.auto_reset_reason == "suspended"
+        assert entry2.reset_context_summary == ""
+
 
 # ---------------------------------------------------------------------------
 # SessionResetPolicy notify config

@@ -35,6 +35,7 @@ def make_restart_source(chat_id: str = "123456", chat_type: str = "dm") -> Sessi
         platform=Platform.TELEGRAM,
         chat_id=chat_id,
         chat_type=chat_type,
+        user_id="u-restart",
     )
 
 
@@ -62,7 +63,7 @@ def make_restart_runner(
     runner._restart_via_service = False
     runner._restart_drain_timeout = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     runner._stop_task = None
-    runner._busy_input_mode = "interrupt"
+    runner._busy_input_mode = "queue"
     runner._update_prompt_pending = {}
     runner._voice_mode = {}
     runner._session_model_overrides = {}
@@ -71,6 +72,7 @@ def make_restart_runner(
     runner._queue_or_replace_pending_event = GatewayRunner._queue_or_replace_pending_event.__get__(
         runner, GatewayRunner
     )
+    runner._is_explicit_interrupt_message = GatewayRunner._is_explicit_interrupt_message
     runner._session_key_for_source = GatewayRunner._session_key_for_source.__get__(
         runner, GatewayRunner
     )

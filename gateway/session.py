@@ -360,8 +360,9 @@ class SessionEntry:
     # Set when a session was created because the previous one expired;
     # consumed once by the message handler to inject a notice into context
     was_auto_reset: bool = False
-    auto_reset_reason: Optional[str] = None  # "idle" or "daily"
+    auto_reset_reason: Optional[str] = None  # "idle", "daily", or "suspended"
     reset_had_activity: bool = False  # whether the expired session had any messages
+    reset_context_summary: str = ""  # compact carryover injected into the next session
     
     # Set by the background expiry watcher after it successfully flushes
     # memories for this session.  Persisted to sessions.json so the flag
@@ -373,6 +374,7 @@ class SessionEntry:
     # this session (create a new session_id) so the user starts fresh.
     # Set by /stop to break stuck-resume loops (#7536).
     suspended: bool = False
+    suspended_reason: str = ""
     
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -393,6 +395,8 @@ class SessionEntry:
             "cost_status": self.cost_status,
             "memory_flushed": self.memory_flushed,
             "suspended": self.suspended,
+            "suspended_reason": self.suspended_reason,
+            "reset_context_summary": self.reset_context_summary,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -430,6 +434,8 @@ class SessionEntry:
             cost_status=data.get("cost_status", "unknown"),
             memory_flushed=data.get("memory_flushed", False),
             suspended=data.get("suspended", False),
+            suspended_reason=data.get("suspended_reason", "") or "",
+            reset_context_summary=data.get("reset_context_summary", "") or "",
         )
 
 
@@ -615,8 +621,7 @@ class SessionStore:
         return False
 
     def _should_reset(self, entry: SessionEntry, source: SessionSource) -> Optional[str]:
-        """
-        Check if a session should be reset based on policy.
+        """Determine whether a session should be reset.
         
         Returns the reset reason ("idle" or "daily") if a reset is needed,
         or None if the session is still valid.
@@ -657,7 +662,53 @@ class SessionStore:
                 return "daily"
         
         return None
-    
+
+    @staticmethod
+    def _normalize_reset_summary_text(value: Any, *, limit: int = 220) -> str:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        if not text:
+            return ""
+        if len(text) <= limit:
+            return text
+        return text[: limit - 1].rstrip() + "…"
+
+    def _build_reset_context_summary(self, session_id: str, *, max_items: int = 6) -> str:
+        """Build a compact carryover summary from the previous transcript.
+
+        This is an extractive fallback used when an auto-reset creates a fresh
+        session. It preserves the most recent user/assistant turns so the next
+        session does not feel like an abrupt amnesia event, even if the old
+        agent was interrupted before durable memory extraction completed.
+        """
+        try:
+            history = self.load_transcript(session_id)
+        except Exception as e:
+            logger.debug("Failed to load transcript for reset summary %s: %s", session_id, e)
+            return ""
+
+        convo = []
+        for msg in history:
+            role = msg.get("role")
+            if role not in {"user", "assistant"}:
+                continue
+            content = self._normalize_reset_summary_text(msg.get("content"))
+            if not content:
+                continue
+            convo.append((role, content))
+
+        if not convo:
+            return ""
+
+        convo = convo[-max_items:]
+        lines = [
+            "Carryover from the previous auto-reset session:",
+            "- Treat this as summarized prior context, not a verbatim transcript.",
+        ]
+        for role, content in convo:
+            label = "User" if role == "user" else "Assistant"
+            lines.append(f"- {label}: {content}")
+        return "\n".join(lines)
+
     def has_any_sessions(self) -> bool:
         """Check if any sessions have ever been created (across all platforms).
 
@@ -698,6 +749,7 @@ class SessionStore:
         # All _entries / _loaded mutations are protected by self._lock.
         db_end_session_id = None
         db_create_kwargs = None
+        reset_context_summary = ""
 
         with self._lock:
             self._ensure_loaded_locked()
@@ -709,8 +761,10 @@ class SessionStore:
                 # broke a stuck loop — #7536).
                 if entry.suspended:
                     reset_reason = "suspended"
+                    suspended_reason = getattr(entry, "suspended_reason", "") or "manual_stop"
                 else:
                     reset_reason = self._should_reset(entry, source)
+                    suspended_reason = ""
                 if not reset_reason:
                     entry.updated_at = now
                     self._save()
@@ -719,8 +773,10 @@ class SessionStore:
                     # Session is being auto-reset.
                     was_auto_reset = True
                     auto_reset_reason = reset_reason
-                    # Track whether the expired session had any real conversation
-                    reset_had_activity = entry.total_tokens > 0
+                    if reset_reason != "suspended" or suspended_reason != "manual_stop":
+                        reset_context_summary = self._build_reset_context_summary(entry.session_id)
+                    # Track whether the expired session had any real conversation.
+                    reset_had_activity = bool(reset_context_summary) or entry.total_tokens > 0
                     db_end_session_id = entry.session_id
             else:
                 was_auto_reset = False
@@ -742,6 +798,7 @@ class SessionStore:
                 was_auto_reset=was_auto_reset,
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
+                reset_context_summary=reset_context_summary,
             )
 
             self._entries[session_key] = entry
@@ -783,17 +840,18 @@ class SessionStore:
                     entry.last_prompt_tokens = last_prompt_tokens
                 self._save()
 
-    def suspend_session(self, session_key: str) -> bool:
+    def suspend_session(self, session_key: str, reason: str = "manual_stop") -> bool:
         """Mark a session as suspended so it auto-resets on next access.
 
         Used by ``/stop`` to prevent stuck sessions from being resumed
-        after a gateway restart (#7536).  Returns True if the session
+        after a gateway restart (#7536). Returns True if the session
         existed and was marked.
         """
         with self._lock:
             self._ensure_loaded_locked()
             if session_key in self._entries:
                 self._entries[session_key].suspended = True
+                self._entries[session_key].suspended_reason = reason or "manual_stop"
                 self._save()
                 return True
         return False
@@ -816,6 +874,7 @@ class SessionStore:
             for entry in self._entries.values():
                 if not entry.suspended and entry.updated_at >= cutoff:
                     entry.suspended = True
+                    entry.suspended_reason = "startup_recovery"
                     count += 1
             if count:
                 self._save()

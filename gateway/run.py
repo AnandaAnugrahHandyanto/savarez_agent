@@ -518,7 +518,7 @@ class GatewayRunner:
     # Class-level defaults so partial construction in tests doesn't
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
-    _busy_input_mode: str = "interrupt"
+    _busy_input_mode: str = "queue"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
@@ -812,6 +812,66 @@ class GatewayRunner:
             old_session_id,
             session_key,
         )
+
+    async def _prepare_auto_reset_boundary(
+        self,
+        *,
+        source: SessionSource,
+        session_key: str,
+    ) -> None:
+        """Flush durable memory hooks before an automatic session reset.
+
+        Auto-resets can happen after crashes, interrupts, or idle expiry. If a
+        cached agent still exists for the old session, give its memory provider
+        one last chance to extract durable facts from the persisted transcript
+        before the active session pointer rolls over to a new session id.
+        """
+        old_entry = None
+        try:
+            with self.session_store._lock:
+                self.session_store._ensure_loaded_locked()
+                old_entry = self.session_store._entries.get(session_key)
+        except Exception:
+            old_entry = None
+        if not old_entry:
+            return
+
+        reset_reason = "suspended" if getattr(old_entry, "suspended", False) else None
+        if reset_reason is None:
+            try:
+                reset_reason = self.session_store._should_reset(old_entry, source)
+            except Exception:
+                reset_reason = None
+        if not reset_reason:
+            return
+
+        cached_agent = None
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        _cache = getattr(self, "_agent_cache", None)
+        if _cache_lock is not None and _cache is not None:
+            with _cache_lock:
+                cached = _cache.get(session_key)
+            cached_agent = cached[0] if isinstance(cached, tuple) else cached if cached else None
+
+        if cached_agent is not None and cached_agent is not _AGENT_PENDING_SENTINEL:
+            try:
+                history = self.session_store.load_transcript(old_entry.session_id)
+                if history and hasattr(cached_agent, "shutdown_memory_provider"):
+                    cached_agent.shutdown_memory_provider(history)
+            except Exception as e:
+                logger.debug("Auto-reset memory provider flush failed for %s: %s", old_entry.session_id, e)
+
+        if not getattr(old_entry, "memory_flushed", False):
+            try:
+                await self._async_flush_memories(old_entry.session_id, session_key)
+                with self.session_store._lock:
+                    self.session_store._ensure_loaded_locked()
+                    refreshed_entry = self.session_store._entries.get(session_key)
+                    if refreshed_entry and refreshed_entry.session_id == old_entry.session_id:
+                        refreshed_entry.memory_flushed = True
+                        self.session_store._save()
+            except Exception as e:
+                logger.debug("Auto-reset async memory flush failed for %s: %s", old_entry.session_id, e)
 
     @property
     def should_exit_cleanly(self) -> bool:
@@ -1189,7 +1249,12 @@ class GatewayRunner:
 
     @staticmethod
     def _load_busy_input_mode() -> str:
-        """Load gateway drain-time busy-input behavior from config/env."""
+        """Load gateway busy-input behavior from config/env.
+
+        Modes:
+          - ``queue``     — queue follow-up user messages while the current turn runs
+          - ``interrupt`` — interrupt the current turn when a follow-up arrives
+        """
         mode = os.getenv("HERMES_GATEWAY_BUSY_INPUT_MODE", "").strip().lower()
         if not mode:
             try:
@@ -1201,7 +1266,7 @@ class GatewayRunner:
                     mode = str(cfg.get("display", {}).get("busy_input_mode", "") or "").strip().lower()
             except Exception:
                 pass
-        return "queue" if mode == "queue" else "interrupt"
+        return "interrupt" if mode == "interrupt" else "queue"
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:
@@ -1326,24 +1391,59 @@ class GatewayRunner:
             return
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
-    async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
-        if not self._draining:
+    @staticmethod
+    def _is_explicit_interrupt_message(event: MessageEvent) -> bool:
+        text = (getattr(event, "text", "") or "").strip().lower()
+        if not text:
             return False
+        explicit = {
+            "interrupt",
+            "interrupt current task",
+            "stop",
+            "stop current task",
+            "cancel",
+            "cancel current task",
+            "abort",
+            "中断",
+            "中断当前任务",
+            "停止",
+            "停止当前任务",
+            "取消",
+            "取消当前任务",
+            "打断",
+            "打断当前任务",
+        }
+        return text in explicit
 
+    async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         adapter = self.adapters.get(event.source.platform)
         if not adapter:
             return True
 
         thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
-        if self._queue_during_drain_enabled():
-            self._queue_or_replace_pending_event(session_key, event)
-            message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
-        else:
-            message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
 
+        if self._draining:
+            if self._queue_during_drain_enabled():
+                self._queue_or_replace_pending_event(session_key, event)
+                message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+            else:
+                message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+
+            await adapter._send_with_retry(
+                chat_id=event.source.chat_id,
+                content=message,
+                reply_to=event.message_id,
+                metadata=thread_meta,
+            )
+            return True
+
+        if self._busy_input_mode != "queue" or self._is_explicit_interrupt_message(event):
+            return False
+
+        self._queue_or_replace_pending_event(session_key, event)
         await adapter._send_with_retry(
             chat_id=event.source.chat_id,
-            content=message,
+            content="⏳ I’m still working on your previous message — queued this for the next turn. Send /stop to interrupt.",
             reply_to=event.message_id,
             metadata=thread_meta,
         )
@@ -2543,7 +2643,7 @@ class GatewayRunner:
                     del self._running_agents[_quick_key]
                 # Mark session suspended so the next message starts fresh
                 # instead of resuming the stuck context (#7536).
-                self.session_store.suspend_session(_quick_key)
+                self.session_store.suspend_session(_quick_key, reason="manual_stop")
                 logger.info("HARD STOP for session %s — suspended, session lock released", _quick_key[:20])
                 return "⚡ Force-stopped. The session is suspended — your next message will start fresh."
 
@@ -2634,6 +2734,10 @@ class GatewayRunner:
                     if self._queue_during_drain_enabled()
                     else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
                 )
+            if self._busy_input_mode == "queue" and not self._is_explicit_interrupt_message(event):
+                logger.debug("PRIORITY queue for session %s", _quick_key[:20])
+                self._queue_or_replace_pending_event(_quick_key, event)
+                return "⏳ I’m still working on your previous message — queued this for the next turn. Send /stop to interrupt."
             logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
             running_agent.interrupt(event.text)
             if _quick_key in self._pending_messages:
@@ -3096,6 +3200,8 @@ class GatewayRunner:
         )
 
         # Get or create session
+        initial_session_key = self._session_key_for_source(source)
+        await self._prepare_auto_reset_boundary(source=source, session_key=initial_session_key)
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         
@@ -3136,11 +3242,21 @@ class GatewayRunner:
         if getattr(session_entry, 'was_auto_reset', False):
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
             if reset_reason == "suspended":
-                context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
+                context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation.]"
             elif reset_reason == "daily":
-                context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
+                context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation.]"
             else:
-                context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
+                context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation.]"
+
+            reset_summary = (getattr(session_entry, 'reset_context_summary', '') or '').strip()
+            if reset_summary:
+                context_note += (
+                    "\n[System note: A brief carryover summary from the previous session is included below so "
+                    "the user does not lose continuity.]\n"
+                    f"{reset_summary}"
+                )
+            else:
+                context_note += "\n[System note: No carryover summary was available from the previous session.]"
             context_prompt = context_note + "\n\n" + context_prompt
 
             # Send a user-facing notification explaining the reset, unless:
@@ -3173,9 +3289,15 @@ class GatewayRunner:
                             mins = policy.idle_minutes % 60
                             duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
                             reason_text = f"inactive for {duration}"
+                        carryover_text = (
+                            "A brief summary from the previous session was carried into this new session."
+                            if reset_summary else
+                            "No carryover summary was available from the previous session."
+                        )
                         notice = (
                             f"◐ Session automatically reset ({reason_text}). "
-                            f"Conversation history cleared.\n"
+                            f"Conversation history cleared from the active session.\n"
+                            f"{carryover_text}\n"
                             f"Use /resume to browse and restore a previous session.\n"
                             f"Adjust reset timing in config.yaml under session_reset."
                         )
@@ -3194,6 +3316,7 @@ class GatewayRunner:
 
             session_entry.was_auto_reset = False
             session_entry.auto_reset_reason = None
+            session_entry.reset_context_summary = ""
 
         # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
         # Discord channel_skill_bindings).  Supports a single name or ordered list.

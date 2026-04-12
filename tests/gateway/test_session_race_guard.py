@@ -60,7 +60,7 @@ def _make_runner():
 
 def _make_event(text="hello", chat_id="12345"):
     source = SessionSource(
-        platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"
+        platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm", user_id="u-race"
     )
     return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
 
@@ -268,7 +268,7 @@ async def test_stop_hard_kills_running_agent():
     forever — showing 'writing...' but never producing output."""
     runner = _make_runner()
     session_key = build_session_key(
-        SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm")
+        SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm", user_id="u-race")
     )
 
     # Simulate a running (possibly hung) agent
@@ -301,7 +301,7 @@ async def test_stop_clears_pending_messages():
     queued during the run must be discarded."""
     runner = _make_runner()
     session_key = build_session_key(
-        SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm")
+        SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm", user_id="u-race")
     )
 
     fake_agent = MagicMock()
