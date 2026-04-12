@@ -201,6 +201,31 @@ def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
     assert "/sandboxes/docker/test-persistent-auto-mount/workspace:/workspace" not in run_args_str
 
 
+def test_auto_mount_remaps_host_pwd_back_to_workspace(monkeypatch, tmp_path):
+    """Persistent cwd tracking must keep container-visible /workspace paths, not host paths."""
+    project_dir = tmp_path / "my-project"
+    project_dir.mkdir()
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    _mock_subprocess_run(monkeypatch)
+
+    env = _make_dummy_env(
+        cwd="/workspace",
+        persistent_filesystem=True,
+        host_cwd=str(project_dir),
+        auto_mount_cwd=True,
+        task_id="test-persistent-auto-mount-remap",
+    )
+
+    result = {
+        "output": f"\n{env._cwd_marker}{project_dir}/subdir{env._cwd_marker}\n",
+        "returncode": 0,
+    }
+    env._update_cwd(result)
+
+    assert env.cwd == "/workspace/subdir"
+
+
 def test_non_persistent_cleanup_removes_container(monkeypatch):
     """When persistent=false, cleanup() must schedule docker stop + rm."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
@@ -253,6 +278,8 @@ def _make_execute_only_env(forward_env=None):
     env._snapshot_ready = True
     env._last_sync_time = None
     env._init_env_args = []
+    env._host_cwd_mount_source = None
+    env._host_cwd_mount_target = None
     return env
 
 

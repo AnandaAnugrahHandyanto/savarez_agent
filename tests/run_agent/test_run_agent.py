@@ -1434,6 +1434,58 @@ class TestConcurrentToolExecution:
             )
             assert result == "result"
 
+    def test_invoke_delegate_task_forwards_execution_contract(self, agent):
+        payload = {
+            "goal": "delegate",
+            "context": "ctx",
+            "toolsets": ["file"],
+            "tasks": None,
+            "max_iterations": 3,
+            "execution_envelope": {"task_spec": "spec"},
+            "context_package": {"paths": ["tools/delegate_tool.py"]},
+        }
+        with patch("tools.delegate_tool.delegate_task", return_value='{"results": []}') as mock_delegate:
+            result = agent._invoke_tool("delegate_task", payload, "task-1")
+            mock_delegate.assert_called_once_with(
+                goal="delegate",
+                context="ctx",
+                toolsets=["file"],
+                tasks=None,
+                max_iterations=3,
+                execution_envelope={"task_spec": "spec"},
+                context_package={"paths": ["tools/delegate_tool.py"]},
+                parent_agent=agent,
+            )
+            assert result == '{"results": []}'
+
+    def test_sequential_delegate_task_forwards_execution_contract(self, agent):
+        tc = _mock_tool_call(
+            name="delegate_task",
+            arguments=json.dumps({
+                "goal": "delegate",
+                "context": "ctx",
+                "toolsets": ["file"],
+                "max_iterations": 3,
+                "execution_envelope": {"task_spec": "spec"},
+                "context_package": {"paths": ["tools/delegate_tool.py"]},
+            }),
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        with patch("tools.delegate_tool.delegate_task", return_value='{"results": []}') as mock_delegate:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+            mock_delegate.assert_called_once_with(
+                goal="delegate",
+                context="ctx",
+                toolsets=["file"],
+                tasks=None,
+                max_iterations=3,
+                execution_envelope={"task_spec": "spec"},
+                context_package={"paths": ["tools/delegate_tool.py"]},
+                parent_agent=agent,
+            )
+
     def test_sequential_tool_callbacks_fire_in_order(self, agent):
         tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])

@@ -151,6 +151,7 @@ def _discover_tools():
         "tools.todo_tool",
         "tools.memory_tool",
         "tools.session_search_tool",
+        "tools.execution_receipts_tool",
         "tools.clarify_tool",
         "tools.code_execution_tool",
         "tools.delegate_tool",

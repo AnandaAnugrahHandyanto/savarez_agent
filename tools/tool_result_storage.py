@@ -27,6 +27,7 @@ import os
 import shlex
 import uuid
 
+from hermes_constants import get_hermes_home
 from tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
@@ -51,10 +52,17 @@ def _resolve_storage_dir(env) -> str:
             except Exception as exc:
                 logger.debug("Could not resolve env temp dir: %s", exc)
             else:
-                if temp_dir:
+                if isinstance(temp_dir, os.PathLike):
+                    temp_dir = os.fspath(temp_dir)
+                if isinstance(temp_dir, str) and temp_dir:
                     temp_dir = temp_dir.rstrip("/") or "/"
                     return f"{temp_dir}/hermes-results"
     return STORAGE_DIR
+
+
+def _default_execution_receipts_dir() -> str:
+    """Durable local directory for controller-side execution receipts."""
+    return str(get_hermes_home() / "artifacts" / "execution-receipts")
 
 
 def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) -> tuple[str, bool]:
@@ -86,6 +94,42 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     )
     result = env.execute(cmd, timeout=30)
     return result.get("returncode", 1) == 0
+
+
+def persist_text_artifact(
+    content: str,
+    artifact_id: str,
+    *,
+    env=None,
+    extension: str = "txt",
+    storage_dir: str | None = None,
+) -> str | None:
+    """Persist a text artifact and return its filesystem path.
+
+    Uses the sandbox temp dir when an environment is available unless an
+    explicit storage_dir is provided. Without an environment, callers can
+    either rely on the temp-backed default or pass a durable local directory.
+    """
+    storage_dir = storage_dir or _resolve_storage_dir(env)
+    suffix = extension.lstrip(".") or "txt"
+    artifact_path = f"{storage_dir}/{artifact_id}.{suffix}"
+
+    if env is not None:
+        try:
+            if _write_to_sandbox(content, artifact_path, env):
+                return artifact_path
+        except Exception as exc:
+            logger.warning("Sandbox artifact write failed for %s: %s", artifact_id, exc)
+        return None
+
+    try:
+        os.makedirs(storage_dir, exist_ok=True)
+        with open(artifact_path, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        return artifact_path
+    except Exception as exc:
+        logger.warning("Local artifact write failed for %s: %s", artifact_id, exc)
+        return None
 
 
 def _build_persisted_message(

@@ -15,12 +15,14 @@ from tools.tool_result_storage import (
     PERSISTED_OUTPUT_CLOSING_TAG,
     STORAGE_DIR,
     _build_persisted_message,
+    _default_execution_receipts_dir,
     _heredoc_marker,
     _resolve_storage_dir,
     _write_to_sandbox,
     enforce_turn_budget,
     generate_preview,
     maybe_persist_tool_result,
+    persist_text_artifact,
 )
 
 
@@ -161,6 +163,41 @@ class TestResolveStorageDir:
         env = MagicMock()
         env.get_temp_dir.return_value = "/data/data/com.termux/files/usr/tmp"
         assert _resolve_storage_dir(env) == "/data/data/com.termux/files/usr/tmp/hermes-results"
+
+
+class TestPersistTextArtifact:
+    def test_persists_locally_without_env(self, tmp_path):
+        target_dir = tmp_path / "artifacts"
+        with patch("tools.tool_result_storage._resolve_storage_dir", return_value=str(target_dir)):
+            path = persist_text_artifact("hello receipt", "delegate-1", extension="json")
+
+        assert path == str(target_dir / "delegate-1.json")
+        assert (target_dir / "delegate-1.json").read_text(encoding="utf-8") == "hello receipt"
+
+    def test_honors_explicit_storage_dir(self, tmp_path):
+        target_dir = tmp_path / "durable-receipts"
+        path = persist_text_artifact("hello durable", "delegate-durable", extension="json", storage_dir=str(target_dir))
+
+        assert path == str(target_dir / "delegate-durable.json")
+        assert (target_dir / "delegate-durable.json").read_text(encoding="utf-8") == "hello durable"
+
+    def test_default_execution_receipts_dir_uses_hermes_home(self, tmp_path):
+        with patch("tools.tool_result_storage.get_hermes_home", return_value=tmp_path):
+            assert _default_execution_receipts_dir() == str(tmp_path / "artifacts" / "execution-receipts")
+
+    def test_uses_sandbox_when_env_available(self):
+        env = MagicMock()
+        env.get_temp_dir.return_value = None
+        env.execute.return_value = {"output": "", "returncode": 0}
+        path = persist_text_artifact("hello", "delegate-2", env=env, extension="json")
+
+        assert path == "/tmp/hermes-results/delegate-2.json"
+        env.execute.assert_called_once()
+
+    def test_returns_none_when_sandbox_write_fails(self):
+        env = MagicMock()
+        env.execute.return_value = {"output": "disk full", "returncode": 1}
+        assert persist_text_artifact("hello", "delegate-3", env=env) is None
 
 
 # ── _build_persisted_message ──────────────────────────────────────────

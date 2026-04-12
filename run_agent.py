@@ -6770,6 +6770,8 @@ class AIAgent:
                 toolsets=function_args.get("toolsets"),
                 tasks=function_args.get("tasks"),
                 max_iterations=function_args.get("max_iterations"),
+                execution_envelope=function_args.get("execution_envelope"),
+                context_package=function_args.get("context_package"),
                 parent_agent=self,
             )
         else:
@@ -7152,6 +7154,8 @@ class AIAgent:
                         toolsets=function_args.get("toolsets"),
                         tasks=tasks_arg,
                         max_iterations=function_args.get("max_iterations"),
+                        execution_envelope=function_args.get("execution_envelope"),
+                        context_package=function_args.get("context_package"),
                         parent_agent=self,
                     )
                     _delegate_result = function_result

@@ -2816,6 +2816,12 @@ def cmd_cron(args):
     cron_command(args)
 
 
+def cmd_receipts(args):
+    """Execution receipt ledger management."""
+    from hermes_cli.receipts import receipts_command
+    receipts_command(args)
+
+
 def cmd_webhook(args):
     """Webhook subscription management."""
     from hermes_cli.webhook import webhook_command
@@ -4896,6 +4902,46 @@ For more help on a command:
     cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
 
     cron_parser.set_defaults(func=cmd_cron)
+
+    # =========================================================================
+    # receipts command
+    # =========================================================================
+    receipts_parser = subparsers.add_parser(
+        "receipts",
+        help="Execution receipt ledger management",
+        description="Inspect and maintain the execution receipt ledger"
+    )
+    receipts_subparsers = receipts_parser.add_subparsers(dest="receipts_command")
+
+    receipts_list = receipts_subparsers.add_parser("list", help="List recent execution receipts")
+    receipts_list.add_argument("--limit", type=int, default=10, help="Maximum receipts to show")
+    receipts_list.add_argument("--status", help="Optional status filter")
+    receipts_list.add_argument("--parent-session-id", dest="parent_session_id", help="Optional parent session filter")
+    receipts_list.add_argument("--child-session-id", dest="child_session_id", help="Optional child session filter")
+
+    receipts_reconcile = receipts_subparsers.add_parser("reconcile", help="Reconcile receipt files with the SQLite ledger")
+    receipts_reconcile.add_argument("--keep-missing-rows", action="store_true", help="Do not remove index rows whose files are missing")
+
+    receipts_prune = receipts_subparsers.add_parser("prune", help="Prune old execution receipts")
+    receipts_prune.add_argument("max_age_seconds", type=float, help="Delete receipts older than this many seconds")
+    receipts_prune.add_argument("--limit", type=int, default=100, help="Maximum receipts to delete in one pass")
+    receipts_prune.add_argument("--include-failed", action="store_true", help="Also prune failed receipts older than the cutoff")
+
+    receipts_subparsers.add_parser("status", help="Show execution receipt maintenance status")
+
+    receipts_install = receipts_subparsers.add_parser("install", help="Install or update cron-backed receipt maintenance")
+    receipts_install.add_argument("--schedule", help="Cron schedule string (default: every 6h)")
+    receipts_install.add_argument("--prune-completed-after-seconds", dest="prune_completed_after_seconds", type=float, help="Retention for completed/non-failed receipts")
+    receipts_install.add_argument("--prune-failed-after-seconds", dest="prune_failed_after_seconds", type=float, help="Retention for failed receipts")
+    receipts_install.add_argument("--keep-missing-rows", action="store_true", help="Do not delete stale index rows during reconcile")
+    receipts_install.add_argument("--limit", type=int, help="Maximum receipts to prune in each pass")
+    receipts_install.add_argument("--model", help="Optional model override for the maintenance job")
+    receipts_install.add_argument("--provider", help="Optional provider override for the maintenance job")
+    receipts_install.add_argument("--base-url", dest="base_url", help="Optional base URL override for the maintenance job")
+
+    receipts_subparsers.add_parser("remove", aliases=["rm", "delete"], help="Remove cron-backed receipt maintenance")
+
+    receipts_parser.set_defaults(func=cmd_receipts)
 
     # =========================================================================
     # webhook command

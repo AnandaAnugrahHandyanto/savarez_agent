@@ -306,6 +306,8 @@ class DockerEnvironment(BaseEnvironment):
             and os.path.isdir(host_cwd_abs)
             and not workspace_explicitly_mounted
         )
+        self._host_cwd_mount_source = host_cwd_abs if bind_host_cwd else None
+        self._host_cwd_mount_target = "/workspace" if bind_host_cwd else None
         if auto_mount_cwd and host_cwd and not os.path.isdir(host_cwd_abs):
             logger.debug(f"Skipping docker cwd mount: host_cwd is not a valid directory: {host_cwd}")
 
@@ -466,6 +468,23 @@ class DockerEnvironment(BaseEnvironment):
         for key in sorted(exec_env):
             args.extend(["-e", f"{key}={exec_env[key]}"])
         return args
+
+    def _remap_cwd_from_host_mount(self, cwd_path: str | None) -> str | None:
+        if not cwd_path:
+            return cwd_path
+        source = (self._host_cwd_mount_source or "").rstrip("/")
+        target = (self._host_cwd_mount_target or "").rstrip("/")
+        if not source or not target:
+            return cwd_path
+        if cwd_path == source:
+            return target
+        if cwd_path.startswith(source + "/"):
+            return target + cwd_path[len(source):]
+        return cwd_path
+
+    def _update_cwd(self, result: dict):
+        super()._update_cwd(result)
+        self.cwd = self._remap_cwd_from_host_mount(self.cwd) or self.cwd
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,

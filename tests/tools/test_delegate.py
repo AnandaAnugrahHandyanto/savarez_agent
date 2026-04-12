@@ -29,6 +29,9 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _build_delegate_worker_assignment,
+    _classify_tool_message_status,
+    _load_config,
 )
 
 
@@ -49,6 +52,8 @@ def _make_mock_parent(depth=0):
     parent._delegate_depth = depth
     parent._active_children = []
     parent._active_children_lock = threading.Lock()
+    parent._delegate_worker_leases = None
+    parent._delegate_worker_leases_lock = None
     parent._print_fn = None
     parent.tool_progress_callback = None
     parent.thinking_callback = None
@@ -59,6 +64,21 @@ class TestDelegateRequirements(unittest.TestCase):
     def test_always_available(self):
         self.assertTrue(check_delegate_requirements())
 
+    def test_load_config_does_not_import_cli_module(self):
+        import builtins
+
+        original_import = builtins.__import__
+
+        def guarded_import(name, *args, **kwargs):
+            if name == "cli":
+                raise AssertionError("delegate_tool._load_config should not import cli")
+            return original_import(name, *args, **kwargs)
+
+        with patch.dict(sys.modules, {"cli": None}, clear=False), \
+             patch("hermes_cli.config.load_config", return_value={"delegation": {"provider": "openai-codex"}}), \
+             patch("builtins.__import__", side_effect=guarded_import):
+            self.assertEqual(_load_config(), {"provider": "openai-codex"})
+
     def test_schema_valid(self):
         self.assertEqual(DELEGATE_TASK_SCHEMA["name"], "delegate_task")
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
@@ -67,6 +87,10 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
         self.assertIn("max_iterations", props)
+        self.assertIn("execution_envelope", props)
+        self.assertIn("context_package", props)
+        self.assertIn("execution_envelope", props["tasks"]["items"]["properties"])
+        self.assertIn("context_package", props["tasks"]["items"]["properties"])
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
 
@@ -86,6 +110,33 @@ class TestChildSystemPrompt(unittest.TestCase):
     def test_empty_context_ignored(self):
         prompt = _build_child_system_prompt("Do something", "  ")
         self.assertNotIn("CONTEXT", prompt)
+
+    def test_prompt_includes_execution_envelope_and_context_package(self):
+        prompt = _build_child_system_prompt(
+            "Implement task",
+            "Fix the bug",
+            workspace_path="/tmp/project",
+            execution_envelope={
+                "task_spec": "Implement task",
+                "completion_criteria": ["Tests pass"],
+                "artifact_schema": {"required": ["summary"]},
+            },
+            context_package={"parent_session_id": "sess-123", "constraints": ["no web"]},
+        )
+        self.assertIn("EXECUTION ENVELOPE", prompt)
+        self.assertIn("CONTEXT PACKAGE", prompt)
+        self.assertIn("Tests pass", prompt)
+        self.assertIn("sess-123", prompt)
+
+
+class TestToolTraceStatus(unittest.TestCase):
+    def test_classify_tool_message_status_treats_error_null_as_ok(self):
+        payload = json.dumps({"output": "/workspace\\nPython 3.11.15", "exit_code": 0, "error": None})
+        self.assertEqual(_classify_tool_message_status(payload), "ok")
+
+    def test_classify_tool_message_status_treats_nonzero_exit_as_error(self):
+        payload = json.dumps({"output": "boom", "exit_code": 126, "error": None})
+        self.assertEqual(_classify_tool_message_status(payload), "error")
 
 
 class TestStripBlockedTools(unittest.TestCase):
@@ -300,6 +351,31 @@ class TestDelegateTask(unittest.TestCase):
         mock_child.thinking_callback("deliberating...")
         parent.tool_progress_callback.assert_not_called()
 
+    def test_child_attaches_execution_contract_metadata(self):
+        parent = _make_mock_parent(depth=0)
+        parent.session_id = "parent-session"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Implement contract",
+                context="Focus on read-only inspection",
+                toolsets=["file", "web"],
+                model="gpt-5.4",
+                max_iterations=10,
+                parent_agent=parent,
+                execution_envelope={"task_spec": "Inspect code", "completion_criteria": ["Return summary"]},
+                context_package={"constraints": ["read-only"]},
+            )
+
+        self.assertEqual(mock_child._delegate_capability_snapshot["effective_toolsets"], ["file", "web"])
+        self.assertEqual(mock_child._delegate_context_package["parent_session_id"], "parent-session")
+        self.assertEqual(mock_child._delegate_execution_envelope["task_spec"], "Inspect code")
+        self.assertEqual(mock_child._delegate_execution_envelope["context_package"]["constraints"], ["read-only"])
+
 
 class TestToolNamePreservation(unittest.TestCase):
     """Verify _last_resolved_tool_names is restored after subagent runs."""
@@ -384,7 +460,7 @@ class TestToolNamePreservation(unittest.TestCase):
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
 
-            def capture_and_return(user_message):
+            def capture_and_return(user_message, **kwargs):
                 captured["saved"] = list(mock_child._delegate_saved_tool_names)
                 return {"final_response": "ok", "completed": True, "api_calls": 1}
 
@@ -399,13 +475,15 @@ class TestToolNamePreservation(unittest.TestCase):
 class TestDelegateObservability(unittest.TestCase):
     """Tests for enriched metadata returned by _run_single_child."""
 
-    def test_observability_fields_present(self):
+    @patch("tools.execution_receipts.persist_execution_receipt", return_value="/tmp/hermes-results/receipt.json")
+    def test_observability_fields_present(self, mock_persist):
         """Completed child should return tool_trace, tokens, model, exit_reason."""
         parent = _make_mock_parent(depth=0)
 
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_id = "child-123"
             mock_child.session_prompt_tokens = 5000
             mock_child.session_completion_tokens = 1200
             mock_child.run_conversation.return_value = {
@@ -424,14 +502,28 @@ class TestDelegateObservability(unittest.TestCase):
             }
             MockAgent.return_value = mock_child
 
-            result = json.loads(delegate_task(goal="Test observability", parent_agent=parent))
+            result = json.loads(delegate_task(
+                goal="Test observability",
+                execution_envelope={"task_spec": "Observe", "completion_criteria": ["done"]},
+                context_package={"notes": ["smoke"]},
+                parent_agent=parent,
+            ))
             entry = result["results"][0]
 
             # Core observability fields
             self.assertEqual(entry["model"], "claude-sonnet-4-6")
             self.assertEqual(entry["exit_reason"], "completed")
+            self.assertIsNone(entry["fallback_reason"])
             self.assertEqual(entry["tokens"]["input"], 5000)
             self.assertEqual(entry["tokens"]["output"], 1200)
+            self.assertEqual(entry["execution_receipt_path"], "/tmp/hermes-results/receipt.json")
+            self.assertIn("execution_envelope_digest", entry)
+            self.assertEqual(entry["context_package"]["notes"], ["smoke"])
+            self.assertEqual(entry["capability_snapshot"]["effective_toolsets"], ["file", "terminal", "web"])
+            self.assertEqual(entry["execution_envelope"]["task_spec"], "Observe")
+            self.assertEqual(entry["worker_mode"], "cold")
+            self.assertFalse(entry["worker_reused"])
+            self.assertTrue(entry["worker_task_id"].startswith("delegate-cold-"))
 
             # Tool trace
             self.assertEqual(len(entry["tool_trace"]), 1)
@@ -439,6 +531,7 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertIn("args_bytes", entry["tool_trace"][0])
             self.assertIn("result_bytes", entry["tool_trace"][0])
             self.assertEqual(entry["tool_trace"][0]["status"], "ok")
+            mock_persist.assert_called_once()
 
     def test_tool_trace_detects_error(self):
         """Tool results containing 'error' should be marked as error status."""
@@ -536,6 +629,7 @@ class TestDelegateObservability(unittest.TestCase):
 
             result = json.loads(delegate_task(goal="Test interrupt", parent_agent=parent))
             self.assertEqual(result["results"][0]["exit_reason"], "interrupted")
+            self.assertEqual(result["results"][0]["fallback_reason"], "interrupted")
 
     def test_exit_reason_max_iterations(self):
         """Child that didn't complete and wasn't interrupted hit max_iterations."""
@@ -557,6 +651,7 @@ class TestDelegateObservability(unittest.TestCase):
 
             result = json.loads(delegate_task(goal="Test max iter", parent_agent=parent))
             self.assertEqual(result["results"][0]["exit_reason"], "max_iterations")
+            self.assertEqual(result["results"][0]["fallback_reason"], "max_iterations")
 
 
 class TestBlockedTools(unittest.TestCase):
@@ -1005,6 +1100,97 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
             self.assertEqual(mock_child._credential_pool, mock_pool)
 
 
+class TestWorkerLeaseAssignments(unittest.TestCase):
+    def test_build_worker_assignment_defaults_to_cold(self):
+        parent = _make_mock_parent(depth=0)
+        assignment = _build_delegate_worker_assignment(
+            parent,
+            cfg={},
+            task_count=1,
+            toolsets=["terminal"],
+            model="gpt-5.4",
+            provider="openai-codex",
+            base_url="acp://codex",
+            api_mode="responses",
+            workspace_path="/tmp/project",
+        )
+        self.assertEqual(assignment["worker_mode"], "cold")
+        self.assertFalse(assignment["keep_warm"])
+        self.assertTrue(assignment["task_id"].startswith("delegate-cold-"))
+
+    def test_build_worker_assignment_reuses_terminal_lease(self):
+        parent = _make_mock_parent(depth=0)
+        parent.session_id = "parent-session"
+        cfg = {"worker_lease_reuse": True, "worker_lease_ttl_seconds": 600}
+        first = _build_delegate_worker_assignment(
+            parent,
+            cfg=cfg,
+            task_count=1,
+            toolsets=["terminal"],
+            model="gpt-5.4",
+            provider="openai-codex",
+            base_url="acp://codex",
+            api_mode="responses",
+            workspace_path="/tmp/project",
+        )
+        second = _build_delegate_worker_assignment(
+            parent,
+            cfg=cfg,
+            task_count=1,
+            toolsets=["terminal"],
+            model="gpt-5.4",
+            provider="openai-codex",
+            base_url="acp://codex",
+            api_mode="responses",
+            workspace_path="/tmp/project",
+        )
+        self.assertEqual(first["worker_mode"], "lease_prime")
+        self.assertEqual(second["worker_mode"], "warm")
+        self.assertEqual(first["task_id"], second["task_id"])
+        self.assertTrue(second["reused"])
+        self.assertEqual(second["reuse_count"], 1)
+
+    def test_build_worker_assignment_does_not_reuse_for_non_terminal_only_toolsets(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {"worker_lease_reuse": True}
+        assignment = _build_delegate_worker_assignment(
+            parent,
+            cfg=cfg,
+            task_count=1,
+            toolsets=["terminal", "file"],
+            model="gpt-5.4",
+            provider="openai-codex",
+            base_url="acp://codex",
+            api_mode="responses",
+            workspace_path="/tmp/project",
+        )
+        self.assertEqual(assignment["worker_mode"], "cold")
+        self.assertFalse(assignment["keep_warm"])
+
+    def test_build_worker_assignment_changes_lease_when_terminal_backend_changes(self):
+        parent = _make_mock_parent(depth=0)
+        parent.session_id = "parent-session"
+        cfg = {"worker_lease_reuse": True, "worker_lease_ttl_seconds": 600}
+        base_kwargs = {
+            "cfg": cfg,
+            "task_count": 1,
+            "toolsets": ["terminal"],
+            "model": "gpt-5.4",
+            "provider": "openai-codex",
+            "base_url": "acp://codex",
+            "api_mode": "responses",
+            "workspace_path": "/tmp/project",
+        }
+
+        with patch.dict(os.environ, {"TERMINAL_ENV": "local", "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE": "false"}, clear=False):
+            local_assignment = _build_delegate_worker_assignment(parent, **base_kwargs)
+        with patch.dict(os.environ, {"TERMINAL_ENV": "docker", "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE": "true"}, clear=False):
+            docker_assignment = _build_delegate_worker_assignment(parent, **base_kwargs)
+
+        self.assertNotEqual(local_assignment["task_id"], docker_assignment["task_id"])
+        self.assertNotEqual(local_assignment["lease_key"], docker_assignment["lease_key"])
+
+
 class TestChildCredentialLeasing(unittest.TestCase):
     def test_run_single_child_acquires_and_releases_lease(self):
         from tools.delegate_tool import _run_single_child
@@ -1015,26 +1201,110 @@ class TestChildCredentialLeasing(unittest.TestCase):
         child = MagicMock()
         child._credential_pool = MagicMock()
         child._credential_pool.acquire_lease.return_value = "cred-b"
+        leased_entry = MagicMock()
         child._credential_pool.current.return_value = leased_entry
+        child._swap_credential = MagicMock()
+        child._delegate_worker_assignment = {
+            "task_id": "delegate-lease-abcd",
+            "worker_mode": "warm",
+            "lease_key": "abcd",
+            "reused": True,
+            "reuse_count": 2,
+            "keep_warm": True,
+            "ttl_seconds": 600,
+            "lease_age_seconds": 12.0,
+        }
         child.run_conversation.return_value = {
-            "final_response": "done",
+            "final_response": "ok",
             "completed": True,
-            "interrupted": False,
             "api_calls": 1,
             "messages": [],
         }
 
-        result = _run_single_child(
-            task_index=0,
-            goal="Investigate rate limits",
-            child=child,
-            parent_agent=_make_mock_parent(),
-        )
+        parent = _make_mock_parent()
+        parent._delegate_worker_leases = {"abcd": {"runtime_id": "container-1"}}
+        parent._delegate_worker_leases_lock = threading.Lock()
 
-        self.assertEqual(result["status"], "completed")
-        child._credential_pool.acquire_lease.assert_called_once_with()
+        class _MockEnv:
+            _container_id = "container-1"
+
+        with patch("tools.file_tools.clear_read_tracker") as mock_clear, \
+             patch("tools.terminal_tool.get_active_env", return_value=_MockEnv()):
+            result = _run_single_child(
+                task_index=0,
+                goal="Investigate rate limits",
+                child=child,
+                parent_agent=parent,
+            )
+
+        assert result["status"] == "completed"
+        assert result["worker_mode"] == "warm"
+        assert result["worker_task_id"] == "delegate-lease-abcd"
+        assert result["worker_runtime_kind"] == "_MockEnv"
+        assert result["worker_runtime_id"] == "container-1"
+        assert result["worker_runtime_reused"] is True
+        child.run_conversation.assert_called_once_with(user_message="Investigate rate limits", task_id="delegate-lease-abcd")
         child._swap_credential.assert_called_once_with(leased_entry)
         child._credential_pool.release_lease.assert_called_once_with("cred-b")
+        assert mock_clear.call_count >= 2
+
+    def test_run_single_child_direct_terminal_work_order_skips_subagent_loop(self):
+        from tools.delegate_tool import _run_single_child
+
+        child = MagicMock()
+        child._delegate_capability_snapshot = {"effective_toolsets": ["terminal"]}
+        child._delegate_context_package = {"parent_session_id": "parent-1"}
+        child._delegate_execution_envelope = {
+            "execution_mode": "direct_terminal_work_order",
+            "direct_terminal_work_order": {
+                "command": "pwd; python -V; node -v; uname -s",
+                "timeout_seconds": 30,
+            },
+        }
+        child._delegate_worker_assignment = {
+            "task_id": "delegate-lease-direct",
+            "worker_mode": "warm",
+            "lease_key": "lease-direct",
+            "reused": True,
+            "reuse_count": 4,
+            "keep_warm": True,
+            "ttl_seconds": 600,
+            "lease_age_seconds": 5.0,
+        }
+        child._credential_pool = MagicMock()
+
+        parent = _make_mock_parent()
+        parent._delegate_worker_leases = {"lease-direct": {"runtime_id": "container-direct"}}
+        parent._delegate_worker_leases_lock = threading.Lock()
+
+        class _MockEnv:
+            _container_id = "container-direct"
+
+        terminal_payload = json.dumps({
+            "output": "/workspace\nPython 3.11.15\nv20.20.2\nLinux",
+            "exit_code": 0,
+            "error": None,
+        })
+
+        with patch("tools.file_tools.clear_read_tracker") as mock_clear, \
+             patch("tools.terminal_tool.get_active_env", return_value=_MockEnv()), \
+             patch("tools.terminal_tool.terminal_tool", return_value=terminal_payload) as mock_terminal:
+            result = _run_single_child(
+                task_index=0,
+                goal="Run deterministic terminal work order",
+                child=child,
+                parent_agent=parent,
+            )
+
+        assert result["status"] == "completed"
+        assert result["execution_path"] == "direct_terminal_work_order"
+        assert result["api_calls"] == 0
+        assert result["summary"] == "/workspace\nPython 3.11.15\nv20.20.2\nLinux"
+        assert result["worker_runtime_reused"] is True
+        mock_terminal.assert_called_once()
+        child.run_conversation.assert_not_called()
+        child._credential_pool.acquire_lease.assert_not_called()
+        assert mock_clear.call_count >= 2
 
     def test_run_single_child_releases_lease_after_failure(self):
         from tools.delegate_tool import _run_single_child

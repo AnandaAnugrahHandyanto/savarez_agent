@@ -16,12 +16,15 @@ The parent's context only sees the delegation call and the summary result,
 never the child's intermediate tool calls or reasoning.
 """
 
+import hashlib
 import json
 import logging
 logger = logging.getLogger(__name__)
 import os
+import sys
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
@@ -50,6 +53,7 @@ _SUBAGENT_TOOLSETS = sorted(
 _TOOLSET_LIST_STR = ", ".join(f"'{n}'" for n in _SUBAGENT_TOOLSETS)
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 3
+_DEFAULT_WORKER_LEASE_TTL_SECONDS = 1800
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
 
 
@@ -92,6 +96,8 @@ def _build_child_system_prompt(
     context: Optional[str] = None,
     *,
     workspace_path: Optional[str] = None,
+    execution_envelope: Optional[Dict[str, Any]] = None,
+    context_package: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Build a focused system prompt for a child agent."""
     parts = [
@@ -101,6 +107,10 @@ def _build_child_system_prompt(
     ]
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
+    if context_package:
+        parts.append(f"\nCONTEXT PACKAGE:\n{_render_structured_block(context_package)}")
+    if execution_envelope:
+        parts.append(f"\nEXECUTION ENVELOPE:\n{_render_structured_block(execution_envelope)}")
     if workspace_path and str(workspace_path).strip():
         parts.append(
             "\nWORKSPACE PATH:\n"
@@ -116,6 +126,7 @@ def _build_child_system_prompt(
         "- Any issues encountered\n\n"
         "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
         "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
+        "If an execution envelope is provided, treat its completion criteria and artifact schema as part of the contract for this task.\n\n"
         "Be thorough but concise -- your response is returned to the "
         "parent agent as a summary."
     )
@@ -147,12 +158,472 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     return None
 
 
+def _sanitize_jsonish(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            cleaned = _sanitize_jsonish(item)
+            if cleaned is not None:
+                sanitized[str(key)] = cleaned
+        return sanitized
+    if isinstance(value, (list, tuple, set)):
+        sanitized_items = []
+        for item in value:
+            cleaned = _sanitize_jsonish(item)
+            if cleaned is not None:
+                sanitized_items.append(cleaned)
+        return sanitized_items
+    return None
+
+
+def _render_structured_block(payload: Optional[Dict[str, Any]]) -> str:
+    safe_payload = _sanitize_jsonish(payload) or {}
+    return json.dumps(safe_payload, indent=2, ensure_ascii=False, sort_keys=True)
+
+
+def _classify_tool_message_status(content: Any) -> str:
+    text = content if isinstance(content, str) else str(content or "")
+    stripped = text.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            payload = json.loads(stripped)
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            status_value = str(payload.get("status") or "").strip().lower()
+            if status_value in {"blocked", "error", "disabled", "approval_required"}:
+                return "error"
+            exit_code = payload.get("exit_code")
+            if isinstance(exit_code, bool):
+                exit_code = int(exit_code)
+            if isinstance(exit_code, int) and exit_code != 0:
+                return "error"
+            error_value = payload.get("error")
+            if error_value not in (None, "", []):
+                return "error"
+            return "ok"
+    return "error" if (stripped and "error" in stripped[:80].lower()) else "ok"
+
+
+def _resolve_direct_terminal_work_order(
+    execution_envelope: Optional[Dict[str, Any]],
+    capability_snapshot: Optional[Dict[str, Any]],
+) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    envelope = execution_envelope if isinstance(execution_envelope, dict) else {}
+    execution_mode = str(envelope.get("execution_mode") or "").strip()
+    if execution_mode != "direct_terminal_work_order":
+        return None, None
+
+    effective_toolsets = sorted({
+        str(toolset).strip()
+        for toolset in ((capability_snapshot or {}).get("effective_toolsets") or [])
+        if str(toolset).strip()
+    })
+    if effective_toolsets != ["terminal"]:
+        return None, "direct_terminal_work_order requires exactly the terminal toolset"
+
+    payload = envelope.get("direct_terminal_work_order")
+    if not isinstance(payload, dict):
+        return None, "direct_terminal_work_order payload is missing"
+
+    command = payload.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return None, "direct_terminal_work_order requires a non-empty command"
+
+    timeout_seconds = payload.get("timeout_seconds")
+    if timeout_seconds is not None:
+        try:
+            timeout_seconds = int(timeout_seconds)
+        except (TypeError, ValueError):
+            return None, "direct_terminal_work_order timeout_seconds must be an integer"
+        if timeout_seconds <= 0:
+            return None, "direct_terminal_work_order timeout_seconds must be > 0"
+
+    workdir = payload.get("workdir")
+    if workdir is not None:
+        workdir = str(workdir).strip() or None
+
+    return {
+        "command": command,
+        "timeout_seconds": timeout_seconds,
+        "workdir": workdir,
+    }, None
+
+
+def _resolve_child_toolsets(parent_agent, requested_toolsets: Optional[List[str]]) -> List[str]:
+    """Resolve the deterministic child tool surface from parent + request."""
+    parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
+    if not isinstance(parent_enabled, (list, tuple, set)):
+        parent_enabled = None
+
+    valid_tool_names = getattr(parent_agent, "valid_tool_names", None)
+    if not isinstance(valid_tool_names, (list, tuple, set)):
+        valid_tool_names = None
+
+    if parent_enabled is not None:
+        parent_toolsets = set(parent_enabled)
+    elif valid_tool_names is not None:
+        import model_tools
+        parent_toolsets = {
+            ts for name in valid_tool_names
+            if (ts := model_tools.get_toolset_for_tool(name)) is not None
+        }
+    else:
+        parent_toolsets = set(DEFAULT_TOOLSETS)
+
+    if requested_toolsets:
+        return _strip_blocked_tools([t for t in requested_toolsets if t in parent_toolsets])
+    if parent_agent and parent_enabled is not None:
+        return _strip_blocked_tools(parent_enabled)
+    if parent_toolsets:
+        return _strip_blocked_tools(sorted(parent_toolsets))
+    return _strip_blocked_tools(DEFAULT_TOOLSETS)
+
+
+def _build_context_package(
+    goal: str,
+    context: Optional[str],
+    parent_agent,
+    workspace_path: Optional[str],
+    requested_toolsets: Optional[List[str]],
+    effective_toolsets: List[str],
+    context_package: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    package: Dict[str, Any] = _sanitize_jsonish({
+        "goal": goal,
+        "workspace_path": workspace_path,
+        "parent_session_id": getattr(parent_agent, "session_id", None),
+        "requested_toolsets": list(requested_toolsets or []),
+        "effective_toolsets": list(effective_toolsets),
+    }) or {}
+    if context and context.strip():
+        package["user_context"] = context.strip()
+    user_package = _sanitize_jsonish(context_package) or {}
+    if isinstance(user_package, dict):
+        package.update(user_package)
+    return package
+
+
+def _build_execution_envelope(
+    goal: str,
+    capability_snapshot: Dict[str, Any],
+    context_package: Dict[str, Any],
+    execution_envelope: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    envelope = _sanitize_jsonish(dict(execution_envelope or {})) if isinstance(execution_envelope, dict) else {}
+    envelope = envelope or {}
+    envelope.setdefault("task_spec", goal)
+    envelope.setdefault(
+        "completion_criteria",
+        [
+            "Summarize what was accomplished.",
+            "List files created or modified.",
+            "Call out blockers or fallback reasons if the task did not fully complete.",
+        ],
+    )
+    envelope.setdefault("artifact_schema", {"required": ["summary"], "optional": ["files_modified", "issues"]})
+    envelope["capability_snapshot"] = _sanitize_jsonish(capability_snapshot) or {}
+    envelope["context_package"] = _sanitize_jsonish(context_package) or {}
+    return envelope
+
+
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """Remove toolsets that contain only blocked tools."""
     blocked_toolset_names = {
         "delegation", "clarify", "memory", "code_execution",
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
+
+
+def _get_worker_lease_policy(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    cfg = cfg or _load_config()
+    enabled_raw = cfg.get("worker_lease_reuse")
+    if enabled_raw is None:
+        enabled_raw = os.getenv("DELEGATION_WORKER_LEASE_REUSE", "false")
+    ttl_raw = cfg.get("worker_lease_ttl_seconds")
+    if ttl_raw is None:
+        ttl_raw = os.getenv("DELEGATION_WORKER_LEASE_TTL_SECONDS", str(_DEFAULT_WORKER_LEASE_TTL_SECONDS))
+    try:
+        ttl_seconds = max(1, int(float(ttl_raw)))
+    except (TypeError, ValueError):
+        ttl_seconds = _DEFAULT_WORKER_LEASE_TTL_SECONDS
+    enabled = str(enabled_raw).strip().lower() in {"1", "true", "yes", "on"}
+    return {
+        "enabled": enabled,
+        "ttl_seconds": ttl_seconds,
+    }
+
+
+def _supports_worker_lease(toolsets: List[str]) -> bool:
+    normalized = sorted({str(toolset).strip() for toolset in (toolsets or []) if str(toolset).strip()})
+    return normalized == ["terminal"]
+
+
+def _ensure_delegate_worker_lease_state(parent_agent) -> tuple[dict[str, Any], threading.Lock]:
+    leases = getattr(parent_agent, "_delegate_worker_leases", None)
+    lock = getattr(parent_agent, "_delegate_worker_leases_lock", None)
+    if leases is None:
+        leases = {}
+        setattr(parent_agent, "_delegate_worker_leases", leases)
+    if lock is None:
+        lock = threading.Lock()
+        setattr(parent_agent, "_delegate_worker_leases_lock", lock)
+    return leases, lock
+
+
+def _terminal_backend_snapshot() -> Dict[str, Any]:
+    return {
+        "env_type": os.getenv("TERMINAL_ENV", "local"),
+        "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE"),
+        "docker_mount_cwd_to_workspace": os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE"),
+        "terminal_cwd": os.getenv("TERMINAL_CWD"),
+        "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT"),
+        "modal_mode": os.getenv("TERMINAL_MODAL_MODE"),
+    }
+
+
+def _build_delegate_worker_lease_key(
+    parent_agent,
+    *,
+    toolsets: List[str],
+    model: Optional[str],
+    provider: Optional[str],
+    base_url: Optional[str],
+    api_mode: Optional[str],
+    workspace_path: Optional[str],
+) -> str:
+    parent_session_id = getattr(parent_agent, "session_id", None) or f"parent-{id(parent_agent)}"
+    blob = json.dumps(
+        {
+            "parent_session_id": parent_session_id,
+            "toolsets": sorted(toolsets or []),
+            "model": model,
+            "provider": provider,
+            "base_url": base_url,
+            "api_mode": api_mode,
+            "workspace_path": workspace_path,
+            "terminal_backend": _terminal_backend_snapshot(),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def _build_delegate_worker_assignment(
+    parent_agent,
+    *,
+    cfg: Dict[str, Any],
+    task_count: int,
+    toolsets: List[str],
+    model: Optional[str],
+    provider: Optional[str],
+    base_url: Optional[str],
+    api_mode: Optional[str],
+    workspace_path: Optional[str],
+) -> Dict[str, Any]:
+    policy = _get_worker_lease_policy(cfg)
+    cold_assignment = {
+        "task_id": f"delegate-cold-{uuid.uuid4().hex[:12]}",
+        "worker_mode": "cold",
+        "keep_warm": False,
+        "lease_key": None,
+        "reused": False,
+        "reuse_count": 0,
+        "ttl_seconds": policy["ttl_seconds"],
+        "lease_age_seconds": 0.0,
+    }
+    if task_count != 1 or not policy["enabled"] or not _supports_worker_lease(toolsets):
+        return cold_assignment
+
+    lease_key = _build_delegate_worker_lease_key(
+        parent_agent,
+        toolsets=toolsets,
+        model=model,
+        provider=provider,
+        base_url=base_url,
+        api_mode=api_mode,
+        workspace_path=workspace_path,
+    )
+    leases, lock = _ensure_delegate_worker_lease_state(parent_agent)
+    now = time.time()
+    with lock:
+        expired = [
+            key for key, lease in leases.items()
+            if now - float(lease.get("last_used_at", lease.get("created_at", now))) > policy["ttl_seconds"]
+        ]
+        for key in expired:
+            leases.pop(key, None)
+        lease = leases.get(lease_key)
+        if lease is None:
+            lease = {
+                "task_id": f"delegate-lease-{lease_key}",
+                "created_at": now,
+                "last_used_at": now,
+                "reuse_count": 0,
+            }
+            leases[lease_key] = lease
+            reused = False
+        else:
+            reused = True
+            lease["last_used_at"] = now
+            lease["reuse_count"] = int(lease.get("reuse_count", 0)) + 1
+        lease_age_seconds = round(now - float(lease.get("created_at", now)), 2)
+        return {
+            "task_id": lease["task_id"],
+            "worker_mode": "warm" if reused else "lease_prime",
+            "keep_warm": True,
+            "lease_key": lease_key,
+            "reused": reused,
+            "reuse_count": int(lease.get("reuse_count", 0)),
+            "ttl_seconds": policy["ttl_seconds"],
+            "lease_age_seconds": lease_age_seconds,
+        }
+
+
+def _capture_worker_runtime_metadata(parent_agent, worker_assignment: Dict[str, Any]) -> Dict[str, Any]:
+    worker_task_id = worker_assignment.get("task_id")
+    worker_keep_warm = bool(worker_assignment.get("keep_warm"))
+    worker_lease_key = worker_assignment.get("lease_key")
+    runtime_id = None
+    runtime_kind = None
+    try:
+        from tools.terminal_tool import get_active_env
+        env = get_active_env(worker_task_id)
+        if env is not None:
+            runtime_kind = type(env).__name__
+            runtime_id = (
+                getattr(env, "_container_id", None)
+                or getattr(env, "_sandbox_id", None)
+                or getattr(env, "instance_id", None)
+                or getattr(env, "_task_id", None)
+            )
+    except Exception:
+        pass
+
+    runtime_reused = False
+    if worker_keep_warm and worker_lease_key:
+        leases, lock = _ensure_delegate_worker_lease_state(parent_agent)
+        with lock:
+            lease = leases.get(worker_lease_key)
+            previous_runtime_id = lease.get("runtime_id") if isinstance(lease, dict) else None
+            runtime_reused = bool(runtime_id and previous_runtime_id and runtime_id == previous_runtime_id)
+            if isinstance(lease, dict):
+                if runtime_id:
+                    lease["runtime_id"] = runtime_id
+                if runtime_kind:
+                    lease["runtime_kind"] = runtime_kind
+    return {
+        "worker_runtime_id": runtime_id,
+        "worker_runtime_kind": runtime_kind,
+        "worker_runtime_reused": runtime_reused,
+    }
+
+
+def _materialize_delegate_entry(
+    *,
+    task_index: int,
+    goal: str,
+    parent_agent,
+    worker_assignment: Dict[str, Any],
+    status: str,
+    summary: Optional[str],
+    api_calls: int,
+    duration: float,
+    model: Optional[str],
+    exit_reason: str,
+    fallback_reason: Optional[str],
+    tokens: Dict[str, Any],
+    tool_trace: List[Dict[str, Any]],
+    capability_snapshot: Optional[Dict[str, Any]],
+    context_package: Optional[Dict[str, Any]],
+    execution_envelope: Optional[Dict[str, Any]],
+    receipt_stem: str,
+    execution_path: str = "subagent",
+    child_session_id: Optional[str] = None,
+    error: Optional[str] = None,
+) -> Dict[str, Any]:
+    worker_mode = worker_assignment.get("worker_mode") or "cold"
+    worker_lease_key = worker_assignment.get("lease_key")
+    worker_task_id = worker_assignment.get("task_id") or f"delegate-cold-{uuid.uuid4().hex[:12]}"
+    worker_reused = bool(worker_assignment.get("reused"))
+    worker_reuse_count = int(worker_assignment.get("reuse_count", 0) or 0)
+    worker_ttl_seconds = int(worker_assignment.get("ttl_seconds", 0) or 0)
+    worker_lease_age_seconds = float(worker_assignment.get("lease_age_seconds", 0.0) or 0.0)
+    worker_runtime = _capture_worker_runtime_metadata(parent_agent, worker_assignment)
+
+    envelope_digest = None
+    if execution_envelope:
+        envelope_digest = hashlib.sha1(
+            json.dumps(execution_envelope, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+    execution_receipt = _sanitize_jsonish({
+        "task_index": task_index,
+        "goal": goal,
+        "child_session_id": child_session_id,
+        "status": status,
+        "summary": summary,
+        "api_calls": api_calls,
+        "duration_seconds": duration,
+        "model": model,
+        "execution_path": execution_path,
+        "exit_reason": exit_reason,
+        "fallback_reason": fallback_reason,
+        "tokens": tokens,
+        "tool_trace": tool_trace,
+        "capability_snapshot": capability_snapshot,
+        "context_package": context_package,
+        "execution_envelope": execution_envelope,
+        "execution_envelope_digest": envelope_digest,
+        "worker_mode": worker_mode,
+        "worker_lease_key": worker_lease_key,
+        "worker_task_id": worker_task_id,
+        "worker_reused": worker_reused,
+        "worker_reuse_count": worker_reuse_count,
+        "worker_runtime_id": worker_runtime.get("worker_runtime_id"),
+        "worker_runtime_kind": worker_runtime.get("worker_runtime_kind"),
+        "worker_runtime_reused": worker_runtime.get("worker_runtime_reused"),
+    }) or {}
+    from tools.execution_receipts import persist_execution_receipt
+
+    execution_receipt["receipt_id"] = f"{receipt_stem}-execution-receipt"
+    receipt_path = persist_execution_receipt(execution_receipt)
+
+    entry: Dict[str, Any] = {
+        "task_index": task_index,
+        "status": status,
+        "summary": summary,
+        "api_calls": api_calls,
+        "duration_seconds": duration,
+        "model": model,
+        "execution_path": execution_path,
+        "exit_reason": exit_reason,
+        "fallback_reason": fallback_reason,
+        "tokens": tokens,
+        "tool_trace": tool_trace,
+        "capability_snapshot": capability_snapshot,
+        "context_package": context_package,
+        "execution_envelope": execution_envelope,
+        "execution_envelope_digest": envelope_digest,
+        "execution_receipt_path": receipt_path,
+        "worker_mode": worker_mode,
+        "worker_lease_key": worker_lease_key,
+        "worker_task_id": worker_task_id,
+        "worker_reused": worker_reused,
+        "worker_reuse_count": worker_reuse_count,
+        "worker_runtime_id": worker_runtime.get("worker_runtime_id"),
+        "worker_runtime_kind": worker_runtime.get("worker_runtime_kind"),
+        "worker_runtime_reused": worker_runtime.get("worker_runtime_reused"),
+        "worker_lease_ttl_seconds": worker_ttl_seconds,
+        "worker_lease_age_seconds": worker_lease_age_seconds,
+    }
+    if error:
+        entry["error"] = error
+    return entry
 
 
 def _build_child_progress_callback(task_index: int, parent_agent, task_count: int = 1) -> Optional[callable]:
@@ -243,6 +714,9 @@ def _build_child_agent(
     model: Optional[str],
     max_iterations: int,
     parent_agent,
+    execution_envelope: Optional[Dict[str, Any]] = None,
+    context_package: Optional[Dict[str, Any]] = None,
+    worker_assignment: Optional[Dict[str, Any]] = None,
     # Credential overrides from delegation config (provider:model resolution)
     override_provider: Optional[str] = None,
     override_base_url: Optional[str] = None,
@@ -263,35 +737,15 @@ def _build_child_agent(
     """
     from run_agent import AIAgent
 
-    # When no explicit toolsets given, inherit from parent's enabled toolsets
-    # so disabled tools (e.g. web) don't leak to subagents.
-    # Note: enabled_toolsets=None means "all tools enabled" (the default),
-    # so we must derive effective toolsets from the parent's loaded tools.
-    parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
-    if parent_enabled is not None:
-        parent_toolsets = set(parent_enabled)
-    elif parent_agent and hasattr(parent_agent, "valid_tool_names"):
-        # enabled_toolsets is None (all tools) — derive from loaded tool names
-        import model_tools
-        parent_toolsets = {
-            ts for name in parent_agent.valid_tool_names
-            if (ts := model_tools.get_toolset_for_tool(name)) is not None
-        }
-    else:
-        parent_toolsets = set(DEFAULT_TOOLSETS)
+    requested_toolsets = list(toolsets or [])
+    child_toolsets = _resolve_child_toolsets(parent_agent, toolsets)
 
-    if toolsets:
-        # Intersect with parent — subagent must not gain tools the parent lacks
-        child_toolsets = _strip_blocked_tools([t for t in toolsets if t in parent_toolsets])
-    elif parent_agent and parent_enabled is not None:
-        child_toolsets = _strip_blocked_tools(parent_enabled)
-    elif parent_toolsets:
-        child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
-    else:
-        child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
+    direct_work_order, direct_work_order_error = _resolve_direct_terminal_work_order(
+        execution_envelope,
+        {"effective_toolsets": child_toolsets},
+    )
+    workspace_hint = None if (direct_work_order is not None or direct_work_order_error is not None) else _resolve_workspace_hint(parent_agent)
 
-    workspace_hint = _resolve_workspace_hint(parent_agent)
-    child_prompt = _build_child_system_prompt(goal, context, workspace_path=workspace_hint)
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -345,6 +799,37 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
+    capability_snapshot = {
+        "requested_toolsets": requested_toolsets,
+        "effective_toolsets": list(child_toolsets),
+        "blocked_tools": sorted(DELEGATE_BLOCKED_TOOLS),
+        "provider": effective_provider,
+        "model": effective_model,
+        "acp_command": effective_acp_command,
+    }
+    effective_context_package = _build_context_package(
+        goal=goal,
+        context=context,
+        parent_agent=parent_agent,
+        workspace_path=workspace_hint,
+        requested_toolsets=requested_toolsets,
+        effective_toolsets=child_toolsets,
+        context_package=context_package,
+    )
+    effective_execution_envelope = _build_execution_envelope(
+        goal=goal,
+        capability_snapshot=capability_snapshot,
+        context_package=effective_context_package,
+        execution_envelope=execution_envelope,
+    )
+    child_prompt = _build_child_system_prompt(
+        goal,
+        context,
+        workspace_path=workspace_hint,
+        execution_envelope=effective_execution_envelope,
+        context_package=effective_context_package,
+    )
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -378,6 +863,10 @@ def _build_child_agent(
     child._print_fn = getattr(parent_agent, '_print_fn', None)
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
+    child._delegate_capability_snapshot = capability_snapshot
+    child._delegate_context_package = effective_context_package
+    child._delegate_execution_envelope = effective_execution_envelope
+    child._delegate_worker_assignment = _sanitize_jsonish(worker_assignment) or None
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -418,9 +907,17 @@ def _run_single_child(
     _saved_tool_names = getattr(child, "_delegate_saved_tool_names",
                                 list(model_tools._last_resolved_tool_names))
 
+    worker_assignment = _sanitize_jsonish(getattr(child, '_delegate_worker_assignment', None)) or {}
+    worker_task_id = worker_assignment.get("task_id") or f"delegate-cold-{uuid.uuid4().hex[:12]}"
+    worker_keep_warm = bool(worker_assignment.get("keep_warm"))
+    capability_snapshot = _sanitize_jsonish(getattr(child, "_delegate_capability_snapshot", None))
+    context_package = _sanitize_jsonish(getattr(child, "_delegate_context_package", None))
+    execution_envelope = _sanitize_jsonish(getattr(child, "_delegate_execution_envelope", None))
+    direct_work_order, direct_work_order_error = _resolve_direct_terminal_work_order(execution_envelope, capability_snapshot)
+
     child_pool = getattr(child, '_credential_pool', None)
     leased_cred_id = None
-    if child_pool is not None:
+    if child_pool is not None and direct_work_order is None and direct_work_order_error is None:
         leased_cred_id = child_pool.acquire_lease()
         if leased_cred_id is not None:
             try:
@@ -443,21 +940,23 @@ def _run_single_child(
             touch = getattr(parent_agent, '_touch_activity', None)
             if not touch:
                 continue
-            # Pull detail from the child's own activity tracker
             desc = f"delegate_task: subagent {task_index} working"
             try:
-                child_summary = child.get_activity_summary()
-                child_tool = child_summary.get("current_tool")
-                child_iter = child_summary.get("api_call_count", 0)
-                child_max = child_summary.get("max_iterations", 0)
-                if child_tool:
-                    desc = (f"delegate_task: subagent running {child_tool} "
-                            f"(iteration {child_iter}/{child_max})")
+                if direct_work_order is not None:
+                    desc = f"delegate_task: direct terminal work-order running (task {task_index})"
                 else:
-                    child_desc = child_summary.get("last_activity_desc", "")
-                    if child_desc:
-                        desc = (f"delegate_task: subagent {child_desc} "
+                    child_summary = child.get_activity_summary()
+                    child_tool = child_summary.get("current_tool")
+                    child_iter = child_summary.get("api_call_count", 0)
+                    child_max = child_summary.get("max_iterations", 0)
+                    if child_tool:
+                        desc = (f"delegate_task: subagent running {child_tool} "
                                 f"(iteration {child_iter}/{child_max})")
+                    else:
+                        child_desc = child_summary.get("last_activity_desc", "")
+                        if child_desc:
+                            desc = (f"delegate_task: subagent {child_desc} "
+                                    f"(iteration {child_iter}/{child_max})")
             except Exception:
                 pass
             try:
@@ -469,9 +968,89 @@ def _run_single_child(
     _heartbeat_thread.start()
 
     try:
-        result = child.run_conversation(user_message=goal)
+        try:
+            from tools.file_tools import clear_read_tracker
+            clear_read_tracker(worker_task_id)
+        except Exception:
+            pass
 
-        # Flush any remaining batched progress to gateway
+        if direct_work_order_error is not None:
+            duration = round(time.monotonic() - child_start, 2)
+            direct_receipt_stem = f"delegate-direct-{task_index}-{uuid.uuid4().hex[:8]}"
+            return _materialize_delegate_entry(
+                task_index=task_index,
+                goal=goal,
+                parent_agent=parent_agent,
+                worker_assignment=worker_assignment,
+                status="failed",
+                summary=None,
+                api_calls=0,
+                duration=duration,
+                model=None,
+                exit_reason="invalid_direct_terminal_work_order",
+                fallback_reason="invalid_direct_terminal_work_order",
+                tokens={"input": 0, "output": 0},
+                tool_trace=[],
+                capability_snapshot=capability_snapshot,
+                context_package=context_package,
+                execution_envelope=execution_envelope,
+                receipt_stem=direct_receipt_stem,
+                execution_path="direct_terminal_work_order",
+                child_session_id=None,
+                error=direct_work_order_error,
+            )
+
+        if direct_work_order is not None:
+            from tools.terminal_tool import terminal_tool
+
+            terminal_raw = terminal_tool(
+                command=direct_work_order["command"],
+                timeout=direct_work_order.get("timeout_seconds"),
+                task_id=worker_task_id,
+                workdir=direct_work_order.get("workdir"),
+            )
+            terminal_result = json.loads(terminal_raw)
+            duration = round(time.monotonic() - child_start, 2)
+            summary = str(terminal_result.get("output") or "").strip() or None
+            exit_code = terminal_result.get("exit_code")
+            if isinstance(exit_code, bool):
+                exit_code = int(exit_code)
+            if not isinstance(exit_code, int):
+                exit_code = 0
+            tool_status = _classify_tool_message_status(terminal_raw)
+            exit_reason = "completed" if exit_code == 0 else f"terminal_exit_code_{exit_code}"
+            fallback_reason = None if exit_reason == "completed" else exit_reason
+            status = "completed" if exit_code == 0 and summary else "failed"
+            return _materialize_delegate_entry(
+                task_index=task_index,
+                goal=goal,
+                parent_agent=parent_agent,
+                worker_assignment=worker_assignment,
+                status=status,
+                summary=summary,
+                api_calls=0,
+                duration=duration,
+                model=None,
+                exit_reason=exit_reason,
+                fallback_reason=fallback_reason,
+                tokens={"input": 0, "output": 0},
+                tool_trace=[{
+                    "tool": "terminal",
+                    "args_bytes": len(direct_work_order["command"]),
+                    "result_bytes": len(terminal_raw),
+                    "status": tool_status,
+                }],
+                capability_snapshot=capability_snapshot,
+                context_package=context_package,
+                execution_envelope=execution_envelope,
+                receipt_stem=f"delegate-direct-{task_index}-{int(child_start)}",
+                execution_path="direct_terminal_work_order",
+                child_session_id=None,
+                error=str(terminal_result.get("error") or "") or None,
+            )
+
+        result = child.run_conversation(user_message=goal, task_id=worker_task_id)
+
         if child_progress_cb and hasattr(child_progress_cb, '_flush'):
             try:
                 child_progress_cb._flush()
@@ -479,7 +1058,6 @@ def _run_single_child(
                 logger.debug("Progress callback flush failed: %s", e)
 
         duration = round(time.monotonic() - child_start, 2)
-
         summary = result.get("final_response") or ""
         completed = result.get("completed", False)
         interrupted = result.get("interrupted", False)
@@ -488,15 +1066,10 @@ def _run_single_child(
         if interrupted:
             status = "interrupted"
         elif summary:
-            # A summary means the subagent produced usable output.
-            # exit_reason ("completed" vs "max_iterations") already
-            # tells the parent *how* the task ended.
             status = "completed"
         else:
             status = "failed"
 
-        # Build tool trace from conversation messages (already in memory).
-        # Uses tool_call_id to correctly pair parallel tool calls with results.
         tool_trace: list[Dict[str, Any]] = []
         trace_by_id: Dict[str, Dict[str, Any]] = {}
         messages = result.get("messages") or []
@@ -517,23 +1090,17 @@ def _run_single_child(
                             trace_by_id[tc_id] = entry_t
                 elif msg.get("role") == "tool":
                     content = msg.get("content", "")
-                    is_error = bool(
-                        content and "error" in content[:80].lower()
-                    )
                     result_meta = {
                         "result_bytes": len(content),
-                        "status": "error" if is_error else "ok",
+                        "status": _classify_tool_message_status(content),
                     }
-                    # Match by tool_call_id for parallel calls
                     tc_id = msg.get("tool_call_id")
                     target = trace_by_id.get(tc_id) if tc_id else None
                     if target is not None:
                         target.update(result_meta)
                     elif tool_trace:
-                        # Fallback for messages without tool_call_id
                         tool_trace[-1].update(result_meta)
 
-        # Determine exit reason
         if interrupted:
             exit_reason = "interrupted"
         elif completed:
@@ -541,29 +1108,35 @@ def _run_single_child(
         else:
             exit_reason = "max_iterations"
 
-        # Extract token counts (safe for mock objects)
         _input_tokens = getattr(child, "session_prompt_tokens", 0)
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
-
-        entry: Dict[str, Any] = {
-            "task_index": task_index,
-            "status": status,
-            "summary": summary,
-            "api_calls": api_calls,
-            "duration_seconds": duration,
-            "model": _model if isinstance(_model, str) else None,
-            "exit_reason": exit_reason,
-            "tokens": {
+        fallback_reason = None if exit_reason == "completed" else exit_reason
+        return _materialize_delegate_entry(
+            task_index=task_index,
+            goal=goal,
+            parent_agent=parent_agent,
+            worker_assignment=worker_assignment,
+            status=status,
+            summary=summary,
+            api_calls=api_calls,
+            duration=duration,
+            model=_model if isinstance(_model, str) else None,
+            exit_reason=exit_reason,
+            fallback_reason=fallback_reason,
+            tokens={
                 "input": _input_tokens if isinstance(_input_tokens, (int, float)) else 0,
                 "output": _output_tokens if isinstance(_output_tokens, (int, float)) else 0,
             },
-            "tool_trace": tool_trace,
-        }
-        if status == "failed":
-            entry["error"] = result.get("error", "Subagent did not produce a response.")
-
-        return entry
+            tool_trace=tool_trace,
+            capability_snapshot=capability_snapshot,
+            context_package=context_package,
+            execution_envelope=execution_envelope,
+            receipt_stem=getattr(child, "session_id", None) or f"delegate-{task_index}-{int(child_start)}",
+            execution_path="subagent",
+            child_session_id=getattr(child, "session_id", None),
+            error=result.get("error", "Subagent did not produce a response.") if status == "failed" else None,
+        )
 
     except Exception as exc:
         duration = round(time.monotonic() - child_start, 2)
@@ -582,6 +1155,19 @@ def _run_single_child(
         # after the child has finished (or failed).
         _heartbeat_stop.set()
         _heartbeat_thread.join(timeout=5)
+
+        try:
+            from tools.file_tools import clear_read_tracker
+            clear_read_tracker(worker_task_id)
+        except Exception:
+            pass
+
+        if not worker_keep_warm:
+            try:
+                from tools.terminal_tool import cleanup_vm
+                cleanup_vm(worker_task_id)
+            except Exception:
+                logger.debug("Failed to cleanup cold worker task %s", worker_task_id)
 
         if child_pool is not None and leased_cred_id is not None:
             try:
@@ -626,6 +1212,8 @@ def delegate_task(
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    execution_envelope: Optional[Dict[str, Any]] = None,
+    context_package: Optional[Dict[str, Any]] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     parent_agent=None,
@@ -680,7 +1268,13 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
+        task_list = [{
+            "goal": goal,
+            "context": context,
+            "toolsets": toolsets,
+            "execution_envelope": execution_envelope,
+            "context_package": context_package,
+        }]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -711,10 +1305,35 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            requested_toolsets = t.get("toolsets") or toolsets
+            effective_child_toolsets = _resolve_child_toolsets(parent_agent, requested_toolsets)
+            maybe_direct_work_order, maybe_direct_work_order_error = _resolve_direct_terminal_work_order(
+                t.get("execution_envelope") or execution_envelope,
+                {"effective_toolsets": effective_child_toolsets},
+            )
+            effective_workspace_hint = None if (maybe_direct_work_order is not None or maybe_direct_work_order_error is not None) else _resolve_workspace_hint(parent_agent)
+            effective_model = creds["model"] or getattr(parent_agent, "model", None)
+            effective_provider = creds["provider"] or getattr(parent_agent, "provider", None)
+            effective_base_url = creds["base_url"] or getattr(parent_agent, "base_url", None)
+            effective_api_mode = creds["api_mode"] or getattr(parent_agent, "api_mode", None)
+            worker_assignment = _build_delegate_worker_assignment(
+                parent_agent,
+                cfg=cfg,
+                task_count=n_tasks,
+                toolsets=effective_child_toolsets,
+                model=effective_model,
+                provider=effective_provider,
+                base_url=effective_base_url,
+                api_mode=effective_api_mode,
+                workspace_path=effective_workspace_hint,
+            )
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
+                toolsets=requested_toolsets, model=creds["model"],
                 max_iterations=effective_max_iter, parent_agent=parent_agent,
+                execution_envelope=t.get("execution_envelope") or execution_envelope,
+                context_package=t.get("context_package") or context_package,
+                worker_assignment=worker_assignment,
                 override_provider=creds["provider"], override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
@@ -800,7 +1419,11 @@ def delegate_task(
                 parent_agent._memory_manager.on_delegation(
                     task=_task_goal,
                     result=entry.get("summary", "") or "",
-                    child_session_id=getattr(children[entry["task_index"]][2], "session_id", "") if entry["task_index"] < len(children) else "",
+                    child_session_id=(
+                        ""
+                        if entry.get("execution_path") == "direct_terminal_work_order"
+                        else getattr(children[entry["task_index"]][2], "session_id", "") if entry["task_index"] < len(children) else ""
+                    ),
                 )
             except Exception:
                 pass
@@ -935,24 +1558,29 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation config without importing side-effectful CLI bootstrap.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    If the interactive CLI module is already loaded, reuse its in-memory
+    ``CLI_CONFIG`` snapshot. But never import ``cli`` here: importing cli.py
+    triggers terminal config -> env bridging, which can silently stomp live
+    ``TERMINAL_*`` values mid-delegation and flip the active backend.
+
+    When CLI_CONFIG is unavailable, fall back to the persistent config loader.
     """
     try:
-        from cli import CLI_CONFIG
-        cfg = CLI_CONFIG.get("delegation", {})
-        if cfg:
-            return cfg
+        cli_module = sys.modules.get("cli")
+        cli_config = getattr(cli_module, "CLI_CONFIG", None) if cli_module is not None else None
+        if isinstance(cli_config, dict):
+            cfg = cli_config.get("delegation", {})
+            if isinstance(cfg, dict) and cfg:
+                return cfg
     except Exception:
         pass
     try:
         from hermes_cli.config import load_config
         full = load_config()
-        return full.get("delegation", {})
+        cfg = full.get("delegation", {})
+        return cfg if isinstance(cfg, dict) else {}
     except Exception:
         return {}
 
@@ -1031,6 +1659,16 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
                         },
+                        "execution_envelope": {
+                            "type": "object",
+                            "additionalProperties": True,
+                            "description": "Optional structured execution contract: task_spec, completion_criteria, artifact_schema, or other task-specific constraints.",
+                        },
+                        "context_package": {
+                            "type": "object",
+                            "additionalProperties": True,
+                            "description": "Optional structured context package passed alongside the free-form context string.",
+                        },
                         "acp_command": {
                             "type": "string",
                             "description": "Per-task ACP command override (e.g. 'claude'). Overrides the top-level acp_command for this task only.",
@@ -1058,6 +1696,16 @@ DELEGATE_TASK_SCHEMA = {
                     "Max tool-calling turns per subagent (default: 50). "
                     "Only set lower for simple tasks."
                 ),
+            },
+            "execution_envelope": {
+                "type": "object",
+                "additionalProperties": True,
+                "description": "Optional structured execution contract: task_spec, completion_criteria, artifact_schema, or other task-level constraints.",
+            },
+            "context_package": {
+                "type": "object",
+                "additionalProperties": True,
+                "description": "Optional structured context package passed alongside the free-form context string.",
             },
             "acp_command": {
                 "type": "string",
@@ -1095,6 +1743,8 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        execution_envelope=args.get("execution_envelope"),
+        context_package=args.get("context_package"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         parent_agent=kw.get("parent_agent")),
