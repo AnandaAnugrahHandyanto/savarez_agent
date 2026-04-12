@@ -578,7 +578,22 @@ DEFAULT_CONFIG = {
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
     },
-    
+
+    # TUI keybindings — customize keyboard shortcuts for the interactive CLI.
+    # Keys use "ctrl+x", "alt+x", "c-x", "a-x" formats (case-insensitive).
+    # Set a binding to null/empty string to disable it.
+    "keybindings": {
+        # Exit the application (disabled by default to preserve macOS delete-char behavior)
+        # Set to "ctrl+d" to enable Ctrl+D exit, or use another key like "ctrl+\\"
+        "exit": None,
+        # Suspend process to background (Unix only)
+        "suspend": "ctrl+z",
+        # Insert newline in multi-line input (Ctrl+Enter)
+        "newline": "ctrl+j",
+        # Alt+Enter also inserts newline
+        "alt_newline": "escape+enter",
+    },
+
     "human_delay": {
         "mode": "off",
         "min_ms": 800,

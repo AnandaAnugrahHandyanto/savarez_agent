@@ -8198,7 +8198,52 @@ class HermesCLI:
         
         # Key bindings for the input area
         kb = KeyBindings()
-        
+
+        # Load keybindings from config (with defaults)
+        try:
+            from hermes_cli.config import load_config
+            _kb_config = load_config().get("keybindings", {})
+        except Exception:
+            _kb_config = {}
+
+        def _normalize_key(key):
+            """Convert user-friendly key format to prompt_toolkit format.
+
+            Examples:
+                "ctrl+d" -> "c-d"
+                "alt+x" -> "a-x"
+                "escape+enter" -> "escape", "enter"
+                "Ctrl+\\" -> "c-\\"
+            """
+            if not key:
+                return None
+            key = key.lower().strip()
+            # Handle multi-key sequences like "escape+enter"
+            if "+" in key and not key.startswith(("c-", "a-")):
+                parts = key.split("+")
+                normalized_parts = []
+                for part in parts:
+                    part = part.strip()
+                    if part in ("ctrl", "c"):
+                        continue  # Will be handled as prefix
+                    elif part in ("alt", "a"):
+                        continue  # Will be handled as prefix
+                    elif part == "escape":
+                        normalized_parts.append("escape")
+                    else:
+                        normalized_parts.append(part)
+                return tuple(normalized_parts) if len(normalized_parts) > 1 else normalized_parts[0]
+            # Single key with modifiers
+            key = key.replace("ctrl+", "c-").replace("alt+", "a-")
+            return key
+
+        def _get_keybinding(name, default=None):
+            """Get a keybinding from config, returning normalized key or None if disabled."""
+            value = _kb_config.get(name, default)
+            if value is None or value == "":
+                return None
+            return _normalize_key(value)
+
         @kb.add('enter')
         def handle_enter(event):
             """Handle Enter key - submit input.
@@ -8308,15 +8353,20 @@ class HermesCLI:
                     self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
         
-        @kb.add('escape', 'enter')
-        def handle_alt_enter(event):
-            """Alt+Enter inserts a newline for multi-line input."""
-            event.current_buffer.insert_text('\n')
+        # Newline keybindings — configurable via config.yaml
+        _alt_newline_key = _get_keybinding("alt_newline", "escape+enter")
+        if _alt_newline_key:
+            @kb.add(_alt_newline_key)
+            def handle_alt_enter(event):
+                """Alt+Enter inserts a newline for multi-line input."""
+                event.current_buffer.insert_text('\n')
 
-        @kb.add('c-j')
-        def handle_ctrl_enter(event):
-            """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
-            event.current_buffer.insert_text('\n')
+        _newline_key = _get_keybinding("newline", "ctrl+j")
+        if _newline_key:
+            @kb.add(_newline_key)
+            def handle_ctrl_enter(event):
+                """Ctrl+Enter inserts a newline. Most terminals send c-j for Ctrl+Enter."""
+                event.current_buffer.insert_text('\n')
 
         @kb.add('tab', eager=True)
         def handle_tab(event):
@@ -8513,29 +8563,40 @@ class HermesCLI:
                     self._should_exit = True
                     event.app.exit()
         
-        @kb.add('c-d')
-        def handle_ctrl_d(event):
-            """Handle Ctrl+D - exit."""
-            self._should_exit = True
-            event.app.exit()
+        # Exit keybinding — configurable via config.yaml (keybindings.exit)
+        # Default: disabled (None) to preserve macOS delete-char behavior
+        # Set to "ctrl+d" to enable Ctrl+D exit, or use another key like "ctrl+\\"
+        _exit_key = _get_keybinding("exit", None)
+        if _exit_key:
+            @kb.add(_exit_key)
+            def handle_exit(event):
+                """Handle exit key — quit Hermes."""
+                self._should_exit = True
+                event.app.exit()
 
-        @kb.add('c-z')
-        def handle_ctrl_z(event):
-            """Handle Ctrl+Z - suspend process to background (Unix only)."""
-            import sys
-            if sys.platform == 'win32':
-                _cprint(f"\n{_DIM}Suspend (Ctrl+Z) is not supported on Windows.{_RST}")
-                event.app.invalidate()
-                return
-            import os, signal as _sig
-            from prompt_toolkit.application import run_in_terminal
-            from hermes_cli.skin_engine import get_active_skin
-            agent_name = get_active_skin().get_branding("agent_name", "Hermes Agent")
-            msg = f"\n{agent_name} has been suspended. Run `fg` to bring {agent_name} back."
-            def _suspend():
-                os.write(1, msg.encode())
-                os.kill(0, _sig.SIGTSTP)
-            run_in_terminal(_suspend)
+        # Suspend keybinding — configurable via config.yaml (keybindings.suspend)
+        # Default: Ctrl+Z
+        _suspend_key = _get_keybinding("suspend", "ctrl+z")
+        if _suspend_key:
+            @kb.add(_suspend_key)
+            def handle_ctrl_z(event):
+                """Handle Ctrl+Z - suspend process to background (Unix only)."""
+                import sys
+                if sys.platform == 'win32':
+                    _cprint(f"\n{_DIM}Suspend (Ctrl+Z) is not supported on Windows.{_RST}")
+                    event.app.invalidate()
+                    return
+                import os, signal as _sig
+                from prompt_toolkit.application import run_in_terminal
+                from hermes_cli.skin_engine import get_active_skin
+                agent_name = get_active_skin().get_branding("agent_name", "Hermes Agent")
+                msg = f"\n{agent_name} has been suspended. Run `fg` to bring {agent_name} back."
+
+                def _suspend():
+                    os.write(1, msg.encode())
+                    os.kill(0, _sig.SIGTSTP)
+
+                run_in_terminal(_suspend)
 
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
         # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)
