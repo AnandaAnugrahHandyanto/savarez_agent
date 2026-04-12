@@ -438,6 +438,9 @@ Leaks as literal `?[K` text under `prompt_toolkit`'s `patch_stdout`. Use space-p
 ### DO NOT hardcode cross-tool references in schema descriptions
 Tool schema descriptions must not mention tools from other toolsets by name (e.g., `browser_navigate` saying "prefer web_search"). Those tools may be unavailable (missing API keys, disabled toolset), causing the model to hallucinate calls to non-existent tools. If a cross-reference is needed, add it dynamically in `get_tool_definitions()` in `model_tools.py` — see the `browser_navigate` / `execute_code` post-processing blocks for the pattern.
 
+### DO NOT bypass abstraction layers to mutate production data
+When a system provides a semantic/structured API (e.g., OpenViking's memory tools), **never** use low-level filesystem or raw HTTP endpoints to directly delete, move, or overwrite its internal files. Doing so corrupts indices, vectors, derived metadata, and consistency guarantees. If you need to remove or fix data, use the system's exposed semantic operations; if none exist, stop and ask rather than poking the storage layer directly. This rule applies to databases, vector stores, memory providers, and any layered architecture.
+
 ### Tests must not write to `~/.hermes/`
 The `_isolate_hermes_home` autouse fixture in `tests/conftest.py` redirects `HERMES_HOME` to a temp dir. Never hardcode `~/.hermes/` paths in tests.
 
