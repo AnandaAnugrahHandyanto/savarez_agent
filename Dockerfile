@@ -24,6 +24,5 @@ RUN pip install --no-cache-dir uv --break-system-packages && \
 WORKDIR /opt/hermes
 RUN chmod +x /opt/hermes/docker/entrypoint.sh
 
-ENV HERMES_HOME=/opt/data
-VOLUME [ "https://docs.railway.com/reference/volumes" ]
+ENV HERMES_HOME=/data
 ENTRYPOINT [ "/opt/hermes/docker/entrypoint.sh" ]
