@@ -1955,6 +1955,14 @@ def _model_flow_named_custom(config, provider_info):
     model["base_url"] = base_url
     if api_key:
         model["api_key"] = api_key
+    # Apply api_mode from the custom provider entry so switching between
+    # providers with different protocols (e.g. openai ↔ anthropic_messages)
+    # uses the correct request format.
+    api_mode = provider_info.get("api_mode")
+    if api_mode:
+        model["api_mode"] = api_mode
+    else:
+        model.pop("api_mode", None)  # let runtime auto-detect
     save_config(cfg)
     deactivate_provider()
 

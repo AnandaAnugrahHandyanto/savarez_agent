@@ -122,3 +122,96 @@ class TestCustomProviderModelSwitch:
         model = config.get("model")
         assert isinstance(model, dict)
         assert model["default"] == "model-X"
+
+    def test_api_mode_applied_from_provider_info(self, config_home):
+        """When a custom provider defines api_mode, it must be written to config."""
+        import yaml
+        from hermes_cli.main import _model_flow_named_custom
+
+        provider_info = {
+            "name": "Claude Proxy",
+            "base_url": "https://proxy.example.com/v1",
+            "api_key": "sk-test",
+            "api_mode": "anthropic_messages",
+        }
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=["claude-3-opus"]), \
+             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert model.get("api_mode") == "anthropic_messages"
+
+    def test_api_mode_cleared_when_not_in_provider_info(self, config_home):
+        """Switching to a provider without api_mode should remove stale api_mode."""
+        import yaml
+        from hermes_cli.main import _model_flow_named_custom
+
+        # Pre-set api_mode in config (from a previous provider switch)
+        config_yaml = config_home / "config.yaml"
+        config_yaml.write_text(
+            "model:\n"
+            "  default: old-model\n"
+            "  provider: custom\n"
+            "  api_mode: anthropic_messages\n"
+            "custom_providers: []\n"
+        )
+
+        provider_info = {
+            "name": "Local Ollama",
+            "base_url": "http://localhost:11434/v1",
+            # no api_key, no api_mode — auto-detect
+        }
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=["llama3"]), \
+             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert "api_mode" not in model, "stale api_mode should be removed"
+
+    def test_api_mode_switches_between_providers(self, config_home):
+        """Switching from anthropic_messages to openai should update api_mode."""
+        import yaml
+        from hermes_cli.main import _model_flow_named_custom
+
+        # First switch: set anthropic_messages
+        provider_a = {
+            "name": "Claude Proxy",
+            "base_url": "https://proxy.example.com/v1",
+            "api_key": "sk-a",
+            "api_mode": "anthropic_messages",
+        }
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=["claude-3"]), \
+             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_a)
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        assert config["model"]["api_mode"] == "anthropic_messages"
+
+        # Second switch: set openai (chat_completions)
+        provider_b = {
+            "name": "Local Ollama",
+            "base_url": "http://localhost:11434/v1",
+            "api_mode": "chat_completions",
+        }
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=["llama3"]), \
+             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_b)
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        assert config["model"]["api_mode"] == "chat_completions"
