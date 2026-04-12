@@ -3732,6 +3732,22 @@ class GatewayRunner:
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
                         )
+                # Streaming already delivered the main response, but the
+                # usage footer (appended at line 3576) was discarded with
+                # the rest of the response.  Send it as a follow-up card.
+                if source.platform == Platform.FEISHU:
+                    _footer = self._build_feishu_usage_footer(
+                        source=source,
+                        agent_result=agent_result,
+                        response_time=_response_time,
+                    )
+                    if _footer:
+                        _footer_adapter = self.adapters.get(source.platform)
+                        if _footer_adapter:
+                            await _footer_adapter.send(
+                                chat_id=source.chat_id,
+                                content=f"[[HERMES_STATUS:completed]]\n---\n{_footer}",
+                            )
                 return None
 
             return response
