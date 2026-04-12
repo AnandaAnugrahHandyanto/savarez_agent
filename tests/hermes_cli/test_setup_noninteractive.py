@@ -127,7 +127,7 @@ class TestNonInteractiveSetup:
         """Bare `hermes` should not prompt for input when no provider exists and stdin is headless."""
         from hermes_cli.main import cmd_chat
 
-        args = _make_chat_args()
+        args = _make_chat_args(query="hello")
 
         with (
             patch("hermes_cli.main._has_any_provider_configured", return_value=False),
@@ -143,6 +143,71 @@ class TestNonInteractiveSetup:
         mock_setup.assert_not_called()
         out = capsys.readouterr().out
         assert "hermes config set model.provider custom" in out
+
+    def test_chat_requires_tty_for_interactive_mode(self, capsys):
+        """Interactive chat should fail fast in headless mode before launching the TUI."""
+        from hermes_cli.main import cmd_chat
+
+        args = _make_chat_args()
+
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch("hermes_cli.main._has_any_provider_configured", side_effect=AssertionError("provider check should not run")),
+            patch("cli.main", side_effect=AssertionError("interactive CLI should not launch")),
+        ):
+            mock_stdin.isatty.return_value = False
+            with pytest.raises(SystemExit) as exc:
+                cmd_chat(args)
+
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "requires an interactive terminal" in err
+        assert "hermes chat" in err
+
+    def test_chat_allows_single_query_without_tty(self):
+        """Single-query mode should remain available in headless environments."""
+        from hermes_cli.main import cmd_chat
+
+        args = _make_chat_args(query="hello")
+
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch("hermes_cli.main._has_any_provider_configured", return_value=True),
+            patch("cli.main") as mock_cli_main,
+        ):
+            mock_stdin.isatty.return_value = False
+            cmd_chat(args)
+
+        mock_cli_main.assert_called_once()
+        assert mock_cli_main.call_args.kwargs["query"] == "hello"
+
+    def test_offer_launch_chat_skips_prompt_and_exec_without_tty(self):
+        """Post-setup chat handoff should be a no-op when stdin is headless."""
+        from hermes_cli.setup import _offer_launch_chat
+
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch("hermes_cli.setup.prompt_yes_no", side_effect=AssertionError("prompt should not be called")),
+            patch("os.execvp", side_effect=AssertionError("exec should not be called")),
+        ):
+            mock_stdin.isatty.return_value = False
+            _offer_launch_chat()
+
+    def test_offer_launch_chat_prompts_and_execs_with_tty(self):
+        """Post-setup chat handoff should still work in an interactive terminal."""
+        from hermes_cli.setup import _offer_launch_chat
+
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch("hermes_cli.setup.prompt_yes_no", return_value=True) as mock_prompt,
+            patch("hermes_cli.setup._resolve_hermes_chat_argv", return_value=["hermes", "chat"]),
+            patch("os.execvp") as mock_execvp,
+        ):
+            mock_stdin.isatty.return_value = True
+            _offer_launch_chat()
+
+        mock_prompt.assert_called_once_with("Launch hermes chat now?", True)
+        mock_execvp.assert_called_once_with("hermes", ["hermes", "chat"])
 
     def test_returning_user_terminal_menu_choice_dispatches_terminal_section(self, tmp_path):
         """Returning-user menu should map Terminal Backend to the terminal setup, not TTS."""

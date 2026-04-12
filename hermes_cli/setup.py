@@ -2946,6 +2946,9 @@ def _resolve_hermes_chat_argv() -> Optional[list[str]]:
 
 def _offer_launch_chat():
     """Prompt the user to jump straight into chat after setup."""
+    if not is_interactive_stdin():
+        return
+
     print()
     if not prompt_yes_no("Launch hermes chat now?", True):
         return
