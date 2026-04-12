@@ -1503,12 +1503,23 @@ class FeishuAdapter(BasePlatformAdapter):
             ],
         }
         try:
+            from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
             payload = json.dumps(card, ensure_ascii=False)
-            body = self._build_update_message_body(msg_type="interactive", content=payload)
-            request = self._build_update_message_request(message_id=message_id, request_body=body)
-            await asyncio.to_thread(self._client.im.v1.message.update, request)
+            request = (
+                PatchMessageRequest.builder()
+                .message_id(message_id)
+                .request_body(PatchMessageRequestBody.builder().content(payload).build())
+                .build()
+            )
+            resp = await asyncio.to_thread(self._client.im.v1.message.patch, request)
+            if resp and getattr(resp, "success", False):
+                logger.info("[Feishu] Approval card %s updated → %s", message_id, label)
+            else:
+                code = getattr(resp, "code", "?")
+                msg = getattr(resp, "msg", "unknown")
+                logger.warning("[Feishu] Approval card patch %s failed: code=%s msg=%s", message_id, code, msg)
         except Exception as exc:
-            logger.warning("[Feishu] Failed to update approval card %s: %s", message_id, exc)
+            logger.warning("[Feishu] Failed to update approval card %s: %s", message_id, exc, exc_info=True)
 
     async def send_voice(
         self,
