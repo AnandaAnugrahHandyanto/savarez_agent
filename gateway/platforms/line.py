@@ -11,6 +11,7 @@ No external LINE SDK dependency — all API calls are made directly via httpx.
 """
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -71,7 +72,6 @@ def _verify_signature(body: bytes, signature: str, channel_secret: str) -> bool:
         body,
         hashlib.sha256,
     ).digest()
-    import base64
     expected_b64 = base64.b64encode(expected).decode("utf-8")
     return hmac.compare_digest(expected_b64, signature)
 
@@ -355,8 +355,7 @@ class LineAdapter(BasePlatformAdapter):
                     image_path = cache_audio_from_bytes(data, ".m4a")
                 elif media_type in ("video", "file"):
                     file_name = message.get("fileName", f"file_{message_id}")
-                    ext = os.path.splitext(file_name)[1] or ".bin"
-                    image_path = cache_document_from_bytes(data, ext, original_name=file_name)
+                    image_path = cache_document_from_bytes(data, file_name)
         except Exception as e:
             logger.warning("[LINE] Failed to download %s %s: %s", media_type, message_id, e)
 

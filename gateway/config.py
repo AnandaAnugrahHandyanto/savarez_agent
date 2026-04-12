@@ -305,7 +305,7 @@ class GatewayConfig:
             elif platform == Platform.BLUEBUBBLES and config.extra.get("server_url") and config.extra.get("password"):
                 connected.append(platform)
             # LINE uses token + channel_secret
-            elif platform == Platform.LINE and config.extra.get("channel_secret"):
+            elif platform == Platform.LINE and config.token and config.extra.get("channel_secret"):
                 connected.append(platform)
         return connected
     

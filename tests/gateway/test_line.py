@@ -246,3 +246,46 @@ class TestLineSendMessageTool:
     def test_line_in_send_platform_map(self):
         """Verify LINE is in the send_message_tool platform map."""
         assert Platform.LINE.value == "line"
+
+
+class TestLineGetConnectedPlatforms:
+    def test_line_requires_token_and_secret(self, monkeypatch):
+        """LINE should not appear as connected if token is missing."""
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        from gateway.config import GatewayConfig, PlatformConfig, _apply_env_overrides
+
+        config = GatewayConfig()
+        config.platforms[Platform.LINE] = PlatformConfig(
+            enabled=True,
+            token=None,
+            extra={"channel_secret": "secret"},
+        )
+        # Must NOT appear when token is absent
+        assert Platform.LINE not in config.get_connected_platforms()
+
+    def test_line_connected_with_both_credentials(self):
+        """LINE appears as connected when both token and secret are present."""
+        from gateway.config import GatewayConfig, PlatformConfig
+
+        config = GatewayConfig()
+        config.platforms[Platform.LINE] = PlatformConfig(
+            enabled=True,
+            token="tok",
+            extra={"channel_secret": "secret"},
+        )
+        assert Platform.LINE in config.get_connected_platforms()
+
+
+class TestLineDocumentCaching:
+    def test_cache_document_from_bytes_signature(self):
+        """Regression: cache_document_from_bytes must accept (data, filename) — not (data, ext, original_name=…)."""
+        import inspect
+        from gateway.platforms.base import cache_document_from_bytes
+
+        sig = inspect.signature(cache_document_from_bytes)
+        params = list(sig.parameters.keys())
+        # Signature must be (data, filename) — no 'original_name' keyword
+        assert params == ["data", "filename"], (
+            f"cache_document_from_bytes signature changed: {params}"
+        )
