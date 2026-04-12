@@ -103,6 +103,14 @@ class TestTrustLevelFor:
         assert result in ("trusted", "community")
 
 
+class TestGitHubSourceDefaultTaps:
+    def test_includes_gbrain_skills_directory(self):
+        auth = MagicMock(spec=GitHubAuth)
+        src = GitHubSource(auth=auth)
+
+        assert {"repo": "garrytan/gbrain", "path": "skills/"} in src.taps
+
+
 # ---------------------------------------------------------------------------
 # SkillsShSource
 # ---------------------------------------------------------------------------

@@ -348,6 +348,7 @@ Default taps (browsable without any setup):
 - [anthropics/skills](https://github.com/anthropics/skills)
 - [VoltAgent/awesome-agent-skills](https://github.com/VoltAgent/awesome-agent-skills)
 - [garrytan/gstack](https://github.com/garrytan/gstack)
+- [garrytan/gbrain](https://github.com/garrytan/gbrain)
 
 - Example:
 
