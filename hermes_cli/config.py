@@ -660,6 +660,14 @@ DEFAULT_CONFIG = {
         # Supports \n for newlines, e.g. "🤖 *My Bot*\n──────\n"
     },
 
+    # Feishu / Lark platform settings (gateway mode)
+    "feishu": {
+        # ACK reaction lifecycle:
+        #   "on_complete" — add OK reaction on receipt, remove after agent finishes responding (default)
+        #   "off"         — disable ACK (OK) reaction entirely
+        "ack_reaction": "on_complete",
+    },
+
     # Approval mode for dangerous commands:
     #   manual — always prompt the user (default)
     #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk

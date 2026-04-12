@@ -231,6 +231,23 @@ Interactive cards require **three** configuration steps in the Feishu Developer 
 Without all three steps, Feishu will successfully *send* interactive cards (sending only requires `im:message:send` permission), but clicking any button will return error 200340. The card appears to work — the error only surfaces when a user interacts with it.
 :::
 
+## ACK Reaction
+
+When Hermes receives a message, it adds an 🆗 (OK) reaction to acknowledge receipt. By default, the reaction is removed after the agent finishes responding.
+
+You can control this behavior in `config.yaml`:
+
+```yaml
+feishu:
+  ack_reaction: "on_complete"  # default — remove OK reaction after agent finishes responding
+  # ack_reaction: "off"       # disable ACK reaction entirely
+```
+
+| Value | Behavior |
+|-------|----------|
+| `on_complete` | Add 🆗 on receipt, remove after agent finishes (default) |
+| `off` | No reaction added |
+
 ## Media Support
 
 ### Inbound (receiving)

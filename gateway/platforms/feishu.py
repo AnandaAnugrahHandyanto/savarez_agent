@@ -278,6 +278,8 @@ class FeishuAdapterSettings:
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
+    # ACK reaction lifecycle: "on_complete" (remove OK after agent finishes) or "off" (disabled)
+    ack_reaction: str = "on_complete"
 
 
 @dataclass
@@ -1049,6 +1051,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._webhook_anomaly_counts: Dict[str, tuple[int, str, float]] = {}  # ip → (count, last_status, first_seen)
         self._card_action_tokens: Dict[str, float] = {}  # token → first_seen_time
         self._chat_locks: Dict[str, asyncio.Lock] = {}  # chat_id → lock (per-chat serial processing)
+        self._ack_reactions: Dict[str, str] = {}  # message_id → reaction_id (pending ACK reactions)
         self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id (for reaction routing)
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
@@ -1144,6 +1147,7 @@ class FeishuAdapter(BasePlatformAdapter):
             admins=admins,
             default_group_policy=default_group_policy,
             group_rules=group_rules,
+            ack_reaction=str(extra.get("ack_reaction", "on_complete")).strip().lower(),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -2031,23 +2035,27 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _handle_message_with_guards(self, event: MessageEvent) -> None:
         """Dispatch a single event through the agent pipeline with per-chat serialization
-        and a persistent ACK emoji reaction before processing starts.
+        and a transient ACK (OK) emoji reaction.
 
         - Per-chat lock: ensures messages in the same chat are processed one at a time
           (matches openclaw's createChatQueue serial queue behaviour).
         - ACK indicator: adds a CHECK reaction to the triggering message before handing
-          off to the agent and leaves it in place as a receipt marker.
+          off to the agent. The reaction is removed in ``on_processing_complete`` after
+          the agent has fully responded (not when handle_message returns, since it
+          spawns a background task).
         """
         chat_id = getattr(event.source, "chat_id", "") or "" if event.source else ""
         chat_lock = self._get_chat_lock(chat_id)
         async with chat_lock:
             message_id = event.message_id
-            if message_id:
-                await self._add_ack_reaction(message_id)
+            if message_id and self._settings.ack_reaction == "on_complete":
+                reaction_id = await self._add_ack_reaction(message_id)
+                if reaction_id:
+                    self._ack_reactions[message_id] = reaction_id
             await self.handle_message(event)
 
     async def _add_ack_reaction(self, message_id: str) -> Optional[str]:
-        """Add a persistent ACK emoji reaction to signal the message was received."""
+        """Add an ACK (OK) emoji reaction to signal the message was received."""
         if not self._client or not message_id:
             return None
         try:
@@ -2079,6 +2087,29 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[Feishu] Failed to add ack reaction to %s", message_id, exc_info=True)
         return None
+
+    async def _remove_ack_reaction(self, message_id: str, reaction_id: str) -> None:
+        """Remove the ACK (OK) emoji reaction after the agent finishes responding."""
+        if not self._client or not message_id or not reaction_id:
+            return
+        try:
+            from lark_oapi.api.im.v1 import DeleteMessageReactionRequest
+            request = (
+                DeleteMessageReactionRequest.builder()
+                .message_id(message_id)
+                .reaction_id(reaction_id)
+                .build()
+            )
+            await asyncio.to_thread(self._client.im.v1.message_reaction.delete, request)
+        except Exception:
+            logger.debug("[Feishu] Failed to remove ack reaction from %s", message_id, exc_info=True)
+
+    async def on_processing_complete(self, event: "MessageEvent", outcome: Any) -> None:
+        """Remove the ACK reaction after the agent has fully processed and responded."""
+        message_id = getattr(event, "message_id", "") or ""
+        reaction_id = self._ack_reactions.pop(message_id, None)
+        if message_id and reaction_id:
+            await self._remove_ack_reaction(message_id, reaction_id)
 
     # =========================================================================
     # Webhook server and security
