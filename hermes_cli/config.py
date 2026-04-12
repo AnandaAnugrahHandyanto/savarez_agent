@@ -989,6 +989,14 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "AWS_BEARER_TOKEN_BEDROCK": {
+        "description": "Bedrock API Key for the OpenAI-compatible bedrock-mantle endpoint",
+        "prompt": "Bedrock API Key",
+        "url": "https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-mantle.html",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
 
     # ── Tool API keys ──
     "EXA_API_KEY": {

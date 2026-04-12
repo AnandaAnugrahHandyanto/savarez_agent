@@ -2450,6 +2450,84 @@ def _model_flow_kimi(config, current_model=""):
         print("No change.")
 
 
+def _model_flow_bedrock_api_key(config, region, current_model=""):
+    """Bedrock API Key mode — uses the OpenAI-compatible bedrock-mantle endpoint.
+
+    For developers who don't have an AWS account but received a Bedrock API Key
+    from their AWS admin. Works like any OpenAI-compatible endpoint.
+    """
+    from hermes_cli.auth import _prompt_model_selection, _save_model_choice, deactivate_provider
+    from hermes_cli.config import load_config, save_config, get_env_value, save_env_value
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    mantle_base_url = f"https://bedrock-mantle.{region}.api.aws/v1"
+
+    # Prompt for API key
+    existing_key = get_env_value("AWS_BEARER_TOKEN_BEDROCK") or ""
+    if existing_key:
+        print(f"  Bedrock API Key: {existing_key[:12]}... ✓")
+    else:
+        print(f"  Endpoint: {mantle_base_url}")
+        print()
+        try:
+            import getpass
+            api_key = getpass.getpass("  Bedrock API Key: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        if not api_key:
+            print("  Cancelled.")
+            return
+        save_env_value("AWS_BEARER_TOKEN_BEDROCK", api_key)
+        existing_key = api_key
+        print("  ✓ API key saved.")
+    print()
+
+    # Model selection — use static list (mantle doesn't need boto3 for discovery)
+    model_list = _PROVIDER_MODELS.get("bedrock", [])
+    print(f"  Showing {len(model_list)} curated models")
+
+    if model_list:
+        selected = _prompt_model_selection(model_list, current_model=current_model)
+    else:
+        try:
+            selected = input("  Model ID: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if selected:
+        _save_model_choice(selected)
+
+        # Save as custom provider pointing to bedrock-mantle
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "custom"
+        model["base_url"] = mantle_base_url
+        model.pop("api_mode", None)  # chat_completions is the default
+
+        # Also save region in bedrock config for reference
+        bedrock_cfg = cfg.get("bedrock", {})
+        if not isinstance(bedrock_cfg, dict):
+            bedrock_cfg = {}
+        bedrock_cfg["region"] = region
+        cfg["bedrock"] = bedrock_cfg
+
+        # Save the API key env var name so hermes knows where to find it
+        save_env_value("OPENAI_API_KEY", existing_key)
+        save_env_value("OPENAI_BASE_URL", mantle_base_url)
+
+        save_config(cfg)
+        deactivate_provider()
+
+        print(f"  Default model set to: {selected} (via Bedrock API Key, {region})")
+        print(f"  Endpoint: {mantle_base_url}")
+    else:
+        print("  No change.")
+
+
 def _model_flow_bedrock(config, current_model=""):
     """AWS Bedrock provider: verify credentials, pick region, discover models.
 
@@ -2495,6 +2573,27 @@ def _model_flow_bedrock(config, current_model=""):
         print()
         return
     region = region_input or current_region
+
+    # 2b. Authentication mode
+    print("  Choose authentication method:")
+    print()
+    print("    1. IAM credential chain (recommended)")
+    print("       Works with EC2 instance roles, SSO, env vars, aws configure")
+    print("    2. Bedrock API Key")
+    print("       Enter your Bedrock API Key directly — also supports")
+    print("       team scenarios where an admin distributes keys")
+    print()
+    try:
+        auth_choice = input("  Choice [1]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+
+    if auth_choice == "2":
+        # Bedrock API Key mode — uses the OpenAI-compatible bedrock-mantle endpoint.
+        # This is a separate path that doesn't need boto3 or IAM credentials.
+        _model_flow_bedrock_api_key(config, region, current_model)
+        return
 
     # 3. Model discovery — try live API first, fall back to static list
     print(f"  Discovering models in {region}...")
