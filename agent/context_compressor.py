@@ -41,6 +41,11 @@ SUMMARY_PREFIX = (
     "config, etc.) may reflect work described here — avoid repeating it:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
+_LEGACY_COMPACTION_PREFIX = "[CONTEXT COMPACTION]"
+
+# Maximum tokens of preserved user messages from the summarized region.
+# Inspired by OpenAI Codex's COMPACT_USER_MESSAGE_MAX_TOKENS.
+_USER_MESSAGE_MAX_TOKENS = 20000
 
 # Minimum tokens for the summary output
 _MIN_SUMMARY_TOKENS = 2000
@@ -114,6 +119,7 @@ class ContextCompressor(ContextEngine):
         config_context_length: int | None = None,
         provider: str = "",
         api_mode: str = "",
+        user_message_max_tokens: int = _USER_MESSAGE_MAX_TOKENS,
     ):
         self.model = model
         self.base_url = base_url
@@ -125,6 +131,7 @@ class ContextCompressor(ContextEngine):
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
+        self.user_message_max_tokens = user_message_max_tokens
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
@@ -660,6 +667,63 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         return max(cut_idx, head_end + 1)
 
     # ------------------------------------------------------------------
+    # User message preservation (Codex-style)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _collect_user_messages(
+        messages: List[Dict[str, Any]],
+        max_tokens: int = _USER_MESSAGE_MAX_TOKENS,
+    ) -> List[Dict[str, Any]]:
+        """Extract real user messages from a message slice, newest-first up to a token budget.
+
+        Filters out previous compaction summaries (identified by SUMMARY_PREFIX,
+        LEGACY_SUMMARY_PREFIX, and _LEGACY_COMPACTION_PREFIX).  Returns messages
+        in chronological order, ready for insertion into the compressed history.
+
+        Inspired by OpenAI Codex's ``collect_user_messages`` +
+        ``build_compacted_history_with_limit`` logic.
+        """
+        # Gather candidates in original order
+        candidates: List[Dict[str, Any]] = []
+        for msg in messages:
+            if msg.get("role") != "user":
+                continue
+            content = (msg.get("content") or "").strip()
+            if not content:
+                continue
+            # Skip previous summaries
+            if (content.startswith(SUMMARY_PREFIX)
+                    or content.startswith(LEGACY_SUMMARY_PREFIX)
+                    or content.startswith(_LEGACY_COMPACTION_PREFIX)):
+                continue
+            candidates.append(msg)
+
+        if not candidates or max_tokens <= 0:
+            return []
+
+        # Select newest-first up to the token budget
+        selected: List[Dict[str, Any]] = []
+        remaining = max_tokens
+        for msg in reversed(candidates):
+            content = msg.get("content") or ""
+            tokens = len(content) // _CHARS_PER_TOKEN + 10
+            if tokens <= remaining:
+                selected.append(msg.copy())
+                remaining -= tokens
+            else:
+                # Truncate the message to fit the remaining budget
+                chars_budget = remaining * _CHARS_PER_TOKEN
+                if chars_budget > 100:  # only include if meaningful
+                    truncated = {**msg, "content": content[:chars_budget] + "\n...[truncated]"}
+                    selected.append(truncated)
+                break
+
+        # Reverse back to chronological order
+        selected.reverse()
+        return selected
+
+    # ------------------------------------------------------------------
     # Main compression entry point
     # ------------------------------------------------------------------
 
@@ -671,7 +735,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
           2. Protect head messages (system prompt + first exchange)
           3. Find tail boundary by token budget (~20K tokens of recent context)
           4. Summarize middle turns with structured LLM prompt
-          5. On re-compression, iteratively update the previous summary
+          5. Preserve recent user messages from the summarized region (Codex-style)
+          6. Assemble: head → preserved user messages → summary → tail
+          7. On re-compression, iteratively update the previous summary
 
         After compression, orphaned tool_call / tool_result pairs are cleaned
         up so the API never receives mismatched IDs.
@@ -740,7 +806,20 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Phase 3: Generate structured summary
         summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
+        # Phase 3b: Extract real user messages from the summarized region.
+        # These are placed before the summary so the model sees the user's actual
+        # asks as the primary signal, with the summary as supplementary context.
+        preserved_user_msgs = self._collect_user_messages(
+            turns_to_summarize, max_tokens=self.user_message_max_tokens
+        )
+        if preserved_user_msgs and not self.quiet_mode:
+            logger.info(
+                "Preserved %d user message(s) from summarized region",
+                len(preserved_user_msgs),
+            )
+
         # Phase 4: Assemble compressed message list
+        # Order: [head] → [preserved user messages] → [summary] → [tail]
         compressed = []
         for i in range(compress_start):
             msg = messages[i].copy()
@@ -750,6 +829,11 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     + "\n\n[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work.]"
                 )
             compressed.append(msg)
+
+        # Insert preserved user messages from the summarized region.
+        # These come before the summary so the model sees user intent first.
+        for umsg in preserved_user_msgs:
+            compressed.append(umsg)
 
         # If LLM summary failed, insert a static fallback so the model
         # knows context was lost rather than silently dropping everything.

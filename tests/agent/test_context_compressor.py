@@ -390,7 +390,8 @@ class TestCompressWithClient:
         mock_response.choices[0].message.content = "summary text"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+            # Disable user message preservation to test role alternation logic in isolation
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2, user_message_max_tokens=0)
 
         # Head ends with tool (index 1), tail starts with user (index 6).
         # Default: tool → summary_role="user" → collides with tail.
@@ -429,7 +430,8 @@ class TestCompressWithClient:
         mock_response.choices[0].message.content = "summary text"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=3)
+            # Disable user message preservation to test role alternation logic in isolation
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=3, user_message_max_tokens=0)
 
         # Head: [system, user, assistant]  →  last head = assistant
         # Tail: [user, assistant, user]    →  first tail = user
@@ -468,7 +470,8 @@ class TestCompressWithClient:
         mock_response.choices[0].message.content = "summary text"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+            # Disable user message preservation to test role alternation logic in isolation
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2, user_message_max_tokens=0)
 
         # Head: [system, user]        → last head = user
         # Tail: [assistant, user, assistant] → first tail = assistant
@@ -781,3 +784,98 @@ class TestTokenBudgetTailProtection:
         # Tool at index 2 is outside the protected tail (last 3 = indices 2,3,4)
         # so it might or might not be pruned depending on boundary
         assert isinstance(pruned, int)
+
+
+class TestUserMessagePreservation:
+    """Tests for Codex-style user message preservation during compression."""
+
+    def test_collect_user_messages_basic(self):
+        """_collect_user_messages extracts user messages newest-first."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        msgs = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "response"},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "response"},
+            {"role": "user", "content": "third"},
+        ]
+        result = c._collect_user_messages(msgs, max_tokens=10000)
+        assert len(result) == 3
+        assert result[0]["content"] == "first"
+        assert result[1]["content"] == "second"
+        assert result[2]["content"] == "third"
+
+    def test_collect_user_messages_filters_summaries(self):
+        """_collect_user_messages filters out previous compaction summaries."""
+        from agent.context_compressor import SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        msgs = [
+            {"role": "user", "content": "real message"},
+            {"role": "user", "content": f"{SUMMARY_PREFIX} old summary"},
+            {"role": "user", "content": f"{LEGACY_SUMMARY_PREFIX} legacy summary"},
+            {"role": "user", "content": "[CONTEXT COMPACTION] another summary"},
+            {"role": "user", "content": "another real message"},
+        ]
+        result = c._collect_user_messages(msgs, max_tokens=10000)
+        assert len(result) == 2
+        assert result[0]["content"] == "real message"
+        assert result[1]["content"] == "another real message"
+
+    def test_collect_user_messages_respects_token_budget(self):
+        """_collect_user_messages respects token budget, newest-first."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        # Each message ~25 chars = ~6 tokens + 10 overhead = ~16 tokens
+        msgs = [
+            {"role": "user", "content": "a" * 25},  # oldest
+            {"role": "user", "content": "b" * 25},
+            {"role": "user", "content": "c" * 25},  # newest
+        ]
+        # With budget of 40 tokens, should get newest 2 messages
+        result = c._collect_user_messages(msgs, max_tokens=40)
+        assert len(result) == 2
+        assert result[0]["content"] == "b" * 25
+        assert result[1]["content"] == "c" * 25
+
+    def test_collect_user_messages_zero_disables(self):
+        """Setting max_tokens=0 disables user message preservation."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, user_message_max_tokens=0)
+
+        msgs = [{"role": "user", "content": "test"}]
+        result = c._collect_user_messages(msgs, max_tokens=0)
+        assert result == []
+
+    def test_preserved_messages_in_compress_output(self):
+        """Compressed output includes preserved user messages between head and summary."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        msgs = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "head user"},
+            {"role": "assistant", "content": "head response"},  # compressed region starts
+            {"role": "user", "content": "middle user 1"},      # should be preserved
+            {"role": "assistant", "content": "middle response"},
+            {"role": "user", "content": "middle user 2"},      # should be preserved
+            {"role": "assistant", "content": "tail response"},  # tail starts
+            {"role": "user", "content": "tail user"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        # Find preserved user messages in result
+        contents = [m.get("content", "") for m in result]
+        assert "middle user 1" in contents or "middle user 2" in contents, \
+            "Preserved user messages should appear in compressed output"
