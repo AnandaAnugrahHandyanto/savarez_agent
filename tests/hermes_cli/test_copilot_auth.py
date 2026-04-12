@@ -58,6 +58,22 @@ class TestTokenValidation:
         assert valid is False
 
 
+class TestNormalizeExpiry:
+    """Expiry timestamp normalization (ms -> seconds)."""
+
+    def test_seconds_unchanged(self):
+        from hermes_cli.copilot_auth import _normalize_expiry
+
+        ts = 1700000000.0
+        assert _normalize_expiry(ts) == ts
+
+    def test_milliseconds_converted(self):
+        from hermes_cli.copilot_auth import _normalize_expiry
+
+        ts_ms = 1700000000000.0
+        assert _normalize_expiry(ts_ms) == 1700000000.0
+
+
 class TestDeriveBaseUrl:
     """Base URL derivation from session token proxy-ep field."""
 
@@ -247,8 +263,9 @@ class TestResolveToken:
             "hermes_cli.copilot_auth.exchange_github_token_for_copilot_session",
             side_effect=_mock_exchange_success,
         ):
-            token, source = resolve_copilot_token()
+            token, base_url, source = resolve_copilot_token()
         assert token == FAKE_SESSION_TOKEN
+        assert base_url == "https://api.enterprise.githubcopilot.com"
         assert "COPILOT_GITHUB_TOKEN" in source
 
     def test_gh_token_second_priority(self, monkeypatch):
@@ -261,8 +278,9 @@ class TestResolveToken:
             "hermes_cli.copilot_auth.exchange_github_token_for_copilot_session",
             side_effect=_mock_exchange_success,
         ):
-            token, source = resolve_copilot_token()
+            token, base_url, source = resolve_copilot_token()
         assert token == FAKE_SESSION_TOKEN
+        assert base_url == "https://api.enterprise.githubcopilot.com"
         assert "GH_TOKEN" in source
 
     def test_github_token_third_priority(self, monkeypatch):
@@ -275,8 +293,9 @@ class TestResolveToken:
             "hermes_cli.copilot_auth.exchange_github_token_for_copilot_session",
             side_effect=_mock_exchange_success,
         ):
-            token, source = resolve_copilot_token()
+            token, base_url, source = resolve_copilot_token()
         assert token == FAKE_SESSION_TOKEN
+        assert base_url == "https://api.enterprise.githubcopilot.com"
         assert "GITHUB_TOKEN" in source
 
     def test_classic_pat_in_env_skipped(self, monkeypatch):
@@ -290,7 +309,7 @@ class TestResolveToken:
             "hermes_cli.copilot_auth.exchange_github_token_for_copilot_session",
             side_effect=_mock_exchange_success,
         ):
-            token, source = resolve_copilot_token()
+            token, base_url, source = resolve_copilot_token()
         assert token == FAKE_SESSION_TOKEN
         assert "GITHUB_TOKEN" in source
 
@@ -309,7 +328,7 @@ class TestResolveToken:
                 side_effect=_mock_exchange_success,
             ),
         ):
-            token, source = resolve_copilot_token()
+            token, base_url, source = resolve_copilot_token()
         assert token == FAKE_SESSION_TOKEN
         assert "gh auth token" in source
 
@@ -332,8 +351,9 @@ class TestResolveToken:
         monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value=None):
-            token, source = resolve_copilot_token()
+            token, base_url, source = resolve_copilot_token()
         assert token == ""
+        assert base_url == ""
         assert source == ""
 
     def test_exchange_failure_returns_empty(self, monkeypatch):
@@ -346,8 +366,9 @@ class TestResolveToken:
             "hermes_cli.copilot_auth.exchange_github_token_for_copilot_session",
             side_effect=RuntimeError("HTTP 404"),
         ):
-            token, source = resolve_copilot_token()
+            token, base_url, source = resolve_copilot_token()
         assert token == ""
+        assert base_url == ""
         assert source == ""
 
 

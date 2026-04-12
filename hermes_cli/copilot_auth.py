@@ -57,9 +57,19 @@ DEFAULT_COPILOT_API_BASE_URL = "https://api.individual.githubcopilot.com"
 # Minimum remaining lifetime (seconds) before we consider a cached token stale
 _TOKEN_REFRESH_MARGIN = 300  # 5 minutes
 
+# Editor version sent to GitHub (must look like a real VS Code version)
+_EDITOR_VERSION = "vscode/1.104.1"
+
 # Polling constants
 _DEVICE_CODE_POLL_INTERVAL = 5  # seconds
 _DEVICE_CODE_POLL_SAFETY_MARGIN = 3  # seconds
+
+
+def _normalize_expiry(value: float) -> float:
+    """Convert an expiry timestamp to seconds if it appears to be milliseconds."""
+    if value > 1e11:
+        return value / 1000.0
+    return value
 
 
 # ─── Session Token Cache ──────────────────────────────────────────────────
@@ -75,14 +85,20 @@ class CopilotSessionToken:
     source: str  # where this came from (cache, fetched, etc.)
 
 
+_cached_hermes_home: Optional[Path] = None
+
+
 def _get_token_cache_path() -> Path:
     """Return the path to the cached Copilot session token."""
-    try:
-        from hermes_constants import get_hermes_home
+    global _cached_hermes_home
+    if _cached_hermes_home is None:
+        try:
+            from hermes_constants import get_hermes_home
 
-        return get_hermes_home() / "credentials" / "github-copilot.token.json"
-    except ImportError:
-        return Path.home() / ".hermes" / "credentials" / "github-copilot.token.json"
+            _cached_hermes_home = get_hermes_home()
+        except ImportError:
+            _cached_hermes_home = Path.home() / ".hermes"
+    return _cached_hermes_home / "credentials" / "github-copilot.token.json"
 
 
 def _load_cached_session_token() -> Optional[CopilotSessionToken]:
@@ -97,8 +113,8 @@ def _load_cached_session_token() -> Optional[CopilotSessionToken]:
         if not isinstance(token, str) or not token.strip():
             return None
         # Convert ms to seconds if needed (openclaw stores ms)
-        if isinstance(expires_at, (int, float)) and expires_at > 1e11:
-            expires_at = expires_at / 1000.0
+        if isinstance(expires_at, (int, float)):
+            expires_at = _normalize_expiry(float(expires_at))
         if time.time() > expires_at - _TOKEN_REFRESH_MARGIN:
             logger.debug("Cached Copilot session token is expired or near-expiry")
             return None
@@ -115,7 +131,11 @@ def _load_cached_session_token() -> Optional[CopilotSessionToken]:
 
 
 def _save_session_token(token: str, expires_at: float) -> None:
-    """Persist a Copilot session token to disk."""
+    """Persist a Copilot session token to disk.
+
+    Uses ``os.open`` with mode ``0o600`` so the file is never world-readable,
+    avoiding a TOCTOU race between ``write_text`` and ``chmod``.
+    """
     cache_path = _get_token_cache_path()
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -123,12 +143,13 @@ def _save_session_token(token: str, expires_at: float) -> None:
         "expiresAt": int(expires_at * 1000),  # store as ms for openclaw compat
         "updatedAt": int(time.time() * 1000),
     }
-    cache_path.write_text(json.dumps(payload), encoding="utf-8")
-    # Restrict permissions — token is a secret
+    content = json.dumps(payload).encode("utf-8")
+    # Open with restricted permissions from the start (no TOCTOU window)
+    fd = os.open(str(cache_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        cache_path.chmod(0o600)
-    except OSError:
-        pass
+        os.write(fd, content)
+    finally:
+        os.close(fd)
 
 
 def _derive_base_url_from_token(token: str) -> str:
@@ -151,9 +172,7 @@ def _derive_base_url_from_token(token: str) -> str:
     if not proxy_ep.startswith(("http://", "https://")):
         proxy_ep = f"https://{proxy_ep}"
     try:
-        from urllib.parse import urlparse
-
-        parsed = urlparse(proxy_ep)
+        parsed = urllib.parse.urlparse(proxy_ep)
         host = parsed.hostname or ""
     except Exception:
         return DEFAULT_COPILOT_API_BASE_URL
@@ -179,7 +198,9 @@ def exchange_github_token_for_copilot_session(
 
     Raises RuntimeError on failure.
     """
-    # Check cache first
+    # Check cache first — intentionally before validating github_token so
+    # that a cached session token is returned even if the caller passes an
+    # empty github_token (perf optimisation; the cached token is valid).
     cached = _load_cached_session_token()
     if cached:
         logger.debug(
@@ -194,7 +215,7 @@ def exchange_github_token_for_copilot_session(
         headers={
             "Accept": "application/json",
             "Authorization": f"Bearer {github_token}",
-            "Editor-Version": "vscode/1.104.1",
+            "Editor-Version": _EDITOR_VERSION,
             "User-Agent": "HermesAgent/1.0",
         },
     )
@@ -230,9 +251,8 @@ def exchange_github_token_for_copilot_session(
     else:
         expires_at = time.time() + 1800
 
-    # Normalize: if < 1e11 it's seconds, otherwise ms
-    if expires_at > 1e11:
-        expires_at = expires_at / 1000.0
+    # Normalize: if > 1e11 it's milliseconds, convert to seconds
+    expires_at = _normalize_expiry(expires_at)
 
     # Cache
     _save_session_token(token, expires_at)
@@ -273,15 +293,17 @@ def validate_copilot_token(token: str) -> tuple[bool, str]:
     return True, "OK"
 
 
-def resolve_copilot_token() -> tuple[str, str]:
+def resolve_copilot_token() -> tuple[str, str, str]:
     """Resolve a Copilot API session token ready for inference calls.
 
     This performs the full resolution chain:
-      1. Find a GitHub token (env vars → gh CLI)
+      1. Find a GitHub token (env vars -> gh CLI)
       2. Exchange it for a Copilot session token (with caching)
 
-    Returns (session_token, source) where session_token is the ``tid=...``
-    string usable as a Bearer token against the Copilot API.
+    Returns ``(session_token, base_url, source)`` where *session_token* is
+    the ``tid=...`` string usable as a Bearer token, *base_url* is the
+    API endpoint derived from the session token's ``proxy-ep`` field
+    (important for enterprise), and *source* describes provenance.
 
     Raises ValueError if only a classic PAT is available.
     """
@@ -312,16 +334,19 @@ def resolve_copilot_token() -> tuple[str, str]:
             github_source = "gh auth token"
 
     if not github_token:
-        return "", ""
+        return "", "", ""
 
     # 3. Exchange for Copilot session token
     try:
         session = exchange_github_token_for_copilot_session(github_token)
-        return session.token, f"copilot-session via {github_source}"
+        return session.token, session.base_url, f"copilot-session via {github_source}"
     except RuntimeError as exc:
-        logger.error("Copilot token exchange failed: %s", exc)
-        # Return empty so the caller can fall back
-        return "", ""
+        logger.warning(
+            "GitHub token found (%s) but Copilot session exchange failed: %s",
+            github_source,
+            exc,
+        )
+        return "", "", ""
 
 
 def _gh_cli_candidates() -> list[str]:
@@ -508,7 +533,7 @@ def copilot_request_headers(
     Replicates the header set used by opencode and the Copilot CLI.
     """
     headers: dict[str, str] = {
-        "Editor-Version": "vscode/1.104.1",
+        "Editor-Version": _EDITOR_VERSION,
         "User-Agent": "HermesAgent/1.0",
         "Copilot-Integration-Id": "vscode-chat",
         "Openai-Intent": "conversation-edits",
