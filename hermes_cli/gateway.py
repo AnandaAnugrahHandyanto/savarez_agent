@@ -753,10 +753,22 @@ def _remap_path_for_user(path: str, target_home_dir: str) -> str:
       /opt/hermes                 -> /opt/hermes  (kept as-is)
     """
     current_home = Path.home().resolve()
+    target_home = Path(target_home_dir)
+    abs_path = Path(path) if Path(path).is_absolute() else Path(path).absolute()
+    # If the path is already under the target home, return it as-is to
+    # preserve symlinks (e.g. venv/bin/python should not be resolved to
+    # the underlying interpreter which lacks venv site-packages).
+    try:
+        abs_path.relative_to(target_home)
+        return str(abs_path)
+    except ValueError:
+        pass
+    # Fall back to fully resolved path for cross-home remapping (e.g.
+    # /root/.hermes -> /home/alice/.hermes when running under sudo).
     resolved = Path(path).resolve()
     try:
         relative = resolved.relative_to(current_home)
-        return str(Path(target_home_dir) / relative)
+        return str(target_home / relative)
     except ValueError:
         return str(resolved)
 
