@@ -367,6 +367,19 @@ A third-party skills marketplace integrated as a community source.
 
 Hermes supports marketplace repos that publish Claude-compatible plugin/marketplace manifests.
 
+You can install directly from any GitHub repo that contains a `.claude-plugin/marketplace.json`:
+
+```bash
+hermes skills install anthropics/skills
+```
+
+Hermes will:
+1. Check for `.claude-plugin/marketplace.json` — parse the plugins list and install
+2. Fall back to downloading the repo root as a plugin
+
+If the marketplace.json lists multiple plugins, you'll be prompted to choose.
+All marketplace plugin source types are supported: relative paths (`"./"`), GitHub repos (`{"source": "github", "repo": "..."}`), Git URLs (`{"source": "url", "url": "..."}`), and git subdirectories (`{"source": "git-subdir", ...}`).
+
 Known integrated sources include:
 - [anthropics/skills](https://github.com/anthropics/skills)
 - [aiskillstore/marketplace](https://github.com/aiskillstore/marketplace)
