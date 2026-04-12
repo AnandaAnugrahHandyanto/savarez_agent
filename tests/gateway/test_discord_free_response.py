@@ -56,29 +56,48 @@ class FakeDMChannel:
 
 
 class FakeTextChannel:
-    def __init__(self, channel_id: int = 1, name: str = "general", guild_name: str = "Hermes Server"):
+    def __init__(
+        self,
+        channel_id: int = 1,
+        name: str = "general",
+        guild_name: str = "Hermes Server",
+        guild_id: int = 100,
+    ):
         self.id = channel_id
         self.name = name
-        self.guild = SimpleNamespace(name=guild_name)
+        self.guild = SimpleNamespace(id=guild_id, name=guild_name)
         self.topic = None
 
 
 class FakeForumChannel:
-    def __init__(self, channel_id: int = 1, name: str = "support-forum", guild_name: str = "Hermes Server"):
+    def __init__(
+        self,
+        channel_id: int = 1,
+        name: str = "support-forum",
+        guild_name: str = "Hermes Server",
+        guild_id: int = 100,
+    ):
         self.id = channel_id
         self.name = name
-        self.guild = SimpleNamespace(name=guild_name)
+        self.guild = SimpleNamespace(id=guild_id, name=guild_name)
         self.type = 15
         self.topic = None
 
 
 class FakeThread:
-    def __init__(self, channel_id: int = 1, name: str = "thread", parent=None, guild_name: str = "Hermes Server"):
+    def __init__(
+        self,
+        channel_id: int = 1,
+        name: str = "thread",
+        parent=None,
+        guild_name: str = "Hermes Server",
+        guild_id: int = 100,
+    ):
         self.id = channel_id
         self.name = name
         self.parent = parent
         self.parent_id = getattr(parent, "id", None)
-        self.guild = getattr(parent, "guild", None) or SimpleNamespace(name=guild_name)
+        self.guild = getattr(parent, "guild", None) or SimpleNamespace(id=guild_id, name=guild_name)
         self.topic = None
 
 
@@ -202,6 +221,40 @@ async def test_discord_free_response_channel_overrides_mention_requirement(adapt
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "allowed without mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_guild_overrides_mention_requirement(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_GUILDS", "1488500058705100882")
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789, guild_id=1488500058705100882),
+        content="allowed by guild without mention",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "allowed by guild without mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_unconfigured_guild_still_requires_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_GUILDS", "1488500058705100882")
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=790, guild_id=1488500058705100883),
+        content="still blocked without mention",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -56,20 +56,33 @@ class FakeDMChannel:
 
 
 class FakeTextChannel:
-    def __init__(self, channel_id: int = 1, name: str = "general", guild_name: str = "Hermes Server"):
+    def __init__(
+        self,
+        channel_id: int = 1,
+        name: str = "general",
+        guild_name: str = "Hermes Server",
+        guild_id: int = 100,
+    ):
         self.id = channel_id
         self.name = name
-        self.guild = SimpleNamespace(name=guild_name)
+        self.guild = SimpleNamespace(id=guild_id, name=guild_name)
         self.topic = None
 
 
 class FakeThread:
-    def __init__(self, channel_id: int = 1, name: str = "thread", parent=None, guild_name: str = "Hermes Server"):
+    def __init__(
+        self,
+        channel_id: int = 1,
+        name: str = "thread",
+        parent=None,
+        guild_name: str = "Hermes Server",
+        guild_id: int = 100,
+    ):
         self.id = channel_id
         self.name = name
         self.parent = parent
         self.parent_id = getattr(parent, "id", None)
-        self.guild = getattr(parent, "guild", None) or SimpleNamespace(name=guild_name)
+        self.guild = getattr(parent, "guild", None) or SimpleNamespace(id=guild_id, name=guild_name)
         self.topic = None
 
 
@@ -224,6 +237,71 @@ async def test_no_thread_channel_skips_auto_thread(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ignored_channel_still_blocks_free_response_guild(adapter, monkeypatch):
+    """ignored_channels takes priority over free-response guilds."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_GUILDS", "1488500058705100882")
+    monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "800")
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=800, guild_id=1488500058705100882),
+        content="ignored even in free guild",
+    )
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_free_response_guild_still_auto_threads(adapter, monkeypatch):
+    """Guild-level free response still uses auto-thread in normal channels."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_GUILDS", "1488500058705100882")
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    fake_thread = FakeThread(channel_id=999, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=900, guild_id=1488500058705100882),
+        content="hello",
+    )
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_no_thread_channel_overrides_free_response_guild_auto_thread(adapter, monkeypatch):
+    """no_thread_channels still overrides auto-thread inside free-response guilds."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_GUILDS", "1488500058705100882")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "900")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=999))
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=900, guild_id=1488500058705100882),
+        content="hello",
+    )
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
 async def test_normal_channel_still_auto_threads(adapter, monkeypatch):
     """Channels NOT in no_thread_channels still get auto-threading."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
@@ -322,6 +400,25 @@ def test_config_bridges_no_thread_channels(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("DISCORD_NO_THREAD_CHANNELS") == "333"
+
+
+def test_config_bridges_free_response_guilds(monkeypatch, tmp_path):
+    """gateway/config.py bridges discord.free_response_guilds to env var."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "free_response_guilds": ["1488500058705100882"],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_GUILDS", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_FREE_RESPONSE_GUILDS") == "1488500058705100882"
 
 
 def test_config_env_var_takes_precedence(monkeypatch, tmp_path):
