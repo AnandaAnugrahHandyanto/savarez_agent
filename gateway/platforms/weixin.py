@@ -1490,24 +1490,24 @@ class WeixinAdapter(BasePlatformAdapter):
     async def send_image_file(
         self,
         chat_id: str,
-        path: str,
+        image_path: str,
         caption: str = "",
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return await self.send_document(chat_id, path, caption=caption, metadata=metadata)
+        return await self.send_document(chat_id, image_path, caption=caption, metadata=metadata)
 
     async def send_document(
         self,
         chat_id: str,
-        path: str,
+        file_path: str,
         caption: str = "",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         if not self._session or not self._token:
             return SendResult(success=False, error="Not connected")
         try:
-            message_id = await self._send_file(chat_id, path, caption)
+            message_id = await self._send_file(chat_id, file_path, caption)
             return SendResult(success=True, message_id=message_id)
         except Exception as exc:
             logger.error("[%s] send_document failed to=%s: %s", self.name, _safe_id(chat_id), exc)
