@@ -1056,10 +1056,52 @@ def estimate_tokens_rough(text: str) -> int:
     return (len(text) + 3) // 4
 
 
+# Anthropic charges ~(w*h)/750 tokens per image; after resizing to
+# ≤1200px long edge this is typically ~1500 tokens.
+_IMAGE_TOKEN_ESTIMATE = 1600
+
+
+def _estimate_content_tokens(content: Any) -> int:
+    """Estimate tokens for a message content field, handling multimodal."""
+    if content is None:
+        return 0
+    if isinstance(content, str):
+        return (len(content) + 3) // 4
+    if isinstance(content, list):
+        total = 0
+        for part in content:
+            if not isinstance(part, dict):
+                total += (len(str(part)) + 3) // 4
+                continue
+            ptype = part.get("type", "")
+            if ptype == "text":
+                total += (len(part.get("text", "")) + 3) // 4
+            elif ptype in ("image_url", "image"):
+                total += _IMAGE_TOKEN_ESTIMATE
+            else:
+                total += (len(str(part)) + 3) // 4
+        return total
+    return (len(str(content)) + 3) // 4
+
+
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
-    """Rough token estimate for a message list (pre-flight only)."""
-    total_chars = sum(len(str(msg)) for msg in messages)
-    return (total_chars + 3) // 4
+    """Rough token estimate for a message list (pre-flight only).
+
+    Handles multimodal messages — image content blocks are estimated at
+    ~1600 tokens (Anthropic's actual cost) instead of counting the raw
+    base64 string length as text.
+    """
+    total = 0
+    for msg in messages:
+        if not isinstance(msg, dict):
+            total += (len(str(msg)) + 3) // 4
+            continue
+        for k, v in msg.items():
+            if k == "content":
+                total += _estimate_content_tokens(v)
+            else:
+                total += (len(str(v)) + 3) // 4
+    return total
 
 
 def estimate_request_tokens_rough(
@@ -1075,11 +1117,11 @@ def estimate_request_tokens_rough(
     tools enabled, schemas alone can add 20-30K tokens — a significant
     blind spot when only counting messages.
     """
-    total_chars = 0
+    total = 0
     if system_prompt:
-        total_chars += len(system_prompt)
+        total += (len(system_prompt) + 3) // 4
     if messages:
-        total_chars += sum(len(str(msg)) for msg in messages)
+        total += estimate_messages_tokens_rough(messages)
     if tools:
-        total_chars += len(str(tools))
-    return (total_chars + 3) // 4
+        total += (len(str(tools)) + 3) // 4
+    return total

@@ -54,6 +54,7 @@ _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
 # Chars per token rough estimate
 _CHARS_PER_TOKEN = 4
+from agent.model_metadata import _IMAGE_TOKEN_ESTIMATE
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 
 
@@ -211,7 +212,17 @@ class ContextCompressor(ContextEngine):
             min_protect = min(protect_tail_count, len(result) - 1)
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
-                content_len = len(msg.get("content") or "")
+                content = msg.get("content")
+                if isinstance(content, list):
+                    # Multimodal: count text normally, images at ~1600 tokens
+                    content_len = sum(
+                        len(p.get("text", "")) if isinstance(p, dict) and p.get("type") == "text"
+                        else _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN if isinstance(p, dict) and p.get("type") in ("image_url", "image")
+                        else len(str(p))
+                        for p in content
+                    )
+                else:
+                    content_len = len(content or "")
                 msg_tokens = content_len // _CHARS_PER_TOKEN + 10
                 for tc in msg.get("tool_calls") or []:
                     if isinstance(tc, dict):
@@ -228,12 +239,29 @@ class ContextCompressor(ContextEngine):
 
         for i in range(prune_boundary):
             msg = result[i]
-            if msg.get("role") != "tool":
+            role = msg.get("role")
+
+            # Strip base64 image data from old multimodal messages.
+            # Vision enrichment text is preserved so context isn't lost.
+            content = msg.get("content")
+            if isinstance(content, list):
+                stripped = []
+                had_images = False
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "image_url":
+                        had_images = True
+                    else:
+                        stripped.append(part)
+                if had_images:
+                    stripped.append({"type": "text", "text": "[Image removed during compression — see description above]"})
+                    result[i] = {**msg, "content": stripped}
+                    pruned += 1
                 continue
-            content = msg.get("content", "")
+
+            if role != "tool":
+                continue
             if not content or content == _PRUNED_TOOL_PLACEHOLDER:
                 continue
-            # Only prune if the content is substantial (>200 chars)
             if len(content) > 200:
                 result[i] = {**msg, "content": _PRUNED_TOOL_PLACEHOLDER}
                 pruned += 1

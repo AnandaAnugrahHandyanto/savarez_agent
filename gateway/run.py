@@ -14,6 +14,7 @@ Usage:
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -3081,6 +3082,21 @@ class GatewayRunner:
                     message_text = _ctx_result.message
             except Exception as exc:
                 logger.debug("@ context reference expansion failed: %s", exc)
+
+        # Embed resized image bytes as multimodal content blocks AFTER all
+        # string-based processing is complete.  _embed_images_in_message
+        # converts message_text from str → list[dict], so it must be last.
+        if event.media_urls:
+            _img_paths = [
+                p for i, p in enumerate(event.media_urls)
+                if (event.media_types[i] if i < len(event.media_types) else "").startswith("image/")
+                or event.message_type == MessageType.PHOTO
+            ]
+            if _img_paths:
+                try:
+                    message_text = self._embed_images_in_message(message_text, _img_paths)
+                except Exception:
+                    logger.debug("Image embedding failed, using text-only", exc_info=True)
 
         return message_text
 
@@ -6845,6 +6861,78 @@ class GatewayRunner:
         from gateway.session_context import clear_session_vars
         clear_session_vars(tokens)
     
+    # Anthropic auto-scales images beyond 1568px; 1200px keeps detail
+    # while saving ~40% tokens vs 1568px (~1500 vs ~2500 tokens/image).
+    _EMBED_MAX_LONG_EDGE = 1200
+
+    _FMT_TO_MIME = {
+        "PNG": "image/png", "GIF": "image/gif",
+        "WEBP": "image/webp", "JPEG": "image/jpeg",
+    }
+
+    @staticmethod
+    def _embed_images_in_message(
+        message_text: str,
+        image_paths: List[str],
+    ):
+        """Convert a text message + image paths into a multimodal content list.
+
+        Images are resized to fit within _EMBED_MAX_LONG_EDGE before encoding
+        to avoid inflating session history.  Token cost is ~(w*h)/750.
+        """
+        try:
+            from PIL import Image as _PILImage
+        except ImportError:
+            logger.debug("Pillow not installed — skipping image embedding")
+            return message_text
+        import io as _io
+
+        max_edge = GatewayRunner._EMBED_MAX_LONG_EDGE
+        fmt_to_mime = GatewayRunner._FMT_TO_MIME
+
+        parts = []
+        if message_text:
+            parts.append({"type": "text", "text": message_text})
+
+        for path in image_paths:
+            try:
+                img = _PILImage.open(path)
+                w, h = img.size
+                fmt = img.format or "JPEG"
+                mime = fmt_to_mime.get(fmt, "image/jpeg")
+                needs_resize = max(w, h) > max_edge
+                needs_convert = fmt == "JPEG" and img.mode in ("RGBA", "P")
+
+                if needs_resize or needs_convert:
+                    if needs_resize:
+                        scale = max_edge / max(w, h)
+                        new_w, new_h = int(w * scale), int(h * scale)
+                        img = img.resize((new_w, new_h), _PILImage.LANCZOS)
+                        logger.info(
+                            "Image resized for embedding: %s %dx%d → %dx%d",
+                            path, w, h, new_w, new_h,
+                        )
+                    if needs_convert:
+                        img = img.convert("RGB")
+                    buf = _io.BytesIO()
+                    img.save(buf, format=fmt, quality=85)
+                    data = buf.getvalue()
+                else:
+                    data = Path(path).read_bytes()
+
+                b64 = base64.b64encode(data).decode("ascii")
+                parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{b64}"},
+                })
+            except Exception:
+                logger.debug("Failed to embed image %s, skipping", path)
+
+        has_images = any(p.get("type") == "image_url" for p in parts)
+        if not has_images:
+            return message_text
+        return parts
+
     async def _enrich_message_with_vision(
         self,
         user_text: str,
