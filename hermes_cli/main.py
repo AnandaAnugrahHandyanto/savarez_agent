@@ -7790,9 +7790,7 @@ def cmd_profile(args):
                 print(f"\n  Edit {profile_dir_display}/.env for different API keys")
                 print(f"  Edit {profile_dir_display}/SOUL.md for different personality")
             else:
-                print(
-                    f"\n  ⚠ This profile has no API keys yet. Run '{name} setup' first,"
-                )
+                print(f"\n  ⚠ This profile has no API keys yet. Run '{name} setup' first,")
                 print(f"    or it will inherit keys from your shell environment.")
                 print(f"  Edit {profile_dir_display}/SOUL.md to customize personality")
             print()
