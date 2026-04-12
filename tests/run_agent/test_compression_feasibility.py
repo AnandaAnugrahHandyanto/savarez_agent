@@ -130,6 +130,30 @@ def test_feasibility_check_passes_live_main_runtime():
     )
 
 
+@patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+@patch("agent.model_metadata.fetch_model_metadata", return_value={
+    "gpt-5.4": {"context_length": 1_050_000}
+})
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_no_warning_for_opencode_gpt54_version_normalization(
+    mock_get_client, mock_fetch_model_metadata, mock_lookup_models_dev_context
+):
+    """Hyphenated OpenCode GPT slugs should still resolve via GPT-5.4 metadata."""
+    agent = _make_agent(main_context=1_050_000, threshold_percent=0.50)
+    mock_client = MagicMock()
+    mock_client.base_url = "https://opencode.ai/zen/v1"
+    mock_client.api_key = "sk-opencode"
+    mock_get_client.return_value = (mock_client, "gpt-5-4")
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    agent._check_compression_model_feasibility()
+
+    assert len(messages) == 0
+    assert agent._compression_warning is None
+
+
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
 def test_warns_when_no_auxiliary_provider(mock_get_client):
     """Warning emitted when no auxiliary provider is configured."""

@@ -914,6 +914,38 @@ def _resolve_nous_context_length(model: str) -> Optional[int]:
     return None
 
 
+def _lookup_openrouter_metadata_context(model: str, metadata: Dict[str, Dict[str, Any]]) -> Optional[int]:
+    """Resolve a model context from OpenRouter metadata with dot↔dash tolerance.
+
+    This is a provider-unaware fallback, so keep matching narrow: exact model ID
+    first, then only a version-separator-normalized equality check. Do not treat a
+    bare OpenRouter suffix as a generic fallback for all providers, or provider-
+    specific differences (for example MiniMax limits) can override Hermes'
+    explicit per-provider defaults.
+    """
+    entry = metadata.get(model)
+    if isinstance(entry, dict):
+        ctx = entry.get("context_length")
+        if isinstance(ctx, int) and ctx > 0:
+            return ctx
+
+    model_lower = model.lower()
+    normalized = _normalize_model_version(model).lower()
+    for or_id, entry in metadata.items():
+        if not isinstance(entry, dict):
+            continue
+        bare = or_id.split("/", 1)[1] if "/" in or_id else or_id
+        bare_lower = bare.lower()
+        if bare_lower == model_lower:
+            continue
+        if _normalize_model_version(bare).lower() == normalized:
+            ctx = entry.get("context_length")
+            if isinstance(ctx, int) and ctx > 0:
+                return ctx
+
+    return None
+
+
 def get_model_context_length(
     model: str,
     base_url: str = "",
@@ -1019,8 +1051,9 @@ def get_model_context_length(
 
     # 6. OpenRouter live API metadata (provider-unaware fallback)
     metadata = fetch_model_metadata()
-    if model in metadata:
-        return metadata[model].get("context_length", 128000)
+    ctx = _lookup_openrouter_metadata_context(model, metadata)
+    if ctx:
+        return ctx
 
     # 8. Hardcoded defaults (fuzzy match — longest key first for specificity)
     # Only check `default_model in model` (is the key a substring of the input).
