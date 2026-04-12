@@ -382,28 +382,34 @@ def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
 
 def _resolve_api_key_provider_secret(
     provider_id: str, pconfig: ProviderConfig
-) -> tuple[str, str]:
-    """Resolve an API-key provider's token and indicate where it came from."""
+) -> tuple[str, str, str]:
+    """Resolve an API-key provider's token and indicate where it came from.
+
+    Returns ``(api_key, source, base_url_override)``.  The third element is
+    non-empty only for providers that derive the API endpoint from the
+    credential itself (currently copilot, where the session token's
+    ``proxy-ep`` field determines the enterprise vs individual endpoint).
+    """
     if provider_id == "copilot":
         # Use the dedicated copilot auth module for proper token validation
         try:
             from hermes_cli.copilot_auth import resolve_copilot_token
 
-            token, _base_url, source = resolve_copilot_token()
+            token, base_url, source = resolve_copilot_token()
             if token:
-                return token, source
+                return token, source, base_url
         except ValueError as exc:
             logger.warning("Copilot token validation failed: %s", exc)
         except Exception:
             pass
-        return "", ""
+        return "", "", ""
 
     for env_var in pconfig.api_key_env_vars:
         val = os.getenv(env_var, "").strip()
         if has_usable_secret(val):
-            return val, env_var
+            return val, env_var, ""
 
-    return "", ""
+    return "", "", ""
 
 
 # =============================================================================
@@ -2502,9 +2508,9 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
 
-    api_key = ""
-    key_source = ""
-    api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
+    api_key, key_source, base_url_override = _resolve_api_key_provider_secret(
+        provider_id, pconfig
+    )
 
     env_url = ""
     if pconfig.base_url_env_var:
@@ -2514,6 +2520,8 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif env_url:
         base_url = env_url
+    elif base_url_override:
+        base_url = base_url_override
     else:
         base_url = pconfig.inference_base_url
 
@@ -2592,9 +2600,9 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
             code="invalid_provider",
         )
 
-    api_key = ""
-    key_source = ""
-    api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
+    api_key, key_source, base_url_override = _resolve_api_key_provider_secret(
+        provider_id, pconfig
+    )
 
     env_url = ""
     if pconfig.base_url_env_var:
@@ -2606,6 +2614,8 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
     elif env_url:
         base_url = env_url.rstrip("/")
+    elif base_url_override:
+        base_url = base_url_override
     else:
         base_url = pconfig.inference_base_url
 
