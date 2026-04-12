@@ -6388,13 +6388,16 @@ class AIAgent:
                 tool_name=tc.function.name, args=args, result=last_tool_result, reasoning=reasoning,
             )
             if verdict.severity == "critical":
-                from agent.tool_loop_pruner import prune_tool_loop
-                pruned = prune_tool_loop(messages, tool_name=tc.function.name, streak=verdict.streak,
-                    intended_tool=verdict.intended_tool, detector=verdict.detector)
-                messages.clear()
-                messages.extend(pruned)
-                if not self.quiet_mode:
-                    self._vprint(f"\n{self.log_prefix}🔄 Loop detected ({verdict.detector}): `{tc.function.name}` called {verdict.streak} times. Pruned {verdict.streak - 1} repeated attempts from context.", force=True)
+                if getattr(self, '_tool_loop_prune_context', True):
+                    from agent.tool_loop_pruner import prune_tool_loop
+                    pruned = prune_tool_loop(messages, tool_name=tc.function.name, streak=verdict.streak,
+                        intended_tool=verdict.intended_tool, detector=verdict.detector)
+                    messages.clear()
+                    messages.extend(pruned)
+                    if not self.quiet_mode:
+                        self._vprint(f"\n{self.log_prefix}🔄 Loop detected ({verdict.detector}): `{tc.function.name}` called {verdict.streak} times. Pruned {verdict.streak - 1} repeated attempts from context.", force=True)
+                elif not self.quiet_mode:
+                    self._vprint(f"\n{self.log_prefix}⚠️  Loop detected ({verdict.detector}): `{tc.function.name}` called {verdict.streak} times — pruning disabled by config.", force=True)
                 if verdict.intended_tool and not self.quiet_mode:
                     self._vprint(f"{self.log_prefix}   💡 Reasoning mentioned `{verdict.intended_tool}` — guidance injected.", force=True)
             elif verdict.severity == "warning" and not self.quiet_mode:

@@ -1675,6 +1675,7 @@ class HermesCLI:
                 "warning_threshold": int(_loop_cfg.get("warning_threshold", 3)),
                 "critical_threshold": int(_loop_cfg.get("critical_threshold", 5)),
                 "window_size": int(_loop_cfg.get("window_size", 30)),
+                "prune_context": _loop_cfg.get("prune_context", True),
             }
         else:
             self._tool_loop_detection_cfg = None
@@ -2998,6 +2999,14 @@ class HermesCLI:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
+            # Wire up tool-loop detection config
+            if self._tool_loop_detection_cfg and hasattr(self.agent, '_tool_loop_detector'):
+                det = self.agent._tool_loop_detector
+                det.warning_threshold = self._tool_loop_detection_cfg["warning_threshold"]
+                det.critical_threshold = self._tool_loop_detection_cfg["critical_threshold"]
+                det.window_size = self._tool_loop_detection_cfg["window_size"]
+                det._history = type(det._history)(maxlen=det.window_size)
+                self.agent._tool_loop_prune_context = self._tool_loop_detection_cfg["prune_context"]
             # Attach subagent panel registry so delegate_tool can update it
             if hasattr(self, '_subagent_panel'):
                 def _invalidate_panel():
