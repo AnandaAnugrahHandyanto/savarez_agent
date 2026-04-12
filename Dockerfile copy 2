@@ -1,0 +1,80 @@
+FROM debian:13.4
+
+# --- Build Arguments ---
+#ARG BUILD_USERNAME=hermes
+#ARG BUILD_UID=1000
+
+ENV BUILD_USERNAME=hermes
+ENV BUILD_UID=1000
+
+# --- Set up non-root user with given username ---
+RUN groupadd -g ${BUILD_UID} ${BUILD_USERNAME} && \
+    useradd -m -u ${BUILD_UID} -g ${BUILD_USERNAME} -s /bin/bash ${BUILD_USERNAME} && \
+    echo "${BUILD_USERNAME} ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+# --- Disable Python stdout buffering ---
+ENV PYTHONUNBUFFERED=1
+
+# --- Install system dependencies ---
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        git \
+        build-essential \
+        nodejs \
+        npm \
+        python3 \
+        python3-pip \
+        ripgrep \
+        ffmpeg \
+        gcc \
+        python3-dev \
+        libffi-dev \
+        procps \
+        && rm -rf /var/lib/apt/lists/*
+
+# --- Set up home directories ---
+RUN mkdir -p /opt/data \
+            /opt/hermes \
+            /opt/hermes/docker \
+            /opt/hermes/scripts/whatsapp-bridge \
+            /home/${BUILD_USERNAME}
+
+WORKDIR /opt/hermes
+
+# --- Set ownership for build context ---
+RUN chown -R ${BUILD_USERNAME}:${BUILD_USERNAME} /opt/hermes /opt/data
+
+# --- Install Python and Node dependencies ---
+RUN pip install --no-cache-dir uv --break-system-packages && \
+    uv pip install --system --break-system-packages --no-cache -e ".[all]" && \
+    npm install --prefer-offline --no-audit && \
+    npx playwright install --with-deps chromium --only-shell && \
+    cd /opt/hermes/scripts/whatsapp-bridge && \
+    npm install --prefer-offline --no-audit && \
+    npm cache clean --force
+
+# --- Configure ownership ---
+RUN chown -R ${BUILD_USERNAME}:${BUILD_USERNAME} /opt/data \
+        /home/${BUILD_USERNAME} \
+        /opt/hermes \
+        /opt/hermes/docker \
+        /opt/hermes/scripts/whatsapp-bridge
+
+# --- Copy and set up entrypoint script ---
+COPY . /opt/hermes
+
+WORKDIR /opt/hermes
+RUN chmod +x /opt/hermes/docker/entrypoint.sh
+
+# --- Define environment variables ---
+ENV HERMES_HOME=/opt/data
+ENV HERMES_USER=${BUILD_USERNAME}
+ENV HERMES_UID=${BUILD_UID}
+
+# --- Expose volume for data persistence ---
+VOLUME [ "/opt/data" ]
+
+# --- Set entrypoint ---
+USER ${BUILD_USERNAME}
+ENTRYPOINT [ "/opt/hermes/docker/entrypoint.sh" ]
+CMD ["/bin/bash"]
