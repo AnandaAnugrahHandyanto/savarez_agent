@@ -155,6 +155,16 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                gateway_only=True),
 
+    # Feishu/Lark integration
+    CommandDef("feishu_auth", "Trigger Feishu OAuth device flow for user authorization",
+               "Tools & Skills",
+               aliases=("lark_auth", "fa"),
+               gateway_config_gate="plugins.feishu_auth.enabled"),
+    CommandDef("feishu_diagnose", "Diagnose Feishu connection and OAuth status",
+               "Tools & Skills",
+               aliases=("lark_diagnose", "fd"),
+               gateway_config_gate="plugins.feishu_auth.enabled"),
+
     # Exit
     CommandDef("quit", "Exit the CLI", "Exit",
                cli_only=True, aliases=("exit", "q")),
