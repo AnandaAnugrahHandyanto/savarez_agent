@@ -150,8 +150,31 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv venv --python 3.11
 source venv/bin/activate
 uv pip install -e ".[all,dev]"
+python scripts/install_local_gate_hook.py
 python -m pytest tests/ -q
 ```
+
+Local gate workflow for code changes:
+
+```bash
+python scripts/install_local_gate_hook.py
+python -m pytest tests/test_local_gate_workflow.py -q
+python scripts/write_gate.py \
+  --review-status PASS \
+  --reviewer hermes-subagent-review \
+  --review-summary "clean implementation; no blocker" \
+  --review-report .hermes-gate/review.md \
+  --test-status PASS \
+  --tester hermes-subagent-test \
+  --test-summary "tests passed; no regression found" \
+  --test-report .hermes-gate/test.md
+```
+
+`pre-push` validates `.hermes-gate/gate.json` against the current `HEAD` and also checks that `.hermes-gate/review.md` and `.hermes-gate/test.md` both contain these exact lines:
+- `- Head SHA: <current HEAD>`
+- `- Verdict: PASS`
+
+Use `--force` only when you intentionally want to replace an unmanaged existing hook.
 
 > **RL Training (optional):** To work on the RL/Tinker-Atropos integration:
 > ```bash

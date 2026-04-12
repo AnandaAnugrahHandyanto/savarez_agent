@@ -82,7 +82,40 @@ hermes chat -q "Hello"
 
 ```bash
 pytest tests/ -v
+pytest tests/test_local_gate_workflow.py -q
 ```
+
+### Local gate workflow
+
+Install the managed `pre-push` hook into the active hooks directory (`core.hooksPath` when set, otherwise `.git/hooks`):
+
+```bash
+python scripts/install_local_gate_hook.py
+```
+
+Write gate artifacts after independent review + test reports exist:
+
+```bash
+python scripts/write_gate.py \
+  --review-status PASS \
+  --reviewer hermes-subagent-review \
+  --review-summary "clean implementation; no blocker" \
+  --review-report .hermes-gate/review.md \
+  --test-status PASS \
+  --tester hermes-subagent-test \
+  --test-summary "tests passed; no regression found" \
+  --test-report .hermes-gate/test.md
+```
+
+The hook validates four things before push:
+- `.hermes-gate/gate.json` exists
+- `gate.json` matches the current `HEAD`
+- review/test report files exist
+- both reports contain these exact lines:
+  - `- Head SHA: <current HEAD>`
+  - `- Verdict: PASS`
+
+Use `--force` only when you intentionally want to replace an unmanaged existing hook.
 
 ## Code Style
 

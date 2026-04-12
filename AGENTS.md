@@ -453,6 +453,16 @@ def profile_env(tmp_path, monkeypatch):
     return home
 ```
 
+### Local gate enforcement lives in repo scripts, not memory
+For the local gated workflow:
+- install/update the active hook with `python scripts/install_local_gate_hook.py --force`
+- generate `.hermes-gate/gate.json` with `python scripts/write_gate.py ...`
+- validate gate artifacts with `python scripts/validate_gate.py`
+
+`pre-push` must reject pushes when `gate.json` is stale, when report files are missing, or when `review.md` / `test.md` do not contain these exact lines for the current commit:
+- `- Head SHA: <current HEAD>`
+- `- Verdict: PASS`
+
 ---
 
 ## Testing
@@ -460,6 +470,7 @@ def profile_env(tmp_path, monkeypatch):
 ```bash
 source venv/bin/activate
 python -m pytest tests/ -q          # Full suite (~3000 tests, ~3 min)
+python -m pytest tests/test_local_gate_workflow.py -q  # Local gate workflow
 python -m pytest tests/test_model_tools.py -q   # Toolset resolution
 python -m pytest tests/test_cli_init.py -q       # CLI config loading
 python -m pytest tests/gateway/ -q               # Gateway tests
