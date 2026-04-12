@@ -928,10 +928,12 @@ def _load_config() -> dict:
     long-running processes (gateway, cron) from using stale runtime defaults
     that mask edits made to config.yaml after startup.
     """
-    disk_cfg = {}
+    from hermes_cli.config import DEFAULT_CONFIG, read_raw_config
+
+    defaults = dict(DEFAULT_CONFIG.get("delegation", {}))
+    raw_disk = {}
     try:
-        from hermes_cli.config import load_config
-        disk_cfg = load_config().get("delegation", {}) or {}
+        raw_disk = read_raw_config().get("delegation", {}) or {}
     except Exception:
         pass
 
@@ -942,12 +944,15 @@ def _load_config() -> dict:
     except Exception:
         pass
 
-    # Prefer disk config; runtime only fills missing keys so that
-    # CLI_CONFIG defaults (e.g. max_iterations) do not overwrite
-    # newer config.yaml edits in long-lived processes.
-    merged = dict(disk_cfg)
+    # Start from defaults, overlay raw disk config.
+    # We use read_raw_config() instead of load_config() because load_config()
+    # deep-merges DEFAULT_CONFIG, so keys like max_iterations always appear
+    # "present" even when the user never set them in config.yaml. By tracking
+    # raw disk keys explicitly, runtime can still fill truly missing values.
+    merged = dict(defaults)
+    merged.update(raw_disk)
     for k, v in runtime_cfg.items():
-        if k not in merged and v not in (None, ""):
+        if k not in raw_disk and v not in (None, ""):
             merged[k] = v
     return merged
 
