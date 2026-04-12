@@ -72,6 +72,15 @@ _SENSITIVE_WRITE_TARGET = (
 # Dangerous command patterns
 # =========================================================================
 
+_GATEWAY_SERVICE_MANAGER_DESC = (
+    "start gateway outside service manager "
+    "(use 'hermes gateway restart' or 'hermes gateway start')"
+)
+
+_NON_OVERRIDABLE_PATTERN_KEYS = {
+    _GATEWAY_SERVICE_MANAGER_DESC,
+}
+
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
@@ -101,9 +110,14 @@ DANGEROUS_PATTERNS = [
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     (r'\bfind\b.*-exec\s+(/\S*/)?rm\b', "find -exec rm"),
     (r'\bfind\b.*-delete\b', "find -delete"),
-    # Gateway protection: never start gateway outside systemd management
-    (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
-    (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
+    # Gateway protection: manual background starts leave orphaned shells and
+    # bypass launchd/systemd supervision. These must stay hard-blocked.
+    (
+        r'(?:\bsetsid\b.*gateway\s+run\b|'
+        r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b))',
+        _GATEWAY_SERVICE_MANAGER_DESC,
+    ),
+    (r'\bnohup\b.*gateway\s+run\b', _GATEWAY_SERVICE_MANAGER_DESC),
     # Self-termination protection: prevent agent from killing its own process
     (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
     # Self-termination via kill + command substitution (pgrep/pidof).
@@ -190,6 +204,27 @@ def detect_dangerous_command(command: str) -> tuple:
             pattern_key = description
             return (True, pattern_key, description)
     return (False, None, None)
+
+
+def _hard_block_response(pattern_key: str, description: str) -> dict:
+    """Return a non-overridable block for structurally unsafe commands."""
+    if pattern_key == _GATEWAY_SERVICE_MANAGER_DESC:
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: Do not start Hermes gateway with nohup, &, disown, or setsid. "
+                "Use 'hermes gateway restart' to replace the running gateway, or "
+                "'hermes gateway start' to let launchd/systemd manage it."
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+        }
+    return {
+        "approved": False,
+        "message": f"BLOCKED: {description}.",
+        "pattern_key": pattern_key,
+        "description": description,
+    }
 
 
 # =========================================================================
@@ -598,12 +633,15 @@ def check_dangerous_command(command: str, env_type: str,
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
+    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    if is_dangerous and pattern_key in _NON_OVERRIDABLE_PATTERN_KEYS:
+        return _hard_block_response(pattern_key, description)
+
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
     if os.getenv("HERMES_YOLO_MODE") or is_current_session_yolo_enabled():
         return {"approved": True, "message": None}
 
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
         return {"approved": True, "message": None}
 
@@ -700,6 +738,10 @@ def check_all_command_guards(command: str, env_type: str,
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
+    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    if is_dangerous and pattern_key in _NON_OVERRIDABLE_PATTERN_KEYS:
+        return _hard_block_response(pattern_key, description)
+
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
@@ -725,9 +767,6 @@ def check_all_command_guards(command: str, env_type: str,
         tirith_result = check_command_security(command)
     except ImportError:
         pass  # tirith module not installed — allow
-
-    # Dangerous command check (detection only, no approval)
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
 
     # --- Phase 2: Decide ---
 
