@@ -8,6 +8,8 @@ description: "Schedule automated tasks with natural language, manage them with o
 
 Schedule tasks to run automatically with natural language or cron expressions. Hermes exposes cron management through a single `cronjob` tool with action-style operations instead of separate schedule/list/remove tools.
 
+If you want a periodic proactive wake-up loop rather than a task-specific schedule, see [Autonomous Heartbeat](heartbeat.md).
+
 ## What cron can do now
 
 Cron jobs can:

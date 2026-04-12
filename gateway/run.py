@@ -1596,7 +1596,10 @@ class GatewayRunner:
         elif platform == Platform.EMAIL:
             from gateway.platforms.email import EmailAdapter, check_email_requirements
             if not check_email_requirements():
-                logger.warning("Email: EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_IMAP_HOST, or EMAIL_SMTP_HOST not set")
+                logger.warning("Email: EMAIL_ADDRESS, EMAIL_PASSWORD, or EMAIL_SMTP_HOST not set")
+                return None
+            if not os.getenv("EMAIL_IMAP_HOST"):
+                logger.info("Email adapter disabled: inbound IMAP not configured (SMTP-only delivery remains available)")
                 return None
             return EmailAdapter(config)
 
@@ -2071,6 +2074,9 @@ class GatewayRunner:
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "heartbeat":
+            return await self._handle_heartbeat_command(event)
         
         if canonical == "stop":
             return await self._handle_stop_command(event)
@@ -4917,6 +4923,63 @@ class GatewayRunner:
             return f"🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
         else:
             return f"🧠 ✓ Reasoning effort set to `{effort}` (this session only)"
+
+    async def _handle_heartbeat_command(self, event: MessageEvent) -> str:
+        """Handle /heartbeat command."""
+        from cron.heartbeat import disable_heartbeat, enable_heartbeat, heartbeat_status, resume_heartbeat, run_heartbeat_now
+
+        args_text = (event.get_command_args() or "").strip()
+        parts = args_text.split() if args_text else []
+        subcommand = (parts[0].lower() if parts else "status")
+
+        def _flag_value(flag: str):
+            if flag not in parts:
+                return None
+            idx = parts.index(flag)
+            if idx + 1 >= len(parts):
+                return None
+            return parts[idx + 1]
+
+        if subcommand == "enable":
+            schedule = _flag_value("--schedule") or "every 2h"
+            mission = _flag_value("--mission")
+            deliver = _flag_value("--deliver")
+            job = enable_heartbeat(schedule=schedule, mission=mission, deliver=deliver)
+            return (
+                "Heartbeat enabled\n"
+                f"Job: {job['name']} ({job['id']})\n"
+                f"Schedule: {job['schedule_display']}\n"
+                f"Next run: {job.get('next_run_at')}"
+            )
+
+        if subcommand == "disable":
+            job = disable_heartbeat()
+            if not job:
+                return "Heartbeat is not configured."
+            return f"Heartbeat disabled\nJob: {job['name']} ({job['id']})"
+
+        if subcommand == "resume":
+            job = resume_heartbeat()
+            if not job:
+                return "Heartbeat is not configured."
+            return f"Heartbeat resumed\nNext run: {job.get('next_run_at')}"
+
+        if subcommand == "run":
+            job = run_heartbeat_now()
+            if not job:
+                return "Heartbeat is not configured."
+            return "Heartbeat triggered\nIt will run on the next scheduler tick."
+
+        status = heartbeat_status()
+        return (
+            "Heartbeat status\n"
+            f"Enabled: {status['enabled']}\n"
+            f"State: {status['state']}\n"
+            f"Job ID: {status['job_id']}\n"
+            f"Schedule: {status['schedule']}\n"
+            f"Next run: {status['next_run_at']}\n"
+            f"Memory: {status.get('include_memory', False)}"
+        )
 
     async def _handle_yolo_command(self, event: MessageEvent) -> str:
         """Handle /yolo — toggle dangerous command approval bypass."""

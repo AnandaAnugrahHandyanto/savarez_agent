@@ -376,6 +376,8 @@ def create_job(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     script: Optional[str] = None,
+    kind: Optional[str] = None,
+    include_memory: bool = False,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -395,6 +397,8 @@ def create_job(
         script: Optional path to a Python script whose stdout is injected into the
                 prompt each run.  The script runs before the agent turn, and its output
                 is prepended as context.  Useful for data collection / change detection.
+        kind: Optional job kind label for special workflows (for example "heartbeat")
+        include_memory: Whether this job should opt into the user's frozen memory snapshot
 
     Returns:
         The created job dict
@@ -437,6 +441,8 @@ def create_job(
         "provider": normalized_provider,
         "base_url": normalized_base_url,
         "script": normalized_script,
+        "kind": str(kind).strip() if isinstance(kind, str) and str(kind).strip() else None,
+        "include_memory": bool(include_memory),
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {

@@ -841,6 +841,43 @@ class TestRunJobPerJobOverrides:
         fake_db.close.assert_called_once()
 
 
+class TestRunJobMemoryOptIn:
+    def test_run_job_can_opt_into_memory_for_heartbeat_jobs(self, tmp_path):
+        job = {
+            "id": "heartbeat-job",
+            "name": "heartbeat",
+            "prompt": "hello",
+            "kind": "heartbeat",
+            "include_memory": True,
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert mock_agent_cls.call_args.kwargs["skip_memory"] is False
+
+
 class TestRunJobSkillBacked:
     def test_run_job_loads_skill_and_disables_recursive_cron_tools(self, tmp_path):
         job = {

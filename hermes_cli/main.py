@@ -2635,6 +2635,12 @@ def cmd_cron(args):
     cron_command(args)
 
 
+def cmd_heartbeat(args):
+    """Autonomous heartbeat management."""
+    from hermes_cli.heartbeat import heartbeat_command
+    heartbeat_command(args)
+
+
 def cmd_webhook(args):
     """Webhook subscription management."""
     from hermes_cli.webhook import webhook_command
@@ -4692,6 +4698,28 @@ For more help on a command:
     cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
 
     cron_parser.set_defaults(func=cmd_cron)
+
+    # =========================================================================
+    # heartbeat command
+    # =========================================================================
+    heartbeat_parser = subparsers.add_parser(
+        "heartbeat",
+        help="Manage Hermes autonomous heartbeat",
+        description="Enable, inspect, pause, resume, or trigger the autonomous heartbeat",
+    )
+    heartbeat_subparsers = heartbeat_parser.add_subparsers(dest="heartbeat_command")
+
+    heartbeat_enable = heartbeat_subparsers.add_parser("enable", help="Enable the autonomous heartbeat")
+    heartbeat_enable.add_argument("--schedule", default="every 2h", help="Heartbeat schedule (default: every 2h)")
+    heartbeat_enable.add_argument("--mission", help="Optional mission override for what the heartbeat should optimize for")
+    heartbeat_enable.add_argument("--deliver", help="Optional delivery target override")
+
+    heartbeat_subparsers.add_parser("status", help="Show heartbeat status")
+    heartbeat_subparsers.add_parser("disable", help="Pause the heartbeat")
+    heartbeat_subparsers.add_parser("resume", help="Resume a paused heartbeat")
+    heartbeat_subparsers.add_parser("run", help="Trigger the heartbeat on the next scheduler tick")
+
+    heartbeat_parser.set_defaults(func=cmd_heartbeat)
 
     # =========================================================================
     # webhook command

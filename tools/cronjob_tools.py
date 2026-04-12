@@ -203,6 +203,10 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     }
     if job.get("script"):
         result["script"] = job["script"]
+    if job.get("kind"):
+        result["kind"] = job["kind"]
+    if job.get("include_memory"):
+        result["include_memory"] = True
     return result
 
 

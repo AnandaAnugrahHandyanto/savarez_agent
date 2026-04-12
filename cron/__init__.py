@@ -27,6 +27,17 @@ from cron.jobs import (
     JOBS_FILE,
 )
 from cron.scheduler import tick
+from cron.heartbeat import (
+    DEFAULT_HEARTBEAT_NAME,
+    DEFAULT_HEARTBEAT_SCHEDULE,
+    build_heartbeat_prompt,
+    disable_heartbeat,
+    enable_heartbeat,
+    get_heartbeat_job,
+    heartbeat_status,
+    resume_heartbeat,
+    run_heartbeat_now,
+)
 
 __all__ = [
     "create_job",
@@ -39,4 +50,13 @@ __all__ = [
     "trigger_job",
     "tick",
     "JOBS_FILE",
+    "DEFAULT_HEARTBEAT_NAME",
+    "DEFAULT_HEARTBEAT_SCHEDULE",
+    "build_heartbeat_prompt",
+    "enable_heartbeat",
+    "disable_heartbeat",
+    "resume_heartbeat",
+    "run_heartbeat_now",
+    "get_heartbeat_job",
+    "heartbeat_status",
 ]

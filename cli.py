@@ -4559,6 +4559,41 @@ class HermesCLI:
         print(f"(._.) Unknown cron command: {subcommand}")
         print("  Available: list, add, edit, pause, resume, run, remove")
     
+    def _handle_heartbeat_command(self, cmd: str):
+        """Handle /heartbeat — manage the autonomous heartbeat."""
+        import shlex
+        from argparse import Namespace
+        from hermes_cli.heartbeat import heartbeat_command
+
+        tokens = shlex.split(cmd)
+        subcommand = tokens[1].lower() if len(tokens) > 1 else "status"
+        schedule = None
+        mission = None
+        deliver = None
+        i = 2
+        while i < len(tokens):
+            token = tokens[i]
+            if token == "--schedule" and i + 1 < len(tokens):
+                schedule = tokens[i + 1]
+                i += 2
+            elif token == "--mission" and i + 1 < len(tokens):
+                mission = tokens[i + 1]
+                i += 2
+            elif token == "--deliver" and i + 1 < len(tokens):
+                deliver = tokens[i + 1]
+                i += 2
+            else:
+                i += 1
+
+        heartbeat_command(
+            Namespace(
+                heartbeat_command=subcommand,
+                schedule=schedule,
+                mission=mission,
+                deliver=deliver,
+            )
+        )
+
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from hermes_cli.skills_hub import handle_skills_slash
@@ -4773,6 +4808,8 @@ class HermesCLI:
             self.save_conversation()
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
+        elif canonical == "heartbeat":
+            self._handle_heartbeat_command(cmd_original)
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)

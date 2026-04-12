@@ -456,6 +456,11 @@ class TestSubcommands:
         assert "list" in SUBCOMMANDS["/cron"]
         assert "add" in SUBCOMMANDS["/cron"]
 
+    def test_heartbeat_has_subcommands(self):
+        assert "/heartbeat" in SUBCOMMANDS
+        assert "status" in SUBCOMMANDS["/heartbeat"]
+        assert "enable" in SUBCOMMANDS["/heartbeat"]
+
     def test_commands_without_subcommands_not_in_dict(self):
         """Plain commands should not appear in SUBCOMMANDS."""
         assert "/help" not in SUBCOMMANDS
