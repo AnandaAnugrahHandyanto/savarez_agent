@@ -55,6 +55,19 @@ gbrain embed --stale
 gbrain doctor --json
 ```
 
+## X/Twitter capture on this machine
+
+Prefer the local bird-smart flow over the official X API for common capture work:
+
+```bash
+python skills/note-taking/gbrain/scripts/capture_x_to_gbrain.py \
+  --url "https://x.com/.../status/..." \
+  --brain-repo /path/to/brain
+```
+
+This writes a markdown source note under `sources/social/x/` and raw JSON under
+`.raw/social/x/`, ready for `gbrain sync --no-pull --no-embed`.
+
 ## Upstream docs worth reading
 
 - README: https://github.com/garrytan/gbrain

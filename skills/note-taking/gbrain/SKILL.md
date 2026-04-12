@@ -8,7 +8,7 @@ metadata:
   hermes:
     tags: [gbrain, knowledge-base, markdown, postgres, pglite, second-brain, personal-crm]
     category: note-taking
-    related_skills: [obsidian, llm-wiki, autonomous-second-brain-backend]
+    related_skills: [obsidian, llm-wiki, autonomous-second-brain-backend, bird-smart-capture]
 ---
 
 # GBrain
@@ -45,6 +45,7 @@ Use this skill when the user asks to:
 
 Read these linked files when needed:
 - `references/quickstart.md` — install, init, import, query, sync, verify
+- `references/x-bird-smart-integration.md` — use bird-smart instead of the X API for X/Twitter ingestion on this machine
 - `templates/agents-brain-first-snippet.md` — AGENTS.md snippet for brain-first behavior
 
 ## Core Operating Rules
@@ -55,6 +56,7 @@ Read these linked files when needed:
 4. After changing brain markdown, run `gbrain sync --no-pull --no-embed`.
 5. If any command fails, run `gbrain doctor --json` before guessing.
 6. Use Hermes memory/session search for agent behavior and prior chats; use GBrain for world knowledge.
+7. For X/Twitter ingestion on this machine, prefer `/home/sparta/.local/bin/bird-smart` over the official X API unless the user explicitly requests the API path.
 
 ## Setup Workflow
 
@@ -138,6 +140,27 @@ If embeddings are stale or missing:
 gbrain embed --stale
 ```
 
+### 6. X/Twitter ingestion for this machine: bird-smart, not X API
+
+For this user's environment, do not default to the official X API recipe. Prefer the
+local adaptive bird wrapper:
+
+```bash
+/home/sparta/.local/bin/bird-smart <x-url>
+```
+
+Why:
+- avoids X API setup/cost for common capture workflows
+- preserves full threads/articles better than shallow single-post extraction
+- can include useful replies when they add signal
+- matches the user's established bird-based workflow and credentials setup
+
+Recommended policy:
+- use `bird-smart` for single-link capture and selective enrichment
+- use backup credentials by default on this machine
+- include replies only when they add clarifications, counterarguments, or implementation detail
+- only use the official X API if the user explicitly wants account-wide monitoring features that bird cannot provide
+
 ## Brain-First Lookup Protocol
 
 When a user asks about a person, company, meeting, idea, or project in their known world:
@@ -196,6 +219,7 @@ Common fixes:
 - Use file tools to inspect and edit markdown brain files safely.
 - Use session/memory search for prior conversations or user preferences.
 - Use GBrain for the user's externalized world knowledge.
+- For X/Twitter capture on this machine, prefer `bird-smart` plus a local markdown/raw export into the brain repo over direct X API ingestion.
 - If the user wants an always-on personal CRM or second brain, recommend pairing GBrain with deterministic collectors and native cron/systemd jobs.
 
 ## Good Outcome
