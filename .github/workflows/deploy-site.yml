@@ -48,13 +48,10 @@ jobs:
           python-version: '3.11'
 
       - name: Install PyYAML for skill extraction
-        run: pip install pyyaml==6.0.2 httpx==0.28.1
+        run: pip install pyyaml httpx
 
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py
-
-      - name: Regenerate per-skill docs pages + catalogs
-        run: python3 website/scripts/generate-skill-docs.py
 
       - name: Build skills index (if not already present)
         env:
