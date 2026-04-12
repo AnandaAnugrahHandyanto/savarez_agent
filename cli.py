@@ -3603,7 +3603,110 @@ class HermesCLI:
             f"Agent Running: {'Yes' if is_running else 'No'}",
         ])
         self.console.print("\n".join(lines), highlight=False, markup=False)
-    
+
+    def _ensure_live_session_state(self):
+        if not hasattr(self, "_live_role"):
+            self._live_role = None
+        if not hasattr(self, "_live_runtime"):
+            from hermes_cli.live_sessions import LiveRuntimeState
+            self._live_runtime = LiveRuntimeState()
+
+    def _drain_live_session_messages(self):
+        self._ensure_live_session_state()
+        if not self._session_db:
+            return []
+        events = self._session_db.claim_live_messages(self.session_id)
+        if not events:
+            return []
+
+        for event in events:
+            sender = event.get("sender_label") or event.get("sender_session_id") or "unknown"
+            body = (event.get("body") or "").strip()
+            preview = body.replace("\n", " ")
+            if len(preview) > 120:
+                preview = preview[:117] + "..."
+            _cprint(f"  ↪ live message from {sender}: {preview}")
+            if body and hasattr(self, "_pending_input"):
+                self._pending_input.put(body)
+        return events
+
+    def _list_live_sessions(self, cmd_original: str) -> None:
+        self._ensure_live_session_state()
+        if not self._session_db:
+            _cprint("  Session database not available.")
+            return
+
+        include_stale = cmd_original.strip().lower().endswith(" all")
+        sessions = self._session_db.list_live_sessions(include_stale=include_stale, limit=100)
+        if not sessions:
+            _cprint("  No live CLI sessions found.")
+            return
+
+        self_id = getattr(self, "session_id", None)
+        _cprint("  Live CLI sessions:")
+        for row in sessions:
+            sid = row.get("session_id", "")
+            me = " *" if sid == self_id else "  "
+            role = row.get("role") or "-"
+            name = row.get("display_name") or sid
+            model = row.get("model") or "unknown"
+            provider = row.get("provider") or "auto"
+            status = "busy" if row.get("agent_running") else ("live" if row.get("is_active") else "stale")
+            age = int(row.get("age_seconds") or 0)
+            cwd = Path(row.get("cwd") or ".").name
+            _cprint(f"{me} {sid} [{role}] {status} {age}s {cwd} {model} ({provider}) — {name}")
+
+    def _handle_live_role_command(self, cmd_original: str) -> None:
+        self._ensure_live_session_state()
+        parts = cmd_original.split(None, 1)
+        if len(parts) == 1 or not parts[1].strip():
+            current = getattr(self, "_live_role", None)
+            _cprint(f"  Live role: {current or '(unset)'}")
+            return
+
+        value = parts[1].strip()
+        self._live_role = None if value == "-" else value
+        try:
+            from hermes_cli.live_sessions import refresh_live_registration
+            refresh_live_registration(self)
+        except Exception:
+            pass
+        _cprint(f"  Live role set: {self._live_role or '(cleared)'}")
+
+    def _handle_live_send_command(self, cmd_original: str) -> None:
+        self._ensure_live_session_state()
+        if not self._session_db:
+            _cprint("  Session database not available.")
+            return
+
+        parts = cmd_original.split(None, 2)
+        if len(parts) < 3 or not parts[1].strip() or not parts[2].strip():
+            _cprint("  Usage: /send <target> <message>")
+            _cprint("  Example: /send executor Implement issue-first PR workflow for ...")
+            return
+
+        target, body = parts[1].strip(), parts[2].strip()
+        resolved, error = self._session_db.resolve_live_session(
+            target,
+            exclude_session_id=self.session_id,
+        )
+        if error or not resolved:
+            _cprint(f"  {error or 'target not found'}")
+            return
+
+        sender_label = getattr(self, "_live_role", None) or self.session_id
+        self._session_db.queue_live_message(
+            target_session_id=resolved["session_id"],
+            body=body,
+            sender_session_id=self.session_id,
+            sender_label=sender_label,
+            sender_model=getattr(self, "model", None),
+        )
+        _cprint(
+            f"  Sent live message to {resolved['session_id']}"
+            f" [{resolved.get('role') or '-'}]"
+        )
+
     def _fast_command_available(self) -> bool:
         try:
             from hermes_cli.models import model_supports_fast_mode
@@ -5373,6 +5476,12 @@ class HermesCLI:
             self._show_gateway_status()
         elif canonical == "status":
             self._show_session_status()
+        elif canonical == "sessions":
+            self._list_live_sessions(cmd_original)
+        elif canonical == "role":
+            self._handle_live_role_command(cmd_original)
+        elif canonical == "send":
+            self._handle_live_send_command(cmd_original)
         elif canonical == "statusbar":
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"
@@ -9552,7 +9661,14 @@ class HermesCLI:
         # Start processing thread
         process_thread = threading.Thread(target=process_loop, daemon=True)
         process_thread.start()
-        
+
+        self._ensure_live_session_state()
+        try:
+            from hermes_cli.live_sessions import start_live_runtime
+            start_live_runtime(self)
+        except Exception:
+            logger.debug("Failed to start live CLI session runtime", exc_info=True)
+
         # Register atexit cleanup so resources are freed even on unexpected exit
         atexit.register(_run_cleanup)
         
@@ -9666,6 +9782,11 @@ class HermesCLI:
                     self._session_db.end_session(self.agent.session_id, "cli_close")
                 except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not close session in DB: %s", e)
+            try:
+                from hermes_cli.live_sessions import stop_live_runtime
+                stop_live_runtime(self)
+            except Exception:
+                logger.debug("Failed to stop live CLI session runtime", exc_info=True)
             # Plugin hook: on_session_end — safety net for interrupted exits.
             # run_conversation() already fires this per-turn on normal completion,
             # so only fire here if the agent was mid-turn (_agent_running) when

@@ -90,6 +90,12 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
+    CommandDef("sessions", "List live CLI sessions available for coordination", "Session",
+               args_hint="[all]", cli_only=True),
+    CommandDef("role", "Set or show the current live session role label", "Session",
+               args_hint="[name|-]", cli_only=True),
+    CommandDef("send", "Send a live message to another active CLI session", "Session",
+               aliases=("msg",), args_hint="<target> <message>", cli_only=True),
 
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",

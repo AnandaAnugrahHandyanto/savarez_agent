@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -84,10 +84,41 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_reasoning_items TEXT
 );
 
+CREATE TABLE IF NOT EXISTS live_sessions (
+    session_id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    display_name TEXT,
+    role TEXT,
+    model TEXT,
+    provider TEXT,
+    profile TEXT,
+    cwd TEXT,
+    pid INTEGER,
+    host TEXT,
+    agent_running INTEGER DEFAULT 0,
+    accepts_messages INTEGER DEFAULT 1,
+    started_at REAL NOT NULL,
+    last_seen REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS live_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_session_id TEXT NOT NULL,
+    sender_session_id TEXT,
+    sender_label TEXT,
+    sender_model TEXT,
+    body TEXT NOT NULL,
+    delivery_mode TEXT NOT NULL DEFAULT 'enqueue',
+    created_at REAL NOT NULL,
+    consumed_at REAL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_live_sessions_last_seen ON live_sessions(last_seen DESC);
+CREATE INDEX IF NOT EXISTS idx_live_messages_target_pending ON live_messages(target_session_id, consumed_at, created_at);
 """
 
 FTS_SQL = """
@@ -329,6 +360,43 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
+            if current_version < 7:
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS live_sessions (
+                        session_id TEXT PRIMARY KEY,
+                        source TEXT NOT NULL,
+                        display_name TEXT,
+                        role TEXT,
+                        model TEXT,
+                        provider TEXT,
+                        profile TEXT,
+                        cwd TEXT,
+                        pid INTEGER,
+                        host TEXT,
+                        agent_running INTEGER DEFAULT 0,
+                        accepts_messages INTEGER DEFAULT 1,
+                        started_at REAL NOT NULL,
+                        last_seen REAL NOT NULL
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS live_messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        target_session_id TEXT NOT NULL,
+                        sender_session_id TEXT,
+                        sender_label TEXT,
+                        sender_model TEXT,
+                        body TEXT NOT NULL,
+                        delivery_mode TEXT NOT NULL DEFAULT 'enqueue',
+                        created_at REAL NOT NULL,
+                        consumed_at REAL
+                    )
+                    """
+                )
+                cursor.execute("UPDATE schema_version SET version = 7")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -339,6 +407,18 @@ class SessionDB:
             )
         except sqlite3.OperationalError:
             pass  # Index already exists
+
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_live_sessions_last_seen "
+                "ON live_sessions(last_seen DESC)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_live_messages_target_pending "
+                "ON live_messages(target_session_id, consumed_at, created_at)"
+            )
+        except sqlite3.OperationalError:
+            pass
 
         # FTS5 setup (separate because CREATE VIRTUAL TABLE can't be in executescript with IF NOT EXISTS reliably)
         try:
@@ -1109,6 +1189,245 @@ class SessionDB:
                     (limit, offset),
                 )
             return [dict(row) for row in cursor.fetchall()]
+
+    def upsert_live_session(
+        self,
+        session_id: str,
+        *,
+        source: str,
+        display_name: Optional[str] = None,
+        role: Optional[str] = None,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        profile: Optional[str] = None,
+        cwd: Optional[str] = None,
+        pid: Optional[int] = None,
+        host: Optional[str] = None,
+        agent_running: bool = False,
+        accepts_messages: bool = True,
+        started_at: Optional[float] = None,
+    ) -> None:
+        """Insert or refresh a live CLI session row."""
+        now = time.time()
+        started = started_at or now
+
+        def _do(conn):
+            conn.execute(
+                """
+                INSERT INTO live_sessions (
+                    session_id, source, display_name, role, model, provider,
+                    profile, cwd, pid, host, agent_running, accepts_messages,
+                    started_at, last_seen
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    source = excluded.source,
+                    display_name = excluded.display_name,
+                    role = excluded.role,
+                    model = excluded.model,
+                    provider = excluded.provider,
+                    profile = excluded.profile,
+                    cwd = excluded.cwd,
+                    pid = excluded.pid,
+                    host = excluded.host,
+                    agent_running = excluded.agent_running,
+                    accepts_messages = excluded.accepts_messages,
+                    started_at = COALESCE(live_sessions.started_at, excluded.started_at),
+                    last_seen = excluded.last_seen
+                """,
+                (
+                    session_id,
+                    source,
+                    display_name,
+                    role,
+                    model,
+                    provider,
+                    profile,
+                    cwd,
+                    pid,
+                    host,
+                    1 if agent_running else 0,
+                    1 if accepts_messages else 0,
+                    started,
+                    now,
+                ),
+            )
+        self._execute_write(_do)
+
+    def remove_live_session(self, session_id: str) -> None:
+        """Delete a live session row when a CLI exits cleanly."""
+        def _do(conn):
+            conn.execute("DELETE FROM live_sessions WHERE session_id = ?", (session_id,))
+        self._execute_write(_do)
+
+    def set_live_session_role(self, session_id: str, role: Optional[str]) -> bool:
+        """Set or clear the current session's live role label."""
+        cleaned = role.strip() if role else None
+        if cleaned == "-":
+            cleaned = None
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE live_sessions SET role = ? WHERE session_id = ?",
+                (cleaned, session_id),
+            )
+            return cursor.rowcount
+        return self._execute_write(_do) > 0
+
+    def list_live_sessions(
+        self,
+        *,
+        active_within_seconds: int = 15,
+        include_stale: bool = False,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """List live sessions ordered by most recently seen heartbeat."""
+        cutoff = time.time() - max(active_within_seconds, 1)
+        query = (
+            "SELECT * FROM live_sessions "
+            "WHERE (? = 1 OR last_seen >= ?) "
+            "ORDER BY last_seen DESC LIMIT ?"
+        )
+        with self._lock:
+            cursor = self._conn.execute(
+                query,
+                (1 if include_stale else 0, cutoff, limit),
+            )
+            rows = cursor.fetchall()
+        sessions = []
+        now = time.time()
+        for row in rows:
+            item = dict(row)
+            item["is_active"] = bool(item.get("last_seen") and item["last_seen"] >= cutoff)
+            item["age_seconds"] = max(0.0, now - float(item.get("last_seen") or now))
+            item["agent_running"] = bool(item.get("agent_running"))
+            item["accepts_messages"] = bool(item.get("accepts_messages", 1))
+            sessions.append(item)
+        return sessions
+
+    def resolve_live_session(
+        self,
+        target: str,
+        *,
+        active_within_seconds: int = 15,
+        exclude_session_id: Optional[str] = None,
+    ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Resolve a live session by exact ID, unique prefix, role, or label."""
+        needle = (target or "").strip()
+        if not needle:
+            return None, "empty target"
+
+        live = self.list_live_sessions(
+            active_within_seconds=active_within_seconds,
+            include_stale=True,
+            limit=200,
+        )
+        if exclude_session_id:
+            live = [row for row in live if row.get("session_id") != exclude_session_id]
+
+        exact_id = [row for row in live if row.get("session_id") == needle]
+        if len(exact_id) == 1:
+            return exact_id[0], None
+
+        prefix = [row for row in live if str(row.get("session_id", "")).startswith(needle)]
+        if len(prefix) == 1:
+            return prefix[0], None
+        if len(prefix) > 1:
+            return None, f"ambiguous target '{needle}' — matches {', '.join(row['session_id'] for row in prefix[:5])}"
+
+        lowered = needle.lower()
+        by_role = [row for row in live if str(row.get("role") or "").lower() == lowered]
+        if len(by_role) == 1:
+            return by_role[0], None
+        if len(by_role) > 1:
+            return None, f"ambiguous role '{needle}' — matches {', '.join(row['session_id'] for row in by_role[:5])}"
+
+        by_label = [
+            row for row in live
+            if str(row.get("display_name") or "").strip().lower() == lowered
+        ]
+        if len(by_label) == 1:
+            return by_label[0], None
+        if len(by_label) > 1:
+            return None, f"ambiguous label '{needle}' — matches {', '.join(row['session_id'] for row in by_label[:5])}"
+
+        return None, f"live session '{needle}' not found"
+
+    def queue_live_message(
+        self,
+        *,
+        target_session_id: str,
+        body: str,
+        sender_session_id: Optional[str] = None,
+        sender_label: Optional[str] = None,
+        sender_model: Optional[str] = None,
+        delivery_mode: str = "enqueue",
+    ) -> int:
+        """Append a live message for another CLI session."""
+        now = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                """
+                INSERT INTO live_messages (
+                    target_session_id, sender_session_id, sender_label,
+                    sender_model, body, delivery_mode, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    target_session_id,
+                    sender_session_id,
+                    sender_label,
+                    sender_model,
+                    body,
+                    delivery_mode,
+                    now,
+                ),
+            )
+            return int(cursor.lastrowid)
+        return self._execute_write(_do)
+
+    def claim_live_messages(
+        self,
+        session_id: str,
+        *,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Atomically claim pending live messages for a CLI session."""
+        now = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                """
+                SELECT * FROM live_messages
+                WHERE target_session_id = ? AND consumed_at IS NULL
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            )
+            rows = cursor.fetchall()
+            if not rows:
+                return []
+            ids = [row["id"] for row in rows]
+            placeholders = ",".join("?" for _ in ids)
+            conn.execute(
+                f"UPDATE live_messages SET consumed_at = ? WHERE id IN ({placeholders})",
+                (now, *ids),
+            )
+            return [dict(row) for row in rows]
+        return self._execute_write(_do)
+
+    def prune_live_sessions(self, *, stale_after_seconds: int = 86400) -> int:
+        """Best-effort cleanup for abandoned live session rows."""
+        cutoff = time.time() - max(stale_after_seconds, 1)
+
+        def _do(conn):
+            cursor = conn.execute(
+                "DELETE FROM live_sessions WHERE last_seen < ?",
+                (cutoff,),
+            )
+            return cursor.rowcount
+        return int(self._execute_write(_do) or 0)
 
     # =========================================================================
     # Utility
