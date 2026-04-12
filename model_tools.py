@@ -29,6 +29,9 @@ from typing import Dict, Any, List, Optional, Tuple
 from tools.registry import registry
 from toolsets import resolve_toolset, validate_toolset
 
+# Config-driven hooks (Claude Code style)
+from hermes_agent.config_hooks import get_config_hook_manager
+
 logger = logging.getLogger(__name__)
 
 
@@ -497,6 +500,7 @@ def handle_function_call(
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
+        # Plugin hooks (legacy)
         try:
             from hermes_cli.plugins import invoke_hook
             invoke_hook(
@@ -507,6 +511,29 @@ def handle_function_call(
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
             )
+        except Exception:
+            pass
+
+        # Config-driven hooks (Claude Code style) - can modify arguments
+        try:
+            hook_mgr = get_config_hook_manager()
+            import asyncio
+            modified = asyncio.get_event_loop().run_until_complete(
+                hook_mgr.execute(
+                    "pre_tool_call",
+                    {
+                        "tool": function_name,
+                        "args": function_args,
+                        "task_id": task_id,
+                        "session_id": session_id,
+                        "tool_call_id": tool_call_id,
+                        "user_task": user_task,
+                    },
+                    tool_name=function_name,
+                )
+            )
+            if "args" in modified:
+                function_args = modified["args"]
         except Exception:
             pass
 
@@ -526,6 +553,30 @@ def handle_function_call(
                 user_task=user_task,
             )
 
+        # Config-driven post_tool_call hooks - can modify result
+        try:
+            hook_mgr = get_config_hook_manager()
+            import asyncio
+            modified = asyncio.get_event_loop().run_until_complete(
+                hook_mgr.execute(
+                    "post_tool_call",
+                    {
+                        "tool": function_name,
+                        "args": function_args,
+                        "result": result,
+                        "task_id": task_id,
+                        "session_id": session_id,
+                        "tool_call_id": tool_call_id,
+                    },
+                    tool_name=function_name,
+                )
+            )
+            if "result" in modified:
+                result = modified["result"]
+        except Exception:
+            pass
+
+        # Plugin hooks (legacy)
         try:
             from hermes_cli.plugins import invoke_hook
             invoke_hook(

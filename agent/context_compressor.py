@@ -682,6 +682,25 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 related to this topic and be more aggressive about compressing
                 everything else.  Inspired by Claude Code's ``/compact``.
         """
+        # Invoke pre_compact hooks (Claude Code style config-driven hooks)
+        try:
+            from hermes_agent.config_hooks import get_config_hook_manager
+            import asyncio
+            hook_mgr = get_config_hook_manager()
+            asyncio.get_event_loop().run_until_complete(
+                hook_mgr.execute(
+                    "pre_compact",
+                    {
+                        "compression_count": self.compression_count,
+                        "message_count": len(messages),
+                        "threshold_tokens": self.threshold_tokens,
+                        "context_length": self.context_length,
+                    }
+                )
+            )
+        except Exception:
+            pass  # Hooks are best-effort
+
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self.protect_first_n + 3 + 1
