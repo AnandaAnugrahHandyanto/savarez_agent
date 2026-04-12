@@ -8,11 +8,14 @@ Add, remove, or reorder entries here — both `hermes setup` and
 from __future__ import annotations
 
 import json
+import logging
 import os
 import urllib.request
 import urllib.error
 from difflib import get_close_matches
 from typing import Any, Optional
+
+from tools.ansi_strip import strip_ansi
 
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
 COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
@@ -55,6 +58,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 ]
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
+logger = logging.getLogger(__name__)
 
 
 def _codex_curated_models() -> list[str]:
@@ -67,6 +71,10 @@ def _codex_curated_models() -> list[str]:
     from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, _add_forward_compat_models
     return _add_forward_compat_models(list(DEFAULT_CODEX_MODELS))
 
+
+FIREWORKS_FIRE_PASS_MODELS: list[str] = [
+    "accounts/fireworks/routers/kimi-k2p5-turbo",
+]
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
@@ -128,6 +136,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         # Gemma open models (also served via AI Studio)
         "gemma-4-31b-it",
         "gemma-4-26b-it",
+    ],
+    "fireworks": [
+        *FIREWORKS_FIRE_PASS_MODELS,
+        "accounts/fireworks/models/kimi-k2p5",
+        "accounts/fireworks/models/glm-5",
+        "accounts/fireworks/models/deepseek-v3p1",
     ],
     "zai": [
         "glm-5",
@@ -485,6 +499,7 @@ _PROVIDER_LABELS = {
     "nous": "Nous Portal",
     "copilot": "GitHub Copilot",
     "gemini": "Google AI Studio",
+    "fireworks": "Fireworks AI",
     "zai": "Z.AI / GLM",
     "kimi-coding": "Kimi / Moonshot",
     "minimax": "MiniMax",
@@ -516,6 +531,7 @@ _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
+    "fireworks-ai": "fireworks",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
     "minimax-china": "minimax-cn",
@@ -839,7 +855,7 @@ def list_available_providers() -> list[dict[str, str]]:
     # Canonical providers in display order
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-        "gemini", "huggingface",
+        "gemini", "huggingface", "fireworks",
         "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "qwen-oauth", "xiaomi",
         "opencode-zen", "opencode-go",
@@ -1177,6 +1193,139 @@ def _resolve_copilot_catalog_api_key() -> str:
         return ""
 
 
+def _merge_unique_model_ids(*groups: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for model_id in group:
+            if model_id and model_id not in seen:
+                seen.add(model_id)
+                merged.append(model_id)
+    return merged
+
+
+def _sanitize_remote_model_id(raw_model_id: Any) -> str:
+    """Normalize remote model ids for safe terminal display and selection."""
+    if not isinstance(raw_model_id, str):
+        return ""
+    cleaned = strip_ansi(raw_model_id)
+    cleaned = "".join(ch for ch in cleaned if ch == "\t" or ch >= " ")
+    return cleaned.strip()
+
+
+def _fetch_fireworks_collection(
+    *,
+    api_key: str,
+    path: str,
+    items_key: str,
+    timeout: float = 5.0,
+    filter_expr: Optional[str] = None,
+) -> Optional[list[dict[str, Any]]]:
+    """Fetch a paginated Fireworks control-plane collection."""
+    if not api_key:
+        return None
+
+    items: list[dict[str, Any]] = []
+    page_token: Optional[str] = None
+    max_pages = 20
+    for _page in range(max_pages):
+        params: list[tuple[str, str]] = []
+        if filter_expr:
+            params.append(("filter", filter_expr))
+        params.append(("pageSize", "200"))
+        if page_token:
+            params.append(("pageToken", page_token))
+        url = f"https://api.fireworks.ai{path}?{urllib.parse.urlencode(params)}"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            logger.debug("Fireworks catalog fetch failed for %s: HTTP %s", path, exc.code)
+            return None
+        except urllib.error.URLError as exc:
+            logger.debug("Fireworks catalog fetch failed for %s: %s", path, exc)
+            return None
+        except json.JSONDecodeError as exc:
+            logger.debug("Fireworks catalog fetch returned invalid JSON for %s: %s", path, exc)
+            return None
+        except Exception as exc:
+            logger.debug("Fireworks catalog fetch failed for %s: %s", path, exc)
+            return None
+
+        page_items = data.get(items_key, []) if isinstance(data, dict) else []
+        if not isinstance(page_items, list):
+            logger.debug("Fireworks catalog fetch returned invalid %s payload for %s", items_key, path)
+            return None
+        items.extend(item for item in page_items if isinstance(item, dict))
+
+        next_page_token = str(data.get("nextPageToken") or "").strip() if isinstance(data, dict) else ""
+        if not next_page_token:
+            break
+        page_token = next_page_token
+    else:
+        logger.debug("Fireworks catalog fetch exceeded max pages for %s", path)
+
+    return items
+
+
+def _fetch_fireworks_models(
+    api_key: Optional[str] = None,
+    timeout: float = 5.0,
+) -> Optional[list[str]]:
+    """Fetch live Fireworks serverless LLM model ids from the control plane API."""
+    if not api_key:
+        return None
+
+    accounts = _fetch_fireworks_collection(
+        api_key=api_key,
+        path="/v1/accounts",
+        items_key="accounts",
+        timeout=timeout,
+    )
+    if not accounts:
+        return None
+
+    model_ids: list[str] = []
+    for account in accounts:
+        account_name = str(account.get("name") or "").strip()
+        account_id = account_name.rsplit("/", 1)[-1]
+        if not account_id:
+            continue
+        models = _fetch_fireworks_collection(
+            api_key=api_key,
+            path=f"/v1/accounts/{urllib.parse.quote(account_id, safe='')}/models",
+            items_key="models",
+            timeout=timeout,
+            filter_expr="supports_serverless=true",
+        )
+        if not models:
+            continue
+        for item in models:
+            if item.get("kind") != "HF_BASE_MODEL":
+                continue
+            status = item.get("status")
+            if isinstance(status, dict):
+                status_code = str(status.get("code") or "").strip().upper()
+                if status_code and status_code != "OK":
+                    continue
+            model_id = _sanitize_remote_model_id(item.get("name"))
+            if not model_id:
+                continue
+            if model_id != str(item.get("name") or "").strip():
+                logger.debug("Skipping Fireworks model with sanitized identifier for account %s", account_id)
+                continue
+            model_ids.append(model_id)
+
+    return _merge_unique_model_ids(model_ids) or None
+
+
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
     """Return the best known model catalog for a provider.
 
@@ -1218,6 +1367,17 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = _fetch_ai_gateway_models()
         if live:
             return live
+    if normalized == "fireworks":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+
+            creds = resolve_api_key_provider_credentials("fireworks")
+            live = _fetch_fireworks_models(str(creds.get("api_key") or "").strip())
+            if live:
+                return _merge_unique_model_ids(FIREWORKS_FIRE_PASS_MODELS, live)
+        except Exception:
+            pass
+        return list(_PROVIDER_MODELS.get("fireworks", []))
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:

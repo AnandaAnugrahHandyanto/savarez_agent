@@ -549,11 +549,55 @@ def test_cmd_model_falls_back_to_auto_on_invalid_provider(monkeypatch, capsys):
     assert "No change." in output
 
 
+def test_cmd_model_displays_fireworks_active_label(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "model": {
+                "default": "accounts/fireworks/routers/kimi-k2p5-turbo",
+                "provider": "fireworks",
+            }
+        },
+    )
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key: "")
+    monkeypatch.setattr("hermes_cli.config.save_env_value", lambda key, value: None)
+    monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda requested, **kwargs: "fireworks")
+    monkeypatch.setattr(hermes_main, "_prompt_provider_choice", lambda choices: len(choices) - 1)
+    monkeypatch.setattr(hermes_main.sys.stdin, "isatty", lambda: True)
+
+    hermes_main.cmd_model(SimpleNamespace())
+    output = capsys.readouterr().out
+
+    assert "Active provider:  Fireworks AI" in output
+    assert "No change." in output
+
+
+def test_main_chat_parser_accepts_fireworks_provider(monkeypatch):
+    captured = {}
+
+    def _fake_cmd_chat(args):
+        captured["provider"] = args.provider
+        captured["query"] = args.query
+
+    monkeypatch.setattr(hermes_main, "cmd_chat", _fake_cmd_chat)
+    monkeypatch.setattr(
+        hermes_main.sys,
+        "argv",
+        ["hermes", "chat", "--provider", "fireworks", "-q", "hi"],
+    )
+
+    hermes_main.main()
+
+    assert captured == {"provider": "fireworks", "query": "hi"}
+
+
 def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     monkeypatch.setattr(
         "hermes_cli.config.get_env_value",
         lambda key: "" if key in {"OPENAI_BASE_URL", "OPENAI_API_KEY"} else "",
     )
+    monkeypatch.setattr(hermes_main.sys.stdin, "isatty", lambda: True)
     saved_env = {}
     monkeypatch.setattr("hermes_cli.config.save_env_value", lambda key, value: saved_env.__setitem__(key, value))
     monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: saved_env.__setitem__("MODEL", model))
@@ -591,6 +635,27 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     assert saved_env["MODEL"] == "llm"
 
 
+def test_model_flow_custom_requires_tty_for_api_key_entry(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "hermes_cli.config.get_env_value",
+        lambda key: "" if key in {"OPENAI_BASE_URL", "OPENAI_API_KEY"} else "",
+    )
+    monkeypatch.setattr(hermes_main.sys.stdin, "isatty", lambda: False)
+
+    prompts = []
+
+    def _fake_input(prompt=""):
+        prompts.append(prompt)
+        return "http://localhost:8000"
+
+    monkeypatch.setattr("builtins.input", _fake_input)
+    monkeypatch.setattr("getpass.getpass", lambda _prompt="": (_ for _ in ()).throw(AssertionError("getpass should not be called")))
+
+    hermes_main._model_flow_custom({})
+    output = capsys.readouterr().out
+
+    assert len(prompts) == 1
+    assert "interactive terminal required for API key entry" in output
 def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
     monkeypatch.setattr(hermes_main, "_require_tty", lambda *a: None)
     monkeypatch.setattr(
