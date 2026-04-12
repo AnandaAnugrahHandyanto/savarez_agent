@@ -8,7 +8,7 @@
 
 ### What's different in this fork
 
-- **Expanded resume display** — Adds a `resume_display: expanded` configuration option that renders the last assistant response in the standard Hermes response panel below the compact recap when resuming a session, mirroring how a fresh response is displayed.
+- **Official Obsidian skills, adopted additively** — Ships Hermes-integrated versions of the upstream Obsidian skills (`obsidian-markdown`, `obsidian-cli`, `obsidian-bases`, `json-canvas`) alongside the existing bundled `obsidian` skill. The broad `obsidian` skill remains the generic entry point and routes to the focused skills for format-specific or app-specific tasks.
 - **Reasoning effort in the TUI status bar** — The status bar now shows the active reasoning effort parenthetically after the model name (e.g. `claude-sonnet-4 (high)`) at medium and wide terminal widths, giving persistent visibility into the configured level.
 
 ---

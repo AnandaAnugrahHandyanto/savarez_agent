@@ -134,7 +134,11 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| [`json-canvas`](/docs/user-guide/skills/bundled/note-taking/note-taking-json-canvas) | Create and edit JSON Canvas files (.canvas) with nodes, edges, groups, and connections. | `note-taking/json-canvas` |
 | [`obsidian`](/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian) | Read, search, create, and edit notes in the Obsidian vault. | `note-taking/obsidian` |
+| [`obsidian-bases`](/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian-bases) | Create and edit Obsidian Bases (.base files) with views, filters, formulas, and summaries. | `note-taking/obsidian-bases` |
+| [`obsidian-cli`](/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian-cli) | Interact with Obsidian vaults using the Obsidian CLI to read, create, search, and manage notes, tasks, properties, and plugin/theme workflows. | `note-taking/obsidian-cli` |
+| [`obsidian-markdown`](/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian-markdown) | Create and edit Obsidian Flavored Markdown with wikilinks, embeds, callouts, properties, and other Obsidian-specific syntax. | `note-taking/obsidian-markdown` |
 
 ## productivity
 
