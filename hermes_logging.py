@@ -202,7 +202,25 @@ def setup_logging(
     global _logging_initialized
     if _logging_initialized and not force:
         home = hermes_home or get_hermes_home()
-        return home / "logs"
+        log_dir = home / "logs"
+        # Even when already initialized, ensure mode-specific handlers
+        # exist.  The normal startup path calls setup_logging(mode="cli")
+        # first (hermes_cli/main.py) and setup_logging(mode="gateway")
+        # later (gateway/run.py).  Without this, gateway.log is never
+        # attached.  _add_rotating_handler() is idempotent so calling it
+        # again for an already-attached path is a no-op.
+        if mode == "gateway":
+            from agent.redact import RedactingFormatter
+            _add_rotating_handler(
+                logging.getLogger(),
+                log_dir / "gateway.log",
+                level=logging.INFO,
+                max_bytes=5 * 1024 * 1024,
+                backup_count=3,
+                formatter=RedactingFormatter(_LOG_FORMAT),
+                log_filter=_ComponentFilter(COMPONENT_PREFIXES["gateway"]),
+            )
+        return log_dir
 
     home = hermes_home or get_hermes_home()
     log_dir = home / "logs"
