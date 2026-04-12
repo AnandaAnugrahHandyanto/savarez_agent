@@ -4240,6 +4240,7 @@ class AIAgent:
             collected_output_items: list = []
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
+                    self._touch_activity("receiving Codex stream response")
                     for event in stream:
                         if self._interrupt_requested:
                             break
@@ -4249,6 +4250,7 @@ class AIAgent:
                             delta_text = getattr(event, "delta", "")
                             if delta_text:
                                 self._codex_streamed_text_parts.append(delta_text)
+                                self._touch_activity("receiving Codex stream response")
                             if delta_text and not has_tool_calls:
                                 if not first_delta_fired:
                                     first_delta_fired = True
@@ -4266,6 +4268,7 @@ class AIAgent:
                             reasoning_text = getattr(event, "delta", "")
                             if reasoning_text:
                                 self._fire_reasoning_delta(reasoning_text)
+                                self._touch_activity("receiving Codex reasoning")
                         # Collect completed output items — some backends
                         # (chatgpt.com/backend-api/codex) stream valid items
                         # via response.output_item.done but the SDK's
@@ -4368,6 +4371,7 @@ class AIAgent:
                 event_type = getattr(event, "type", None)
                 if not event_type and isinstance(event, dict):
                     event_type = event.get("type")
+                self._touch_activity("receiving Codex fallback stream response")
 
                 # Collect output items and text deltas for backfill
                 if event_type == "response.output_item.done":

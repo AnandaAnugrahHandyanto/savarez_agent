@@ -1197,3 +1197,53 @@ def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
     assert reasoning_ids.count("rs_xyz") == 1
     assert reasoning_ids.count("rs_zzz") == 1
     assert len(reasoning_items) == 2
+
+
+def test_codex_stream_updates_activity_tracker(monkeypatch):
+    """Regression for #7794: Codex stream events must update _touch_activity."""
+    agent = _build_agent(monkeypatch)
+
+    text_event = SimpleNamespace(type="response.output_text.delta", delta="hello")
+    reasoning_event = SimpleNamespace(type="response.reasoning.delta", delta="thinking")
+
+    class _StreamWithEvents:
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def __iter__(self):
+            yield text_event
+            yield reasoning_event
+        def get_final_response(self):
+            return _codex_message_response("done")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(stream=lambda **kw: _StreamWithEvents())
+    )
+
+    initial_ts = agent._last_activity_ts
+    agent._run_codex_stream(_codex_request_kwargs())
+    assert agent._last_activity_ts > initial_ts
+    assert "Codex" in agent._last_activity_desc
+
+
+def test_codex_fallback_stream_updates_activity_tracker(monkeypatch):
+    """Regression for #7794: Codex fallback stream must also update activity."""
+    agent = _build_agent(monkeypatch)
+
+    events = [
+        SimpleNamespace(type="response.output_text.delta", delta="hi"),
+        SimpleNamespace(
+            type="response.completed",
+            response=_codex_message_response("result"),
+        ),
+    ]
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **kw: iter(events))
+    )
+
+    initial_ts = agent._last_activity_ts
+    agent._run_codex_create_stream_fallback(_codex_request_kwargs())
+    assert agent._last_activity_ts > initial_ts
+    assert "Codex" in agent._last_activity_desc
