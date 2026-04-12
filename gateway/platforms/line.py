@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 LINE_API_BASE = "https://api.line.me/v2/bot"
 LINE_DATA_API_BASE = "https://api-data.line.me/v2/bot"
+LINE_LOADING_API = "https://api.line.me/v2/bot/chat/loading/start"
 MAX_MESSAGE_LENGTH = 5000
 DEFAULT_WEBHOOK_HOST = "0.0.0.0"
 DEFAULT_WEBHOOK_PORT = 8443
@@ -135,6 +136,9 @@ class LineAdapter(BasePlatformAdapter):
         self._webhook_app: Optional[web.Application] = None
         self._webhook_runner: Optional[web.AppRunner] = None
         self._user_profile_cache: Dict[str, Dict[str, str]] = {}
+        self._last_loading_at: Dict[str, float] = {}
+        self._loading_interval_seconds: float = 18.0
+        self._loading_seconds: int = 20
 
     # ------------------------------------------------------------------
     # HTTP client helpers
@@ -253,7 +257,9 @@ class LineAdapter(BasePlatformAdapter):
             return web.Response(status=400, text="Invalid JSON")
 
         events = payload.get("events", [])
+        logger.info("[LINE] webhook received: destination=%s events=%d", payload.get("destination", ""), len(events))
         for event in events:
+            logger.info("[LINE] webhook event type=%s source_type=%s", event.get("type", ""), event.get("source", {}).get("type", ""))
             asyncio.create_task(self._process_event(event))
 
         return web.Response(status=200, text="OK")
@@ -261,6 +267,7 @@ class LineAdapter(BasePlatformAdapter):
     async def _process_event(self, event: dict) -> None:
         """Process a single LINE webhook event."""
         event_type = event.get("type", "")
+        logger.info("[LINE] processing event type=%s", event_type)
 
         if event_type == "message":
             await self._handle_message_event(event)
@@ -307,23 +314,27 @@ class LineAdapter(BasePlatformAdapter):
 
         # Build display name
         display_name = await self._get_user_display_name(user_id, source)
+        source_obj = self.build_source(
+            chat_id=chat_id,
+            chat_name=chat_id,
+            chat_type="group" if source.get("type") in ("group", "room") else "dm",
+            user_id=user_id,
+            user_name=display_name,
+        )
+        message_id = event.get("message", {}).get("id")
+        logger.info("[LINE] inbound text: user=%s chat=%s text=%r", display_name, chat_id, text[:200])
+        if str(chat_id).startswith("U"):
+            asyncio.create_task(self.send_typing(chat_id))
 
         msg_event = MessageEvent(
-            platform=Platform.LINE,
-            chat_id=chat_id,
-            user_id=user_id,
-            username=display_name,
             text=text,
             message_type=MessageType.TEXT,
-            raw_event=event,
-            metadata={"reply_token": reply_token},
+            source=source_obj,
+            raw_message=event,
+            message_id=str(message_id) if message_id else None,
         )
-        msg_event.source = self.build_source(
-            user_id=user_id,
-            username=display_name,
-            chat_id=chat_id,
-            is_group=source.get("type") in ("group", "room"),
-        )
+        if reply_token:
+            setattr(msg_event, "metadata", {"reply_token": reply_token})
         await self.handle_message(msg_event)
 
     async def _handle_media_message(self, event: dict, media_type: str) -> None:
@@ -360,24 +371,28 @@ class LineAdapter(BasePlatformAdapter):
             logger.warning("[LINE] Failed to download %s %s: %s", media_type, message_id, e)
 
         msg_type = MessageType.IMAGE if media_type == "image" else MessageType.TEXT
+        source_obj = self.build_source(
+            chat_id=chat_id,
+            chat_name=chat_id,
+            chat_type="group" if source.get("type") in ("group", "room") else "dm",
+            user_id=user_id,
+            user_name=display_name,
+        )
+        logger.info("[LINE] inbound media: type=%s user=%s chat=%s", media_type, display_name, chat_id)
+        if str(chat_id).startswith("U"):
+            asyncio.create_task(self.send_typing(chat_id))
 
         msg_event = MessageEvent(
-            platform=Platform.LINE,
-            chat_id=chat_id,
-            user_id=user_id,
-            username=display_name,
             text=text,
             message_type=msg_type,
-            raw_event=event,
-            image_path=image_path,
-            metadata={"reply_token": reply_token},
+            source=source_obj,
+            raw_message=event,
+            message_id=str(message_id) if message_id else None,
+            media_urls=[image_path] if image_path else [],
+            media_types=[media_type] if image_path else [],
         )
-        msg_event.source = self.build_source(
-            user_id=user_id,
-            username=display_name,
-            chat_id=chat_id,
-            is_group=source.get("type") in ("group", "room"),
-        )
+        if reply_token:
+            setattr(msg_event, "metadata", {"reply_token": reply_token})
         await self.handle_message(msg_event)
 
     # ------------------------------------------------------------------
@@ -387,35 +402,49 @@ class LineAdapter(BasePlatformAdapter):
     async def send(
         self,
         chat_id: str,
-        text: str,
-        reply_to_message_id: Optional[str] = None,
+        content: str,
+        reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a text message via LINE Push API."""
-        if not text.strip():
+        """Send a text message via LINE Reply API when possible, else Push API."""
+        if not content.strip():
             return SendResult(success=True)
 
         # Strip markdown — LINE does not render it
-        text = strip_markdown(text)
+        text = strip_markdown(content)
 
         messages = self._build_text_messages(text)
         try:
             client = await self._ensure_client()
-            resp = await client.post(
-                f"{LINE_API_BASE}/message/push",
-                headers=self._auth_headers(),
-                json={
-                    "to": chat_id,
-                    "messages": messages,
-                },
-            )
+            reply_token = metadata.get("reply_token") if metadata else None
+            if reply_token:
+                logger.info("[LINE] replying to %s via reply API", chat_id)
+                resp = await client.post(
+                    f"{LINE_API_BASE}/message/reply",
+                    headers=self._auth_headers(),
+                    json={
+                        "replyToken": reply_token,
+                        "messages": messages,
+                    },
+                )
+            else:
+                logger.info("[LINE] sending push to %s", chat_id)
+                resp = await client.post(
+                    f"{LINE_API_BASE}/message/push",
+                    headers=self._auth_headers(),
+                    json={
+                        "to": chat_id,
+                        "messages": messages,
+                    },
+                )
             if resp.status_code == 200:
+                logger.info("[LINE] send success to %s", chat_id)
                 return SendResult(success=True)
             error_body = resp.text[:300]
-            logger.warning("[LINE] Push failed (HTTP %d): %s", resp.status_code, error_body)
+            logger.warning("[LINE] Send failed (HTTP %d): %s", resp.status_code, error_body)
             return SendResult(success=False, error=f"HTTP {resp.status_code}: {error_body}")
         except Exception as e:
-            logger.error("[LINE] Push error: %s", e)
+            logger.error("[LINE] Send error: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
     async def send_reply(
@@ -449,14 +478,30 @@ class LineAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
-        """Send typing indicator (loading animation) to LINE chat."""
+        """Send LINE loading animation, throttled like OpenClaw's keepalive."""
+        import time
+
+        # LINE loading animation is mainly for 1:1 chats; quietly skip groups/rooms.
+        if not str(chat_id).startswith("U"):
+            return
+
+        now = time.monotonic()
+        last = self._last_loading_at.get(chat_id, 0.0)
+        if now - last < self._loading_interval_seconds:
+            return
+
         try:
             client = await self._ensure_client()
-            await client.post(
-                f"{LINE_API_BASE}/chat/loading",
+            resp = await client.post(
+                LINE_LOADING_API,
                 headers=self._auth_headers(),
-                json={"chatId": chat_id, "loadingSeconds": 5},
+                json={"chatId": chat_id, "loadingSeconds": self._loading_seconds},
             )
+            if resp.status_code in (200, 202):
+                self._last_loading_at[chat_id] = now
+                logger.info("[LINE] loading animation shown for %s (HTTP %d)", chat_id, resp.status_code)
+            else:
+                logger.info("[LINE] loading animation not accepted for %s (HTTP %d): %s", chat_id, resp.status_code, resp.text[:200])
         except Exception as e:
             logger.debug("[LINE] Failed to send typing indicator: %s", e)
 
