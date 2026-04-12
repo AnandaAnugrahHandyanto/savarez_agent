@@ -126,3 +126,15 @@ class TestTelegramLoopPrevention:
         now[0] += 1.0
         reset_msg = _message(text="bot after reset", sender_id=123, is_bot=True)
         assert adapter._should_accept_bot_loop_message(reset_msg) is True
+
+    def test_stale_loop_state_is_pruned_after_timeout(self, adapter, monkeypatch):
+        now = [50.0]
+        monkeypatch.setattr("gateway.platforms.telegram.time.monotonic", lambda: now[0])
+
+        first = _message(text="ping", sender_id=123, is_bot=True)
+        assert adapter._should_accept_bot_loop_message(first) is True
+        assert adapter._bot_loop_states
+
+        now[0] += 120.0
+        adapter._telegram_prune_bot_loop_states(now[0], adapter._telegram_loop_settings())
+        assert adapter._bot_loop_states == {}

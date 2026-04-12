@@ -2205,6 +2205,18 @@ class TelegramAdapter(BasePlatformAdapter):
             if key == prefix or key.startswith(prefix + ":"):
                 self._bot_loop_states.pop(key, None)
 
+    def _telegram_prune_bot_loop_states(self, now: float, settings: dict) -> None:
+        """Drop stale loop-prevention entries so the in-memory cache stays bounded."""
+        if not hasattr(self, "_bot_loop_states"):
+            self._bot_loop_states = {}
+            return
+        stale_keys = [
+            key for key, state in self._bot_loop_states.items()
+            if now - float((state or {}).get("last_seen", now)) > settings["max_duration_seconds"]
+        ]
+        for key in stale_keys:
+            self._bot_loop_states.pop(key, None)
+
     def _telegram_loop_state_allows(self, key: str, signature: str, now: float, settings: dict) -> tuple[bool, Optional[dict], str]:
         if not hasattr(self, "_bot_loop_states"):
             self._bot_loop_states = {}
@@ -2257,6 +2269,7 @@ class TelegramAdapter(BasePlatformAdapter):
         settings = self._telegram_loop_settings()
         signature = self._telegram_loop_message_signature(message)
         now = time.monotonic()
+        self._telegram_prune_bot_loop_states(now, settings)
         global_key = self._telegram_bot_loop_key(scope_key, sender_id, global_key=True)
         sender_key = self._telegram_bot_loop_key(scope_key, sender_id)
 
