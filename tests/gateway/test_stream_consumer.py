@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.config import PlatformConfig
+from gateway.platforms.weixin import WeixinAdapter
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
@@ -180,6 +182,68 @@ class TestStreamRunMediaStripping:
 
 
 # ── Segment break (tool boundary) tests ──────────────────────────────────
+
+
+class TestNonEditablePlatforms:
+    """Platforms without edit_message support should skip visible partials."""
+
+    @staticmethod
+    def _make_weixin_adapter():
+        adapter = WeixinAdapter(
+            PlatformConfig(enabled=True, token="token", extra={"account_id": "acct"})
+        )
+        adapter.send = AsyncMock(
+            side_effect=[
+                SimpleNamespace(success=True, message_id="msg_1"),
+                SimpleNamespace(success=True, message_id="msg_2"),
+            ]
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_non_editable_platform_sends_only_final_message(self):
+        adapter = self._make_weixin_adapter()
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉"),
+        )
+
+        consumer.on_delta("我是 Hermes")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.08)
+        consumer.on_delta("，你可以把我当成一个助手。")
+        await asyncio.sleep(0.08)
+        consumer.finish()
+        await task
+
+        sent_texts = [call.kwargs["content"] for call in adapter.send.call_args_list]
+        assert sent_texts == ["我是 Hermes，你可以把我当成一个助手。"]
+
+    @pytest.mark.asyncio
+    async def test_non_editable_platform_segment_break_preserves_prior_segment(self):
+        adapter = self._make_weixin_adapter()
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉"),
+        )
+
+        consumer.on_delta("第一段")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.08)
+        consumer.on_delta(None)
+        await asyncio.sleep(0.08)
+        consumer.on_delta("第二段")
+        await asyncio.sleep(0.08)
+        consumer.finish()
+        await task
+
+        sent_texts = [call.kwargs["content"] for call in adapter.send.call_args_list]
+        assert sent_texts == ["第一段", "第二段"]
 
 
 class TestSegmentBreakOnToolBoundary:

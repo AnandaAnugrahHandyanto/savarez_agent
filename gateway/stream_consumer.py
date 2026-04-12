@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from gateway.platforms.base import BasePlatformAdapter
+
 logger = logging.getLogger("gateway.stream_consumer")
 
 # Sentinel to signal the stream is complete
@@ -87,6 +89,22 @@ class GatewayStreamConsumer:
         self._flood_strikes = 0         # Consecutive flood-control edit failures
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
+        self._platform_supports_editing = self._detect_platform_edit_support()
+
+    def _detect_platform_edit_support(self) -> bool:
+        """Return True when the adapter implements real message editing."""
+        edit_attr = getattr(self.adapter, "edit_message", None)
+        if edit_attr is None:
+            return False
+
+        adapter_edit = getattr(type(self.adapter), "edit_message", None)
+        if adapter_edit is BasePlatformAdapter.edit_message:
+            return False
+
+        if adapter_edit is None and isinstance(self.adapter, BasePlatformAdapter):
+            return False
+
+        return True
 
     @property
     def already_sent(self) -> bool:
@@ -174,63 +192,75 @@ class GatewayStreamConsumer:
 
                 current_update_visible = False
                 if should_edit and self._accumulated:
-                    # Split overflow: if accumulated text exceeds the platform
-                    # limit, split into properly sized chunks.
+                    # Platforms without real edit support (e.g. Weixin) should
+                    # not expose partial streamed text. Wait for the final
+                    # response instead of sending a half-finished message plus a
+                    # continuation tail.
                     if (
-                        len(self._accumulated) > _safe_limit
-                        and self._message_id is None
+                        not self._platform_supports_editing
+                        and commentary_text is None
+                        and not got_done
+                        and not got_segment_break
                     ):
-                        # No existing message to edit (first message or after a
-                        # segment break).  Use truncate_message — the same
-                        # helper the non-streaming path uses — to split with
-                        # proper word/code-fence boundaries and chunk
-                        # indicators like "(1/2)".
-                        chunks = self.adapter.truncate_message(
-                            self._accumulated, _safe_limit
-                        )
-                        for chunk in chunks:
-                            await self._send_new_chunk(chunk, self._message_id)
-                        self._accumulated = ""
-                        self._last_sent_text = ""
-                        self._last_edit_time = time.monotonic()
-                        if got_done:
-                            self._final_response_sent = self._already_sent
-                            return
-                        if got_segment_break:
+                        current_update_visible = False
+                    else:
+                        # Split overflow: if accumulated text exceeds the platform
+                        # limit, split into properly sized chunks.
+                        if (
+                            len(self._accumulated) > _safe_limit
+                            and self._message_id is None
+                        ):
+                            # No existing message to edit (first message or after a
+                            # segment break).  Use truncate_message — the same
+                            # helper the non-streaming path uses — to split with
+                            # proper word/code-fence boundaries and chunk
+                            # indicators like "(1/2)".
+                            chunks = self.adapter.truncate_message(
+                                self._accumulated, _safe_limit
+                            )
+                            for chunk in chunks:
+                                await self._send_new_chunk(chunk, self._message_id)
+                            self._accumulated = ""
+                            self._last_sent_text = ""
+                            self._last_edit_time = time.monotonic()
+                            if got_done:
+                                self._final_response_sent = self._already_sent
+                                return
+                            if got_segment_break:
+                                self._message_id = None
+                                self._fallback_final_send = False
+                                self._fallback_prefix = ""
+                            continue
+
+                        # Existing message: edit it with the first chunk, then
+                        # start a new message for the overflow remainder.
+                        while (
+                            len(self._accumulated) > _safe_limit
+                            and self._message_id is not None
+                            and self._edit_supported
+                        ):
+                            split_at = self._accumulated.rfind("\n", 0, _safe_limit)
+                            if split_at < _safe_limit // 2:
+                                split_at = _safe_limit
+                            chunk = self._accumulated[:split_at]
+                            ok = await self._send_or_edit(chunk)
+                            if self._fallback_final_send or not ok:
+                                # Edit failed (or backed off due to flood control)
+                                # while attempting to split an oversized message.
+                                # Keep the full accumulated text intact so the
+                                # fallback final-send path can deliver the remaining
+                                # continuation without dropping content.
+                                break
+                            self._accumulated = self._accumulated[split_at:].lstrip("\n")
                             self._message_id = None
-                            self._fallback_final_send = False
-                            self._fallback_prefix = ""
-                        continue
+                            self._last_sent_text = ""
 
-                    # Existing message: edit it with the first chunk, then
-                    # start a new message for the overflow remainder.
-                    while (
-                        len(self._accumulated) > _safe_limit
-                        and self._message_id is not None
-                        and self._edit_supported
-                    ):
-                        split_at = self._accumulated.rfind("\n", 0, _safe_limit)
-                        if split_at < _safe_limit // 2:
-                            split_at = _safe_limit
-                        chunk = self._accumulated[:split_at]
-                        ok = await self._send_or_edit(chunk)
-                        if self._fallback_final_send or not ok:
-                            # Edit failed (or backed off due to flood control)
-                            # while attempting to split an oversized message.
-                            # Keep the full accumulated text intact so the
-                            # fallback final-send path can deliver the remaining
-                            # continuation without dropping content.
-                            break
-                        self._accumulated = self._accumulated[split_at:].lstrip("\n")
-                        self._message_id = None
-                        self._last_sent_text = ""
+                        display_text = self._accumulated
+                        if not got_done and not got_segment_break and commentary_text is None:
+                            display_text += self.cfg.cursor
 
-                    display_text = self._accumulated
-                    if not got_done and not got_segment_break and commentary_text is None:
-                        display_text += self.cfg.cursor
-
-                    current_update_visible = await self._send_or_edit(display_text)
-                    self._last_edit_time = time.monotonic()
+                        current_update_visible = await self._send_or_edit(display_text)
+                        self._last_edit_time = time.monotonic()
 
                 if got_done:
                     # Final edit without cursor. If progressive editing failed
