@@ -4561,7 +4561,7 @@ class AIAgent:
             self._client_kwargs["default_headers"] = copilot_default_headers()
         elif "api.kimi.com" in normalized:
             self._client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
-        elif "portal.qwen.ai" in normalized:
+        elif "portal.qwen.ai" in normalized or getattr(self, "provider", "") == "qwen-oauth":
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
         else:
             self._client_kwargs.pop("default_headers", None)
@@ -5837,6 +5837,9 @@ class AIAgent:
                 str(msg.get("role", "user") or "user"),
             )
         return transformed
+
+    def _is_qwen_portal_url(self) -> bool:
+        return "portal.qwen.ai" in self._base_url_lower or "dashscope.aliyuncs.com" in self._base_url_lower
 
     def _anthropic_preserve_dots(self) -> bool:
         """True when using an anthropic-compatible endpoint that preserves dots in model names.

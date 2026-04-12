@@ -894,7 +894,7 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "HERMES_QWEN_BASE_URL": {
-        "description": "Qwen Portal base URL override (default: https://portal.qwen.ai/v1)",
+        "description": "Qwen Portal base URL override (default: https://dashscope.aliyuncs.com/compatible-mode/v1)",
         "prompt": "Qwen Portal base URL (leave empty for default)",
         "url": None,
         "password": False,
