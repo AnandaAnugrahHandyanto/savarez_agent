@@ -2171,13 +2171,15 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_id = getattr(message, "chat_id", "") or ""
         chat_info = await self.get_chat_info(chat_id)
         sender_profile = await self._resolve_sender_profile(sender_id)
+        source_chat_type = self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type)
+        thread_id = self._resolve_inbound_thread_id(message=message, source_chat_type=source_chat_type)
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
+            chat_type=source_chat_type,
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
-            thread_id=getattr(message, "thread_id", None) or None,
+            thread_id=thread_id,
             user_id_alt=sender_profile["user_id_alt"],
         )
         normalized = MessageEvent(
@@ -2193,6 +2195,25 @@ class FeishuAdapter(BasePlatformAdapter):
             timestamp=datetime.now(),
         )
         await self._dispatch_inbound_event(normalized)
+
+    @staticmethod
+    def _resolve_inbound_thread_id(*, message: Any, source_chat_type: str) -> Optional[str]:
+        """Infer Feishu thread context for forum/topic messages.
+
+        Feishu does not reliably populate ``thread_id`` on every message inside an
+        existing topic. In forum chats, ``upper_message_id`` is the best available
+        topic anchor; fall back to ``parent_id`` only when nothing better exists.
+        """
+        explicit_thread_id = str(getattr(message, "thread_id", "") or "").strip()
+        if explicit_thread_id:
+            return explicit_thread_id
+        if source_chat_type != "forum":
+            return None
+        upper_message_id = str(getattr(message, "upper_message_id", "") or "").strip()
+        if upper_message_id:
+            return upper_message_id
+        parent_id = str(getattr(message, "parent_id", "") or "").strip()
+        return parent_id or None
 
     async def _dispatch_inbound_event(self, event: MessageEvent) -> None:
         """Apply Feishu-specific burst protection before entering the base adapter."""
