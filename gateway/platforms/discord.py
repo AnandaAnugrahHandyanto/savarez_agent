@@ -53,7 +53,9 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
     cache_image_from_url,
+    cache_image_from_bytes,
     cache_audio_from_url,
+    cache_audio_from_bytes,
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
 )
@@ -2370,7 +2372,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     ext = "." + content_type.split("/")[-1].split(";")[0]
                     if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
                         ext = ".jpg"
-                    cached_path = await cache_image_from_url(att.url, ext=ext)
+                    try:
+                        image_bytes = await att.read()
+                        cached_path = cache_image_from_bytes(image_bytes, ext=ext)
+                    except Exception:
+                        cached_path = await cache_image_from_url(att.url, ext=ext)
                     media_urls.append(cached_path)
                     media_types.append(content_type)
                     print(f"[Discord] Cached user image: {cached_path}", flush=True)
@@ -2384,7 +2390,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     ext = "." + content_type.split("/")[-1].split(";")[0]
                     if ext not in (".ogg", ".mp3", ".wav", ".webm", ".m4a"):
                         ext = ".ogg"
-                    cached_path = await cache_audio_from_url(att.url, ext=ext)
+                    try:
+                        audio_bytes = await att.read()
+                        cached_path = cache_audio_from_bytes(audio_bytes, ext=ext)
+                    except Exception:
+                        cached_path = await cache_audio_from_url(att.url, ext=ext)
                     media_urls.append(cached_path)
                     media_types.append(content_type)
                     print(f"[Discord] Cached user audio: {cached_path}", flush=True)
