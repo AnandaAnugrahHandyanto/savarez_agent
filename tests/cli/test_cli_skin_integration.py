@@ -92,6 +92,16 @@ class TestCliSkinPromptIntegration:
             ("class:prompt-working", "[1m 15s] "),
         ]
 
+    def test_elapsed_badge_rolls_over_to_hours(self):
+        cli = _make_cli_stub()
+        cli._last_user_message_at = datetime.now() - timedelta(seconds=3_665)
+
+        set_active_skin("default")
+        frags = cli._get_tui_prompt_fragments()
+
+        assert frags[0] == ("class:prompt", "❯ ")
+        assert frags[1] == ("class:prompt-working", "[1h 1m since last user message] ")
+
     def test_icon_only_skin_symbol_still_visible_in_special_states(self):
         cli = _make_cli_stub()
         cli._secret_state = {"response_queue": object()}
