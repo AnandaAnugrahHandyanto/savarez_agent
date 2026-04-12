@@ -169,6 +169,12 @@ class LineAdapter(BasePlatformAdapter):
             )
             return False
 
+        # Prevent two profiles from running the same bot simultaneously
+        if not self._acquire_platform_lock(
+            "line-channel-token", self.channel_access_token, "LINE channel access token"
+        ):
+            return False
+
         # Verify bot credentials by fetching bot info
         try:
             client = await self._ensure_client()
@@ -177,6 +183,7 @@ class LineAdapter(BasePlatformAdapter):
                 headers=self._auth_headers(),
             )
             if resp.status_code != 200:
+                self._release_platform_lock()
                 self._set_fatal_error(
                     "auth_failed",
                     f"LINE bot info request failed (HTTP {resp.status_code}): {resp.text[:200]}",
@@ -187,6 +194,7 @@ class LineAdapter(BasePlatformAdapter):
             bot_name = bot_info.get("displayName", "LINE Bot")
             logger.info("[LINE] Connected as %s", bot_name)
         except Exception as e:
+            self._release_platform_lock()
             self._set_fatal_error(
                 "connection_error",
                 f"Failed to verify LINE bot credentials: {e}",
@@ -214,6 +222,7 @@ class LineAdapter(BasePlatformAdapter):
                 self.webhook_path,
             )
         except Exception as e:
+            self._release_platform_lock()
             self._set_fatal_error(
                 "webhook_error",
                 f"Failed to start LINE webhook server: {e}",
@@ -235,6 +244,7 @@ class LineAdapter(BasePlatformAdapter):
         if self._http_client and not self._http_client.is_closed:
             await self._http_client.aclose()
             self._http_client = None
+        self._release_platform_lock()
         self._mark_disconnected()
 
     # ------------------------------------------------------------------
