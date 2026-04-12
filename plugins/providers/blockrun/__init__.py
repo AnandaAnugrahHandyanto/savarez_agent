@@ -8,10 +8,30 @@ Provider names: "blockrun", "clawrouter"
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, Optional
 
 # Aliases that map to this provider (checked by plugins/providers/__init__.py)
 ALIASES = ["clawrouter"]
+
+
+def _export_session_wallet() -> None:
+    """If BLOCKRUN_WALLET_KEY is not set but ~/.blockrun/.session exists,
+    export it so auth.py auto-detection can find BlockRun as a provider."""
+    if os.environ.get("BLOCKRUN_WALLET_KEY"):
+        return
+    session_file = os.path.expanduser("~/.blockrun/.session")
+    try:
+        if os.path.exists(session_file):
+            key = open(session_file).read().strip()
+            if key:
+                os.environ["BLOCKRUN_WALLET_KEY"] = key
+    except OSError:
+        pass
+
+
+# Export wallet from session file at import time — enables auto-detection
+_export_session_wallet()
 
 
 def resolve(
