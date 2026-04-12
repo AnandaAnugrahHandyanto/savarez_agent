@@ -19,6 +19,7 @@ def _make_agent(
     compression_enabled: bool = True,
     threshold_percent: float = 0.50,
     main_context: int = 200_000,
+    config_context_length: int | None = None,
 ) -> AIAgent:
     """Build a minimal AIAgent with a compressor, skipping __init__."""
     agent = AIAgent.__new__(AIAgent)
@@ -43,6 +44,7 @@ def _make_agent(
     compressor.context_length = main_context
     compressor.threshold_tokens = int(main_context * threshold_percent)
     agent.context_compressor = compressor
+    agent._config_context_length = config_context_length
 
     return agent
 
@@ -127,6 +129,86 @@ def test_feasibility_check_passes_live_main_runtime():
             "api_key": "codex-token",
             "api_mode": "codex_responses",
         },
+    )
+
+
+@patch("agent.auxiliary_client._get_auxiliary_env_override", return_value=None)
+@patch("agent.auxiliary_client._get_auxiliary_provider", return_value="auto")
+@patch("hermes_cli.config.load_config", return_value={"compression": {"summary_model": "", "summary_provider": "auto", "summary_base_url": None}, "auxiliary": {"compression": {"provider": "auto", "model": "", "base_url": "", "api_key": "", "api_mode": ""}}})
+@patch("agent.model_metadata.get_model_context_length")
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_auto_mode_reuses_main_config_context_when_aux_matches_main_runtime(
+    mock_get_client,
+    mock_ctx_len,
+    mock_load_config,
+    mock_get_provider,
+    mock_get_env_override,
+):
+    """Auto compression should reuse the main config context when routing back to the live main runtime."""
+    agent = _make_agent(
+        main_context=1_050_000,
+        threshold_percent=0.50,
+        config_context_length=1_050_000,
+    )
+    agent.model = "gpt-5.4"
+    agent.provider = "custom"
+    agent.base_url = "https://llm.mics.tw/v1"
+    agent.api_key = "sk-main"
+
+    mock_client = MagicMock()
+    mock_client.base_url = "https://llm.mics.tw/v1"
+    mock_client.api_key = "sk-main"
+    mock_get_client.return_value = (mock_client, "gpt-5.4")
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    agent._check_compression_model_feasibility()
+
+    assert messages == []
+    assert agent._compression_warning is None
+    mock_ctx_len.assert_not_called()
+
+
+@patch("agent.auxiliary_client._get_auxiliary_env_override", return_value=None)
+@patch("agent.auxiliary_client._get_auxiliary_provider", return_value="auto")
+@patch("hermes_cli.config.load_config", return_value={"compression": {"summary_model": "gpt-5.4", "summary_provider": "auto", "summary_base_url": None}, "auxiliary": {"compression": {"provider": "auto", "model": "", "base_url": "", "api_key": "", "api_mode": ""}}})
+@patch("agent.model_metadata.get_model_context_length", return_value=128_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_explicit_summary_model_does_not_reuse_main_config_context(
+    mock_get_client,
+    mock_ctx_len,
+    mock_load_config,
+    mock_get_provider,
+    mock_get_env_override,
+):
+    """Any explicit compression model override disables main-context reuse."""
+    agent = _make_agent(
+        main_context=1_050_000,
+        threshold_percent=0.50,
+        config_context_length=1_050_000,
+    )
+    agent.model = "gpt-5.4"
+    agent.provider = "custom"
+    agent.base_url = "https://llm.mics.tw/v1"
+    agent.api_key = "sk-main"
+
+    mock_client = MagicMock()
+    mock_client.base_url = "https://llm.mics.tw/v1"
+    mock_client.api_key = "sk-main"
+    mock_get_client.return_value = (mock_client, "gpt-5.4")
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    agent._check_compression_model_feasibility()
+
+    assert len(messages) == 1
+    assert "128,000" in messages[0]
+    mock_ctx_len.assert_called_once_with(
+        "gpt-5.4",
+        base_url="https://llm.mics.tw/v1",
+        api_key="sk-main",
     )
 
 

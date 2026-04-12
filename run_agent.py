@@ -1708,6 +1708,89 @@ class AIAgent:
             "api_mode": getattr(self, "api_mode", "") or "",
         }
 
+    def _compression_has_explicit_override(self) -> bool:
+        """Return True when compression routing is explicitly configured.
+
+        Reusing the main model's configured context length is only safe when
+        compression is still in full auto mode and resolves back to the live main
+        runtime. Any explicit provider/model/base URL/API override means the
+        auxiliary route may intentionally differ and must be re-measured.
+        """
+        try:
+            from hermes_cli.config import load_config as _load_agent_config
+            from agent.auxiliary_client import (
+                _get_auxiliary_env_override,
+                _get_auxiliary_provider,
+            )
+        except Exception:
+            return True
+
+        try:
+            _agent_cfg = _load_agent_config()
+        except Exception:
+            _agent_cfg = {}
+
+        if not isinstance(_agent_cfg, dict):
+            _agent_cfg = {}
+
+        _compression_cfg = _agent_cfg.get("compression", {})
+        if not isinstance(_compression_cfg, dict):
+            _compression_cfg = {}
+
+        _aux_cfg = _agent_cfg.get("auxiliary", {})
+        if not isinstance(_aux_cfg, dict):
+            _aux_cfg = {}
+        _aux_compression_cfg = _aux_cfg.get("compression", {})
+        if not isinstance(_aux_compression_cfg, dict):
+            _aux_compression_cfg = {}
+
+        _aux_provider = str(_aux_compression_cfg.get("provider") or "").strip().lower()
+        if _aux_provider and _aux_provider != "auto":
+            return True
+        for _key in ("model", "base_url", "api_key", "api_mode"):
+            if str(_aux_compression_cfg.get(_key) or "").strip():
+                return True
+
+        _summary_provider = str(_compression_cfg.get("summary_provider") or "").strip().lower()
+        if _summary_provider and _summary_provider != "auto":
+            return True
+        for _key in ("summary_model", "summary_base_url"):
+            if str(_compression_cfg.get(_key) or "").strip():
+                return True
+
+        if _get_auxiliary_provider("compression") != "auto":
+            return True
+        for _suffix in ("MODEL", "BASE_URL", "API_KEY", "API_MODE"):
+            if _get_auxiliary_env_override("compression", _suffix):
+                return True
+
+        return False
+
+    def _compression_can_reuse_main_context(
+        self,
+        aux_model: str,
+        aux_base_url: str,
+        aux_api_key: str,
+    ) -> bool:
+        """Return True when auto compression resolves back to the live main runtime."""
+        _config_context_length = getattr(self, "_config_context_length", None)
+        if not isinstance(_config_context_length, int) or _config_context_length <= 0:
+            return False
+        if self._compression_has_explicit_override():
+            return False
+
+        _main_model = str(getattr(self, "model", "") or "")
+        _main_base_url = str(getattr(self, "base_url", "") or "")
+        _main_api_key = str(getattr(self, "api_key", "") or "")
+
+        if str(aux_model or "") != _main_model:
+            return False
+        if str(aux_base_url or "").rstrip("/") != _main_base_url.rstrip("/"):
+            return False
+        if str(aux_api_key or "") != _main_api_key:
+            return False
+        return True
+
     def _check_compression_model_feasibility(self) -> None:
         """Warn at session start if the auxiliary compression model's context
         window is smaller than the main model's compression threshold.
@@ -1748,11 +1831,18 @@ class AIAgent:
 
             aux_base_url = str(getattr(client, "base_url", ""))
             aux_api_key = str(getattr(client, "api_key", ""))
-            aux_context = get_model_context_length(
+            if self._compression_can_reuse_main_context(
                 aux_model,
-                base_url=aux_base_url,
-                api_key=aux_api_key,
-            )
+                aux_base_url,
+                aux_api_key,
+            ):
+                aux_context = int(self._config_context_length)
+            else:
+                aux_context = get_model_context_length(
+                    aux_model,
+                    base_url=aux_base_url,
+                    api_key=aux_api_key,
+                )
 
             threshold = self.context_compressor.threshold_tokens
             if aux_context < threshold:
