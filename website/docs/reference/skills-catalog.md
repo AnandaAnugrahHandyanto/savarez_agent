@@ -182,6 +182,10 @@ Note taking skills, to save information, assist with research, and collaborate o
 | Skill | Description | Path |
 |-------|-------------|------|
 | `obsidian` | Read, search, and create notes in the Obsidian vault. | `note-taking/obsidian` |
+| `obsidian-markdown` | Create and edit Obsidian Flavored Markdown with wikilinks, embeds, callouts, properties, and other Obsidian-specific syntax. | `note-taking/obsidian-markdown` |
+| `obsidian-cli` | Interact with Obsidian vaults using the Obsidian CLI to read, create, search, and manage notes, tasks, properties, and plugin/theme workflows. | `note-taking/obsidian-cli` |
+| `obsidian-bases` | Create and edit Obsidian Bases (.base files) with views, filters, formulas, and summaries. | `note-taking/obsidian-bases` |
+| `json-canvas` | Create and edit JSON Canvas files (.canvas) with nodes, edges, groups, and connections. | `note-taking/json-canvas` |
 
 ## productivity
 
