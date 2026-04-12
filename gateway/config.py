@@ -942,28 +942,37 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     feishu_app_id = os.getenv("FEISHU_APP_ID")
     feishu_app_secret = os.getenv("FEISHU_APP_SECRET")
     if feishu_app_id and feishu_app_secret:
-        if Platform.FEISHU not in config.platforms:
-            config.platforms[Platform.FEISHU] = PlatformConfig()
-        config.platforms[Platform.FEISHU].enabled = True
-        config.platforms[Platform.FEISHU].extra.update({
-            "app_id": feishu_app_id,
-            "app_secret": feishu_app_secret,
-            "domain": os.getenv("FEISHU_DOMAIN", "feishu"),
-            "connection_mode": os.getenv("FEISHU_CONNECTION_MODE", "websocket"),
-        })
-        feishu_encrypt_key = os.getenv("FEISHU_ENCRYPT_KEY", "")
-        if feishu_encrypt_key:
-            config.platforms[Platform.FEISHU].extra["encrypt_key"] = feishu_encrypt_key
-        feishu_verification_token = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
-        if feishu_verification_token:
-            config.platforms[Platform.FEISHU].extra["verification_token"] = feishu_verification_token
-        feishu_home = os.getenv("FEISHU_HOME_CHANNEL")
-        if feishu_home:
-            config.platforms[Platform.FEISHU].home_channel = HomeChannel(
-                platform=Platform.FEISHU,
-                chat_id=feishu_home,
-                name=os.getenv("FEISHU_HOME_CHANNEL_NAME", "Home"),
+        _feishu_cfg = config.platforms.get(Platform.FEISHU)
+        # config.yaml ``platforms.feishu.enabled: false`` must win over env
+        # (including stale FEISHU_* exported in the shell after .env is edited).
+        if _feishu_cfg is not None and not _feishu_cfg.enabled:
+            logger.info(
+                "Feishu: credentials in environment but platforms.feishu.enabled "
+                "is false — not connecting."
             )
+        else:
+            if Platform.FEISHU not in config.platforms:
+                config.platforms[Platform.FEISHU] = PlatformConfig()
+            config.platforms[Platform.FEISHU].enabled = True
+            config.platforms[Platform.FEISHU].extra.update({
+                "app_id": feishu_app_id,
+                "app_secret": feishu_app_secret,
+                "domain": os.getenv("FEISHU_DOMAIN", "feishu"),
+                "connection_mode": os.getenv("FEISHU_CONNECTION_MODE", "websocket"),
+            })
+            feishu_encrypt_key = os.getenv("FEISHU_ENCRYPT_KEY", "")
+            if feishu_encrypt_key:
+                config.platforms[Platform.FEISHU].extra["encrypt_key"] = feishu_encrypt_key
+            feishu_verification_token = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
+            if feishu_verification_token:
+                config.platforms[Platform.FEISHU].extra["verification_token"] = feishu_verification_token
+            feishu_home = os.getenv("FEISHU_HOME_CHANNEL")
+            if feishu_home:
+                config.platforms[Platform.FEISHU].home_channel = HomeChannel(
+                    platform=Platform.FEISHU,
+                    chat_id=feishu_home,
+                    name=os.getenv("FEISHU_HOME_CHANNEL_NAME", "Home"),
+                )
 
     # WeCom (Enterprise WeChat)
     wecom_bot_id = os.getenv("WECOM_BOT_ID")
