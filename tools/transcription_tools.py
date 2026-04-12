@@ -359,7 +359,11 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
                 language=shlex.quote(language),
                 model=shlex.quote(normalized_model),
             )
-            subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+            # shell=False with shlex.split: args are already quoted, so splitting
+            # back into an argv list avoids invoking /bin/sh at all. The template
+            # itself comes from config.yaml (trusted); user-supplied values are
+            # shlex.quote()'d above.
+            subprocess.run(shlex.split(command), check=True, capture_output=True, text=True)
 
             txt_files = sorted(Path(output_dir).glob("*.txt"))
             if not txt_files:

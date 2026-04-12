@@ -488,13 +488,25 @@ class SessionStore:
         self._lock = threading.Lock()
         self._has_active_processes_fn = has_active_processes_fn
         
-        # Initialize SQLite session database
+        # Initialize SQLite session database.
+        # SQLite is the store-of-record. JSONL remains only as a read-only
+        # compatibility path for legacy sessions and manual inspection.
+        # Failure to open the DB is logged loudly (not silently swallowed)
+        # so operators notice they're running in degraded mode.
         self._db = None
         try:
             from hermes_state import SessionDB
             self._db = SessionDB()
         except Exception as e:
-            print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
+            logger.error(
+                "SQLite session store unavailable; gateway is running in "
+                "DEGRADED JSONL-only mode. New sessions lack transaction "
+                "guarantees. Fix SessionDB init error: %s",
+                e, exc_info=True,
+            )
+            # Also print so it surfaces on bare stdout where logging may
+            # not yet be configured (e.g. very early gateway startup).
+            print(f"[gateway] ERROR: SQLite session store unavailable, JSONL-only mode: {e}", flush=True)
     
     def _ensure_loaded(self) -> None:
         """Load sessions index from disk if not already loaded."""
