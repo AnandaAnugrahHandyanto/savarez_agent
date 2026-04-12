@@ -1587,8 +1587,8 @@ class APIServerAdapter(BasePlatformAdapter):
         then legacy paths like /root/{repo}.
         """
         import os
-        # Check /workspaces/<any_user>/<repo> — preferred convention
-        workspaces_root = "/workspaces"
+        # Check HERMES_WORKSPACE_DIR or /workspaces/<any_user>/<repo> — preferred convention
+        workspaces_root = os.environ.get("HERMES_WORKSPACE_DIR", "/workspaces")
         if os.path.isdir(workspaces_root):
             try:
                 for entry in sorted(os.scandir(workspaces_root), key=lambda e: e.name):
@@ -1647,7 +1647,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 parts = url.split("github.com/")[-1].split("/")
                 if len(parts) >= 1:
                     owner = parts[0]
-            dest_dir = f"/workspaces/{owner}"
+            workspaces_root = os.environ.get("HERMES_WORKSPACE_DIR", "/workspaces")
+            dest_dir = f"{workspaces_root}/{owner}"
             os.makedirs(dest_dir, exist_ok=True)
             dest = f"{dest_dir}/{repo}"
             rc, out, err = await self._ws_run(["git", "clone", "--branch", branch, url, dest], dest_dir)
@@ -1733,6 +1734,8 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             with open(abs_path, "w", encoding="utf-8") as f:
                 f.write(content)
+            # Bust the Sylang symbols cache so the next /symbols call is fresh
+            self._ws_symbols_cache.pop(repo, None)
             return web.json_response({"status": "ok", "path": rel, "written": True})
         except Exception as e:
             return web.json_response({"status": "error", "message": str(e)}, status=500)
@@ -1839,6 +1842,102 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response({"status": "error", "message": err.strip()}, status=500)
 
     # ------------------------------------------------------------------
+    # Sylang workspace symbols — batch file delivery for hermes web app
+    # Routes: GET /ws/{repo}/symbols
+    #         POST /ws/{repo}/symbols/invalidate
+    # ------------------------------------------------------------------
+
+    _ws_symbols_cache: "dict[str, tuple[float, dict]]" = {}
+    _WS_SYMBOLS_TTL = 300  # 5 minutes
+
+    _SYLANG_EXTS = frozenset({
+        '.req', '.agt', '.blk', '.fml', '.fun', '.haz', '.ifc', '.itm',
+        '.ple', '.sam', '.seq', '.sgl', '.smd', '.spec', '.spr', '.tst',
+        '.ucd', '.vcf', '.vml', '.fta', '.flr',
+    })
+    _SYLANG_IGNORED = frozenset({
+        '.git', 'node_modules', '.next', 'dist', '.turbo', '.cache', '__pycache__',
+    })
+
+    def _walk_sylang_files(self, workspace: str) -> "list[dict]":
+        """Walk workspace directory tree and return [{path, content}] for all Sylang files.
+
+        path is relative to workspace root. Depth-limited to 8 levels.
+        """
+        import os
+        results: list[dict] = []
+
+        def walk(directory: str, depth: int) -> None:
+            if depth > 8:
+                return
+            try:
+                with os.scandir(directory) as it:
+                    for entry in it:
+                        if entry.name in self._SYLANG_IGNORED:
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            walk(entry.path, depth + 1)
+                        elif entry.is_file(follow_symlinks=False):
+                            _, ext = os.path.splitext(entry.name)
+                            if ext in self._SYLANG_EXTS:
+                                try:
+                                    with open(entry.path, 'r', encoding='utf-8', errors='replace') as f:
+                                        content = f.read()
+                                    rel = os.path.relpath(entry.path, workspace).replace(os.sep, '/')
+                                    results.append({'path': rel, 'content': content})
+                                except OSError:
+                                    pass
+            except (PermissionError, OSError):
+                pass
+
+        walk(workspace, 0)
+        return results
+
+    async def _handle_ws_symbols(self, request: "web.Request") -> "web.Response":
+        """GET /ws/{repo}/symbols — batch-delivers all Sylang file contents.
+
+        Returns: { files: [{path, content}], fileCount: int, cachedAt: int }
+        - path  : relative to workspace root, forward-slash separated
+        - content: raw UTF-8 text of the file
+        - cachedAt: Unix epoch milliseconds of when this snapshot was taken
+
+        Results are cached for 5 minutes. The cache is invalidated when any
+        file is written via POST /ws/{repo}/file or POST /ws/{repo}/symbols/invalidate.
+        """
+        import asyncio, time
+        repo = request.match_info["repo"]
+        workspace = self._ws_find_repo(repo)
+        if not workspace:
+            return web.json_response(
+                {"status": "error", "message": f"Workspace for '{repo}' not found"},
+                status=404,
+            )
+
+        now = time.time()
+        cached = self._ws_symbols_cache.get(repo)
+        if cached and (now - cached[0]) < self._WS_SYMBOLS_TTL:
+            return web.json_response(cached[1])
+
+        # Walk + read files in a thread (blocking I/O)
+        loop = asyncio.get_event_loop()
+        files = await loop.run_in_executor(None, self._walk_sylang_files, workspace)
+
+        result = {
+            "files": files,
+            "fileCount": len(files),
+            "cachedAt": int(now * 1000),
+        }
+        self._ws_symbols_cache[repo] = (now, result)
+        logger.info("[ws/symbols] %s: delivered %d Sylang files", repo, len(files))
+        return web.json_response(result)
+
+    async def _handle_ws_symbols_invalidate(self, request: "web.Request") -> "web.Response":
+        """POST /ws/{repo}/symbols/invalidate — bust the symbols cache for a repo."""
+        repo = request.match_info["repo"]
+        self._ws_symbols_cache.pop(repo, None)
+        return web.json_response({"status": "ok", "repo": repo})
+
+    # ------------------------------------------------------------------
     # BasePlatformAdapter interface
     # ------------------------------------------------------------------
 
@@ -1881,6 +1980,9 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/ws/{repo}/git/push", self._handle_ws_git_push)
             self._app.router.add_post("/ws/{repo}/git/pull", self._handle_ws_git_pull)
             self._app.router.add_post("/ws/{repo}/git/pr", self._handle_ws_git_pr)
+            # Sylang symbol graph — batch file delivery (no LLM, fast)
+            self._app.router.add_get("/ws/{repo}/symbols", self._handle_ws_symbols)
+            self._app.router.add_post("/ws/{repo}/symbols/invalidate", self._handle_ws_symbols_invalidate)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:
