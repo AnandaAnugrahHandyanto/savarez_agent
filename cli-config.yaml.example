@@ -558,6 +558,7 @@ agent:
 #   slack:         hermes-slack          (same as telegram)
 #   signal:        hermes-signal         (same as telegram)
 #   homeassistant: hermes-homeassistant  (same as telegram)
+#   line:          hermes-line           (same as telegram)
 #
 platform_toolsets:
   cli: [hermes-cli]
@@ -567,6 +568,7 @@ platform_toolsets:
   slack: [hermes-slack]
   signal: [hermes-signal]
   homeassistant: [hermes-homeassistant]
+  line: [hermes-line]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)
