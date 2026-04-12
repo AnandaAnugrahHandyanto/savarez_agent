@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
-    "wecom", "weixin", "sms", "email", "webhook", "bluebubbles",
+    "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
 })
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
@@ -234,6 +234,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         "dingtalk": Platform.DINGTALK,
         "feishu": Platform.FEISHU,
         "wecom": Platform.WECOM,
+        "wecom_callback": Platform.WECOM_CALLBACK,
         "weixin": Platform.WEIXIN,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
@@ -442,6 +443,14 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
 
+        # Redact secrets from both stdout and stderr before any return path.
+        try:
+            from agent.redact import redact_sensitive_text
+            stdout = redact_sensitive_text(stdout)
+            stderr = redact_sensitive_text(stderr)
+        except Exception:
+            pass
+
         if result.returncode != 0:
             parts = [f"Script exited with code {result.returncode}"]
             if stderr:
@@ -450,13 +459,6 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 parts.append(f"stdout:\n{stdout}")
             return False, "\n".join(parts)
 
-        # Redact any secrets that may appear in script output before
-        # they are injected into the LLM prompt context.
-        try:
-            from agent.redact import redact_sensitive_text
-            stdout = redact_sensitive_text(stdout)
-        except Exception:
-            pass
         return True, stdout
 
     except subprocess.TimeoutExpired:
@@ -721,6 +723,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             provider_sort=pr.get("sort"),
             disabled_toolsets=["cronjob", "messaging", "clarify"],
             quiet_mode=True,
+            skip_context_files=True,  # Don't inject SOUL.md/AGENTS.md from scheduler cwd
             skip_memory=True,  # Cron system prompts would corrupt user representations
             platform="cron",
             session_id=_cron_session_id,
