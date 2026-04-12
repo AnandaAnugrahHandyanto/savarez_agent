@@ -592,6 +592,52 @@ class TestSendTyping:
 
 
 # ---------------------------------------------------------------------------
+# TestStopTyping — clear assistant.threads.setStatus
+# ---------------------------------------------------------------------------
+
+
+class TestStopTyping:
+    """Test clearing the assistant typing indicator."""
+
+    @pytest.mark.asyncio
+    async def test_clears_status_after_send_typing(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        await adapter.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        await adapter.stop_typing("C123")
+        # Second call should clear the status
+        assert adapter._app.client.assistant_threads_setStatus.call_count == 2
+        adapter._app.client.assistant_threads_setStatus.assert_called_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="",
+        )
+
+    @pytest.mark.asyncio
+    async def test_noop_without_prior_send_typing(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        await adapter.stop_typing("C123")
+        adapter._app.client.assistant_threads_setStatus.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_clears_only_once(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        await adapter.send_typing("C123", metadata={"thread_id": "ts1"})
+        await adapter.stop_typing("C123")
+        await adapter.stop_typing("C123")  # second call should be a no-op
+        # 1 call for send_typing + 1 call for first stop_typing = 2
+        assert adapter._app.client.assistant_threads_setStatus.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_handles_api_error_gracefully(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock(
+            side_effect=[None, Exception("api_error")]
+        )
+        await adapter.send_typing("C123", metadata={"thread_id": "ts1"})
+        # Should not raise
+        await adapter.stop_typing("C123")
+
+
+# ---------------------------------------------------------------------------
 # TestFormatMessage — Markdown → mrkdwn conversion
 # ---------------------------------------------------------------------------
 

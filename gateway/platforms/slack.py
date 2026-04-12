@@ -113,6 +113,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Cache for _fetch_thread_context results: cache_key → _ThreadContextCache
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
         self._THREAD_CACHE_TTL = 60.0
+        # Track thread_ts for active typing indicators so stop_typing() can
+        # explicitly clear the assistant status after the response is sent.
+        self._typing_thread_ts: Dict[str, str] = {}
 
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
@@ -355,6 +358,8 @@ class SlackAdapter(BasePlatformAdapter):
         if not thread_ts:
             return  # Can only set status in a thread context
 
+        self._typing_thread_ts[chat_id] = thread_ts
+
         try:
             await self._get_client(chat_id).assistant_threads_setStatus(
                 channel_id=chat_id,
@@ -365,6 +370,26 @@ class SlackAdapter(BasePlatformAdapter):
             # Silently ignore — may lack assistant:write scope or not be
             # in an assistant-enabled context. Falls back to reactions.
             logger.debug("[Slack] assistant.threads.setStatus failed: %s", e)
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Clear the assistant typing indicator for a Slack thread.
+
+        Slack's assistant.threads.setStatus normally auto-clears when the bot
+        sends a reply.  However, when MCP tools or other post-reply processing
+        triggers additional API activity, Slack can keep the indicator alive.
+        Explicitly setting an empty status ensures it is cleared.
+        """
+        thread_ts = self._typing_thread_ts.pop(chat_id, None)
+        if not thread_ts or not self._app:
+            return
+        try:
+            await self._get_client(chat_id).assistant_threads_setStatus(
+                channel_id=chat_id,
+                thread_ts=thread_ts,
+                status="",
+            )
+        except Exception as e:
+            logger.debug("[Slack] Failed to clear assistant status: %s", e)
 
     def _resolve_thread_ts(
         self,
