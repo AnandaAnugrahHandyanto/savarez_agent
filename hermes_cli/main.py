@@ -281,11 +281,11 @@ def _has_any_provider_configured() -> bool:
 
 
 def _maybe_auto_update_before_chat_launch() -> None:
-    """Auto-update on CLI launch when enabled and safe to do so.
+    """Handle startup update policy before launching interactive chat.
 
-    This is intentionally conservative: only auto-update a clean checkout on
+    Safe-guards are intentionally conservative: only act on a clean checkout on
     ``main``. If the repo is dirty, detached, on a feature branch, or the check
-    fails, Hermes skips auto-update and continues launching normally.
+    fails, Hermes skips startup updating and continues launching normally.
     """
     from hermes_cli.config import is_managed, load_config
 
@@ -301,7 +301,17 @@ def _maybe_auto_update_before_chat_launch() -> None:
         return
 
     startup_cfg = config.get("startup") if isinstance(config, dict) else None
-    if not isinstance(startup_cfg, dict) or not startup_cfg.get("auto_update_on_launch", False):
+    policy = "ask"
+    if isinstance(startup_cfg, dict):
+        raw_policy = startup_cfg.get("update_on_launch")
+        if isinstance(raw_policy, str) and raw_policy.strip().lower() in {"ask", "auto", "off"}:
+            policy = raw_policy.strip().lower()
+        elif startup_cfg.get("auto_update_on_launch") is True:
+            policy = "auto"
+        elif startup_cfg.get("auto_update_on_launch") is False and "update_on_launch" not in startup_cfg:
+            policy = "off"
+
+    if policy == "off":
         return
 
     try:
@@ -332,7 +342,7 @@ def _maybe_auto_update_before_chat_launch() -> None:
 
     if current_branch != "main":
         print(
-            f"↻ Auto-update skipped: checkout is on '{current_branch or 'unknown'}', not 'main'."
+            f"↻ Startup update skipped: checkout is on '{current_branch or 'unknown'}', not 'main'."
         )
         return
 
@@ -349,15 +359,32 @@ def _maybe_auto_update_before_chat_launch() -> None:
         return
 
     if (status_result.stdout or "").strip():
-        print("↻ Auto-update skipped: local changes detected in the repo.")
+        print("↻ Startup update skipped: local changes detected in the repo.")
         return
 
-    print(f"↻ Auto-update: found {behind} new commit(s); updating before launch...")
+    if policy == "ask":
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            print("↻ Hermes update available, but startup prompt skipped in non-interactive mode.")
+            return
+        try:
+            reply = input(
+                f"↻ Hermes update available ({behind} commit{'s' if behind != 1 else ''}). "
+                "Update before launch? [Y/n] "
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            reply = "n"
+        if reply not in ("", "y", "yes"):
+            print("↻ Skipping startup update and launching current checkout.")
+            return
+
+    elif policy == "auto":
+        print(f"↻ Auto-update: found {behind} new commit(s); updating before launch...")
+
     try:
         cmd_update(argparse.Namespace(gateway=False, auto_startup=True))
     except SystemExit as exc:
         if exc.code not in (0, None):
-            print("⚠ Auto-update failed; continuing with the current checkout.")
+            print("⚠ Startup update failed; continuing with the current checkout.")
         return
 
     print("↻ Restarting Hermes on the updated checkout...")

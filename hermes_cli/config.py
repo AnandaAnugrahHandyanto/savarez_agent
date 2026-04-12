@@ -523,10 +523,13 @@ DEFAULT_CONFIG = {
     },
 
     "startup": {
-        # When true, `hermes` checks whether the current git checkout is behind
-        # origin/main before launching chat. If the checkout is clean and on
-        # main, Hermes runs the normal update flow first, then re-execs itself
-        # so the interactive session starts on the freshly updated code.
+        # Startup update policy for git checkouts:
+        # - "ask" (default UX): prompt before launching when updates exist
+        # - "auto": update immediately before launching
+        # - "off": never check/apply launch-time updates
+        # Back-compat: older configs may still use boolean auto_update_on_launch
+        # where true => "auto" and false => "off".
+        "update_on_launch": "ask",
         "auto_update_on_launch": False,
     },
 
