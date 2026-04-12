@@ -50,6 +50,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from openai import OpenAI
 
 from agent.credential_pool import load_pool
+from agent.openai_compat import create_async_openai_client, create_openai_client
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 
@@ -725,7 +726,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 from hermes_cli.models import copilot_default_headers
 
                 extra["default_headers"] = copilot_default_headers()
-            return OpenAI(api_key=api_key, base_url=base_url, **extra), model
+            return create_openai_client(api_key=api_key, base_url=base_url, **extra), model
 
         creds = resolve_api_key_provider_credentials(provider_id)
         api_key = str(creds.get("api_key", "")).strip()
@@ -746,7 +747,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             from hermes_cli.models import copilot_default_headers
 
             extra["default_headers"] = copilot_default_headers()
-        return OpenAI(api_key=api_key, base_url=base_url, **extra), model
+        return create_openai_client(api_key=api_key, base_url=base_url, **extra), model
 
     return None, None
 
@@ -787,14 +788,14 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
             return None, None
         base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
         logger.debug("Auxiliary client: OpenRouter via pool")
-        return OpenAI(api_key=or_key, base_url=base_url,
+        return create_openai_client(api_key=or_key, base_url=base_url,
                        default_headers=_OR_HEADERS), _OPENROUTER_MODEL
 
     or_key = os.getenv("OPENROUTER_API_KEY")
     if not or_key:
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
-    return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
+    return create_openai_client(api_key=or_key, base_url=OPENROUTER_BASE_URL,
                    default_headers=_OR_HEADERS), _OPENROUTER_MODEL
 
 
@@ -820,7 +821,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     except Exception:
         pass
     return (
-        OpenAI(
+        create_openai_client(
             api_key=_nous_api_key(nous),
             base_url=str(nous.get("inference_base_url") or _nous_base_url()).rstrip("/"),
         ),
@@ -1226,7 +1227,7 @@ def _to_async_client(sync_client, model: str):
         async_kwargs["default_headers"] = copilot_default_headers()
     elif "api.kimi.com" in base_lower:
         async_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
-    return AsyncOpenAI(**async_kwargs), model
+    return create_async_openai_client(**async_kwargs), model
 
 
 def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optional[str]:
@@ -1405,7 +1406,7 @@ def resolve_provider_client(
             elif "api.githubcopilot.com" in custom_base.lower():
                 from hermes_cli.models import copilot_default_headers
                 extra["default_headers"] = copilot_default_headers()
-            client = OpenAI(api_key=custom_key, base_url=custom_base, **extra)
+            client = create_openai_client(api_key=custom_key, base_url=custom_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base)
             return (_to_async_client(client, final_model) if async_mode
                     else (client, final_model))
@@ -1497,7 +1498,7 @@ def resolve_provider_client(
 
             headers.update(copilot_default_headers())
 
-        client = OpenAI(api_key=api_key, base_url=base_url,
+        client = create_openai_client(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
 
         # Copilot GPT-5+ models (except gpt-5-mini) require the Responses
