@@ -5,11 +5,24 @@ from unittest.mock import patch, MagicMock
 
 
 class FakeHttpx:
-    """Fake httpx module for testing without network."""
+    """Fake httpx module for testing without network.
+
+    Supports both module-level calls (httpx.get/httpx.post) and
+    Client-instance calls (httpx.Client().get/httpx.Client().post)
+    since _VikingClient now uses httpx.Client(trust_env=False).
+    """
 
     def __init__(self, health_ok=True):
         self.health_ok = health_ok
         self.calls = []
+
+    def __call__(self, **kwargs):
+        """Return self when called as httpx.Client(trust_env=False)."""
+        return self
+
+    def Client(self, **kwargs):
+        """Return self when _VikingClient calls httpx.Client(trust_env=False)."""
+        return self
 
     def get(self, url, **kwargs):
         self.calls.append(("get", url, kwargs))

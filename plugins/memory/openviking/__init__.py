@@ -89,6 +89,12 @@ class _VikingClient:
         if self._httpx is None:
             raise ImportError("httpx is required for OpenViking: pip install httpx")
 
+        # Bypass system proxy for internal endpoints to avoid corporate proxy
+        # returning 403 for RFC-1918 addresses (e.g. 10.37.43.162).
+        # trust_env=False ignores http_proxy/https_proxy env vars.
+        httpx_module = self._httpx
+        self._httpx = httpx_module.Client(trust_env=False)
+
     def _headers(self) -> dict:
         h = {
             "Content-Type": "application/json",
