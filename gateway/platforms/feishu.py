@@ -1863,9 +1863,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 loop,
             )
             future.add_done_callback(self._log_background_failure)
-        if P2CardActionTriggerResponse is None:
-            return None
-        return P2CardActionTriggerResponse()
+        # Feishu accepts a no-op callback response here; returning an empty
+        # P2CardActionTriggerResponse() can serialize to a malformed body and
+        # surface 200340 on button clicks.
+        return None
 
     async def _handle_reaction_event(self, event_type: str, data: Any) -> None:
         """Fetch the reacted-to message; if it was sent by this bot, emit a synthetic text event."""

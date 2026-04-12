@@ -806,6 +806,35 @@ class TestAdapterBehavior(unittest.TestCase):
         run_threadsafe.assert_not_called()
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_card_action_trigger_ack_returns_none(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        class _Loop:
+            def is_closed(self):
+                return False
+
+        adapter._loop = _Loop()
+        data = SimpleNamespace(event=SimpleNamespace(token="tok_1"))
+
+        future = SimpleNamespace(add_done_callback=lambda *_args, **_kwargs: None)
+
+        def _submit(coro, _loop):
+            coro.close()
+            return future
+
+        with patch(
+            "gateway.platforms.feishu.asyncio.run_coroutine_threadsafe",
+            side_effect=_submit,
+        ) as submit:
+            result = adapter._on_card_action_trigger(data)
+
+        self.assertIsNone(result)
+        self.assertTrue(submit.called)
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_normalize_inbound_text_strips_feishu_mentions(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
