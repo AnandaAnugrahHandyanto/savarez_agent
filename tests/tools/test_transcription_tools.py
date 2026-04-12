@@ -8,7 +8,9 @@ end-to-end dispatch.  All external dependencies are mocked.
 import os
 import struct
 import subprocess
+import sys
 import wave
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -51,6 +53,15 @@ def clean_env(monkeypatch):
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+
+
+@pytest.fixture
+def stub_faster_whisper(monkeypatch):
+    module = ModuleType("faster_whisper")
+    whisper_model = MagicMock(name="WhisperModel")
+    module.WhisperModel = whisper_model
+    monkeypatch.setitem(sys.modules, "faster_whisper", module)
+    return whisper_model
 
 
 # ============================================================================
@@ -415,7 +426,7 @@ class TestTranscribeLocalCommand:
 # ============================================================================
 
 class TestTranscribeLocalExtended:
-    def test_model_reuse_on_second_call(self, tmp_path):
+    def test_model_reuse_on_second_call(self, tmp_path, stub_faster_whisper):
         """Second call with same model should NOT reload the model."""
         audio = tmp_path / "test.ogg"
         audio.write_bytes(b"fake")
@@ -428,10 +439,9 @@ class TestTranscribeLocalExtended:
 
         mock_model = MagicMock()
         mock_model.transcribe.return_value = ([mock_segment], mock_info)
-        mock_whisper_cls = MagicMock(return_value=mock_model)
+        stub_faster_whisper.return_value = mock_model
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None):
             from tools.transcription_tools import _transcribe_local
@@ -439,9 +449,9 @@ class TestTranscribeLocalExtended:
             _transcribe_local(str(audio), "base")
 
         # WhisperModel should be created only once
-        assert mock_whisper_cls.call_count == 1
+        assert stub_faster_whisper.call_count == 1
 
-    def test_model_reloaded_on_change(self, tmp_path):
+    def test_model_reloaded_on_change(self, tmp_path, stub_faster_whisper):
         """Switching model name should reload the model."""
         audio = tmp_path / "test.ogg"
         audio.write_bytes(b"fake")
@@ -454,26 +464,24 @@ class TestTranscribeLocalExtended:
 
         mock_model = MagicMock()
         mock_model.transcribe.return_value = ([mock_segment], mock_info)
-        mock_whisper_cls = MagicMock(return_value=mock_model)
+        stub_faster_whisper.return_value = mock_model
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None):
             from tools.transcription_tools import _transcribe_local
             _transcribe_local(str(audio), "base")
             _transcribe_local(str(audio), "small")
 
-        assert mock_whisper_cls.call_count == 2
+        assert stub_faster_whisper.call_count == 2
 
-    def test_exception_returns_failure(self, tmp_path):
+    def test_exception_returns_failure(self, tmp_path, stub_faster_whisper):
         audio = tmp_path / "test.ogg"
         audio.write_bytes(b"fake")
 
-        mock_whisper_cls = MagicMock(side_effect=RuntimeError("CUDA out of memory"))
+        stub_faster_whisper.side_effect = RuntimeError("CUDA out of memory")
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
              patch("tools.transcription_tools._local_model", None):
             from tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio), "large-v3")
@@ -481,7 +489,7 @@ class TestTranscribeLocalExtended:
         assert result["success"] is False
         assert "CUDA out of memory" in result["error"]
 
-    def test_multiple_segments_joined(self, tmp_path):
+    def test_multiple_segments_joined(self, tmp_path, stub_faster_whisper):
         audio = tmp_path / "test.ogg"
         audio.write_bytes(b"fake")
 
@@ -496,8 +504,9 @@ class TestTranscribeLocalExtended:
         mock_model = MagicMock()
         mock_model.transcribe.return_value = ([seg1, seg2], mock_info)
 
+        stub_faster_whisper.return_value = mock_model
+
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("faster_whisper.WhisperModel", return_value=mock_model), \
              patch("tools.transcription_tools._local_model", None):
             from tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio), "base")

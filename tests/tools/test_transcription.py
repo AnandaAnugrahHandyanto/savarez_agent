@@ -6,7 +6,9 @@ dispatch.  All external dependencies (faster_whisper, openai) are mocked.
 
 import json
 import os
+import sys
 import tempfile
+from types import ModuleType
 from pathlib import Path
 from unittest.mock import MagicMock, patch, mock_open
 
@@ -23,6 +25,15 @@ def _clear_openai_env(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
 
+@pytest.fixture
+def stub_faster_whisper(monkeypatch):
+    module = ModuleType("faster_whisper")
+    whisper_model = MagicMock(name="WhisperModel")
+    module.WhisperModel = whisper_model
+    monkeypatch.setitem(sys.modules, "faster_whisper", module)
+    return whisper_model
+
+
 class TestGetProvider:
     """_get_provider() picks the right backend based on config + availability."""
 
@@ -36,6 +47,7 @@ class TestGetProvider:
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
              patch("tools.transcription_tools._HAS_OPENAI", True):
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "local"}) == "none"
@@ -43,6 +55,7 @@ class TestGetProvider:
     def test_local_nothing_available(self, monkeypatch):
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
              patch("tools.transcription_tools._HAS_OPENAI", False):
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "local"}) == "none"
@@ -122,7 +135,7 @@ class TestValidateAudioFile:
 
 class TestTranscribeLocal:
 
-    def test_successful_transcription(self, tmp_path):
+    def test_successful_transcription(self, tmp_path, stub_faster_whisper):
         audio_file = tmp_path / "test.ogg"
         audio_file.write_bytes(b"fake audio")
 
@@ -135,8 +148,9 @@ class TestTranscribeLocal:
         mock_model = MagicMock()
         mock_model.transcribe.return_value = ([mock_segment], mock_info)
 
+        stub_faster_whisper.return_value = mock_model
+
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("faster_whisper.WhisperModel", return_value=mock_model), \
              patch("tools.transcription_tools._local_model", None):
             from tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio_file), "base")
