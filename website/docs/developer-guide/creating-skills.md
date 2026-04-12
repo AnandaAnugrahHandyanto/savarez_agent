@@ -28,17 +28,17 @@ Bundled skills live in `skills/` organized by category. Official optional skills
 
 ```text
 skills/
-  research/
-    arxiv/
-      SKILL.md              # Required: main instructions
-      scripts/              # Optional: helper scripts
-        search_arxiv.py
-  productivity/
-    ocr-and-documents/
-      SKILL.md
-      scripts/
-      references/
-  ...
+├── research/
+│   └── arxiv/
+│       ├── SKILL.md              # Required: main instructions
+│       └── scripts/              # Optional: helper scripts
+│           └── search_arxiv.py
+├── productivity/
+│   └── ocr-and-documents/
+│       ├── SKILL.md
+│       ├── scripts/
+│       └── references/
+└── ...
 ```
 
 ## SKILL.md Format
