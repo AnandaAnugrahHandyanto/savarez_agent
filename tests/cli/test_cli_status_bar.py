@@ -8,6 +8,8 @@ from cli import HermesCLI
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj = HermesCLI.__new__(HermesCLI)
     cli_obj.model = model
+    cli_obj.reasoning_config = None
+    cli_obj.service_tier = None
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
@@ -79,6 +81,32 @@ class TestCLIStatusBar:
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
+
+    def test_build_status_bar_text_includes_reasoning_and_fast_markers(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.4"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.reasoning_config = {"enabled": True, "effort": "high"}
+        cli_obj.service_tier = "priority"
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "gpt-5.4 [high fast]" in text
+        assert "12.4K/200K" in text
+
+    def test_build_status_bar_text_includes_reasoning_disabled_marker(self):
+        cli_obj = _make_cli(model="gpt-5.4")
+        cli_obj.reasoning_config = {"enabled": False}
+
+        text = cli_obj._build_status_bar_text(width=100)
+
+        assert "gpt-5.4 [none]" in text
 
     def test_input_height_counts_wide_characters_using_cell_width(self):
         cli_obj = _make_cli()
