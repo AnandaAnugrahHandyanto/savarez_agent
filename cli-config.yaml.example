@@ -23,6 +23,7 @@ model:
   #   "kimi-coding"  - Kimi / Moonshot AI (requires: KIMI_API_KEY)
   #   "minimax"      - MiniMax global (requires: MINIMAX_API_KEY)
   #   "minimax-cn"   - MiniMax China (requires: MINIMAX_CN_API_KEY)
+  #   "moonshot-cn"  - Kimi / Moonshot China (requires: MOONSHOT_CN_API_KEY)
   #   "huggingface"  - Hugging Face Inference (requires: HF_TOKEN)
   #   "xiaomi"       - Xiaomi MiMo (requires: XIAOMI_API_KEY)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)

@@ -148,6 +148,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "kimi-coding": "kimi-for-coding",
     "minimax": "minimax",
     "minimax-cn": "minimax-cn",
+    "moonshot-cn": "moonshot-cn",
     "deepseek": "deepseek",
     "alibaba": "alibaba",
     "qwen-oauth": "alibaba",

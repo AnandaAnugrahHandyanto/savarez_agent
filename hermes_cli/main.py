@@ -1047,6 +1047,7 @@ def select_provider_and_model(args=None):
         "kimi-coding": "Kimi / Moonshot",
         "minimax": "MiniMax",
         "minimax-cn": "MiniMax (China)",
+        "moonshot-cn": "Kimi / Moonshot (China)",
         "opencode-zen": "OpenCode Zen",
         "opencode-go": "OpenCode Go",
         "ai-gateway": "AI Gateway",
@@ -1081,6 +1082,7 @@ def select_provider_and_model(args=None):
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
         ("minimax", "MiniMax (global direct API)"),
         ("minimax-cn", "MiniMax China (domestic direct API)"),
+        ("moonshot-cn", "Kimi / Moonshot China (domestic direct API)"),
         ("kilocode", "Kilo Code (Kilo Gateway API)"),
         ("opencode-zen", "OpenCode Zen (35+ curated models, pay-as-you-go)"),
         ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
@@ -4486,7 +4488,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "xiaomi"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "moonshot-cn", "kilocode", "xiaomi"],
         default=None,
         help="Inference provider (default: auto)"
     )

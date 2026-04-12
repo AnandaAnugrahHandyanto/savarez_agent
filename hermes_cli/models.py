@@ -157,7 +157,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-turbo-preview",
         "kimi-k2-0905-preview",
     ],
-    "moonshot": [
+    "moonshot-cn": [
         "kimi-k2.5",
         "kimi-k2-thinking",
         "kimi-k2-turbo-preview",
@@ -489,6 +489,7 @@ _PROVIDER_LABELS = {
     "kimi-coding": "Kimi / Moonshot",
     "minimax": "MiniMax",
     "minimax-cn": "MiniMax (China)",
+    "moonshot-cn": "Kimi / Moonshot (China)",
     "anthropic": "Anthropic",
     "deepseek": "DeepSeek",
     "opencode-zen": "OpenCode Zen",
@@ -520,6 +521,7 @@ _PROVIDER_ALIASES = {
     "moonshot": "kimi-coding",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
+    "moonshot-china": "moonshot-cn",
     "claude": "anthropic",
     "claude-code": "anthropic",
     "deep-seek": "deepseek",
@@ -826,7 +828,7 @@ def list_available_providers() -> list[dict[str, str]]:
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
         "gemini", "huggingface",
-        "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
+        "zai", "kimi-coding", "minimax", "minimax-cn", "moonshot-cn", "kilocode", "anthropic", "alibaba",
         "qwen-oauth", "xiaomi",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",

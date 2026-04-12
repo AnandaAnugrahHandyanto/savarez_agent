@@ -863,6 +863,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "MOONSHOT_CN_API_KEY": {
+        "description": "Kimi / Moonshot API key (China domestic endpoint)",
+        "prompt": "Kimi / Moonshot (China) API key",
+        "url": "https://platform.moonshot.cn/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "MOONSHOT_CN_BASE_URL": {
+        "description": "Kimi / Moonshot (China) base URL override",
+        "prompt": "Kimi / Moonshot (China) base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "DEEPSEEK_API_KEY": {
         "description": "DeepSeek API key for direct DeepSeek access",
         "prompt": "DeepSeek API Key",
@@ -2294,6 +2310,7 @@ _FALLBACK_COMMENT = """
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#   moonshot-cn  (MOONSHOT_CN_API_KEY) — Kimi / Moonshot (China domestic)
 #
 # For custom OpenAI-compatible endpoints, add base_url and api_key_env.
 #
@@ -2337,6 +2354,7 @@ _COMMENTED_SECTIONS = """
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#   moonshot-cn  (MOONSHOT_CN_API_KEY) — Kimi / Moonshot (China domestic)
 #
 # For custom OpenAI-compatible endpoints, add base_url and api_key_env.
 #
