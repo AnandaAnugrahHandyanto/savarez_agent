@@ -373,7 +373,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     last_result = None
     for chunk in chunks:
         if platform == Platform.DISCORD:
-            result = await _send_discord(pconfig.token, chat_id, chunk)
+            result = await _send_discord(pconfig.token, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.SLACK:
             result = await _send_slack(pconfig.token, chat_id, chunk)
         elif platform == Platform.WHATSAPP:
@@ -535,7 +535,70 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         return _error(f"Telegram send failed: {e}")
 
 
-async def _send_discord(token, chat_id, message):
+async def _create_discord_thread(token, chat_id, name, auto_archive_duration=1440):
+    """Create a Discord thread via REST, with a seed-message fallback."""
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+            direct_url = f"https://discord.com/api/v10/channels/{chat_id}/threads"
+            direct_payload = {
+                "name": name,
+                "auto_archive_duration": auto_archive_duration,
+                "type": 11,
+            }
+            async with session.post(direct_url, headers=headers, json=direct_payload) as resp:
+                if resp.status in (200, 201):
+                    data = await resp.json()
+                    return {
+                        "success": True,
+                        "platform": "discord",
+                        "chat_id": chat_id,
+                        "thread_id": data.get("id"),
+                        "thread_name": data.get("name") or name,
+                    }
+                direct_error = await resp.text()
+
+            seed_url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
+            seed_payload = {"content": f"🧵 Thread created by Hermes: **{name}**"}
+            async with session.post(seed_url, headers=headers, json=seed_payload) as seed_resp:
+                if seed_resp.status not in (200, 201):
+                    seed_error = await seed_resp.text()
+                    return _error(
+                        "Discord thread creation failed. "
+                        f"Direct error: {direct_error}. Seed error ({seed_resp.status}): {seed_error}"
+                    )
+                seed_data = await seed_resp.json()
+
+            from_message_url = f"https://discord.com/api/v10/channels/{chat_id}/messages/{seed_data['id']}/threads"
+            from_message_payload = {
+                "name": name,
+                "auto_archive_duration": auto_archive_duration,
+            }
+            async with session.post(from_message_url, headers=headers, json=from_message_payload) as thread_resp:
+                if thread_resp.status not in (200, 201):
+                    thread_error = await thread_resp.text()
+                    return _error(
+                        "Discord thread creation failed. "
+                        f"Direct error: {direct_error}. Fallback error ({thread_resp.status}): {thread_error}"
+                    )
+                data = await thread_resp.json()
+                return {
+                    "success": True,
+                    "platform": "discord",
+                    "chat_id": chat_id,
+                    "thread_id": data.get("id"),
+                    "thread_name": data.get("name") or name,
+                }
+    except Exception as e:
+        return _error(f"Discord thread creation failed: {e}")
+
+
+async def _send_discord(token, chat_id, message, thread_id=None):
     """Send a single message via Discord REST API (no websocket client needed).
 
     Chunking is handled by _send_to_platform() before this is called.
@@ -545,7 +608,8 @@ async def _send_discord(token, chat_id, message):
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
-        url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
+        target_id = thread_id or chat_id
+        url = f"https://discord.com/api/v10/channels/{target_id}/messages"
         headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             async with session.post(url, headers=headers, json={"content": message}) as resp:
@@ -553,7 +617,7 @@ async def _send_discord(token, chat_id, message):
                     body = await resp.text()
                     return _error(f"Discord API error ({resp.status}): {body}")
                 data = await resp.json()
-        return {"success": True, "platform": "discord", "chat_id": chat_id, "message_id": data.get("id")}
+        return {"success": True, "platform": "discord", "chat_id": chat_id, "thread_id": thread_id, "message_id": data.get("id")}
     except Exception as e:
         return _error(f"Discord send failed: {e}")
 

@@ -84,6 +84,18 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_discord_target_parses_thread_creation_query(self):
+        job = {
+            "deliver": "discord:1491307591471726594?thread_name=GitHub趋势-%Y-%m-%d&thread_auto_archive=4320",
+        }
+        assert _resolve_delivery_target(job) == {
+            "platform": "discord",
+            "chat_id": "1491307591471726594",
+            "thread_id": None,
+            "thread_name": "GitHub趋势-%Y-%m-%d",
+            "thread_auto_archive": 4320,
+        }
+
     def test_human_friendly_label_resolved_via_channel_directory(self):
         """deliver: 'whatsapp:Alice (dm)' resolves to the real JID."""
         job = {"deliver": "whatsapp:Alice (dm)"}
@@ -506,6 +518,84 @@ class TestDeliverResultWrapping:
 
         send_mock.assert_called_once()
         assert send_mock.call_args.kwargs["thread_id"] == "17585"
+
+    def test_discord_delivery_creates_thread_via_live_adapter(self):
+        """Discord cron deliveries can create a fresh thread before sending."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.create_thread.return_value = MagicMock(
+            success=True,
+            message_id="222",
+            raw_response={"thread_id": "222", "thread_name": "GitHub趋势-2026-04-13"},
+        )
+        adapter.send.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        run_results = iter([
+            adapter.create_thread.return_value,
+            adapter.send.return_value,
+        ])
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(next(run_results))
+            coro.close()
+            return future
+
+        job = {
+            "id": "discord-thread-job",
+            "deliver": "discord:1491307591471726594?thread_name=GitHub趋势-%Y-%m-%d",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                "Top 10 repos",
+                adapters={Platform.DISCORD: adapter},
+                loop=loop,
+            )
+
+        adapter.create_thread.assert_called_once()
+        adapter.send.assert_called_once_with(
+            "1491307591471726594",
+            "Top 10 repos",
+            metadata={"thread_id": "222"},
+        )
+
+    def test_discord_delivery_creates_thread_via_standalone_helper(self):
+        """Without a live adapter, cron should still create a Discord thread before sending."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        pconfig.token = "fake-token"
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        job = {
+            "id": "discord-thread-standalone",
+            "deliver": "discord:1491307591471726594?thread_name=GitHub趋势-%Y-%m-%d",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._create_discord_thread", new=AsyncMock(return_value={"success": True, "thread_id": "333"})), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            _deliver_result(job, "Top 10 repos")
+
+        send_mock.assert_called_once()
+        assert send_mock.call_args.kwargs["thread_id"] == "333"
 
 
 class TestRunJobSessionPersistence:

@@ -15,6 +15,7 @@ import logging
 import os
 import subprocess
 import sys
+from urllib.parse import parse_qs
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -109,6 +110,24 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     if ":" in deliver:
         platform_name, rest = deliver.split(":", 1)
         platform_key = platform_name.lower()
+        target_options = {}
+
+        if "?" in rest:
+            rest, query = rest.split("?", 1)
+            query_params = parse_qs(query, keep_blank_values=False)
+            thread_name = (query_params.get("thread_name") or [None])[0]
+            if thread_name:
+                target_options["thread_name"] = thread_name
+            auto_archive = (query_params.get("thread_auto_archive") or [None])[0]
+            if auto_archive:
+                try:
+                    target_options["thread_auto_archive"] = int(auto_archive)
+                except ValueError:
+                    logger.warning(
+                        "Job '%s': invalid thread_auto_archive=%r in deliver target; ignoring",
+                        job.get("id", "?"),
+                        auto_archive,
+                    )
 
         from tools.send_message_tool import _parse_target_ref
 
@@ -135,6 +154,7 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
             "platform": platform_name,
             "chat_id": chat_id,
             "thread_id": thread_id,
+            **target_options,
         }
 
     platform_name = deliver
@@ -156,6 +176,103 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
         "chat_id": chat_id,
         "thread_id": None,
     }
+
+
+def _render_thread_name(template: str) -> str:
+    """Render a Discord cron thread name from a strftime template."""
+    rendered = _hermes_now().strftime(template).strip()
+    return rendered[:100] if rendered else "Hermes"
+
+
+def _ensure_discord_delivery_thread(job: dict, target: dict, pconfig, runtime_adapter=None, loop=None) -> str | None:
+    """Create a Discord thread for cron delivery when requested by the target."""
+    thread_name_template = (target.get("thread_name") or "").strip()
+    if not thread_name_template or target.get("thread_id"):
+        return target.get("thread_id")
+
+    thread_name = _render_thread_name(thread_name_template)
+    auto_archive_duration = target.get("thread_auto_archive") or 1440
+
+    if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                runtime_adapter.create_thread(
+                    target["chat_id"],
+                    thread_name,
+                    auto_archive_duration=auto_archive_duration,
+                ),
+                loop,
+            )
+            result = future.result(timeout=60)
+            if result and getattr(result, "success", False):
+                raw = getattr(result, "raw_response", {}) or {}
+                thread_id = raw.get("thread_id") or getattr(result, "message_id", None)
+                if thread_id:
+                    return str(thread_id)
+            logger.warning(
+                "Job '%s': live Discord thread creation failed for %s (%s)",
+                job["id"],
+                target["chat_id"],
+                getattr(result, "error", "unknown error") if result else "empty result",
+            )
+        except Exception as e:
+            logger.warning(
+                "Job '%s': live Discord thread creation failed for %s (%s)",
+                job["id"],
+                target["chat_id"],
+                e,
+            )
+
+    try:
+        from tools.send_message_tool import _create_discord_thread
+
+        result = asyncio.run(
+            _create_discord_thread(
+                pconfig.token,
+                target["chat_id"],
+                thread_name,
+                auto_archive_duration=auto_archive_duration,
+            )
+        )
+        if result and result.get("success") and result.get("thread_id"):
+            return str(result["thread_id"])
+        logger.warning(
+            "Job '%s': standalone Discord thread creation failed for %s (%s)",
+            job["id"],
+            target["chat_id"],
+            result.get("error", "unknown error") if isinstance(result, dict) else result,
+        )
+    except RuntimeError:
+        from tools.send_message_tool import _create_discord_thread
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                asyncio.run,
+                _create_discord_thread(
+                    pconfig.token,
+                    target["chat_id"],
+                    thread_name,
+                    auto_archive_duration=auto_archive_duration,
+                ),
+            )
+            result = future.result(timeout=60)
+            if result and result.get("success") and result.get("thread_id"):
+                return str(result["thread_id"])
+            logger.warning(
+                "Job '%s': standalone Discord thread creation failed for %s (%s)",
+                job["id"],
+                target["chat_id"],
+                result.get("error", "unknown error") if isinstance(result, dict) else result,
+            )
+    except Exception as e:
+        logger.warning(
+            "Job '%s': standalone Discord thread creation failed for %s (%s)",
+            job["id"],
+            target["chat_id"],
+            e,
+        )
+
+    return None
 
 
 # Media extension sets — keep in sync with gateway/platforms/base.py:_process_message_background
@@ -281,6 +398,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
     # Prefer the live adapter when the gateway is running — this supports E2EE
     # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
     runtime_adapter = (adapters or {}).get(platform)
+    if platform == Platform.DISCORD and target.get("thread_name") and not thread_id:
+        thread_id = _ensure_discord_delivery_thread(
+            job,
+            target,
+            pconfig,
+            runtime_adapter=runtime_adapter,
+            loop=loop,
+        )
     if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
         send_metadata = {"thread_id": thread_id} if thread_id else None
         try:

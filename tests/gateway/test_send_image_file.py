@@ -219,6 +219,36 @@ class TestDiscordSendImageFile:
         assert result.message_id == "99"
         mock_channel.send.assert_awaited_once()
 
+    def test_send_respects_thread_id_metadata(self, adapter):
+        """Discord text sends should route into the target thread when metadata.thread_id is set."""
+        parent_channel = MagicMock()
+        thread_channel = MagicMock()
+        sent_msg = MagicMock()
+        sent_msg.id = 77
+        thread_channel.send = AsyncMock(return_value=sent_msg)
+
+        def get_channel(channel_id):
+            if channel_id == 123:
+                return parent_channel
+            if channel_id == 456:
+                return thread_channel
+            return None
+
+        adapter._client.get_channel = MagicMock(side_effect=get_channel)
+        adapter._client.fetch_channel = AsyncMock(return_value=None)
+
+        result = _run(
+            adapter.send(
+                chat_id="123",
+                content="hello thread",
+                metadata={"thread_id": "456"},
+            )
+        )
+
+        assert result.success
+        thread_channel.send.assert_awaited_once()
+        parent_channel.send.assert_not_called()
+
     def test_send_document_uploads_file_attachment(self, adapter, tmp_path):
         """send_document should upload a native Discord attachment."""
         pdf = tmp_path / "sample.pdf"
