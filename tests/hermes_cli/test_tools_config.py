@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 from hermes_cli.tools_config import (
+    CONFIGURABLE_TOOLSETS,
     _configure_provider,
     _get_platform_tools,
     _platform_toolset_summary,
@@ -20,6 +21,19 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
     enabled = _get_platform_tools(config, "cli")
 
     assert enabled
+
+
+def test_configurable_toolsets_include_messaging():
+    configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+    assert "messaging" in configurable_keys
+
+
+def test_get_platform_tools_infers_messaging_from_default_telegram_toolset():
+    config = {}
+
+    enabled = _get_platform_tools(config, "telegram")
+
+    assert "messaging" in enabled
 
 
 def test_get_platform_tools_preserves_explicit_empty_selection():
