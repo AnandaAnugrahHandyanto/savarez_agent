@@ -1032,6 +1032,12 @@ class AIAgent:
         elif not self.quiet_mode:
             print("🛠️  No tools loaded (all tools filtered out or unavailable)")
         
+        # Tool-call loop detector (PR #6784 by jbarket)
+        from agent.tool_loop_detector import ToolLoopDetector
+        self._tool_loop_detector = ToolLoopDetector(
+            valid_tool_names=self.valid_tool_names,
+        )
+        
         # Check tool requirements
         if self.tools and not self.quiet_mode:
             requirements = check_toolset_requirements()
@@ -1467,7 +1473,11 @@ class AIAgent:
         # Context engine reset (works for both built-in compressor and plugins)
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.on_session_reset()
-    
+
+        # Reset tool-loop detector
+        if hasattr(self, '_tool_loop_detector'):
+            self._tool_loop_detector.reset()
+
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
         """Switch the model/provider in-place for a live agent.
 
@@ -6355,6 +6365,40 @@ class AIAgent:
             f"{_compressed_est:,}",
         )
         return compressed, new_system_prompt
+
+    def _check_tool_loop(self, messages: list, assistant_message, finish_reason: str) -> None:
+        """Check for tool call loops after tool execution. Prune context on critical."""
+        if not getattr(self, '_tool_loop_detector', None):
+            return
+        if not assistant_message.tool_calls:
+            return
+        reasoning = self._extract_reasoning(assistant_message)
+        for tc in assistant_message.tool_calls:
+            try:
+                args = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments
+            except (json.JSONDecodeError, AttributeError):
+                args = {}
+            last_tool_result = ""
+            tc_id = getattr(tc, "id", None) or getattr(tc, "call_id", None)
+            for msg in reversed(messages):
+                if msg.get("role") == "tool" and msg.get("tool_call_id") == tc_id:
+                    last_tool_result = msg.get("content", "")
+                    break
+            verdict = self._tool_loop_detector.record(
+                tool_name=tc.function.name, args=args, result=last_tool_result, reasoning=reasoning,
+            )
+            if verdict.severity == "critical":
+                from agent.tool_loop_pruner import prune_tool_loop
+                pruned = prune_tool_loop(messages, tool_name=tc.function.name, streak=verdict.streak,
+                    intended_tool=verdict.intended_tool, detector=verdict.detector)
+                messages.clear()
+                messages.extend(pruned)
+                if not self.quiet_mode:
+                    self._vprint(f"\n{self.log_prefix}🔄 Loop detected ({verdict.detector}): `{tc.function.name}` called {verdict.streak} times. Pruned {verdict.streak - 1} repeated attempts from context.", force=True)
+                if verdict.intended_tool and not self.quiet_mode:
+                    self._vprint(f"{self.log_prefix}   💡 Reasoning mentioned `{verdict.intended_tool}` — guidance injected.", force=True)
+            elif verdict.severity == "warning" and not self.quiet_mode:
+                self._vprint(f"\n{self.log_prefix}⚠️  Possible loop: `{tc.function.name}` called {verdict.streak} consecutive times ({verdict.detector})", force=True)
 
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls from the assistant message and append results to messages.

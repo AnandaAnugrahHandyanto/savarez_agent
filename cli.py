@@ -1668,6 +1668,17 @@ class HermesCLI:
         else:
             self.max_turns = 90
         
+        # Tool-loop detection config
+        _loop_cfg = CLI_CONFIG["agent"].get("tool_loop_detection", {})
+        if isinstance(_loop_cfg, dict) and _loop_cfg.get("enabled", True):
+            self._tool_loop_detection_cfg = {
+                "warning_threshold": int(_loop_cfg.get("warning_threshold", 3)),
+                "critical_threshold": int(_loop_cfg.get("critical_threshold", 5)),
+                "window_size": int(_loop_cfg.get("window_size", 30)),
+            }
+        else:
+            self._tool_loop_detection_cfg = None
+        
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
         if toolsets and "all" not in toolsets and "*" not in toolsets:

@@ -263,6 +263,9 @@ DEFAULT_CONFIG = {
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
+        "tool_loop_detection": {
+            "enabled": True, "warning_threshold": 3, "critical_threshold": 5, "window_size": 30,
+        },
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has
