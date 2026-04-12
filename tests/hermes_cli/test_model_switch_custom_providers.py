@@ -102,3 +102,33 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     assert result.new_model == "rotator-openrouter-coding"
     assert result.base_url == "http://127.0.0.1:4141/v1"
     assert result.api_key == "no-key-required"
+
+
+
+def test_list_authenticated_providers_uses_custom_provider_models_dict(monkeypatch):
+    """Custom providers with a models: mapping should expose all configured model IDs."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="openai-codex",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Redacted Gateway",
+                "base_url": "https://redacted-gateway.example/v1",
+                "model": "model-a",
+                "models": {
+                    "model-a": {},
+                    "model-b": {},
+                    "model-c": {},
+                    "model-d": {},
+                },
+            }
+        ],
+        max_models=50,
+    )
+
+    provider = next(p for p in providers if p["slug"] == "custom:redacted-gateway")
+    assert provider["models"] == ["model-a", "model-b", "model-c", "model-d"]
+    assert provider["total_models"] == 4

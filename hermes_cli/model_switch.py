@@ -920,9 +920,25 @@ def list_authenticated_providers(
                 continue
 
             models_list = []
+            configured_models = entry.get("models")
+            if isinstance(configured_models, dict):
+                models_list.extend(
+                    model_id.strip()
+                    for model_id in configured_models.keys()
+                    if isinstance(model_id, str) and model_id.strip()
+                )
+            elif isinstance(configured_models, list):
+                for model_entry in configured_models:
+                    if isinstance(model_entry, str) and model_entry.strip():
+                        models_list.append(model_entry.strip())
+                    elif isinstance(model_entry, dict):
+                        model_name = (model_entry.get("name") or "").strip()
+                        if model_name:
+                            models_list.append(model_name)
+
             default_model = (entry.get("model") or "").strip()
-            if default_model:
-                models_list.append(default_model)
+            if default_model and default_model not in models_list:
+                models_list.insert(0, default_model)
 
             results.append({
                 "slug": slug,
