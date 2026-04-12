@@ -76,6 +76,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
+from gateway.feishu_usage_footer import (
+    build_feishu_usage_footer_from_agent_result,
+    format_elapsed_compact as _format_elapsed_compact,
+    format_usage_compact as _format_usage_compact,
+)
 from utils import atomic_yaml_write, is_truthy_value
 _hermes_home = get_hermes_home()
 
@@ -303,28 +308,6 @@ logger = logging.getLogger(__name__)
 # session from bypassing the "already running" guard during the async gap
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
-
-
-def _format_usage_compact(value: int) -> str:
-    value = int(value or 0)
-    if value >= 1_000_000:
-        return f"{value / 1_000_000:.1f}m".replace(".0m", "m")
-    if value >= 100_000:
-        return f"{value / 1_000:.0f}k"
-    if value >= 1_000:
-        return f"{value / 1_000:.1f}k".replace(".0k", "k")
-    return str(value)
-
-
-def _format_elapsed_compact(seconds: float) -> str:
-    total_seconds = max(0, int(round(seconds or 0)))
-    minutes, secs = divmod(total_seconds, 60)
-    hours, minutes = divmod(minutes, 60)
-    if hours:
-        return f"{hours}h {minutes}m"
-    if minutes:
-        return f"{minutes}m {secs}s"
-    return f"{secs}s"
 
 
 def _resolve_runtime_agent_kwargs() -> dict:
@@ -1017,44 +1000,15 @@ class GatewayRunner:
         if source.platform != Platform.FEISHU:
             return ""
 
-        model = str(agent_result.get("model") or _resolve_gateway_model() or "unknown").strip()
-        input_tokens = int(agent_result.get("input_tokens") or 0)
-        output_tokens = int(agent_result.get("output_tokens") or 0)
-        cache_read = int(agent_result.get("cache_read_tokens") or 0)
-        cache_write = int(agent_result.get("cache_write_tokens") or 0)
-        last_prompt_tokens = int(agent_result.get("last_prompt_tokens") or 0)
-
-        context_length = 0
-        try:
-            from agent.model_metadata import get_model_context_length
-
-            runtime = _resolve_runtime_agent_kwargs()
-            context_length = int(
-                get_model_context_length(
-                    model=model,
-                    provider=runtime.get("provider") or "",
-                    base_url=runtime.get("base_url") or "",
-                    api_key=runtime.get("api_key") or "",
-                ) or 0
-            )
-        except Exception:
-            context_length = 0
-
-        cache_base = input_tokens + cache_read + cache_write
-        cache_pct = min(100, (cache_read / cache_base * 100)) if cache_base > 0 else 0
-        line1 = f"已完成 · 耗时 {_format_elapsed_compact(response_time)} · {model}"
-        line2 = (
-            f"↑ {_format_usage_compact(input_tokens)}"
-            f" ↓ {_format_usage_compact(output_tokens)}"
-            f" · 缓存 {_format_usage_compact(cache_read)}/{_format_usage_compact(cache_write)} ({cache_pct:.0f}%)"
+        runtime = _resolve_runtime_agent_kwargs()
+        return build_feishu_usage_footer_from_agent_result(
+            agent_result,
+            response_time=response_time,
+            provider=runtime.get("provider") or "",
+            base_url=runtime.get("base_url") or "",
+            api_key=runtime.get("api_key") or "",
+            default_model=_resolve_gateway_model() or "unknown",
         )
-        if context_length > 0:
-            context_pct = min(100, (last_prompt_tokens / context_length * 100))
-            line2 += (
-                f" · 上下文 {_format_usage_compact(last_prompt_tokens)}"
-                f"/{_format_usage_compact(context_length)} ({context_pct:.0f}%)"
-            )
-        return f"{line1}\n{line2}"
 
     def _append_feishu_usage_footer(
         self,
@@ -1073,7 +1027,13 @@ class GatewayRunner:
         )
         if not footer:
             return response
-        return f"[[HERMES_STATUS:completed]]\n{response.rstrip()}\n\n---\n{footer}"
+        return (
+            "[[HERMES_STATUS:completed]]\n"
+            f"{response.rstrip()}\n\n"
+            "[[HERMES_FOOTER]]\n"
+            f"{footer}\n"
+            "[[/HERMES_FOOTER]]"
+        )
 
     def _queue_during_drain_enabled(self) -> bool:
         return self._restart_requested and self._busy_input_mode == "queue"
@@ -3652,6 +3612,28 @@ class GatewayRunner:
                     else:
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+
+            if response and source.platform == Platform.FEISHU:
+                feishu_sections = [response.rstrip()]
+                last_reasoning = str(agent_result.get("last_reasoning") or "").strip()
+                if last_reasoning:
+                    feishu_sections.append(
+                        "[[HERMES_REASONING]]\n"
+                        f"{last_reasoning}\n"
+                        "[[/HERMES_REASONING]]"
+                    )
+                tool_activity = [
+                    str(line).strip()
+                    for line in (agent_result.get("tool_activity") or [])
+                    if str(line).strip()
+                ]
+                if tool_activity:
+                    feishu_sections.append(
+                        "[[HERMES_TOOLS]]\n"
+                        + "\n".join(tool_activity)
+                        + "\n[[/HERMES_TOOLS]]"
+                    )
+                response = "\n\n".join(section for section in feishu_sections if section.strip())
 
             if response:
                 response = self._append_feishu_usage_footer(
@@ -7331,25 +7313,34 @@ class GatewayRunner:
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
+        tool_activity_lines: list[str] = []
         
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
-            if not progress_queue:
+            if event_type not in ("tool.started", "tool.completed"):
                 return
 
-            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
-            if event_type not in ("tool.started",):
+            if event_type == "tool.completed":
+                duration = float(kwargs.get("duration") or 0.0)
+                is_error = bool(kwargs.get("is_error"))
+                status_icon = "❌" if is_error else "✅"
+                if duration > 0:
+                    activity_msg = f"{status_icon} {tool_name} ({duration:.1f}s)"
+                else:
+                    activity_msg = f"{status_icon} {tool_name}"
+                if activity_msg not in tool_activity_lines:
+                    tool_activity_lines.append(activity_msg)
                 return
 
+            # tool.started
             # "new" mode: only report when tool changes
             if progress_mode == "new" and tool_name == last_tool[0]:
                 return
             last_tool[0] = tool_name
-            
-            # Build progress message with primary argument preview
+
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")
-            
+
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
                 if args:
@@ -7365,12 +7356,12 @@ class GatewayRunner:
                     msg = f"{emoji} {tool_name}: \"{preview}\""
                 else:
                     msg = f"{emoji} {tool_name}..."
-                progress_queue.put(msg)
+                if msg not in tool_activity_lines:
+                    tool_activity_lines.append(msg)
+                if progress_queue:
+                    progress_queue.put(msg)
                 return
-            
-            # "all" / "new" modes: short preview, respects tool_preview_length
-            # config (defaults to 40 chars when unset to keep gateway messages
-            # compact — unlike CLI spinners, these persist as permanent messages).
+
             if preview:
                 from agent.display import get_tool_preview_max_len
                 _pl = get_tool_preview_max_len()
@@ -7380,6 +7371,10 @@ class GatewayRunner:
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
+            if msg not in tool_activity_lines:
+                tool_activity_lines.append(msg)
+            if not progress_queue:
+                return
             
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
@@ -7757,7 +7752,10 @@ class GatewayRunner:
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
-            agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
+            # Keep tool activity collection enabled even when live progress
+            # messages are turned off; the callback itself checks whether a
+            # progress queue exists before emitting editable status messages.
+            agent.tool_progress_callback = progress_callback
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
@@ -7973,6 +7971,7 @@ class GatewayRunner:
                     "messages": result.get("messages", []),
                     "api_calls": result.get("api_calls", 0),
                     "tools": tools_holder[0] or [],
+                    "tool_activity": list(tool_activity_lines),
                     "history_offset": len(agent_history),
                     "last_prompt_tokens": _last_prompt_toks,
                     "input_tokens": _input_toks,
@@ -8061,6 +8060,7 @@ class GatewayRunner:
             return {
                 "final_response": final_response,
                 "last_reasoning": result.get("last_reasoning"),
+                "tool_activity": list(tool_activity_lines),
                 "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                 "api_calls": result_holder[0].get("api_calls", 0) if result_holder[0] else 0,
                 "tools": tools_holder[0] or [],
