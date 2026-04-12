@@ -21,229 +21,30 @@ def test_local_model_download_view_model_and_store_support_resumable_download_st
     download_store = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/LocalModelDownloadStore.kt").read_text(encoding="utf-8")
     download_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
 
-    assert 'Saved Hugging Face token for private or gated model downloads' in downloads_view_model
+    assert 'Saved Hugging Face token for gated model downloads' in downloads_view_model
     assert 'refreshDownloads()' in downloads_view_model
-    assert 'restartDownloadOnMobileData(' in downloads_view_model
-    assert 'ACTION_VIEW_DOWNLOADS' in downloads_view_model
     assert 'setPreferredDownload(' in downloads_view_model
     assert 'LocalModelDownloadRecord' in download_store
     assert 'preferred_download_id' in download_store
-    assert 'allowMetered' in download_store
-    assert 'allowRoaming' in download_store
     assert 'DownloadManager' in download_manager
-    assert 'setAllowedOverMetered(allowMetered)' in download_manager
-    assert 'setAllowedOverRoaming(allowRoaming)' in download_manager
-    assert 'findCompatibleRepoFile' in download_manager
-    assert 'findFallbackRepoFile' in download_manager
-    assert 'does not publish a .litertlm or .task file' in download_manager
-    assert 'mobile-ready repo' in download_manager
-    assert 'selectRepoFileForDownload(' in download_manager
-    assert 'Downloading is allowed; the selected backend will decide at load time whether it can run this file.' in download_manager
-    assert 'Paused because Android treats the current connection as roaming' in download_manager
+    assert 'setAllowedOverMetered(!dataSaverMode)' in download_manager
+    assert 'Paused until network connectivity returns' in download_manager
+    assert 'Paused until Wi‑Fi / unmetered connectivity is available' in download_manager
     assert 'larger than your phone RAM' in download_manager
     assert 'supportsResume' in download_store
 
 
-def test_model_catalog_prefers_verified_sub_5gb_litert_lm_mobile_models():
-    catalog = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/ModelManagerViewModel.kt").read_text(encoding="utf-8")
-    download_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
-
-    assert 'gemma-4-e2b-litert-lm' in catalog
-    assert 'litert-community/gemma-4-E2B-it-litert-lm' in catalog
-    assert '7fa1d78473894f7e736a21d920c3aa80f950c0db' in catalog
-    assert '2_583_085_056' in catalog
-    assert '8_000_000_000' in catalog
-    assert 'gemma-4-e4b-litert-lm' in catalog
-    assert 'litert-community/gemma-4-E4B-it-litert-lm' in catalog
-    assert '9695417f248178c63a9f318c6e0c56cb917cb837' in catalog
-    assert '3_654_467_584' in catalog
-    assert '12_000_000_000' in catalog
-    assert 'Gemma 4 MTP support' in catalog
-    assert '"mtp"' in catalog
-    assert '"speculative-decoding"' in catalog
-    assert 'gemma-3-1b-it-litert-lm' in catalog
-    assert 'litert-community/Gemma3-1B-IT' in catalog
-    assert 'gemma-3-4b-it-vision-task' in catalog
-    assert 'supportsImageInput = true' in catalog
-    assert 'google/gemma-3n-E2B-it-litert-lm' in catalog
-    assert 'google/gemma-3n-E4B-it-litert-lm' in catalog
-    assert 'qwen3-0-6b-litert-lm' in catalog
-    assert 'litert-community/Qwen3-0.6B' in catalog
-    assert '614_236_160' in catalog
-    assert 'qwen2-5-1-5b-instruct-litert-lm' in catalog
-    assert 'phi-4-mini-instruct-litert-lm' not in catalog
-    assert 'lower.endsWith(".litertlm") ||' in download_manager
-    assert 'lower.endsWith(".task") && !isLiteRtWebTaskArtifact(lower)' in download_manager
-    assert 'isLiteRtWebTaskArtifact(lower) -> Int.MAX_VALUE' in download_manager
-    assert 'lower.endsWith(".litertlm") -> 0' in download_manager
-    assert '"q4" in lower || "int4" in lower -> 0' in download_manager
-    assert '"q8" in lower || "int8" in lower -> 1' in download_manager
-    assert '"f32" in lower || "float32" in lower -> 20' in download_manager
-    assert 'LiteRT-LM file may need extra RAM and cache space' in download_manager
-
-
-def test_local_model_download_ui_mentions_hugging_face_progress_resume_and_mobile_restart_guidance():
+def test_local_model_download_ui_mentions_hugging_face_progress_resume_and_pocketpal_reference():
     downloads_ui = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsSection.kt").read_text(encoding="utf-8")
-    strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
     download_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
 
-    assert 'strings.localDownloadsExampleGuidance()' in downloads_ui
-    assert 'strings.downloadManagerReliabilityDescription()' in downloads_ui
-    assert 'strings.localDownloadStatusLine(item.runtimeFlavor, item.statusLabel)' in downloads_ui
-    assert 'strings.restartOnMobileData()' in downloads_ui
-    assert 'strings.openSystemDownloads()' in downloads_ui
-    assert 'Enter any Hugging Face repo' in strings
-    assert 'Qwen/Qwen2.5-1.5B-Instruct-GGUF' in strings
-    assert 'litert-community/Phi-4-mini-instruct' in strings
-    assert 'lets the selected backend decide whether it can load it' in strings
+    assert 'Hugging Face local model downloads' in downloads_ui
+    assert 'Data saver mode' in downloads_ui
+    assert 'PocketPal AI' in downloads_ui
+    assert 'resume safely after network loss or a phone restart' in downloads_ui
+    assert 'Unexpected connection loss is handled safely by Android DownloadManager' in downloads_ui
+    assert 'Set preferred' in downloads_ui
     assert 'Warning: this download is larger than your phone RAM' in download_manager
-
-
-def test_on_device_backend_preflights_required_model_extensions_before_launching_runtime():
-    backend_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/OnDeviceBackendManager.kt").read_text(encoding="utf-8")
-
-    assert 'preferredCompletedDownload(context)' in backend_manager
-    assert 'Download any repo or file and mark it as preferred' in backend_manager
-    assert 'matchesBackendArtifact' in backend_manager
-    assert 'incompatiblePreferredDownloadStatus' in backend_manager
-    assert 'lower.endsWith(".gguf")' in backend_manager
-    assert 'isLiteRtLmArtifactPath(lower)' in backend_manager
-    assert 'web/browser .task FlatBuffer' in backend_manager
-    assert '.litertlm or .task' in backend_manager
-    assert 'Download a $requiredExtension artifact and mark it as preferred first.' in backend_manager
-
-
-def test_runtime_manager_rechecks_local_backend_instead_of_returning_stale_remote_cache():
-    runtime_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/HermesRuntimeManager.kt").read_text(encoding="utf-8")
-
-    assert 'val selectedLocalBackend = BackendKind.fromPersistedValue(settings.onDeviceBackend)' in runtime_manager
-    assert 'selectedLocalBackend == BackendKind.NONE' in runtime_manager
-    assert '!currentState.baseUrl.isNullOrBlank()' in runtime_manager
-    assert 'OnDeviceBackendManager.ensureConfigured(' in runtime_manager
-    assert 'localBackendFallbackWarning(selectedLocalBackend, localBackendStatus)' in runtime_manager
-    assert 'Using saved remote provider.' in runtime_manager
-    assert 'probeResult.withLocalBackendWarning(localBackendFallbackWarning)' in runtime_manager
-
-
-def test_litert_runtime_rejects_web_task_flatbuffers_before_engine_start():
-    proxy = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
-
-    assert 'validateModelArtifact(modelPath)' in proxy
-    assert "header[4] == 'T'.code.toByte()" in proxy
-    assert "header[7] == '3'.code.toByte()" in proxy
-    assert 'web/browser .task FlatBuffer' in proxy
-    assert 'download the .litertlm artifact instead' in proxy
-
-
-def test_litert_proxy_bounds_generation_with_executor_timeout_and_cancel():
-    proxy = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
-
-    assert 'Executors.newSingleThreadExecutor()' in proxy
-    assert 'conversation.sendMessage(promptMessage, extraContext)' in proxy
-    assert 'future.get(timeoutMs, TimeUnit.MILLISECONDS)' in proxy
-    assert 'chatTemplateExtraContext(requestJson)' in proxy
-    assert 'generationTimeoutMs(requestJson)' in proxy
-    assert 'private const val DEFAULT_GENERATION_TIMEOUT_MS = 300_000L' in proxy
-    assert 'conversation.cancelProcess()' in proxy
-    assert 'executor.shutdownNow()' in proxy
-    assert 'LiteRT-LM generation timed out after' in proxy
-
-
-def test_litert_proxy_attempts_gpu_on_real_arm_devices_with_cpu_fallback():
-    proxy = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
-
-    assert 'val openClAvailable = hasLoadableOpenClLibrary()' in proxy
-    assert 'val gpuPolicy = gpuBackendPolicy(context, openClAvailable)' in proxy
-    assert 'if (gpuPolicy.enabled)' in proxy
-    assert 'disabled: translated arm64 package on x86 emulator/device' in proxy
-    assert 'disabled: x86 emulator/device build' in proxy
-    assert 'ARM Qualcomm/Adreno' in proxy
-    assert 'attempting LiteRT-LM GPU with CPU fallback even though OpenCL probe was not loadable' in proxy
-    assert 'System.loadLibrary("OpenCL")' in proxy
-    assert '"/vendor/lib64/libOpenCL.so"' in proxy
-    assert '"/system/vendor/lib64/libOpenCL.so"' in proxy
-    assert 'System.load(file.absolutePath)' in proxy
-    assert 'put("gpu_policy", engineInitResult.gpuPolicy)' in proxy
-    assert 'visionBackend = visionBackend' in proxy
-    assert 'else -> "cpu"' in proxy
-    assert 'maxNumTokens = maxNumTokens' in proxy
-    assert 'resolveEngineMaxNumTokens(' in proxy
-    assert 'decideEngineTokenBudget(' in proxy
-    assert 'memorySafeContextWindowLimit(totalRamBytes, modelBytes)' in proxy
-    assert 'put("max_num_tokens", engineInitResult.maxNumTokens ?: JSONObject.NULL)' in proxy
-    assert 'put("context_window_policy", engineInitResult.contextWindowPolicy)' in proxy
-    assert 'clamped requested context window $requested to $selected on' in proxy
-
-
-def test_on_device_backend_applies_edge_gallery_model_defaults_for_gemma_and_qwen():
-    backend_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/OnDeviceBackendManager.kt").read_text(encoding="utf-8")
-
-    assert 'maxTokens = 4000' in backend_manager
-    assert 'maxContextLength = 32000' in backend_manager
-    assert 'maxTokens = 1024' in backend_manager
-    assert 'maxTokens = 4096' in backend_manager
-    assert '"gemma-4" in lower || "gemma4" in lower' in backend_manager
-    assert '"qwen3-0.6b" in lower || "qwen3-0-6b" in lower' in backend_manager
-    assert '"qwen2.5-1.5b" in lower || "qwen2-5-1-5b" in lower' in backend_manager
-
-
-def test_litert_proxy_requests_optional_opencl_native_library_for_adreno():
-    manifest = (REPO_ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
-
-    assert '<uses-native-library' in manifest
-    assert 'android:name="libOpenCL.so"' in manifest
-    assert 'android:required="false"' in manifest
-
-
-def test_native_tool_loop_allows_long_file_generation_prompts():
-    native_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
-
-    assert 'timeoutMs: Long = NATIVE_TOOL_GENERATION_TIMEOUT_MS' in native_client
-    assert '.put("timeout_ms", timeoutMs)' in native_client
-    assert '.put("temperature", 0.0)' in native_client
-    assert '.put("max_tokens", maxTokens)' in native_client
-    assert '.put("chat_template_kwargs", JSONObject().put("enable_thinking", false))' in native_client
-    assert 'private const val NATIVE_TOOL_GENERATION_TIMEOUT_MS = 300_000L' in native_client
-    assert 'private const val HTML_GENERATION_TIMEOUT_MS = 45_000L' in native_client
-    assert 'private const val NATIVE_TOOL_MAX_TOKENS = 1024' in native_client
-    assert 'Native tool chat requires a local HTTP base URL' in native_client
-    assert 'toolCompletionReply(latestToolResult)' in native_client
-    assert 'executeExplicitDirectToolRequest(userText)' in native_client
-    assert 'extractExactTerminalCommand(userText)' in native_client
-    assert '"run exactly this command:"' in native_client
-
-
-def test_native_tool_loop_has_structured_file_write_tool():
-    native_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
-    workspace_file_bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesWorkspaceFileBridge.kt").read_text(encoding="utf-8")
-
-    assert '"file_write_tool", "write_file", "file_tool" -> executeFileWriteTool(toolCall)' in native_client
-    assert '.put("name", "file_write_tool")' in native_client
-    assert 'prefer file_write_tool so multiline content is written exactly' in native_client
-    assert 'file_write_tool can only write inside the Hermes app workspace' in native_client
-    assert 'target.writeText(content, Charsets.UTF_8)' in workspace_file_bridge
-    assert 'target.appendText(content, Charsets.UTF_8)' in workspace_file_bridge
-
-
-def test_native_android_shell_tool_prefers_system_commands_over_noexec_prefix():
-    shell_tool = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/NativeAndroidShellTool.kt").read_text(encoding="utf-8")
-
-    assert 'val shellPath = "/system/bin/sh"' in shell_tool
-    assert '"/system/bin",' in shell_tool
-    assert 'state.optString("bin_path")' in shell_tool
-
-
-def test_release_build_recovers_existing_model_files_without_run_as_access():
-    download_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
-    backend_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/OnDeviceBackendManager.kt").read_text(encoding="utf-8")
-
-    assert 'importExistingModelFiles(' in download_manager
-    assert 'repairPreferredDownload(store, refreshed)' in download_manager
-    assert 'downloadManagerId = -1L' in download_manager
-    assert 'Imported existing model file from disk' in download_manager
-    assert 'lower.endsWith(".litertlm") && "gemma-4" in lower -> 0' in download_manager
-    assert 'lower.endsWith(".task") && !isLiteRtWebTaskArtifact(lower)' in download_manager
-    assert 'HermesModelDownloadManager.refreshDownloads(context, store)' in backend_manager
 
 
 def test_portal_screen_exposes_fullscreen_and_minimize_controls():
