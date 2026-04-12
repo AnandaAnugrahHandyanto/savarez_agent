@@ -261,11 +261,15 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            # Convert standard markdown → Slack mrkdwn
-            formatted = self.format_message(content)
+            # Use raw content for the Block Kit markdown block type which
+            # natively renders standard markdown (tables, bold, links, etc.).
+            # format_message() converts to legacy mrkdwn and is only used for
+            # the plain-text fallback (notifications, search, accessibility).
+            fallback = self.format_message(content)
 
             # Split long messages, preserving code block boundaries
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH)
+            fallback_chunks = self.truncate_message(fallback, self.MAX_MESSAGE_LENGTH)
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_result = None
@@ -275,10 +279,11 @@ class SlackAdapter(BasePlatformAdapter):
             broadcast = self.config.extra.get("reply_broadcast", False)
 
             for i, chunk in enumerate(chunks):
+                fallback_chunk = fallback_chunks[i] if i < len(fallback_chunks) else chunk
                 kwargs = {
                     "channel": chat_id,
-                    "text": chunk,
-                    "mrkdwn": True,
+                    "text": fallback_chunk,
+                    "blocks": [{"type": "markdown", "text": chunk}],
                 }
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
@@ -321,11 +326,13 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
         try:
-            formatted = self.format_message(content)
+            # Use raw content for the markdown block; mrkdwn fallback for text field.
+            fallback = self.format_message(content)
             await self._get_client(chat_id).chat_update(
                 channel=chat_id,
                 ts=message_id,
-                text=formatted,
+                text=fallback,
+                blocks=[{"type": "markdown", "text": content}],
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging

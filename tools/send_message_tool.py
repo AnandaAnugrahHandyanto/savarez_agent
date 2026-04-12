@@ -336,12 +336,10 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     media_files = media_files or []
 
-    if platform == Platform.SLACK and message:
-        try:
-            slack_adapter = SlackAdapter.__new__(SlackAdapter)
-            message = slack_adapter.format_message(message)
-        except Exception:
-            logger.debug("Failed to apply Slack mrkdwn formatting in _send_to_platform", exc_info=True)
+    # NOTE: Do NOT call format_message() for Slack here.
+    # The _send_slack() function uses the `markdown` block type which requires
+    # raw standard markdown — format_message() converts to legacy mrkdwn and
+    # corrupts table syntax, bold, and links before they reach the block.
 
     # Platform message length limits (from adapter class attributes)
     _MAX_LENGTHS = {
@@ -609,7 +607,7 @@ async def _send_slack(token, chat_id, message):
         url = "https://slack.com/api/chat.postMessage"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
-            payload = {"channel": chat_id, "text": message, "mrkdwn": True}
+            payload = {"channel": chat_id, "text": message, "blocks": [{"type": "markdown", "text": message}]}
             async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):
