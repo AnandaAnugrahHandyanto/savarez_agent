@@ -752,13 +752,18 @@ def _remap_path_for_user(path: str, target_home_dir: str) -> str:
       /root/.hermes/hermes-agent  -> /home/alice/.hermes/hermes-agent
       /opt/hermes                 -> /opt/hermes  (kept as-is)
     """
-    current_home = Path.home().resolve()
-    resolved = Path(path).resolve()
+    current_home = Path.home()
+    # Use normpath/abspath instead of resolve() so that symlinks are NOT
+    # followed.  venv/bin/python is typically a symlink to the real Python
+    # interpreter (e.g. /usr/bin/python3.11); resolve() would make the path
+    # appear to live outside the home directory and return the system Python
+    # instead of preserving the venv path.
+    normalized = Path(os.path.normpath(os.path.abspath(path)))
     try:
-        relative = resolved.relative_to(current_home)
+        relative = normalized.relative_to(current_home)
         return str(Path(target_home_dir) / relative)
     except ValueError:
-        return str(resolved)
+        return str(normalized)
 
 
 def _hermes_home_for_target_user(target_home_dir: str) -> str:

@@ -968,6 +968,29 @@ class TestRemapPathForUser:
         result = gateway_cli._remap_path_for_user(original, str(tmp_path / "alice"))
         assert result == original
 
+    def test_does_not_follow_symlinks(self, monkeypatch, tmp_path):
+        """venv/bin/python is a symlink to the system Python; the symlink path
+        itself (which lives under the home dir) must be remapped, not the
+        symlink target (which lives under /usr/bin and would be kept as-is)."""
+        root_home = tmp_path / "root"
+        venv_bin = root_home / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        system_python = tmp_path / "usr" / "bin" / "python3"
+        system_python.parent.mkdir(parents=True)
+        system_python.write_text("")
+        # Simulate the venv python symlink pointing to system python
+        (venv_bin / "python").symlink_to(system_python)
+
+        monkeypatch.setattr(Path, "home", lambda: root_home)
+
+        result = gateway_cli._remap_path_for_user(
+            str(venv_bin / "python"),
+            str(tmp_path / "alice"),
+        )
+        # Should remap the symlink path to alice's home, NOT follow to system python
+        assert result == str(tmp_path / "alice" / ".venv" / "bin" / "python")
+        assert str(system_python) != result
+
 
 class TestSystemUnitPathRemapping:
     """System units must remap ALL paths from the caller's home to the target user."""
