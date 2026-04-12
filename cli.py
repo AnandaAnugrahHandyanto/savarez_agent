@@ -1671,11 +1671,14 @@ class HermesCLI:
         # Tool-loop detection config
         _loop_cfg = CLI_CONFIG["agent"].get("tool_loop_detection", {})
         if isinstance(_loop_cfg, dict) and _loop_cfg.get("enabled", True):
+            _mode = _loop_cfg.get("mode", "stop")
+            if _mode not in ("warn", "stop", "prune"):
+                _mode = "stop"
             self._tool_loop_detection_cfg = {
+                "mode": _mode,
                 "warning_threshold": int(_loop_cfg.get("warning_threshold", 3)),
                 "critical_threshold": int(_loop_cfg.get("critical_threshold", 5)),
                 "window_size": int(_loop_cfg.get("window_size", 30)),
-                "prune_context": _loop_cfg.get("prune_context", True),
             }
         else:
             self._tool_loop_detection_cfg = None
@@ -3006,7 +3009,7 @@ class HermesCLI:
                 det.critical_threshold = self._tool_loop_detection_cfg["critical_threshold"]
                 det.window_size = self._tool_loop_detection_cfg["window_size"]
                 det._history = type(det._history)(maxlen=det.window_size)
-                self.agent._tool_loop_prune_context = self._tool_loop_detection_cfg["prune_context"]
+                self.agent._tool_loop_mode = self._tool_loop_detection_cfg["mode"]
             # Attach subagent panel registry so delegate_tool can update it
             if hasattr(self, '_subagent_panel'):
                 def _invalidate_panel():

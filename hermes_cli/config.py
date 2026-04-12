@@ -265,10 +265,10 @@ DEFAULT_CONFIG = {
         "max_turns": 90,
         "tool_loop_detection": {
             "enabled": True,
+            "mode": "stop",  # "warn" | "stop" | "prune"
             "warning_threshold": 3,
             "critical_threshold": 5,
             "window_size": 30,
-            "prune_context": False,  # True = prune context on loop; False = warn + retry hint + stop
         },
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling

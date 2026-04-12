@@ -6370,14 +6370,16 @@ class AIAgent:
     def _check_tool_loop(self, messages: list, assistant_message, finish_reason: str) -> bool:
         """Check for tool-call loops after tool execution.
 
-        Returns True if execution should stop (intervention exhausted).
+        Returns True if execution should stop (intervention exhausted in 'stop' mode).
         """
         if not getattr(self, '_tool_loop_detector', None):
             return False
         if not assistant_message.tool_calls:
             return False
 
-        prune = getattr(self, '_tool_loop_prune_context', True)
+        mode = getattr(self, '_tool_loop_mode', 'stop')
+        if mode not in ('warn', 'stop', 'prune'):
+            mode = 'stop'
         reasoning = self._extract_reasoning(assistant_message)
 
         for tc in assistant_message.tool_calls:
@@ -6404,8 +6406,8 @@ class AIAgent:
                 )
 
             if verdict.severity == "critical":
-                if prune:
-                    # Mode: prune context
+                if mode == "prune":
+                    # Prune context
                     from agent.tool_loop_pruner import prune_tool_loop
                     pruned = prune_tool_loop(
                         messages, tool_name=tc.function.name, streak=verdict.streak,
@@ -6425,11 +6427,11 @@ class AIAgent:
                                 f"{self.log_prefix}   💡 Reasoning mentioned `{verdict.intended_tool}` — guidance injected.",
                                 force=True,
                             )
-                else:
-                    # Mode: intervention + stop
+
+                elif mode == "stop":
                     intervention_count = getattr(self, '_loop_intervention_count', 0)
                     if intervention_count == 0:
-                        # First critical: inject retry hint, let model try again
+                        # First critical: inject retry hint
                         self._loop_intervention_count = 1
                         hint = (
                             f"[System: You are stuck in a tool loop — `{tc.function.name}` has been called "
@@ -6446,11 +6448,11 @@ class AIAgent:
                                 force=True,
                             )
                     else:
-                        # Already tried once — stop execution
+                        # Already tried — stop
                         if not self.quiet_mode:
                             self._vprint(
-                                f"\n{self.log_prefix}🛑 Loop not resolved — stopping execution after "
-                                f"retry hint. `{tc.function.name}` called {verdict.streak}+ times.",
+                                f"\n{self.log_prefix}🛑 Loop not resolved — stopping after retry hint. "
+                                f"`{tc.function.name}` called {verdict.streak}+ times.",
                                 force=True,
                             )
                         messages.append({
@@ -6463,7 +6465,9 @@ class AIAgent:
                             ),
                             "tool_call_id": tc_id,
                         })
-                        return True  # signal caller to break the tool loop
+                        return True
+
+                # mode == "warn": just log the warning above, no further action
 
         return False
 
