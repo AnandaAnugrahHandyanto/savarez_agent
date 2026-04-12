@@ -53,9 +53,6 @@ _TAPBACK_REMOVED = {
     3003: "laugh", 3004: "emphasize", 3005: "question",
 }
 
-# Webhook event types that carry user messages
-_MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
-
 # Log redaction patterns
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
@@ -128,6 +125,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: Dict[str, str] = {}
+        # Cache original message text by GUID for edit detection.
+        # When an updated-message arrives with dateEdited, we compare
+        # against the cached text to distinguish edits from status updates.
+        self._message_text_cache: Dict[str, str] = {}
+        self._MESSAGE_TEXT_CACHE_MAX = 500
 
     # ------------------------------------------------------------------
     # API helpers
@@ -793,8 +795,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return web.json_response({"error": "invalid payload"}, status=400)
 
         event_type = self._value(payload.get("type"), payload.get("event")) or ""
-        # Only process message events; silently acknowledge everything else
-        if event_type and event_type not in _MESSAGE_EVENTS:
+        # Treat legacy "message" event as "new-message"
+        if event_type == "message":
+            event_type = "new-message"
+        # Only process new-message and updated-message events
+        if event_type not in ("new-message", "updated-message"):
             return web.Response(text="ok")
 
         record = self._extract_payload_record(payload) or {}
@@ -820,6 +825,38 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             )
             or ""
         )
+        msg_guid = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+
+        # --- Handle updated-message: distinguish edits from status updates ---
+        is_edit = False
+        original_text = None
+        if event_type == "updated-message":
+            date_edited = record.get("dateEdited")
+            if not date_edited:
+                # No dateEdited → delivery/read receipt, skip
+                return web.Response(text="ok")
+            # dateEdited is set → message was edited
+            cached_text = self._message_text_cache.get(msg_guid or "") if msg_guid else None
+            if cached_text is not None and cached_text == text:
+                # Text unchanged despite dateEdited, skip
+                return web.Response(text="ok")
+            is_edit = True
+            original_text = cached_text  # None if we didn't see the original
+            # Update cache with edited text
+            if msg_guid:
+                self._message_text_cache[msg_guid] = text
+
+        # --- Cache text for new messages ---
+        if event_type == "new-message" and msg_guid and text:
+            if len(self._message_text_cache) >= self._MESSAGE_TEXT_CACHE_MAX:
+                # Evict oldest entry
+                oldest = next(iter(self._message_text_cache))
+                del self._message_text_cache[oldest]
+            self._message_text_cache[msg_guid] = text
 
         # --- Inbound attachment handling ---
         attachments = record.get("attachments") or []
@@ -902,17 +939,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             message_type=msg_type,
             source=source,
             raw_message=payload,
-            message_id=self._value(
-                record.get("guid"),
-                record.get("messageGuid"),
-                record.get("id"),
-            ),
+            message_id=msg_guid,
             reply_to_message_id=self._value(
                 record.get("threadOriginatorGuid"),
                 record.get("associatedMessageGuid"),
             ),
             media_urls=media_urls,
             media_types=media_types,
+            is_edit=is_edit,
+            original_text=original_text,
         )
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
