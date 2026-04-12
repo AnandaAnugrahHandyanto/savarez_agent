@@ -1079,6 +1079,11 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(gaf, list):
                         gaf = ",".join(str(v) for v in gaf)
                     os.environ["WHATSAPP_GROUP_ALLOWED_USERS"] = str(gaf)
+                gac = whatsapp_cfg.get("group_allowed_users")
+                if gac is not None and not os.getenv("WHATSAPP_GROUP_ALLOWED_USERS"):
+                    if isinstance(gac, list):
+                        gac = ",".join(str(v) for v in gac)
+                    os.environ["WHATSAPP_GROUP_ALLOWED_USERS"] = str(gac)
 
             # DingTalk settings → env vars (env vars take precedence)
             dingtalk_cfg = yaml_cfg.get("dingtalk", {})
