@@ -385,6 +385,21 @@ class TestBlueBubblesWebhookUrl:
         adapter = _make_adapter(monkeypatch, webhook_host="192.168.1.50")
         assert "192.168.1.50" in adapter._webhook_url
 
+    def test_password_included_in_url(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert "password=secret" in adapter._webhook_url
+
+    def test_no_password_omits_query_string(self, monkeypatch):
+        monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
+        monkeypatch.delenv("BLUEBUBBLES_PASSWORD", raising=False)
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server_url": "http://localhost:1234", "password": ""},
+        )
+        adapter = BlueBubblesAdapter(cfg)
+        assert "?" not in adapter._webhook_url
+
 
 class TestBlueBubblesWebhookRegistration:
     """Tests for _register_webhook, _unregister_webhook, _find_registered_webhooks."""
@@ -482,6 +497,25 @@ class TestBlueBubblesWebhookRegistration:
             adapter._register_webhook()
         )
         assert ok is True
+
+    def test_register_events_exclude_invalid_message(self, monkeypatch):
+        """Webhook registration must not include invalid 'message' event."""
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": []},
+            post_response={"status": 200, "data": {"id": 44}},
+        )
+        captured = {}
+        orig_api_post = adapter._api_post
+        async def _capture_post(path, payload):
+            captured.update(payload)
+            return {"status": 200, "data": {"id": 44}}
+        adapter._api_post = _capture_post
+        asyncio.get_event_loop().run_until_complete(adapter._register_webhook())
+        assert "message" not in captured.get("events", [])
+        assert "new-message" in captured.get("events", [])
+        assert "updated-message" in captured.get("events", [])
 
     def test_register_accepts_201(self, monkeypatch):
         """BB might return 201 Created — must still succeed."""
