@@ -155,11 +155,7 @@ def _xai_curated_models() -> list[str]:
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
-        "moonshotai/kimi-k2.6",
-        "xiaomi/mimo-v2.5-pro",
-        "xiaomi/mimo-v2.5",
-        "tencent/hy3-preview",
-        "anthropic/claude-opus-4.7",
+        "xiaomi/mimo-v2-pro",
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
         "anthropic/claude-sonnet-4.5",
