@@ -53,6 +53,40 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["system_prompt"] == "You are a helpful assistant."
 
+    def test_update_codex_previous_response(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.update_codex_previous_response(
+            "s1",
+            response_id="resp_123",
+            history_len=4,
+            history_fingerprint="abc123",
+        )
+
+        session = db.get_session("s1")
+        assert session["codex_previous_response_id"] == "resp_123"
+        assert session["codex_previous_response_history_len"] == 4
+        assert session["codex_previous_response_history_fingerprint"] == "abc123"
+
+    def test_update_codex_previous_response_clears_invalid_values(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.update_codex_previous_response(
+            "s1",
+            response_id="resp_123",
+            history_len=4,
+            history_fingerprint="abc123",
+        )
+        db.update_codex_previous_response(
+            "s1",
+            response_id="   ",
+            history_len=-1,
+            history_fingerprint="",
+        )
+
+        session = db.get_session("s1")
+        assert session["codex_previous_response_id"] is None
+        assert session["codex_previous_response_history_len"] == 0
+        assert session["codex_previous_response_history_fingerprint"] is None
+
     def test_update_token_counts(self, db):
         db.create_session(session_id="s1", source="cli")
         db.update_token_counts("s1", input_tokens=200, output_tokens=100)

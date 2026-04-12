@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -65,6 +65,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_source TEXT,
     pricing_version TEXT,
     title TEXT,
+    codex_previous_response_id TEXT,
+    codex_previous_response_history_len INTEGER DEFAULT 0,
+    codex_previous_response_history_fingerprint TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -329,6 +332,23 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
+            if current_version < 7:
+                # v7: persist native Codex Responses continuity boundary on the
+                # session row so resumed agents can keep threading upstream via
+                # previous_response_id instead of falling back to full replay.
+                for col_name, col_type in [
+                    ("codex_previous_response_id", "TEXT"),
+                    ("codex_previous_response_history_len", "INTEGER DEFAULT 0"),
+                    ("codex_previous_response_history_fingerprint", "TEXT"),
+                ]:
+                    try:
+                        safe = col_name.replace('"', '""')
+                        cursor.execute(
+                            f'ALTER TABLE sessions ADD COLUMN "{safe}" {col_type}'
+                        )
+                    except sqlite3.OperationalError:
+                        pass  # Column already exists
+                cursor.execute("UPDATE schema_version SET version = 7")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -407,6 +427,37 @@ class SessionDB:
                 "UPDATE sessions SET system_prompt = ? WHERE id = ?",
                 (system_prompt, session_id),
             )
+        self._execute_write(_do)
+
+    def update_codex_previous_response(
+        self,
+        session_id: str,
+        response_id: Optional[str],
+        history_len: int = 0,
+        history_fingerprint: Optional[str] = None,
+    ) -> None:
+        """Persist the native Codex Responses continuity boundary for a session."""
+        normalized_response_id = response_id.strip() if isinstance(response_id, str) and response_id.strip() else None
+        normalized_history_len = int(history_len) if isinstance(history_len, int) and history_len >= 0 else 0
+        normalized_fingerprint = (
+            history_fingerprint if isinstance(history_fingerprint, str) and history_fingerprint else None
+        )
+
+        def _do(conn):
+            conn.execute(
+                """UPDATE sessions
+                   SET codex_previous_response_id = ?,
+                       codex_previous_response_history_len = ?,
+                       codex_previous_response_history_fingerprint = ?
+                   WHERE id = ?""",
+                (
+                    normalized_response_id,
+                    normalized_history_len,
+                    normalized_fingerprint,
+                    session_id,
+                ),
+            )
+
         self._execute_write(_do)
 
     def update_token_counts(

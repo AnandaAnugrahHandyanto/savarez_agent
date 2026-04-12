@@ -630,6 +630,12 @@ class AIAgent:
         # would mangle the escape sequences.  None = use builtins.print.
         self._print_fn = None
         self.background_review_callback = None  # Optional sync callback for gateway delivery
+        # Native OpenAI Responses threading state. We keep the prior response id
+        # plus a fingerprinted history boundary so resumed turns can safely send
+        # only the new delta instead of replaying the full conversation.
+        self._codex_previous_response_id = None
+        self._codex_previous_response_history_len = 0
+        self._codex_previous_response_history_fingerprint = None
         self.skip_context_files = skip_context_files
         self.pass_session_id = pass_session_id
         self.persist_session = persist_session
@@ -3539,6 +3545,114 @@ class AIAgent:
 
         return items
 
+    def _responses_history_fingerprint(self, messages: List[Dict[str, Any]]) -> str:
+        """Return a stable fingerprint for Responses-threading history matching."""
+        try:
+            payload = json.dumps(messages, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        except TypeError:
+            payload = json.dumps(messages, ensure_ascii=False, default=str, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+    def _history_messages_from_responses_payload(
+        self,
+        payload_messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Strip ephemeral Responses-only prefixes (for example prefill messages)."""
+        prefill_count = len(self.prefill_messages or [])
+        if prefill_count <= 0:
+            return payload_messages
+        return payload_messages[prefill_count:]
+
+    @staticmethod
+    def _normalize_messages_for_responses_threading(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Match the durable history shape used just before _build_api_kwargs()."""
+        normalized: List[Dict[str, Any]] = []
+        strip_keys = {"reasoning", "finish_reason", "_flush_sentinel", "_thinking_prefill"}
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            normalized.append({k: v for k, v in msg.items() if k not in strip_keys})
+        return normalized
+
+    def _build_codex_responses_turn_input(self, payload_messages: List[Dict[str, Any]]) -> tuple[Optional[str], List[Dict[str, Any]]]:
+        """Return (previous_response_id, input_items) for the next Codex request.
+
+        Native Responses threading is only used when the current history still
+        matches the prefix that produced the stored previous_response_id.
+        Otherwise we safely fall back to full replay.
+        """
+        history_messages = self._normalize_messages_for_responses_threading(
+            self._history_messages_from_responses_payload(payload_messages)
+        )
+        previous_response_id = getattr(self, "_codex_previous_response_id", None)
+        history_len = getattr(self, "_codex_previous_response_history_len", None)
+        history_fingerprint = getattr(self, "_codex_previous_response_history_fingerprint", None)
+
+        can_thread = (
+            isinstance(previous_response_id, str)
+            and previous_response_id.strip()
+            and isinstance(history_len, int)
+            and history_len >= 0
+            and isinstance(history_fingerprint, str)
+            and history_len <= len(history_messages)
+            and self._responses_history_fingerprint(history_messages[:history_len]) == history_fingerprint
+        )
+        if not can_thread:
+            return None, self._chat_messages_to_responses_input(payload_messages)
+
+        delta_messages = history_messages[history_len:]
+        return previous_response_id.strip(), self._chat_messages_to_responses_input(delta_messages)
+
+    def _persist_codex_previous_response_state(self) -> None:
+        """Write the current native Codex continuity boundary to the session store."""
+        if not self._session_db or not self.session_id:
+            return
+        try:
+            self._session_db.update_codex_previous_response(
+                self.session_id,
+                getattr(self, "_codex_previous_response_id", None),
+                history_len=getattr(self, "_codex_previous_response_history_len", 0),
+                history_fingerprint=getattr(self, "_codex_previous_response_history_fingerprint", None),
+            )
+        except Exception as e:
+            logger.debug("Session DB update_codex_previous_response failed: %s", e)
+
+    def _hydrate_codex_previous_response_state(self, session_row: Optional[Dict[str, Any]]) -> None:
+        """Restore native Codex continuity boundary from persisted session metadata."""
+        if self.api_mode != "codex_responses" or not isinstance(session_row, dict):
+            return
+
+        response_id = session_row.get("codex_previous_response_id")
+        history_len = session_row.get("codex_previous_response_history_len")
+        history_fingerprint = session_row.get("codex_previous_response_history_fingerprint")
+
+        self._codex_previous_response_id = (
+            response_id.strip() if isinstance(response_id, str) and response_id.strip() else None
+        )
+        self._codex_previous_response_history_len = history_len if isinstance(history_len, int) and history_len >= 0 else 0
+        self._codex_previous_response_history_fingerprint = (
+            history_fingerprint if isinstance(history_fingerprint, str) and history_fingerprint else None
+        )
+
+    def _remember_codex_previous_response(self, response: Any, history_messages: List[Dict[str, Any]]) -> None:
+        """Persist the last successful Responses id plus its history boundary."""
+        response_id = getattr(response, "id", None)
+        if not isinstance(response_id, str) or not response_id.strip():
+            return
+
+        stored_history = history_messages
+        if stored_history and stored_history[0].get("role") == "system":
+            stored_history = stored_history[1:]
+        stored_history = self._normalize_messages_for_responses_threading(
+            self._history_messages_from_responses_payload(stored_history)
+        )
+
+        self._codex_previous_response_id = response_id.strip()
+        self._codex_previous_response_history_len = len(stored_history)
+        # Fingerprint only the durable conversation history, not ephemeral API-only prefixes.
+        self._codex_previous_response_history_fingerprint = self._responses_history_fingerprint(stored_history)
+        self._persist_codex_previous_response_state()
+
     def _preflight_codex_input_items(self, raw_items: Any) -> List[Dict[str, Any]]:
         if not isinstance(raw_items, list):
             raise ValueError("Codex Responses input must be a list of input items.")
@@ -3705,6 +3819,7 @@ class AIAgent:
             "model", "instructions", "input", "tools", "store",
             "reasoning", "include", "max_output_tokens", "temperature",
             "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier",
+            "previous_response_id",
         }
         normalized: Dict[str, Any] = {
             "model": model,
@@ -3734,8 +3849,8 @@ class AIAgent:
         if isinstance(temperature, (int, float)):
             normalized["temperature"] = float(temperature)
 
-        # Pass through tool_choice, parallel_tool_calls, prompt_cache_key
-        for passthrough_key in ("tool_choice", "parallel_tool_calls", "prompt_cache_key"):
+        # Pass through tool_choice, parallel_tool_calls, prompt_cache_key, previous_response_id
+        for passthrough_key in ("tool_choice", "parallel_tool_calls", "prompt_cache_key", "previous_response_id"):
             val = api_kwargs.get(passthrough_key)
             if val is not None:
                 normalized[passthrough_key] = val
@@ -5946,15 +6061,22 @@ class AIAgent:
                 elif self.reasoning_config.get("effort"):
                     reasoning_effort = self.reasoning_config["effort"]
 
+            previous_response_id = None
+            input_items = self._chat_messages_to_responses_input(payload_messages)
+            if not is_github_responses:
+                previous_response_id, input_items = self._build_codex_responses_turn_input(payload_messages)
+
             kwargs = {
                 "model": self.model,
                 "instructions": instructions,
-                "input": self._chat_messages_to_responses_input(payload_messages),
+                "input": input_items,
                 "tools": self._responses_tools(),
                 "tool_choice": "auto",
                 "parallel_tool_calls": True,
                 "store": False,
             }
+            if previous_response_id:
+                kwargs["previous_response_id"] = previous_response_id
 
             if not is_github_responses:
                 kwargs["prompt_cache_key"] = self.session_id
@@ -7654,11 +7776,13 @@ class AIAgent:
         # prefix cache.
         if self._cached_system_prompt is None:
             stored_prompt = None
+            session_row = None
             if conversation_history and self._session_db:
                 try:
                     session_row = self._session_db.get_session(self.session_id)
                     if session_row:
                         stored_prompt = session_row.get("system_prompt") or None
+                        self._hydrate_codex_previous_response_state(session_row)
                 except Exception:
                     pass  # Fall through to build fresh
 
@@ -9464,7 +9588,8 @@ class AIAgent:
                         if not duplicate_interim:
                             messages.append(interim_msg)
                             self._emit_interim_assistant_message(interim_msg)
-
+                        self._remember_codex_previous_response(response, messages)
+ 
                     if self._codex_incomplete_retries < 3:
                         if not self.quiet_mode:
                             self._vprint(f"{self.log_prefix}↻ Codex response incomplete; continuing turn ({self._codex_incomplete_retries}/3)")
@@ -9531,6 +9656,8 @@ class AIAgent:
 
                         assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                         messages.append(assistant_msg)
+                        if self.api_mode == "codex_responses":
+                            self._remember_codex_previous_response(response, messages)
                         for tc in assistant_message.tool_calls:
                             if tc.function.name not in self.valid_tool_names:
                                 content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}"
@@ -9614,6 +9741,8 @@ class AIAgent:
                             # Append the assistant message with its (broken) tool_calls
                             recovery_assistant = self._build_assistant_message(assistant_message, finish_reason)
                             messages.append(recovery_assistant)
+                            if self.api_mode == "codex_responses":
+                                self._remember_codex_previous_response(response, messages)
                             
                             # Respond with tool error results for each tool call
                             invalid_names = {name for name, _ in invalid_json_args}
@@ -9684,6 +9813,8 @@ class AIAgent:
 
                     messages.append(assistant_msg)
                     self._emit_interim_assistant_message(assistant_msg)
+                    if self.api_mode == "codex_responses":
+                        self._remember_codex_previous_response(response, messages)
 
                     # Close any open streaming display (response box, reasoning
                     # box) before tool execution begins.  Intermediate turns may
@@ -9852,6 +9983,8 @@ class AIAgent:
                             )
                             interim_msg["_thinking_prefill"] = True
                             messages.append(interim_msg)
+                            if self.api_mode == "codex_responses":
+                                self._remember_codex_previous_response(response, messages)
                             self._session_messages = messages
                             self._save_session_log(messages)
                             continue
@@ -9963,6 +10096,7 @@ class AIAgent:
                         interim_msg = self._build_assistant_message(assistant_message, "incomplete")
                         messages.append(interim_msg)
                         self._emit_interim_assistant_message(interim_msg)
+                        self._remember_codex_previous_response(response, messages)
 
                         continue_msg = {
                             "role": "user",
@@ -10000,6 +10134,8 @@ class AIAgent:
                         messages.pop()
 
                     messages.append(final_msg)
+                    if self.api_mode == "codex_responses":
+                        self._remember_codex_previous_response(response, messages)
                     
                     _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                     if not self.quiet_mode:
