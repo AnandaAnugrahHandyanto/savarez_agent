@@ -800,7 +800,9 @@ def _container_systemd_operational() -> bool:
 
 
 def supports_systemd_services() -> bool:
-    if not is_linux() or is_termux():
+    if not is_linux() or is_termux() or is_container():
+        return False
+    if shutil.which("systemctl") is None:
         return False
     if shutil.which("systemctl") is None:
         return False
@@ -1988,16 +1990,6 @@ def systemd_restart(system: bool = False):
         )
         _wait_for_systemd_service_restart(system=system, previous_pid=pid)
         return
-
-    if _recover_pending_systemd_restart(system=system, previous_pid=pid):
-        return
-
-    _run_systemctl(
-        ["reset-failed", get_service_name()],
-        system=system,
-        check=False,
-        timeout=30,
-    )
     _run_systemctl(["reload-or-restart", get_service_name()], system=system, check=True, timeout=90)
     print(f"✓ {_service_scope_label(system).capitalize()} service restarted")
 
@@ -2026,12 +2018,8 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         print(f"  Run: {'sudo ' if system else ''}hermes gateway restart{scope_flag}  # auto-refreshes the unit")
         print()
 
-    status_cmd = ["status", get_service_name(), "--no-pager"]
-    if full:
-        status_cmd.append("-l")
-
     _run_systemctl(
-        status_cmd,
+        ["status", get_service_name(), "--no-pager"],
         system=system,
         capture_output=False,
         timeout=10,
