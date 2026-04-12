@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from gateway.platforms.web_surfaces import WebSurfaceSpec
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
     VALID_HOOKS,
@@ -341,6 +342,136 @@ class TestPluginContext:
 
         from tools.registry import registry
         assert "plugin_echo" in registry._tools
+
+    def test_register_web_surface_tracks_surface(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "surface_plugin"
+        static_dir = plugin_dir / "ui"
+        static_dir.mkdir(parents=True)
+        (static_dir / "index.html").write_text("<html>surface</html>")
+        (static_dir / "manifest.webmanifest").write_text('{"name": "surface"}')
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "surface_plugin"}))
+        (plugin_dir / "__init__.py").write_text(
+            'def register(ctx):\n'
+            '    ctx.register_web_surface(\n'
+            '        surface_id="dashboard",\n'
+            '        static_dir="ui",\n'
+            '        extra_files={"manifest.webmanifest": "ui/manifest.webmanifest"},\n'
+            '    )\n'
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert mgr._plugins["surface_plugin"].enabled is True
+        assert mgr._plugins["surface_plugin"].web_surfaces_registered == ["dashboard"]
+        assert mgr.get_web_surfaces() == [
+            WebSurfaceSpec(
+                surface_id="dashboard",
+                plugin_name="surface_plugin",
+                static_dir=static_dir.resolve(),
+                spa_fallback=True,
+                extra_files={"manifest.webmanifest": (static_dir / "manifest.webmanifest").resolve()},
+            )
+        ]
+
+    def test_register_web_surface_duplicate_id_disables_second_plugin(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        for name in ("first_surface", "second_surface"):
+            plugin_dir = plugins_dir / name
+            static_dir = plugin_dir / "ui"
+            static_dir.mkdir(parents=True)
+            (static_dir / "index.html").write_text(f"<html>{name}</html>")
+            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": name}))
+            (plugin_dir / "__init__.py").write_text(
+                'def register(ctx):\n'
+                '    ctx.register_web_surface(surface_id="shared", static_dir="ui")\n'
+            )
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert mgr._plugins["first_surface"].enabled is True
+        assert mgr._plugins["second_surface"].enabled is False
+        assert "Duplicate web surface id" in (mgr._plugins["second_surface"].error or "")
+
+    def test_register_web_surface_rolls_back_when_plugin_errors(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "broken_surface"
+        static_dir = plugin_dir / "ui"
+        static_dir.mkdir(parents=True)
+        (static_dir / "index.html").write_text("<html>broken</html>")
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "broken_surface"}))
+        (plugin_dir / "__init__.py").write_text(
+            'def register(ctx):\n'
+            '    ctx.register_tool(\n'
+            '        name="broken_tool",\n'
+            '        toolset="plugin_broken_surface",\n'
+            '        schema={"name": "broken_tool", "description": "Broken", "parameters": {"type": "object", "properties": {}}},\n'
+            '        handler=lambda args, **kw: "broken",\n'
+            '    )\n'
+            '    ctx.register_web_surface(surface_id="broken", static_dir="ui")\n'
+            '    raise RuntimeError("boom")\n'
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert mgr._plugins["broken_surface"].enabled is False
+        assert mgr.get_web_surfaces() == []
+        assert "broken_tool" not in mgr._plugin_tool_names
+        from tools.registry import registry
+        assert "broken_tool" not in registry._tools
+
+    def test_register_web_surface_rejects_reserved_bootstrap_path(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "reserved_surface"
+        static_dir = plugin_dir / "ui"
+        static_dir.mkdir(parents=True)
+        (static_dir / "index.html").write_text("<html>reserved</html>")
+        (static_dir / "__hermes__.json").write_text('{"name": "reserved"}')
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "reserved_surface"}))
+        (plugin_dir / "__init__.py").write_text(
+            'def register(ctx):\n'
+            '    ctx.register_web_surface(\n'
+            '        surface_id="reserved",\n'
+            '        static_dir="ui",\n'
+            '        extra_files={"__hermes__.json": "ui/__hermes__.json"},\n'
+            '    )\n'
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert mgr._plugins["reserved_surface"].enabled is False
+        assert "reserved for bootstrap payloads" in (mgr._plugins["reserved_surface"].error or "")
+
+    def test_register_web_surface_resolves_relative_paths_for_entrypoint_plugins(self, tmp_path):
+        package_dir = tmp_path / "entry_surface"
+        static_dir = package_dir / "ui"
+        static_dir.mkdir(parents=True)
+        (static_dir / "index.html").write_text("<html>entry</html>")
+        module = types.ModuleType("entry_surface.plugin")
+        module.__file__ = str(package_dir / "plugin.py")
+        manifest = PluginManifest(name="entry-surface", source="entrypoint", path="entry_surface.plugin:register")
+        mgr = PluginManager()
+        ctx = PluginContext(manifest, mgr, module)
+
+        ctx.register_web_surface(surface_id="entrypoint", static_dir="ui")
+
+        assert mgr.get_web_surfaces() == [
+            WebSurfaceSpec(
+                surface_id="entrypoint",
+                plugin_name="entry-surface",
+                static_dir=static_dir.resolve(),
+                spa_fallback=True,
+            )
+        ]
 
 
 # ── TestPluginToolVisibility ───────────────────────────────────────────────

@@ -31,6 +31,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from gateway.platforms.web_surfaces import WebSurfaceSpec
 
 
 # ---------------------------------------------------------------------------
@@ -1550,6 +1551,31 @@ class TestCORS:
             assert resp.headers.get("Access-Control-Allow-Origin") is None
 
     @pytest.mark.asyncio
+    async def test_same_origin_request_allowed_without_cors_headers(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            origin = str(cli.make_url("/")).rstrip("/")
+            resp = await cli.get("/health", headers={"Origin": origin})
+            assert resp.status == 200
+            assert resp.headers.get("Access-Control-Allow-Origin") is None
+
+    @pytest.mark.asyncio
+    async def test_forwarded_same_origin_request_allowed_without_cors_headers(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                "/health",
+                headers={
+                    "Host": "internal.local",
+                    "Origin": "https://proxy.example",
+                    "X-Forwarded-Host": "proxy.example",
+                    "X-Forwarded-Proto": "https",
+                },
+            )
+            assert resp.status == 200
+            assert resp.headers.get("Access-Control-Allow-Origin") is None
+
+    @pytest.mark.asyncio
     async def test_browser_origin_rejected_by_default(self, adapter):
         """Browser-originated requests are rejected unless explicitly allowed."""
         app = _create_app(adapter)
@@ -1644,6 +1670,107 @@ class TestCORS:
             )
             assert resp.status == 200
             assert resp.headers.get("Access-Control-Max-Age") == "600"
+
+
+class TestPluginWebSurfaces:
+    @pytest.mark.asyncio
+    async def test_plugin_surface_serves_index_bootstrap_and_spa_fallback(self, tmp_path, adapter):
+        static_dir = tmp_path / "surface"
+        static_dir.mkdir()
+        (static_dir / "index.html").write_text("<html>surface</html>")
+        (static_dir / "app.js").write_text("console.log('surface');")
+        (static_dir / "manifest.webmanifest").write_text('{"name": "surface"}')
+
+        spec = WebSurfaceSpec(
+            surface_id="demo",
+            plugin_name="demo-plugin",
+            static_dir=static_dir.resolve(),
+            extra_files={"manifest.webmanifest": (static_dir / "manifest.webmanifest").resolve()},
+            bootstrap_factory=lambda runtime: {
+                "surface_id": runtime.surface_id,
+                "mount_path": runtime.mount_path,
+            },
+        )
+
+        app = _create_app(adapter)
+        adapter._app = app
+        with patch("hermes_cli.plugins.discover_plugins") as mock_discover, patch(
+            "hermes_cli.plugins.get_plugin_web_surfaces", return_value=[spec]
+        ):
+            adapter._mount_plugin_web_surfaces()
+        mock_discover.assert_called_once()
+
+        async with TestClient(TestServer(app)) as cli:
+            root = await cli.get("/web/demo/")
+            assert root.status == 200
+            assert "surface" in await root.text()
+
+            asset = await cli.get("/web/demo/app.js")
+            assert asset.status == 200
+            assert "console.log" in await asset.text()
+
+            bootstrap = await cli.get("/web/demo/__hermes__.json")
+            assert bootstrap.status == 200
+            assert await bootstrap.json() == {
+                "surface_id": "demo",
+                "mount_path": "/web/demo/",
+            }
+
+            manifest = await cli.get("/web/demo/manifest.webmanifest")
+            assert manifest.status == 200
+            assert '"name": "surface"' in await manifest.text()
+
+            spa = await cli.get("/web/demo/routes/inside/app")
+            assert spa.status == 200
+            assert "surface" in await spa.text()
+
+    @pytest.mark.asyncio
+    async def test_plugin_surface_can_serve_static_bootstrap_file_when_no_factory(self, tmp_path, adapter):
+        static_dir = tmp_path / "surface"
+        static_dir.mkdir()
+        (static_dir / "index.html").write_text("<html>surface</html>")
+        (static_dir / "__hermes__.json").write_text('{"kind": "static"}')
+        spec = WebSurfaceSpec(
+            surface_id="static-bootstrap",
+            plugin_name="demo-plugin",
+            static_dir=static_dir.resolve(),
+        )
+
+        app = _create_app(adapter)
+        adapter._app = app
+        with patch("hermes_cli.plugins.discover_plugins"), patch(
+            "hermes_cli.plugins.get_plugin_web_surfaces", return_value=[spec]
+        ):
+            adapter._mount_plugin_web_surfaces()
+
+        async with TestClient(TestServer(app)) as cli:
+            bootstrap = await cli.get("/web/static-bootstrap/__hermes__.json")
+            assert bootstrap.status == 200
+            assert await bootstrap.text() == '{"kind": "static"}'
+
+    @pytest.mark.asyncio
+    async def test_plugin_surfaces_not_mounted_when_api_key_is_set(self, tmp_path, auth_adapter):
+        static_dir = tmp_path / "surface"
+        static_dir.mkdir()
+        (static_dir / "index.html").write_text("<html>surface</html>")
+        spec = WebSurfaceSpec(
+            surface_id="secure-demo",
+            plugin_name="demo-plugin",
+            static_dir=static_dir.resolve(),
+        )
+
+        app = _create_app(auth_adapter)
+        auth_adapter._app = app
+        with patch("hermes_cli.plugins.discover_plugins") as mock_discover, patch(
+            "hermes_cli.plugins.get_plugin_web_surfaces", return_value=[spec]
+        ):
+            auth_adapter._mount_plugin_web_surfaces()
+        mock_discover.assert_not_called()
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/web/secure-demo/")
+            assert resp.status == 404
+
 # ---------------------------------------------------------------------------
 # Conversation parameter
 # ---------------------------------------------------------------------------

@@ -215,6 +215,12 @@ Central tool registry (`tools/registry.py`) with 47 registered tools across 20 t
 
 → [Tools Runtime](./tools-runtime.md)
 
+### Plugin System
+
+`hermes_cli/plugins.py` provides the general plugin seam. Plugins can register tools, hooks, CLI commands, context engines, injected messages, and lightweight web surfaces.
+
+For browser UIs, plugins can now register a prebuilt static surface that the API server mounts under `/web/<surface_id>/...` via `gateway/platforms/web_surfaces.py`. The API server discovers plugins during startup, mounts those surfaces on the existing aiohttp app, treats same-origin requests as local rather than forcing them through the cross-origin allowlist, and skips mounting them entirely when `API_SERVER_KEY` is enabled so Hermes does not grow a second browser auth path.
+
 ### Session Persistence
 
 SQLite-based session storage with FTS5 full-text search. Sessions have lineage tracking (parent/child across compressions), per-platform isolation, and atomic writes with contention handling.
