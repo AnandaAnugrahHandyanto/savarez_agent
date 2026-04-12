@@ -55,65 +55,27 @@ _OPENCLAW_SCRIPT_INSTALLED = (
 # Known OpenClaw directory names (current + legacy)
 _OPENCLAW_DIR_NAMES = (".openclaw", ".clawdbot", ".moltbot")
 
-def _detect_openclaw_processes() -> list[str]:
-    """Detect running OpenClaw processes and services.
-
-    Returns a list of human-readable descriptions of what was found.
-    An empty list means nothing was detected.
-    """
-    found: list[str] = []
-
-    # -- systemd service (Linux) ------------------------------------------
-    if sys.platform != "win32":
-        try:
-            result = subprocess.run(
-                ["systemctl", "--user", "is-active", "openclaw-gateway.service"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.stdout.strip() == "active":
-                found.append("systemd service: openclaw-gateway.service")
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
-
-    # -- process scan ------------------------------------------------------
+def _is_openclaw_running() -> bool:
+    """Check whether an OpenClaw process appears to be running."""
     if sys.platform == "win32":
         try:
-            for exe in ("openclaw.exe", "clawd.exe"):
-                result = subprocess.run(
-                    ["tasklist", "/FI", f"IMAGENAME eq {exe}"],
-                    capture_output=True, text=True, timeout=5,
-                )
-                if exe in result.stdout.lower():
-                    found.append(f"process: {exe}")
-
-            # Node.js-hosted OpenClaw — tasklist doesn't show command lines,
-            # so fall back to PowerShell.
-            ps_cmd = (
-                'Get-CimInstance Win32_Process -Filter "Name = \'node.exe\'" | '
-                'Where-Object { $_.CommandLine -match "openclaw|clawd" } | '
-                'Select-Object -First 1 ProcessId'
-            )
             result = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps_cmd],
-                capture_output=True, text=True, timeout=5,
+                ["tasklist", "/FI", "IMAGENAME eq node.exe"],
+                capture_output=True, text=True, timeout=5
             )
-            if result.stdout.strip():
-                found.append(f"node.exe process with openclaw in command line (PID {result.stdout.strip()})")
+            output = result.stdout.lower()
+            return "openclaw" in output or "clawd" in output
         except Exception:
-            pass
-    else:
-        try:
-            result = subprocess.run(
-                ["pgrep", "-f", "openclaw"],
-                capture_output=True, text=True, timeout=3,
-            )
-            if result.returncode == 0:
-                pids = result.stdout.strip().split()
-                found.append(f"openclaw process(es) (PIDs: {', '.join(pids)})")
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+            return False
 
-    return found
+    for cmd in (["pgrep", "-f", "openclaw"], ["pgrep", "-f", "clawd"]):
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=3)
+            if result.returncode == 0:
+                return True
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+    return False
 
 
 def _warn_if_openclaw_running(auto_yes: bool) -> None:
@@ -123,14 +85,11 @@ def _warn_if_openclaw_running(auto_yes: bool) -> None:
     token. Migrating while OpenClaw is running causes both to fight for the
     same token.
     """
-    running = _detect_openclaw_processes()
-    if not running:
+    if not _is_openclaw_running():
         return
 
     print()
-    print_error("OpenClaw appears to be running:")
-    for detail in running:
-        print_info(f"  * {detail}")
+    print_error("OpenClaw appears to be running.")
     print_info(
         "Messaging platforms (Telegram, Discord, Slack) only allow one "
         "active session per bot token. If you continue, both OpenClaw and "
@@ -138,12 +97,7 @@ def _warn_if_openclaw_running(auto_yes: bool) -> None:
     )
     print_info("Recommendation: stop OpenClaw before migrating.")
     print()
-    if auto_yes:
-        return
-    if not sys.stdin.isatty():
-        print_info("Non-interactive session — continuing to preview only.")
-        return
-    if not prompt_yes_no("Continue anyway?", default=False):
+    if not auto_yes and not prompt_yes_no("Continue anyway?", default=False):
         print_info("Migration cancelled. Stop OpenClaw and try again.")
         sys.exit(0)
 
