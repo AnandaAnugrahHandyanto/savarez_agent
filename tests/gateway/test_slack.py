@@ -649,14 +649,26 @@ class TestResolveThreadTs:
         result = adapter._resolve_thread_ts("ts123", {"thread_id": "ts123"})
         assert result is None
 
-    def test_none_reply_to_returns_none_when_disabled(self, adapter):
-        """reply_in_thread=false: proactive messages (no reply_to) get None."""
+    def test_internal_send_stays_in_thread_when_disabled(self, adapter):
+        """reply_in_thread=false: internal sends (reply_to=None, real thread) stay in-thread."""
         adapter.config.extra["reply_in_thread"] = False
-        result = adapter._resolve_thread_ts(None, {"thread_id": "ts123"})
+        result = adapter._resolve_thread_ts(None, {"thread_id": "parent_ts"})
+        assert result == "parent_ts"
+
+    def test_proactive_message_returns_none_when_disabled(self, adapter):
+        """reply_in_thread=false: proactive messages (both None) get None."""
+        adapter.config.extra["reply_in_thread"] = False
+        result = adapter._resolve_thread_ts(None, {})
+        assert result is None
+
+    def test_proactive_no_metadata_returns_none_when_disabled(self, adapter):
+        """reply_in_thread=false: no metadata at all returns None."""
+        adapter.config.extra["reply_in_thread"] = False
+        result = adapter._resolve_thread_ts(None)
         assert result is None
 
     def test_no_metadata_returns_none_when_disabled(self, adapter):
-        """reply_in_thread=false: no metadata returns None."""
+        """reply_in_thread=false: reply_to only, no metadata returns None."""
         adapter.config.extra["reply_in_thread"] = False
         result = adapter._resolve_thread_ts("ts123")
         assert result is None

@@ -400,7 +400,12 @@ class SlackAdapter(BasePlatformAdapter):
         # session keying) — return None so the reply goes to the channel.
         if not self.config.extra.get("reply_in_thread", True) or self.config.reply_to_mode == "off":
             existing_thread = (metadata or {}).get("thread_id") or (metadata or {}).get("thread_ts")
-            if not reply_to or reply_to == existing_thread:
+            # Top-level channel messages have reply_to == existing_thread
+            # (both equal the message's own ts, set for session keying).
+            # Proactive messages have reply_to == existing_thread == None.
+            # Internal sends (typing, TTS, media) have reply_to=None but
+            # existing_thread set to a real parent — those must stay in-thread.
+            if reply_to == existing_thread:
                 return None
             return existing_thread or None
 
