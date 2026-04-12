@@ -353,3 +353,37 @@ class TestStreamingPerPlatform:
             }
         }
         assert resolve_display_setting(config, "email", "streaming") is True
+
+
+class TestStreamingGateGlobalOverride:
+    """display.streaming must not override streaming.enabled: false (issue #8338)."""
+
+    @staticmethod
+    def _gate(_scfg_enabled, _scfg_transport, _plat_streaming):
+        """Replicate the streaming gate logic from gateway/run.py."""
+        _global_streaming = _scfg_enabled and _scfg_transport != "off"
+        return (
+            _global_streaming
+            if _plat_streaming is None
+            else _global_streaming and bool(_plat_streaming)
+        )
+
+    def test_display_true_but_global_off_means_disabled(self):
+        """display.streaming=True should NOT enable streaming when
+        streaming.enabled=False."""
+        assert self._gate(False, "sse", True) is False
+
+    def test_both_on_means_enabled(self):
+        assert self._gate(True, "sse", True) is True
+
+    def test_global_on_no_override_means_enabled(self):
+        assert self._gate(True, "sse", None) is True
+
+    def test_global_off_no_override_means_disabled(self):
+        assert self._gate(False, "sse", None) is False
+
+    def test_global_on_override_false_means_disabled(self):
+        assert self._gate(True, "sse", False) is False
+
+    def test_transport_off_means_disabled(self):
+        assert self._gate(True, "off", True) is False

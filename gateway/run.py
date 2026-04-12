@@ -7652,10 +7652,11 @@ class GatewayRunner:
                 user_config, platform_key, "streaming"
             )
             # None = no per-platform override → follow global config
+            _global_streaming = _scfg.enabled and _scfg.transport != "off"
             _streaming_enabled = (
-                _scfg.enabled and _scfg.transport != "off"
+                _global_streaming
                 if _plat_streaming is None
-                else bool(_plat_streaming)
+                else _global_streaming and bool(_plat_streaming)
             )
             _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled
