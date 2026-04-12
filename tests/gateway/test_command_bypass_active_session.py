@@ -176,6 +176,77 @@ class TestCommandBypassActiveSession:
             "/background response was not sent back to the user"
         )
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("command_text", "expected_command"),
+        [
+            ("/stop", "stop"),
+            ("/new", "new"),
+            ("/reset", "reset"),
+        ],
+    )
+    async def test_reset_like_command_cancels_active_session_and_unblocks_follow_up(
+        self,
+        command_text,
+        expected_command,
+    ):
+        """Session-terminating commands must cancel the active task before bypassing.
+
+        Without this, the adapter-level session guard can survive a /new or /stop,
+        causing the next /model or plain-text message to queue behind a stale task.
+        """
+        adapter = _make_adapter()
+        sk = _session_key()
+        processing_started = asyncio.Event()
+        processing_cancelled = asyncio.Event()
+        blocked_first_message = True
+
+        async def _handler(event):
+            nonlocal blocked_first_message
+            cmd = event.get_command()
+            if cmd in {"stop", "new", "reset", "model"}:
+                return f"handled:{cmd}"
+
+            if blocked_first_message:
+                blocked_first_message = False
+                processing_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    processing_cancelled.set()
+                    raise
+            return f"handled:text:{event.text}"
+
+        adapter._message_handler = _handler
+
+        await adapter.handle_message(_make_event("hello world"))
+        await processing_started.wait()
+        await asyncio.sleep(0)
+
+        assert sk in adapter._active_sessions
+        assert sk in adapter._session_tasks
+
+        await adapter.handle_message(_make_event(command_text))
+
+        assert processing_cancelled.is_set(), (
+            f"{command_text} did not cancel the active processing task"
+        )
+        assert sk not in adapter._active_sessions
+        assert sk not in adapter._pending_messages
+        assert sk not in adapter._session_tasks
+        assert any(f"handled:{expected_command}" in r for r in adapter.sent_responses)
+
+        await adapter.handle_message(
+            _make_event("/model xiaomi/mimo-v2-pro --provider nous")
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert any("handled:model" in r for r in adapter.sent_responses), (
+            f"follow-up /model stayed blocked after {command_text}"
+        )
+        assert sk not in adapter._pending_messages
+
 
 # ---------------------------------------------------------------------------
 # Tests: non-bypass messages still get queued

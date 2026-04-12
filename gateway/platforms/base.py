@@ -744,10 +744,13 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_retryable = True
         self._fatal_error_handler: Optional[Callable[["BasePlatformAdapter"], Awaitable[None] | None]] = None
         
-        # Track active message handlers per session for interrupt support
-        # Key: session_key (e.g., chat_id), Value: (event, asyncio.Event for interrupt)
+        # Track active message handlers per session for interrupt support.
+        # _active_sessions stores the per-session interrupt Event, while
+        # _session_tasks keeps the task currently processing that session so
+        # reset-like commands can cancel it immediately.
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
+        self._session_tasks: Dict[str, asyncio.Task] = {}
         # Background message-processing tasks spawned by handle_message().
         # Gateway shutdown cancels these so an old gateway instance doesn't keep
         # working on a task after --replace or manual restarts.
@@ -1462,6 +1465,8 @@ class BasePlatformAdapter(ABC):
                     self.name, cmd, session_key,
                 )
                 try:
+                    if cmd in ("stop", "new", "reset"):
+                        await self.cancel_session_processing(session_key)
                     _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
                     response = await self._message_handler(event)
                     if response:
@@ -1506,11 +1511,13 @@ class BasePlatformAdapter(ABC):
 
         # Spawn background task to process this message
         task = asyncio.create_task(self._process_message_background(event, session_key))
+        self._session_tasks[session_key] = task
         try:
             self._background_tasks.add(task)
         except TypeError:
             # Some tests stub create_task() with lightweight sentinels that are not
             # hashable and do not support lifecycle callbacks.
+            self._session_tasks.pop(session_key, None)
             return
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
@@ -1808,7 +1815,31 @@ class BasePlatformAdapter(ABC):
             # Clean up session tracking
             if session_key in self._active_sessions:
                 del self._active_sessions[session_key]
-    
+            current_task = asyncio.current_task()
+            if current_task is not None and self._session_tasks.get(session_key) is current_task:
+                del self._session_tasks[session_key]
+
+    async def cancel_session_processing(self, session_key: str) -> None:
+        """Cancel in-flight processing for a single session and release its guard."""
+        task = self._session_tasks.pop(session_key, None)
+        if task is not None and not task.done():
+            logger.debug("[%s] Cancelling active processing for session %s", self.name, session_key)
+            self._expected_cancelled_tasks.add(task)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug(
+                    "[%s] Session cancellation raised while unwinding %s",
+                    self.name,
+                    session_key,
+                    exc_info=True,
+                )
+        self._pending_messages.pop(session_key, None)
+        self._active_sessions.pop(session_key, None)
+
     async def cancel_background_tasks(self) -> None:
         """Cancel any in-flight background message-processing tasks.
 
@@ -1823,6 +1854,7 @@ class BasePlatformAdapter(ABC):
             await asyncio.gather(*tasks, return_exceptions=True)
         self._background_tasks.clear()
         self._expected_cancelled_tasks.clear()
+        self._session_tasks.clear()
         self._pending_messages.clear()
         self._active_sessions.clear()
 
