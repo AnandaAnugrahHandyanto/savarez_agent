@@ -2105,6 +2105,7 @@ class AIAgent:
                         model=self.model,
                         max_iterations=8,
                         quiet_mode=True,
+                        skip_memory=True,
                         platform=self.platform,
                         provider=self.provider,
                     )
