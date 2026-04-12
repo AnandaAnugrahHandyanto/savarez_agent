@@ -15,6 +15,17 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
         load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
 
 
+def load_dotenv_path(path: Path | str, *, override: bool = False) -> None:
+    """Load a single ``.env`` file using UTF-8, then latin-1 (e.g. Windows cp1252).
+
+    No-op if *path* is missing or not a regular file.
+    """
+    p = Path(path)
+    if not p.is_file():
+        return
+    _load_dotenv_with_fallback(p, override=override)
+
+
 def load_hermes_dotenv(
     *,
     hermes_home: str | os.PathLike | None = None,

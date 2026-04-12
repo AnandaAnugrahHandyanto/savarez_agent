@@ -37,10 +37,12 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Literal
 
 import fire
-from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+from hermes_cli.env_loader import load_hermes_dotenv
+
+# Load environment variables (UTF-8 + latin-1 fallback for Windows-saved .env)
+_REPO_ROOT = Path(__file__).resolve().parent
+load_hermes_dotenv(project_env=_REPO_ROOT / ".env")
 
 
 

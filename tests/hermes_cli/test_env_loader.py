@@ -3,7 +3,29 @@ import os
 import sys
 from pathlib import Path
 
-from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.env_loader import load_dotenv_path, load_hermes_dotenv
+
+
+def test_load_dotenv_path_utf8(tmp_path, monkeypatch):
+    monkeypatch.delenv("FOO_BAR", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text("FOO_BAR=hello\n", encoding="utf-8")
+    load_dotenv_path(env_file)
+    assert os.getenv("FOO_BAR") == "hello"
+
+
+def test_load_dotenv_path_latin1_fallback(tmp_path, monkeypatch):
+    monkeypatch.delenv("FOO_BAR", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_bytes(b"FOO_BAR=caf\xe9\n")
+    load_dotenv_path(env_file)
+    assert os.getenv("FOO_BAR") == "café"
+
+
+def test_load_dotenv_path_missing_file_noop(tmp_path, monkeypatch):
+    monkeypatch.delenv("FOO_BAR", raising=False)
+    load_dotenv_path(tmp_path / "nope.env")
+    assert os.getenv("FOO_BAR") is None
 
 
 def test_user_env_overrides_stale_shell_values(tmp_path, monkeypatch):

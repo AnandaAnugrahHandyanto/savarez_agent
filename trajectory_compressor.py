@@ -46,9 +46,11 @@ from rich.console import Console
 from hermes_constants import OPENROUTER_BASE_URL
 from agent.retry_utils import jittered_backoff
 
-# Load environment variables
-from dotenv import load_dotenv
-load_dotenv()
+# Load environment variables (UTF-8 + latin-1 fallback for Windows-saved .env)
+from hermes_cli.env_loader import load_hermes_dotenv
+
+_REPO_ROOT = Path(__file__).resolve().parent
+load_hermes_dotenv(project_env=_REPO_ROOT / ".env")
 
 
 @dataclass

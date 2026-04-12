@@ -33,13 +33,12 @@ _repo_root = Path(__file__).resolve().parent.parent
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
 
-from dotenv import load_dotenv
 from pydantic import Field
 
+from hermes_cli.env_loader import load_dotenv_path
+
 # Load API keys from hermes-agent/.env so all environments can access them
-_env_path = _repo_root / ".env"
-if _env_path.exists():
-    load_dotenv(dotenv_path=_env_path)
+load_dotenv_path(_repo_root / ".env", override=False)
 
 # Apply monkey patches for async-safe tool operation inside Atropos's event loop.
 # This patches SwerexModalEnvironment to use a background thread instead of
