@@ -2,12 +2,14 @@
 
 import json
 import pytest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
 from gateway.session import (
     SessionSource,
     SessionStore,
+    SessionEntry,
     build_session_context,
     build_session_context_prompt,
     build_session_key,
@@ -1010,3 +1012,36 @@ class TestRewriteTranscriptPreservesReasoning:
         assert after[0].get("reasoning") == "I need to think step by step."
         assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert after[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
+
+
+class TestSuspendRecentlyActive:
+    def test_suspend_recently_active_uses_datetime_cutoff(self, tmp_path):
+        """Regression test for #7966: datetime vs float comparison."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+
+        now = datetime.now()
+        store._entries = {
+            "recent": SessionEntry(
+                session_id="recent",
+                session_key="recent",
+                created_at=now - timedelta(seconds=10),
+                updated_at=now - timedelta(seconds=10),
+                origin=SessionSource(platform=Platform.TELEGRAM, chat_id="1"),
+                suspended=False,
+            ),
+            "old": SessionEntry(
+                session_id="old",
+                session_key="old",
+                created_at=now - timedelta(minutes=10),
+                updated_at=now - timedelta(minutes=10),
+                origin=SessionSource(platform=Platform.TELEGRAM, chat_id="2"),
+                suspended=False,
+            ),
+        }
+
+        count = store.suspend_recently_active(max_age_seconds=120)
+        assert count == 1
+        assert store._entries["recent"].suspended is True
+        assert store._entries["old"].suspended is False
