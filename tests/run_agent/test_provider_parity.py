@@ -225,6 +225,30 @@ class TestDeveloperRoleSwap:
         assert kwargs["messages"][0]["role"] == "developer"
 
 
+class TestBuildApiKwargsAnthropicMessages:
+    def test_handles_none_request_overrides(self, monkeypatch):
+        captured = {}
+
+        def _fake_build_anthropic_kwargs(**kwargs):
+            captured.update(kwargs)
+            return kwargs
+
+        monkeypatch.setattr("agent.anthropic_adapter.build_anthropic_kwargs", _fake_build_anthropic_kwargs)
+        agent = _make_agent(
+            monkeypatch,
+            "anthropic",
+            api_mode="anthropic_messages",
+            base_url="https://api.anthropic.com",
+        )
+        agent.model = "claude-opus-4-6"
+        agent.request_overrides = None
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+        assert kwargs["fast_mode"] is False
+        assert captured["fast_mode"] is False
+
+
 class TestBuildApiKwargsChatCompletionsServiceTier:
     """service_tier via request_overrides works on the chat_completions path."""
 
