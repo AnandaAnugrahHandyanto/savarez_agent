@@ -195,6 +195,88 @@ class TestBlueBubblesWebhookParsing:
         assert record["text"] == "hello"
 
 
+class TestBlueBubblesChatGuidFromChatsArray:
+    """chatGuid is often null in BB webhook payloads; extract from chats[]."""
+
+    def test_chat_guid_from_chats_array_dm(self, monkeypatch):
+        """DM: chats[0].guid provides the correct chat GUID."""
+        adapter = _make_adapter(monkeypatch)
+        record = {
+            "chatGuid": None,
+            "chatIdentifier": None,
+            "chats": [{"guid": "iMessage;-;+601234567890"}],
+        }
+        payload = {"data": record}
+        chat_guid = adapter._value(
+            record.get("chatGuid"),
+            payload.get("chatGuid"),
+            record.get("chat_guid"),
+            payload.get("chat_guid"),
+        )
+        if not chat_guid:
+            _chats = record.get("chats") or payload.get("chats") or []
+            if _chats and isinstance(_chats[0], dict):
+                chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
+        assert chat_guid == "iMessage;-;+601234567890"
+
+    def test_chat_guid_from_chats_array_group(self, monkeypatch):
+        """Group: chats[0].guid provides the group GUID."""
+        adapter = _make_adapter(monkeypatch)
+        record = {
+            "chatGuid": None,
+            "chatIdentifier": None,
+            "chats": [{"guid": "iMessage;+;chat17d58a0bf2"}],
+        }
+        chat_guid = adapter._value(
+            record.get("chatGuid"),
+            record.get("chat_guid"),
+        )
+        if not chat_guid:
+            _chats = record.get("chats") or []
+            if _chats and isinstance(_chats[0], dict):
+                chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
+        assert chat_guid == "iMessage;+;chat17d58a0bf2"
+
+    def test_direct_chat_guid_still_preferred(self, monkeypatch):
+        """When chatGuid is populated, it takes priority over chats[]."""
+        adapter = _make_adapter(monkeypatch)
+        record = {
+            "chatGuid": "iMessage;-;direct@example.com",
+            "chats": [{"guid": "iMessage;-;different@example.com"}],
+        }
+        chat_guid = adapter._value(
+            record.get("chatGuid"),
+            record.get("chat_guid"),
+        )
+        if not chat_guid:
+            _chats = record.get("chats") or []
+            if _chats and isinstance(_chats[0], dict):
+                chat_guid = _chats[0].get("guid")
+        assert chat_guid == "iMessage;-;direct@example.com"
+
+    def test_empty_chats_array_falls_through(self, monkeypatch):
+        """Empty chats array → chat_guid stays None."""
+        adapter = _make_adapter(monkeypatch)
+        record = {"chatGuid": None, "chats": []}
+        chat_guid = adapter._value(record.get("chatGuid"))
+        if not chat_guid:
+            _chats = record.get("chats") or []
+            if _chats and isinstance(_chats[0], dict):
+                chat_guid = _chats[0].get("guid")
+        assert chat_guid is None
+
+    def test_no_chats_key_falls_through(self, monkeypatch):
+        """Missing chats key entirely → chat_guid stays None."""
+        adapter = _make_adapter(monkeypatch)
+        record = {"chatGuid": None}
+        chat_guid = adapter._value(record.get("chatGuid"))
+        if not chat_guid:
+            _chats = record.get("chats") or []
+            if _chats and isinstance(_chats[0], dict):
+                chat_guid = _chats[0].get("guid")
+        assert chat_guid is None
+
+
 class TestBlueBubblesGuidResolution:
     def test_raw_guid_returned_as_is(self, monkeypatch):
         """If target already contains ';' it's a raw GUID — return unchanged."""
