@@ -470,6 +470,7 @@ DEFAULT_CONFIG = {
             "model": "",
             "base_url": "",
             "api_key": "",
+            "context_length": None,  # optional manual override when endpoint metadata is unavailable
             "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
         },
         "session_search": {

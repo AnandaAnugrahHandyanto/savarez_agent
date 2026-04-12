@@ -2112,6 +2112,30 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
     return default
 
 
+def get_auxiliary_task_context_length(task: str) -> Optional[int]:
+    """Read an optional context_length override from auxiliary.{task}.context_length."""
+    if not task:
+        return None
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+    except Exception:
+        return None
+    aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+    task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
+    if not isinstance(task_config, dict):
+        return None
+    raw = task_config.get("context_length")
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 # ---------------------------------------------------------------------------
 # Anthropic-compatible endpoint detection + image block conversion
 # ---------------------------------------------------------------------------

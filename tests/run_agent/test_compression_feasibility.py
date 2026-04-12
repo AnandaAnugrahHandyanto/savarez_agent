@@ -130,6 +130,33 @@ def test_feasibility_check_passes_live_main_runtime():
     )
 
 
+@patch("agent.auxiliary_client.get_auxiliary_task_context_length", return_value=65_536)
+@patch("agent.model_metadata.get_model_context_length", return_value=65_536)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_feasibility_check_respects_auxiliary_context_override(
+    mock_get_client,
+    mock_ctx_len,
+    mock_get_aux_context_length,
+):
+    """Compression feasibility should honor auxiliary.compression.context_length."""
+    agent = _make_agent(main_context=100_000, threshold_percent=0.50)
+    mock_client = MagicMock()
+    mock_client.base_url = "http://localhost:11434/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "custom/compression-model")
+
+    agent._emit_status = lambda msg: None
+    agent._check_compression_model_feasibility()
+
+    mock_get_aux_context_length.assert_called_once_with("compression")
+    mock_ctx_len.assert_called_once_with(
+        "custom/compression-model",
+        base_url="http://localhost:11434/v1",
+        api_key="sk-aux",
+        config_context_length=65_536,
+    )
+
+
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
 def test_warns_when_no_auxiliary_provider(mock_get_client):
     """Warning emitted when no auxiliary provider is configured."""

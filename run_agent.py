@@ -1725,7 +1725,10 @@ class AIAgent:
         if not self.compression_enabled:
             return
         try:
-            from agent.auxiliary_client import get_text_auxiliary_client
+            from agent.auxiliary_client import (
+                get_auxiliary_task_context_length,
+                get_text_auxiliary_client,
+            )
             from agent.model_metadata import get_model_context_length
 
             client, aux_model = get_text_auxiliary_client(
@@ -1748,10 +1751,12 @@ class AIAgent:
 
             aux_base_url = str(getattr(client, "base_url", ""))
             aux_api_key = str(getattr(client, "api_key", ""))
+            aux_config_context_length = get_auxiliary_task_context_length("compression")
             aux_context = get_model_context_length(
                 aux_model,
                 base_url=aux_base_url,
                 api_key=aux_api_key,
+                config_context_length=aux_config_context_length,
             )
 
             threshold = self.context_compressor.threshold_tokens
