@@ -9191,7 +9191,7 @@ class AIAgent:
                             "api_calls": api_call_count,
                             "completed": False,
                             "failed": True,
-                            "error": str(api_error),
+                            "error": self._summarize_api_error(api_error),
                         }
 
                     if retry_count >= max_retries:
@@ -10063,7 +10063,7 @@ class AIAgent:
                                 err_msg = {
                                     "role": "tool",
                                     "tool_call_id": tc["id"],
-                                    "content": f"Error executing tool: {error_msg}",
+                                    "content": f"Error executing tool: {self._clean_error_message(str(api_error))}",
                                 }
                                 messages.append(err_msg)
                     break
@@ -10076,8 +10076,9 @@ class AIAgent:
 
                 # If we're near the limit, break to avoid infinite loops
                 if api_call_count >= self.max_iterations - 1:
-                    _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
-                    final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
+                    _clean_msg = self._clean_error_message(str(api_error))
+                    _turn_exit_reason = f"error_near_max_iterations({_clean_msg[:80]})"
+                    final_response = f"I apologize, but I encountered repeated errors: {_clean_msg}"
                     # Append as assistant so the history stays valid for
                     # session resume (avoids consecutive user messages).
                     messages.append({"role": "assistant", "content": final_response})
