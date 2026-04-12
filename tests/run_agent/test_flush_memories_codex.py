@@ -167,6 +167,7 @@ class TestFlushMemoriesUsesAuxiliaryClient:
         mock_call.assert_called_once()
         call_kwargs = mock_call.call_args
         assert call_kwargs.kwargs.get("task") == "flush_memories"
+        assert call_kwargs.kwargs.get("main_runtime") == agent._current_main_runtime()
 
     def test_flush_uses_main_client_when_no_auxiliary(self, monkeypatch):
         """Non-Codex mode with no auxiliary falls back to self.client."""
