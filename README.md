@@ -57,12 +57,33 @@ hermes tools        # Configure which tools are enabled
 hermes config set   # Set individual config values
 hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
 hermes setup        # Run the full setup wizard (configures everything at once)
+hermes lang zh      # Switch CLI/TUI helper text to Chinese
+hermes zh           # Built-in Chinese quickstart / command guide
 hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)
 hermes update       # Update to the latest version
 hermes doctor       # Diagnose any issues
 ```
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
+
+## Chinese Guide
+
+Hermes now ships with a built-in offline Chinese guide for users who prefer to learn setup steps and commands in Chinese:
+
+```bash
+hermes lang zh
+hermes zh
+hermes zh setup
+hermes zh commands
+```
+
+Inside the interactive CLI or a messaging conversation, you can also use:
+
+```text
+/zh
+/zh config
+/zh gateway
+```
 
 ## CLI vs Messaging Quick Reference
 

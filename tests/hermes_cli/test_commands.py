@@ -99,6 +99,8 @@ class TestResolveCommand:
         assert resolve_command("reset").name == "new"
         assert resolve_command("q").name == "quit"
         assert resolve_command("exit").name == "quit"
+        assert resolve_command("lang").name == "lang"
+        assert resolve_command("cn").name == "zh"
         assert resolve_command("gateway").name == "platforms"
         assert resolve_command("set-home").name == "sethome"
         assert resolve_command("reload_mcp").name == "reload-mcp"
@@ -198,6 +200,12 @@ class TestGatewayHelpLines:
         bg_line = [l for l in lines if "/background" in l]
         assert len(bg_line) == 1
         assert "/bg" in bg_line[0]
+
+    def test_includes_chinese_guide_command(self):
+        lines = gateway_help_lines()
+        zh_line = [l for l in lines if "/zh [topic]" in l]
+        assert len(zh_line) == 1
+        assert "/cn" in zh_line[0]
 
 
 class TestTelegramBotCommands:
@@ -340,6 +348,15 @@ class TestSlashCommandCompleter:
         completions = _completions(SlashCommandCompleter(), "/help")
         assert len(completions) == 1
         assert completions[0].display_meta_text == "Show available commands"
+
+    def test_builtin_completion_display_meta_localizes_to_chinese(self):
+        completions = _completions(
+            SlashCommandCompleter(language_provider=lambda: "zh-CN"),
+            "/skin",
+        )
+        assert len(completions) == 1
+        assert "查看或切换显示皮肤/主题" in completions[0].display_meta_text
+        assert "用法" in completions[0].display_meta_text
 
     # -- exact-match trailing space --------------------------------------
 

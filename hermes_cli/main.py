@@ -18,6 +18,9 @@ Usage:
     hermes cron list           # List cron jobs
     hermes cron status         # Check if cron scheduler is running
     hermes doctor              # Check configuration and dependencies
+    hermes lang zh             # Switch the CLI/TUI display language to Chinese
+    hermes zh                  # Show the built-in Chinese quickstart guide
+    hermes zh commands         # Show Chinese explanations for common commands
     hermes honcho setup                    # Configure Honcho AI memory integration
     hermes honcho status                   # Show Honcho config and connection status
     hermes honcho sessions                 # List directory → session name mappings
@@ -2818,6 +2821,34 @@ def cmd_config(args):
     config_command(args)
 
 
+def cmd_lang(args):
+    """Show or change the CLI/TUI display language."""
+    from hermes_cli.config import load_config, set_config_value
+    from hermes_cli.ui_language import display_language_name, normalize_display_language, parse_display_language
+
+    requested = getattr(args, "language", None)
+    if not requested or str(requested).strip().lower() == "status":
+        current = normalize_display_language(load_config().get("display", {}).get("language", "en"))
+        print(f"CLI/TUI language: {display_language_name(current)} ({current})")
+        print("Usage: hermes lang [en|zh|status]")
+        return
+
+    parsed = parse_display_language(requested)
+    if not parsed:
+        print(f"Unsupported language: {requested}. Use en or zh.")
+        return
+
+    set_config_value("display.language", parsed)
+    print(f"CLI/TUI language set to {display_language_name(parsed)} ({parsed}).")
+
+
+def cmd_zh(args):
+    """Show the built-in Chinese guide."""
+    from hermes_cli.chinese_guide import render_topic
+    topic = "topics" if getattr(args, "list_topics", False) else getattr(args, "topic", None)
+    print(render_topic(topic, markdown=getattr(args, "markdown", False)))
+
+
 def cmd_version(args):
     """Show version."""
     print(f"Hermes Agent v{__version__} ({__release_date__})")
@@ -4904,7 +4935,58 @@ For more help on a command:
         help="Show redacted API key prefixes (first/last 4 chars) instead of just set/not set"
     )
     dump_parser.set_defaults(func=cmd_dump)
-    
+
+    # =========================================================================
+    # lang command
+    # =========================================================================
+    lang_parser = subparsers.add_parser(
+        "lang",
+        help="Show or change the CLI/TUI display language",
+        description="Switch visible CLI/TUI helper text between English and Chinese.",
+    )
+    lang_parser.add_argument(
+        "language",
+        nargs="?",
+        default="status",
+        help="Language: en, zh, or status",
+    )
+    lang_parser.set_defaults(func=cmd_lang)
+
+    # =========================================================================
+    # zh command
+    # =========================================================================
+    zh_parser = subparsers.add_parser(
+        "zh",
+        help="Show the built-in Chinese quickstart and command guide",
+        description="Offline Chinese guide for installation, setup, config, commands, gateway, and profiles.",
+        epilog=(
+            "Examples:\n"
+            "  hermes zh\n"
+            "  hermes zh setup\n"
+            "  hermes zh commands\n"
+            "  hermes zh --list\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    zh_parser.add_argument(
+        "topic",
+        nargs="?",
+        default="quickstart",
+        help="Topic: quickstart, setup, config, commands, gateway, profiles, topics",
+    )
+    zh_parser.add_argument(
+        "--list",
+        dest="list_topics",
+        action="store_true",
+        help="List all available Chinese guide topics",
+    )
+    zh_parser.add_argument(
+        "--markdown",
+        action="store_true",
+        help="Render the guide as Markdown for sharing or copy/paste",
+    )
+    zh_parser.set_defaults(func=cmd_zh)
+
     # =========================================================================
     # config command
     # =========================================================================

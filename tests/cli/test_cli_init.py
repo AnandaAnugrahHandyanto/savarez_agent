@@ -219,6 +219,15 @@ class TestHistoryDisplay:
         assert "/resume" in output
         assert "Current preview" not in output
 
+    def test_zh_command_prints_chinese_guide(self, capsys):
+        cli = _make_cli()
+
+        cli.process_command("/zh setup")
+
+        rendered = capsys.readouterr().out
+        assert "中文配置流程" in rendered
+        assert "hermes setup" in rendered
+
     def test_resume_without_target_lists_recent_sessions(self, capsys):
         cli = _make_cli()
         cli.session_id = "current"
@@ -244,6 +253,38 @@ class TestHistoryDisplay:
         assert "Recent sessions" in output
         assert "Checking Running Hermes Agent" in output
         assert "Use /resume <session id or title> to continue" in output
+
+    def test_lang_command_switches_help_to_chinese(self):
+        cli = _make_cli()
+
+        with patch("cli.save_config_value", return_value=True):
+            cli.process_command("/lang zh")
+
+        from hermes_cli.ui_language import command_help_description
+
+        translated = command_help_description(
+            "skin",
+            "Show or change the display skin/theme",
+            "[name]",
+            cli.display_language,
+        )
+
+        assert "查看或切换显示皮肤/主题" in translated
+        assert "用法" in translated
+        assert cli.display_language == "zh-CN"
+
+    def test_session_status_localizes_labels_in_chinese(self, capsys):
+        cli = _make_cli()
+        cli.display_language = "zh-CN"
+        cli._session_db = MagicMock()
+        cli._session_db.get_session.return_value = {"title": "中文会话"}
+
+        cli._show_session_status()
+
+        printed = capsys.readouterr().out
+        assert "Hermes CLI 状态" in printed
+        assert "会话 ID" in printed
+        assert "标题: 中文会话" in printed
 
 
 class TestRootLevelProviderOverride:

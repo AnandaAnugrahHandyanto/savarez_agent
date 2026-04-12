@@ -318,7 +318,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                          enabled_toolsets: List[str] = None,
                          session_id: str = None,
                          get_toolset_for_tool=None,
-                         context_length: int = None):
+                         context_length: int = None,
+                         language: str = "en"):
     """Build and print a welcome banner with caduceus on left and info on right.
 
     Args:
@@ -332,6 +333,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         context_length: Model's context window size in tokens.
     """
     from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+    from hermes_cli.ui_language import ui_text
     if get_toolset_for_tool is None:
         from model_tools import get_toolset_for_tool
 
@@ -384,7 +386,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         left_lines.append(f"[dim {session_color}]Session: {session_id}[/]")
     left_content = "\n".join(left_lines)
 
-    right_lines = [f"[bold {accent}]Available Tools[/]"]
+    right_lines = [f"[bold {accent}]{ui_text('banner_available_tools', language)}[/]"]
     toolsets_dict: Dict[str, list] = {}
 
     for tool in tools:
@@ -441,7 +443,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         right_lines.append(f"[dim {dim}]{toolset}:[/] {tools_str}")
 
     if remaining_toolsets > 0:
-        right_lines.append(f"[dim {dim}](and {remaining_toolsets} more toolsets...)[/]")
+        right_lines.append(f"[dim {dim}]{ui_text('banner_more_toolsets', language, count=remaining_toolsets)}[/]")
 
     # MCP Servers section (only if configured)
     try:
@@ -452,21 +454,21 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     if mcp_status:
         right_lines.append("")
-        right_lines.append(f"[bold {accent}]MCP Servers[/]")
+        right_lines.append(f"[bold {accent}]{ui_text('banner_mcp_servers', language)}[/]")
         for srv in mcp_status:
             if srv["connected"]:
                 right_lines.append(
                     f"[dim {dim}]{srv['name']}[/] [{text}]({srv['transport']})[/] "
-                    f"[dim {dim}]—[/] [{text}]{srv['tools']} tool(s)[/]"
+                    f"[dim {dim}]—[/] [{text}]{ui_text('banner_tool_count', language, count=srv['tools'])}[/]"
                 )
             else:
                 right_lines.append(
                     f"[red]{srv['name']}[/] [dim]({srv['transport']})[/] "
-                    f"[red]— failed[/]"
+                    f"[red]— {ui_text('banner_failed', language)}[/]"
                 )
 
     right_lines.append("")
-    right_lines.append(f"[bold {accent}]Available Skills[/]")
+    right_lines.append(f"[bold {accent}]{ui_text('banner_available_skills', language)}[/]")
     skills_by_category = get_available_skills()
     total_skills = sum(len(s) for s in skills_by_category.values())
 
@@ -475,27 +477,30 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
             skill_names = sorted(skills_by_category[category])
             if len(skill_names) > 8:
                 display_names = skill_names[:8]
-                skills_str = ", ".join(display_names) + f" +{len(skill_names) - 8} more"
+                skills_str = ", ".join(display_names) + f" {ui_text('banner_more_skills', language, count=len(skill_names) - 8)}"
             else:
                 skills_str = ", ".join(skill_names)
             if len(skills_str) > 50:
                 skills_str = skills_str[:47] + "..."
             right_lines.append(f"[dim {dim}]{category}:[/] [{text}]{skills_str}[/]")
     else:
-        right_lines.append(f"[dim {dim}]No skills installed[/]")
+        right_lines.append(f"[dim {dim}]{ui_text('banner_no_skills', language)}[/]")
 
     right_lines.append("")
     mcp_connected = sum(1 for s in mcp_status if s["connected"]) if mcp_status else 0
-    summary_parts = [f"{len(tools)} tools", f"{total_skills} skills"]
+    summary_parts = [
+        ui_text('banner_summary_tools', language, count=len(tools)),
+        ui_text('banner_summary_skills', language, count=total_skills),
+    ]
     if mcp_connected:
-        summary_parts.append(f"{mcp_connected} MCP servers")
-    summary_parts.append("/help for commands")
+        summary_parts.append(ui_text('banner_summary_mcp', language, count=mcp_connected))
+    summary_parts.append(ui_text('banner_summary_help', language))
     # Show active profile name when not 'default'
     try:
         from hermes_cli.profiles import get_active_profile_name
         _profile_name = get_active_profile_name()
         if _profile_name and _profile_name != "default":
-            right_lines.append(f"[bold {accent}]Profile:[/] [{text}]{_profile_name}[/]")
+            right_lines.append(f"[bold {accent}]{ui_text('banner_profile', language)}[/] [{text}]{_profile_name}[/]")
     except Exception:
         pass  # Never break the banner over a profiles.py bug
 
@@ -506,10 +511,12 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         behind = get_update_result(timeout=0.5)
         if behind and behind > 0:
             from hermes_cli.config import recommended_update_command
-            commits_word = "commit" if behind == 1 else "commits"
+            commits_word = ui_text(
+                "banner_commit_word_singular" if behind == 1 else "banner_commit_word_plural",
+                language,
+            )
             right_lines.append(
-                f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
-                f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
+                f"[bold yellow]{ui_text('banner_update', language, count=behind, word=commits_word, command=recommended_update_command())}[/]"
             )
     except Exception:
         pass  # Never break the banner over an update check

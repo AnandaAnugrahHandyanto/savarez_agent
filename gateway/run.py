@@ -76,6 +76,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
+from agent.redact import RedactingFormatter
 from utils import atomic_yaml_write, is_truthy_value
 _hermes_home = get_hermes_home()
 
@@ -2523,6 +2524,9 @@ class GatewayRunner:
         if canonical == "help":
             return await self._handle_help_command(event)
 
+        if canonical == "zh":
+            return await self._handle_zh_command(event)
+
         if canonical == "commands":
             return await self._handle_commands_command(event)
         
@@ -4018,6 +4022,12 @@ class GatewayRunner:
         except Exception:
             pass
         return "\n".join(lines)
+
+    async def _handle_zh_command(self, event: MessageEvent) -> str:
+        """Handle /zh [topic] - show the built-in Chinese guide."""
+        from hermes_cli.chinese_guide import render_topic
+        topic = event.get_command_args().strip() or None
+        return render_topic(topic, markdown=True)
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
         """Handle /commands [page] - paginated list of all commands and skills."""

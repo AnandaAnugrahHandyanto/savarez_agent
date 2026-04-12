@@ -506,6 +506,7 @@ DEFAULT_CONFIG = {
     
     "display": {
         "compact": False,
+        "language": "en",
         "personality": "kawaii",
         "resume_display": "full",
         "busy_input_mode": "interrupt",
@@ -707,7 +708,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 16,
+    "_config_version": 17,
 }
 
 # =============================================================================
@@ -1971,6 +1972,20 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 migrated = ", ".join(f"{p}={m}" for p, m in old_overrides.items())
                 print(f"  ✓ Migrated tool_progress_overrides → display.platforms: {migrated}")
             results["config_added"].append("display.platforms (migrated from tool_progress_overrides)")
+
+    # ── Version 16 → 17: add explicit display.language default ──
+    if current_ver < 17:
+        config = read_raw_config()
+        display = config.get("display", {})
+        if not isinstance(display, dict):
+            display = {}
+        if "language" not in display:
+            display["language"] = "en"
+            config["display"] = display
+            results["config_added"].append("display.language=en (default)")
+            save_config(config)
+            if not quiet:
+                print("  ✓ Added display.language=en")
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")

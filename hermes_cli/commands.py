@@ -116,6 +116,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="[name]"),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
+    CommandDef("lang", "Switch the TUI display language", "Configuration",
+               cli_only=True, args_hint="[en|zh|status]", subcommands=("en", "zh", "status")),
 
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
@@ -140,6 +142,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]"),
     CommandDef("help", "Show available commands", "Info"),
+    CommandDef("zh", "Show the built-in Chinese quickstart and command guide", "Info",
+               aliases=("cn",), args_hint="[topic]",
+               subcommands=("quickstart", "setup", "config", "commands", "gateway", "profiles", "topics")),
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True),
     CommandDef("usage", "Show token usage and rate limits for the current session", "Info"),
@@ -648,9 +653,19 @@ class SlashCommandCompleter(Completer):
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
         command_filter: Callable[[str], bool] | None = None,
+        language_provider: Callable[[], str] | None = None,
     ) -> None:
         self._skill_commands_provider = skill_commands_provider
         self._command_filter = command_filter
+        self._language_provider = language_provider
+
+    def _display_language(self) -> str:
+        if self._language_provider is None:
+            return "en"
+        try:
+            return str(self._language_provider() or "en")
+        except Exception:
+            return "en"
 
     def _command_allowed(self, slash_command: str) -> bool:
         if self._command_filter is None:
@@ -667,6 +682,20 @@ class SlashCommandCompleter(Completer):
             return self._skill_commands_provider() or {}
         except Exception:
             return {}
+
+    def _command_meta(self, command_def: CommandDef, alias: str | None = None) -> str:
+        from hermes_cli.ui_language import alias_description, command_help_description
+
+        language = self._display_language()
+        desc = command_help_description(
+            command_def.name,
+            command_def.description,
+            command_def.args_hint,
+            language,
+        )
+        if alias:
+            return alias_description(desc, command_def.name, language)
+        return desc
 
     @staticmethod
     def _completion_text(cmd_name: str, word: str) -> str:
@@ -948,7 +977,10 @@ class SlashCommandCompleter(Completer):
 
         word = text[1:]
 
-        for cmd, desc in COMMANDS.items():
+        for command_def in COMMAND_REGISTRY:
+            if command_def.gateway_only:
+                continue
+            cmd = f"/{command_def.name}"
             if not self._command_allowed(cmd):
                 continue
             cmd_name = cmd[1:]
@@ -957,8 +989,19 @@ class SlashCommandCompleter(Completer):
                     self._completion_text(cmd_name, word),
                     start_position=-len(word),
                     display=cmd,
-                    display_meta=desc,
+                    display_meta=self._command_meta(command_def),
                 )
+            for alias in command_def.aliases:
+                alias_cmd = f"/{alias}"
+                if not self._command_allowed(alias_cmd):
+                    continue
+                if alias.startswith(word):
+                    yield Completion(
+                        self._completion_text(alias, word),
+                        start_position=-len(word),
+                        display=alias_cmd,
+                        display_meta=self._command_meta(command_def, alias=alias),
+                    )
 
         for cmd, info in self._iter_skill_commands().items():
             cmd_name = cmd[1:]

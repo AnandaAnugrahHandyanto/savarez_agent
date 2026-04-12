@@ -1395,13 +1395,18 @@ HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀�
 
 
 
-def _build_compact_banner() -> str:
+def _build_compact_banner(language: str = "en") -> str:
     """Build a compact banner that fits the current terminal width."""
     try:
         from hermes_cli.skin_engine import get_active_skin
         _skin = get_active_skin()
     except Exception:
         _skin = None
+    try:
+        from hermes_cli.ui_language import is_chinese_display
+        _zh = is_chinese_display(language)
+    except Exception:
+        _zh = False
 
     skin_name = getattr(_skin, "name", "default") if _skin else "default"
     border_color = _skin.get_color("banner_border", "#FFD700") if _skin else "#FFD700"
@@ -1409,11 +1414,11 @@ def _build_compact_banner() -> str:
     dim_color = _skin.get_color("banner_dim", "#B8860B") if _skin else "#B8860B"
 
     if skin_name == "default":
-        line1 = "⚕ NOUS HERMES - AI Agent Framework"
+        line1 = "⚕ NOUS HERMES - AI Agent Framework" if not _zh else "⚕ NOUS HERMES - AI 智能体框架"
         tiny_line = "⚕ NOUS HERMES"
     else:
         agent_name = _skin.get_branding("agent_name", "Hermes Agent") if _skin else "Hermes Agent"
-        line1 = f"{agent_name} - AI Agent Framework"
+        line1 = f"{agent_name} - AI Agent Framework" if not _zh else f"{agent_name} - AI 智能体框架"
         tiny_line = agent_name
 
     version_line = format_banner_version_label()
@@ -1612,6 +1617,11 @@ class HermesCLI:
         self.console = Console()
         self.config = CLI_CONFIG
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
+        try:
+            from hermes_cli.ui_language import normalize_display_language
+            self.display_language = normalize_display_language(CLI_CONFIG["display"].get("language", "en"))
+        except Exception:
+            self.display_language = "en"
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
         # YAML 1.1 parses bare `off` as boolean False — normalise to string.
         _raw_tp = CLI_CONFIG["display"].get("tool_progress", "all")
@@ -2016,17 +2026,17 @@ class HermesCLI:
         compact = self._use_minimal_tui_chrome(width=width)
         if self._voice_recording:
             if compact:
-                return [("class:voice-status-recording", " ● REC ")]
-            return [("class:voice-status-recording", " ● REC  Ctrl+B to stop ")]
+                return [("class:voice-status-recording", self._ui_text("voice_rec_compact"))]
+            return [("class:voice-status-recording", self._ui_text("voice_rec_full"))]
         if self._voice_processing:
             if compact:
-                return [("class:voice-status", " ◉ STT ")]
-            return [("class:voice-status", " ◉ Transcribing... ")]
+                return [("class:voice-status", self._ui_text("voice_stt_compact"))]
+            return [("class:voice-status", self._ui_text("voice_stt_full"))]
         if compact:
-            return [("class:voice-status", " 🎤 Ctrl+B ")]
-        tts = " | TTS on" if self._voice_tts else ""
-        cont = " | Continuous" if self._voice_continuous else ""
-        return [("class:voice-status", f" 🎤 Voice mode{tts}{cont}  —  Ctrl+B to record ")]
+            return [("class:voice-status", self._ui_text("voice_ready_compact"))]
+        tts = self._ui_text("voice_tts_on") if self._voice_tts else ""
+        cont = self._ui_text("voice_continuous") if self._voice_continuous else ""
+        return [("class:voice-status", self._ui_text("voice_ready_full", tts=tts, cont=cont))]
 
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         """Return a compact one-line session status string for the TUI footer."""
@@ -2933,7 +2943,7 @@ class HermesCLI:
         use_compact = self.compact or term_width < 80
         
         if use_compact:
-            self.console.print(_build_compact_banner())
+            self.console.print(_build_compact_banner(language=self._ui_language()))
             self._show_status()
         else:
             # Get tools for display
@@ -2951,6 +2961,7 @@ class HermesCLI:
                 enabled_toolsets=self.enabled_toolsets,
                 session_id=self.session_id,
                 context_length=ctx_len,
+                language=self._ui_language(),
             )
         
         # Show tool availability warnings if any tools are disabled
@@ -2960,24 +2971,23 @@ class HermesCLI:
         if ctx_len and ctx_len <= 8192:
             self.console.print()
             self.console.print(
-                f"[yellow]⚠️  Context length is only {ctx_len:,} tokens — "
-                f"this is likely too low for agent use with tools.[/]"
+                f"[yellow]{self._ui_text('context_warning', count=f'{ctx_len:,}')}[/]"
             )
             self.console.print(
-                "[dim]   Hermes needs 16k–32k minimum. Tool schemas + system prompt alone use ~4k–8k.[/]"
+                f"[dim]   {self._ui_text('context_warning_detail')}[/]"
             )
             base_url = getattr(self, "base_url", "") or ""
             if "11434" in base_url or "ollama" in base_url.lower():
                 self.console.print(
-                    "[dim]   Ollama fix: OLLAMA_CONTEXT_LENGTH=32768 ollama serve[/]"
+                    f"[dim]   {self._ui_text('context_warning_ollama')}[/]"
                 )
             elif "1234" in base_url:
                 self.console.print(
-                    "[dim]   LM Studio fix: Set context length in model settings → reload model[/]"
+                    f"[dim]   {self._ui_text('context_warning_lmstudio')}[/]"
                 )
             else:
                 self.console.print(
-                    "[dim]   Fix: Set model.context_length in config.yaml, or increase your server's context setting[/]"
+                    f"[dim]   {self._ui_text('context_warning_generic')}[/]"
                 )
 
         # Warn if the configured model is a Nous Hermes LLM (not agentic)
@@ -2985,12 +2995,10 @@ class HermesCLI:
         if "hermes" in model_name.lower():
             self.console.print()
             self.console.print(
-                "[bold yellow]⚠  Nous Research Hermes 3 & 4 models are NOT agentic and are not "
-                "designed for use with Hermes Agent.[/]"
+                f"[bold yellow]{self._ui_text('hermes_model_warning')}[/]"
             )
             self.console.print(
-                "[dim]   They lack tool-calling capabilities required for agent workflows. "
-                "Consider using an agentic model (Claude, GPT, Gemini, DeepSeek, etc.).[/]"
+                f"[dim]   {self._ui_text('hermes_model_warning_detail')}[/]"
             )
             self.console.print(
                 "[dim]   Switch with: /model sonnet  or  /model gpt5[/]"
@@ -3483,13 +3491,13 @@ class HermesCLI:
             
             if api_key_missing:
                 self.console.print()
-                self.console.print("[yellow]⚠️  Some tools disabled (missing API keys):[/]")
+                self.console.print(f"[yellow]{self._ui_text('tools_disabled_missing_keys')}[/]")
                 for item in api_key_missing:
                     tools_str = ", ".join(item["tools"][:2])  # Show first 2 tools
                     if len(item["tools"]) > 2:
                         tools_str += f", +{len(item['tools'])-2} more"
                     self.console.print(f"   [dim]• {item['name']}[/] [dim italic]({', '.join(item['missing_vars'])})[/]")
-                self.console.print("[dim]   Run 'hermes setup' to configure[/]")
+                self.console.print(f"[dim]   {self._ui_text('run_setup_to_configure')}[/]")
         except Exception:
             pass  # Don't crash on import errors
     
@@ -3520,16 +3528,19 @@ class HermesCLI:
         except Exception:
             separator_color, accent_color, label_color = "#B8860B", "#FFBF00", "cyan"
         toolsets_info = ""
+        toolset_label = "toolsets" if self._ui_language() == "en" else "工具集"
+        provider_label = "provider" if self._ui_language() == "en" else "提供方"
+        auth_label = "auth" if self._ui_language() == "en" else "认证"
         if self.enabled_toolsets and "all" not in self.enabled_toolsets:
-            toolsets_info = f" [dim {separator_color}]·[/] [{label_color}]toolsets: {', '.join(self.enabled_toolsets)}[/]"
+            toolsets_info = f" [dim {separator_color}]·[/] [{label_color}]{toolset_label}: {', '.join(self.enabled_toolsets)}[/]"
 
-        provider_info = f" [dim {separator_color}]·[/] [dim]provider: {self.provider}[/]"
+        provider_info = f" [dim {separator_color}]·[/] [dim]{provider_label}: {self.provider}[/]"
         if self._provider_source:
-            provider_info += f" [dim {separator_color}]·[/] [dim]auth: {self._provider_source}[/]"
+            provider_info += f" [dim {separator_color}]·[/] [dim]{auth_label}: {self._provider_source}[/]"
 
         self.console.print(
             f"  {api_indicator} [{accent_color}]{model_short}[/] "
-            f"[dim {separator_color}]·[/] [bold {label_color}]{tool_count} tools[/]"
+            f"[dim {separator_color}]·[/] [bold {label_color}]{tool_count} {'tools' if self._ui_language() == 'en' else '个工具'}[/]"
             f"{toolsets_info}{provider_info}"
         )
 
@@ -3570,19 +3581,19 @@ class HermesCLI:
         is_running = bool(getattr(self, "_agent_running", False))
 
         lines = [
-            "Hermes CLI Status",
+            self._ui_text("status_title"),
             "",
-            f"Session ID: {self.session_id}",
-            f"Path: {display_hermes_home()}",
+            f"{self._ui_text('status_session_id')}: {self.session_id}",
+            f"{self._ui_text('status_path')}: {display_hermes_home()}",
         ]
         if title:
-            lines.append(f"Title: {title}")
+            lines.append(f"{self._ui_text('status_title_field')}: {title}")
         lines.extend([
-            f"Model: {model} ({provider})",
-            f"Created: {created_at.strftime('%Y-%m-%d %H:%M')}",
-            f"Last Activity: {updated_at.strftime('%Y-%m-%d %H:%M')}",
-            f"Tokens: {total_tokens:,}",
-            f"Agent Running: {'Yes' if is_running else 'No'}",
+            f"{self._ui_text('status_model')}: {model} ({provider})",
+            f"{self._ui_text('status_created')}: {created_at.strftime('%Y-%m-%d %H:%M')}",
+            f"{self._ui_text('status_last_activity')}: {updated_at.strftime('%Y-%m-%d %H:%M')}",
+            f"{self._ui_text('status_tokens')}: {total_tokens:,}",
+            f"{self._ui_text('status_agent_running')}: {self._ui_text('yes' if is_running else 'no')}",
         ])
         self.console.print("\n".join(lines), highlight=False, markup=False)
     
@@ -3595,6 +3606,36 @@ class HermesCLI:
         model = getattr(agent, "model", None) or getattr(self, "model", None)
         return model_supports_fast_mode(model)
 
+    def _ui_language(self) -> str:
+        """Return the active CLI/TUI display language."""
+        try:
+            from hermes_cli.ui_language import normalize_display_language
+            value = getattr(self, "display_language", None)
+            if value:
+                return normalize_display_language(value)
+            config = getattr(self, "config", {}) or {}
+            display = config.get("display", {}) if isinstance(config, dict) else {}
+            return normalize_display_language(display.get("language", "en"))
+        except Exception:
+            return "en"
+
+    def _ui_text(self, key: str, **kwargs) -> str:
+        """Translate a fixed CLI/TUI label."""
+        from hermes_cli.ui_language import ui_text
+        return ui_text(key, self._ui_language(), **kwargs)
+
+    def _set_display_language(self, language: str) -> None:
+        """Persist the active language in the current CLI object."""
+        from hermes_cli.ui_language import normalize_display_language
+        normalized = normalize_display_language(language)
+        self.display_language = normalized
+        if isinstance(getattr(self, "config", None), dict):
+            self.config.setdefault("display", {})["language"] = normalized
+        try:
+            CLI_CONFIG.setdefault("display", {})["language"] = normalized
+        except Exception:
+            pass
+
     def _command_available(self, slash_command: str) -> bool:
         if slash_command == "/fast":
             return self._fast_command_available()
@@ -3602,14 +3643,17 @@ class HermesCLI:
 
     def show_help(self):
         """Display help information with categorized commands."""
-        from hermes_cli.commands import COMMANDS_BY_CATEGORY
+        from hermes_cli.commands import COMMAND_REGISTRY
+        from hermes_cli.ui_language import alias_description, category_label, command_help_description
 
-        try:
-            from hermes_cli.skin_engine import get_active_help_header
-            header = get_active_help_header("(^_^)? Available Commands")
-        except Exception:
-            header = "(^_^)? Available Commands"
-        header = (header or "").strip() or "(^_^)? Available Commands"
+        if self._ui_language() == "en":
+            try:
+                from hermes_cli.skin_engine import get_active_help_header
+                header = get_active_help_header(self._ui_text("help_header"))
+            except Exception:
+                header = self._ui_text("help_header")
+        else:
+            header = self._ui_text("help_header")
         inner_width = 55
         if len(header) > inner_width:
             header = header[:inner_width]
@@ -3617,38 +3661,91 @@ class HermesCLI:
         _cprint(f"{_BOLD}|{header:^{inner_width}}|{_RST}")
         _cprint(f"{_BOLD}+{'-' * inner_width}+{_RST}")
 
-        for category, commands in COMMANDS_BY_CATEGORY.items():
-            _cprint(f"\n  {_BOLD}── {category} ──{_RST}")
-            for cmd, desc in commands.items():
+        categories: list[str] = []
+        for command_def in COMMAND_REGISTRY:
+            if command_def.gateway_only or command_def.category in categories:
+                continue
+            categories.append(command_def.category)
+
+        for category in categories:
+            _cprint(f"\n  {_BOLD}── {category_label(category, self._ui_language())} ──{_RST}")
+            for command_def in COMMAND_REGISTRY:
+                if command_def.gateway_only or command_def.category != category:
+                    continue
+                cmd = f"/{command_def.name}"
                 if not self._command_available(cmd):
                     continue
+                desc = command_help_description(
+                    command_def.name,
+                    command_def.description,
+                    command_def.args_hint,
+                    self._ui_language(),
+                )
                 ChatConsole().print(f"    [bold {_accent_hex()}]{cmd:<15}[/] [dim]-[/] {_escape(desc)}")
+                for alias in command_def.aliases:
+                    alias_cmd = f"/{alias}"
+                    if not self._command_available(alias_cmd):
+                        continue
+                    alias_desc = alias_description(desc, command_def.name, self._ui_language())
+                    ChatConsole().print(f"    [bold {_accent_hex()}]{alias_cmd:<15}[/] [dim]-[/] {_escape(alias_desc)}")
 
         if _skill_commands:
-            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(_skill_commands)} installed):")
+            _cprint(
+                f"\n  ⚡ {_BOLD}{self._ui_text('skill_commands')}{_RST} "
+                f"({self._ui_text('installed_count', count=len(_skill_commands))}):"
+            )
             for cmd, info in sorted(_skill_commands.items()):
                 ChatConsole().print(
                     f"    [bold {_accent_hex()}]{cmd:<22}[/] [dim]-[/] {_escape(info['description'])}"
                 )
 
-        _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
-        _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
+        _cprint(f"\n  {_DIM}{self._ui_text('help_tip_chat')}{_RST}")
+        _cprint(f"  {_DIM}{self._ui_text('help_tip_multiline')}{_RST}")
         if _is_termux_environment():
-            _cprint(f"  {_DIM}Attach image: /image {_termux_example_image_path()} or start your prompt with a local image path{_RST}\n")
+            _cprint(
+                f"  {_DIM}{self._ui_text('help_tip_attach_image', path=_termux_example_image_path())}{_RST}\n"
+            )
         else:
-            _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
+            _cprint(f"  {_DIM}{self._ui_text('help_tip_paste_image')}{_RST}\n")
+
+    def _show_chinese_guide(self, cmd: str):
+        """Display the built-in Chinese guide for Hermes."""
+        parts = cmd.split(maxsplit=1)
+        topic = parts[1].strip() if len(parts) > 1 else None
+        from hermes_cli.chinese_guide import render_topic
+        self.console.print(render_topic(topic, markdown=False), highlight=False, markup=False)
+
+    def _handle_lang_command(self, cmd: str):
+        """Handle /lang [en|zh|status] for CLI/TUI language switching."""
+        from hermes_cli.ui_language import display_language_name, parse_display_language
+
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or parts[1].strip().lower() == "status":
+            _cprint(f"  {_ACCENT}{self._ui_text('lang_status', label=display_language_name(self._ui_language()))}{_RST}")
+            _cprint(f"  {_DIM}{self._ui_text('lang_usage')}{_RST}")
+            return
+
+        parsed = parse_display_language(parts[1].strip())
+        if not parsed:
+            _cprint(f"  {_DIM}{self._ui_text('lang_unknown', value=parts[1].strip())}{_RST}")
+            return
+
+        self._set_display_language(parsed)
+        saved = save_config_value("display.language", parsed)
+        key = "lang_changed_saved" if saved else "lang_changed_session"
+        _cprint(f"  {_ACCENT}{self._ui_text(key, label=display_language_name(parsed))}{_RST}")
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
         tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
         
         if not tools:
-            print("(;_;) No tools available")
+            print(self._ui_text("no_tools_available"))
             return
         
         # Header
         print()
-        title = "(^_^)/ Available Tools"
+        title = self._ui_text("available_tools_title")
         width = 78
         pad = width - len(title)
         print("+" + "-" * width + "+")
@@ -3677,7 +3774,7 @@ class HermesCLI:
                 print(f"    * {name:<20} - {desc}")
             print()
         
-        print(f"  Total: {len(tools)} tools  ヽ(^o^)ノ")
+        print(f"  {self._ui_text('tools_total', count=len(tools))}")
         print()
 
     def _handle_tools_command(self, cmd: str):
@@ -3738,7 +3835,7 @@ class HermesCLI:
         
         # Header
         print()
-        title = "(^_^)b Available Toolsets"
+        title = self._ui_text("available_toolsets_title")
         width = 58
         pad = width - len(title)
         print("+" + "-" * width + "+")
@@ -3757,10 +3854,10 @@ class HermesCLI:
                 print(f"  {marker} {name:<18} [{tool_count:>2} tools] - {desc}")
         
         print()
-        print("  (*) = currently enabled")
+        print(f"  {self._ui_text('toolsets_currently_enabled')}")
         print()
-        print("  Tip: Use 'all' or '*' to enable all toolsets")
-        print("  Example: python cli.py --toolsets web,terminal")
+        print(f"  {self._ui_text('toolsets_tip_enable_all')}")
+        print(f"  {self._ui_text('toolsets_example')}")
         print()
     
     def _handle_profile_command(self):
@@ -5121,14 +5218,17 @@ class HermesCLI:
         
         print()
         print("+" + "-" * 60 + "+")
-        print("|" + " " * 15 + "(✿◠‿◠) Gateway Status" + " " * 17 + "|")
+        _gateway_title = self._ui_text("gateway_status_title")
+        _gateway_title = _gateway_title[:58]
+        _gateway_pad = 60 - len(_gateway_title)
+        print("|" + " " * (_gateway_pad // 2) + _gateway_title + " " * (_gateway_pad - _gateway_pad // 2) + "|")
         print("+" + "-" * 60 + "+")
         print()
         
         try:
             config = load_gateway_config()
             
-            print("  Messaging Platform Configuration:")
+            print(f"  {self._ui_text('gateway_platform_config')}")
             print("  " + "-" * 55)
             
             platform_status = {
@@ -5142,33 +5242,33 @@ class HermesCLI:
                 if pconfig and pconfig.enabled:
                     home = config.get_home_channel(platform)
                     home_str = f" → {home.name}" if home else ""
-                    print(f"    ✓ {name:<12} Enabled{home_str}")
+                    print(f"    ✓ {name:<12} {self._ui_text('gateway_enabled')}{home_str}")
                 else:
-                    print(f"    ○ {name:<12} Not configured ({env_var})")
+                    print(f"    ○ {name:<12} {self._ui_text('gateway_not_configured')} ({env_var})")
             
             print()
-            print("  Session Reset Policy:")
+            print(f"  {self._ui_text('gateway_reset_policy')}")
             print("  " + "-" * 55)
             policy = config.default_reset_policy
-            print(f"    Mode: {policy.mode}")
-            print(f"    Daily reset at: {policy.at_hour}:00")
-            print(f"    Idle timeout: {policy.idle_minutes} minutes")
+            print(f"    {self._ui_text('gateway_mode')}: {policy.mode}")
+            print(f"    {self._ui_text('gateway_daily_reset')}: {policy.at_hour}:00")
+            print(f"    {self._ui_text('gateway_idle_timeout')}: {policy.idle_minutes} {self._ui_text('gateway_minutes')}")
             
             print()
-            print("  To start the gateway:")
+            print(f"  {self._ui_text('gateway_start_label')}")
             print("    python cli.py --gateway")
             print()
-            print(f"  Configuration file: {display_hermes_home()}/config.yaml")
+            print(f"  {self._ui_text('gateway_config_file')}: {display_hermes_home()}/config.yaml")
             print()
             
         except Exception as e:
             print(f"  Error loading gateway config: {e}")
             print()
-            print("  To configure the gateway:")
-            print("    1. Set environment variables:")
+            print(f"  {self._ui_text('gateway_configure_label')}")
+            print(f"    1. {self._ui_text('gateway_set_env')}")
             print("       TELEGRAM_BOT_TOKEN=your_token")
             print("       DISCORD_BOT_TOKEN=your_token")
-            print(f"    2. Or configure settings in {display_hermes_home()}/config.yaml")
+            print(f"    2. {self._ui_text('gateway_or_config')} {display_hermes_home()}/config.yaml")
             print()
     
     def process_command(self, command: str) -> bool:
@@ -5196,6 +5296,10 @@ class HermesCLI:
             return False
         elif canonical == "help":
             self.show_help()
+        elif canonical == "lang":
+            self._handle_lang_command(cmd_original)
+        elif canonical == "zh":
+            self._show_chinese_guide(cmd_original)
         elif canonical == "profile":
             self._handle_profile_command()
         elif canonical == "tools":
@@ -5225,7 +5329,7 @@ class HermesCLI:
                 cc = ChatConsole()
                 term_w = shutil.get_terminal_size().columns
                 if self.compact or term_w < 80:
-                    cc.print(_build_compact_banner())
+                    cc.print(_build_compact_banner(language=self._ui_language()))
                 else:
                     tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
                     cwd = os.getenv("TERMINAL_CWD", os.getcwd())
@@ -5240,11 +5344,12 @@ class HermesCLI:
                         enabled_toolsets=self.enabled_toolsets,
                         session_id=self.session_id,
                         context_length=ctx_len,
+                        language=self._ui_language(),
                     )
-                _cprint("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
+                _cprint(self._ui_text("fresh_start"))
             else:
                 self.show_banner()
-                print("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
+                print(self._ui_text("fresh_start"))
         elif canonical == "history":
             self.show_history()
         elif canonical == "title":
@@ -5333,8 +5438,9 @@ class HermesCLI:
             self._show_session_status()
         elif canonical == "statusbar":
             self._status_bar_visible = not self._status_bar_visible
-            state = "visible" if self._status_bar_visible else "hidden"
-            self.console.print(f"  Status bar {state}")
+            self.console.print(
+                self._ui_text("statusbar_visible" if self._status_bar_visible else "statusbar_hidden")
+            )
         elif canonical == "verbose":
             self._toggle_verbose()
         elif canonical == "yolo":
@@ -6072,10 +6178,10 @@ class HermesCLI:
         # into garbled sequences like '?[33mTool progress: NEW?[0m' (#2262).
         from hermes_cli.colors import Colors as _Colors
         labels = {
-            "off": f"{_Colors.DIM}Tool progress: OFF{_Colors.RESET} — silent mode, just the final response.",
-            "new": f"{_Colors.YELLOW}Tool progress: NEW{_Colors.RESET} — show each new tool (skip repeats).",
-            "all": f"{_Colors.GREEN}Tool progress: ALL{_Colors.RESET} — show every tool call.",
-            "verbose": f"{_Colors.BOLD}{_Colors.GREEN}Tool progress: VERBOSE{_Colors.RESET} — full args, results, think blocks, and debug logs.",
+            "off": f"{_Colors.DIM}{self._ui_text('tool_progress_off')}{_Colors.RESET}",
+            "new": f"{_Colors.YELLOW}{self._ui_text('tool_progress_new')}{_Colors.RESET}",
+            "all": f"{_Colors.GREEN}{self._ui_text('tool_progress_all')}{_Colors.RESET}",
+            "verbose": f"{_Colors.BOLD}{_Colors.GREEN}{self._ui_text('tool_progress_verbose')}{_Colors.RESET}",
         }
         _cprint(labels.get(self.tool_progress_mode, ""))
 
@@ -6085,10 +6191,10 @@ class HermesCLI:
         current = bool(os.environ.get("HERMES_YOLO_MODE"))
         if current:
             os.environ.pop("HERMES_YOLO_MODE", None)
-            self.console.print("  ⚠ YOLO mode [bold red]OFF[/] — dangerous commands will require approval.")
+            self.console.print(self._ui_text("yolo_off"))
         else:
             os.environ["HERMES_YOLO_MODE"] = "1"
-            self.console.print("  ⚡ YOLO mode [bold green]ON[/] — all commands auto-approved. Use with caution.")
+            self.console.print(self._ui_text("yolo_on"))
 
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.
@@ -6111,9 +6217,9 @@ class HermesCLI:
             else:
                 level = rc.get("effort", "medium")
             display_state = "on ✓" if self.show_reasoning else "off"
-            _cprint(f"  {_ACCENT}Reasoning effort:  {level}{_RST}")
-            _cprint(f"  {_ACCENT}Reasoning display: {display_state}{_RST}")
-            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|show|hide>{_RST}")
+            _cprint(f"  {_ACCENT}{self._ui_text('reasoning_effort', level=level)}{_RST}")
+            _cprint(f"  {_ACCENT}{self._ui_text('reasoning_display', state=display_state)}{_RST}")
+            _cprint(f"  {_DIM}{self._ui_text('reasoning_usage')}{_RST}")
             return
 
         arg = parts[1].strip().lower()
@@ -6124,32 +6230,32 @@ class HermesCLI:
             if self.agent:
                 self.agent.reasoning_callback = self._current_reasoning_callback()
             save_config_value("display.show_reasoning", True)
-            _cprint(f"  {_ACCENT}✓ Reasoning display: ON (saved){_RST}")
-            _cprint(f"  {_DIM}  Model thinking will be shown during and after each response.{_RST}")
+            _cprint(f"  {_ACCENT}{self._ui_text('reasoning_display_on')}{_RST}")
+            _cprint(f"  {_DIM}  {self._ui_text('reasoning_display_on_detail')}{_RST}")
             return
         if arg in ("hide", "off"):
             self.show_reasoning = False
             if self.agent:
                 self.agent.reasoning_callback = self._current_reasoning_callback()
             save_config_value("display.show_reasoning", False)
-            _cprint(f"  {_ACCENT}✓ Reasoning display: OFF (saved){_RST}")
+            _cprint(f"  {_ACCENT}{self._ui_text('reasoning_display_off')}{_RST}")
             return
 
         # Effort level change
         parsed = _parse_reasoning_config(arg)
         if parsed is None:
-            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Valid levels: none, minimal, low, medium, high, xhigh{_RST}")
-            _cprint(f"  {_DIM}Display:      show, hide{_RST}")
+            _cprint(f"  {_DIM}{self._ui_text('reasoning_unknown_arg', arg=arg)}{_RST}")
+            _cprint(f"  {_DIM}{self._ui_text('reasoning_valid_levels')}{_RST}")
+            _cprint(f"  {_DIM}{self._ui_text('reasoning_display_values')}{_RST}")
             return
 
         self.reasoning_config = parsed
         self.agent = None  # Force agent re-init with new reasoning config
 
         if save_config_value("agent.reasoning_effort", arg):
-            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
+            _cprint(f"  {_ACCENT}{self._ui_text('reasoning_set_saved', arg=arg)}{_RST}")
         else:
-            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only){_RST}")
+            _cprint(f"  {_ACCENT}{self._ui_text('reasoning_set_session', arg=arg)}{_RST}")
 
     def _handle_fast_command(self, cmd: str):
         """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode)."""
@@ -8016,19 +8122,27 @@ class HermesCLI:
             if self._preload_resumed_session():
                 self._display_resumed_history()
 
+        from hermes_cli.ui_language import localized_welcome
         try:
             from hermes_cli.skin_engine import get_active_skin
             _welcome_skin = get_active_skin()
-            _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to Hermes Agent! Type your message or /help for commands.")
+            _agent_name = _welcome_skin.get_branding("agent_name", "Hermes Agent")
+            if self._ui_language() == "en":
+                _welcome_text = _welcome_skin.get_branding(
+                    "welcome",
+                    localized_welcome(_agent_name, self._ui_language()),
+                )
+            else:
+                _welcome_text = localized_welcome(_agent_name, self._ui_language())
             _welcome_color = _welcome_skin.get_color("banner_text", "#FFF8DC")
         except Exception:
-            _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."
+            _welcome_text = localized_welcome("Hermes Agent", self._ui_language())
             _welcome_color = "#FFF8DC"
         self.console.print(f"[{_welcome_color}]{_welcome_text}[/]")
         if self.preloaded_skills and not self._startup_skills_line_shown:
             skills_label = ", ".join(self.preloaded_skills)
             self.console.print(
-                f"[bold {_accent_hex()}]Activated skills:[/] {skills_label}"
+                f"[bold {_accent_hex()}]{self._ui_text('activated_skills')}[/] {skills_label}"
             )
             self._startup_skills_line_shown = True
         self.console.print()
@@ -8604,6 +8718,7 @@ class HermesCLI:
         _completer = SlashCommandCompleter(
             skill_commands_provider=lambda: _skill_commands,
             command_filter=cli_ref._command_available,
+            language_provider=cli_ref._ui_language,
         )
         input_area = TextArea(
             height=Dimension(min=1, max=8, preferred=1),

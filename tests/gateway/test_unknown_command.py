@@ -143,6 +143,18 @@ async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_zh_slash_command_returns_chinese_guide():
+    """The built-in /zh command should return the Chinese guide instead of leaking to the LLM."""
+    runner = _make_runner()
+
+    result = await runner._handle_message(_make_event("/zh config"))
+
+    assert result is not None
+    assert "中文配置文件说明" in result
+    assert "config.yaml" in result
+
+
+@pytest.mark.asyncio
 async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch):
     """Telegram autocomplete sends /reload_mcp for the /reload-mcp built-in.
     That must NOT be flagged as unknown."""
