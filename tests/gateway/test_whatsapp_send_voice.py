@@ -252,6 +252,43 @@ def test_send_voice_ffmpeg_timeout_kills_process():
     asyncio.run(run())
 
 
+def test_send_voice_ffmpeg_os_error_cleans_temp_file():
+    """When ffmpeg raises a non-timeout exception, the temp file should still be cleaned up."""
+    async def run():
+        import shutil
+
+        adapter = _make_adapter()
+        expected_result = SendResult(success=True, message_id="voice-oserror")
+        adapter._send_media_to_bridge = AsyncMock(return_value=expected_result)
+
+        fd, ogg_path = tempfile.mkstemp(suffix=".ogg")
+
+        try:
+            with patch.object(shutil, "which", return_value="/usr/bin/ffmpeg"), \
+                 patch("tempfile.mkstemp", return_value=(fd, ogg_path)), \
+                 patch("asyncio.create_subprocess_exec", side_effect=OSError("Permission denied")):
+                result = await adapter.send_voice(
+                    chat_id="123456789@c.us",
+                    audio_path="/tmp/test-voice.mp3",
+                )
+
+            # Should fall back to original path
+            adapter._send_media_to_bridge.assert_called_once_with(
+                "123456789@c.us",
+                "/tmp/test-voice.mp3",
+                "audio",
+                None,
+            )
+            assert result.success is True
+            # Temp file should have been cleaned up
+            assert not os.path.exists(ogg_path)
+        finally:
+            if os.path.exists(ogg_path):
+                os.unlink(ogg_path)
+
+    asyncio.run(run())
+
+
 def test_send_voice_method_exists():
     """WhatsAppAdapter should have its own send_voice implementation."""
     from gateway.platforms.whatsapp import WhatsAppAdapter

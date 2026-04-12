@@ -800,6 +800,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         os.unlink(converted_path)
                     logger.warning("ffmpeg conversion timed out for %s", audio_path)
                 except Exception as e:
+                    if os.path.exists(converted_path):
+                        os.unlink(converted_path)
                     logger.debug("ffmpeg conversion error for %s: %s", audio_path, e)
             else:
                 logger.debug(
