@@ -287,8 +287,13 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # ----- B3: resolve_session_name -----
         session_title = kwargs.get("session_title")
+        gateway_session_key = kwargs.get("gateway_session_key")
         self._session_key = (
-            cfg.resolve_session_name(session_title=session_title, session_id=session_id)
+            cfg.resolve_session_name(
+                session_title=session_title,
+                session_id=session_id,
+                gateway_session_key=gateway_session_key,
+            )
             or session_id
             or "hermes-default"
         )
