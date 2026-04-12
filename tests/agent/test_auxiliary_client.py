@@ -504,7 +504,12 @@ class TestExplicitProviderRouting:
             assert client is not None
 
     def test_explicit_google_alias_uses_gemini_credentials(self):
-        """provider='google' should route through the gemini API-key provider."""
+        """provider='google' should route through the gemini API-key provider.
+
+        Updated for issue #7893: the OpenAI client must receive api_key='not-used'
+        and default_headers={'x-goog-api-key': real_key} so the SDK does not emit
+        Authorization: Bearer, which Google's endpoint rejects with HTTP 400.
+        """
         with (
             patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
                 "api_key": "gemini-key",
@@ -517,8 +522,11 @@ class TestExplicitProviderRouting:
 
         assert client is not None
         assert model == "gemini-3.1-pro-preview"
-        assert mock_openai.call_args.kwargs["api_key"] == "gemini-key"
+        # api_key must be placeholder to suppress Authorization: Bearer (issue #7893)
+        assert mock_openai.call_args.kwargs["api_key"] == "not-used"
         assert mock_openai.call_args.kwargs["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+        # real key must be in x-goog-api-key header
+        assert mock_openai.call_args.kwargs.get("default_headers", {}).get("x-goog-api-key") == "gemini-key"
 
     def test_explicit_unknown_returns_none(self, monkeypatch):
         """Unknown provider should return None."""
@@ -853,6 +861,7 @@ class TestAuxiliaryPoolAwareness:
         assert provider == "custom:local"
 
     def test_vision_config_google_provider_uses_gemini_credentials(self, monkeypatch):
+        """Updated for issue #7893: Gemini vision client must use x-goog-api-key."""
         config = {
             "auxiliary": {
                 "vision": {
@@ -874,8 +883,11 @@ class TestAuxiliaryPoolAwareness:
         assert resolved_provider == "gemini"
         assert client is not None
         assert model == "gemini-3.1-pro-preview"
-        assert mock_openai.call_args.kwargs["api_key"] == "gemini-key"
+        # api_key must be placeholder to suppress Authorization: Bearer (issue #7893)
+        assert mock_openai.call_args.kwargs["api_key"] == "not-used"
         assert mock_openai.call_args.kwargs["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+        # real key must be in x-goog-api-key header
+        assert mock_openai.call_args.kwargs.get("default_headers", {}).get("x-goog-api-key") == "gemini-key"
 
 
 
