@@ -212,6 +212,168 @@ class TestGeminiAgentInit:
             assert agent.provider == "gemini"
 
 
+# ── Tool Schema Sanitization for Google ──
+
+class TestGeminiToolConversion:
+    """Verify OpenAI-format tools are converted to Google-native format."""
+
+    @pytest.fixture()
+    def agent(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+        with patch("run_agent.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from run_agent import AIAgent
+            agent = AIAgent(
+                model="gemini-2.5-flash",
+                provider="gemini",
+                api_key="test-key",
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            )
+        return agent
+
+    def test_is_google_api(self, agent):
+        assert agent._is_google_api()
+
+    def test_is_google_api_false_for_openai(self, agent):
+        agent.base_url = "https://api.openai.com/v1"
+        assert not agent._is_google_api()
+
+    def test_convert_tools_unwraps_openai_format(self, agent):
+        """OpenAI wrapper (type+function) should be stripped for Google."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "File path"},
+                        },
+                        "required": ["path"],
+                    },
+                },
+            }
+        ]
+        result = agent._convert_tools_for_google(tools)
+        assert len(result) == 1
+        assert "function_declarations" in result[0]
+        decls = result[0]["function_declarations"]
+        assert len(decls) == 1
+        assert decls[0]["name"] == "read_file"
+        assert decls[0]["description"] == "Read a file"
+        assert "type" not in result[0]  # no OpenAI wrapper
+        assert "function" not in result[0]  # no OpenAI wrapper
+
+    def test_convert_tools_multiple(self, agent):
+        tools = [
+            {"type": "function", "function": {"name": "tool_a", "description": "A", "parameters": {"type": "object", "properties": {}}}},
+            {"type": "function", "function": {"name": "tool_b", "description": "B", "parameters": {"type": "object", "properties": {}}}},
+        ]
+        result = agent._convert_tools_for_google(tools)
+        decls = result[0]["function_declarations"]
+        assert len(decls) == 2
+        assert decls[0]["name"] == "tool_a"
+        assert decls[1]["name"] == "tool_b"
+
+    def test_convert_tools_empty(self, agent):
+        assert agent._convert_tools_for_google([]) == []
+        assert agent._convert_tools_for_google(None) == []
+
+    def test_sanitize_strips_additional_properties(self, agent):
+        schema = {
+            "type": "object",
+            "properties": {"x": {"type": "string"}},
+            "additionalProperties": False,
+        }
+        result = agent._sanitize_google_schema(schema)
+        assert "additionalProperties" not in result
+        assert result["type"] == "object"
+        assert result["properties"]["x"]["type"] == "string"
+
+    def test_sanitize_strips_unsupported_keys(self, agent):
+        schema = {
+            "type": "object",
+            "properties": {"x": {"type": "string", "default": "hi", "title": "X"}},
+            "anyOf": [{"type": "string"}],
+            "$ref": "#/defs/Foo",
+        }
+        result = agent._sanitize_google_schema(schema)
+        assert "anyOf" not in result
+        assert "$ref" not in result
+        assert "default" not in result["properties"]["x"]
+        assert "title" not in result["properties"]["x"]
+
+    def test_sanitize_adds_missing_type(self, agent):
+        schema = {"properties": {"a": {"type": "integer"}}}
+        result = agent._sanitize_google_schema(schema)
+        assert result["type"] == "object"
+
+    def test_sanitize_nested_objects(self, agent):
+        schema = {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "default": "test"},
+                    },
+                    "additionalProperties": True,
+                },
+            },
+        }
+        result = agent._sanitize_google_schema(schema)
+        nested = result["properties"]["config"]
+        assert "additionalProperties" not in nested
+        assert "default" not in nested["properties"]["name"]
+
+    def test_sanitize_array_items(self, agent):
+        schema = {
+            "type": "object",
+            "properties": {
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string", "default": ""},
+                },
+            },
+        }
+        result = agent._sanitize_google_schema(schema)
+        assert "default" not in result["properties"]["tags"]["items"]
+
+    def test_build_api_kwargs_google_uses_extra_body(self, agent):
+        """For Google endpoints, tools go in extra_body, not top-level tools."""
+        agent.tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "description": "Run commands",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        agent.max_tokens = None
+        agent.reasoning_config = None
+        agent.request_overrides = None
+        agent.providers_allowed = None
+        agent.providers_ignored = None
+        agent.providers_order = None
+        agent.provider_sort = None
+        agent.provider_require_parameters = False
+        agent.provider_data_collection = None
+        agent._ollama_num_ctx = None
+        msgs = [{"role": "system", "content": "You are helpful."}]
+        kwargs = agent._build_api_kwargs(msgs)
+        # tools should NOT be in top-level kwargs (would fail Google validation)
+        assert "tools" not in kwargs
+        # tools should be in extra_body as Google-native format
+        assert "extra_body" in kwargs
+        google_tools = kwargs["extra_body"]["tools"]
+        assert "function_declarations" in google_tools[0]
+        assert google_tools[0]["function_declarations"][0]["name"] == "terminal"
+
+
 # ── models.dev Integration ──
 
 class TestGeminiModelsDev:
