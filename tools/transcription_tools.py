@@ -618,7 +618,7 @@ def _transcribe_cartesia(file_path: str, model_name: str) -> Dict[str, Any]:
 
     try:
         with open(file_path, "rb") as audio_file:
-            files = {"file": (Path(file_path).name, audio_file, "audio/mpeg")}
+            files = {"file": (Path(file_path).name, audio_file, "audio/wav")}
             data = {"model": model_name}
             if language:
                 data["language"] = language
@@ -627,7 +627,10 @@ def _transcribe_cartesia(file_path: str, model_name: str) -> Dict[str, Any]:
                 "https://api.cartesia.ai/stt",
                 files=files,
                 data=data,
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Cartesia-Version": "2026-03-01"
+                },
                 timeout=120
             )
             response.raise_for_status()
