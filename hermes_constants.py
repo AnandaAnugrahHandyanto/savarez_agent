@@ -298,3 +298,7 @@ OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
 AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 
 NOUS_API_BASE_URL = "https://inference-api.nousresearch.com/v1"
+
+# Cartesia AI constants shared between TTS and STT
+DEFAULT_CARTESIA_BASE_URL = "https://api.cartesia.ai"
+DEFAULT_CARTESIA_VERSION = "2026-03-01"

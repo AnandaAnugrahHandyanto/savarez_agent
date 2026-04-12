@@ -44,6 +44,10 @@ from urllib.parse import urljoin
 logger = logging.getLogger(__name__)
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_openai_audio_api_key
+from hermes_constants import (
+    DEFAULT_CARTESIA_BASE_URL,
+    DEFAULT_CARTESIA_VERSION,
+)
 
 # ---------------------------------------------------------------------------
 # Lazy imports -- providers are imported only when actually used to avoid
@@ -94,7 +98,6 @@ DEFAULT_MISTRAL_TTS_MODEL = "voxtral-mini-tts-2603"
 DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
 DEFAULT_CARTESIA_MODEL = "sonic-3"
 DEFAULT_CARTESIA_VOICE_ID = "6f9d531e-144f-4749-87db-f84e7c6ab800"  # Barbershop Man
-DEFAULT_CARTESIA_BASE_URL = "https://api.cartesia.ai"
 
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
@@ -464,14 +467,16 @@ def _generate_cartesia_tts(text: str, output_path: str, tts_config: Dict[str, An
     language = cartesia_config.get("language", "en")
     base_url = cartesia_config.get("base_url", DEFAULT_CARTESIA_BASE_URL)
 
-    # Determine output format based on file extension
-    if output_path.endswith(".ogg"):
+    # Determine output format based on file extension (using pathlib.Path)
+    output_path_obj = Path(output_path)
+    file_suffix = output_path_obj.suffix.lower()
+    if file_suffix == ".ogg":
         container = "ogg"
         encoding = "opus"
-    elif output_path.endswith(".wav"):
+    elif file_suffix == ".wav":
         container = "wav"
         encoding = "pcm_s16le"
-    elif output_path.endswith(".mp3"):
+    elif file_suffix == ".mp3":
         container = "mp3"
         encoding = "mp3"
     else:
@@ -496,26 +501,42 @@ def _generate_cartesia_tts(text: str, output_path: str, tts_config: Dict[str, An
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
-        "Cartesia-Version": "2026-03-01"
+        "Cartesia-Version": DEFAULT_CARTESIA_VERSION,
     }
 
-    response = requests.post(
-        f"{base_url.rstrip('/')}/tts/bytes",
-        json=payload,
-        headers=headers,
-        timeout=60
-    )
-    response.raise_for_status()
+    try:
+        response = requests.post(
+            f"{base_url.rstrip('/')}/tts/bytes",
+            json=payload,
+            headers=headers,
+            timeout=60
+        )
+        response.raise_for_status()
 
-    # Cartesia returns raw audio bytes
-    audio_bytes = response.content
-    if not audio_bytes:
-        raise RuntimeError("Cartesia TTS returned empty audio data")
+        # Cartesia returns raw audio bytes
+        audio_bytes = response.content
+        if not audio_bytes:
+            raise RuntimeError("Cartesia TTS returned empty audio data")
 
-    with open(output_path, "wb") as f:
-        f.write(audio_bytes)
+        with open(output_path, "wb") as f:
+            f.write(audio_bytes)
 
-    return output_path
+        return output_path
+    except requests.exceptions.HTTPError as e:
+        logger.error("Cartesia TTS HTTP error: %s", e, exc_info=True)
+        raise RuntimeError(f"Cartesia TTS failed: {e}") from e
+    except requests.exceptions.Timeout as e:
+        logger.error("Cartesia TTS timeout: %s", e, exc_info=True)
+        raise RuntimeError(f"Cartesia TTS timed out after 60s") from e
+    except requests.exceptions.RequestException as e:
+        logger.error("Cartesia TTS request failed: %s", e, exc_info=True)
+        raise RuntimeError(f"Cartesia TTS request failed: {e}") from e
+    except (OSError, IOError) as e:
+        logger.error("Cartesia TTS file write failed: %s", e, exc_info=True)
+        raise RuntimeError(f"Failed to write audio file: {e}") from e
+    except Exception as e:
+        logger.error("Cartesia TTS unexpected error: %s", e, exc_info=True)
+        raise
 
 
 # ===========================================================================

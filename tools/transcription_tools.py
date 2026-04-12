@@ -39,7 +39,11 @@ from utils import is_truthy_value
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_openai_audio_api_key
 
-from hermes_constants import get_hermes_home
+from hermes_constants import (
+    get_hermes_home,
+    DEFAULT_CARTESIA_BASE_URL,
+    DEFAULT_CARTESIA_VERSION,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -624,12 +628,12 @@ def _transcribe_cartesia(file_path: str, model_name: str) -> Dict[str, Any]:
                 data["language"] = language
 
             response = requests.post(
-                "https://api.cartesia.ai/stt",
+                f"{DEFAULT_CARTESIA_BASE_URL}/stt",
                 files=files,
                 data=data,
                 headers={
                     "Authorization": f"Bearer {api_key}",
-                    "Cartesia-Version": "2026-03-01"
+                    "Cartesia-Version": DEFAULT_CARTESIA_VERSION,
                 },
                 timeout=120
             )
@@ -646,12 +650,19 @@ def _transcribe_cartesia(file_path: str, model_name: str) -> Dict[str, Any]:
             return {"success": True, "transcript": transcript_text, "provider": "cartesia"}
 
     except PermissionError:
+        logger.warning("Cartesia transcription permission denied: %s", file_path)
         return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except FileNotFoundError:
+        logger.warning("Cartesia transcription file not found: %s", file_path)
+        return {"success": False, "transcript": "", "error": f"File not found: {file_path}"}
     except requests.exceptions.RequestException as e:
-        logger.error("Cartesia transcription failed: %s", e, exc_info=True)
+        logger.error("Cartesia transcription request failed: %s", e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"Cartesia transcription failed: {e}"}
+    except (OSError, IOError) as e:
+        logger.error("Cartesia transcription file error: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Cartesia transcription file error: {e}"}
     except Exception as e:
-        logger.error("Cartesia transcription failed: %s", e, exc_info=True)
+        logger.error("Cartesia transcription unexpected error: %s", e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"Cartesia transcription failed: {type(e).__name__}"}
 
 
