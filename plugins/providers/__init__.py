@@ -106,7 +106,7 @@ def _discover_all() -> None:
         try:
             mod = _load_module(child)
             if mod and hasattr(mod, "resolve"):
-                _provider_cache[child.name] = mod.resolve
+                _provider_cache[child.name.lower()] = mod.resolve
                 # Register aliases if defined
                 aliases = getattr(mod, "ALIASES", [])
                 for alias in aliases:

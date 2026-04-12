@@ -85,8 +85,6 @@ class TestAliasResolution:
         # Reset cache and discover from our tmp dir
         pp._discovered = False
         pp._provider_cache.clear()
-        original_dir = pp._PROVIDERS_DIR
-
         with patch.object(pp, "_PROVIDERS_DIR", tmp_path):
             pp._discover_all()
 
