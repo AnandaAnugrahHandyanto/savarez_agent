@@ -14,8 +14,10 @@ Context management is built on the `ContextEngine` ABC (`agent/context_engine.py
 ```yaml
 context:
   engine: "compressor"    # default — built-in lossy summarization
-  engine: "lcm"           # example — plugin providing lossless context
+  engine: "lcm"           # repo-scanned lossless context engine
 ```
+
+Hermes now ships a repo-scanned `plugins/context_engine/lcm/` engine as the reference lossless implementation. When enabled, it persists every message in SQLite, builds a hierarchical summary DAG, and injects three engine tools into the agent: `lcm_grep`, `lcm_describe`, and `lcm_expand`.
 
 The engine is responsible for:
 - Deciding when compaction should fire (`should_compress()`)

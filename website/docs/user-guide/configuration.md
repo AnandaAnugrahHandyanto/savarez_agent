@@ -493,7 +493,9 @@ context:
   engine: "compressor"    # default — built-in lossy summarization
 ```
 
-To use a plugin engine (e.g., LCM for lossless context management):
+Hermes also ships a repo-scanned `lcm` engine for Lossless Context Management. It persists every message, builds a summary DAG, and exposes retrieval tools (`lcm_grep`, `lcm_describe`, `lcm_expand`) for drilling back into compacted history.
+
+To enable LCM:
 
 ```yaml
 context:

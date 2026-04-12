@@ -1,0 +1,11 @@
+name: lcm
+version: 0.1.0
+description: "Repo-shipped Lossless Context Management context engine for Hermes Agent"
+author: "Voltropy / Hermes Community"
+provides_tools:
+  - lcm_grep
+  - lcm_describe
+  - lcm_expand
+provides_hooks:
+  - on_session_start
+  - on_session_end

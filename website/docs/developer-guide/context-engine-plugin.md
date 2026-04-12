@@ -34,6 +34,8 @@ plugins/context_engine/lcm/
 └── ...              # any other modules your engine needs
 ```
 
+Hermes ships `plugins/context_engine/lcm/` as a real example of a repo-scanned context engine, so this directory layout is not just theoretical.
+
 ## The ContextEngine ABC
 
 Your engine must implement these **required** methods:
