@@ -814,6 +814,7 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
         "browser_get_images",
         "browser_vision",
         "image_generate",
+        "music_generate",
         "text_to_speech",
         "terminal",
         "process",
@@ -839,7 +840,7 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
 
     lines = [
         "# Nous Subscription",
-        "Nous subscription includes managed web tools (Firecrawl), image generation (FAL), OpenAI TTS, and browser automation (Browser Use) by default. Modal execution is optional.",
+        "Nous subscription can unlock managed web tools (Firecrawl), image generation (FAL), music generation (FAL), OpenAI TTS, and browser automation (Browser Use). Modal execution is optional.",
         "Current capability status:",
     ]
     lines.extend(_status_line(feature) for feature in features.items())

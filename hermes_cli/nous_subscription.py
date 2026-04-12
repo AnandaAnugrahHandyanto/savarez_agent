@@ -54,6 +54,10 @@ class NousSubscriptionFeatures:
         return self.features["image_gen"]
 
     @property
+    def music_gen(self) -> NousFeatureState:
+        return self.features["music_gen"]
+
+    @property
     def tts(self) -> NousFeatureState:
         return self.features["tts"]
 
@@ -66,9 +70,11 @@ class NousSubscriptionFeatures:
         return self.features["modal"]
 
     def items(self) -> Iterable[NousFeatureState]:
-        ordered = ("web", "image_gen", "tts", "browser", "modal")
+        ordered = ("web", "image_gen", "music_gen", "tts", "browser", "modal")
         for key in ordered:
-            yield self.features[key]
+            feature = self.features.get(key)
+            if feature is not None:
+                yield feature
 
 
 def _model_config_dict(config: Dict[str, object]) -> Dict[str, object]:
@@ -235,6 +241,7 @@ def get_nous_subscription_features(
 
     web_tool_enabled = _toolset_enabled(config, "web")
     image_tool_enabled = _toolset_enabled(config, "image_gen")
+    music_tool_enabled = _toolset_enabled(config, "music_gen")
     tts_tool_enabled = _toolset_enabled(config, "tts")
     browser_tool_enabled = _toolset_enabled(config, "browser")
     modal_tool_enabled = _toolset_enabled(config, "terminal")
@@ -271,6 +278,7 @@ def get_nous_subscription_features(
 
     managed_web_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("firecrawl")
     managed_image_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("fal-queue")
+    managed_music_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("fal-queue")
     managed_tts_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("openai-audio")
     managed_browser_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("browser-use")
     managed_modal_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("modal")
@@ -298,6 +306,10 @@ def get_nous_subscription_features(
     image_managed = image_tool_enabled and managed_image_available and not direct_fal
     image_active = bool(image_tool_enabled and (image_managed or direct_fal))
     image_available = bool(managed_image_available or direct_fal)
+
+    music_managed = music_tool_enabled and managed_music_available and not direct_fal
+    music_active = bool(music_tool_enabled and (music_managed or direct_fal))
+    music_available = bool(managed_music_available or direct_fal)
 
     tts_current_provider = tts_provider or "edge"
     tts_managed = (
@@ -393,6 +405,18 @@ def get_nous_subscription_features(
             current_provider="FAL" if direct_fal else ("Nous Subscription" if image_managed else ""),
             explicit_configured=direct_fal,
         ),
+        "music_gen": NousFeatureState(
+            key="music_gen",
+            label="Music generation",
+            included_by_default=True,
+            available=music_available,
+            active=music_active,
+            managed_by_nous=music_managed,
+            direct_override=music_active and not music_managed,
+            toolset_enabled=music_tool_enabled,
+            current_provider="FAL" if direct_fal else ("Nous Subscription" if music_managed else ""),
+            explicit_configured=direct_fal,
+        ),
         "tts": NousFeatureState(
             key="tts",
             label="OpenAI TTS",
@@ -444,7 +468,7 @@ def get_nous_subscription_explainer_lines() -> list[str]:
         return []
 
     return [
-        "Nous subscription enables managed web tools, image generation, OpenAI TTS, and browser automation by default.",
+        "Nous subscription enables managed web tools, image generation, music generation, OpenAI TTS, and browser automation by default.",
         "Those managed tools bill to your Nous subscription. Modal execution is optional and can bill to your subscription too.",
         "Change these later with: hermes setup tools, hermes setup terminal, or hermes status.",
     ]
@@ -527,5 +551,8 @@ def apply_nous_managed_defaults(
 
     if "image_gen" in selected_toolsets and not get_env_value("FAL_KEY"):
         changed.add("image_gen")
+
+    if "music_gen" in selected_toolsets and not get_env_value("FAL_KEY"):
+        changed.add("music_gen")
 
     return changed

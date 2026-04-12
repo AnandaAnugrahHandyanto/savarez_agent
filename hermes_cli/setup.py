@@ -462,6 +462,14 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("Image Generation", False, "FAL_KEY"))
 
+    # FAL (music generation)
+    if subscription_features.music_gen.managed_by_nous:
+        tool_status.append(("Music Generation (Nous subscription)", True, None))
+    elif subscription_features.music_gen.available:
+        tool_status.append(("Music Generation", True, None))
+    else:
+        tool_status.append(("Music Generation", False, "FAL_KEY"))
+
     # TTS — show configured provider
     tts_provider = config.get("tts", {}).get("provider", "edge")
     if subscription_features.tts.managed_by_nous:

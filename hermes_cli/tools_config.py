@@ -54,6 +54,7 @@ CONFIGURABLE_TOOLSETS = [
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
+    ("music_gen",       "🎵 Music Generation",           "music_generate"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -232,6 +233,27 @@ TOOL_CATEGORIES = {
             {
                 "name": "FAL.ai",
                 "tag": "FLUX 2 Pro with auto-upscaling",
+                "env_vars": [
+                    {"key": "FAL_KEY", "prompt": "FAL API key", "url": "https://fal.ai/dashboard/keys"},
+                ],
+            },
+        ],
+    },
+    "music_gen": {
+        "name": "Music Generation",
+        "icon": "🎵",
+        "providers": [
+            {
+                "name": "Nous Subscription",
+                "tag": "Managed FAL music generation billed to your subscription",
+                "env_vars": [],
+                "requires_nous_auth": True,
+                "managed_nous_feature": "music_gen",
+                "override_env_vars": ["FAL_KEY"],
+            },
+            {
+                "name": "FAL.ai",
+                "tag": "Text-to-music generation via FAL",
                 "env_vars": [
                     {"key": "FAL_KEY", "prompt": "FAL API key", "url": "https://fal.ai/dashboard/keys"},
                 ],
@@ -619,7 +641,7 @@ def _toolset_has_keys(ts_key: str, config: dict = None) -> bool:
         except Exception:
             return False
 
-    if ts_key in {"web", "image_gen", "tts", "browser"}:
+    if ts_key in {"web", "image_gen", "music_gen", "tts", "browser"}:
         features = get_nous_subscription_features(config)
         feature = features.features.get(ts_key)
         if feature and (feature.available or feature.managed_by_nous):
@@ -768,8 +790,13 @@ def _visible_providers(cat: dict, config: dict) -> list[dict]:
     features = get_nous_subscription_features(config)
     visible = []
     for provider in cat.get("providers", []):
-        if provider.get("managed_nous_feature") and not managed_nous_tools_enabled():
-            continue
+        managed_feature = provider.get("managed_nous_feature")
+        if managed_feature:
+            if not managed_nous_tools_enabled():
+                continue
+            feature = features.features.get(managed_feature)
+            if feature is None or not (feature.available or feature.managed_by_nous):
+                continue
         if provider.get("requires_nous_auth") and not features.nous_auth_present:
             continue
         visible.append(provider)
