@@ -231,6 +231,35 @@ async def test_notify_on_complete_preserves_user_identity(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_notify_on_complete_preserves_chat_type(monkeypatch, tmp_path):
+    """Synthetic completion event should keep group chats as group, not dm."""
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="done\n", exited=True, exit_code=0, command="echo test"
+        ),
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path)
+    adapter = runner.adapters[Platform.DISCORD]
+
+    watcher = _watcher_dict_with_notify()
+    watcher["chat_type"] = "group"
+
+    await runner._run_process_watcher(watcher)
+
+    assert adapter.handle_message.await_count == 1
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
 async def test_none_user_id_skips_pairing(monkeypatch, tmp_path):
     """A non-internal event with user_id=None should be silently dropped."""
     import gateway.run as gateway_run
