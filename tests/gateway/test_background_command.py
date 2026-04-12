@@ -226,6 +226,7 @@ class TestRunBackgroundTask:
             await runner._run_background_task("say hello", source, "bg_test")
 
         # Should have sent the result
+        mock_agent_instance.close.assert_called_once()
         mock_adapter.send.assert_called_once()
         call_args = mock_adapter.send.call_args
         content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")

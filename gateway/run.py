@@ -791,11 +791,17 @@ class GatewayRunner:
                 "tools if needed, then stop.]"
             )
 
-            tmp_agent.run_conversation(
-                user_message=flush_prompt,
-                conversation_history=msgs,
-            )
-            logger.info("Pre-reset memory flush completed for session %s", old_session_id)
+            try:
+                tmp_agent.run_conversation(
+                    user_message=flush_prompt,
+                    conversation_history=msgs,
+                )
+                logger.info("Pre-reset memory flush completed for session %s", old_session_id)
+            finally:
+                try:
+                    tmp_agent.close()
+                except Exception:
+                    pass
         except Exception as e:
             logger.debug("Pre-reset memory flush failed for session %s: %s", old_session_id, e)
 
@@ -3410,13 +3416,19 @@ class GatewayRunner:
                                 _hyg_agent._print_fn = lambda *a, **kw: None
 
                                 loop = asyncio.get_event_loop()
-                                _compressed, _ = await loop.run_in_executor(
-                                    None,
-                                    lambda: _hyg_agent._compress_context(
-                                        _hyg_msgs, "",
-                                        approx_tokens=_approx_tokens,
-                                    ),
-                                )
+                                try:
+                                    _compressed, _ = await loop.run_in_executor(
+                                        None,
+                                        lambda: _hyg_agent._compress_context(
+                                            _hyg_msgs, "",
+                                            approx_tokens=_approx_tokens,
+                                        ),
+                                    )
+                                finally:
+                                    try:
+                                        _hyg_agent.close()
+                                    except Exception:
+                                        pass
 
                                 # _compress_context ends the old session and creates
                                 # a new session_id.  Write compressed messages into
@@ -5310,10 +5322,16 @@ class GatewayRunner:
                     fallback_model=self._fallback_model,
                 )
 
-                return agent.run_conversation(
-                    user_message=prompt,
-                    task_id=task_id,
-                )
+                try:
+                    return agent.run_conversation(
+                        user_message=prompt,
+                        task_id=task_id,
+                    )
+                finally:
+                    try:
+                        agent.close()
+                    except Exception:
+                        pass
 
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, run_sync)
@@ -5492,11 +5510,17 @@ class GatewayRunner:
                     skip_context_files=True,
                     persist_session=False,
                 )
-                return agent.run_conversation(
-                    user_message=btw_prompt,
-                    conversation_history=history_snapshot,
-                    task_id=task_id,
-                )
+                try:
+                    return agent.run_conversation(
+                        user_message=btw_prompt,
+                        conversation_history=history_snapshot,
+                        task_id=task_id,
+                    )
+                finally:
+                    try:
+                        agent.close()
+                    except Exception:
+                        pass
 
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, run_sync)
@@ -5835,10 +5859,16 @@ class GatewayRunner:
                 return "Nothing to compress yet (the transcript is still all protected context)."
 
             loop = asyncio.get_event_loop()
-            compressed, _ = await loop.run_in_executor(
-                None,
-                lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic)
-            )
+            try:
+                compressed, _ = await loop.run_in_executor(
+                    None,
+                    lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic)
+                )
+            finally:
+                try:
+                    tmp_agent.close()
+                except Exception:
+                    pass
 
             # _compress_context already calls end_session() on the old session
             # (preserving its full transcript in SQLite) and creates a new

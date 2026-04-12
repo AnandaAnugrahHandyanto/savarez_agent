@@ -599,6 +599,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
+    agent = None
     try:
         # Inject origin context so the agent's send_message tool knows the chat.
         # Must be INSIDE the try block so the finally cleanup always runs.
@@ -873,6 +874,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return False, output, "", error_msg
 
     finally:
+        if agent is not None:
+            try:
+                agent.close()
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug("Job '%s': failed to close agent: %s", job_id, e)
         # Clean up injected env vars so they don't leak to other jobs
         for key in (
             "HERMES_SESSION_PLATFORM",

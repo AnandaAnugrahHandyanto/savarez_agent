@@ -193,6 +193,31 @@ class TestStdinHelpers:
             registry.kill_process(session.id)
 
 
+class TestReaderCleanup:
+    def test_reader_loop_closes_process_pipes_when_process_exits(self, registry):
+        proc = MagicMock()
+        proc.stdout = MagicMock()
+        proc.stdout.read.side_effect = ["hello", ""]
+        proc.stdin = MagicMock()
+        proc.stderr = proc.stdout
+        proc.wait = MagicMock()
+        proc.returncode = 0
+
+        session = _make_session()
+        session.process = proc
+        registry._running[session.id] = session
+
+        registry._reader_loop(session)
+
+        proc.wait.assert_called_once_with(timeout=5)
+        proc.stdout.close.assert_called_once()
+        proc.stdin.close.assert_called_once()
+        assert session.exited is True
+        assert session.exit_code == 0
+        assert session.id in registry._finished
+        assert session.output_buffer == "hello"
+
+
 # =========================================================================
 # List sessions
 # =========================================================================
