@@ -4224,6 +4224,25 @@ class AIAgent:
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
         self._close_openai_client(client, reason=reason, shared=False)
 
+    def _is_custom_codex_provider(self) -> bool:
+        provider_name = (self.provider or "").strip().lower()
+        return provider_name == "custom" or provider_name.startswith("custom:")
+
+    def _should_fallback_custom_codex_missing_created(self, exc: Exception) -> bool:
+        """Detect custom Responses streams that skip the initial response.created event.
+
+        Some third-party Responses-compatible relays stream usable SSE bytes but
+        violate the SDK's event ordering contract by starting with
+        response.in_progress (or another response.* event) before
+        response.created. curl can display those bytes just fine, but the SDK's
+        strict state machine raises before Hermes can consume the stream.
+        """
+        if not self._is_custom_codex_provider():
+            return False
+
+        err_text = str(exc or "")
+        return "Expected to have received response.created before response." in err_text
+
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Execute one streaming Responses API request and return the final response."""
         import httpx as _httpx
@@ -4326,10 +4345,14 @@ class AIAgent:
                     self._client_log_context(),
                     exc,
                 )
-                return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+                fallback_kwargs = {"client": active_client}
+                if on_first_delta is not None:
+                    fallback_kwargs["on_first_delta"] = on_first_delta
+                return self._run_codex_create_stream_fallback(api_kwargs, **fallback_kwargs)
             except RuntimeError as exc:
                 err_text = str(exc)
                 missing_completed = "response.completed" in err_text
+                missing_created = self._should_fallback_custom_codex_missing_created(exc)
                 if missing_completed and attempt < max_stream_retries:
                     logger.debug(
                         "Responses stream closed before completion (attempt %s/%s); retrying. %s",
@@ -4343,10 +4366,35 @@ class AIAgent:
                         "Responses stream did not emit response.completed; falling back to create(stream=True). %s",
                         self._client_log_context(),
                     )
-                    return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+                    fallback_kwargs = {"client": active_client}
+                    if on_first_delta is not None:
+                        fallback_kwargs["on_first_delta"] = on_first_delta
+                    return self._run_codex_create_stream_fallback(api_kwargs, **fallback_kwargs)
+                if missing_created and attempt < max_stream_retries:
+                    logger.debug(
+                        "Custom Responses stream skipped response.created (attempt %s/%s); retrying. %s",
+                        attempt + 1,
+                        max_stream_retries + 1,
+                        self._client_log_context(),
+                    )
+                    continue
+                if missing_created:
+                    logger.debug(
+                        "Custom Responses stream skipped response.created; falling back to create(stream=True). %s",
+                        self._client_log_context(),
+                    )
+                    fallback_kwargs = {"client": active_client}
+                    if on_first_delta is not None:
+                        fallback_kwargs["on_first_delta"] = on_first_delta
+                    return self._run_codex_create_stream_fallback(api_kwargs, **fallback_kwargs)
                 raise
 
-    def _run_codex_create_stream_fallback(self, api_kwargs: dict, client: Any = None):
+    def _run_codex_create_stream_fallback(
+        self,
+        api_kwargs: dict,
+        client: Any = None,
+        on_first_delta: callable = None,
+    ):
         """Fallback path for stream completion edge cases on Codex-style Responses backends."""
         active_client = client or self._ensure_primary_openai_client(reason="codex_create_stream_fallback")
         fallback_kwargs = dict(api_kwargs)
@@ -4363,6 +4411,8 @@ class AIAgent:
         terminal_response = None
         collected_output_items: list = []
         collected_text_deltas: list = []
+        has_function_calls = False
+        first_delta_fired = False
         try:
             for event in stream_or_response:
                 event_type = getattr(event, "type", None)
@@ -4382,6 +4432,23 @@ class AIAgent:
                         delta = event.get("delta", "")
                     if delta:
                         collected_text_deltas.append(delta)
+                        if not has_function_calls:
+                            if not first_delta_fired:
+                                first_delta_fired = True
+                                if on_first_delta:
+                                    try:
+                                        on_first_delta()
+                                    except Exception:
+                                        pass
+                            self._fire_stream_delta(delta)
+                elif "function_call" in str(event_type):
+                    has_function_calls = True
+                elif "reasoning" in str(event_type) and "delta" in str(event_type):
+                    reasoning_text = getattr(event, "delta", "")
+                    if not reasoning_text and isinstance(event, dict):
+                        reasoning_text = event.get("delta", "")
+                    if reasoning_text:
+                        self._fire_reasoning_delta(reasoning_text)
 
                 if event_type not in {"response.completed", "response.incomplete", "response.failed"}:
                     continue
@@ -4399,7 +4466,7 @@ class AIAgent:
                                 "Codex fallback stream: backfilled %d output items",
                                 len(collected_output_items),
                             )
-                        elif collected_text_deltas:
+                        elif collected_text_deltas and not has_function_calls:
                             assembled = "".join(collected_text_deltas)
                             terminal_response.output = [SimpleNamespace(
                                 type="message", role="assistant",

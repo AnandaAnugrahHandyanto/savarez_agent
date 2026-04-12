@@ -814,3 +814,56 @@ class TestCodexStreamCallbacks:
 
         assert response is fallback_response
         mock_fallback.assert_called_once_with({}, client=mock_client)
+
+    def test_codex_create_stream_fallback_emits_deltas_without_response_created(self):
+        from run_agent import AIAgent
+
+        deltas = []
+
+        class _CreateStream:
+            def __init__(self, events):
+                self._events = list(events)
+                self.closed = False
+
+            def __iter__(self):
+                return iter(self._events)
+
+            def close(self):
+                self.closed = True
+
+        terminal_response = SimpleNamespace(output=[], status="completed")
+        create_stream = _CreateStream(
+            [
+                SimpleNamespace(type="response.in_progress"),
+                SimpleNamespace(type="response.output_text.delta", delta="Hello "),
+                SimpleNamespace(type="response.output_text.delta", delta="fallback"),
+                SimpleNamespace(type="response.completed", response=terminal_response),
+            ]
+        )
+
+        mock_client = MagicMock()
+        mock_client.responses.create.return_value = create_stream
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda t: deltas.append(t),
+        )
+        agent.api_mode = "codex_responses"
+        agent.provider = "custom"
+        agent._interrupt_requested = False
+
+        response = agent._run_codex_create_stream_fallback(
+            {
+                "model": "gpt-5.4",
+                "instructions": "You are Hermes.",
+                "input": [{"role": "user", "content": "Ping"}],
+            },
+            client=mock_client,
+        )
+
+        assert create_stream.closed is True
+        assert "".join(deltas) == "Hello fallback"
+        assert response.output[0].content[0].text == "Hello fallback"

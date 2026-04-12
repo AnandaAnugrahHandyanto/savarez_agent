@@ -70,6 +70,27 @@ def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
     return agent
 
 
+def _build_custom_agent(monkeypatch, *, model="gpt-5.4"):
+    _patch_agent_bootstrap(monkeypatch)
+
+    agent = run_agent.AIAgent(
+        model=model,
+        provider="custom",
+        api_mode="codex_responses",
+        base_url="https://relay.example.com/openai",
+        api_key="relay-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    agent._save_session_log = lambda messages: None
+    return agent
+
+
 def _codex_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -187,6 +208,12 @@ def _codex_request_kwargs():
         "tools": None,
         "store": False,
     }
+
+
+def _missing_created_error():
+    return RuntimeError(
+        "Expected to have received response.created before response.in_progress"
+    )
 
 
 def test_api_mode_uses_explicit_provider_when_codex(monkeypatch):
@@ -378,6 +405,67 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_stream_custom_missing_created_retries_then_falls_back(monkeypatch):
+    agent = _build_custom_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.in_progress"),
+            SimpleNamespace(type="response.output_text.delta", delta="custom "),
+            SimpleNamespace(type="response.output_text.delta", delta="fallback"),
+            SimpleNamespace(type="response.completed", response=_codex_message_response("custom fallback")),
+        ]
+    )
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _FakeResponsesStream(final_error=_missing_created_error())
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        assert kwargs.get("stream") is True
+        return create_stream
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=_fake_create,
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert calls["stream"] == 2
+    assert calls["create"] == 1
+    assert create_stream.closed is True
+    assert response.output[0].content[0].text == "custom fallback"
+
+
+def test_run_codex_stream_non_custom_missing_created_raises(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _FakeResponsesStream(final_error=_missing_created_error())
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        return _codex_message_response("should not be used")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=_fake_create,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="response.created"):
+        agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["stream"] == 1
+    assert calls["create"] == 0
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):
