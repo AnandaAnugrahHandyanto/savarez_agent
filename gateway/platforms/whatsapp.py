@@ -78,6 +78,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     cache_image_from_url,
     cache_audio_from_url,
+    cache_video_from_url,
 )
 
 
@@ -861,6 +862,16 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     cached_urls.append(url)
                     media_types.append("video/mp4")
                     print(f"[{self.name}] Using bridge-cached video: {url}", flush=True)
+                elif msg_type == MessageType.VIDEO and url.startswith(("http://", "https://")):
+                    try:
+                        cached_path = await cache_video_from_url(url, ext=".mp4")
+                        cached_urls.append(cached_path)
+                        media_types.append("video/mp4")
+                        print(f"[{self.name}] Cached user video: {cached_path}", flush=True)
+                    except Exception as e:
+                        print(f"[{self.name}] Failed to cache video: {e}", flush=True)
+                        cached_urls.append(url)
+                        media_types.append("video/mp4")
                 else:
                     cached_urls.append(url)
                     media_types.append("unknown")

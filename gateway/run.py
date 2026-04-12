@@ -2797,12 +2797,15 @@ class GatewayRunner:
         if event.media_urls:
             image_paths = []
             audio_paths = []
+            video_paths = []
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
                     image_paths.append(path)
                 if mtype.startswith("audio/") or event.message_type in (MessageType.VOICE, MessageType.AUDIO):
                     audio_paths.append(path)
+                if mtype.startswith("video/") or event.message_type == MessageType.VIDEO:
+                    video_paths.append(path)
 
             if image_paths:
                 message_text = await self._enrich_message_with_vision(
@@ -2843,6 +2846,12 @@ class GatewayRunner:
                             )
                         except Exception:
                             pass
+
+            if video_paths:
+                message_text = await self._enrich_message_with_video(
+                    message_text,
+                    video_paths,
+                )
 
         if event.media_urls and event.message_type == MessageType.DOCUMENT:
             import mimetypes as _mimetypes
@@ -6779,6 +6788,223 @@ class GatewayRunner:
             _placeholder = "(The user sent a message with no text content)"
             if user_text and user_text.strip() == _placeholder:
                 return prefix
+            if user_text:
+                return f"{prefix}\n\n{user_text}"
+            return prefix
+        return user_text
+
+    async def _enrich_message_with_video(
+        self,
+        user_text: str,
+        video_paths: List[str],
+    ) -> str:
+        """
+        Auto-analyze user-attached videos by extracting key frames and audio,
+        then combining vision descriptions and transcription into the message text.
+
+        Args:
+            user_text:   The user's original caption / message text.
+            video_paths: List of local file paths to cached video files.
+
+        Returns:
+            The enriched message string with video descriptions prepended.
+        """
+        from tools.vision_tools import vision_analyze_tool
+        from tools.transcription_tools import transcribe_audio
+        import asyncio
+        import json as _json
+        import tempfile as _tempfile
+        import subprocess as _subprocess
+        import os as _os
+
+        analysis_prompt = (
+            "Describe everything visible in this video frame in thorough detail. "
+            "Include any text, code, data, objects, people, layout, colors, "
+            "and any other notable visual information."
+        )
+
+        enriched_parts = []
+        for video_path in video_paths:
+            tmpdir = None
+            try:
+                tmpdir = _tempfile.mkdtemp(prefix="hermes_video_")
+
+                # --- Probe video duration ---
+                duration = 0.0
+                try:
+                    dur_result = await asyncio.to_thread(
+                        _subprocess.run,
+                        [
+                            "ffprobe", "-v", "error",
+                            "-show_entries", "format=duration",
+                            "-of", "csv=p=0", video_path,
+                        ],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    if dur_result.returncode == 0 and dur_result.stdout.strip():
+                        duration = float(dur_result.stdout.strip())
+                except Exception as e:
+                    logger.warning("Video duration probe failed: %s", e)
+
+                # --- Probe total frames ---
+                total_frames = 0
+                try:
+                    probe_result = await asyncio.to_thread(
+                        _subprocess.run,
+                        [
+                            "ffprobe", "-v", "error", "-count_frames",
+                            "-select_streams", "v:0",
+                            "-show_entries", "stream=nb_read_frames",
+                            "-of", "csv=p=0", video_path,
+                        ],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    if probe_result.returncode == 0 and probe_result.stdout.strip():
+                        total_frames = int(probe_result.stdout.strip())
+                except Exception as e:
+                    logger.warning("Video frame count probe failed: %s", e)
+
+                # --- Extract 4 key frames ---
+                frame_paths = []
+                frame_timestamps = []
+                if total_frames >= 4:
+                    interval = max(total_frames // 4, 1)
+                    try:
+                        await asyncio.to_thread(
+                            _subprocess.run,
+                            [
+                                "ffmpeg", "-y", "-i", video_path,
+                                "-vf", f"select='not(mod(n\\,{interval}))',setpts=N/FRAME_RATE/TB",
+                                "-frames:v", "4", "-q:v", "2",
+                                _os.path.join(tmpdir, "frame_%02d.jpg"),
+                            ],
+                            capture_output=True, timeout=120,
+                        )
+                    except Exception as e:
+                        logger.warning("Frame extraction (filter) failed: %s", e)
+
+                    for idx in range(1, 5):
+                        fp = _os.path.join(tmpdir, f"frame_{idx:02d}.jpg")
+                        if _os.path.isfile(fp) and _os.path.getsize(fp) > 0:
+                            frame_paths.append(fp)
+                            ts = duration * (idx - 1) / 4 if duration > 0 else 0
+                            frame_timestamps.append(ts)
+
+                # Fallback: time-based extraction at 0%, 25%, 50%, 75%
+                if len(frame_paths) < 2:
+                    frame_paths = []
+                    frame_timestamps = []
+                    if duration <= 0:
+                        duration = 10.0  # guess a default
+                    percentages = [0.0, 0.25, 0.50, 0.75]
+                    for i, pct in enumerate(percentages):
+                        ts = duration * pct
+                        fp = _os.path.join(tmpdir, f"fallback_{i:02d}.jpg")
+                        try:
+                            await asyncio.to_thread(
+                                _subprocess.run,
+                                [
+                                    "ffmpeg", "-y", "-ss", str(ts),
+                                    "-i", video_path,
+                                    "-frames:v", "1", "-q:v", "2", fp,
+                                ],
+                                capture_output=True, timeout=30,
+                            )
+                            if _os.path.isfile(fp) and _os.path.getsize(fp) > 0:
+                                frame_paths.append(fp)
+                                frame_timestamps.append(ts)
+                        except Exception as e:
+                            logger.warning("Fallback frame extraction at %.1fs failed: %s", ts, e)
+
+                # --- Extract audio ---
+                audio_wav = _os.path.join(tmpdir, "audio.wav")
+                try:
+                    await asyncio.to_thread(
+                        _subprocess.run,
+                        [
+                            "ffmpeg", "-y", "-i", video_path,
+                            "-vn", "-acodec", "pcm_s16le", "-ar", "16000",
+                            audio_wav,
+                        ],
+                        capture_output=True, timeout=120,
+                    )
+                except Exception as e:
+                    logger.warning("Video audio extraction failed: %s", e)
+                    audio_wav = None
+
+                if audio_wav and not (_os.path.isfile(audio_wav) and _os.path.getsize(audio_wav) > 0):
+                    audio_wav = None
+
+                # --- Analyze frames with vision ---
+                def _fmt_ts(seconds: float) -> str:
+                    m, s = divmod(int(seconds), 60)
+                    return f"{m}:{s:02d}"
+
+                frame_descriptions = []
+                for i, fp in enumerate(frame_paths):
+                    ts_label = _fmt_ts(frame_timestamps[i]) if i < len(frame_timestamps) else "?"
+                    try:
+                        result_json = await vision_analyze_tool(
+                            image_url=fp,
+                            user_prompt=analysis_prompt,
+                        )
+                        result = _json.loads(result_json)
+                        if result.get("success"):
+                            desc = result.get("analysis", "(no description)")
+                        else:
+                            desc = "(could not analyze this frame)"
+                    except Exception as e:
+                        logger.error("Vision analysis on video frame failed: %s", e)
+                        desc = "(analysis error)"
+                    frame_descriptions.append(f"Frame {i + 1} ({ts_label}): {desc}")
+
+                # --- Transcribe audio ---
+                transcript = None
+                if audio_wav:
+                    try:
+                        stt_result = await asyncio.to_thread(transcribe_audio, audio_wav)
+                        if stt_result.get("success"):
+                            transcript = stt_result.get("transcript", "")
+                        else:
+                            logger.warning("Video audio transcription failed: %s", stt_result.get("error"))
+                    except Exception as e:
+                        logger.error("Video audio transcription error: %s", e)
+
+                # --- Build description block ---
+                block_parts = ["[The user sent a video. Here's what I observed:"]
+                if frame_descriptions:
+                    block_parts.append("")
+                    block_parts.append("Visual summary:")
+                    for fd in frame_descriptions:
+                        block_parts.append(fd)
+
+                if transcript:
+                    block_parts.append("")
+                    block_parts.append(f'Audio transcript: "{transcript}"')
+                elif audio_wav is None:
+                    block_parts.append("")
+                    block_parts.append("Audio: (no audio track detected)")
+
+                block_parts.append("]")
+                block_parts.append(f"[The original video file is at: {video_path}]")
+                enriched_parts.append("\n".join(block_parts))
+
+            except Exception as e:
+                logger.error("Video enrichment error for %s: %s", video_path, e)
+                enriched_parts.append(
+                    f"[The user sent a video but something went wrong during analysis. "
+                    f"The original video file is at: {video_path}]"
+                )
+            finally:
+                if tmpdir:
+                    try:
+                        import shutil as _shutil
+                        _shutil.rmtree(tmpdir, ignore_errors=True)
+                    except Exception:
+                        pass
+
+        if enriched_parts:
+            prefix = "\n\n".join(enriched_parts)
             if user_text:
                 return f"{prefix}\n\n{user_text}"
             return prefix
