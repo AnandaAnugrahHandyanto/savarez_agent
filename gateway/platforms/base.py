@@ -922,6 +922,28 @@ class BasePlatformAdapter(ABC):
         """
         pass
 
+    async def send_chunks(
+        self,
+        chat_id: str,
+        chunks: list[str],
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a pre-split list of message chunks without further splitting.
+
+        The default implementation calls send() for each chunk.
+        Platforms that do their own splitting (like Weixin) should override
+        this to send each chunk directly, bypassing re-splitting.
+        """
+        last_message_id = None
+        for chunk in chunks:
+            result = await self.send(chat_id=chat_id, content=chunk, reply_to=reply_to, metadata=metadata)
+            if result.success and result.message_id:
+                last_message_id = result.message_id
+            else:
+                return SendResult(success=False, error=result.error or "Chunk send failed")
+        return SendResult(success=True, message_id=last_message_id)
+
     async def edit_message(
         self,
         chat_id: str,

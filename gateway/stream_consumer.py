@@ -202,24 +202,34 @@ class GatewayStreamConsumer:
                             self._fallback_prefix = ""
                         continue
 
-                    # Existing message: edit it with the first chunk, then
-                    # start a new message for the overflow remainder.
+                    # Existing message: when accumulated text exceeds the platform
+                    # limit, use truncate_message to split with proper (N/M)
+                    # indicators instead of blunt character truncation.
                     while (
                         len(self._accumulated) > _safe_limit
                         and self._message_id is not None
                         and self._edit_supported
                     ):
+                        chunks = self.adapter.truncate_message(
+                            self._accumulated, _safe_limit
+                        )
+                        # truncate_message returns properly chunked text with (N/M)
+                        # indicators. If multiple chunks, send as new messages.
+                        if len(chunks) > 1:
+                            for chunk in chunks:
+                                await self._send_new_chunk(chunk, None)
+                            self._accumulated = ""
+                            self._message_id = None
+                            self._last_sent_text = ""
+                            self._last_edit_time = time.monotonic()
+                            break
+                        # Single chunk from truncate_message — use existing edit path.
                         split_at = self._accumulated.rfind("\n", 0, _safe_limit)
                         if split_at < _safe_limit // 2:
                             split_at = _safe_limit
                         chunk = self._accumulated[:split_at]
                         ok = await self._send_or_edit(chunk)
                         if self._fallback_final_send or not ok:
-                            # Edit failed (or backed off due to flood control)
-                            # while attempting to split an oversized message.
-                            # Keep the full accumulated text intact so the
-                            # fallback final-send path can deliver the remaining
-                            # continuation without dropping content.
                             break
                         self._accumulated = self._accumulated[split_at:].lstrip("\n")
                         self._message_id = None
@@ -318,9 +328,11 @@ class GatewayStreamConsumer:
             return reply_to_id
         try:
             meta = dict(self.metadata) if self.metadata else {}
-            result = await self.adapter.send(
+            # Use send_chunks to avoid double-splitting on platforms that do
+            # their own chunking (e.g. Weixin send() calls _split_text internally).
+            result = await self.adapter.send_chunks(
                 chat_id=self.chat_id,
-                content=text,
+                chunks=[text],
                 reply_to=reply_to_id,
                 metadata=meta,
             )

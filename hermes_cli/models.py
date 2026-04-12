@@ -267,6 +267,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # or https://dashscope-intl.aliyuncs.com/apps/anthropic (Anthropic-compat).
     "alibaba": [
         "qwen3.5-plus",
+        "qwen3.6-plus",
         "qwen3-coder-plus",
         "qwen3-coder-next",
         # Third-party models available on coding-intl

@@ -1397,6 +1397,43 @@ class WeixinAdapter(BasePlatformAdapter):
         assert last_error is not None
         raise last_error
 
+    async def send_chunks(
+        self,
+        chat_id: str,
+        chunks: list[str],
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a pre-split list of message chunks without further splitting.
+
+        Used by the stream consumer when content has already been chunked
+        by truncate_message with (N/M) indicators.  Bypasses _split_text()
+        to avoid double-splitting.
+        """
+        if not self._session or not self._token:
+            return SendResult(success=False, error="Not connected")
+        context_token = self._token_store.get(self._account_id, chat_id)
+        last_message_id: Optional[str] = None
+        try:
+            for idx, chunk in enumerate(chunks):
+                chunk = chunk.strip()
+                if not chunk:
+                    continue
+                client_id = f"hermes-weixin-{uuid.uuid4().hex}"
+                await self._send_text_chunk(
+                    chat_id=chat_id,
+                    chunk=chunk,
+                    context_token=context_token,
+                    client_id=client_id,
+                )
+                last_message_id = client_id
+                if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
+                    await asyncio.sleep(self._send_chunk_delay_seconds)
+            return SendResult(success=True, message_id=last_message_id)
+        except Exception as exc:
+            logger.error("[%s] send_chunks failed to=%s: %s", self.name, _safe_id(chat_id), exc)
+            return SendResult(success=False, error=str(exc))
+
     async def send(
         self,
         chat_id: str,

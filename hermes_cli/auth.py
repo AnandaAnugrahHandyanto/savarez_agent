@@ -219,7 +219,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="OpenCode Zen",
         auth_type="api_key",
         inference_base_url="https://opencode.ai/zen/v1",
-        api_key_env_vars=("OPENCODE_ZEN_API_KEY",),
+        api_key_env_vars=("OPENCODE_ZEN_API_KEY", "OPENCODE_API_KEY"),
         base_url_env_var="OPENCODE_ZEN_BASE_URL",
     ),
     "opencode-go": ProviderConfig(
@@ -231,7 +231,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         # - MiniMax models use Anthropic Messages under /v1/messages
         # Keep the provider base at /v1 and select api_mode per-model.
         inference_base_url="https://opencode.ai/zen/go/v1",
-        api_key_env_vars=("OPENCODE_GO_API_KEY",),
+        api_key_env_vars=("OPENCODE_GO_API_KEY", "OPENCODE_API_KEY"),
         base_url_env_var="OPENCODE_GO_BASE_URL",
     ),
     "kilocode": ProviderConfig(

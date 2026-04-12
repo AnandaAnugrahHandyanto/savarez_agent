@@ -68,6 +68,68 @@ def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypat
     assert models == ["gpt-5.2-codex", "gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex", "gpt-5.3-codex-spark"]
 
 
+def test_model_picker_uses_codex_discovery_catalog(monkeypatch):
+    from hermes_cli.model_switch import list_authenticated_providers
+
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(
+        "hermes_cli.auth._load_auth_store",
+        lambda: {"providers": {"openai-codex": {"tokens": {"access_token": "token"}}}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.get_codex_model_ids",
+        lambda access_token=None: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
+    )
+
+    providers = list_authenticated_providers(max_models=50)
+    codex = next(p for p in providers if p["slug"] == "openai-codex")
+
+    assert codex["models"] == ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"]
+    assert codex["total_models"] == 3
+
+
+def test_model_picker_detects_opencode_go_specific_env(monkeypatch):
+    from hermes_cli.model_switch import list_authenticated_providers
+
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {"opencode-go": {"name": "OpenCode Go", "env": ["OPENCODE_API_KEY"]}},
+    )
+    monkeypatch.setattr(
+        "agent.models_dev.list_agentic_models",
+        lambda provider: ["minimax-m2.7", "kimi-k2.5"] if provider == "opencode-go" else [],
+    )
+
+    providers = list_authenticated_providers(max_models=50)
+    opencode_go = next(p for p in providers if p["slug"] == "opencode-go")
+
+    assert opencode_go["models"] == ["minimax-m2.7", "kimi-k2.5"]
+    assert opencode_go["total_models"] == 2
+
+
+def test_model_picker_prefers_dynamic_alibaba_catalog(monkeypatch):
+    from hermes_cli.model_switch import list_authenticated_providers
+
+    dynamic_models = [f"qwen-dynamic-{idx}" for idx in range(10)]
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-dashscope-key")
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {"alibaba": {"name": "Alibaba", "env": ["DASHSCOPE_API_KEY"]}},
+    )
+    monkeypatch.setattr(
+        "agent.models_dev.list_agentic_models",
+        lambda provider: dynamic_models if provider == "alibaba" else [],
+    )
+
+    providers = list_authenticated_providers(max_models=50)
+    alibaba = next(p for p in providers if p["slug"] == "alibaba")
+
+    assert alibaba["models"] == dynamic_models
+    assert alibaba["total_models"] == len(dynamic_models)
+
+
 def test_model_command_uses_runtime_access_token_for_codex_list(monkeypatch):
     from hermes_cli.main import _model_flow_openai_codex
 
