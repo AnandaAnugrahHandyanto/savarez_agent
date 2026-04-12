@@ -753,7 +753,7 @@ def _remap_path_for_user(path: str, target_home_dir: str) -> str:
       /opt/hermes                 -> /opt/hermes  (kept as-is)
     """
     current_home = Path.home().resolve()
-    resolved = Path(path).resolve()
+    resolved = Path(path).absolute()
     try:
         relative = resolved.relative_to(current_home)
         return str(Path(target_home_dir) / relative)
