@@ -72,6 +72,7 @@ EMAIL_IMAP_PORT=993                    # Default: 993 (IMAP SSL)
 EMAIL_SMTP_PORT=587                    # Default: 587 (SMTP STARTTLS)
 EMAIL_POLL_INTERVAL=15                 # Seconds between inbox checks (default: 15)
 EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
+# EMAIL_INSECURE_TRUST_FROM_HEADER=true # Trust raw From: header even without SPF/DKIM/DMARC (unsafe)
 ```
 
 ---
@@ -135,14 +136,15 @@ When enabled, attachment and inline parts are skipped before payload decoding. T
 
 ## Access Control
 
-Email access follows the same pattern as all other Hermes platforms:
+Email access follows the same pattern as all other Hermes platforms, with one important extra rule:
 
-1. **`EMAIL_ALLOWED_USERS` set** → only emails from those addresses are processed
+1. **`EMAIL_ALLOWED_USERS` set** → only emails from those addresses are processed, and the message must also include trusted SPF/DKIM/DMARC results via `Authentication-Results` (or equivalent) headers
 2. **No allowlist set** → unknown senders get a pairing code
 3. **`EMAIL_ALLOW_ALL_USERS=true`** → any sender is accepted (use with caution)
+4. **`EMAIL_INSECURE_TRUST_FROM_HEADER=true`** → restores the old behavior of trusting the raw `From:` header even without server-side auth results (**not recommended**)
 
 :::warning
-**Always configure `EMAIL_ALLOWED_USERS`.** Without it, anyone who knows the agent's email address could send commands. The agent has terminal access by default.
+**Always configure `EMAIL_ALLOWED_USERS` when your mail provider preserves authentication results.** Without it, anyone who knows the agent's email address could send commands. The agent has terminal access by default.
 :::
 
 ---
@@ -153,7 +155,7 @@ Email access follows the same pattern as all other Hermes platforms:
 |---------|----------|
 | **"IMAP connection failed"** at startup | Verify `EMAIL_IMAP_HOST` and `EMAIL_IMAP_PORT`. Ensure IMAP is enabled on the account. For Gmail, enable it in Settings → Forwarding and POP/IMAP. |
 | **"SMTP connection failed"** at startup | Verify `EMAIL_SMTP_HOST` and `EMAIL_SMTP_PORT`. Check that your password is correct (use App Password for Gmail). |
-| **Messages not received** | Check `EMAIL_ALLOWED_USERS` includes the sender's email. Check spam folder — some providers flag automated replies. |
+| **Messages not received** | Check `EMAIL_ALLOWED_USERS` includes the sender's email and that your provider preserves `Authentication-Results` headers for SPF/DKIM/DMARC. Check spam folder — some providers flag automated replies. |
 | **"Authentication failed"** | For Gmail, you must use an App Password, not your regular password. Ensure 2FA is enabled first. |
 | **Duplicate replies** | Ensure only one gateway instance is running. Check `hermes gateway status`. |
 | **Slow response** | The default poll interval is 15 seconds. Reduce with `EMAIL_POLL_INTERVAL=5` for faster response (but more IMAP connections). |
@@ -169,6 +171,8 @@ Email access follows the same pattern as all other Hermes platforms:
 
 - Use **App Passwords** instead of your main password (required for Gmail with 2FA)
 - Set `EMAIL_ALLOWED_USERS` to restrict who can interact with the agent
+- Prefer providers that preserve `Authentication-Results` headers so Hermes can reject spoofed `From:` addresses
+- Avoid `EMAIL_INSECURE_TRUST_FROM_HEADER=true` unless all inbound mail is rewritten by a trusted internal mail gateway
 - The password is stored in `~/.hermes/.env` — protect this file (`chmod 600`)
 - IMAP uses SSL (port 993) and SMTP uses STARTTLS (port 587) by default — connections are encrypted
 
@@ -185,6 +189,7 @@ Email access follows the same pattern as all other Hermes platforms:
 | `EMAIL_IMAP_PORT` | No | `993` | IMAP server port |
 | `EMAIL_SMTP_PORT` | No | `587` | SMTP server port |
 | `EMAIL_POLL_INTERVAL` | No | `15` | Seconds between inbox checks |
-| `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
+| `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses. Requires trusted auth headers for spoof-resistant enforcement |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |
+| `EMAIL_INSECURE_TRUST_FROM_HEADER` | No | `false` | Trust raw `From:` headers even without SPF/DKIM/DMARC results (unsafe; compatibility only) |
