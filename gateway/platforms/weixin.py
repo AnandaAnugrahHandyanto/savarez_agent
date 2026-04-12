@@ -433,12 +433,7 @@ async def _send_message(
     text: str,
     context_token: Optional[str],
     client_id: str,
-) -> Dict[str, Any]:
-    """Send a text message via iLink sendmessage API.
-
-    Returns the raw API response dict (may contain error codes like
-    ``errcode: -14`` for session expiry that the caller can inspect).
-    """
+) -> None:
     if not text or not text.strip():
         raise ValueError("_send_message: text must not be empty")
     message: Dict[str, Any] = {
@@ -718,8 +713,8 @@ def _normalize_markdown_blocks(content: str) -> str:
                 result.append("")
             continue
 
-        blank_run = 0
-        result.append(line)
+        result.append(_MARKDOWN_LINK_RE.sub(r"\1 (\2)", _rewrite_headers_for_weixin(line)))
+        i += 1
 
     return "\n".join(result).strip()
 
@@ -1127,6 +1122,10 @@ class WeixinAdapter(BasePlatformAdapter):
     """Native Hermes adapter for Weixin personal accounts."""
 
     MAX_MESSAGE_LENGTH = 2000
+
+    # WeChat does not support editing sent messages — streaming must use the
+    # fallback "send-final-only" path so the cursor (▉) is never left visible.
+    SUPPORTS_MESSAGE_EDITING = False
 
     # WeChat does not support editing sent messages — streaming must use the
     # fallback "send-final-only" path so the cursor (▉) is never left visible.
@@ -1636,22 +1635,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 await self.send_document(chat_id=chat_id, file_path=path, metadata=metadata)
 
         try:
-            # Deliver extracted MEDIA: attachments first.
-            for media_path, is_voice in media_files:
-                try:
-                    await _deliver_media(media_path, is_voice)
-                except Exception as exc:
-                    logger.warning("[%s] media delivery failed for %s: %s", self.name, media_path, exc)
-
-            # Deliver bare local file paths.
-            for file_path in local_files:
-                try:
-                    await _deliver_media(file_path, is_voice=False)
-                except Exception as exc:
-                    logger.warning("[%s] local file delivery failed for %s: %s", self.name, file_path, exc)
-
-            # Deliver text content.
-            chunks = [c for c in self._split_text(self.format_message(final_content)) if c and c.strip()]
+            chunks = [c for c in self._split_text(self.format_message(content)) if c and c.strip()]
             for idx, chunk in enumerate(chunks):
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"
                 await self._send_text_chunk(
@@ -1774,7 +1758,7 @@ class WeixinAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        if not self._send_session or not self._token:
+        if not self._session or not self._token:
             return SendResult(success=False, error="Not connected")
         try:
             message_id = await self._send_file(chat_id, video_path, caption or "")
@@ -1791,24 +1775,7 @@ class WeixinAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        if not self._send_session or not self._token:
-            return SendResult(success=False, error="Not connected")
-
-        # Native outbound Weixin voice bubbles are not proven-working in the
-        # upstream reference implementation. Prefer a reliable file attachment
-        # fallback so users at least receive playable audio, even for .silk.
-        fallback_caption = caption or "[voice message as attachment]"
-        try:
-            message_id = await self._send_file(
-                chat_id,
-                audio_path,
-                fallback_caption,
-                force_file_attachment=True,
-            )
-            return SendResult(success=True, message_id=message_id)
-        except Exception as exc:
-            logger.error("[%s] send_voice failed to=%s: %s", self.name, _safe_id(chat_id), exc)
-            return SendResult(success=False, error=str(exc))
+        return await self.send_document(chat_id, audio_path, caption=caption or "", metadata=metadata)
 
     async def _download_remote_media(self, url: str) -> str:
         from tools.url_safety import is_safe_url
@@ -1866,9 +1833,23 @@ class WeixinAdapter(BasePlatformAdapter):
             raise RuntimeError(f"getUploadUrl returned neither upload_param nor upload_full_url: {upload_response}")
 
         encrypted_query_param = await _upload_ciphertext(
-            self._send_session,
+            self._session,
             ciphertext=ciphertext,
             upload_url=upload_url,
+        )
+
+        context_token = self._token_store.get(self._account_id, chat_id)
+        # The iLink API expects aes_key as base64(hex_string), not base64(raw_bytes).
+        # Sending base64(raw_bytes) causes images to show as grey boxes on the
+        # receiver side because the decryption key doesn't match.
+        aes_key_for_api = base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii")
+        media_item = item_builder(
+            encrypt_query_param=encrypted_query_param,
+            aes_key_for_api=aes_key_for_api,
+            ciphertext_size=len(ciphertext),
+            plaintext_size=rawsize,
+            filename=Path(path).name,
+            rawfilemd5=rawfilemd5,
         )
         context_token = self._token_store.get(self._account_id, chat_id)
         # The iLink API expects aes_key as base64(hex_string), not base64(raw_bytes).
@@ -1951,7 +1932,7 @@ class WeixinAdapter(BasePlatformAdapter):
                     "video_md5": kw.get("rawfilemd5", ""),
                 },
             }
-        if path.endswith(".silk") and not force_file_attachment:
+        if mime.startswith("audio/") or path.endswith(".silk"):
             return MEDIA_VOICE, lambda **kw: {
                 "type": ITEM_VOICE,
                 "voice_item": {
@@ -1960,23 +1941,7 @@ class WeixinAdapter(BasePlatformAdapter):
                         "aes_key": kw["aes_key_for_api"],
                         "encrypt_type": 1,
                     },
-                    "encode_type": kw.get("encode_type"),
-                    "bits_per_sample": kw.get("bits_per_sample"),
-                    "sample_rate": kw.get("sample_rate"),
                     "playtime": kw.get("playtime", 0),
-                },
-            }
-        if mime.startswith("audio/"):
-            return MEDIA_FILE, lambda **kw: {
-                "type": ITEM_FILE,
-                "file_item": {
-                    "media": {
-                        "encrypt_query_param": kw["encrypt_query_param"],
-                        "aes_key": kw["aes_key_for_api"],
-                        "encrypt_type": 1,
-                    },
-                    "file_name": kw["filename"],
-                    "len": str(kw["plaintext_size"]),
                 },
             }
         return MEDIA_FILE, lambda **kw: {
