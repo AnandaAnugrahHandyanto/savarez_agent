@@ -190,10 +190,10 @@ class TestCommandBypassActiveSession:
         command_text,
         expected_command,
     ):
-        """Session-terminating commands must cancel the active task before bypassing.
+        """Session-terminating commands must cancel the active task after dispatch.
 
         Without this, the adapter-level session guard can survive a /new or /stop,
-        causing the next /model or plain-text message to queue behind a stale task.
+        causing the next /model or plain-text message to queue behind stale work.
         """
         adapter = _make_adapter()
         sk = _session_key()
@@ -245,6 +245,68 @@ class TestCommandBypassActiveSession:
         assert any("handled:model" in r for r in adapter.sent_responses), (
             f"follow-up /model stayed blocked after {command_text}"
         )
+        assert sk not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_new_keeps_guard_until_command_finishes_and_then_runs_follow_up(self):
+        """/new must finish runner logic before cancelling old work or releasing the guard."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        processing_started = asyncio.Event()
+        command_started = asyncio.Event()
+        allow_command_finish = asyncio.Event()
+        follow_up_processed = asyncio.Event()
+        call_order = []
+
+        async def _handler(event):
+            cmd = event.get_command()
+            if cmd == "new":
+                call_order.append("command:start")
+                command_started.set()
+                await allow_command_finish.wait()
+                call_order.append("command:end")
+                return "handled:new"
+
+            if event.text == "hello world":
+                processing_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    call_order.append("original:cancelled")
+                    raise
+
+            if event.text == "after reset":
+                call_order.append("followup:processed")
+                follow_up_processed.set()
+            return f"handled:text:{event.text}"
+
+        adapter._message_handler = _handler
+
+        await adapter.handle_message(_make_event("hello world"))
+        await processing_started.wait()
+
+        command_task = asyncio.create_task(adapter.handle_message(_make_event("/new")))
+        await command_started.wait()
+        await asyncio.sleep(0)
+
+        assert sk in adapter._active_sessions
+
+        await adapter.handle_message(_make_event("after reset"))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert sk in adapter._active_sessions, "guard must stay active while /new is still running"
+        assert sk in adapter._pending_messages, "follow-up should stay queued until /new finishes"
+        assert not follow_up_processed.is_set(), "follow-up ran before /new completed"
+        assert "original:cancelled" not in call_order, "old task was cancelled before runner completed /new"
+
+        allow_command_finish.set()
+        await command_task
+        await asyncio.wait_for(follow_up_processed.wait(), timeout=1.0)
+
+        assert any("handled:new" in r for r in adapter.sent_responses)
+        assert call_order.index("command:end") < call_order.index("original:cancelled")
+        assert call_order.index("original:cancelled") < call_order.index("followup:processed")
         assert sk not in adapter._pending_messages
 
 
