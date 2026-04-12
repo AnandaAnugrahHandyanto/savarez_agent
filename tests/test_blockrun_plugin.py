@@ -258,9 +258,10 @@ class TestClientFactory(unittest.TestCase):
 # Group 7: Provider resolver
 # ─────────────────────────────────────────────────────────────────────────────
 
+@patch("plugins.providers.blockrun.provider._detect_clawrouter_url", return_value=None)
 class TestProviderResolver(unittest.TestCase):
 
-    def test_resolve_base(self):
+    def test_resolve_base(self, _mock_claw):
         from plugins.providers.blockrun.provider import resolve_blockrun_provider, BLOCKRUN_BASE_URL
         result = resolve_blockrun_provider(
             explicit_api_key=_TEST_ETH_KEY,
@@ -274,7 +275,7 @@ class TestProviderResolver(unittest.TestCase):
         self.assertIn("blockrun_client_factory", result)
         self.assertIn("blockrun_async_client_factory", result)
 
-    def test_resolve_solana(self):
+    def test_resolve_solana(self, _mock_claw):
         from plugins.providers.blockrun.provider import resolve_blockrun_provider, BLOCKRUN_SOLANA_URL
         result = resolve_blockrun_provider(
             explicit_api_key=_fresh_solana_key(),
@@ -284,7 +285,7 @@ class TestProviderResolver(unittest.TestCase):
         self.assertEqual(result["blockrun_chain"], "solana")
         self.assertEqual(result["base_url"], BLOCKRUN_SOLANA_URL)
 
-    def test_resolve_testnet(self):
+    def test_resolve_testnet(self, _mock_claw):
         from plugins.providers.blockrun.provider import resolve_blockrun_provider, BLOCKRUN_BASE_TESTNET
         with patch.dict(os.environ, {"NETWORK_MODE": "testnet"}):
             result = resolve_blockrun_provider(
@@ -294,7 +295,7 @@ class TestProviderResolver(unittest.TestCase):
             )
         self.assertEqual(result["base_url"], BLOCKRUN_BASE_TESTNET)
 
-    def test_resolve_explicit_base_url_wins(self):
+    def test_resolve_explicit_base_url_wins(self, _mock_claw):
         from plugins.providers.blockrun.provider import resolve_blockrun_provider
         result = resolve_blockrun_provider(
             explicit_api_key=_TEST_ETH_KEY,
@@ -303,7 +304,7 @@ class TestProviderResolver(unittest.TestCase):
         )
         self.assertEqual(result["base_url"], "https://custom.blockrun.ai/api/v1")
 
-    def test_resolve_no_key_raises_value_error(self):
+    def test_resolve_no_key_raises_value_error(self, _mock_claw):
         from plugins.providers.blockrun.provider import resolve_blockrun_provider
         env = {k: "" for k in ("BLOCKRUN_WALLET_KEY", "BASE_CHAIN_WALLET_KEY")}
         with patch.dict(os.environ, env):
@@ -319,7 +320,7 @@ class TestProviderResolver(unittest.TestCase):
                     )
         self.assertIn("BLOCKRUN_WALLET_KEY", str(ctx.exception))
 
-    def test_client_factory_callable(self):
+    def test_client_factory_callable(self, _mock_claw):
         from plugins.providers.blockrun.provider import resolve_blockrun_provider
         import openai
         result = resolve_blockrun_provider(
