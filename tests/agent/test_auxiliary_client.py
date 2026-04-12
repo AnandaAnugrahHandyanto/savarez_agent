@@ -10,6 +10,7 @@ import pytest
 
 from agent.auxiliary_client import (
     get_text_auxiliary_client,
+    get_vision_auxiliary_client,
     get_available_vision_backends,
     resolve_vision_provider_client,
     resolve_provider_client,
@@ -91,12 +92,48 @@ class TestReadCodexAccessToken:
 
         assert result == valid_jwt
 
+    def test_explicit_auth_store_takes_priority_over_pool(self):
+        with (
+            patch("hermes_cli.auth._read_codex_tokens", return_value={
+                "tokens": {"access_token": "explicit-auth-token", "refresh_token": "refresh"}
+            }),
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, object())),
+            patch("agent.auxiliary_client._pool_runtime_api_key", return_value="pooled-codex-token"),
+        ):
+            result = _read_codex_access_token()
+
+        assert result == "explicit-auth-token"
+
+    def test_missing_auth_store_falls_back_to_pool(self):
+        with (
+            patch("hermes_cli.auth._read_codex_tokens", side_effect=RuntimeError("no auth store token")),
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, object())),
+            patch("agent.auxiliary_client._pool_runtime_api_key", return_value="pooled-codex-token"),
+        ):
+            result = _read_codex_access_token()
+
+        assert result == "pooled-codex-token"
+
+    def test_expired_explicit_auth_store_token_skips_pool(self):
+        expired_jwt = "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjF9.sig"
+        with (
+            patch("hermes_cli.auth._read_codex_tokens", return_value={
+                "tokens": {"access_token": expired_jwt, "refresh_token": "refresh"}
+            }),
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, object())),
+            patch("agent.auxiliary_client._pool_runtime_api_key", return_value="pooled-codex-token"),
+        ):
+            result = _read_codex_access_token()
+
+        assert result is None
+
     def test_missing_returns_none(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir(parents=True, exist_ok=True)
         (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        result = _read_codex_access_token()
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            result = _read_codex_access_token()
         assert result is None
 
     def test_empty_token_returns_none(self, tmp_path, monkeypatch):
@@ -114,19 +151,26 @@ class TestReadCodexAccessToken:
         result = _read_codex_access_token()
         assert result is None
 
-    def test_malformed_json_returns_none(self, tmp_path):
-        codex_dir = tmp_path / ".codex"
-        codex_dir.mkdir()
-        (codex_dir / "auth.json").write_text("{bad json")
-        with patch("agent.auxiliary_client.Path.home", return_value=tmp_path):
+    def test_malformed_auth_store_falls_back_to_pool(self):
+        with (
+            patch("hermes_cli.auth._read_codex_tokens", side_effect=ValueError("bad auth")),
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, object())),
+            patch("agent.auxiliary_client._pool_runtime_api_key", return_value="pooled-codex-token"),
+        ):
             result = _read_codex_access_token()
-        assert result is None
+        assert result == "pooled-codex-token"
 
-    def test_missing_tokens_key_returns_none(self, tmp_path):
-        codex_dir = tmp_path / ".codex"
-        codex_dir.mkdir()
-        (codex_dir / "auth.json").write_text(json.dumps({"other": "data"}))
-        with patch("agent.auxiliary_client.Path.home", return_value=tmp_path):
+    def test_missing_tokens_key_returns_none(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {
+                "openai-codex": {"other": "data"},
+            },
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             result = _read_codex_access_token()
         assert result is None
 
@@ -623,7 +667,7 @@ class TestGetTextAuxiliaryClient:
         from agent.auxiliary_client import CodexAuxiliaryClient
         assert isinstance(client, CodexAuxiliaryClient)
 
-    def test_codex_pool_entry_takes_priority_over_auth_store(self):
+    def test_codex_auth_store_takes_priority_over_pool_entry(self):
         class _Entry:
             access_token = "pooled-codex-token"
             base_url = "https://chatgpt.com/backend-api/codex"
@@ -637,8 +681,10 @@ class TestGetTextAuxiliaryClient:
 
         with (
             patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
-            patch("agent.auxiliary_client.OpenAI"),
-            patch("hermes_cli.auth._read_codex_tokens", side_effect=AssertionError("legacy codex store should not run")),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            patch("hermes_cli.auth._read_codex_tokens", return_value={
+                "tokens": {"access_token": "explicit-auth-token", "refresh_token": "refresh"}
+            }),
         ):
             from agent.auxiliary_client import _try_codex
 
@@ -648,6 +694,7 @@ class TestGetTextAuxiliaryClient:
 
         assert isinstance(client, CodexAuxiliaryClient)
         assert model == "gpt-5.2-codex"
+        assert mock_openai.call_args.kwargs["api_key"] == "explicit-auth-token"
 
     def test_returns_none_when_nothing_available(self, monkeypatch):
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
@@ -655,6 +702,7 @@ class TestGetTextAuxiliaryClient:
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
+             patch("agent.auxiliary_client._resolve_custom_runtime", return_value=(None, None, None)), \
              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
             client, model = get_text_auxiliary_client()
         assert client is None

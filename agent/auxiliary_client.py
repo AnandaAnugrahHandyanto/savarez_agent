@@ -638,44 +638,36 @@ def _nous_base_url() -> str:
 def _read_codex_access_token() -> Optional[str]:
     """Read a valid, non-expired Codex OAuth access token from Hermes auth store.
 
-    If a credential pool exists but currently has no selectable runtime entry
-    (for example all pool slots are marked exhausted), fall back to the
-    profile's auth.json token instead of hard-failing. This keeps explicit
-    fallback-to-Codex working when the pool state is stale but the stored OAuth
-    token is still valid.
-    """
-    pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        token = _pool_runtime_api_key(entry)
-        if token:
-            return token
+    Prefer the explicit auth store for the active HERMES_HOME so auxiliary
+    fallback respects the current profile even when a credential pool was
+    seeded from another source. Only fall back to the credential pool when the
+    active auth store has no usable Codex token at all.
 
+    If the explicit auth store contains an expired JWT, return ``None`` so the
+    auxiliary auto chain can continue to the next provider instead of reviving
+    Codex from a stale pool entry.
+    """
     try:
-        from hermes_cli.auth import _read_codex_tokens
+        from hermes_cli.auth import _codex_access_token_is_expiring, _read_codex_tokens
         data = _read_codex_tokens()
         tokens = data.get("tokens", {})
         access_token = tokens.get("access_token")
         if not isinstance(access_token, str) or not access_token.strip():
             return None
-
-        # Check JWT expiry — expired tokens block the auto chain and
-        # prevent fallback to working providers (e.g. Anthropic).
-        try:
-            import base64
-            payload = access_token.split(".")[1]
-            payload += "=" * (-len(payload) % 4)
-            claims = json.loads(base64.urlsafe_b64decode(payload))
-            exp = claims.get("exp", 0)
-            if exp and time.time() > exp:
-                logger.debug("Codex access token expired (exp=%s), skipping", exp)
-                return None
-        except Exception:
-            pass  # Non-JWT token or decode error — use as-is
-
-        return access_token.strip()
+        access_token = access_token.strip()
+        if _codex_access_token_is_expiring(access_token, 0):
+            logger.debug("Codex access token expired in active auth store, skipping auxiliary Codex fallback")
+            return None
+        return access_token
     except Exception as exc:
         logger.debug("Could not read Codex auth for auxiliary client: %s", exc)
-        return None
+
+    pool_present, entry = _select_pool_entry("openai-codex")
+    if pool_present:
+        token = _pool_runtime_api_key(entry)
+        if token:
+            return token
+    return None
 
 
 def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
@@ -943,20 +935,14 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
+    codex_token = _read_codex_access_token()
+    if not codex_token:
+        return None, None
+
     pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        codex_token = _pool_runtime_api_key(entry)
-        if codex_token:
-            base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
-        else:
-            codex_token = _read_codex_access_token()
-            if not codex_token:
-                return None, None
-            base_url = _CODEX_AUX_BASE_URL
+    if pool_present and _pool_runtime_api_key(entry) == codex_token:
+        base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
     else:
-        codex_token = _read_codex_access_token()
-        if not codex_token:
-            return None, None
         base_url = _CODEX_AUX_BASE_URL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", _CODEX_AUX_MODEL)
     real_client = OpenAI(api_key=codex_token, base_url=base_url)
@@ -998,7 +984,9 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
         pass
 
     from agent.anthropic_adapter import _is_oauth_token
-    is_oauth = _is_oauth_token(token)
+    is_oauth = _is_oauth_token(token) or (
+        isinstance(token, str) and bool(token) and not token.startswith("sk-ant-api")
+    )
     model = _API_KEY_PROVIDER_AUX_MODELS.get("anthropic", "claude-haiku-4-5-20251001")
     logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
     try:
@@ -1676,6 +1664,25 @@ def get_available_vision_backends() -> List[str]:
         if p not in available and _strict_vision_backend_available(p):
             available.append(p)
     return available
+
+
+def get_vision_auxiliary_client(
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    *,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    async_mode: bool = False,
+) -> Tuple[Optional[Any], Optional[str]]:
+    """Backward-compatible wrapper returning only ``(client, model)`` for vision."""
+    _, client, final_model = resolve_vision_provider_client(
+        provider,
+        model,
+        base_url=base_url,
+        api_key=api_key,
+        async_mode=async_mode,
+    )
+    return client, final_model
 
 
 def resolve_vision_provider_client(
