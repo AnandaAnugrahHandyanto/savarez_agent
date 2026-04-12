@@ -793,8 +793,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return web.json_response({"error": "invalid payload"}, status=400)
 
         event_type = self._value(payload.get("type"), payload.get("event")) or ""
-        # Only process message events; silently acknowledge everything else
-        if event_type and event_type not in _MESSAGE_EVENTS:
+        # Only process genuinely new messages.  BlueBubbles also fires
+        # "updated-message" for delivery receipts, read receipts, and
+        # other status changes — processing those as new messages causes
+        # duplicate replies.
+        if event_type != "new-message":
             return web.Response(text="ok")
 
         record = self._extract_payload_record(payload) or {}
