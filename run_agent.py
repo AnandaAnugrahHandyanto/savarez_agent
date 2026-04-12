@@ -13120,10 +13120,6 @@ class AIAgent:
                     if _had_prefill:
                         self._thinking_prefill_retries = 0
                         self._empty_content_retries = 0
-                    # Successful tool execution — reset the post-tool nudge
-                    # flag so it can fire again if the model goes empty on
-                    # a LATER tool round.
-                    self._post_tool_empty_retried = False
 
                     messages.append(assistant_msg)
                     self._emit_interim_assistant_message(assistant_msg)
