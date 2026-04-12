@@ -28,10 +28,13 @@ Usage:
     )
 """
 
+import asyncio
 import base64
 import json
 import logging
 import os
+import shlex
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
@@ -70,6 +73,293 @@ _VISION_DOWNLOAD_TIMEOUT = _resolve_download_timeout()
 # Hard cap on downloaded image file size (50 MB). Prevents OOM from
 # attacker-hosted multi-gigabyte files or decompression bombs.
 _VISION_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
+
+
+def _load_vision_config() -> Dict[str, Any]:
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        vision_cfg = cfg.get("auxiliary", {}).get("vision", {})
+        return vision_cfg if isinstance(vision_cfg, dict) else {}
+    except Exception:
+        return {}
+
+
+def _resolve_minimax_vlm_host(vision_cfg: Optional[Dict[str, Any]] = None) -> str:
+    env_host = (os.getenv("MINIMAX_API_HOST") or "").strip()
+    if env_host:
+        try:
+            return urlparse(env_host if "://" in env_host else f"https://{env_host}").scheme + "://" + urlparse(env_host if "://" in env_host else f"https://{env_host}").netloc
+        except Exception:
+            pass
+
+    cfg = vision_cfg or {}
+    candidates = [
+        str(cfg.get("api_host") or "").strip(),
+        str(cfg.get("direct_base_url") or "").strip(),
+    ]
+    try:
+        from hermes_cli.config import load_config
+        root_cfg = load_config()
+        model_cfg = root_cfg.get("model", {})
+        if isinstance(model_cfg, dict):
+            candidates.append(str(model_cfg.get("base_url") or "").strip())
+    except Exception:
+        pass
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            parsed = urlparse(candidate if "://" in candidate else f"https://{candidate}")
+            if parsed.netloc and "minimax" in parsed.netloc:
+                return f"{parsed.scheme}://{parsed.netloc}"
+        except Exception:
+            continue
+
+    return "https://api.minimaxi.com"
+
+
+def _is_mmx_available() -> bool:
+    """Check if mmx CLI is installed and authenticated."""
+    return shutil.which("mmx") is not None
+
+
+def _should_prefer_mmx_cli(vision_cfg: Optional[Dict[str, Any]] = None) -> bool:
+    """Return True only when mmx is explicitly enabled for vision.
+
+    Default behavior is to bypass mmx because the CLI path has proven unstable
+    in this environment. Operators can re-enable it via config or env:
+      - HERMES_VISION_USE_MMX=1
+      - auxiliary.vision.use_mmx: true
+    """
+    env_value = (os.getenv("HERMES_VISION_USE_MMX") or "").strip().lower()
+    if env_value in {"1", "true", "yes", "on"}:
+        return True
+    if env_value in {"0", "false", "no", "off"}:
+        return False
+    if isinstance(vision_cfg, dict):
+        value = vision_cfg.get("use_mmx")
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
+async def _call_mmx_vision(
+    *,
+    image_path: Path,
+    prompt: str,
+    timeout: float,
+) -> str:
+    """
+    Call mmx vision describe via subprocess.
+    mmx reads its own auth from ~/.mmx/config.json (independent of env vars),
+    so this works even when MINIMAX_API_KEY is a Token Plan key.
+
+    Uses shell-wrapped wait_for to ensure the asyncio timeout can interrupt
+    a hanging mmx process (the subprocess.PIPE deadlocks issue).
+    """
+    if not _is_mmx_available():
+        raise RuntimeError("mmx CLI is not installed or not in PATH")
+
+    # Build the command as a single shell string so asyncio can manage it.
+    # Using --poll-interval 1 lets mmx check for signals more frequently.
+    cmd = (
+        f"mmx vision describe "
+        f"--image {shlex.quote(str(image_path))} "
+        f"--prompt {shlex.quote(prompt.strip())} "
+        f"--output json --quiet --non-interactive"
+    )
+
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        raise RuntimeError("mmx CLI not found in PATH")
+
+    # wait_for ensures asyncio can cancel the task when the timeout fires.
+    # asyncio.TimeoutError inherits from BaseException, so we catch it explicitly.
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        # Clean up the subprocess: terminate, then kill, then await death.
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5.0)
+        except Exception:
+            try:
+                proc.kill()
+                await asyncio.wait_for(proc.wait(), timeout=3.0)
+            except Exception:
+                pass
+        raise RuntimeError(f"mmx vision timed out after {timeout:.0f}s")
+
+    if proc.returncode != 0:
+        err = stderr.decode("utf-8", errors="replace").strip()
+        if proc.returncode == 3:
+            raise RuntimeError(f"mmx auth error: {err}")
+        if proc.returncode == 4:
+            raise RuntimeError(f"mmx quota exceeded: {err}")
+        raise RuntimeError(f"mmx vision failed (exit {proc.returncode}): {err}")
+
+    output = stdout.decode("utf-8", errors="replace").strip()
+    if not output:
+        raise RuntimeError("mmx vision returned empty output")
+
+    try:
+        parsed = json.loads(output)
+        # mmx returns {"response": "..."} or {"content": "..."}
+        content = (
+            parsed.get("response")
+            or parsed.get("content")
+            or parsed.get("text")
+            or str(parsed)
+        )
+        return content.strip()
+    except json.JSONDecodeError:
+        # Fallback: return raw output
+        return output.strip()
+
+
+def _should_use_direct_minimax_vlm(
+    *,
+    vision_cfg: Dict[str, Any],
+    requested_model: Optional[str],
+    image_mime_type: Optional[str],
+) -> bool:
+    supported_mime_types = {"image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"}
+    if image_mime_type not in supported_mime_types:
+        return False
+    model_name = str(requested_model or vision_cfg.get("model") or "").strip()
+    api_key = (os.getenv("MINIMAX_API_KEY") or os.getenv("XIAOMI_API_KEY") or "").strip()
+    if api_key:
+        return True
+    # If no direct API key exists, allow the explicitly enabled mmx path to run.
+    if _should_prefer_mmx_cli(vision_cfg) and _is_mmx_available():
+        return True
+    # Preserve the old MiniMax model gating for callers that explicitly request it.
+    return model_name == "MiniMax-VL-01" and _should_prefer_mmx_cli(vision_cfg) and _is_mmx_available()
+
+
+async def _direct_minimax_vlm_analyze(
+    *,
+    prompt: str,
+    image_data_url: str,
+    timeout: float,
+    vision_cfg: Dict[str, Any],
+) -> str:
+    """
+    Primary path: direct MiniMax VLM API using MINIMAX_API_KEY.
+
+    Optional fallback: mmx CLI, but only when explicitly enabled. This avoids the
+    unstable default behavior where mmx returns HTTP 404 or stalls the request.
+    """
+    api_key = (os.getenv("MINIMAX_API_KEY") or os.getenv("XIAOMI_API_KEY") or "").strip()
+    if api_key:
+        api_host = _resolve_minimax_vlm_host(vision_cfg)
+        url = f"{api_host.rstrip('/')}/v1/coding_plan/vlm"
+        request_headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "MM-API-Source": "Hermes",
+        }
+        request_json = {
+            "prompt": prompt.strip(),
+            "image_url": image_data_url.strip(),
+        }
+
+        async def _post_request(*, trust_env: bool) -> httpx.Response:
+            async with httpx.AsyncClient(timeout=timeout, trust_env=trust_env) as client:
+                return await client.post(url, headers=request_headers, json=request_json)
+
+        try:
+            response = await _post_request(trust_env=False)
+        except httpx.ConnectError:
+            has_proxy_env = any(
+                str(os.getenv(name) or "").strip()
+                for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
+            )
+            if not has_proxy_env:
+                raise
+            logger.info("MiniMax VLM direct request failed without env proxy; retrying with system proxy settings")
+            response = await _post_request(trust_env=True)
+
+        if response.status_code >= 400:
+            body = response.text[:400]
+            raise RuntimeError(
+                f"MiniMax VLM request failed ({response.status_code}): {body or response.reason_phrase}"
+            )
+
+        payload = response.json()
+        base_resp = payload.get("base_resp", {}) if isinstance(payload, dict) else {}
+        status_code = base_resp.get("status_code", -1) if isinstance(base_resp, dict) else -1
+        if status_code != 0:
+            status_msg = str(base_resp.get("status_msg", "") or "").strip()
+            raise RuntimeError(
+                f"MiniMax VLM API error ({status_code}){': ' + status_msg if status_msg else ''}"
+            )
+
+        content = str(payload.get("content", "") or "").strip() if isinstance(payload, dict) else ""
+        if not content:
+            raise RuntimeError("MiniMax VLM returned no content")
+        return content
+
+    if _should_prefer_mmx_cli(vision_cfg) and _is_mmx_available():
+        temp_path = vision_cfg.get("_mmx_temp_image_path") if isinstance(vision_cfg, dict) else None
+
+        if temp_path and Path(temp_path).is_file():
+            try:
+                return await _call_mmx_vision(
+                    image_path=Path(temp_path),
+                    prompt=prompt,
+                    timeout=timeout,
+                )
+            except RuntimeError as mmx_err:
+                # mmx failed (timeout, auth, etc.) — raise to let the outer handler
+                # at vision_analyze_tool level fall through to OpenRouter.
+                raise RuntimeError(f"mmx vision failed: {mmx_err}") from None
+
+        # No temp path cached — decode the base64 data URL to a temp file for mmx
+        try:
+            header, b64_data = image_data_url.split(",", 1)
+            mime_part = header.split(";")[0]  # e.g. "data:image/jpeg"
+            ext = mime_part.split("/")[-1] if "/" in mime_part else "jpg"
+            tmp = Path(f"/tmp/hermes_mmx_vision_{uuid.uuid4().hex}.{ext}")
+            tmp.write_bytes(base64.b64decode(b64_data))
+            try:
+                return await _call_mmx_vision(
+                    image_path=tmp,
+                    prompt=prompt,
+                    timeout=timeout,
+                )
+            except RuntimeError as mmx_err:
+                raise RuntimeError(f"mmx vision failed: {mmx_err}") from None
+            finally:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        except RuntimeError:
+            raise  # Already re-raised above
+        except Exception as decode_err:
+            logger.warning("Failed to decode base64 image for mmx: %s", decode_err)
+            # Fall through to the outer OpenRouter fallback below.
+
+    raise RuntimeError(
+        "No usable MiniMax vision path is available. "
+        "Set MINIMAX_API_KEY for direct MiniMax VLM access, or explicitly enable mmx via HERMES_VISION_USE_MMX=1."
+    )
 
 
 def _validate_image_url(url: str) -> bool:
@@ -527,6 +817,7 @@ async def vision_analyze_tool(
         
         # Use the prompt as provided (model_tools.py now handles full description formatting)
         comprehensive_prompt = user_prompt
+        vision_cfg = _load_vision_config()
         
         # Prepare the message with base64-encoded image
         messages = [
@@ -548,15 +839,11 @@ async def vision_analyze_tool(
         ]
         
         logger.info("Processing image with vision model...")
-        
-        # Call the vision API via centralized router.
+
         # Read timeout from config.yaml (auxiliary.vision.timeout), default 120s.
-        # Local vision models (llama.cpp, ollama) can take well over 30s.
         vision_timeout = 120.0
         try:
-            from hermes_cli.config import load_config
-            _cfg = load_config()
-            _vt = _cfg.get("auxiliary", {}).get("vision", {}).get("timeout")
+            _vt = vision_cfg.get("timeout")
             if _vt is not None:
                 vision_timeout = float(_vt)
         except Exception:
@@ -592,11 +879,53 @@ async def vision_analyze_tool(
         # Extract the analysis — fall back to reasoning if content is empty
         analysis = extract_content_or_reasoning(response)
 
-        # Retry once on empty content (reasoning-only response)
-        if not analysis:
-            logger.warning("Vision LLM returned empty content, retrying once")
+        # Fast path: call MiniMax VLM directly.
+        # On failure, fall through to OpenRouter via async_call_llm.
+        if _should_use_direct_minimax_vlm(
+            vision_cfg=vision_cfg,
+            requested_model=model,
+            image_mime_type=detected_mime_type,
+        ):
+            minimax_vision_cfg = dict(vision_cfg)
+            if temp_image_path:
+                minimax_vision_cfg["_mmx_temp_image_path"] = str(temp_image_path)
+            logger.info("Processing image with MiniMax VLM direct API...")
+            try:
+                analysis = await _direct_minimax_vlm_analyze(
+                    prompt=comprehensive_prompt,
+                    image_data_url=image_data_url,
+                    timeout=vision_timeout,
+                    vision_cfg=minimax_vision_cfg,
+                )
+            except Exception as minimax_err:
+                logger.warning("MiniMax VL direct path failed (%s), falling back to OpenRouter", minimax_err)
+                # Fall through to OpenRouter path below
+                use_openrouter = True
+            else:
+                use_openrouter = False
+        else:
+            use_openrouter = True
+
+        if use_openrouter:
+            call_kwargs = {
+                "task": "vision",
+                "messages": messages,
+                "temperature": 0.1,
+                "max_tokens": 2000,
+                "timeout": vision_timeout,
+            }
+            if model:
+                call_kwargs["model"] = model
             response = await async_call_llm(**call_kwargs)
+
+            # Extract the analysis — fall back to reasoning if content is empty
             analysis = extract_content_or_reasoning(response)
+
+            # Retry once on empty content (reasoning-only response)
+            if not analysis:
+                logger.warning("Vision LLM returned empty content, retrying once")
+                response = await async_call_llm(**call_kwargs)
+                analysis = extract_content_or_reasoning(response)
 
         analysis_length = len(analysis)
         

@@ -3572,6 +3572,14 @@ class GatewayRunner:
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
 
+            if response:
+                response = self._append_feishu_usage_footer(
+                    response,
+                    source=source,
+                    agent_result=agent_result,
+                    response_time=_response_time,
+                )
+
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
                 **hook_ctx,
@@ -3865,6 +3873,97 @@ class GatewayRunner:
             lines.append(f"◆ Endpoint: {base_url}")
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_usage_compact(value: int) -> str:
+        value = int(value or 0)
+        if value >= 1_000_000:
+            text = f"{value / 1_000_000:.1f}m"
+        elif value >= 100_000:
+            text = f"{value / 1_000:.0f}k"
+        elif value >= 1_000:
+            text = f"{value / 1_000:.1f}k"
+        else:
+            return str(value)
+        return text.replace(".0m", "m").replace(".0k", "k")
+
+    @staticmethod
+    def _format_elapsed_compact(seconds: float) -> str:
+        total_seconds = max(0, int(round(seconds or 0)))
+        minutes, secs = divmod(total_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return f"{hours}h {minutes}m"
+        if minutes:
+            return f"{minutes}m {secs}s"
+        return f"{secs}s"
+
+    def _build_feishu_usage_footer(
+        self,
+        *,
+        source: SessionSource,
+        agent_result: Dict[str, Any],
+        response_time: float,
+    ) -> str:
+        if source.platform != Platform.FEISHU:
+            return ""
+
+        model = str(agent_result.get("model") or _resolve_gateway_model() or "unknown").strip()
+        input_tokens = int(agent_result.get("input_tokens") or 0)
+        output_tokens = int(agent_result.get("output_tokens") or 0)
+        cache_read = int(agent_result.get("cache_read_tokens") or 0)
+        cache_write = int(agent_result.get("cache_write_tokens") or 0)
+        last_prompt_tokens = int(agent_result.get("last_prompt_tokens") or 0)
+
+        context_length = 0
+        try:
+            from agent.model_metadata import get_model_context_length
+            runtime = _resolve_runtime_agent_kwargs()
+            context_length = int(
+                get_model_context_length(
+                    model=model,
+                    provider=runtime.get("provider") or "",
+                    base_url=runtime.get("base_url") or "",
+                    api_key=runtime.get("api_key") or "",
+                ) or 0
+            )
+        except Exception:
+            context_length = 0
+
+        cache_base = input_tokens + cache_read + cache_write
+        cache_pct = min(100, (cache_read / cache_base * 100)) if cache_base > 0 else 0
+        line1 = f"已完成 · 耗时 {self._format_elapsed_compact(response_time)} · {model}"
+        line2 = (
+            f"↑ {self._format_usage_compact(input_tokens)}"
+            f" · ↓ {self._format_usage_compact(output_tokens)}"
+            f" · 缓存 {self._format_usage_compact(cache_read)}/{self._format_usage_compact(cache_write)} ({cache_pct:.0f}%)"
+        )
+        if context_length > 0:
+            context_pct = min(100, (last_prompt_tokens / context_length * 100))
+            line2 += (
+                f" · 上下文 {self._format_usage_compact(last_prompt_tokens)}"
+                f"/{self._format_usage_compact(context_length)} ({context_pct:.0f}%)"
+            )
+        return f"{line1}\n{line2}"
+
+    def _append_feishu_usage_footer(
+        self,
+        response: str,
+        *,
+        source: SessionSource,
+        agent_result: Dict[str, Any],
+        response_time: float,
+    ) -> str:
+        if not response or source.platform != Platform.FEISHU:
+            return response
+        footer = self._build_feishu_usage_footer(
+            source=source,
+            agent_result=agent_result,
+            response_time=response_time,
+        )
+        if not footer:
+            return response
+        return f"[[HERMES_STATUS:completed]]\n{response.rstrip()}\n\n---\n{footer}"
 
     async def _handle_reset_command(self, event: MessageEvent) -> str:
         """Handle /new or /reset command."""
@@ -6795,9 +6894,14 @@ class GatewayRunner:
         )
 
         enriched_parts = []
+        logger.info(
+            "Auto-vision enrichment starting for %d image(s)",
+            len(image_paths),
+        )
         for path in image_paths:
+            image_started_at = time.perf_counter()
             try:
-                logger.debug("Auto-analyzing user image: %s", path)
+                logger.info("Auto-analyzing user image: %s", path)
                 result_json = await vision_analyze_tool(
                     image_url=path,
                     user_prompt=analysis_prompt,
@@ -6805,19 +6909,35 @@ class GatewayRunner:
                 result = _json.loads(result_json)
                 if result.get("success"):
                     description = result.get("analysis", "")
+                    logger.info(
+                        "Auto-vision enrichment succeeded for %s in %.1fs (%d chars)",
+                        path,
+                        time.perf_counter() - image_started_at,
+                        len(description),
+                    )
                     enriched_parts.append(
                         f"[The user sent an image~ Here's what I can see:\n{description}]\n"
                         f"[If you need a closer look, use vision_analyze with "
                         f"image_url: {path} ~]"
                     )
                 else:
+                    logger.warning(
+                        "Auto-vision enrichment reported failure for %s in %.1fs",
+                        path,
+                        time.perf_counter() - image_started_at,
+                    )
                     enriched_parts.append(
                         "[The user sent an image but I couldn't quite see it "
                         "this time (>_<) You can try looking at it yourself "
                         f"with vision_analyze using image_url: {path}]"
                     )
             except Exception as e:
-                logger.error("Vision auto-analysis error: %s", e)
+                logger.error(
+                    "Vision auto-analysis error for %s after %.1fs: %s",
+                    path,
+                    time.perf_counter() - image_started_at,
+                    e,
+                )
                 enriched_parts.append(
                     f"[The user sent an image but something went wrong when I "
                     f"tried to look at it~ You can try examining it yourself "
@@ -6826,10 +6946,15 @@ class GatewayRunner:
 
         # Combine: vision descriptions first, then the user's original text
         if enriched_parts:
+            logger.info(
+                "Auto-vision enrichment finished with %d analyzed image(s)",
+                len(enriched_parts),
+            )
             prefix = "\n\n".join(enriched_parts)
             if user_text:
                 return f"{prefix}\n\n{user_text}"
             return prefix
+        logger.info("Auto-vision enrichment produced no image descriptions")
         return user_text
 
     async def _enrich_message_with_transcription(
@@ -7320,6 +7445,11 @@ class GatewayRunner:
             _progress_thread_id = source.thread_id
         _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
 
+        def _decorate_progress_content(text: str, status: str = "thinking") -> str:
+            if source.platform != Platform.FEISHU or not text:
+                return text
+            return f"[[HERMES_STATUS:{status}]]\n{text}"
+
         async def send_progress_messages():
             if not progress_queue:
                 return
@@ -7379,7 +7509,7 @@ class GatewayRunner:
                         result = await adapter.edit_message(
                             chat_id=source.chat_id,
                             message_id=progress_msg_id,
-                            content=full_text,
+                            content=_decorate_progress_content(full_text, "thinking"),
                         )
                         if not result.success:
                             _err = (getattr(result, "error", "") or "").lower()
@@ -7392,15 +7522,27 @@ class GatewayRunner:
                                     adapter.name,
                                 )
                             can_edit = False
-                            await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            await adapter.send(
+                                chat_id=source.chat_id,
+                                content=_decorate_progress_content(msg, "thinking"),
+                                metadata=_progress_metadata,
+                            )
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
                             full_text = "\n".join(progress_lines)
-                            result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
+                            result = await adapter.send(
+                                chat_id=source.chat_id,
+                                content=_decorate_progress_content(full_text, "thinking"),
+                                metadata=_progress_metadata,
+                            )
                         else:
                             # Editing unsupported: send just this line
-                            result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            result = await adapter.send(
+                                chat_id=source.chat_id,
+                                content=_decorate_progress_content(msg, "thinking"),
+                                metadata=_progress_metadata,
+                            )
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
 
@@ -7432,7 +7574,7 @@ class GatewayRunner:
                             await adapter.edit_message(
                                 chat_id=source.chat_id,
                                 message_id=progress_msg_id,
-                                content=full_text,
+                                content=_decorate_progress_content(full_text, "ended"),
                             )
                         except Exception:
                             pass
@@ -7866,11 +8008,15 @@ class GatewayRunner:
             _last_prompt_toks = 0
             _input_toks = 0
             _output_toks = 0
+            _cache_read_toks = 0
+            _cache_write_toks = 0
             _agent = agent_holder[0]
             if _agent and hasattr(_agent, "context_compressor"):
                 _last_prompt_toks = getattr(_agent.context_compressor, "last_prompt_tokens", 0)
                 _input_toks = getattr(_agent, "session_prompt_tokens", 0)
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
+                _cache_read_toks = getattr(_agent, "session_cache_read_tokens", 0)
+                _cache_write_toks = getattr(_agent, "session_cache_write_tokens", 0)
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
             if not final_response:
@@ -7884,6 +8030,8 @@ class GatewayRunner:
                     "last_prompt_tokens": _last_prompt_toks,
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
+                    "cache_read_tokens": _cache_read_toks,
+                    "cache_write_tokens": _cache_write_toks,
                     "model": _resolved_model,
                 }
             
@@ -7973,6 +8121,8 @@ class GatewayRunner:
                 "last_prompt_tokens": _last_prompt_toks,
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
+                "cache_read_tokens": _cache_read_toks,
+                "cache_write_tokens": _cache_write_toks,
                 "model": _resolved_model,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),

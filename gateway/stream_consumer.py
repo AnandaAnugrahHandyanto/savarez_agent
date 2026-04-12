@@ -35,6 +35,14 @@ _NEW_SEGMENT = object()
 # Queue marker for a completed assistant commentary message emitted between
 # API/tool iterations (for example: "I'll inspect the repo first.").
 _COMMENTARY = object()
+_INTERNAL_REASONING_BLOCK_RE = re.compile(
+    r"<(?:think|reasoning|REASONING_SCRATCHPAD)\b[^>]*>.*?</(?:think|reasoning|REASONING_SCRATCHPAD)>",
+    re.IGNORECASE | re.DOTALL,
+)
+_INTERNAL_REASONING_TAG_RE = re.compile(
+    r"</?(?:think|reasoning|REASONING_SCRATCHPAD)\b[^>]*>",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -299,9 +307,13 @@ class GatewayStreamConsumer:
         stream finishes — we just need to hide the raw directives from the
         user.
         """
-        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
-            return text
-        cleaned = text.replace("[[audio_as_voice]]", "")
+        cleaned = text
+        cleaned = _INTERNAL_REASONING_BLOCK_RE.sub("", cleaned)
+        cleaned = _INTERNAL_REASONING_TAG_RE.sub("", cleaned)
+        if "MEDIA:" not in cleaned and "[[audio_as_voice]]" not in cleaned:
+            cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+            return cleaned.rstrip()
+        cleaned = cleaned.replace("[[audio_as_voice]]", "")
         cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
         # Collapse excessive blank lines left behind by removed tags
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
