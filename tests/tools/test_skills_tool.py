@@ -1231,4 +1231,6 @@ class TestSkillViewPluginSkillGuards:
         result = json.loads(raw)
         # Injection is logged but skill still serves (matches existing behavior)
         assert result["success"] is True
+        # NEW: confirm the actual skill body is served, not an empty payload
+        assert "Ignore previous instructions" in result["content"]
         assert any("injection" in r.message.lower() for r in caplog.records)

@@ -126,6 +126,22 @@ class SkillReadinessStatus(str, Enum):
     UNSUPPORTED = "unsupported"
 
 
+# Security: prompt injection detection patterns — shared by both local-skill
+# and plugin-skill serving paths. If you add a new pattern here, BOTH paths
+# will pick it up automatically.
+_INJECTION_PATTERNS: list[str] = [
+    "ignore previous instructions",
+    "ignore all previous",
+    "you are now",
+    "disregard your",
+    "forget your instructions",
+    "new instructions:",
+    "system prompt:",
+    "<system>",
+    "]]>",
+]
+
+
 def set_secret_capture_callback(callback) -> None:
     global _secret_capture_callback
     _secret_capture_callback = callback
@@ -834,17 +850,7 @@ def _serve_plugin_skill(
         )
 
     # 注入模式扫描 — 记录警告但仍提供 skill（与现有行为保持一致）
-    _INJECTION_PATTERNS = [
-        "ignore previous instructions",
-        "ignore all previous",
-        "you are now",
-        "disregard your",
-        "forget your instructions",
-        "new instructions:",
-        "system prompt:",
-        "<system>",
-        "]]>",
-    ]
+    # 模式列表见模块级 _INJECTION_PATTERNS 常量
     content_lower = content.lower()
     if any(p in content_lower for p in _INJECTION_PATTERNS):
         logger.warning(
@@ -1017,17 +1023,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 continue
 
         # Security: detect common prompt injection patterns
-        _INJECTION_PATTERNS = [
-            "ignore previous instructions",
-            "ignore all previous",
-            "you are now",
-            "disregard your",
-            "forget your instructions",
-            "new instructions:",
-            "system prompt:",
-            "<system>",
-            "]]>",
-        ]
+        # 模式列表见模块级 _INJECTION_PATTERNS 常量
         _content_lower = content.lower()
         _injection_detected = any(p in _content_lower for p in _INJECTION_PATTERNS)
 
