@@ -657,9 +657,9 @@ class TestSessionStoreSwitchSession:
         db.close()
 
 
-class TestWhatsAppSessionKeyConsistency:
-    """Regression: WhatsApp session keys must collapse JID/LID aliases to a
-    single stable identity for both DM chat_ids and group participant_ids."""
+class TestWhatsAppDMSessionKeyConsistency:
+    """Regression: all session-key construction must go through build_session_key
+    so DMs are isolated by chat_id across platforms."""
 
     @pytest.fixture()
     def store(self, tmp_path):
