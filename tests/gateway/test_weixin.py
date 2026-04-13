@@ -3,7 +3,9 @@
 import asyncio
 import json
 import os
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from gateway.config import PlatformConfig
 from gateway.config import GatewayConfig, HomeChannel, Platform, _apply_env_overrides
@@ -61,6 +63,120 @@ class TestWeixinFormatting:
         adapter = _make_adapter()
 
         assert adapter.format_message(None) == ""
+
+
+class TestWeixinMediaSending:
+    def test_send_document_accepts_file_path_keyword(self):
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._token = "test-token"
+        adapter._send_file = AsyncMock(return_value="msg-123")
+
+        result = asyncio.run(
+            adapter.send_document(chat_id="wxid_1", file_path="/tmp/test.txt")
+        )
+
+        assert result.success is True
+        assert result.message_id == "msg-123"
+        adapter._send_file.assert_awaited_once_with("wxid_1", "/tmp/test.txt", "")
+
+    def test_send_document_rejects_legacy_path_keyword(self):
+        adapter = _make_adapter()
+
+        with pytest.raises(TypeError, match="unexpected keyword argument 'path'"):
+            asyncio.run(adapter.send_document(chat_id="wxid_1", path="/tmp/test.txt"))
+
+    def test_send_image_file_accepts_image_path_keyword(self):
+        adapter = _make_adapter()
+        adapter.send_document = AsyncMock(return_value="ok")
+
+        result = asyncio.run(
+            adapter.send_image_file(chat_id="wxid_1", image_path="/tmp/test.png")
+        )
+
+        assert result == "ok"
+        adapter.send_document.assert_awaited_once_with(
+            chat_id="wxid_1",
+            file_path="/tmp/test.png",
+            caption=None,
+            metadata=None,
+            reply_to=None,
+        )
+
+    def test_send_image_file_rejects_legacy_path_keyword(self):
+        adapter = _make_adapter()
+
+        with pytest.raises(TypeError, match="unexpected keyword argument 'path'"):
+            asyncio.run(adapter.send_image_file(chat_id="wxid_1", path="/tmp/test.png"))
+
+    def test_send_file_encodes_message_aes_key_as_base64_of_hex_string(self, tmp_path):
+        adapter = _make_adapter()
+        adapter._token_store = ContextTokenStore("/tmp")
+        adapter._token_store.get = lambda *_args, **_kwargs: None
+        probe = tmp_path / "test.txt"
+        probe.write_text("hello", encoding="utf-8")
+
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.status = 200
+        response.headers = {"x-encrypted-param": "enc-param"}
+        response.read = AsyncMock(return_value=b"")
+        response.text = AsyncMock(return_value="")
+        response.__aenter__ = AsyncMock(return_value=response)
+        response.__aexit__ = AsyncMock(return_value=None)
+
+        session = MagicMock()
+        session.post = MagicMock(return_value=response)
+        adapter._session = session
+        adapter._token = "test-token"
+
+        api_post = AsyncMock(return_value={})
+        aes_key = bytes.fromhex("00112233445566778899aabbccddeeff")
+        expected_aes_key_b64 = "MDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmY="
+
+        with patch("gateway.platforms.weixin._get_upload_url", AsyncMock(return_value={"upload_full_url": "https://upload.example"})), \
+             patch("gateway.platforms.weixin._aes128_ecb_encrypt", return_value=b"ciphertext"), \
+             patch("gateway.platforms.weixin._api_post", api_post), \
+             patch("gateway.platforms.weixin.secrets.token_bytes", return_value=aes_key), \
+             patch("gateway.platforms.weixin.secrets.token_hex", return_value="filekey123"), \
+             patch.object(type(adapter), "_outbound_media_builder", return_value=(3, lambda **kwargs: {"type": 4, "file_item": {"media": {"encrypt_query_param": kwargs["encrypt_query_param"], "aes_key": kwargs.get("aes_key_b64") or kwargs.get("aes_key_for_api"), "encrypt_type": 1}, "file_name": kwargs["filename"], "len": str(kwargs["plaintext_size"])} })):
+            asyncio.run(adapter._send_file("wxid_1", str(probe), ""))
+
+        payload = api_post.await_args_list[-1].kwargs["payload"]
+        media = payload["msg"]["item_list"][0]["file_item"]["media"]
+        assert media["aes_key"] == expected_aes_key_b64
+
+    def test_upload_full_url_uses_post_not_put(self, tmp_path):
+        adapter = _make_adapter()
+        adapter._token_store = ContextTokenStore("/tmp")
+        adapter._token_store.get = lambda *_args, **_kwargs: None
+        probe = tmp_path / "test.txt"
+        probe.write_text("hello", encoding="utf-8")
+
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.status = 200
+        response.headers = {"x-encrypted-param": "enc-param"}
+        response.read = AsyncMock(return_value=b"")
+        response.text = AsyncMock(return_value="")
+        response.__aenter__ = AsyncMock(return_value=response)
+        response.__aexit__ = AsyncMock(return_value=None)
+
+        session = MagicMock()
+        session.post = MagicMock(return_value=response)
+        session.put = MagicMock(return_value=response)
+        adapter._session = session
+        adapter._token = "test-token"
+
+        with patch("gateway.platforms.weixin._get_upload_url", AsyncMock(return_value={"upload_full_url": "https://upload.example"})), \
+             patch("gateway.platforms.weixin._aes128_ecb_encrypt", return_value=b"ciphertext"), \
+             patch("gateway.platforms.weixin._api_post", AsyncMock(return_value={})), \
+             patch.object(type(adapter), "_outbound_media_builder", return_value=(3, lambda **kwargs: {"type": 4, "file_item": {"media": {"encrypt_query_param": kwargs["encrypt_query_param"], "aes_key": kwargs.get("aes_key_b64") or kwargs.get("aes_key_for_api"), "encrypt_type": 1}, "file_name": kwargs["filename"], "len": str(kwargs["plaintext_size"])} })):
+            result = asyncio.run(adapter._send_file("wxid_1", str(probe), ""))
+
+        assert result.startswith("hermes-weixin-")
+        session.post.assert_called_once()
+        session.put.assert_not_called()
 
 
 class TestWeixinChunking:
