@@ -686,6 +686,7 @@ def switch_model(
             target_provider,
             api_key=api_key,
             base_url=base_url,
+            api_mode=api_mode,
         )
     except Exception:
         validation = {
