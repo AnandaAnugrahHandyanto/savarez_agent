@@ -18,10 +18,33 @@ from hermes_cli.migrate_core import (
     _collect_migration_items,
     _should_skip_dir,
     _should_skip_file,
+    _is_text_file,
+    _remap_content,
     create_manifest,
     detect_platform,
     _log_warning,
 )
+
+# Placeholder written into bundle text files; replaced with real target home at import time.
+_TARGET_HOME_PLACEHOLDER = "{{HERMES_HOME}}"
+
+
+def _add_file_to_tarball(tf, full_path: Path, arcname: str, source_home: Path) -> None:
+    """Add a file to tarball, remapping source_home paths in text files.
+
+    Text files (.yaml, .json, .md, .sh, etc.) have their home-directory paths
+    rewritten to _TARGET_HOME_PLACEHOLDER so they can be restored on a different
+    machine. Binary files are added verbatim.
+    """
+    if _is_text_file(arcname):
+        content = full_path.read_text(encoding="utf-8", errors="replace")
+        remapped = _remap_content(content, source_home, Path(_TARGET_HOME_PLACEHOLDER))
+        data = remapped.encode("utf-8")
+        info = tarfile.TarInfo(name=arcname)
+        info.size = len(data)
+        tf.addfile(info, BytesIO(data))
+    else:
+        tf.add(str(full_path), arcname=arcname)
 
 
 def export_bundle(output_path: Optional[str], preset: str = "safe") -> Path:
@@ -70,12 +93,12 @@ def export_bundle(output_path: Optional[str], preset: str = "safe") -> Path:
                                 continue
                             full_path = Path(parent) / fname
                             arcname = full_path.relative_to(hermes_home).as_posix()
-                            tf.add(str(full_path), arcname=arcname)
+                            _add_file_to_tarball(tf, full_path, arcname, source_platform["home"])
                             migrated_count += 1
                 else:
                     if _should_skip_file(rel_path, source_platform["os"]):
                         continue
-                    tf.add(str(src), arcname=rel_path)
+                    _add_file_to_tarball(tf, src, rel_path, source_platform["home"])
                     migrated_count += 1
             except (OSError, IOError) as e:
                 _log_warning(f"Could not add {rel_path}: {e}")
