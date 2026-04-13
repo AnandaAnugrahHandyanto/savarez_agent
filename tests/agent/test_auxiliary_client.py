@@ -22,6 +22,7 @@ from agent.auxiliary_client import (
     _is_payment_error,
     _try_payment_fallback,
     _resolve_auto,
+    _resolve_task_provider_model,
 )
 
 
@@ -970,6 +971,46 @@ class TestTaskSpecificOverrides:
         with patch("agent.auxiliary_client.OpenAI"):
             client, model = get_text_auxiliary_client("compression")
         assert model == "google/gemini-3-flash-preview"  # auto → OpenRouter
+
+    def test_legacy_compression_model_ignored_when_provider_is_auto(self, monkeypatch, tmp_path):
+        """Legacy compression.summary_model should not pin auto-detected providers."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            """compression:
+  summary_provider: auto
+  summary_model: google/gemini-3-flash-preview
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model("compression")
+
+        assert provider == "auto"
+        assert model is None
+        assert base_url is None
+        assert api_key is None
+        assert api_mode is None
+
+    def test_legacy_compression_model_preserved_for_pinned_provider(self, monkeypatch, tmp_path):
+        """Legacy compression.summary_model still works when provider is pinned."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            """compression:
+  summary_provider: openrouter
+  summary_model: google/gemini-3-flash-preview
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model("compression")
+
+        assert provider == "openrouter"
+        assert model == "google/gemini-3-flash-preview"
+        assert base_url is None
+        assert api_key is None
+        assert api_mode is None
 
     def test_resolve_auto_prefers_live_main_runtime_over_persisted_config(self, monkeypatch, tmp_path):
         """Session-only live model switches should override persisted config for auto routing."""

@@ -566,6 +566,32 @@ class TestInit:
                 f"session_id doesn't match expected format: {a.session_id}"
             )
 
+    def test_legacy_auto_compression_model_not_passed_to_context_compressor(self):
+        """Legacy compression.summary_model should not override auto compression backends."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "compression": {
+                        "summary_provider": "auto",
+                        "summary_model": "google/gemini-3-flash-preview",
+                    }
+                },
+            ),
+            patch("agent.context_compressor.get_model_context_length", return_value=200000),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent.context_compressor.summary_model == ""
+
 
 class TestInterrupt:
     def test_interrupt_sets_flag(self, agent):

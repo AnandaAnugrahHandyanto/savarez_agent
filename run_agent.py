@@ -1212,7 +1212,15 @@ class AIAgent:
             _compression_cfg = {}
         compression_threshold = float(_compression_cfg.get("threshold", 0.50))
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
-        compression_summary_model = _compression_cfg.get("summary_model") or None
+        try:
+            from agent.auxiliary_client import _resolve_legacy_compression_config
+
+            _, compression_summary_model, _ = _resolve_legacy_compression_config(
+                _agent_cfg,
+                warn_on_auto_model=True,
+            )
+        except Exception:
+            compression_summary_model = _compression_cfg.get("summary_model") or None
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
 

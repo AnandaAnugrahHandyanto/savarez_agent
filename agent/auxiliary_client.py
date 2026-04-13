@@ -129,6 +129,7 @@ NOUS_EXTRA_BODY = {"tags": ["product=hermes-agent"]}
 
 # Set at resolve time — True if the auxiliary client points to Nous Portal
 auxiliary_is_nous: bool = False
+_legacy_compression_auto_model_warned: bool = False
 
 # Default auxiliary models per provider
 _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
@@ -1277,6 +1278,47 @@ def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optio
         return model_name
 
 
+def _resolve_legacy_compression_config(
+    config: Dict[str, Any],
+    *,
+    warn_on_auto_model: bool = False,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Read legacy ``compression.*`` overrides safely.
+
+    The old compression section stores a provider/model pair separately from
+    ``auxiliary.compression``. A provider-specific model like
+    ``google/gemini-3-flash-preview`` is unsafe when the legacy provider is
+    left at ``auto`` because auto-detection may land on a non-OpenRouter
+    backend. In that case we ignore the legacy model and let the resolved
+    provider pick its own default model instead.
+    """
+    global _legacy_compression_auto_model_warned
+
+    comp = config.get("compression", {}) if isinstance(config, dict) else {}
+    if not isinstance(comp, dict):
+        return None, None, None
+
+    provider = str(comp.get("summary_provider") or "").strip() or None
+    model = str(comp.get("summary_model") or "").strip() or None
+    base_url = str(comp.get("summary_base_url") or "").strip() or None
+
+    if model and not base_url and (not provider or provider == "auto"):
+        if warn_on_auto_model and not _legacy_compression_auto_model_warned:
+            logger.warning(
+                "Ignoring legacy compression.summary_model=%r because "
+                "compression.summary_provider=%r uses auto-detection. "
+                "Compression summaries will use the resolved provider's "
+                "default model instead. To pin a specific model, set "
+                "auxiliary.compression.provider/model explicitly.",
+                model,
+                provider or "auto",
+            )
+            _legacy_compression_auto_model_warned = True
+        model = None
+
+    return provider, model, base_url
+
+
 def resolve_provider_client(
     provider: str,
     model: str = None,
@@ -2048,12 +2090,12 @@ def _resolve_task_provider_model(
         # The auxiliary.compression defaults to provider="auto", so treat
         # both None and "auto" as "not explicitly configured".
         if task == "compression" and (not cfg_provider or cfg_provider == "auto"):
-            comp = config.get("compression", {}) if isinstance(config, dict) else {}
-            if isinstance(comp, dict):
-                cfg_provider = comp.get("summary_provider", "").strip() or None
-                cfg_model = cfg_model or comp.get("summary_model", "").strip() or None
-                _sbu = comp.get("summary_base_url") or ""
-                cfg_base_url = cfg_base_url or _sbu.strip() or None
+            legacy_provider, legacy_model, legacy_base_url = _resolve_legacy_compression_config(
+                config, warn_on_auto_model=True
+            )
+            cfg_provider = legacy_provider
+            cfg_model = cfg_model or legacy_model
+            cfg_base_url = cfg_base_url or legacy_base_url
 
     # Env vars are backward-compat fallback only — config.yaml is primary.
     env_model = _get_auxiliary_env_override(task, "MODEL") if task else None
