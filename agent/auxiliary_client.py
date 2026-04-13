@@ -77,6 +77,8 @@ _PROVIDER_ALIASES = {
 
 def _normalize_aux_provider(provider: Optional[str], *, for_vision: bool = False) -> str:
     normalized = (provider or "auto").strip().lower()
+    if normalized == "none":
+        return "none"
     if normalized.startswith("custom:"):
         suffix = normalized.split(":", 1)[1].strip()
         if not suffix:
@@ -1298,6 +1300,7 @@ def resolve_provider_client(
         provider: Provider identifier.  One of:
             "openrouter", "nous", "openai-codex" (or "codex"),
             "zai", "kimi-coding", "minimax", "minimax-cn",
+            "none" (disable auxiliary routing for this call),
             "custom" (OPENAI_BASE_URL + OPENAI_API_KEY),
             "auto" (full auto-detection chain).
         model: Model slug override.  If None, uses the provider's default
@@ -1319,6 +1322,9 @@ def resolve_provider_client(
     """
     # Normalise aliases
     provider = _normalize_aux_provider(provider)
+    if provider == "none":
+        logger.debug("resolve_provider_client: auxiliary routing disabled")
+        return None, None
 
     def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:
         """Decide if a plain OpenAI client should be wrapped for Responses API.
