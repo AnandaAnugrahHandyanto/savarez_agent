@@ -752,6 +752,7 @@ def switch_model(
 
 def list_authenticated_providers(
     current_provider: str = "",
+    current_base_url: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
     max_models: int = 8,
@@ -969,41 +970,62 @@ def list_authenticated_providers(
             })
 
     # --- 4. Saved custom providers from config ---
+    # Entries are grouped by (base_url, api_key) so a single Ollama host
+    # with several models appears as one provider group in the picker.
+    # When the entry's base_url matches the currently active endpoint the
+    # slug is set to current_provider so that switching via the picker
+    # resolves credentials correctly through the existing runtime provider
+    # logic (no extra credential lookup needed).
     if custom_providers and isinstance(custom_providers, list):
-        for entry in custom_providers:
+        from collections import OrderedDict
+        groups: dict = OrderedDict()
+        for i, entry in enumerate(custom_providers):
             if not isinstance(entry, dict):
                 continue
-
-            display_name = (entry.get("name") or "").strip()
-            api_url = (
-                entry.get("base_url", "")
-                or entry.get("url", "")
-                or entry.get("api", "")
-                or ""
-            ).strip()
-            if not display_name or not api_url:
+            b_url = (
+                entry.get("base_url") or entry.get("url") or entry.get("api") or ""
+            ).rstrip("/")
+            a_key = entry.get("api_key") or ""
+            model_id = (entry.get("model") or "").strip()
+            if not b_url:
                 continue
-
-            slug = custom_provider_slug(display_name)
-            if slug in seen_slugs:
-                continue
-
-            models_list = []
-            default_model = (entry.get("model") or "").strip()
-            if default_model:
-                models_list.append(default_model)
-
-            results.append({
-                "slug": slug,
-                "name": display_name,
-                "is_current": slug == current_provider,
-                "is_user_defined": True,
-                "models": models_list,
-                "total_models": len(models_list),
-                "source": "user-config",
-                "api_url": api_url,
-            })
-            seen_slugs.add(slug)
+            if current_base_url and b_url == current_base_url.rstrip("/"):
+                slug = current_provider or "custom"
+            else:
+                slug = custom_provider_slug(entry.get("name") or b_url)
+            group_key = (b_url, a_key)
+            if group_key not in groups:
+                raw_name = (entry.get("name") or "").strip()
+                # Strip per-model suffix ("Ollama — GLM 5.1" -> "Ollama")
+                display_name = raw_name.split("—")[0].strip() if "—" in raw_name else raw_name
+                if not display_name:
+                    display_name = b_url
+                groups[group_key] = {
+                    "slug": slug,
+                    "name": display_name,
+                    "is_current": slug == current_provider,
+                    "is_user_defined": True,
+                    "models": [],
+                    "source": "custom_providers",
+                    "api_url": b_url,
+                }
+            if model_id and model_id not in groups[group_key]["models"]:
+                groups[group_key]["models"].append(model_id)
+        for g in groups.values():
+            g["total_models"] = len(g["models"])
+            g["models"] = g["models"][:max_models]
+            if g["slug"] not in seen_slugs:
+                results.append(g)
+                seen_slugs.add(g["slug"])
+            else:
+                # Merge models into existing entry (user-config + custom_providers overlap)
+                for existing in results:
+                    if existing["slug"] == g["slug"]:
+                        for m in g["models"]:
+                            if m not in existing["models"]:
+                                existing["models"].append(m)
+                        existing["total_models"] = len(existing["models"])
+                        break
 
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
