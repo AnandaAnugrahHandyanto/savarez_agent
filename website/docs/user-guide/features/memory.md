@@ -8,6 +8,10 @@ description: "How Hermes Agent remembers across sessions — memory.db, markdown
 
 Hermes Agent has bounded, curated memory that persists across sessions. This lets it remember your preferences, your projects, your environment, and things it has learned.
 
+:::note
+Persistent Memory is one lane inside Hermes' broader Continuity Control Plane. For the full architecture — including session recall, llm-wiki synthesis, Clerk reset handoff, and recovery rails — see the developer guide page on the Continuity Control Plane.
+:::
+
 ## How It Works
 
 Hermes now stores memory in a local SQLite database and keeps markdown exports for compatibility:
