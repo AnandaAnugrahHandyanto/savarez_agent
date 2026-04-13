@@ -266,6 +266,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("XIAOMI_API_KEY",),
         base_url_env_var="XIAOMI_BASE_URL",
     ),
+    "xiaomi-token-plan": ProviderConfig(
+        id="xiaomi-token-plan",
+        name="Xiaomi MiMo (Token Plan)",
+        auth_type="api_key",
+        inference_base_url="https://token-plan-sgp.xiaomimimo.com/v1",
+        api_key_env_vars=("XIAOMI_TOKEN_PLAN_API_KEY",),
+        base_url_env_var="XIAOMI_TOKEN_PLAN_BASE_URL",
+    ),
 }
 
 
@@ -910,6 +918,8 @@ def resolve_provider(
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
+        "xiaomi-token": "xiaomi-token-plan", "mimo-token-plan": "xiaomi-token-plan",
+        "xiaomi-sgp": "xiaomi-token-plan",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         # Local server aliases — route through the generic custom provider

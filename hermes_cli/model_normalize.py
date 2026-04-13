@@ -94,6 +94,7 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "alibaba",
     "qwen-oauth",
     "xiaomi",
+    "xiaomi-token-plan",
     "custom",
 })
 
@@ -204,7 +205,10 @@ def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> st
 
     normalized_prefix = _normalize_provider_alias(prefix)
     normalized_target = _normalize_provider_alias(target_provider)
-    if normalized_prefix and normalized_prefix == normalized_target:
+    if normalized_prefix and (
+        normalized_prefix == normalized_target
+        or normalized_target.startswith(normalized_prefix + "-")
+    ):
         return remainder.strip()
     return model_name
 

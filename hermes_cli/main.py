@@ -1037,7 +1037,8 @@ def select_provider_and_model(args=None):
     from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
 
     provider_labels = dict(_PROVIDER_LABELS)  # derive from canonical list
-    active_label = provider_labels.get(active, active) if active else "none"
+    picker_active = "xiaomi" if active == "xiaomi-token-plan" else active
+    active_label = provider_labels.get(picker_active, picker_active) if picker_active else "none"
 
     print()
     print(f"  Current model:    {current_model}")
@@ -1047,7 +1048,7 @@ def select_provider_and_model(args=None):
     # Step 1: Provider selection — top providers shown first, rest behind "More..."
     # Derived from CANONICAL_PROVIDERS (single source of truth)
     top_providers = [(p.slug, p.tui_desc) for p in CANONICAL_PROVIDERS if p.tier == "top"]
-    extended_providers = [(p.slug, p.tui_desc) for p in CANONICAL_PROVIDERS if p.tier == "extended"]
+    extended_providers = [(p.slug, p.tui_desc) for p in CANONICAL_PROVIDERS if p.tier == "extended" and p.slug != "xiaomi-token-plan"]
 
     def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
         custom_provider_map = {}
@@ -1090,17 +1091,17 @@ def select_provider_and_model(args=None):
     extended_keys = {k for k, _ in extended_providers}
 
     # If the active provider is in the extended list, promote it into top
-    if active and active in extended_keys:
-        promoted = [(k, l) for k, l in extended_providers if k == active]
-        extended_providers = [(k, l) for k, l in extended_providers if k != active]
+    if picker_active and picker_active in extended_keys:
+        promoted = [(k, l) for k, l in extended_providers if k == picker_active]
+        extended_providers = [(k, l) for k, l in extended_providers if k != picker_active]
         top_providers = promoted + top_providers
-        top_keys.add(active)
+        top_keys.add(picker_active)
 
     # Build the primary menu
     ordered = []
     default_idx = 0
     for key, label in top_providers:
-        if active and key == active:
+        if picker_active and key == picker_active:
             ordered.append((key, f"{label}  ← currently active"))
             default_idx = len(ordered) - 1
         else:
@@ -2436,11 +2437,71 @@ def _model_flow_kimi(config, current_model=""):
         print("No change.")
 
 
+def _is_xiaomi_token_plan_key(api_key: str) -> bool:
+    return (api_key or "").strip().lower().startswith("tp-")
+
+
+
+def _prompt_xiaomi_endpoint_choice(api_key: str, current_base: str) -> tuple[str, str | None]:
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    standard_base = PROVIDER_REGISTRY["xiaomi"].inference_base_url.rstrip("/")
+    token_plan_base = PROVIDER_REGISTRY["xiaomi-token-plan"].inference_base_url.rstrip("/")
+    current_base = (current_base or "").strip().rstrip("/")
+
+    if current_base and current_base not in {standard_base, token_plan_base}:
+        default_idx = 2
+    elif current_base == token_plan_base:
+        default_idx = 1
+    elif current_base == standard_base:
+        default_idx = 0
+    elif _is_xiaomi_token_plan_key(api_key):
+        default_idx = 1
+    else:
+        default_idx = 0
+
+    choices = [
+        f"Xiaomi MiMo API ({standard_base})",
+        f"Xiaomi Token Plan API ({token_plan_base})",
+        "Custom Xiaomi-compatible URL",
+    ]
+    choice_idx = _prompt_provider_choice(choices, default=default_idx)
+    if choice_idx is None:
+        fallback = token_plan_base if default_idx == 1 else standard_base
+        return current_base or fallback, None
+
+    if choice_idx == 0:
+        env_update = "" if current_base and current_base != standard_base else None
+        return standard_base, env_update
+
+    if choice_idx == 1:
+        env_update = token_plan_base if current_base != token_plan_base else None
+        return token_plan_base, env_update
+
+    default_custom = current_base if current_base and current_base not in {standard_base, token_plan_base} else (
+        token_plan_base if default_idx == 1 else standard_base
+    )
+    try:
+        custom_url = input(f"Custom Xiaomi base URL [{default_custom}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return default_custom, None
+
+    effective_base = (custom_url or default_custom).rstrip("/")
+    if not effective_base.startswith(("http://", "https://")):
+        print("  Invalid URL — must start with http:// or https://. Keeping current value.")
+        return current_base or default_custom, None
+
+    env_update = effective_base if effective_base != current_base else None
+    return effective_base, env_update
+
+
+
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
     from hermes_cli.auth import (
         PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
-        deactivate_provider,
+        deactivate_provider, has_usable_secret,
     )
     from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
     from hermes_cli.models import fetch_api_models, opencode_model_api_mode, normalize_opencode_model_id
@@ -2452,8 +2513,9 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     # Check / prompt for API key
     existing_key = ""
     for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
+        candidate = (get_env_value(ev) or os.getenv(ev, "") or "").strip()
+        if has_usable_secret(candidate):
+            existing_key = candidate
             break
 
     if not existing_key:
@@ -2469,6 +2531,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                 print("Cancelled.")
                 return
             save_env_value(key_env, new_key)
+            existing_key = new_key
             print("API key saved.")
             print()
     else:
@@ -2481,17 +2544,22 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         current_base = get_env_value(base_url_env) or os.getenv(base_url_env, "")
     effective_base = current_base or pconfig.inference_base_url
 
-    try:
-        override = input(f"Base URL [{effective_base}]: ").strip()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        override = ""
-    if override and base_url_env:
-        if not override.startswith(("http://", "https://")):
-            print("  Invalid URL — must start with http:// or https://. Keeping current value.")
-        else:
-            save_env_value(base_url_env, override)
-            effective_base = override
+    if provider_id == "xiaomi":
+        effective_base, env_update = _prompt_xiaomi_endpoint_choice(existing_key, current_base)
+        if env_update is not None and base_url_env:
+            save_env_value(base_url_env, env_update)
+    else:
+        try:
+            override = input(f"Base URL [{effective_base}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            override = ""
+        if override and base_url_env:
+            if not override.startswith(("http://", "https://")):
+                print("  Invalid URL — must start with http:// or https://. Keeping current value.")
+            else:
+                save_env_value(base_url_env, override)
+                effective_base = override.rstrip("/")
 
     # Model selection — resolution order:
     #   1. models.dev registry (cached, filtered for agentic/tool-capable models)
@@ -4586,7 +4654,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "xiaomi"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "xiaomi", "xiaomi-token-plan"],
         default=None,
         help="Inference provider (default: auto)"
     )

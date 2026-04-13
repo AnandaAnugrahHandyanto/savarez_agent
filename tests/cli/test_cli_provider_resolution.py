@@ -641,3 +641,219 @@ def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
         "ca_bundle": "/tmp/local-ca.pem",
         "insecure": True,
     }
+
+
+def test_select_provider_and_model_hides_separate_xiaomi_token_plan_entry(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "claude-sonnet-4.6", "provider": "anthropic"}},
+    )
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key: "")
+    monkeypatch.setattr("hermes_cli.config.save_env_value", lambda key, value: None)
+    monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda requested, **kwargs: "anthropic")
+
+    prompt_calls = []
+
+    def _prompt_choice(choices, *, default=0):
+        prompt_calls.append((list(choices), default))
+        if len(prompt_calls) == 1:
+            return len(choices) - 2  # More providers...
+        return len(choices) - 1  # Cancel
+
+    monkeypatch.setattr(hermes_main, "_prompt_provider_choice", _prompt_choice)
+
+    hermes_main.select_provider_and_model()
+
+    assert len(prompt_calls) == 2
+    extended_choices = prompt_calls[1][0]
+    assert any("Xiaomi MiMo (MiMo-V2 models" in choice for choice in extended_choices)
+    assert not any("Token Plan" in choice for choice in extended_choices)
+
+
+def test_select_provider_and_model_collapses_active_xiaomi_token_plan_into_xiaomi(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "mimo-v2-pro", "provider": "xiaomi-token-plan"}},
+    )
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key: "")
+    monkeypatch.setattr("hermes_cli.config.save_env_value", lambda key, value: None)
+    monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda requested, **kwargs: "xiaomi-token-plan")
+
+    prompt_calls = []
+
+    def _prompt_choice(choices, *, default=0):
+        prompt_calls.append((list(choices), default))
+        return len(choices) - 1  # Cancel from top menu
+
+    monkeypatch.setattr(hermes_main, "_prompt_provider_choice", _prompt_choice)
+
+    hermes_main.select_provider_and_model()
+
+    top_choices, default_idx = prompt_calls[0]
+    assert any("Xiaomi MiMo" in choice and "currently active" in choice for choice in top_choices)
+    assert not any("Token Plan" in choice for choice in top_choices)
+    assert "Xiaomi MiMo" in top_choices[default_idx]
+
+
+def _configure_xiaomi_flow_test(monkeypatch):
+    for key in (
+        "XIAOMI_API_KEY",
+        "XIAOMI_BASE_URL",
+        "XIAOMI_TOKEN_PLAN_API_KEY",
+        "XIAOMI_TOKEN_PLAN_BASE_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    saved_env = {}
+    saved_config = {}
+    chosen_models = []
+    deactivated = []
+    prompts = []
+
+    def _get_env_value(key):
+        return saved_env.get(key, "")
+
+    def _save_env_value(key, value):
+        saved_env[key] = value
+
+    def _save_config(cfg):
+        saved_config.clear()
+        saved_config.update(cfg)
+
+    monkeypatch.setattr("hermes_cli.config.get_env_value", _get_env_value)
+    monkeypatch.setattr("hermes_cli.config.save_env_value", _save_env_value)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "", "provider": "xiaomi", "base_url": ""}},
+    )
+    monkeypatch.setattr("hermes_cli.config.save_config", _save_config)
+    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: chosen_models.append(model))
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: deactivated.append(True))
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        lambda models, current_model="", pricing=None: models[0] if models else None,
+    )
+    monkeypatch.setattr(
+        "agent.models_dev.list_agentic_models",
+        lambda provider_id: ["mimo-v2-pro", "mimo-v2-omni"],
+    )
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda api_key, base_url: ["mimo-v2-pro"])
+
+    def _prompt_choice(choices, *, default=0):
+        prompts.append((list(choices), default))
+        return default
+
+    monkeypatch.setattr(hermes_main, "_prompt_provider_choice", _prompt_choice)
+
+    return saved_env, saved_config, chosen_models, deactivated, prompts
+
+
+def test_model_flow_xiaomi_ignores_redacted_placeholder_key(monkeypatch):
+    saved_env, saved_config, chosen_models, deactivated, prompts = _configure_xiaomi_flow_test(monkeypatch)
+    saved_env["XIAOMI_API_KEY"] = "***"
+
+    answers = iter([""])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+    monkeypatch.setattr("getpass.getpass", lambda _prompt="": "tp-live-key")
+
+    hermes_main._model_flow_api_key_provider({}, "xiaomi")
+
+    assert saved_env["XIAOMI_API_KEY"] == "tp-live-key"
+    assert saved_env["XIAOMI_BASE_URL"] == "https://token-plan-sgp.xiaomimimo.com/v1"
+    assert saved_config["model"]["provider"] == "xiaomi"
+    assert saved_config["model"]["base_url"] == "https://token-plan-sgp.xiaomimimo.com/v1"
+    assert chosen_models == ["mimo-v2-pro"]
+    assert deactivated == [True]
+    assert prompts == [(
+        [
+            "Xiaomi MiMo API (https://api.xiaomimimo.com/v1)",
+            "Xiaomi Token Plan API (https://token-plan-sgp.xiaomimimo.com/v1)",
+            "Custom Xiaomi-compatible URL",
+        ],
+        1,
+    )]
+
+
+
+def test_model_flow_xiaomi_tp_key_defaults_to_token_plan_endpoint(monkeypatch):
+    saved_env, saved_config, chosen_models, deactivated, prompts = _configure_xiaomi_flow_test(monkeypatch)
+
+    answers = iter([""])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+    monkeypatch.setattr("getpass.getpass", lambda _prompt="": "tp-live-key")
+
+    hermes_main._model_flow_api_key_provider({}, "xiaomi")
+
+    assert saved_env["XIAOMI_API_KEY"] == "tp-live-key"
+    assert saved_env["XIAOMI_BASE_URL"] == "https://token-plan-sgp.xiaomimimo.com/v1"
+    assert saved_config["model"]["provider"] == "xiaomi"
+    assert saved_config["model"]["base_url"] == "https://token-plan-sgp.xiaomimimo.com/v1"
+    assert chosen_models == ["mimo-v2-pro"]
+    assert deactivated == [True]
+    assert prompts == [(
+        [
+            "Xiaomi MiMo API (https://api.xiaomimimo.com/v1)",
+            "Xiaomi Token Plan API (https://token-plan-sgp.xiaomimimo.com/v1)",
+            "Custom Xiaomi-compatible URL",
+        ],
+        1,
+    )]
+
+
+def test_model_flow_xiaomi_non_tp_key_defaults_to_standard_endpoint(monkeypatch):
+    saved_env, saved_config, chosen_models, deactivated, prompts = _configure_xiaomi_flow_test(monkeypatch)
+
+    answers = iter([""])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+    monkeypatch.setattr("getpass.getpass", lambda _prompt="": "user-generated-key")
+
+    hermes_main._model_flow_api_key_provider({}, "xiaomi")
+
+    assert saved_env["XIAOMI_API_KEY"] == "user-generated-key"
+    assert "XIAOMI_BASE_URL" not in saved_env
+    assert saved_config["model"]["provider"] == "xiaomi"
+    assert saved_config["model"]["base_url"] == "https://api.xiaomimimo.com/v1"
+    assert chosen_models == ["mimo-v2-pro"]
+    assert deactivated == [True]
+    assert prompts == [(
+        [
+            "Xiaomi MiMo API (https://api.xiaomimimo.com/v1)",
+            "Xiaomi Token Plan API (https://token-plan-sgp.xiaomimimo.com/v1)",
+            "Custom Xiaomi-compatible URL",
+        ],
+        0,
+    )]
+
+
+def test_model_flow_xiaomi_custom_endpoint_prompts_for_manual_url(monkeypatch):
+    saved_env, saved_config, chosen_models, deactivated, _ = _configure_xiaomi_flow_test(monkeypatch)
+
+    answers = iter(["https://token-plan-ams.xiaomimimo.com/v1"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+    monkeypatch.setattr("getpass.getpass", lambda _prompt="": "tp-live-key")
+
+    prompts = []
+
+    def _prompt_choice(choices, *, default=0):
+        prompts.append((list(choices), default))
+        return 2
+
+    monkeypatch.setattr(hermes_main, "_prompt_provider_choice", _prompt_choice)
+
+    hermes_main._model_flow_api_key_provider({}, "xiaomi")
+
+    assert saved_env["XIAOMI_API_KEY"] == "tp-live-key"
+    assert saved_env["XIAOMI_BASE_URL"] == "https://token-plan-ams.xiaomimimo.com/v1"
+    assert saved_config["model"]["base_url"] == "https://token-plan-ams.xiaomimimo.com/v1"
+    assert chosen_models == ["mimo-v2-pro"]
+    assert deactivated == [True]
+    assert prompts == [(
+        [
+            "Xiaomi MiMo API (https://api.xiaomimimo.com/v1)",
+            "Xiaomi Token Plan API (https://token-plan-sgp.xiaomimimo.com/v1)",
+            "Custom Xiaomi-compatible URL",
+        ],
+        1,
+    )]

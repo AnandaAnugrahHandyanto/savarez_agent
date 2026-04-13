@@ -200,6 +200,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "mimo-v2-omni",
         "mimo-v2-flash",
     ],
+    "xiaomi-token-plan": [
+        "mimo-v2-pro",
+        "mimo-v2-omni",
+        "mimo-v2-flash",
+    ],
     "opencode-zen": [
         "gpt-5.4-pro",
         "gpt-5.4",
@@ -529,6 +534,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("ai-gateway",     "AI Gateway",               "extended", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
     ProviderEntry("alibaba",        "Alibaba Cloud (DashScope)","extended", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "extended", "Xiaomi MiMo (MiMo-V2 models — pro, omni, flash)"),
+    ProviderEntry("xiaomi-token-plan", "Xiaomi MiMo (Token Plan)", "extended", "Xiaomi MiMo Token Plan (token-plan-sgp endpoint)"),
 ]
 
 # Derived dicts — used throughout the codebase
@@ -578,6 +584,9 @@ _PROVIDER_ALIASES = {
     "huggingface-hub": "huggingface",
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
+    "xiaomi-token": "xiaomi-token-plan",
+    "mimo-token-plan": "xiaomi-token-plan",
+    "xiaomi-sgp": "xiaomi-token-plan",
     "grok": "xai",
     "x-ai": "xai",
     "x.ai": "xai",

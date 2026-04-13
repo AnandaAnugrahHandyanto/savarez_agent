@@ -136,6 +136,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="XIAOMI_BASE_URL",
     ),
+    "xiaomi-token-plan": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("XIAOMI_TOKEN_PLAN_API_KEY",),
+        base_url_override="https://token-plan-sgp.xiaomimimo.com/v1",
+        base_url_env_var="XIAOMI_TOKEN_PLAN_BASE_URL",
+    ),
 }
 
 
@@ -230,6 +236,9 @@ ALIASES: Dict[str, str] = {
     # xiaomi
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
+    "xiaomi-token": "xiaomi-token-plan",
+    "mimo-token-plan": "xiaomi-token-plan",
+    "xiaomi-sgp": "xiaomi-token-plan",
 
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
@@ -252,6 +261,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
     "xiaomi": "Xiaomi MiMo",
+    "xiaomi-token-plan": "Xiaomi MiMo (Token Plan)",
     "local": "Local endpoint",
 }
 
@@ -306,8 +316,16 @@ def get_provider(name: str) -> Optional[ProviderDef]:
         base_url_env = overlay.base_url_env_var if overlay else ""
         base_url_override = overlay.base_url_override if overlay else ""
 
-        # Combine env vars: models.dev env + hermes extra
+        # Prefer auth.py PROVIDER_REGISTRY for env vars — it's Hermes' source of
+        # truth for variant providers that share a models.dev catalog entry.
         env_vars = list(mdev_info.env)
+        try:
+            from hermes_cli.auth import PROVIDER_REGISTRY as _AUTH_PROVIDER_REGISTRY
+            pconfig = _AUTH_PROVIDER_REGISTRY.get(canonical)
+            if pconfig and pconfig.api_key_env_vars:
+                env_vars = list(pconfig.api_key_env_vars)
+        except Exception:
+            pass
         if overlay and overlay.extra_env_vars:
             for ev in overlay.extra_env_vars:
                 if ev not in env_vars:
@@ -315,7 +333,7 @@ def get_provider(name: str) -> Optional[ProviderDef]:
 
         return ProviderDef(
             id=canonical,
-            name=mdev_info.name,
+            name=_LABEL_OVERRIDES.get(canonical, mdev_info.name),
             transport=transport,
             api_key_env_vars=tuple(env_vars),
             base_url=base_url_override or mdev_info.api,

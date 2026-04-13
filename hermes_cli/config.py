@@ -955,6 +955,21 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "XIAOMI_TOKEN_PLAN_API_KEY": {
+        "description": "Xiaomi MiMo Token Plan API key for the token-plan-sgp endpoint",
+        "prompt": "Xiaomi MiMo Token Plan API Key",
+        "url": "https://platform.xiaomimimo.com",
+        "password": True,
+        "category": "provider",
+    },
+    "XIAOMI_TOKEN_PLAN_BASE_URL": {
+        "description": "Xiaomi MiMo Token Plan base URL override (default: https://token-plan-sgp.xiaomimimo.com/v1)",
+        "prompt": "Xiaomi Token Plan base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
 
     # ── Tool API keys ──
     "EXA_API_KEY": {
