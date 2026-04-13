@@ -250,6 +250,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("HF_TOKEN",),
         base_url_env_var="HF_BASE_URL",
     ),
+    "fireworks": ProviderConfig(
+        id="fireworks",
+        name="Fireworks AI",
+        auth_type="api_key",
+        inference_base_url="https://api.fireworks.ai/inference/v1",
+        api_key_env_vars=("FIREWORKS_API_KEY",),
+        base_url_env_var="FIREWORKS_BASE_URL",
+    ),
     "xiaomi": ProviderConfig(
         id="xiaomi",
         name="Xiaomi MiMo",
@@ -934,6 +942,7 @@ def resolve_provider(
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
+        "fireworks-ai": "fireworks",
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
@@ -982,9 +991,30 @@ def resolve_provider(
     if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
         return "openrouter"
 
-    # Auto-detect API-key providers by checking their env vars
-    for pid, pconfig in PROVIDER_REGISTRY.items():
-        if pconfig.auth_type != "api_key":
+    # Auto-detect API-key providers by checking their env vars.
+    # Keep an explicit priority order so adding new providers does not
+    # silently change which ambient credential wins in auto mode.
+    provider_priority = [
+        "anthropic",
+        "gemini",
+        "zai",
+        "kimi-coding",
+        "minimax",
+        "minimax-cn",
+        "deepseek",
+        "xai",
+        "ai-gateway",
+        "opencode-zen",
+        "opencode-go",
+        "kilocode",
+        "huggingface",
+        "xiaomi",
+        "fireworks",
+        "alibaba",
+    ]
+    for pid in provider_priority:
+        pconfig = PROVIDER_REGISTRY.get(pid)
+        if not pconfig or pconfig.auth_type != "api_key":
             continue
         # GitHub tokens are commonly present for repo/tool access but should not
         # hijack inference auto-selection unless the user explicitly chooses
