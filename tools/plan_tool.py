@@ -3,9 +3,21 @@
 Allows entering/exiting plan mode and querying status.
 """
 
+import importlib.util
 import json
+import os
+import sys
 
 from tools.registry import registry
+
+PLAN_MODE_HOOK_MODULE_NAME = "plan_mode_hook"
+PLAN_MODE_HOOK_PATH = os.path.join(
+    os.path.dirname(__file__),
+    os.pardir,
+    "plugins",
+    "hongxing-enhancements",
+    "plan_mode_hook.py",
+)
 
 PLAN_MODE_SCHEMA = {
     "name": "plan_mode",
@@ -24,24 +36,33 @@ PLAN_MODE_SCHEMA = {
 }
 
 
+def _load_plan_mode_hook():
+    """Load the plan mode hook once and reuse the module instance."""
+    mod = sys.modules.get(PLAN_MODE_HOOK_MODULE_NAME)
+    if mod is not None:
+        return mod
+
+    spec = importlib.util.spec_from_file_location(
+        PLAN_MODE_HOOK_MODULE_NAME,
+        PLAN_MODE_HOOK_PATH,
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load {PLAN_MODE_HOOK_MODULE_NAME} from {PLAN_MODE_HOOK_PATH}")
+
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[PLAN_MODE_HOOK_MODULE_NAME] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except Exception:
+        sys.modules.pop(PLAN_MODE_HOOK_MODULE_NAME, None)
+        raise
+    return mod
+
+
 def plan_mode_handler(args: dict, **kwargs) -> str:
     """Handle plan_mode tool calls."""
-    import importlib
-    import os
-
     action = args.get("action", "status")
-
-    # Load plan_mode_hook via importlib (hyphenated directory)
-    plugin_dir = os.path.join(
-        os.path.dirname(__file__), os.pardir,
-        "plugins", "hongxing-enhancements",
-    )
-    spec = importlib.util.spec_from_file_location(
-        "plan_mode_hook",
-        os.path.join(plugin_dir, "plan_mode_hook.py"),
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    mod = _load_plan_mode_hook()
 
     if action == "enter":
         mod.enter_plan_mode()
