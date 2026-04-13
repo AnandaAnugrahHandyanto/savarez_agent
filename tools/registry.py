@@ -18,10 +18,7 @@ import ast
 import importlib
 import json
 import logging
-import threading
-import time
-from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Union
 
 logger = logging.getLogger(__name__)
 
@@ -83,9 +80,19 @@ class ToolEntry:
         "max_result_size_chars",
     )
 
-    def __init__(self, name, toolset, schema, handler, check_fn,
-                 requires_env, is_async, description, emoji,
-                 max_result_size_chars=None):
+    def __init__(
+        self,
+        name: str,
+        toolset: str,
+        schema: dict,
+        handler: Callable,
+        check_fn: Optional[Callable[[], bool]],
+        requires_env: List[str],
+        is_async: bool,
+        description: str,
+        emoji: str,
+        max_result_size_chars: Optional[Union[int, float]] = None,
+    ) -> None:
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -96,6 +103,12 @@ class ToolEntry:
         self.description = description
         self.emoji = emoji
         self.max_result_size_chars = max_result_size_chars
+
+    def __repr__(self) -> str:
+        return (
+            f"ToolEntry(name={self.name!r}, toolset={self.toolset!r}, "
+            f"is_async={self.is_async})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -143,81 +156,12 @@ def invalidate_check_fn_cache() -> None:
 class ToolRegistry:
     """Singleton registry that collects tool schemas + handlers from tool files."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._tools: Dict[str, ToolEntry] = {}
-        self._toolset_checks: Dict[str, Callable] = {}
-        self._toolset_aliases: Dict[str, str] = {}
-        # MCP dynamic refresh can mutate the registry while other threads are
-        # reading tool metadata, so keep mutations serialized and readers on
-        # stable snapshots.
-        self._lock = threading.RLock()
-        # Monotonically-increasing generation counter. Bumped on every
-        # mutation (register / deregister / register_toolset_alias / MCP
-        # refresh). External callers (e.g. get_tool_definitions) can memoize
-        # against it: a cache entry keyed on the generation is valid for as
-        # long as the generation hasn't changed.
-        self._generation: int = 0
+        self._toolset_checks: Dict[str, Callable[[], bool]] = {}
 
-    def _snapshot_state(self) -> tuple[List[ToolEntry], Dict[str, Callable]]:
-        """Return a coherent snapshot of registry entries and toolset checks."""
-        with self._lock:
-            return list(self._tools.values()), dict(self._toolset_checks)
-
-    def _snapshot_entries(self) -> List[ToolEntry]:
-        """Return a stable snapshot of registered tool entries."""
-        return self._snapshot_state()[0]
-
-    def _snapshot_toolset_checks(self) -> Dict[str, Callable]:
-        """Return a stable snapshot of toolset availability checks."""
-        return self._snapshot_state()[1]
-
-    def _evaluate_toolset_check(self, toolset: str, check: Callable | None) -> bool:
-        """Run a toolset check, treating missing or failing checks as unavailable/available."""
-        if not check:
-            return True
-        try:
-            return bool(check())
-        except Exception:
-            logger.debug("Toolset %s check raised; marking unavailable", toolset)
-            return False
-
-    def get_entry(self, name: str) -> Optional[ToolEntry]:
-        """Return a registered tool entry by name, or None."""
-        with self._lock:
-            return self._tools.get(name)
-
-    def get_registered_toolset_names(self) -> List[str]:
-        """Return sorted unique toolset names present in the registry."""
-        return sorted({entry.toolset for entry in self._snapshot_entries()})
-
-    def get_tool_names_for_toolset(self, toolset: str) -> List[str]:
-        """Return sorted tool names registered under a given toolset."""
-        return sorted(
-            entry.name for entry in self._snapshot_entries()
-            if entry.toolset == toolset
-        )
-
-    def register_toolset_alias(self, alias: str, toolset: str) -> None:
-        """Register an explicit alias for a canonical toolset name."""
-        with self._lock:
-            existing = self._toolset_aliases.get(alias)
-            if existing and existing != toolset:
-                logger.warning(
-                    "Toolset alias collision: '%s' (%s) overwritten by %s",
-                    alias, existing, toolset,
-                )
-            self._toolset_aliases[alias] = toolset
-            self._generation += 1
-
-    def get_registered_toolset_aliases(self) -> Dict[str, str]:
-        """Return a snapshot of ``{alias: canonical_toolset}`` mappings."""
-        with self._lock:
-            return dict(self._toolset_aliases)
-
-    def get_toolset_alias_target(self, alias: str) -> Optional[str]:
-        """Return the canonical toolset name for an alias, or None."""
-        with self._lock:
-            return self._toolset_aliases.get(alias)
+    def __repr__(self) -> str:
+        return f"ToolRegistry(tools={len(self._tools)})"
 
     # ------------------------------------------------------------------
     # Registration
@@ -229,13 +173,13 @@ class ToolRegistry:
         toolset: str,
         schema: dict,
         handler: Callable,
-        check_fn: Callable = None,
-        requires_env: list = None,
+        check_fn: Optional[Callable[[], bool]] = None,
+        requires_env: Optional[List[str]] = None,
         is_async: bool = False,
         description: str = "",
         emoji: str = "",
-        max_result_size_chars: int | float | None = None,
-    ):
+        max_result_size_chars: Optional[Union[int, float]] = None,
+    ) -> None:
         """Register a tool.  Called at module-import time by each tool file."""
         with self._lock:
             existing = self._tools.get(name)
@@ -318,20 +262,26 @@ class ToolRegistry:
         still take effect in near-real-time without forcing a full cache
         flush on every call.
         """
-        result = []
-        # Per-call cache on top of the 30 s TTL — handles repeat probes of the
-        # same check_fn within one definitions pass without re-reading the
-        # TTL clock.
-        check_results: Dict[Callable, bool] = {}
-        entries_by_name = {entry.name: entry for entry in self._snapshot_entries()}
+        result: List[dict] = []
+        # Use id(check_fn) as cache key instead of the callable object itself.
+        # This avoids holding strong references to callables that may prevent
+        # garbage collection and avoids potential memory leaks in long-running
+        # gateway processes.
+        check_results: Dict[int, bool] = {}
         for name in sorted(tool_names):
             entry = entries_by_name.get(name)
             if not entry:
                 continue
-            if entry.check_fn:
-                if entry.check_fn not in check_results:
-                    check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
-                if not check_results[entry.check_fn]:
+            if entry.check_fn is not None:
+                check_id = id(entry.check_fn)
+                if check_id not in check_results:
+                    try:
+                        check_results[check_id] = bool(entry.check_fn())
+                    except Exception:
+                        check_results[check_id] = False
+                        if not quiet:
+                            logger.debug("Tool %s check raised; skipping", name)
+                if not check_results[check_id]:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)
                     continue
@@ -344,16 +294,21 @@ class ToolRegistry:
     # Dispatch
     # ------------------------------------------------------------------
 
-    def dispatch(self, name: str, args: dict, **kwargs) -> str:
+    def dispatch(self, name: str, args: dict, **kwargs: Any) -> str:
         """Execute a tool handler by name.
 
         * Async handlers are bridged automatically via ``_run_async()``.
         * All exceptions are caught and returned as ``{"error": "..."}``
           for consistent error format.
+        * The ``error_type`` field distinguishes "unknown_tool" from
+          "execution_error" so callers can handle the two cases differently.
         """
         entry = self.get_entry(name)
         if not entry:
-            return json.dumps({"error": f"Unknown tool: {name}"})
+            return json.dumps({
+                "error": f"Unknown tool: {name}",
+                "error_type": "unknown_tool",
+            })
         try:
             if entry.is_async:
                 from model_tools import _run_async
@@ -361,13 +316,17 @@ class ToolRegistry:
             return entry.handler(args, **kwargs)
         except Exception as e:
             logger.exception("Tool %s dispatch error: %s", name, e)
-            return json.dumps({"error": f"Tool execution failed: {type(e).__name__}: {e}"})
+            return json.dumps({
+                "error": f"Tool execution failed: {type(e).__name__}: {e}",
+                "error_type": "execution_error",
+                "error_class": type(e).__name__,
+            })
 
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)
     # ------------------------------------------------------------------
 
-    def get_max_result_size(self, name: str, default: int | float | None = None) -> int | float:
+    def get_max_result_size(self, name: str, default: Optional[Union[int, float]] = None) -> Union[int, float]:
         """Return per-tool max result size, or *default* (or global default)."""
         entry = self.get_entry(name)
         if entry and entry.max_result_size_chars is not None:
@@ -466,13 +425,12 @@ class ToolRegistry:
                     result[ts]["env_vars"].append(env)
         return result
 
-    def check_tool_availability(self, quiet: bool = False):
+    def check_tool_availability(self, quiet: bool = False) -> tuple:
         """Return (available_toolsets, unavailable_info) like the old function."""
-        available = []
-        unavailable = []
-        seen = set()
-        entries, toolset_checks = self._snapshot_state()
-        for entry in entries:
+        available: List[str] = []
+        unavailable: List[dict] = []
+        seen: Set[str] = set()
+        for entry in self._tools.values():
             ts = entry.toolset
             if ts in seen:
                 continue
@@ -508,7 +466,7 @@ registry = ToolRegistry()
 #   return tool_result(items)            # pass a dict directly
 
 
-def tool_error(message, **extra) -> str:
+def tool_error(message: str, **extra: Any) -> str:
     """Return a JSON error string for tool handlers.
 
     >>> tool_error("file not found")
@@ -516,13 +474,13 @@ def tool_error(message, **extra) -> str:
     >>> tool_error("bad input", success=False)
     '{"error": "bad input", "success": false}'
     """
-    result = {"error": str(message)}
+    result: Dict[str, Any] = {"error": str(message)}
     if extra:
         result.update(extra)
     return json.dumps(result, ensure_ascii=False)
 
 
-def tool_result(data=None, **kwargs) -> str:
+def tool_result(data: Any = None, **kwargs: Any) -> str:
     """Return a JSON result string for tool handlers.
 
     Accepts a dict positional arg *or* keyword arguments (not both):
