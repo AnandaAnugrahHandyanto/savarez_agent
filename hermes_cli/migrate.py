@@ -54,12 +54,10 @@ def run_migrate(args):
             )
         elif action == "verify":
             _, verify_bundle = _lazy_import_verify()
-            success = verify_bundle(getattr(args, "input", None))
-            sys.exit(0 if success else 1)
+            return verify_bundle(getattr(args, "input", None))
         elif action == "doctor":
             run_doctor, _ = _lazy_import_verify()
-            success = run_doctor()
-            sys.exit(0 if success else 1)
+            return run_doctor()
     except KeyboardInterrupt:
         print(color("\n\nCancelled.", Colors.YELLOW))
         sys.exit(130)

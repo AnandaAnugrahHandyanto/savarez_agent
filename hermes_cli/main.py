@@ -2859,7 +2859,10 @@ def cmd_backup(args):
 def cmd_migrate(args):
     """Unified migration command — export, import, verify, doctor."""
     from hermes_cli import migrate as migrate_module
-    migrate_module.run_migrate(args)
+    action = getattr(args, "action", None)
+    result = migrate_module.run_migrate(args)
+    if action in ("verify", "doctor") and not result:
+        sys.exit(1)
 
 
 def cmd_import(args):
