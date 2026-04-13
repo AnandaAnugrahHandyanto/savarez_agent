@@ -1,17 +1,30 @@
-import { useEffect, useState } from "react";
+import React, { useState } from "react";
+import { Grid, Cell } from "@/nous/ui/grid";
 import {
   Activity,
   AlertTriangle,
+  ArrowUpCircle,
+  Calendar,
+  Check,
   Clock,
+  Copy,
   Cpu,
   Database,
+  FolderOpen,
+  Grid2X2,
+  HardDrive,
+  MessageCircle,
+  MessageSquare,
+  Phone,
   Radio,
+  Send,
   Shield,
   Wifi,
   WifiOff,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { PlatformStatus, SessionInfo, StatusResponse } from "@/lib/api";
+import { useAPI } from "@/hooks/useAPI";
 import { timeAgo, isoTimeAgo } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -29,6 +42,14 @@ const GATEWAY_STATE_DISPLAY: Record<string, { badge: "success" | "warning" | "de
   stopped: { badge: "outline", label: "Stopped" },
 };
 
+const PLATFORM_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+  discord: MessageCircle,
+  telegram: Send,
+  slack: MessageSquare,
+  whatsapp: Phone,
+  matrix: Grid2X2,
+};
+
 function gatewayValue(status: StatusResponse): string {
   if (status.gateway_running) return `PID ${status.gateway_pid}`;
   if (status.gateway_state === "startup_failed") return "Start failed";
@@ -44,18 +65,18 @@ function gatewayBadge(status: StatusResponse) {
 }
 
 export default function StatusPage() {
-  const [status, setStatus] = useState<StatusResponse | null>(null);
-  const [sessions, setSessions] = useState<SessionInfo[]>([]);
-
-  useEffect(() => {
-    const load = () => {
-      api.getStatus().then(setStatus).catch(() => {});
-      api.getSessions().then(setSessions).catch(() => {});
-    };
-    load();
-    const interval = setInterval(load, 5000);
-    return () => clearInterval(interval);
-  }, []);
+  const [migrateCopied, setMigrateCopied] = useState(false);
+  const { data: status } = useAPI<StatusResponse>(
+    "status",
+    api.getStatus,
+    { pollMs: 5000, staleMs: 3000 },
+  );
+  const { data: sessionsData } = useAPI<SessionInfo[]>(
+    "sessions",
+    api.getSessions,
+    { pollMs: 5000, staleMs: 3000 },
+  );
+  const sessions = sessionsData ?? [];
 
   if (!status) {
     return (
@@ -89,13 +110,15 @@ export default function StatusPage() {
       value: gatewayValue(status),
       badgeText: gwBadge.label,
       badgeVariant: gwBadge.badge,
+      title: "Process ID of the running gateway daemon",
     },
     {
       icon: Shield,
       label: "Config Version",
       value: `v${status.config_version}`,
-      badgeText: configNeedsMigration ? "Migrate" : "Current",
+      badgeText: configNeedsMigration ? "Outdated" : "Current",
       badgeVariant: (configNeedsMigration ? "warning" : "success") as "warning" | "success",
+      title: "Internal version number. Bump indicates schema changes.",
     },
   ];
 
@@ -118,9 +141,7 @@ export default function StatusPage() {
       detail: info.error_message ?? undefined,
     });
   }
-  if (configNeedsMigration) {
-    alerts.push({ message: `Config v${status.config_version} is outdated — v${status.latest_config_version} available` });
-  }
+  // Config migration is advisory, not critical — handled separately below
 
   return (
     <div className="flex flex-col gap-6">
@@ -143,27 +164,101 @@ export default function StatusPage() {
         </div>
       )}
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {items.map(({ icon: Icon, label, value, badgeText, badgeVariant }) => (
-          <Card key={label}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
+      {/* Config migration advisory */}
+      {configNeedsMigration && (
+        <div className="border border-warning/30 bg-warning/[0.06] p-4">
+          <div className="flex items-start gap-3">
+            <ArrowUpCircle className="h-5 w-5 text-warning shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-warning">
+                Config v{status.config_version} is outdated — v{status.latest_config_version} available
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Run the migration command in your terminal to update:
+              </p>
+              <div className="flex items-center gap-2 mt-2">
+                <code className="text-xs bg-muted/50 px-2.5 py-1 font-mono-ui text-foreground">
+                  hermes config migrate
+                </code>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                  onClick={() => {
+                    navigator.clipboard.writeText("hermes config migrate").then(() => {
+                      setMigrateCopied(true);
+                      setTimeout(() => setMigrateCopied(false), 2000);
+                    });
+                  }}
+                >
+                  {migrateCopied ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3" />}
+                  {migrateCopied ? "Copied" : "Copy"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <Grid className="border-b border-current/20">
+        {items.map(({ icon: Icon, label, value, badgeText, badgeVariant, title }) => (
+          <Cell key={label} className="flex flex-col gap-2" title={title}>
+            <div className="flex items-center justify-between">
               <CardTitle className="text-sm font-medium">{label}</CardTitle>
               <Icon className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-
-            <CardContent>
-              <div className="text-2xl font-bold font-display">{value}</div>
-
-              <Badge variant={badgeVariant} className="mt-2">
-                {badgeVariant === "success" && (
-                  <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
-                )}
-                {badgeText}
-              </Badge>
-            </CardContent>
-          </Card>
+            </div>
+            <div className="text-2xl font-bold font-display">{value}</div>
+            <Badge variant={badgeVariant}>
+              {badgeVariant === "success" && (
+                <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+              )}
+              {badgeText}
+            </Badge>
+          </Cell>
         ))}
-      </div>
+      </Grid>
+
+      {status.gateway_running && (
+        <div className="flex items-center gap-4 text-xs text-muted-foreground px-1">
+          <span>PID: <span className="font-mono-ui">{status.gateway_pid}</span></span>
+          <span>State: <span className="font-mono-ui">{status.gateway_state}</span></span>
+          {status.gateway_updated_at && (
+            <span>Updated: {isoTimeAgo(status.gateway_updated_at)}</span>
+          )}
+        </div>
+      )}
+      {!status.gateway_running && status.gateway_exit_reason && (
+        <div className="text-xs text-destructive/80 px-1">
+          Gateway stopped: {status.gateway_exit_reason}
+        </div>
+      )}
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <HardDrive className="h-5 w-5 text-muted-foreground" />
+            <CardTitle className="text-base">System Info</CardTitle>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {[
+              { label: "Hermes Home", value: status.hermes_home, icon: FolderOpen },
+              { label: "Config Path", value: status.config_path, icon: FolderOpen },
+              { label: "Env Path", value: status.env_path, icon: FolderOpen },
+              { label: "Release Date", value: status.release_date, icon: Calendar },
+              { label: "Total Sessions", value: `${sessions.length} sessions`, icon: Clock },
+            ].map(({ label, value, icon: InfoIcon }) => (
+              <div key={label} className="flex items-start gap-2">
+                <InfoIcon className="h-3.5 w-3.5 text-muted-foreground mt-0.5 shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-[0.65rem] text-muted-foreground uppercase tracking-wider">{label}</div>
+                  <div className="text-xs text-foreground truncate font-mono-ui" title={value}>{value}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
 
       {platforms.length > 0 && (
         <PlatformsCard platforms={platforms} />
@@ -262,7 +357,8 @@ function PlatformsCard({ platforms }: PlatformsCardProps) {
             variant: "outline" as const,
             label: info.state,
           };
-          const IconComponent = info.state === "connected" ? Wifi : info.state === "fatal" ? AlertTriangle : WifiOff;
+          const PlatformIcon = PLATFORM_ICONS[name.toLowerCase()] ?? Radio;
+          const StateIcon = info.state === "connected" ? Wifi : info.state === "fatal" ? AlertTriangle : WifiOff;
 
           return (
             <div
@@ -270,25 +366,32 @@ function PlatformsCard({ platforms }: PlatformsCardProps) {
               className="flex items-center justify-between border border-border p-3"
             >
               <div className="flex items-center gap-3">
-                <IconComponent className={`h-4 w-4 ${
-                  info.state === "connected"
-                    ? "text-success"
-                    : info.state === "fatal"
-                      ? "text-destructive"
-                      : "text-warning"
-                }`} />
+                <div className="flex items-center justify-center h-8 w-8 rounded-md bg-muted/50 shrink-0">
+                  <PlatformIcon className="h-4 w-4 text-foreground" />
+                </div>
 
                 <div className="flex flex-col gap-0.5">
-                  <span className="text-sm font-medium capitalize">{name}</span>
-
-                  {info.error_message && (
-                    <span className="text-xs text-destructive">{info.error_message}</span>
-                  )}
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium capitalize">{name}</span>
+                    <StateIcon className={`h-3 w-3 ${
+                      info.state === "connected"
+                        ? "text-success"
+                        : info.state === "fatal"
+                          ? "text-destructive"
+                          : "text-warning"
+                    }`} />
+                  </div>
 
                   {info.updated_at && (
                     <span className="text-xs text-muted-foreground">
                       Last update: {isoTimeAgo(info.updated_at)}
                     </span>
+                  )}
+
+                  {info.error_code && (
+                    <div className="text-[10px] text-destructive/80 mt-1">
+                      {info.error_code}: {info.error_message}
+                    </div>
                   )}
                 </div>
               </div>
