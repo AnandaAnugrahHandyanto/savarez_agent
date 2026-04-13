@@ -542,7 +542,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
             skill_dir = skill_md.parent
 
             try:
-                content = skill_md.read_text(encoding="utf-8")[:4000]
+                content = skill_md.read_text(encoding="utf-8")
                 frontmatter, body = _parse_frontmatter(content)
 
                 if not skill_matches_platform(frontmatter):
@@ -671,9 +671,10 @@ def skills_categories(verbose: bool = False, task_id: str = None) -> str:
 
                 try:
                     frontmatter, _ = _parse_frontmatter(
-                        skill_md.read_text(encoding="utf-8")[:4000]
+                        skill_md.read_text(encoding="utf-8")
                     )
-                except Exception:
+                except Exception as e:
+                    logger.warning("Failed to parse frontmatter for %s: %s", skill_md, e)
                     frontmatter = {}
 
                 if not skill_matches_platform(frontmatter):

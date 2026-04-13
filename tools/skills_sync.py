@@ -112,7 +112,7 @@ def _write_manifest(entries: Dict[str, str]):
 def _read_skill_name(skill_md: Path, fallback: str) -> str:
     """Read the name field from SKILL.md YAML frontmatter, falling back to *fallback*."""
     try:
-        content = skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
+        content = skill_md.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return fallback
     in_frontmatter = False
