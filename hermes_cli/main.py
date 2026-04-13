@@ -5220,83 +5220,6 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     return default
 
 
-def _web_ui_build_needed(web_dir: Path) -> bool:
-    """Return True if the web UI dist is missing or stale.
-
-    Mirrors the staleness logic used by ``_tui_build_needed()`` for the TUI.
-    The Vite build outputs to ``hermes_cli/web_dist/`` (per vite.config.ts
-    outDir: "../hermes_cli/web_dist"), NOT to ``web/dist/``.  Uses the Vite
-    manifest as the sentinel because it is written last and therefore has the
-    newest mtime of any build output.
-    """
-    dist_dir = web_dir.parent / "hermes_cli" / "web_dist"
-    sentinel = dist_dir / ".vite" / "manifest.json"
-    if not sentinel.exists():
-        sentinel = dist_dir / "index.html"
-    if not sentinel.exists():
-        return True
-    dist_mtime = sentinel.stat().st_mtime
-    skip = frozenset({"node_modules", "dist"})
-    for dirpath, dirnames, filenames in os.walk(web_dir, topdown=True):
-        dirnames[:] = [d for d in dirnames if d not in skip]
-        for fn in filenames:
-            if fn.endswith((".ts", ".tsx", ".js", ".jsx", ".css", ".html", ".vue")):
-                if os.path.getmtime(os.path.join(dirpath, fn)) > dist_mtime:
-                    return True
-    for meta in (
-        "package.json",
-        "package-lock.json",
-        "yarn.lock",
-        "pnpm-lock.yaml",
-        "vite.config.ts",
-        "vite.config.js",
-    ):
-        mp = web_dir / meta
-        if mp.exists() and mp.stat().st_mtime > dist_mtime:
-            return True
-    return False
-
-
-def _run_npm_install_deterministic(
-    npm: str,
-    cwd: Path,
-    *,
-    extra_args: tuple[str, ...] = (),
-    capture_output: bool = True,
-) -> subprocess.CompletedProcess:
-    """Run a deterministic npm install that does not mutate ``package-lock.json``.
-
-    Prefers ``npm ci`` (strict, lockfile-preserving) when a lockfile is present;
-    falls back to ``npm install`` only if ``npm ci`` fails (e.g. lockfile out of
-    sync on a WIP checkout).  Without this, ``npm install`` on npm ≥ 10 silently
-    rewrites committed lockfiles (stripping ``"peer": true`` etc.), which leaves
-    the working tree dirty and causes the next ``hermes update`` to stash the
-    lockfile — repeatedly.
-    """
-    lockfile = cwd / "package-lock.json"
-    if lockfile.exists():
-        ci_cmd = [npm, "ci", *extra_args]
-        ci_result = subprocess.run(
-            ci_cmd,
-            cwd=cwd,
-            capture_output=capture_output,
-            text=True,
-            check=False,
-        )
-        if ci_result.returncode == 0:
-            return ci_result
-        # Fall through to `npm install` — lockfile may be out of sync on a
-        # WIP fork/branch, or `npm ci` may not be available on very old npm.
-    install_cmd = [npm, "install", *extra_args]
-    return subprocess.run(
-        install_cmd,
-        cwd=cwd,
-        capture_output=capture_output,
-        text=True,
-        check=False,
-    )
-
-
 def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     """Build the web UI frontend if npm is available.
 
@@ -5309,10 +5232,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     """
     if not (web_dir / "package.json").exists():
         return True
-
-    if not _web_ui_build_needed(web_dir):
-        return True
-
+    import shutil
     npm = shutil.which("npm")
     if not npm:
         if fatal:
@@ -5320,217 +5240,22 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             print("Install Node.js, then run:  cd web && npm install && npm run build")
         return not fatal
     print("→ Building web UI...")
-    r1 = _run_npm_install_deterministic(npm, web_dir, extra_args=("--silent",))
+    r1 = subprocess.run([npm, "install", "--silent"], cwd=web_dir, capture_output=True)
     if r1.returncode != 0:
-        print(
-            f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
-            + ("" if fatal else " (hermes web will not be available)")
-        )
+        print(f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
+              + ("" if fatal else " (hermes web will not be available)"))
         if fatal:
             print("  Run manually:  cd web && npm install && npm run build")
         return False
     r2 = subprocess.run([npm, "run", "build"], cwd=web_dir, capture_output=True)
     if r2.returncode != 0:
-        print(
-            f"  {'✗' if fatal else '⚠'} Web UI build failed"
-            + ("" if fatal else " (hermes web will not be available)")
-        )
+        print(f"  {'✗' if fatal else '⚠'} Web UI build failed"
+              + ("" if fatal else " (hermes web will not be available)"))
         if fatal:
             print("  Run manually:  cd web && npm install && npm run build")
         return False
     print("  ✓ Web UI built")
     return True
-
-
-def _find_stale_dashboard_pids() -> list[int]:
-    """Return PIDs of ``hermes dashboard`` processes other than ourselves.
-
-    ``hermes dashboard`` is a long-lived server process commonly started and
-    forgotten.  When ``hermes update`` replaces files on disk, the running
-    process keeps the old Python backend in memory while the JS bundle on
-    disk is updated, causing a silent frontend/backend mismatch (e.g. new
-    auth headers the old backend doesn't recognise → every API call 401s).
-
-    The dashboard has no service manager (systemd / launchd), no PID file,
-    and we can't know the original launch args — so the only sane action
-    after an update is to kill the stale process and let the user restart
-    it.  This helper is just the detection step; see
-    ``_kill_stale_dashboard_processes`` for the kill.
-
-    Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
-    """
-    patterns = [
-        "hermes dashboard",
-        "hermes_cli.main dashboard",
-        "hermes_cli/main.py dashboard",
-    ]
-    self_pid = os.getpid()
-    dashboard_pids: list[int] = []
-
-    try:
-        if sys.platform == "win32":
-            # wmic may emit text in the system code page (for example cp936
-            # on zh-CN systems), not UTF-8. In text mode, subprocess output
-            # decoding depends on Python's configuration (locale-dependent
-            # by default, or UTF-8 in UTF-8 mode). The important protection
-            # here is errors="ignore": it prevents a reader-thread
-            # UnicodeDecodeError from leaving result.stdout=None and turning
-            # the later .split() into an AttributeError (#17049).
-            result = subprocess.run(
-                ["wmic", "process", "get", "ProcessId,CommandLine",
-                 "/FORMAT:LIST"],
-                capture_output=True, text=True, timeout=10,
-                encoding="utf-8", errors="ignore",
-            )
-            if result.returncode != 0 or result.stdout is None:
-                return []
-            current_cmd = ""
-            for line in result.stdout.split("\n"):
-                line = line.strip()
-                if line.startswith("CommandLine="):
-                    current_cmd = line[len("CommandLine="):]
-                elif line.startswith("ProcessId="):
-                    pid_str = line[len("ProcessId="):]
-                    if (any(p in current_cmd for p in patterns)
-                            and int(pid_str) != self_pid):
-                        try:
-                            dashboard_pids.append(int(pid_str))
-                        except ValueError:
-                            pass
-        else:
-            # Linux / macOS: scan the process table via ps and match against
-            # the same explicit patterns list used on Windows.  Using ps
-            # (rather than `pgrep -f "hermes.*dashboard"`) keeps us consistent
-            # with `hermes_cli.gateway._scan_gateway_pids` and avoids the
-            # greedy regex matching unrelated cmdlines that merely contain
-            # both words (e.g. a chat session discussing "dashboard").
-            result = subprocess.run(
-                ["ps", "-A", "-o", "pid=,command="],
-                capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode == 0:
-                for line in getattr(result, "stdout", "").split("\n"):
-                    stripped = line.strip()
-                    if not stripped or "grep" in stripped:
-                        continue
-                    parts = stripped.split(None, 1)
-                    if len(parts) != 2:
-                        continue
-                    try:
-                        pid = int(parts[0])
-                    except ValueError:
-                        continue
-                    command = parts[1]
-                    if (any(p in command for p in patterns)
-                            and pid != self_pid):
-                        dashboard_pids.append(pid)
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return []
-
-    return dashboard_pids
-
-
-def _kill_stale_dashboard_processes(
-    reason: str = "the running backend no longer matches the updated frontend",
-) -> None:
-    """Kill running ``hermes dashboard`` processes.
-
-    Called at the end of ``hermes update`` (default ``reason``) and also
-    from ``hermes dashboard --stop`` (which overrides ``reason``).  The
-    dashboard has no service manager, so after a code update the running
-    process is guaranteed to be serving stale Python against a
-    freshly-updated JS bundle.  Leaving it alive produces silent
-    frontend/backend mismatches (new auth headers the old backend doesn't
-    recognise → every API call 401s).
-
-    POSIX: SIGTERM, wait up to ~3s for graceful exit, SIGKILL any survivors.
-    Windows: ``taskkill /PID <pid> /F`` since there's no clean SIGTERM
-    equivalent for background console apps.
-
-    The dashboard isn't auto-restarted because we don't know the original
-    launch args (--host, --port, --insecure, --tui, --no-open).  The user
-    restarts it manually; a hint is printed.
-    """
-    pids = _find_stale_dashboard_pids()
-    if not pids:
-        return
-
-    print()
-    print(f"⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
-
-    killed: list[int] = []
-    failed: list[tuple[int, str]] = []
-
-    if sys.platform == "win32":
-        for pid in pids:
-            try:
-                result = subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/F"],
-                    capture_output=True, text=True, timeout=10,
-                )
-                if result.returncode == 0:
-                    killed.append(pid)
-                else:
-                    failed.append((pid, (result.stderr or result.stdout or "").strip()))
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
-                failed.append((pid, str(e)))
-    else:
-        import signal as _signal
-        import time as _time
-
-        # SIGTERM first — give each process a chance to shut down cleanly
-        # (uvicorn closes its socket, flushes logs, etc.).
-        for pid in pids:
-            try:
-                os.kill(pid, _signal.SIGTERM)
-            except ProcessLookupError:
-                # Already gone — count as killed.
-                killed.append(pid)
-            except (PermissionError, OSError) as e:
-                failed.append((pid, str(e)))
-
-        # Poll for exit up to ~3s total.
-        deadline = _time.monotonic() + 3.0
-        pending = [p for p in pids if p not in killed
-                   and p not in {f[0] for f in failed}]
-        while pending and _time.monotonic() < deadline:
-            _time.sleep(0.1)
-            still_pending = []
-            for pid in pending:
-                try:
-                    os.kill(pid, 0)  # probe
-                except ProcessLookupError:
-                    killed.append(pid)
-                except (PermissionError, OSError):
-                    # Can't probe — assume still there.
-                    still_pending.append(pid)
-                else:
-                    still_pending.append(pid)
-            pending = still_pending
-
-        # SIGKILL any survivors.
-        for pid in pending:
-            try:
-                os.kill(pid, _signal.SIGKILL)
-                killed.append(pid)
-            except ProcessLookupError:
-                killed.append(pid)
-            except (PermissionError, OSError) as e:
-                failed.append((pid, str(e)))
-
-    for pid in killed:
-        print(f"    ✓ stopped PID {pid}")
-    for pid, reason in failed:
-        print(f"    ✗ failed to stop PID {pid}: {reason}")
-
-    if killed:
-        print("  Restart the dashboard when you're ready:")
-        print("    hermes dashboard --port <port>")
-
-
-# Back-compat alias: some tests and any external callers may import the old
-# warn-only name.  The new behaviour (kill stale processes) replaces it.
-_warn_stale_dashboard_processes = _kill_stale_dashboard_processes
 
 
 def _update_via_zip(args):
@@ -5641,7 +5366,7 @@ def _update_via_zip(args):
             )
         _install_python_dependencies_with_optional_fallback(pip_cmd)
 
-    _update_node_dependencies()
+    # Build web UI frontend (optional — requires npm)
     _build_web_ui(PROJECT_ROOT / "web")
 
     # Sync skills
@@ -6942,8 +6667,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     check=True,
                 )
             _install_python_dependencies_with_optional_fallback(pip_cmd)
+        
+        # Check for Node.js deps
+        if (PROJECT_ROOT / "package.json").exists():
+            import shutil
+            if shutil.which("npm"):
+                print("→ Updating Node.js dependencies...")
+                subprocess.run(["npm", "install", "--silent"], cwd=PROJECT_ROOT, check=False)
 
-        _update_node_dependencies()
+        # Build web UI frontend (optional — requires npm)
         _build_web_ui(PROJECT_ROOT / "web")
 
         print()
@@ -7559,41 +7291,10 @@ def _coalesce_session_name_args(argv: list) -> list:
     or a known top-level subcommand.
     """
     _SUBCOMMANDS = {
-        "chat",
-        "model",
-        "gateway",
-        "setup",
-        "whatsapp",
-        "login",
-        "logout",
-        "auth",
-        "status",
-        "cron",
-        "doctor",
-        "config",
-        "pairing",
-        "skills",
-        "tools",
-        "mcp",
-        "sessions",
-        "insights",
-        "version",
-        "update",
-        "uninstall",
-        "profile",
-        "dashboard",
-        "honcho",
-        "claw",
-        "plugins",
-        "acp",
-        "webhook",
-        "memory",
-        "dump",
-        "debug",
-        "backup",
-        "import",
-        "completion",
-        "logs",
+        "chat", "model", "gateway", "setup", "whatsapp", "login", "logout", "auth",
+        "status", "cron", "doctor", "config", "pairing", "skills", "tools",
+        "mcp", "sessions", "insights", "version", "update", "uninstall",
+        "profile", "dashboard",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -7919,90 +7620,28 @@ def cmd_profile(args):
             sys.exit(1)
 
 
-def _report_dashboard_status() -> int:
-    """Print ``hermes dashboard`` PIDs and return the count.
-
-    Uses the same detection logic as ``_find_stale_dashboard_pids`` (the
-    current process is excluded, but since ``hermes dashboard --status``
-    runs in a short-lived CLI process that never matches the pattern,
-    the exclusion is irrelevant here).
-    """
-    pids = _find_stale_dashboard_pids()
-    if not pids:
-        print("No hermes dashboard processes running.")
-        return 0
-
-    print(f"{len(pids)} hermes dashboard process(es) running:")
-    for pid in pids:
-        # Best-effort: show the full cmdline so users can tell profiles apart.
-        cmdline = ""
-        try:
-            if sys.platform != "win32":
-                cmdline_path = f"/proc/{pid}/cmdline"
-                if os.path.exists(cmdline_path):
-                    with open(cmdline_path, "rb") as f:
-                        cmdline = f.read().replace(b"\x00", b" ").decode(
-                            "utf-8", errors="replace").strip()
-        except (OSError, ValueError):
-            pass
-        if cmdline:
-            print(f"    PID {pid}: {cmdline}")
-        else:
-            print(f"    PID {pid}")
-    return len(pids)
-
-
 def cmd_dashboard(args):
-    """Start the web UI server, or (with --stop/--status) manage running ones."""
-    # --status: report running dashboards and exit, no deps needed.
-    if getattr(args, "status", False):
-        count = _report_dashboard_status()
-        sys.exit(0 if count == 0 else 0)  # status is informational, always 0
-
-    # --stop: kill any running dashboards and exit, no deps needed.
-    if getattr(args, "stop", False):
-        pids = _find_stale_dashboard_pids()
-        if not pids:
-            print("No hermes dashboard processes running.")
-            sys.exit(0)
-        # Reuse the same SIGTERM-grace-SIGKILL path used after `hermes update`.
-        _kill_stale_dashboard_processes(reason="requested via --stop")
-        # _kill_stale_dashboard_processes prints outcomes itself.  Exit 0 if
-        # we killed at least one, 1 if they were all unkillable.
-        remaining = _find_stale_dashboard_pids()
-        sys.exit(1 if remaining else 0)
-
+    """Start the web UI server."""
     try:
         import fastapi  # noqa: F401
         import uvicorn  # noqa: F401
-    except ImportError as e:
-        print("Web UI dependencies not installed (need fastapi + uvicorn).")
-        print(
-            f"Re-install the package into this interpreter so metadata updates apply:\n"
-            f"  cd {PROJECT_ROOT}\n"
-            f"  {sys.executable} -m pip install -e .\n"
-            "If `pip` is missing in this venv, use:  uv pip install -e ."
-        )
-        print(f"Import error: {e}")
+    except ImportError:
+        print("Web UI dependencies not installed.")
+        print("Install them with:  pip install hermes-agent[web]")
         sys.exit(1)
 
-    if "HERMES_WEB_DIST" not in os.environ:
-        if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
-            sys.exit(1)
+    if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
+        sys.exit(1)
 
     from hermes_cli.web_server import start_server
-
-    embedded_chat = args.tui or os.environ.get("HERMES_DASHBOARD_TUI") == "1"
     start_server(
         host=args.host,
         port=args.port,
         open_browser=not args.no_open,
-        allow_public=getattr(args, "insecure", False),
-        embedded_chat=embedded_chat,
     )
 
 
-def cmd_completion(args, parser=None):
+def cmd_completion(args):
     """Print shell completion script."""
     from hermes_cli.completion import generate_bash, generate_zsh, generate_fish
 
@@ -10116,6 +9755,19 @@ Examples:
         action="store_true",
         help="List running hermes dashboard processes and exit",
     )
+    dashboard_parser.set_defaults(func=cmd_dashboard)
+
+    # =========================================================================
+    # dashboard command
+    # =========================================================================
+    dashboard_parser = subparsers.add_parser(
+        "dashboard",
+        help="Start the web UI dashboard",
+        description="Launch the Hermes Agent web dashboard for managing config, API keys, and sessions",
+    )
+    dashboard_parser.add_argument("--port", type=int, default=9119, help="Port (default 9119)")
+    dashboard_parser.add_argument("--host", default="127.0.0.1", help="Host (default 127.0.0.1)")
+    dashboard_parser.add_argument("--no-open", action="store_true", help="Don't open browser automatically")
     dashboard_parser.set_defaults(func=cmd_dashboard)
 
     # =========================================================================
