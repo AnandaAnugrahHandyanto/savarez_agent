@@ -83,96 +83,32 @@ def _build_skill_message(
     user_instruction: str = "",
     runtime_note: str = "",
 ) -> str:
-    """Format a loaded skill into a user/system message payload."""
-    from tools.skills_tool import SKILLS_DIR
+    """Format a loaded skill into a user/system message payload.
 
-    content = str(loaded_skill.get("content") or "")
+    Thin adapter over ``agent.skill_context.build_skill_context`` — shared
+    with the cron executor path so per-skill features (setup hints,
+    supporting-file pointers, BRAID plans) don't drift between the two.
+    See ``agent/skill_context.py`` module docstring for the F-014 rationale.
+    """
+    from agent.skill_context import build_skill_context
 
-    parts = [activation_note]
+    block = build_skill_context(
+        loaded_skill,
+        activation_note=activation_note,
+        skill_dir=skill_dir,
+        include_setup_hints=True,
+        include_supporting_files=True,
+    )
 
-    # BRAID optional reasoning plan (arXiv:2512.15959). When a skill ships
-    # a SKILL.mmd sibling, render it ahead of the prose content so the
-    # solver treats the flowchart as the primary decision topology and the
-    # SKILL.md body as reference detail.
-    mermaid_plan = str(loaded_skill.get("mermaid_plan") or "").strip()
-    if mermaid_plan:
-        parts.extend(
-            [
-                "",
-                "[BRAID Reasoning Plan — treat this Mermaid flowchart as your primary "
-                "decision topology. Each node is an atomic step; labeled edges are "
-                "explicit conditions; terminal Check nodes must all pass before emitting "
-                "the final response. Do not render the diagram visually — traverse it to "
-                "produce the final output. The prose skill content below is reference "
-                "detail.]",
-                "",
-                "```mermaid",
-                mermaid_plan,
-                "```",
-            ]
-        )
-
-    parts.extend(["", content.strip()])
-
-    if loaded_skill.get("setup_skipped"):
-        parts.extend(
-            [
-                "",
-                "[Skill setup note: Required environment setup was skipped. Continue loading the skill and explain any reduced functionality if it matters.]",
-            ]
-        )
-    elif loaded_skill.get("gateway_setup_hint"):
-        parts.extend(
-            [
-                "",
-                f"[Skill setup note: {loaded_skill['gateway_setup_hint']}]",
-            ]
-        )
-    elif loaded_skill.get("setup_needed") and loaded_skill.get("setup_note"):
-        parts.extend(
-            [
-                "",
-                f"[Skill setup note: {loaded_skill['setup_note']}]",
-            ]
-        )
-
-    supporting = []
-    linked_files = loaded_skill.get("linked_files") or {}
-    for entries in linked_files.values():
-        if isinstance(entries, list):
-            supporting.extend(entries)
-
-    if not supporting and skill_dir:
-        for subdir in ("references", "templates", "scripts", "assets"):
-            subdir_path = skill_dir / subdir
-            if subdir_path.exists():
-                for f in sorted(subdir_path.rglob("*")):
-                    if f.is_file():
-                        rel = str(f.relative_to(skill_dir))
-                        supporting.append(rel)
-
-    if supporting and skill_dir:
-        try:
-            skill_view_target = str(skill_dir.relative_to(SKILLS_DIR))
-        except ValueError:
-            # Skill is from an external dir — use the skill name instead
-            skill_view_target = skill_dir.name
-        parts.append("")
-        parts.append("[This skill has supporting files you can load with the skill_view tool:]")
-        for sf in supporting:
-            parts.append(f"- {sf}")
-        parts.append(
-            f'\nTo view any of these, use: skill_view(name="{skill_view_target}", file_path="<path>")'
-        )
-
+    parts = [block]
     if user_instruction:
         parts.append("")
-        parts.append(f"The user has provided the following instruction alongside the skill invocation: {user_instruction}")
-
+        parts.append(
+            f"The user has provided the following instruction alongside the skill invocation: {user_instruction}"
+        )
     if runtime_note:
         parts.append("")
         parts.append(f"[Runtime note: {runtime_note}]")
-
     return "\n".join(parts)
 
 
