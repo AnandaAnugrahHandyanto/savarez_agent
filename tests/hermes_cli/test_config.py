@@ -592,7 +592,7 @@ class TestCustomProviderCompatibility:
 class TestCompressionSummaryMigration:
     """Version 16 → 17 migration of legacy compression summary settings."""
 
-    def test_v16_upgrade_drops_provider_scoped_summary_model_without_target_provider(self, tmp_path):
+    def test_v16_upgrade_keeps_summary_model_with_auto_provider(self, tmp_path):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             yaml.safe_dump(
@@ -616,7 +616,7 @@ class TestCompressionSummaryMigration:
         assert "summary_provider" not in raw["compression"]
         assert "summary_base_url" not in raw["compression"]
         aux_comp = raw.get("auxiliary", {}).get("compression", {})
-        assert aux_comp["model"] == ""
+        assert aux_comp["model"] == "google/gemini-3-flash-preview"
         assert aux_comp["provider"] == "auto"
         assert aux_comp["base_url"] == ""
 

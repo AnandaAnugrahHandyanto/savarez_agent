@@ -2203,38 +2203,26 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             s_provider = comp.pop("summary_provider", None)
             s_base_url = comp.pop("summary_base_url", None)
             migrated_keys = []
-            removed_keys = []
             aux = config.get("auxiliary", {})
             if not isinstance(aux, dict):
                 aux = {}
             aux_comp = aux.get("compression", {})
             if not isinstance(aux_comp, dict):
                 aux_comp = {}
-
-            current_aux_provider = str(aux_comp.get("provider", "")).strip()
-            current_aux_base_url = str(aux_comp.get("base_url", "")).strip()
             summary_provider = str(s_provider).strip() if s_provider is not None else ""
             summary_base_url = str(s_base_url).strip() if s_base_url is not None else ""
 
-            # A legacy provider-qualified model like "google/gemini-..." only
-            # remains meaningful after migration when compression also has an
-            # explicit provider/base_url target. Otherwise it can break auto
-            # routing by forcing a model slug onto the wrong provider.
-            effective_provider = current_aux_provider or (
-                summary_provider if summary_provider not in ("", "auto") else ""
-            )
-            effective_base_url = current_aux_base_url or summary_base_url
             # Migrate non-empty, non-default values to auxiliary.compression
             if s_model and str(s_model).strip():
                 summary_model = str(s_model).strip()
-                if effective_provider or effective_base_url or "/" not in summary_model:
-                    aux = config.setdefault("auxiliary", {})
-                    aux_comp = aux.setdefault("compression", {})
-                    if not aux_comp.get("model"):
-                        aux_comp["model"] = summary_model
-                        migrated_keys.append(f"model={summary_model}")
-                else:
-                    removed_keys.append(f"model={summary_model}")
+                # Keep migrating the model override, including provider="auto".
+                # The auxiliary runtime already drops incompatible OpenRouter-
+                # style model slugs after it resolves the actual provider.
+                aux = config.setdefault("auxiliary", {})
+                aux_comp = aux.setdefault("compression", {})
+                if not aux_comp.get("model"):
+                    aux_comp["model"] = summary_model
+                    migrated_keys.append(f"model={summary_model}")
             if summary_provider not in ("", "auto"):
                 aux = config.setdefault("auxiliary", {})
                 aux_comp = aux.setdefault("compression", {})
@@ -2253,16 +2241,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 if not quiet:
                     if migrated_keys:
                         print(f"  ✓ Migrated compression.summary_* → auxiliary.compression: {', '.join(migrated_keys)}")
-                        if removed_keys:
-                            print(
-                                "  ✓ Removed incompatible compression.summary_* values: "
-                                + ", ".join(removed_keys)
-                            )
-                    elif removed_keys:
-                        print(
-                            "  ✓ Removed incompatible compression.summary_* values: "
-                            + ", ".join(removed_keys)
-                        )
                     else:
                         print("  ✓ Removed unused compression.summary_* keys")
 
