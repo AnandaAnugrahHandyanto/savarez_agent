@@ -569,8 +569,19 @@ def check_dangerous_command(command: str, env_type: str,
     is_cli = os.getenv("HERMES_INTERACTIVE")
     is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
 
+    # Fail-closed: in non-interactive mode without a gateway session, we cannot
+    # ask the user to approve dangerous commands, so we must deny them.
+    # Use HERMES_YOLO_MODE=1 or add the pattern to command_allowlist for
+    # unattended/batch scenarios that genuinely need dangerous commands.
     if not is_cli and not is_gateway:
-        return {"approved": True, "message": None}
+        return {
+            "approved": False,
+            "message": f"BLOCKED: Cannot execute dangerous command in non-interactive mode "
+                        f"({description}). Use YOLO mode or add to command_allowlist for "
+                        f"unattended execution.",
+            "pattern_key": pattern_key,
+            "description": description,
+        }
 
     if is_gateway or os.getenv("HERMES_EXEC_ASK"):
         submit_pending(session_key, {
