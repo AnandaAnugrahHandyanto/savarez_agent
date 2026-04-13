@@ -383,34 +383,16 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 continue
             # Match exact name or normalized name
             name_norm = _normalize_custom_provider_name(ep_name)
-            # Resolve the API key from the env var name stored in key_env
-            key_env = str(entry.get("key_env", "") or "").strip()
-            resolved_api_key = os.getenv(key_env, "").strip() if key_env else ""
-            # Fall back to inline api_key when key_env is absent or unresolvable
-            if not resolved_api_key:
-                resolved_api_key = str(entry.get("api_key", "") or "").strip()
-
             if requested_norm in {ep_name, name_norm, f"custom:{name_norm}"}:
                 # Found match by provider key
                 base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                 if base_url:
-                    result = {
+                    return {
                         "name": entry.get("name", ep_name),
                         "base_url": base_url.strip(),
-                        "api_key": resolved_api_key,
+                        "api_key": str(entry.get("key_env", "") or "").strip(),
                         "model": entry.get("default_model", ""),
                     }
-                    # The v11→v12 migration writes the API mode under the new
-                    # ``transport`` field, but hand-edited configs may still
-                    # use the legacy ``api_mode`` spelling.  Accept both —
-                    # the runtime normaliser ``_normalize_custom_provider_entry``
-                    # already does, so without this lift every migrated config
-                    # silently downgrades codex_responses / anthropic_messages
-                    # providers to chat_completions in the resolved runtime.
-                    api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
-                    if api_mode:
-                        result["api_mode"] = api_mode
-                    return result
             # Also check the 'name' field if present
             display_name = entry.get("name", "")
             if display_name:
@@ -419,16 +401,12 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     # Found match by display name
                     base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                     if base_url:
-                        result = {
+                        return {
                             "name": display_name,
                             "base_url": base_url.strip(),
-                            "api_key": resolved_api_key,
+                            "api_key": str(entry.get("key_env", "") or "").strip(),
                             "model": entry.get("default_model", ""),
                         }
-                        api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
-                        if api_mode:
-                            result["api_mode"] = api_mode
-                        return result
 
     # Fall back to custom_providers: list (legacy format)
     custom_providers = config.get("custom_providers")
