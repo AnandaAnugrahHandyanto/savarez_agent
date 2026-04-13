@@ -839,7 +839,7 @@ class SessionDB:
                     (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                      FROM messages m
                      WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                     ORDER BY m.timestamp, m.id LIMIT 1),
+                     ORDER BY m.timestamp DESC, m.id DESC LIMIT 1),
                     ''
                 ) AS _preview_raw,
                 COALESCE(
