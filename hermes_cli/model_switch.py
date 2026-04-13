@@ -988,18 +988,32 @@ def list_authenticated_providers(
             if slug in seen_slugs:
                 continue
 
-            models_list = []
+            models_list: list[str] = []
+            seen_models: set[str] = set()
+
             default_model = (entry.get("model") or "").strip()
             if default_model:
                 models_list.append(default_model)
+                seen_models.add(default_model)
+
+            configured_models = entry.get("models")
+            if isinstance(configured_models, dict):
+                for model_id in configured_models.keys():
+                    normalized_model = str(model_id or "").strip()
+                    if not normalized_model or normalized_model in seen_models:
+                        continue
+                    models_list.append(normalized_model)
+                    seen_models.add(normalized_model)
+
+            total_models = len(models_list)
 
             results.append({
                 "slug": slug,
                 "name": display_name,
                 "is_current": slug == current_provider,
                 "is_user_defined": True,
-                "models": models_list,
-                "total_models": len(models_list),
+                "models": models_list[:max_models],
+                "total_models": total_models,
                 "source": "user-config",
                 "api_url": api_url,
             })
