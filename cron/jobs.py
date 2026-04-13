@@ -55,12 +55,44 @@ def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = N
     return normalized
 
 
+def _normalize_label_list(labels: Optional[Any] = None) -> List[str]:
+    """Normalize labels into a unique ordered list."""
+    if labels is None:
+        raw_items: List[Any] = []
+    elif isinstance(labels, str):
+        raw_items = [labels]
+    else:
+        raw_items = list(labels)
+
+    normalized: List[str] = []
+    for item in raw_items:
+        text = str(item or "").strip()
+        if text and text not in normalized:
+            normalized.append(text)
+    return normalized
+
+
+def _normalize_metadata(metadata: Optional[Any] = None) -> Dict[str, str]:
+    """Normalize metadata into a shallow string:string dictionary."""
+    if not isinstance(metadata, dict):
+        return {}
+    normalized: Dict[str, str] = {}
+    for key, value in metadata.items():
+        text_key = str(key or "").strip()
+        if not text_key:
+            continue
+        normalized[text_key] = "" if value is None else str(value)
+    return normalized
+
+
 def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a job dict with canonical `skills` and legacy `skill` fields aligned."""
+    """Return a job dict with canonical skill, label, and metadata fields aligned."""
     normalized = dict(job)
     skills = _normalize_skill_list(normalized.get("skill"), normalized.get("skills"))
     normalized["skills"] = skills
     normalized["skill"] = skills[0] if skills else None
+    normalized["labels"] = _normalize_label_list(normalized.get("labels"))
+    normalized["metadata"] = _normalize_metadata(normalized.get("metadata"))
     return normalized
 
 
@@ -376,6 +408,8 @@ def create_job(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     script: Optional[str] = None,
+    labels: Optional[List[str]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -395,6 +429,8 @@ def create_job(
         script: Optional path to a Python script whose stdout is injected into the
                 prompt each run.  The script runs before the agent turn, and its output
                 is prepended as context.  Useful for data collection / change detection.
+        labels: Optional ordered list of stable labels for rediscovery and filtering
+        metadata: Optional shallow dictionary of job metadata
 
     Returns:
         The created job dict
@@ -425,6 +461,8 @@ def create_job(
     normalized_base_url = normalized_base_url or None
     normalized_script = str(script).strip() if isinstance(script, str) else None
     normalized_script = normalized_script or None
+    normalized_labels = _normalize_label_list(labels)
+    normalized_metadata = _normalize_metadata(metadata)
 
     label_source = (prompt or (normalized_skills[0] if normalized_skills else None)) or "cron job"
     job = {
@@ -455,6 +493,8 @@ def create_job(
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
+        "labels": normalized_labels,
+        "metadata": normalized_metadata,
     }
 
     jobs = load_jobs()
@@ -474,10 +514,18 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
-    """List all jobs, optionally including disabled ones."""
+    """List all jobs, optionally including disabled ones.
+
+    Error-state jobs (state=="error") remain visible even with the default
+    filter — they were auto-disabled by the scheduler due to a schedule
+    problem, and the operator needs to see them to fix or delete them.
+    """
     jobs = [_apply_skill_fields(j) for j in load_jobs()]
     if not include_disabled:
-        jobs = [j for j in jobs if j.get("enabled", True)]
+        jobs = [
+            j for j in jobs
+            if j.get("enabled", True) or j.get("state") == "error"
+        ]
     return jobs
 
 
@@ -495,6 +543,10 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
             updated["skills"] = normalized_skills
             updated["skill"] = normalized_skills[0] if normalized_skills else None
+        if "labels" in updates:
+            updated["labels"] = _normalize_label_list(updated.get("labels"))
+        if "metadata" in updates:
+            updated["metadata"] = _normalize_metadata(updated.get("metadata"))
 
         if schedule_changed:
             updated_schedule = updated["schedule"]
@@ -697,12 +749,50 @@ def get_due_jobs() -> List[Dict[str, Any]]:
                                 needs_save = True
                                 break
                     else:
-                        logger.warning(
-                            "Job '%s' (%s) has null next_run_at and compute_next_run returned None; job will not fire",
-                            job.get("name", job["id"]), kind,
+                        # F-007: stop silently dropping this job on every tick.
+                        # Something is wrong with its schedule; disable it and
+                        # surface the failure via state so `hermes cron list`
+                        # can show it to the operator.
+                        reason = (
+                            f"compute_next_run returned None for schedule={schedule!r}; "
+                            "job disabled to stop silent skip loop"
                         )
+                        logger.warning(
+                            "Job '%s' (%s): %s",
+                            job.get("name", job["id"]), kind, reason,
+                        )
+                        job["enabled"] = False
+                        job["state"] = "error"
+                        job["error_reason"] = reason
+                        for rj in raw_jobs:
+                            if rj["id"] == job["id"]:
+                                rj["enabled"] = False
+                                rj["state"] = "error"
+                                rj["error_reason"] = reason
+                                needs_save = True
+                                break
                         continue
                 else:
+                    # Non-cron/interval schedule (e.g., one-shot) with null
+                    # next_run_at and no recoverable value — same treatment.
+                    reason = (
+                        f"schedule kind={kind!r} has null next_run_at with no recoverable value; "
+                        "job disabled to stop silent skip loop"
+                    )
+                    logger.warning(
+                        "Job '%s' (%s): %s",
+                        job.get("name", job["id"]), kind, reason,
+                    )
+                    job["enabled"] = False
+                    job["state"] = "error"
+                    job["error_reason"] = reason
+                    for rj in raw_jobs:
+                        if rj["id"] == job["id"]:
+                            rj["enabled"] = False
+                            rj["state"] = "error"
+                            rj["error_reason"] = reason
+                            needs_save = True
+                            break
                     continue
             else:
                 job["next_run_at"] = recovered_next

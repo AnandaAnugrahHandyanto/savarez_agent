@@ -77,6 +77,8 @@ def cron_list(show_all: bool = False):
             status = color("[paused]", Colors.YELLOW)
         elif state == "completed":
             status = color("[completed]", Colors.BLUE)
+        elif state == "error":
+            status = color("[error]", Colors.RED)
         elif job.get("enabled", True):
             status = color("[active]", Colors.GREEN)
         else:
@@ -107,6 +109,10 @@ def cron_list(show_all: bool = False):
         delivery_err = job.get("last_delivery_error")
         if delivery_err:
             print(f"    {color('⚠ Delivery failed:', Colors.YELLOW)} {delivery_err}")
+
+        error_reason = job.get("error_reason")
+        if error_reason:
+            print(f"    {color('⚠ Error:', Colors.RED)} {error_reason}")
 
         print()
 
