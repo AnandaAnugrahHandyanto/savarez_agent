@@ -24,7 +24,19 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Callable
 
 from tools.delegate_tool import delegate_task as _delegate_task
-from tools.harness_hooks import HarnessHookManager, get_project_harness_config
+import sys
+import os
+
+# 동적 스킬 모듈 로딩 (팀 에이전트 하네스가 설치된 경우에만 활성화)
+SKILL_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../skills/software-development/team-harness/scripts"))
+if os.path.exists(SKILL_PATH) and SKILL_PATH not in sys.path:
+    sys.path.insert(0, SKILL_PATH)
+
+try:
+    from harness_hooks import HarnessHookManager, get_project_harness_config
+except ImportError:
+    HarnessHookManager = None
+    get_project_harness_config = None
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +183,7 @@ class StagedDelegateOrchestrator:
         self.parent_agent = parent_agent
         self.verbose = verbose
         self.use_harness = use_harness
-        self.harness = HarnessHookManager() if use_harness else None
+        self.harness = (HarnessHookManager() if use_harness and HarnessHookManager else None)
         self.results: List[StageResult] = []
 
     def log(self, message: str, level: str = "INFO"):

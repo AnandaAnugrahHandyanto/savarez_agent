@@ -23,7 +23,7 @@ import yaml
 # 프로젝트 루트를 sys.path에 추가
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tools.enforcement_engine import (
+from enforcement_engine import (
     EnforcementEngine,
     EnforcementResult,
     enforce_delegate,
@@ -264,7 +264,7 @@ class TestEnforceDelegate:
     def test_strict_raises_runtime_error(self, strict_config):
         with mock.patch.dict(os.environ, {}):
             with mock.patch(
-                "tools.enforcement_engine.EnforcementEngine.__init__",
+                "enforcement_engine.EnforcementEngine.__init__",
                 lambda self, **kw: setattr(self, 'config_path', strict_config) or
                                    setattr(self, 'config', EnforcementEngine.DEFAULT_CONFIG.copy()) or
                                    setattr(self, '_bypass_cache', {})
