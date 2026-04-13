@@ -320,7 +320,7 @@ def stop_profile_gateway() -> bool:
         try:
             os.kill(pid, 0)
             _time.sleep(0.5)
-        except (ProcessLookupError, PermissionError):
+        except (ProcessLookupError, PermissionError, OSError, SystemError):
             break
 
     remove_pid_file()

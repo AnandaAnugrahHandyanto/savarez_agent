@@ -312,7 +312,7 @@ def _check_gateway_running(profile_dir: Path) -> bool:
         os.kill(pid, 0)  # existence check
         return True
     except (json.JSONDecodeError, KeyError, ValueError, TypeError,
-            ProcessLookupError, PermissionError, OSError):
+            ProcessLookupError, PermissionError, OSError, SystemError):
         return False
 
 
@@ -664,13 +664,13 @@ def _stop_gateway_process(profile_dir: Path) -> None:
             _time.sleep(0.5)
             try:
                 os.kill(pid, 0)
-            except ProcessLookupError:
+            except (ProcessLookupError, OSError, SystemError):
                 print(f"✓ Gateway stopped (PID {pid})")
                 return
         # Force kill
         try:
             os.kill(pid, _signal.SIGKILL)
-        except ProcessLookupError:
+        except (ProcessLookupError, OSError, SystemError):
             pass
         print(f"✓ Gateway force-stopped (PID {pid})")
     except (ProcessLookupError, PermissionError):
