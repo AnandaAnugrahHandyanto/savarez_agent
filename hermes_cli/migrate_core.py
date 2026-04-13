@@ -175,11 +175,18 @@ def _remap_content(content: str, source_home: Path, target_home: Path) -> str:
     """
     source_str = str(source_home).replace("\\", "/")
     target_str = str(target_home).replace("\\", "/")
-    if source_str == target_str or source_str not in content:
+    # Normalize content to forward slashes too, so Windows paths match
+    normalized_content = content.replace("\\", "/")
+    if source_str == target_str or source_str not in normalized_content:
         return content
-    # Only replace at path boundaries to avoid corrupting embedded occurrences
-    boundary = re.escape(source_str) + r"(?:/|(?=\s)|(?=['\"])|$)"
-    return re.sub(boundary, target_str, content)
+    # Zero-width lookahead at '/' preserves it in output; other boundaries
+    # (space, quote, end) are consumed and not replaced.
+    boundary = re.escape(source_str) + r"(?:(?=/)|(?=\s)|(?=['\"])|$)"
+    result = re.sub(boundary, target_str, normalized_content)
+    # Restore original backslashes in content that wasn't remapped
+    if result == normalized_content:
+        return content
+    return result
 
 
 def _collect_migration_items(preset: str) -> dict:
