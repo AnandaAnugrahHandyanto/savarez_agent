@@ -990,7 +990,15 @@ def execute_code(
                               "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
                               "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
         _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
-                              "PASSWD", "AUTH")
+                              "PASSWD", "AUTH",
+                              # Additional substrings that appear in real-world
+                              # credential variable names but were previously
+                              # undetected by the blocklist:
+                              # - CREDS / CREDENTIALS abbreviated
+                              # - PASS as a short form of PASSWORD
+                              # - BEARER for Authorization: Bearer tokens
+                              # - APIKEY written without underscore
+                              "CREDS", "PASS", "BEARER", "APIKEY")
         try:
             from tools.env_passthrough import is_env_passthrough as _is_passthrough
         except Exception:
