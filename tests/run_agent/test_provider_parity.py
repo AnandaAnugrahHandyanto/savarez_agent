@@ -414,6 +414,135 @@ class TestBuildApiKwargsCodex:
         assert "function" not in tools[0]
 
 
+class TestCodexPreviousResponseIdThreading:
+    def _make_codex_agent(self, monkeypatch):
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+        monkeypatch.setattr(agent, "_build_system_prompt", lambda *a, **k: "system prompt")
+        monkeypatch.setattr(agent, "_save_session_log", lambda *a, **k: None)
+        monkeypatch.setattr(agent, "_persist_session", lambda *a, **k: None)
+        agent.model = "codex-mini-latest"
+        agent.client = MagicMock()
+        return agent
+
+    @staticmethod
+    def _codex_response(response_id, text):
+        return SimpleNamespace(
+            id=response_id,
+            model="codex-mini-latest",
+            status="completed",
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    status="completed",
+                    phase="final_answer",
+                    content=[SimpleNamespace(type="output_text", text=text)],
+                )
+            ],
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5, total_tokens=15),
+        )
+
+    def test_first_turn_does_not_send_previous_response_id(self, monkeypatch):
+        agent = self._make_codex_agent(monkeypatch)
+        kwargs_seen = []
+
+        def fake_api(kwargs):
+            kwargs_seen.append(kwargs)
+            return self._codex_response("resp_1", "First reply")
+
+        monkeypatch.setattr(agent, "_interruptible_api_call", fake_api)
+
+        result = agent.run_conversation("hello", conversation_history=[])
+
+        assert result["final_response"] == "First reply"
+        assert len(kwargs_seen) == 1
+        assert "previous_response_id" not in kwargs_seen[0]
+        assert kwargs_seen[0]["input"] == [{"role": "user", "content": "hello"}]
+
+    def test_follow_up_turn_threads_previous_response_id_and_only_new_input(self, monkeypatch):
+        agent = self._make_codex_agent(monkeypatch)
+        kwargs_seen = []
+        responses = iter(
+            [
+                self._codex_response("resp_1", "First reply"),
+                self._codex_response("resp_2", "Second reply"),
+            ]
+        )
+
+        def fake_api(kwargs):
+            kwargs_seen.append(kwargs)
+            return next(responses)
+
+        monkeypatch.setattr(agent, "_interruptible_api_call", fake_api)
+
+        first = agent.run_conversation("hello", conversation_history=[])
+        second = agent.run_conversation("follow up", conversation_history=first["messages"])
+
+        assert first["final_response"] == "First reply"
+        assert second["final_response"] == "Second reply"
+        assert len(kwargs_seen) == 2
+        assert "previous_response_id" not in kwargs_seen[0]
+        assert kwargs_seen[1]["previous_response_id"] == "resp_1"
+        assert kwargs_seen[1]["input"] == [{"role": "user", "content": "follow up"}]
+
+    def test_delta_starting_with_tool_output_replays_matching_function_call(self, monkeypatch):
+        agent = self._make_codex_agent(monkeypatch)
+        tool_call_message = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_abc|fc_abc",
+                "call_id": "call_abc",
+                "response_item_id": "fc_abc",
+                "function": {"name": "calculator", "arguments": '{"expression":"6*7"}'},
+            }],
+        }
+        payload_messages = [
+            {"role": "user", "content": "What is 6*7?"},
+            tool_call_message,
+            {"role": "tool", "tool_call_id": "call_abc", "content": "42"},
+            {"role": "assistant", "content": "The result is 42.", "finish_reason": "stop"},
+            {"role": "user", "content": "Thanks"},
+        ]
+        prefix = payload_messages[:2]
+        agent._codex_previous_response_id = "resp_1"
+        agent._codex_previous_response_history_len = len(prefix)
+        agent._codex_previous_response_history_fingerprint = agent._responses_history_fingerprint(prefix)
+
+        kwargs = agent._build_api_kwargs(payload_messages)
+
+        assert kwargs["previous_response_id"] == "resp_1"
+        assert [item["type"] for item in kwargs["input"][:2]] == ["function_call", "function_call_output"]
+        assert kwargs["input"][0]["call_id"] == "call_abc"
+        assert kwargs["input"][0]["id"] == "fc_abc"
+        assert kwargs["input"][1]["call_id"] == "call_abc"
+        assert kwargs["input"][-1] == {"role": "user", "content": "Thanks"}
+
+    def test_malformed_replay_window_is_rejected(self, monkeypatch):
+        agent = self._make_codex_agent(monkeypatch)
+
+        with pytest.raises(ValueError, match="Codex replay window is malformed"):
+            agent._preflight_codex_api_kwargs(
+                {
+                    "model": "codex-mini-latest",
+                    "instructions": "system prompt",
+                    "previous_response_id": "resp_1",
+                    "input": [
+                        {
+                            "type": "function_call_output",
+                            "call_id": "call_orphan",
+                            "output": "42",
+                        }
+                    ],
+                }
+            )
+
+
 # ── Message conversion tests ────────────────────────────────────────────────
 
 class TestChatMessagesToResponsesInput:
