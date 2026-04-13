@@ -799,10 +799,10 @@ class SessionDB:
         include_children: bool = False,
         project_compression_tips: bool = True,
     ) -> List[Dict[str, Any]]:
-        """List sessions with preview (first user message) and last active timestamp.
+        """List sessions with preview (most recent user message) and last active timestamp.
 
         Returns dicts with keys: id, source, model, title, started_at, ended_at,
-        message_count, preview (first 60 chars of first user message),
+        message_count, preview (first 60 chars of the most recent user message),
         last_active (timestamp of last message).
 
         Uses a single query with correlated subqueries instead of N+2 queries.
