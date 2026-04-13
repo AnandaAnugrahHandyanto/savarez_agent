@@ -7,9 +7,7 @@ Exercises the full flow through the ACP server layer:
     session_update events arrive at the mock client
 """
 
-import asyncio
-from collections import deque
-from types import SimpleNamespace
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -29,6 +27,7 @@ from acp.schema import (
 
 from acp_adapter.server import HermesACPAgent
 from acp_adapter.session import SessionManager
+from model_tools import handle_function_call
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +229,147 @@ class TestMcpRegistrationE2E:
         assert start_ids == completion_ids, (
             f"IDs must match: starts={start_ids}, completions={completion_ids}"
         )
+
+    @pytest.mark.asyncio
+    async def test_prompt_guard_block_emits_failed_tool_completion(self, acp_agent, mock_manager):
+        """Guard-stopped MCP calls should surface as failed ACP tool updates."""
+        resp = await acp_agent.new_session(cwd="/tmp")
+        session_id = resp.session_id
+        state = mock_manager.get_session(session_id)
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        mock_conn.request_permission = AsyncMock()
+        acp_agent._conn = mock_conn
+
+        class _FakeResponse:
+            def __init__(self, payload, status_code=200):
+                self._payload = payload
+                self.status_code = status_code
+
+            def json(self):
+                return self._payload
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    raise RuntimeError("request failed")
+
+        class _FakeClient:
+            def __init__(self, routes, recorded_posts):
+                self._routes = routes
+                self._recorded_posts = recorded_posts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, url, headers=None):
+                payload = self._routes.get(("GET", url), {})
+                return _FakeResponse(payload)
+
+            def post(self, url, headers=None, json=None):
+                self._recorded_posts.append({"url": url, "headers": headers, "json": json})
+                payload = self._routes.get(("POST", url), {})
+                return _FakeResponse(payload)
+
+        routes = {
+            ("POST", "https://guard.example/api/v1/consumer/verdict/pre-execution"): {
+                "decision": "block",
+                "rationale": "Guard blocked the MCP server before execution.",
+                "scope": "artifact",
+            },
+            ("POST", "https://guard.example/api/v1/consumer/signals/pain"): {"items": []},
+        }
+        recorded_posts = []
+
+        def mock_run_conversation(user_message, conversation_history=None, task_id=None):
+            agent = state.agent
+            if agent.tool_progress_callback:
+                agent.tool_progress_callback(
+                    "tool.started",
+                    "mcp_github_create_issue",
+                    "mcp github create issue",
+                    {"title": "blocked"},
+                )
+
+            tool_result = handle_function_call("mcp_github_create_issue", {"title": "blocked"})
+            parsed_result = json.loads(tool_result)
+            assert parsed_result["blocked"] is True
+
+            if agent.step_callback:
+                agent.step_callback(
+                    1,
+                    [
+                        {
+                            "name": "mcp_github_create_issue",
+                            "result": tool_result,
+                        }
+                    ],
+                )
+
+            return {
+                "final_response": "Guard stopped the tool call before execution.",
+                "messages": [
+                    {"role": "user", "content": user_message},
+                    {"role": "assistant", "content": "Guard stopped the tool call before execution."},
+                ],
+            }
+
+        state.agent.run_conversation = mock_run_conversation
+
+        with (
+            patch(
+                "tools.guard_runtime_policy.load_config",
+                lambda: {
+                    "guard": {
+                        "enabled": True,
+                        "base_url": "https://guard.example/api/v1/consumer",
+                        "timeout_seconds": 5,
+                        "fail_open": False,
+                        "cache_ttl_seconds": 1,
+                        "token_env_var": "HERMES_GUARD_TOKEN",
+                        "enforce_mcp_tools": True,
+                        "pain_signals_enabled": True,
+                    }
+                },
+            ),
+            patch(
+                "tools.guard_runtime_policy._load_mcp_config",
+                lambda: {
+                    "github": {
+                        "url": "https://mcp.github.example/mcp",
+                    }
+                },
+            ),
+            patch(
+                "tools.guard_runtime_policy.httpx.Client",
+                lambda timeout: _FakeClient(routes, recorded_posts),
+            ),
+            patch("tools.guard_runtime_policy.time.time", lambda: 1_700_000_000.0),
+            patch("tools.guard_runtime_policy._CACHE", {}),
+            patch.dict("os.environ", {"HERMES_GUARD_TOKEN": "guard-token"}, clear=False),
+        ):
+            prompt = [TextContentBlock(type="text", text="create the blocked issue")]
+            response = await acp_agent.prompt(prompt=prompt, session_id=session_id)
+
+        assert isinstance(response, PromptResponse)
+        updates = []
+        for call in mock_conn.session_update.call_args_list:
+            update_arg = call[1].get("update") or call[0][1]
+            updates.append(update_arg)
+
+        completions = [u for u in updates if getattr(u, "session_update", None) == "tool_call_update"]
+        assert len(completions) == 1
+        completion = completions[0]
+        assert isinstance(completion, ToolCallProgress)
+        assert completion.status == "failed"
+        assert completion.raw_output is not None
+        assert '"blocked": true' in completion.raw_output
+        assert "Guard blocked the MCP server before execution." in completion.content[0].content.text
+        assert recorded_posts[0]["url"].endswith("/verdict/pre-execution")
+        assert recorded_posts[1]["url"].endswith("/receipts/submit")
 
 
 class TestMcpSanitizationE2E:

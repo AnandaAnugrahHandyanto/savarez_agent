@@ -27,6 +27,7 @@ import threading
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import registry
+from tools.guard_runtime_policy import evaluate_guard_tool_call
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
@@ -211,7 +212,7 @@ _LEGACY_TOOLSET_MAP = {
     "browser_tools": [
         "browser_navigate", "browser_snapshot", "browser_click",
         "browser_type", "browser_scroll", "browser_back",
-        "browser_press", "browser_get_images",
+        "browser_press", "browser_close", "browser_get_images",
         "browser_vision", "browser_console"
     ],
     "cronjob_tools": ["cronjob"],
@@ -496,6 +497,17 @@ def handle_function_call(
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
+
+        guard_block = evaluate_guard_tool_call(function_name, function_args)
+        if guard_block is not None:
+            return json.dumps(
+                {
+                    "error": guard_block.reason,
+                    "blocked": True,
+                    "guard_recommendation": guard_block.recommendation,
+                    "guard_source": guard_block.source,
+                }
+            )
 
         try:
             from hermes_cli.plugins import invoke_hook

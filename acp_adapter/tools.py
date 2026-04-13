@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -39,6 +40,7 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
     "browser_scroll": "execute",
     "browser_press": "execute",
     "browser_back": "execute",
+    "browser_close": "execute",
     "browser_get_images": "read",
     # Agent internals
     "delegate_task": "execute",
@@ -181,9 +183,26 @@ def build_tool_complete(
 ) -> ToolCallProgress:
     """Create a ToolCallUpdate (progress) event for a completed tool call."""
     kind = get_tool_kind(tool_name)
+    status = "completed"
 
-    # Truncate very large results for the UI
     display_result = result or ""
+    if result:
+        try:
+            payload = json.loads(result)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict) and payload.get("blocked") is True:
+            status = "failed"
+            reason = str(payload.get("error", "")).strip() or "Guard blocked this tool call."
+            recommendation = str(payload.get("guard_recommendation", "")).strip()
+            source = str(payload.get("guard_source", "")).strip()
+            lines = [reason]
+            if recommendation:
+                lines.append(f"Recommendation: {recommendation}")
+            if source:
+                lines.append(f"Source: {source}")
+            display_result = "\n".join(lines)
+
     if len(display_result) > 5000:
         display_result = display_result[:4900] + f"\n... ({len(result)} chars total, truncated)"
 
@@ -191,7 +210,7 @@ def build_tool_complete(
     return acp.update_tool_call(
         tool_call_id,
         kind=kind,
-        status="completed",
+        status=status,
         content=content,
         raw_output=result,
     )

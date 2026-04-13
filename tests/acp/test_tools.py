@@ -1,7 +1,5 @@
 """Tests for acp_adapter.tools — tool kind mapping and ACP content building."""
 
-import pytest
-
 from acp_adapter.tools import (
     TOOL_KIND_MAP,
     build_tool_complete,
@@ -214,6 +212,20 @@ class TestBuildToolComplete:
         display_text = result.content[0].content.text
         assert len(display_text) < 6000
         assert "truncated" in display_text
+
+    def test_build_tool_complete_marks_guard_blocks_failed(self):
+        """Guard-blocked tool results should surface as failed ACP events."""
+        result = build_tool_complete(
+            "tc-7",
+            "mcp_github_create_issue",
+            '{"error":"Guard blocked this MCP server.","blocked":true,"guard_recommendation":"block","guard_source":"preexecution-artifact"}',
+        )
+        assert isinstance(result, ToolCallProgress)
+        assert result.status == "failed"
+        display_text = result.content[0].content.text
+        assert "Guard blocked this MCP server." in display_text
+        assert "Recommendation: block" in display_text
+        assert "Source: preexecution-artifact" in display_text
 
 
 # ---------------------------------------------------------------------------

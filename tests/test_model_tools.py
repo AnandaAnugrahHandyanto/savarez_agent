@@ -3,8 +3,6 @@
 import json
 from unittest.mock import call, patch
 
-import pytest
-
 from model_tools import (
     handle_function_call,
     get_all_tool_names,
@@ -42,6 +40,7 @@ class TestHandleFunctionCall:
 
     def test_tool_hooks_receive_session_and_tool_call_ids(self):
         with (
+            patch("model_tools.evaluate_guard_tool_call", return_value=None, create=True),
             patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
             patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
         ):
@@ -73,6 +72,32 @@ class TestHandleFunctionCall:
                 tool_call_id="call-1",
             ),
         ]
+
+    def test_guard_block_prevents_dispatch(self):
+        with (
+            patch(
+                "model_tools.evaluate_guard_tool_call",
+                return_value=type(
+                    "GuardBlock",
+                    (),
+                    {
+                        "reason": "Guard blocked this MCP server.",
+                        "recommendation": "block",
+                        "source": "watchlist",
+                    },
+                )(),
+                create=True,
+            ),
+            patch("model_tools.registry.dispatch") as mock_dispatch,
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            result = json.loads(handle_function_call("mcp_github_create_issue", {"title": "x"}))
+
+        assert result["blocked"] is True
+        assert result["guard_recommendation"] == "block"
+        assert result["guard_source"] == "watchlist"
+        mock_dispatch.assert_not_called()
+        mock_invoke_hook.assert_not_called()
 
 
 # =========================================================================
