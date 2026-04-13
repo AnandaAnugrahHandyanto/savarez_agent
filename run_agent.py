@@ -6329,9 +6329,18 @@ class AIAgent:
         # httpx timeout (default 1800s) with zero feedback.  The stale
         # detector kills the connection early so the main retry loop can
         # apply richer recovery (credential rotation, provider fallback).
-        _stale_timeout = self._compute_non_stream_stale_timeout(
-            api_kwargs.get("messages", [])
-        )
+        _stale_base = float(os.getenv("HERMES_API_CALL_STALE_TIMEOUT", 300.0))
+        _base_url = getattr(self, "_base_url", None) or ""
+        if _stale_base == 300.0 and _base_url and is_local_endpoint(_base_url):
+            _stale_timeout = float("inf")
+        else:
+            _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+            if _est_tokens > 100_000:
+                _stale_timeout = max(_stale_base, 600.0)
+            elif _est_tokens > 50_000:
+                _stale_timeout = max(_stale_base, 450.0)
+            else:
+                _stale_timeout = _stale_base
 
         _call_start = time.time()
         self._touch_activity("waiting for non-streaming API response")
@@ -6369,8 +6378,13 @@ class AIAgent:
                 )
                 try:
                     if self.api_mode == "anthropic_messages":
+                        from agent.anthropic_adapter import build_anthropic_client
+
                         self._anthropic_client.close()
-                        self._rebuild_anthropic_client()
+                        self._anthropic_client = build_anthropic_client(
+                            self._anthropic_api_key,
+                            getattr(self, "_anthropic_base_url", None),
+                        )
                     else:
                         rc = request_client_holder.get("client")
                         if rc is not None:
@@ -11017,16 +11031,6 @@ class AIAgent:
                     # attempt — switch to non-streaming for the rest of this
                     # session instead of re-failing every retry.
                     if getattr(self, "_disable_streaming", False):
-                        _use_streaming = False
-                    # CopilotACPClient communicates via subprocess stdio and
-                    # returns a plain SimpleNamespace — not an iterable
-                    # stream.  Mirror the ACP exclusion used for Responses
-                    # API upgrade (lines ~1083-1085).
-                    elif (
-                        self.provider == "copilot-acp"
-                        or str(self.base_url or "").lower().startswith("acp://copilot")
-                        or str(self.base_url or "").lower().startswith("acp+tcp://")
-                    ):
                         _use_streaming = False
                     elif not self._has_stream_consumers():
                         # No display/TTS consumer. Still prefer streaming for
