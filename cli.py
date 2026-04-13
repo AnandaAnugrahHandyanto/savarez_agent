@@ -5351,6 +5351,8 @@ class HermesCLI:
         elif canonical == "personality":
             # Use original case (handler lowercases the personality name itself)
             self._handle_personality_command(cmd_original)
+        elif canonical == "present":
+            self._handle_present_command(cmd_original)
         elif canonical == "plan":
             self._handle_plan_command(cmd_original)
         elif canonical == "retry":
@@ -5549,7 +5551,39 @@ class HermesCLI:
                     _cprint(f"{_DIM}{_ACCENT}Type /help for available commands{_RST}")
         
         return True
-    
+
+    def _handle_present_command(self, cmd: str):
+        """Handle /present <topic> — generate a slide deck on any topic."""
+        parts = cmd.strip().split(maxsplit=1)
+        topic = parts[1].strip() if len(parts) > 1 else ""
+
+        if not topic:
+            self.console.print("[bold yellow]Usage: /present <topic>[/]")
+            self.console.print("[dim]  e.g. /present poker equity calculations[/]")
+            return
+
+        # Queue a message that tells the agent to generate slides using the powerpoint skill
+        msg = build_skill_invocation_message(
+            "/present",
+            topic,
+            task_id=self.session_id,
+            runtime_note=(
+                "Generate a PPTX slide deck on the topic using pptxgenjs. "
+                "Save the file to ~/.hermes/slides/ and return the file path. "
+                "Use the powerpoint skill for design guidance."
+            ),
+        )
+
+        if not msg:
+            self.console.print("[bold red]Failed to invoke the /present skill[/]")
+            return
+
+        _cprint(f"  🎬 Slide deck queued: '{topic}'")
+        if hasattr(self, '_pending_input'):
+            self._pending_input.put(msg)
+        else:
+            self.console.print("[bold red]Present mode unavailable: input queue not initialized[/]")
+
     def _handle_plan_command(self, cmd: str):
         """Handle /plan [request] — load the bundled plan skill."""
         parts = cmd.strip().split(maxsplit=1)

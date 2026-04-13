@@ -2745,6 +2745,12 @@ class GatewayRunner:
         if canonical == "insights":
             return await self._handle_insights_command(event)
 
+        if canonical == "yt-wisdom":
+            return await self._handle_yt_wisdom_command(event)
+
+        if canonical == "present":
+            return await self._handle_present_command(event)
+
         if canonical == "reload-mcp":
             return await self._handle_reload_mcp_command(event)
 
@@ -6247,6 +6253,367 @@ class GatewayRunner:
         except Exception as e:
             logger.error("Insights command error: %s", e, exc_info=True)
             return f"Error generating insights: {e}"
+
+    async def _handle_yt_wisdom_command(self, event: MessageEvent) -> str:
+        """Handle /yt-wisdom -- mine a YouTube video/playlist/channel for wisdom."""
+        import asyncio
+        import os
+        import uuid
+
+        args = event.get_command_args().strip()
+        if not args:
+            return (
+                "**/yt-wisdom** — Mine a YouTube video for wisdom\n\n"
+                "**Usage:**\n"
+                "`/yt-wisdom <YouTube URL>` — single video\n"
+                "`/yt-wisdom <playlist URL>` — all videos in playlist\n"
+                "`/yt-wisdom <channel URL> [--max 10]` — recent channel videos\n\n"
+                "_I'll grab the transcript, extract key facts and wisdom, and store a structured note in your Obsidian vault._"
+            )
+
+        # Build the command using the hermes venv python
+        hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+        venv_python = os.path.join(hermes_home, "hermes-agent", "venv", "bin", "python3")
+        skill_script = os.path.join(hermes_home, "skills", "yt-knowledge", "scripts", "mine_video.py")
+
+        # Wire up OpenRouter if configured
+        env = os.environ.copy()
+        from hermes_cli.auth import resolve_api_key_provider_credentials
+        try:
+            openrouter_creds = resolve_api_key_provider_credentials("openrouter")
+            if openrouter_creds.get("api_key"):
+                env["OPENAI_API_KEY"] = openrouter_creds["api_key"]
+                # Use base_url from credentials if available, fallback to OpenRouter default
+                base_url = openrouter_creds.get("base_url") or "https://openrouter.ai/api/v1"
+                env["OPENAI_BASE_URL"] = base_url
+                env.setdefault("OPENAI_MODEL", "google/gemini-2.0-flash-001")
+                print(f"  [yt-wisdom] Using OpenRouter at {base_url}")
+        except Exception as e:
+            # OpenRouter not configured — script will fall back gracefully
+            pass
+
+        cmd = [venv_python, skill_script] + args.split()
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=hermes_home,
+            )
+            stdout, _ = await process.communicate()
+            output = stdout.decode().strip() if stdout else ""
+
+            if process.returncode == 0 and output:
+                # Trim to a reasonable Discord response length
+                if len(output) > 1900:
+                    output = output[:1890] + "\n\n_(output truncated)_"
+                return f"```\n{output}\n```"
+            else:
+                return f"⚠ /yt-wisdom encountered an issue.\n```\n{output[:1000]}\n```"
+        except Exception as e:
+            logger.error("yt-wisdom error: %s", e, exc_info=True)
+            return f"⚠ Error running yt-wisdom: {e}"
+
+    async def _handle_present_command(self, event: MessageEvent) -> str:
+        """Handle /present <topic> — generate a PPTX slide deck and send it back."""
+        import asyncio
+        import os
+        import re
+
+        args = event.get_command_args().strip()
+        if not args:
+            return (
+                "**/present** — Generate a slide deck on any topic\n\n"
+                "**Usage:**\n"
+                "`/present poker equity` — 5-slide intro deck\n"
+                "`/present machine learning --slides 10` — longer deck\n\n"
+                "_I'll generate a polished PPTX and send it here~_"
+            )
+
+        # Parse --slides N if provided
+        num_slides = 5
+        match = re.search(r"--slides\s+(\d+)", args)
+        if match:
+            num_slides = int(match.group(1))
+            args = re.sub(r"--slides\s+\d+", "", args).strip()
+
+        topic = args
+        hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+        slides_dir = os.path.join(hermes_home, "slides")
+        os.makedirs(slides_dir, exist_ok=True)
+
+        # Find node binary
+        node_bin = "node"
+        for candidate in ("/usr/local/bin/node", "/usr/bin/node", "/opt/homebrew/bin/node"):
+            if os.path.isfile(candidate):
+                node_bin = candidate
+                break
+
+        # Create a unique output file
+        import uuid
+        safe_topic = re.sub(r'[^a-z0-9]+', '_', topic.lower())[:40]
+        output_file = os.path.join(slides_dir, f"{safe_topic}_{uuid.uuid4().hex[:6]}.pptx")
+
+        # Get global npm modules path for NODE_PATH
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "npm", "root", "-g",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            npm_out, _ = await proc.communicate()
+            npm_global = npm_out.decode().strip() if npm_out else ""
+        except Exception:
+            npm_global = ""
+
+        node_env = os.environ.copy()
+        if npm_global:
+            node_env["NODE_PATH"] = npm_global
+
+        # Build the pptxgenjs generation script inline
+        # We'll write a JS script that generates slides based on the topic
+        script_content = f"""'use strict';
+const pptxgen = require('pptxgenjs');
+
+// Parse arguments
+const topic = {repr(topic)};
+const numSlides = {num_slides};
+const outputFile = {repr(output_file)};
+
+// Color palette — pick one based on topic keywords
+const palettes = {{
+  tech:     {{ primary: '1E2761', secondary: 'CADCFC', accent: 'FFFFFF', bg: 'F5F7FA', text: '1E293B', muted: '64748B' }},
+  poker:    {{ primary: '1D6F42', secondary: '2ECC71', accent: 'F5E6D3', bg: 'F0F7F4', text: '1A1A2E', muted: '5D6D7E' }},
+  business: {{ primary: 'B85042', secondary: 'E7E8D1', accent: 'A7BEAE', bg: 'FAFAFA', text: '2D2D2D', muted: '6B7280' }},
+  finance:  {{ primary: '0F4C75', secondary: '3282B8', accent: 'BBE1FA', bg: 'F0F4F8', text: '1B262C', muted: '5C6B7A' }},
+  default:  {{ primary: '2C3E50', secondary: '34495E', accent: 'E74C3C', bg: 'ECF0F1', text: '2C3E50', muted: '7F8C8D' }}
+}};
+
+// Pick palette by topic keyword
+const topicLower = topic.toLowerCase();
+let palette = palettes.default;
+if (topicLower.includes('poker') || topicLower.includes('card') || topicLower.includes('texas')) palette = palettes.poker;
+else if (topicLower.includes('tech') || topicLower.includes('software') || topicLower.includes('code') || topicLower.includes('ai')) palette = palettes.tech;
+else if (topicLower.includes('business') || topicLower.includes('startup') || topicLower.includes('marketing')) palette = palettes.business;
+else if (topicLower.includes('finance') || topicLower.includes('invest') || topicLower.includes('stock') || topicLower.includes('trading')) palette = palettes.finance;
+
+// Build title-case topic for slides
+const titleTopic = topic.charAt(0).toUpperCase() + topic.slice(1);
+
+const pres = new (require('pptxgenjs'))();
+pres.layout = 'LAYOUT_16x9';
+pres.author = 'Nyx';
+pres.title = titleTopic + ' — Slide Deck';
+
+// Shadow factory to avoid mutation issues
+const mkShadow = () => ({ type: 'outer', color: '000000', blur: 6, offset: 2, angle: 135, opacity: 0.12 });
+
+// ===== SLIDE 1: Title Slide =====
+{{
+  const slide = pres.addSlide();
+  slide.background = {{ color: palette.primary }};
+
+  // Large decorative circle (top right)
+  slide.addShape(pres.shapes.OVAL, {{
+    x: 7.0, y: -1.5, w: 5, h: 5,
+    fill: {{ color: palette.secondary, transparency: 70 }}
+  }});
+
+  // Small accent circle (bottom left)
+  slide.addShape(pres.shapes.OVAL, {{
+    x: -0.8, y: 4.0, w: 2.5, h: 2.5,
+    fill: {{ color: palette.accent, transparency: 80 }}
+  }});
+
+  // Main title
+  slide.addText(titleTopic, {{
+    x: 0.6, y: 1.8, w: 8.8, h: 1.4,
+    fontSize: 44, fontFace: 'Arial Black', color: 'FFFFFF',
+    bold: true, align: 'left', margin: 0
+  }});
+
+  // Subtitle
+  slide.addText('Slide Deck — Generated by Nyx', {{
+    x: 0.6, y: 3.3, w: 8.0, h: 0.5,
+    fontSize: 16, fontFace: 'Calibri', color: palette.accent,
+    align: 'left'
+  }});
+
+  // Bottom bar
+  slide.addShape(pres.shapes.RECTANGLE, {{
+    x: 0, y: 5.1, w: 10, h: 0.525,
+    fill: {{ color: palette.secondary, transparency: 60 }}
+  }});
+
+  slide.addText('📊 ' + numSlides + ' slides', {{
+    x: 0.6, y: 5.15, w: 4, h: 0.4,
+    fontSize: 13, color: 'FFFFFF', align: 'left'
+  }});
+}}
+
+// ===== Content slides =====
+const contentSlides = Math.min(numSlides - 1, 8); // title + content slides
+const sectionCount = Math.max(1, Math.floor(contentSlides / 2));
+
+for (let i = 0; i < contentSlides; i++) {{
+  const slide = pres.addSlide();
+  slide.background = {{ color: palette.bg }};
+
+  // Left accent bar
+  slide.addShape(pres.shapes.RECTANGLE, {{
+    x: 0, y: 0, w: 0.12, h: 5.625,
+    fill: {{ color: palette.primary }}
+  }});
+
+  // Slide number bubble
+  slide.addShape(pres.shapes.OVAL, {{
+    x: 9.2, y: 0.3, w: 0.5, h: 0.5,
+    fill: {{ color: palette.primary }}
+  }});
+  slide.addText(String(i + 2), {{
+    x: 9.2, y: 0.3, w: 0.5, h: 0.5,
+    fontSize: 13, color: 'FFFFFF', bold: true,
+    align: 'center', valign: 'middle'
+  }});
+
+  // Content blocks - alternating layout
+  const isLeft = i % 2 === 0;
+
+  // Card background
+  slide.addShape(pres.shapes.RECTANGLE, {{
+    x: 0.5, y: 1.0, w: 9.0, h: 4.1,
+    fill: {{ color: 'FFFFFF' }},
+    shadow: mkShadow()
+  }});
+
+  // Accent top border on card
+  slide.addShape(pres.shapes.RECTANGLE, {{
+    x: 0.5, y: 1.0, w: 9.0, h: 0.08,
+    fill: {{ color: palette.primary }}
+  }});
+
+  // Section title
+  const sectionTitles = [
+    'Key Concept',
+    'How It Works',
+    'Main Benefits',
+    'Practical Use',
+    'Real Examples',
+    'Common Mistakes',
+    'Tips & Tricks',
+    'Next Steps'
+  ]];
+  const secTitle = sectionTitles[i % sectionTitles.length];
+
+  slide.addText(secTitle + ': ' + titleTopic, {{
+    x: 0.8, y: 1.25, w: 8.4, h: 0.55,
+    fontSize: 20, fontFace: 'Arial', color: palette.primary,
+    bold: true, margin: 0
+  }});
+
+  // Bullet points
+  const bullets = [
+    ['Foundation: understanding the core principles',
+     'Real-world application in ' + topicLower + ' scenarios',
+     'Key metrics and how to measure success'],
+    ['Step-by-step breakdown of the process',
+     'Common patterns and best practices',
+     'Tools and resources to get started'],
+    ['Efficiency gains and time savings',
+     'Improved outcomes and accuracy',
+     'Scalability for larger contexts'],
+    ['Direct application to your work',
+     'Integration with existing workflows',
+     'Measuring and validating results'],
+    ['Case study: how it performed in practice',
+     'Lessons learned and pitfalls to avoid',
+     'Adaptation for different scenarios'],
+    ['What to avoid and why it matters',
+     'Warning signs to watch for',
+     'How to recover from mistakes'],
+    ['Pro tips from experts in the field',
+     'Shortcuts that actually work',
+     'Resources for continued learning'],
+    ['Immediate next steps to take action',
+     'Long-term strategy and goals',
+     'How to track your progress']
+  ]];
+  const bulletItems = bullets[i % bullets.length];
+
+  slide.addText(bulletItems.map((b, idx) => ({{
+    text: b,
+    options: {{ bullet: true, breakLine: idx < bulletItems.length - 1 }}
+  }})), {{
+    x: 0.8, y: 1.95, w: 8.2, h: 2.8,
+    fontSize: 15, fontFace: 'Calibri', color: palette.text,
+    paraSpaceAfter: 8
+  }});
+
+  // Muted footer
+  slide.addText('Generated by Nyx — /present ' + topic, {{
+    x: 0.5, y: 5.2, w: 8, h: 0.3,
+    fontSize: 9, color: palette.muted, align: 'left'
+  }});
+}}
+
+// Write file
+pres.writeFile({{ fileName: outputFile }})
+  .then(() => console.log('OK:' + outputFile))
+  .catch(err => {{ console.error('ERROR:' + err.message); process.exit(1); }});
+"""
+
+        script_path = os.path.join(slides_dir, f"_present_gen_{uuid.uuid4().hex[:8]}.js")
+        with open(script_path, "w") as f:
+            f.write(script_content)
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                node_bin, script_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=node_env,
+            )
+            stdout, stderr = await process.communicate()
+            output = stdout.decode().strip() if stdout else ""
+            err = stderr.decode().strip() if stderr else ""
+
+            # Clean up script
+            try:
+                os.unlink(script_path)
+            except Exception:
+                pass
+
+            if process.returncode == 0 and output.startswith("OK:"):
+                file_path = output[3:].strip()
+                if os.path.isfile(file_path):
+                    # Send the file back via Discord
+                    adapter = self.adapters.get(event.source.platform)
+                    if adapter:
+                        thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                        await adapter.send_document(
+                            chat_id=event.source.chat_id,
+                            file_path=file_path,
+                            caption=f"🎬 **{titleTopic}** — {numSlides} slides",
+                            metadata=thread_meta,
+                        )
+                    return f"✅ Sent: **{titleTopic}** ({num_slides} slides)"
+                else:
+                    return f"⚠ File was created but not found: {file_path}"
+            else:
+                error_msg = err or output
+                if len(error_msg) > 500:
+                    error_msg = error_msg[:490] + "..."
+                return f"⚠ /present generation failed:\n```\n{error_msg}\n```"
+        except FileNotFoundError:
+            return (
+                "⚠ Node.js not found. `/present` requires Node.js with pptxgenjs installed.\n"
+                "Run: `npm install -g pptxgenjs`"
+            )
+        except Exception as e:
+            logger.error("present error: %s", e, exc_info=True)
+            return f"⚠ Error running /present: {e}"
 
     async def _handle_reload_mcp_command(self, event: MessageEvent) -> str:
         """Handle /reload-mcp command -- disconnect and reconnect all MCP servers."""
