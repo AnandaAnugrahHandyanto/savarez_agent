@@ -105,11 +105,14 @@ class TestSSHBulkUpload:
                 # Capture the staging dir from -C argument
                 c_idx = cmd.index("-C")
                 staging_dir = cmd[c_idx + 1]
-                # Check the symlink exists
+                # Check the staged entry exists at the base-relative path
                 expected = os.path.join(staging_dir, "skills/my_skill.md")
                 staging_paths.append(expected)
-                assert os.path.islink(expected), f"Expected symlink at {expected}"
-                assert os.readlink(expected) == os.path.abspath(str(f1))
+                # File must exist (either as symlink or copy)
+                assert os.path.exists(expected), f"Expected staged file at {expected}"
+                # Content must match the source
+                with open(expected, "r") as fh:
+                    assert fh.read() == "content a"
 
             mock = MagicMock()
             mock.stdout = MagicMock()
