@@ -2,6 +2,20 @@
 /_pycache/
 *.pyc*
 __pycache__/
+
+# Local credential pool — contains live API keys, must never be committed
+auth.json
+auth.lock
+
+# Runtime state
+state.db
+state.db-journal
+state.db-wal
+state.db-shm
+
+# Playwright MCP scratch
+.playwright-mcp/
+
 .venv/
 .vscode/
 .env
