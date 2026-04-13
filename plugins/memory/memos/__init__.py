@@ -16,6 +16,9 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
+# Constants
+SOURCE_HERMES_AGENT = "Hermes Agent"
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -212,18 +215,20 @@ class MemosMemoryProvider(MemoryProvider):
             client = self._get_client()
             sid = session_id or self._session_id
             
-            kwargs = {
-                "query": query,
-                "user_id": self._user_id,
-                "conversation_id": sid,
-            }
+            kwargs = {}
             if self._knowledgebase:
                 kwargs["knowledgebase_ids"] = self._knowledgebase if isinstance(self._knowledgebase, list) else [self._knowledgebase]
             search_filter = self._build_search_filter()
             if search_filter:
                 kwargs["filter"] = search_filter
                 
-            res = client.search_memory(**kwargs)
+            res = client.search_memory(
+                query=query,
+                user_id=self._user_id,
+                conversation_id=sid,
+                source=SOURCE_HERMES_AGENT,
+                **kwargs
+            )
             if res is None:
                 return ""
             if hasattr(res, "model_dump"):
@@ -270,7 +275,7 @@ class MemosMemoryProvider(MemoryProvider):
                     {"role": "assistant", "content": assistant_content},
                 ]
                 info = {
-                    "source": "Hermes Agent",
+                    "source": SOURCE_HERMES_AGENT,
                     "agent_id": self._agent_id
                 }
                 client.add_message(
@@ -278,7 +283,7 @@ class MemosMemoryProvider(MemoryProvider):
                     user_id=self._user_id, 
                     conversation_id=sid, 
                     agent_id=self._agent_id,
-                    source="Hermes Agent",
+                    source=SOURCE_HERMES_AGENT,
                     info=info
                 )
             except Exception as e:
@@ -311,18 +316,21 @@ class MemosMemoryProvider(MemoryProvider):
             if len(query) < 3:
                 return json.dumps({"result": "No relevant memories found."}, ensure_ascii=False)
             try:
-                kwargs = {
-                    "query": query,
-                    "user_id": self._user_id,
-                    "conversation_id": sid,
-                }
+                kwargs = {}
                 if self._knowledgebase:
                     kwargs["knowledgebase_ids"] = self._knowledgebase if isinstance(self._knowledgebase, list) else [self._knowledgebase]
+                
                 search_filter = self._build_search_filter()
                 if search_filter:
                     kwargs["filter"] = search_filter
 
-                res = client.search_memory(**kwargs)
+                res = client.search_memory(
+                    query=query,
+                    user_id=self._user_id,
+                    conversation_id=sid,
+                    source=SOURCE_HERMES_AGENT,
+                    **kwargs
+                )
                 if res is None:
                     return json.dumps({"result": "No relevant memories found or API error."}, ensure_ascii=False)
                 if hasattr(res, "model_dump"):
@@ -338,9 +346,12 @@ class MemosMemoryProvider(MemoryProvider):
                             if m.get("memory_value"):
                                 results.append(m["memory_value"])
                     if "preference_detail_list" in data and isinstance(data["preference_detail_list"], list):
-                        for p in data["preference_detail_list"]:
-                            if p.get("preference"):
-                                results.append(f"Preference: {p['preference']}")
+                        prefs = [p["preference"] for p in data["preference_detail_list"] if p.get("preference")]
+                        if prefs:
+                            if len(prefs) == 1:
+                                results.append(f"Preference: {prefs[0]}")
+                            else:
+                                results.append("Preferences:\n  - " + "\n  - ".join(prefs))
                     
                     if not results:
                         return json.dumps({"result": "No relevant memories found."}, ensure_ascii=False)
@@ -357,7 +368,7 @@ class MemosMemoryProvider(MemoryProvider):
             try:
                 messages = [{"role": "user", "content": content}]
                 info = {
-                    "source": "Hermes Agent",
+                    "source": SOURCE_HERMES_AGENT,
                     "agent_id": self._agent_id
                 }
                 res = client.add_message(
@@ -365,7 +376,7 @@ class MemosMemoryProvider(MemoryProvider):
                     user_id=self._user_id, 
                     conversation_id=sid, 
                     agent_id=self._agent_id,
-                    source="Hermes Agent",
+                    source=SOURCE_HERMES_AGENT,
                     info=info
                 )
                 if res is None:
