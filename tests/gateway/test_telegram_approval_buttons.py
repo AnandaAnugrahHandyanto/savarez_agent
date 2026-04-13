@@ -59,6 +59,12 @@ def _make_adapter():
     return adapter
 
 
+@pytest.fixture(autouse=True)
+def _clear_allowed_users(monkeypatch):
+    """Keep approval callback tests independent from local Telegram allowlists."""
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+
+
 # ===========================================================================
 # send_exec_approval — inline keyboard buttons
 # ===========================================================================

@@ -2,6 +2,7 @@
 
 import json
 import pytest
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
@@ -154,6 +155,26 @@ class TestLocalCliFactory:
         assert source.chat_id == "cli"
         assert source.chat_type == "dm"
         assert source.chat_name == "CLI terminal"
+
+
+class TestSessionSuspension:
+    def test_suspend_recently_active_uses_datetime_cutoff(self, tmp_path: Path):
+        store = SessionStore(tmp_path, GatewayConfig())
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", chat_type="dm")
+
+        recent_entry = store.get_or_create_session(source, force_new=True)
+        stale_entry = store.get_or_create_session(
+            SessionSource(platform=Platform.TELEGRAM, chat_id="456", chat_type="dm"),
+            force_new=True,
+        )
+        stale_entry.updated_at = stale_entry.updated_at - timedelta(minutes=10)
+        store._save()
+
+        suspended = store.suspend_recently_active(max_age_seconds=120)
+
+        assert suspended == 1
+        assert recent_entry.suspended is True
+        assert stale_entry.suspended is False
 
 
 class TestBuildSessionContextPrompt:

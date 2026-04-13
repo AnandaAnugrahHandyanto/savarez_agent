@@ -89,7 +89,8 @@ class TestReadCodexAccessToken:
         hermes_home.mkdir(parents=True, exist_ok=True)
         (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        result = _read_codex_access_token()
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            result = _read_codex_access_token()
         assert result is None
 
     def test_empty_token_returns_none(self, tmp_path, monkeypatch):
@@ -146,8 +147,25 @@ class TestReadCodexAccessToken:
             },
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        result = _read_codex_access_token()
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            result = _read_codex_access_token()
         assert result is None, "Expired JWT should return None"
+
+    def test_expired_pool_jwt_returns_none(self):
+        """Expired JWT from the credential pool should also be skipped."""
+        import base64
+        import time as _time
+
+        header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
+        payload_data = json.dumps({"exp": int(_time.time()) - 3600}).encode()
+        payload = base64.urlsafe_b64encode(payload_data).rstrip(b"=").decode()
+        expired_jwt = f"{header}.{payload}.fakesig"
+
+        with patch(
+            "agent.auxiliary_client._select_pool_entry",
+            return_value=(True, {"api_key": expired_jwt}),
+        ):
+            assert _read_codex_access_token() is None
 
     def test_valid_jwt_returns_token(self, tmp_path, monkeypatch):
         """Non-expired JWT tokens should be returned."""
@@ -365,7 +383,7 @@ class TestExpiredCodexFallback:
     def test_hermes_oauth_file_sets_oauth_flag(self, monkeypatch):
         """OAuth-style tokens should get is_oauth=*** (token is not sk-ant-api-*)."""
         # Mock resolve_anthropic_token to return an OAuth-style token
-        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="hermes-oauth-jwt-token"), \
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="eyJhbGciOiJSUzI1NiJ9.payload.sig"), \
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
@@ -420,7 +438,7 @@ class TestExpiredCodexFallback:
 
     def test_claude_code_oauth_env_sets_flag(self, monkeypatch):
         """CLAUDE_CODE_OAUTH_TOKEN env var should get is_oauth=True."""
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-oauth-token-test")
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-cc-oauth-token-test")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
             mock_build.return_value = MagicMock()
@@ -585,7 +603,10 @@ class TestGetTextAuxiliaryClient:
         assert call_kwargs.kwargs["base_url"] == "http://localhost:1234/v1"
 
     def test_codex_fallback_when_nothing_else(self, codex_auth_dir):
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("openai-codex", None, None, None, None),
+        ), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_text_auxiliary_client()
         assert model == "gpt-5.2-codex"
@@ -624,6 +645,7 @@ class TestGetTextAuxiliaryClient:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
              patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
             client, model = get_text_auxiliary_client()
@@ -786,9 +808,10 @@ class TestAuxiliaryPoolAwareness:
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
             patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="***"),
         ):
-            client, model = get_vision_auxiliary_client()
+            provider, client, model = resolve_vision_provider_client()
 
         assert client is not None
+        assert provider == "anthropic"
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
 
     def test_vision_auto_prefers_active_provider_over_openrouter(self, monkeypatch):
@@ -1426,6 +1449,52 @@ class TestAsyncCallLlmFallback:
 
         assert result is fb_response
         mock_fb.assert_called_once_with("auto", "compression", reason="connection error")
+
+
+class TestProviderErrorSanitization:
+    def test_call_llm_sanitizes_html_error_body(self):
+        primary_client = MagicMock()
+        html_err = Exception(
+            "<html><head><title>Attention Required!</title></head>"
+            "<body>Enable JavaScript and cookies to continue"
+            "<script>window.__cf_chl_opt={}</script></body></html>"
+        )
+        html_err.status_code = 403
+        primary_client.chat.completions.create.side_effect = html_err
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.2-codex")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("custom", "gpt-5.2-codex", "https://chatgpt.com/backend-api/codex", None, None)):
+            with pytest.raises(RuntimeError, match="HTML challenge page instead of API JSON") as excinfo:
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+
+        assert "Enable JavaScript and cookies to continue" not in str(excinfo.value)
+        assert "Attention Required!" in str(excinfo.value)
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_sanitizes_html_error_body(self):
+        primary_client = MagicMock()
+        html_err = Exception(
+            "<html><head><title>Attention Required!</title></head>"
+            "<body>Enable JavaScript and cookies to continue"
+            "<script>window.__cf_chl_opt={}</script></body></html>"
+        )
+        html_err.status_code = 403
+        primary_client.chat.completions.create = AsyncMock(side_effect=html_err)
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.2-codex")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("custom", "gpt-5.2-codex", "https://chatgpt.com/backend-api/codex", None, None)):
+            with pytest.raises(RuntimeError, match="HTML challenge page instead of API JSON"):
+                await async_call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
 class TestStaleBaseUrlWarning:
     """_resolve_auto() warns when OPENAI_BASE_URL conflicts with config provider (#5161)."""
 

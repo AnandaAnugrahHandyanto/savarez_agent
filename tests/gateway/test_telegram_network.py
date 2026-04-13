@@ -494,6 +494,11 @@ class TestDiscoverFallbackIps:
         client = FakeDoHClient(responses)
         monkeypatch.setattr(tnet.httpx, "AsyncClient", lambda **kw: client)
 
+        async def _fake_to_thread(func, /, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr(tnet.asyncio, "to_thread", _fake_to_thread)
+
         if system_dns_ips is not None:
             addrs = [(None, None, None, None, (ip, 443)) for ip in system_dns_ips]
             monkeypatch.setattr(tnet.socket, "getaddrinfo", lambda *a, **kw: addrs)

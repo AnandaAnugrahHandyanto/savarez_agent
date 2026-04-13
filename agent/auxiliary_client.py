@@ -37,6 +37,7 @@ Payment / credit exhaustion fallback:
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path  # noqa: F401 — used by test mocks
@@ -640,19 +641,10 @@ def _read_codex_access_token() -> Optional[str]:
     fallback-to-Codex working when the pool state is stale but the stored OAuth
     token is still valid.
     """
-    pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        token = _pool_runtime_api_key(entry)
-        if token:
-            return token
-
-    try:
-        from hermes_cli.auth import _read_codex_tokens
-        data = _read_codex_tokens()
-        tokens = data.get("tokens", {})
-        access_token = tokens.get("access_token")
-        if not isinstance(access_token, str) or not access_token.strip():
+    def _validated_codex_token(candidate: Any) -> Optional[str]:
+        if not isinstance(candidate, str) or not candidate.strip():
             return None
+        access_token = candidate.strip()
 
         # Check JWT expiry — expired tokens block the auto chain and
         # prevent fallback to working providers (e.g. Anthropic).
@@ -668,7 +660,19 @@ def _read_codex_access_token() -> Optional[str]:
         except Exception:
             pass  # Non-JWT token or decode error — use as-is
 
-        return access_token.strip()
+        return access_token
+
+    pool_present, entry = _select_pool_entry("openai-codex")
+    if pool_present:
+        token = _validated_codex_token(_pool_runtime_api_key(entry))
+        if token:
+            return token
+
+    try:
+        from hermes_cli.auth import _read_codex_tokens
+        data = _read_codex_tokens()
+        tokens = data.get("tokens", {})
+        return _validated_codex_token(tokens.get("access_token"))
     except Exception as exc:
         logger.debug("Could not read Codex auth for auxiliary client: %s", exc)
         return None
@@ -1070,6 +1074,39 @@ def _is_connection_error(exc: Exception) -> bool:
     )):
         return True
     return False
+
+
+def _summarize_provider_error(exc: Exception) -> Optional[str]:
+    """Return a compact message for noisy provider errors, else None."""
+    raw = str(exc or "")
+    lowered = raw.lower()
+    if not raw:
+        return None
+
+    if not any(marker in lowered for marker in (
+        "<html",
+        "<!doctype html",
+        "challenge-error-text",
+        "enable javascript and cookies to continue",
+        "/cdn-cgi/challenge-platform/",
+        "__cf_chl",
+    )):
+        return None
+
+    status = getattr(exc, "status_code", None)
+    status_text = f"HTTP {status}" if isinstance(status, int) else "non-JSON error"
+    exc_name = type(exc).__name__ or "ProviderError"
+
+    hint = "provider returned an HTML challenge page instead of API JSON"
+    if "cloudflare" in lowered or "__cf_chl" in lowered or "challenge-error-text" in lowered:
+        hint += " (possible Cloudflare challenge or expired web session)"
+
+    title_match = re.search(r"<title>(.*?)</title>", raw, flags=re.IGNORECASE | re.DOTALL)
+    title = title_match.group(1).strip() if title_match else ""
+    if title:
+        hint += f"; page title={title!r}"
+
+    return f"{exc_name}: {status_text}; {hint}"
 
 
 def _try_payment_fallback(
@@ -2377,6 +2414,9 @@ def call_llm(
                     extra_body=extra_body)
                 return _validate_llm_response(
                     fb_client.chat.completions.create(**fb_kwargs), task)
+        summarized = _summarize_provider_error(first_err)
+        if summarized:
+            raise RuntimeError(summarized) from None
         raise
 
 
@@ -2559,4 +2599,7 @@ async def async_call_llm(
                     fb_kwargs["model"] = async_fb_model
                 return _validate_llm_response(
                     await async_fb.chat.completions.create(**fb_kwargs), task)
+        summarized = _summarize_provider_error(first_err)
+        if summarized:
+            raise RuntimeError(summarized) from None
         raise
