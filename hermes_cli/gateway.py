@@ -1014,6 +1014,42 @@ def _get_restart_drain_timeout() -> float:
     return parse_restart_drain_timeout(raw)
 
 
+def _wait_for_systemd_active(
+    system: bool = False,
+    *,
+    timeout: float = 60.0,
+    require_transition: bool = False,
+) -> bool:
+    """Wait for the gateway systemd unit to report ``active``.
+
+    When ``require_transition`` is true, the function waits until the unit has
+    first left the active state (for example ``inactive`` / ``activating``)
+    before accepting a later ``active`` result. This prevents graceful
+    self-restarts from returning immediately while the old process is still
+    draining under the original active unit.
+    """
+    import time
+
+    deadline = time.monotonic() + timeout
+    saw_transition = not require_transition
+
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            _systemctl_cmd(system) + ["is-active", get_service_name()],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        status = result.stdout.strip()
+        if status != "active":
+            saw_transition = True
+        elif saw_transition:
+            return True
+        time.sleep(0.5)
+
+    return False
+
+
 def systemd_install(force: bool = False, system: bool = False, run_as_user: str | None = None):
     if system:
         _require_root_for_system_service("install")
@@ -1103,7 +1139,20 @@ def systemd_restart(system: bool = False):
 
     pid = get_running_pid()
     if pid is not None and _request_gateway_self_restart(pid):
-        print(f"✓ {_service_scope_label(system).capitalize()} service restart requested")
+        drain_timeout = _get_restart_drain_timeout()
+        _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
+        restart_timeout = max(35.0, drain_timeout + 5.0)
+        if _wait_for_systemd_active(
+            system=system,
+            timeout=restart_timeout,
+            require_transition=True,
+        ):
+            print(f"✓ {_service_scope_label(system).capitalize()} service restarted")
+        else:
+            print(
+                f"⚠ {_service_scope_label(system).capitalize()} service restart requested, "
+                f"but it did not become active within {restart_timeout:.0f}s"
+            )
         return
     subprocess.run(_systemctl_cmd(system) + ["reload-or-restart", get_service_name()], check=True, timeout=90)
     print(f"✓ {_service_scope_label(system).capitalize()} service restarted")
