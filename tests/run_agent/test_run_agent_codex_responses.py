@@ -55,7 +55,7 @@ def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
     agent = run_agent.AIAgent(
         model=model,
         provider="copilot",
-        api_mode="codex_responses",
+        api_mode="chat_completions",
         base_url="https://api.githubcopilot.com",
         api_key="gh-token",
         quiet_mode=True,
@@ -271,17 +271,20 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "extra_body" not in kwargs
 
 
-def test_build_api_kwargs_copilot_responses_omits_openai_only_fields(monkeypatch):
+def test_build_api_kwargs_copilot_chat_omits_openai_only_fields(monkeypatch):
     agent = _build_copilot_agent(monkeypatch)
     kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
 
     assert kwargs["model"] == "gpt-5.4"
-    assert kwargs["store"] is False
-    assert kwargs["tool_choice"] == "auto"
-    assert kwargs["parallel_tool_calls"] is True
-    assert kwargs["reasoning"] == {"effort": "medium"}
+    assert kwargs["timeout"] == 1800.0
+    assert kwargs["tools"][0]["type"] == "function"
+    assert kwargs["tools"][0]["function"]["name"] == "terminal"
+    assert "store" not in kwargs
+    assert "tool_choice" not in kwargs
+    assert "parallel_tool_calls" not in kwargs
     assert "prompt_cache_key" not in kwargs
     assert "include" not in kwargs
+    assert kwargs["extra_body"] == {"reasoning": {"effort": "medium"}}
 
 
 def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_model(monkeypatch):

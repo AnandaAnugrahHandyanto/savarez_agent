@@ -557,7 +557,7 @@ class TestRuntimeProviderResolution:
         assert result["api_key"] == "gho_cli_secret"
         assert result["base_url"] == "https://api.githubcopilot.com"
 
-    def test_runtime_copilot_uses_responses_for_gpt_5_4(self, monkeypatch):
+    def test_runtime_copilot_uses_chat_for_gpt_5_4(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
         monkeypatch.setattr(
             "hermes_cli.runtime_provider._get_model_config",
@@ -578,7 +578,7 @@ class TestRuntimeProviderResolution:
         result = resolve_runtime_provider(requested="copilot")
 
         assert result["provider"] == "copilot"
-        assert result["api_mode"] == "codex_responses"
+        assert result["api_mode"] == "chat_completions"
 
     def test_runtime_copilot_acp_uses_process_runtime(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")

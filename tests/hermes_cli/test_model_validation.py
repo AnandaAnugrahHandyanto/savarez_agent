@@ -317,20 +317,17 @@ class TestCopilotNormalization:
         catalog = [{"id": "gpt-4.1"}, {"id": "gpt-5.4"}]
         assert normalize_copilot_model_id("openai/gpt-4.1-mini", catalog=catalog) == "gpt-4.1"
 
-    def test_copilot_api_mode_gpt5_uses_responses(self):
-        """GPT-5+ models should use Responses API (matching opencode)."""
-        assert copilot_model_api_mode("gpt-5.4") == "codex_responses"
-        assert copilot_model_api_mode("gpt-5.4-mini") == "codex_responses"
-        assert copilot_model_api_mode("gpt-5.3-codex") == "codex_responses"
-        assert copilot_model_api_mode("gpt-5.2-codex") == "codex_responses"
-        assert copilot_model_api_mode("gpt-5.2") == "codex_responses"
-
-    def test_copilot_api_mode_gpt5_mini_uses_chat(self):
-        """gpt-5-mini is the exception — uses Chat Completions."""
+    def test_copilot_api_mode_forces_chat_for_gpt5(self):
+        """Hermes forces Copilot-visible GPT-5 models to chat completions."""
+        assert copilot_model_api_mode("gpt-5.4") == "chat_completions"
+        assert copilot_model_api_mode("gpt-5.4-mini") == "chat_completions"
+        assert copilot_model_api_mode("gpt-5.3-codex") == "chat_completions"
+        assert copilot_model_api_mode("gpt-5.2-codex") == "chat_completions"
+        assert copilot_model_api_mode("gpt-5.2") == "chat_completions"
         assert copilot_model_api_mode("gpt-5-mini") == "chat_completions"
 
     def test_copilot_api_mode_non_gpt5_uses_chat(self):
-        """Non-GPT-5 models use Chat Completions."""
+        """Non-GPT models also stay on chat completions."""
         assert copilot_model_api_mode("gpt-4.1") == "chat_completions"
         assert copilot_model_api_mode("gpt-4o") == "chat_completions"
         assert copilot_model_api_mode("gpt-4o-mini") == "chat_completions"
@@ -338,22 +335,21 @@ class TestCopilotNormalization:
         assert copilot_model_api_mode("claude-opus-4.6") == "chat_completions"
         assert copilot_model_api_mode("gemini-2.5-pro") == "chat_completions"
 
-    def test_copilot_api_mode_with_catalog_both_endpoints(self):
-        """When catalog shows both endpoints, model ID pattern wins."""
+    def test_copilot_api_mode_ignores_catalog_endpoint_hints(self):
+        """Catalog endpoint hints do not override Hermes's chat-only policy."""
         catalog = [{
             "id": "gpt-5.4",
             "supported_endpoints": ["/chat/completions", "/responses"],
         }]
-        # GPT-5.4 should use responses even though chat/completions is listed
-        assert copilot_model_api_mode("gpt-5.4", catalog=catalog) == "codex_responses"
+        assert copilot_model_api_mode("gpt-5.4", catalog=catalog) == "chat_completions"
 
-    def test_copilot_api_mode_with_catalog_only_responses(self):
+    def test_copilot_api_mode_ignores_catalog_response_only_models(self):
         catalog = [{
             "id": "gpt-5.4",
             "supported_endpoints": ["/responses"],
             "capabilities": {"type": "chat"},
         }]
-        assert copilot_model_api_mode("gpt-5.4", catalog=catalog) == "codex_responses"
+        assert copilot_model_api_mode("gpt-5.4", catalog=catalog) == "chat_completions"
 
     def test_normalize_opencode_model_id_strips_provider_prefix(self):
         assert normalize_opencode_model_id("opencode-go", "opencode-go/kimi-k2.5") == "kimi-k2.5"

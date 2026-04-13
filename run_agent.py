@@ -705,11 +705,10 @@ class AIAgent:
         except Exception:
             pass
 
-        # GPT-5.x models require the Responses API path — they are rejected
-        # on /v1/chat/completions by both OpenAI and OpenRouter.  Also
-        # auto-upgrade for direct OpenAI URLs (api.openai.com) since all
-        # newer tool-calling models prefer Responses there.
-        if self.api_mode == "chat_completions" and (
+        # Some providers require the Responses API path, but Copilot is now
+        # intentionally pinned to chat_completions to avoid silent model-based
+        # transport switching.  Only auto-upgrade providers that still need it.
+        if self.api_mode == "chat_completions" and self.provider != "copilot" and (
             self._is_direct_openai_url()
             or self._model_requires_responses_api(self.model)
         ):

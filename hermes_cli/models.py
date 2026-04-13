@@ -1484,20 +1484,13 @@ def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
 
 
 def _should_use_copilot_responses_api(model_id: str) -> bool:
-    """Decide whether a Copilot model should use the Responses API.
+    """Compatibility shim for older code paths.
 
-    Replicates opencode's ``shouldUseCopilotResponsesApi`` logic:
-    GPT-5+ models use Responses API, except ``gpt-5-mini`` which uses
-    Chat Completions.  All non-GPT models (Claude, Gemini, etc.) use
-    Chat Completions.
+    Hermes policy is now chat-completions-only for Copilot-visible models,
+    so this always returns False. The helper remains for callers and tests
+    that still import it directly.
     """
-    import re
-
-    match = re.match(r"^gpt-(\d+)", model_id)
-    if not match:
-        return False
-    major = int(match.group(1))
-    return major >= 5 and not model_id.startswith("gpt-5-mini")
+    return False
 
 
 def copilot_model_api_mode(
@@ -1508,34 +1501,9 @@ def copilot_model_api_mode(
 ) -> str:
     """Determine the API mode for a Copilot model.
 
-    Uses the model ID pattern (matching opencode's approach) as the
-    primary signal.  Falls back to the catalog's ``supported_endpoints``
-    only for models not covered by the pattern check.
+    Hermes intentionally forces all Copilot-visible models through
+    Chat Completions to avoid silent model-dependent API switching.
     """
-    normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
-    if not normalized:
-        return "chat_completions"
-
-    # Primary: model ID pattern (matches opencode's shouldUseCopilotResponsesApi)
-    if _should_use_copilot_responses_api(normalized):
-        return "codex_responses"
-
-    # Secondary: check catalog for non-GPT-5 models (Claude via /v1/messages, etc.)
-    if catalog is None and api_key:
-        catalog = fetch_github_model_catalog(api_key=api_key)
-
-    if catalog:
-        catalog_entry = next((item for item in catalog if item.get("id") == normalized), None)
-        if isinstance(catalog_entry, dict):
-            supported_endpoints = {
-                str(endpoint).strip()
-                for endpoint in (catalog_entry.get("supported_endpoints") or [])
-                if str(endpoint).strip()
-            }
-            # For non-GPT-5 models, check if they only support messages API
-            if "/v1/messages" in supported_endpoints and "/chat/completions" not in supported_endpoints:
-                return "anthropic_messages"
-
     return "chat_completions"
 
 

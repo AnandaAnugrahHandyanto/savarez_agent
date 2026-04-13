@@ -155,18 +155,18 @@ class TestCopilotDefaultHeaders:
 
 
 class TestApiModeSelection:
-    """API mode selection matching opencode's shouldUseCopilotResponsesApi."""
+    """Hermes forces Copilot-visible models to chat completions."""
 
-    def test_gpt5_uses_responses(self):
+    def test_gpt5_uses_chat(self):
         from hermes_cli.models import _should_use_copilot_responses_api
-        assert _should_use_copilot_responses_api("gpt-5.4") is True
-        assert _should_use_copilot_responses_api("gpt-5.4-mini") is True
-        assert _should_use_copilot_responses_api("gpt-5.3-codex") is True
-        assert _should_use_copilot_responses_api("gpt-5.2-codex") is True
-        assert _should_use_copilot_responses_api("gpt-5.2") is True
-        assert _should_use_copilot_responses_api("gpt-5.1-codex-max") is True
+        assert _should_use_copilot_responses_api("gpt-5.4") is False
+        assert _should_use_copilot_responses_api("gpt-5.4-mini") is False
+        assert _should_use_copilot_responses_api("gpt-5.3-codex") is False
+        assert _should_use_copilot_responses_api("gpt-5.2-codex") is False
+        assert _should_use_copilot_responses_api("gpt-5.2") is False
+        assert _should_use_copilot_responses_api("gpt-5.1-codex-max") is False
 
-    def test_gpt5_mini_excluded(self):
+    def test_gpt5_mini_uses_chat(self):
         from hermes_cli.models import _should_use_copilot_responses_api
         assert _should_use_copilot_responses_api("gpt-5-mini") is False
 
