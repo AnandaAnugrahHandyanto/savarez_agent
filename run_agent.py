@@ -13004,6 +13004,11 @@ class AIAgent:
                         _real_tokens = estimate_messages_tokens_rough(messages)
 
                     if self.compression_enabled and _compressor.should_compress(_real_tokens):
+                        # Check if we were mid-task (last message is a tool result)
+                        _was_mid_task = (
+                            messages
+                            and messages[-1].get("role") == "tool"
+                        )
                         self._safe_print("  ⟳ compacting context…")
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message,
@@ -13014,6 +13019,21 @@ class AIAgent:
                         # _flush_messages_to_session_db writes compressed messages
                         # to the new session (see preflight compression comment).
                         conversation_history = None
+
+                        # Inject resume signal when compressed mid-task so the
+                        # model continues tool execution instead of stopping.
+                        if _was_mid_task:
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    "[SYSTEM: Context was auto-compacted while you were "
+                                    "actively executing a multi-step task with tools. "
+                                    "Review the summary and recent tool results above, "
+                                    "then CONTINUE the task by making the next tool call. "
+                                    "Do NOT summarize progress or ask the user what to do "
+                                    "— just continue where you left off.]"
+                                ),
+                            })
                     
                     # Save session log incrementally (so progress is visible even if interrupted)
                     self._session_messages = messages
