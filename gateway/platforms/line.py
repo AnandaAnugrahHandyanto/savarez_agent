@@ -25,7 +25,8 @@ import time
 import uuid
 import zlib
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Set, Tuple
+from urllib.parse import quote as _urlquote
 
 import httpx
 from aiohttp import web
@@ -173,6 +174,9 @@ class LineAdapter(BasePlatformAdapter):
         # token -> (absolute_path, expires_at) for temporary media serving
         self._media_tokens: Dict[str, Tuple[str, float]] = {}
         self._media_ttl: int = 300  # seconds
+        # paths of tempfiles created internally (e.g. video preview PNGs) to
+        # delete from disk when their token expires
+        self._media_temp_paths: Set[str] = set()
 
     # ------------------------------------------------------------------
     # HTTP client helpers
@@ -559,16 +563,31 @@ class LineAdapter(BasePlatformAdapter):
     # Temporary media serving (required for LINE image messages)
     # ------------------------------------------------------------------
 
-    def _register_media(self, file_path: str) -> str:
-        """Register a local file for temporary HTTPS serving; return an opaque token."""
+    def _register_media(self, file_path: str, *, cleanup: bool = False) -> str:
+        """Register a local file for temporary HTTPS serving; return an opaque token.
+
+        Args:
+            file_path: Absolute or relative path to the file to serve.
+            cleanup:   If True, the file will be deleted from disk when its
+                       token expires (use for internally generated tempfiles).
+        """
         now = time.time()
-        # Evict expired tokens to prevent unbounded growth
+        # Evict expired tokens and clean up any associated tempfiles
         expired = [t for t, (_, exp) in self._media_tokens.items() if now > exp]
         for t in expired:
-            del self._media_tokens[t]
+            path, _ = self._media_tokens.pop(t)
+            if path in self._media_temp_paths:
+                self._media_temp_paths.discard(path)
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
 
+        resolved = str(Path(file_path).resolve())
         token = secrets.token_urlsafe(32)
-        self._media_tokens[token] = (str(Path(file_path).resolve()), now + self._media_ttl)
+        self._media_tokens[token] = (resolved, now + self._media_ttl)
+        if cleanup:
+            self._media_temp_paths.add(resolved)
         return token
 
     def _media_url(self, token: str, filename: str) -> str:
@@ -576,7 +595,8 @@ class LineAdapter(BasePlatformAdapter):
         host = self.webhook_host
         port = self.webhook_port
         base = f"https://{host}" if port == 443 else f"https://{host}:{port}"
-        return f"{base}/line/media/{token}/{filename}"
+        safe_name = _urlquote(filename, safe="")
+        return f"{base}/line/media/{token}/{safe_name}"
 
     async def _handle_media(self, request: web.Request) -> web.Response:
         """Serve a registered local file over HTTPS for LINE's image API."""
@@ -778,7 +798,7 @@ class LineAdapter(BasePlatformAdapter):
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(_make_preview_png())
             preview_path = f.name
-        preview_token = self._register_media(preview_path)
+        preview_token = self._register_media(preview_path, cleanup=True)
         preview_url = self._media_url(preview_token, "preview.png")
 
         messages = []
@@ -885,5 +905,10 @@ class LineAdapter(BasePlatformAdapter):
             text = text[MAX_MESSAGE_LENGTH:]
             messages.append({"type": "text", "text": chunk})
             if len(messages) >= 5:  # LINE allows max 5 messages per request
+                if text:
+                    logger.warning(
+                        "[LINE] Message truncated: %d chars dropped (25000 char limit per request)",
+                        len(text),
+                    )
                 break
         return messages

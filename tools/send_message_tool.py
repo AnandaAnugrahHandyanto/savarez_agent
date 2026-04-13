@@ -444,8 +444,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
         elif platform == Platform.QQBOT:
             result = await _send_qqbot(pconfig, chat_id, chunk)
-        elif platform == Platform.LINE:
-            result = await _send_line(pconfig, chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -1016,7 +1014,7 @@ async def _send_line(pconfig, chat_id, message, media_files=None):
             if ext in _IMAGE_EXTS:
                 result = await adapter.send_image_file(chat_id, media_path)
             elif ext in _VIDEO_EXTS:
-                result = await adapter.send_document(chat_id, media_path)
+                result = await adapter.send_video(chat_id, media_path)
             elif ext in _AUDIO_EXTS:
                 result = await adapter.send_voice(chat_id, media_path)
             else:
