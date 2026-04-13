@@ -20,7 +20,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Union
 
 from tools.tool_backend_helpers import managed_nous_tools_enabled as _managed_nous_tools_enabled
 
@@ -47,6 +47,7 @@ import yaml
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.default_soul import DEFAULT_SOUL_MD
+from hermes_cli.config_schema import HermesConfig
 
 
 # =============================================================================
@@ -1278,19 +1279,24 @@ def get_missing_config_fields() -> List[Dict[str, Any]]:
     config = load_config()
     missing = []
 
-    def _check(defaults: dict, current: dict, prefix: str = ""):
+    def _check(defaults: dict, current: Any, prefix: str = ""):
         for key, default_value in defaults.items():
             if key.startswith('_'):
                 continue
             full_key = key if not prefix else f"{prefix}.{key}"
-            if key not in current:
+            if hasattr(current, "get"):
+                val = current.get(key)
+            else:
+                val = getattr(current, key, None)
+
+            if val is None and key not in (getattr(current.__class__, "model_fields", {})):
                 missing.append({
                     "key": full_key,
                     "default": default_value,
                     "description": f"New config option: {full_key}",
                 })
-            elif isinstance(default_value, dict) and isinstance(current.get(key), dict):
-                _check(default_value, current[key], full_key)
+            elif isinstance(default_value, dict) and (isinstance(val, dict) or hasattr(current.__class__, "model_fields")):
+                _check(default_value, val, full_key)
 
     _check(DEFAULT_CONFIG, config)
     return missing
@@ -1579,7 +1585,7 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 
-def load_config() -> Dict[str, Any]:
+def load_config() -> HermesConfig:
     """Load configuration from ~/.hermes/config.yaml."""
     import copy
     ensure_hermes_home()
@@ -1603,7 +1609,8 @@ def load_config() -> Dict[str, Any]:
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
     
-    return _expand_env_vars(_normalize_root_model_keys(_normalize_max_turns_config(config)))
+    raw_config = _expand_env_vars(_normalize_root_model_keys(_normalize_max_turns_config(config)))
+    return HermesConfig.model_validate(raw_config)
 
 
 _SECURITY_COMMENT = """
@@ -1701,16 +1708,21 @@ _COMMENTED_SECTIONS = """
 """
 
 
-def save_config(config: Dict[str, Any]):
+def save_config(config: Union[Dict[str, Any], HermesConfig]):
     """Save configuration to ~/.hermes/config.yaml."""
     if is_managed():
         managed_error("save configuration")
         return
     from utils import atomic_yaml_write
+    
+    if isinstance(config, HermesConfig):
+        config_dict = config.model_dump(by_alias=True)
+    else:
+        config_dict = dict(config)
 
     ensure_hermes_home()
     config_path = get_config_path()
-    normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+    normalized = _normalize_root_model_keys(_normalize_max_turns_config(config_dict))
 
     # Build optional commented-out sections for features that are off by
     # default or only relevant when explicitly configured.

@@ -727,6 +727,10 @@ platform_toolsets:
 #   time:
 #     command: uvx
 #     args: ["mcp-server-time"]
+#   chrome-devtools:
+#     command: npx
+#     args: ["-y", "chrome-devtools-mcp@latest"]
+#     timeout: 60
 #   filesystem:
 #     command: npx
 #     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
