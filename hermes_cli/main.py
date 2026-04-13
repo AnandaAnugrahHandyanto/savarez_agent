@@ -42,6 +42,7 @@ Usage:
 
     hermes claw migrate --dry-run  # Preview migration without changes
     hermes migrate export -o backup.tar.gz  Export Hermes to migration bundle
+    hermes migrate import -i backup.tar.gz  Import from migration bundle
     hermes migrate verify -i backup.tar.gz  Verify a migration bundle
     hermes migrate doctor                   Check environment for migration readiness
 """
@@ -5869,6 +5870,7 @@ Examples:
         epilog="""
 Examples:
   hermes migrate export -o backup.tar.gz  Export to migration bundle
+  hermes migrate import -i backup.tar.gz  Import from migration bundle
   hermes migrate verify -i backup.tar.gz  Verify a bundle
   hermes migrate doctor                   Check migration readiness
 """,
