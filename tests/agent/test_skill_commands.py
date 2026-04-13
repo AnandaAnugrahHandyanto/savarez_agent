@@ -46,6 +46,35 @@ class TestScanSkillCommands:
         assert "/my-skill" in result
         assert result["/my-skill"]["name"] == "my-skill"
 
+    def test_finds_symlinked_skill(self, tmp_path):
+        """Skills installed via symlink should be discovered."""
+        real_dir = tmp_path / "real" / "linked-skill"
+        real_dir.mkdir(parents=True)
+        (real_dir / "SKILL.md").write_text(
+            "---\nname: linked-skill\ndescription: A symlinked skill.\n---\n\nBody.\n"
+        )
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        (skills_dir / "linked-skill").symlink_to(real_dir, target_is_directory=True)
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+            result = scan_skill_commands()
+        assert "/linked-skill" in result
+        assert result["/linked-skill"]["name"] == "linked-skill"
+
+    def test_symlink_cycle_does_not_hang(self, tmp_path):
+        """A symlink cycle inside the skills dir must not cause infinite recursion."""
+        skill_dir = tmp_path / "cyclic-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: cyclic-skill\ndescription: Has a cycle.\n---\n\nBody.\n"
+        )
+        # Create a directory symlink that points back to the skills root
+        (skill_dir / "loop").symlink_to(tmp_path, target_is_directory=True)
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            result = scan_skill_commands()
+        # Should still find the skill without hanging
+        assert "/cyclic-skill" in result
+
     def test_empty_dir(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             result = scan_skill_commands()

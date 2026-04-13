@@ -429,15 +429,40 @@ def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
 # ── File iteration ────────────────────────────────────────────────────────
 
 
+def walk_skill_files(base_dir: Path, filename: str) -> List[Path]:
+    """Walk *base_dir* returning sorted paths matching *filename*.
+
+    Follows symlinked directories so that skills installed via ``ln -s``
+    are discovered.  Uses ``(st_dev, st_ino)`` to detect directory cycles
+    and avoid infinite recursion.
+
+    Excludes ``.git``, ``.github``, ``.hub`` directories.
+    """
+    results: List[Path] = []
+    seen_real: set = set()
+    for root, dirs, files in os.walk(base_dir, followlinks=True):
+        # Cycle guard: skip directories we have already traversed
+        try:
+            st = os.stat(root)
+            ident = (st.st_dev, st.st_ino)
+        except OSError:
+            dirs[:] = []
+            continue
+        if ident in seen_real:
+            dirs[:] = []
+            continue
+        seen_real.add(ident)
+        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
+        if filename in files:
+            results.append(Path(root) / filename)
+    return sorted(results, key=lambda p: str(p))
+
+
 def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*.
 
     Excludes ``.git``, ``.github``, ``.hub`` directories.
+    Follows symlinks with cycle detection (delegates to :func:`walk_skill_files`).
     """
-    matches = []
-    for root, dirs, files in os.walk(skills_dir):
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
-        if filename in files:
-            matches.append(Path(root) / filename)
-    for path in sorted(matches, key=lambda p: str(p.relative_to(skills_dir))):
+    for path in walk_skill_files(skills_dir, filename):
         yield path
