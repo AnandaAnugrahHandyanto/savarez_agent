@@ -1721,21 +1721,13 @@ class WeixinAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        del reply_to, kwargs
-        return await self.send_document(
-            chat_id=chat_id,
-            file_path=image_path,
-            caption=caption,
-            metadata=metadata,
-        )
+        return await self.send_document(chat_id, file_path=path, caption=caption, metadata=metadata)
 
     async def send_document(
         self,
         chat_id: str,
         file_path: str,
-        caption: Optional[str] = None,
-        file_name: Optional[str] = None,
-        reply_to: Optional[str] = None,
+        caption: str = "",
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
@@ -1743,7 +1735,7 @@ class WeixinAdapter(BasePlatformAdapter):
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
         try:
-            message_id = await self._send_file(chat_id, file_path, caption or "")
+            message_id = await self._send_file(chat_id, file_path, caption)
             return SendResult(success=True, message_id=message_id)
         except Exception as exc:
             logger.error("[%s] send_document failed to=%s: %s", self.name, _safe_id(chat_id), exc)
