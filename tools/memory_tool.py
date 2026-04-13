@@ -53,6 +53,13 @@ ENTRY_DELIMITER = "\n§\n"
 DEFAULT_MEMORY_TYPE = "uncategorized"
 EXPLICIT_MEMORY_TYPES = ("user", "feedback", "project", "reference")
 ALL_MEMORY_TYPES = EXPLICIT_MEMORY_TYPES + (DEFAULT_MEMORY_TYPE,)
+MEMORY_TYPE_PRIORITY = {
+    "user": 0,
+    "feedback": 1,
+    "project": 2,
+    "reference": 3,
+    DEFAULT_MEMORY_TYPE: 4,
+}
 
 
 def _normalize_memory_type(
@@ -71,6 +78,52 @@ def _normalize_memory_type(
         allowed = ", ".join(ALL_MEMORY_TYPES)
         raise ValueError(f"Invalid type '{memory_type}'. Use one of: {allowed}.")
     return normalized
+
+
+def _infer_memory_type(content: str) -> str:
+    """Infer a memory type from content using simple keyword heuristics."""
+    text = content.lower()
+
+    feedback_markers = (
+        "prefer",
+        "don't",
+        "do not",
+        "stop doing",
+        "keep doing",
+        "always",
+        "never",
+    )
+    project_markers = (
+        "deadline",
+        "sprint",
+        "release",
+        "milestone",
+        "freeze",
+    )
+    reference_markers = (
+        "url",
+        "http",
+        "dashboard",
+        "link",
+        "wiki",
+        "docs",
+    )
+    user_markers = (
+        "i am",
+        "my role",
+        "i work",
+        "my team",
+    )
+
+    if any(marker in text for marker in feedback_markers):
+        return "feedback"
+    if any(marker in text for marker in project_markers):
+        return "project"
+    if any(marker in text for marker in reference_markers):
+        return "reference"
+    if any(marker in text for marker in user_markers):
+        return "user"
+    return DEFAULT_MEMORY_TYPE
 
 
 # ---------------------------------------------------------------------------
@@ -264,13 +317,15 @@ class MemoryStore:
     ) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         try:
-            resolved_type = _normalize_memory_type(memory_type, default=DEFAULT_MEMORY_TYPE)
+            resolved_type = _normalize_memory_type(memory_type, default=None)
         except ValueError as exc:
             return {"success": False, "error": str(exc)}
 
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
+        if resolved_type is None:
+            resolved_type = _infer_memory_type(content)
 
         # Scan for injection/exfiltration before accepting
         scan_error = _scan_memory_content(content)
@@ -363,7 +418,7 @@ class MemoryStore:
             idx = matches[0][0]
             limit = self._char_limit(target)
             old_entry = entries[idx]
-            final_type = resolved_type or self._entry_type(target, old_entry)
+            final_type = resolved_type or _infer_memory_type(new_content)
 
             # Check that replacement doesn't blow the budget
             test_entries = entries.copy()
@@ -428,7 +483,12 @@ class MemoryStore:
 
         return self._success_response(target, "Entry removed.")
 
-    def read(self, target: str, memory_type: Optional[str] = None) -> Dict[str, Any]:
+    def read(
+        self,
+        target: str,
+        memory_type: Optional[str] = None,
+        group_by_type: bool = False,
+    ) -> Dict[str, Any]:
         """Return current entries, optionally filtered by type."""
         try:
             resolved_type = _normalize_memory_type(memory_type, default=None)
@@ -450,7 +510,43 @@ class MemoryStore:
             "Entries read.",
             entries=entries,
             type_filter=resolved_type,
+            include_rendered=True,
+            group_by_type=group_by_type,
         )
+
+    def recall_by_types(self, types: List[str], limit: int = 20) -> List[Dict[str, str]]:
+        """Return matching memories across stores, ordered by type priority."""
+        normalized_types: List[str] = []
+        for memory_type in types:
+            normalized = _normalize_memory_type(memory_type, default=None)
+            if normalized is not None:
+                normalized_types.append(normalized)
+
+        if not normalized_types or limit <= 0:
+            return []
+
+        allowed_types = set(normalized_types)
+        recalled: List[Dict[str, str]] = []
+        seen = set()
+
+        for target in ("user", "memory"):
+            for item in self._typed_entries(target):
+                if item["type"] not in allowed_types:
+                    continue
+                key = (item["type"], item["content"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                recalled.append(
+                    {
+                        "type": item["type"],
+                        "title": self._entry_title(item["content"]),
+                        "content": item["content"],
+                    }
+                )
+
+        recalled.sort(key=lambda item: (MEMORY_TYPE_PRIORITY[item["type"]], item["title"]))
+        return recalled[:limit]
 
     def bulk_update_types(self, target: str, updates: Dict[str, str]) -> Dict[str, Any]:
         """Update entry types by exact content match. Used by migration tooling."""
@@ -510,9 +606,12 @@ class MemoryStore:
         message: str = None,
         entries: Optional[List[str]] = None,
         type_filter: Optional[str] = None,
+        include_rendered: bool = False,
+        group_by_type: bool = False,
     ) -> Dict[str, Any]:
         live_entries = self._entries_for(target)
         result_entries = live_entries if entries is None else entries
+        typed_entries = self._typed_entries(target, result_entries)
         current = self._char_count(target)
         limit = self._char_limit(target)
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
@@ -521,7 +620,7 @@ class MemoryStore:
             "success": True,
             "target": target,
             "entries": result_entries,
-            "typed_entries": self._typed_entries(target, result_entries),
+            "typed_entries": typed_entries,
             "usage": f"{pct}% — {current:,}/{limit:,} chars",
             "entry_count": len(result_entries),
         }
@@ -529,9 +628,45 @@ class MemoryStore:
             resp["total_entry_count"] = len(live_entries)
         if type_filter is not None:
             resp["type_filter"] = type_filter
+        if include_rendered:
+            resp["group_by_type"] = group_by_type
+            resp["rendered"] = self._render_read_entries(typed_entries, group_by_type=group_by_type)
         if message:
             resp["message"] = message
         return resp
+
+    @staticmethod
+    def _entry_title(content: str, max_length: int = 80) -> str:
+        """Build a short title from the first non-empty line of content."""
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        title = lines[0] if lines else content.strip()
+        if len(title) <= max_length:
+            return title
+        return title[: max_length - 3].rstrip() + "..."
+
+    @staticmethod
+    def _render_read_entries(typed_entries: List[Dict[str, str]], *, group_by_type: bool = False) -> str:
+        """Render read results either flat or grouped by memory type."""
+        if not typed_entries:
+            return ""
+
+        if not group_by_type:
+            return "".join(f"- {item['content']}\n" for item in typed_entries)
+
+        grouped: Dict[str, List[str]] = {memory_type: [] for memory_type in ALL_MEMORY_TYPES}
+        for item in typed_entries:
+            grouped[item["type"]].append(item["content"])
+
+        sections: List[str] = []
+        for memory_type in sorted(ALL_MEMORY_TYPES, key=lambda name: MEMORY_TYPE_PRIORITY[name]):
+            contents = grouped[memory_type]
+            if not contents:
+                continue
+            section_lines = [f"## [Type] {memory_type}"]
+            section_lines.extend(f"- {content}" for content in contents)
+            sections.append("\n".join(section_lines))
+
+        return "\n\n".join(sections) + "\n"
 
     def _render_block(self, target: str, entries: List[str]) -> str:
         """Render a system prompt block with header and usage indicator."""
@@ -664,6 +799,7 @@ def memory_tool(
     content: str = None,
     old_text: str = None,
     memory_type: Optional[str] = None,
+    group_by_type: bool = False,
     store: Optional[MemoryStore] = None,
 ) -> str:
     """
@@ -695,7 +831,7 @@ def memory_tool(
         result = store.remove(target, old_text)
 
     elif action == "read":
-        result = store.read(target, memory_type=memory_type)
+        result = store.read(target, memory_type=memory_type, group_by_type=group_by_type)
 
     else:
         return tool_error(f"Unknown action '{action}'. Use: add, replace, remove, read", success=False)
@@ -763,9 +899,15 @@ MEMORY_SCHEMA = {
                 "enum": list(ALL_MEMORY_TYPES),
                 "description": (
                     "Optional memory category. Use user, feedback, project, or reference for explicit typing. "
-                    "If omitted on add, the entry is stored as uncategorized. "
-                    "If omitted on replace, the existing type is preserved. "
+                    "If omitted on add or replace, Hermes infers a type from the content. "
                     "On read, this acts as an optional type filter."
+                ),
+            },
+            "group_by_type": {
+                "type": "boolean",
+                "description": (
+                    "Optional read-only flag. When true, the rendered output is grouped into "
+                    "type-based sections. Defaults to false for backward compatibility."
                 ),
             },
         },
@@ -787,10 +929,10 @@ registry.register(
         content=args.get("content"),
         old_text=args.get("old_text"),
         memory_type=args.get("type"),
+        group_by_type=args.get("group_by_type", False),
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",
     allowed_in_plan_mode_default=False,
 )
-
 

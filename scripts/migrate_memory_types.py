@@ -13,7 +13,7 @@ import json
 import sys
 from typing import Dict, Iterable, List
 
-from tools.memory_tool import DEFAULT_MEMORY_TYPE, MemoryStore
+from tools.memory_tool import DEFAULT_MEMORY_TYPE, MemoryStore, _infer_memory_type
 
 TARGETS = ("memory", "user")
 
@@ -59,9 +59,19 @@ def _suggest_type(target: str, content: str) -> Dict[str, str]:
 
 
 def build_report(store: MemoryStore, target: str = "all") -> Dict[str, object]:
+    return _build_report(store, target=target, auto_classify=False)
+
+
+def _build_report(
+    store: MemoryStore,
+    target: str = "all",
+    *,
+    auto_classify: bool = False,
+) -> Dict[str, object]:
     report: Dict[str, object] = {
         "success": True,
         "mode": "dry-run",
+        "auto_classify": auto_classify,
         "targets": {},
         "summary": {
             "total_entries": 0,
@@ -95,12 +105,18 @@ def build_report(store: MemoryStore, target: str = "all") -> Dict[str, object]:
             else:
                 typed_count += 1
 
-            suggestion = _suggest_type(current_target, item["content"])
+            if auto_classify and current_type == DEFAULT_MEMORY_TYPE:
+                suggested_type = _infer_memory_type(item["content"])
+                reason = "auto-classify via _infer_memory_type()"
+            else:
+                suggestion = _suggest_type(current_target, item["content"])
+                suggested_type = suggestion["suggested_type"]
+                reason = suggestion["reason"]
             suggestions.append({
                 "content": item["content"],
                 "current_type": current_type,
-                "suggested_type": suggestion["suggested_type"],
-                "reason": suggestion["reason"],
+                "suggested_type": suggested_type,
+                "reason": reason,
             })
 
         targets[current_target] = {
@@ -173,11 +189,16 @@ def main(argv: List[str] | None = None) -> int:
         action="store_true",
         help="Apply suggested non-uncategorized types to the sidecar metadata files.",
     )
+    parser.add_argument(
+        "--auto-classify",
+        action="store_true",
+        help="Use tools.memory_tool._infer_memory_type() to suggest types for uncategorized entries.",
+    )
     args = parser.parse_args(argv)
 
     store = MemoryStore()
     store.load_from_disk()
-    report = build_report(store, target=args.target)
+    report = _build_report(store, target=args.target, auto_classify=args.auto_classify)
 
     if not report.get("success"):
         json.dump(report, sys.stdout, ensure_ascii=False, indent=2)
