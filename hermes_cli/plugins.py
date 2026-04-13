@@ -656,6 +656,58 @@ class PluginManager:
 
 
 # ---------------------------------------------------------------------------
+# Plugin skill auto-registration helper
+# ---------------------------------------------------------------------------
+
+
+def _auto_register_skills_from_dir_v1(
+    ctx: "PluginContext",
+    skills_dir: Path,
+) -> int:
+    """Scan skills_dir for SKILL.md files and register each via ctx.register_skill().
+
+    **INTERNAL HELPER — STABILITY CONTRACT**
+
+    This is an internal helper used by auto-generated plugin shims (created
+    by `hermes plugins install` for skill-only bundles). Its signature and
+    behavior are frozen as part of the shim v1 contract — future refactors
+    must introduce _v2 rather than modifying this function, so that existing
+    autogen shims continue to work.
+
+    Plugin authors writing their own __init__.py should call ctx.register_skill()
+    directly rather than using this helper.
+
+    Per-skill errors are logged and skipped — one malformed skill does not
+    block registration of other skills in the same bundle.
+
+    Returns the number of skills successfully registered.
+    """
+    if not skills_dir.is_dir():
+        return 0
+
+    count = 0
+    errors = []
+    for child in sorted(skills_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        skill_md = child / "SKILL.md"
+        if not skill_md.exists():
+            continue
+        try:
+            ctx.register_skill(name=child.name, path=skill_md)
+            count += 1
+        except Exception as exc:
+            errors.append(f"{child.name}: {exc}")
+
+    if errors:
+        logger.warning(
+            "Plugin %s: %d skill(s) failed to register: %s",
+            ctx.manifest.name, len(errors), "; ".join(errors),
+        )
+    return count
+
+
+# ---------------------------------------------------------------------------
 # Module-level singleton & convenience functions
 # ---------------------------------------------------------------------------
 

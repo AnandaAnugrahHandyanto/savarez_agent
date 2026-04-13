@@ -762,3 +762,107 @@ class TestPluginContextRegisterSkill:
 
         entry = manager._plugin_skills["myplugin:foo"]
         assert entry["description"] == ""
+
+
+class TestAutoRegisterSkillsFromDirV1:
+    def _fake_register(self, tmp_path, plugin_name="myplugin"):
+        """Create a fake ctx + manager + skills dir with a few SKILL.md files."""
+        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+        plugin_dir = tmp_path / plugin_name
+        plugin_dir.mkdir()
+        skills_dir = plugin_dir / "skills"
+        skills_dir.mkdir()
+
+        manifest = PluginManifest(name=plugin_name, source="user", path=str(plugin_dir))
+        manager = PluginManager()
+        ctx = PluginContext(manifest, manager)
+        return ctx, manager, skills_dir
+
+    def _make_skill(self, skills_dir, name):
+        """Helper: create a skill directory with SKILL.md under skills_dir."""
+        skill_dir = skills_dir / name
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: test\n---\n\nBody.\n"
+        )
+
+    def test_scans_all_valid_skills(self, tmp_path):
+        from hermes_cli.plugins import _auto_register_skills_from_dir_v1
+
+        ctx, manager, skills_dir = self._fake_register(tmp_path)
+        self._make_skill(skills_dir, "a")
+        self._make_skill(skills_dir, "b")
+        self._make_skill(skills_dir, "c")
+
+        count = _auto_register_skills_from_dir_v1(ctx, skills_dir)
+
+        assert count == 3
+        assert manager.find_plugin_skill("myplugin:a") is not None
+        assert manager.find_plugin_skill("myplugin:b") is not None
+        assert manager.find_plugin_skill("myplugin:c") is not None
+
+    def test_skips_non_directory_files(self, tmp_path):
+        from hermes_cli.plugins import _auto_register_skills_from_dir_v1
+
+        ctx, manager, skills_dir = self._fake_register(tmp_path)
+        self._make_skill(skills_dir, "real-skill")
+        # Add garbage files that should be ignored
+        (skills_dir / ".DS_Store").write_text("")
+        (skills_dir / "README.md").write_text("# hi")
+
+        count = _auto_register_skills_from_dir_v1(ctx, skills_dir)
+
+        assert count == 1
+        assert manager.find_plugin_skill("myplugin:real-skill") is not None
+
+    def test_skips_subdir_without_skill_md(self, tmp_path):
+        from hermes_cli.plugins import _auto_register_skills_from_dir_v1
+
+        ctx, manager, skills_dir = self._fake_register(tmp_path)
+        self._make_skill(skills_dir, "good")
+        # Empty subdirectory
+        (skills_dir / "empty").mkdir()
+
+        count = _auto_register_skills_from_dir_v1(ctx, skills_dir)
+
+        assert count == 1
+
+    def test_one_broken_skill_doesnt_block_others(self, tmp_path, caplog):
+        from hermes_cli.plugins import _auto_register_skills_from_dir_v1
+
+        ctx, manager, skills_dir = self._fake_register(tmp_path)
+        self._make_skill(skills_dir, "good")
+        # Skill with invalid name (dir name contains dot)
+        bad_dir = skills_dir / "bad.name"
+        bad_dir.mkdir()
+        (bad_dir / "SKILL.md").write_text("---\nname: bad.name\n---\n")
+
+        count = _auto_register_skills_from_dir_v1(ctx, skills_dir)
+
+        # Only the good one succeeds
+        assert count == 1
+        assert manager.find_plugin_skill("myplugin:good") is not None
+
+    def test_empty_dir(self, tmp_path):
+        from hermes_cli.plugins import _auto_register_skills_from_dir_v1
+
+        ctx, _, skills_dir = self._fake_register(tmp_path)
+
+        count = _auto_register_skills_from_dir_v1(ctx, skills_dir)
+
+        assert count == 0
+
+    def test_missing_dir(self, tmp_path):
+        from hermes_cli.plugins import (
+            PluginContext, PluginManager, PluginManifest,
+            _auto_register_skills_from_dir_v1,
+        )
+
+        manifest = PluginManifest(name="p", source="user", path=str(tmp_path))
+        manager = PluginManager()
+        ctx = PluginContext(manifest, manager)
+
+        count = _auto_register_skills_from_dir_v1(ctx, tmp_path / "does-not-exist")
+
+        assert count == 0
