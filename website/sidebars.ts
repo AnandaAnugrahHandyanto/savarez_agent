@@ -86,7 +86,6 @@ const sidebars: SidebarsConfig = {
           label: 'Management',
           items: [
             'user-guide/features/web-dashboard',
-            'user-guide/features/extending-the-dashboard',
           ],
         },
         {
