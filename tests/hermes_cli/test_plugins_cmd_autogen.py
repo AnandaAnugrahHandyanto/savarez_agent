@@ -177,3 +177,67 @@ class TestAutogenPluginShimHappyPath:
             for call in console.print.call_args_list
         )
         assert "3 skills" in all_calls or "3 skill" in all_calls
+
+
+class TestAutogenPluginShimRollback:
+    def test_write_failure_rolls_back_all_files(self, tmp_path, monkeypatch):
+        from hermes_cli.plugins_cmd import _autogen_plugin_shim
+
+        plugin_dir = tmp_path / "testbundle"
+        plugin_dir.mkdir()
+        skills_dir = plugin_dir / "skills"
+        skills_dir.mkdir()
+        (skills_dir / "foo").mkdir()
+        (skills_dir / "foo" / "SKILL.md").write_text("---\nname: foo\n---\n")
+
+        # Patch Path.write_text on plugin.yaml only, after init_py already writes
+        original_write = Path.write_text
+
+        def flaky_write(self, *args, **kwargs):
+            if self.name == "plugin.yaml":
+                raise PermissionError("disk full simulation")
+            return original_write(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", flaky_write)
+
+        with pytest.raises(RuntimeError, match="Failed to generate plugin shim"):
+            _autogen_plugin_shim(plugin_dir, MagicMock())
+
+        # Verify rollback: init_py was unlinked, no lock file left behind
+        assert not (plugin_dir / "__init__.py").exists()
+        assert not (plugin_dir / ".hermes-autogen").exists()
+
+
+class TestAutogenPluginNameValidation:
+    def test_rejects_name_with_colon(self, tmp_path):
+        from hermes_cli.plugins_cmd import _autogen_plugin_shim
+
+        plugin_dir = tmp_path / "bad:name"
+        plugin_dir.mkdir()
+        (plugin_dir / "skills").mkdir()
+        (plugin_dir / "skills" / "x").mkdir()
+        (plugin_dir / "skills" / "x" / "SKILL.md").write_text("---\nname: x\n---\n")
+
+        with pytest.raises(ValueError, match="contains ':'"):
+            _autogen_plugin_shim(plugin_dir, MagicMock())
+
+
+class TestAutogenEmptySkillsDir:
+    def test_empty_skills_dir_still_generates_with_warning(self, tmp_path):
+        from hermes_cli.plugins_cmd import _autogen_plugin_shim
+
+        plugin_dir = tmp_path / "emptybundle"
+        plugin_dir.mkdir()
+        (plugin_dir / "skills").mkdir()  # exists but empty
+
+        console = MagicMock()
+        _autogen_plugin_shim(plugin_dir, console)
+
+        # Shim is generated (skills/ exists, so the condition is met)
+        assert (plugin_dir / "__init__.py").exists()
+        # Warning was printed
+        all_calls = " ".join(
+            str(call.args[0]) if call.args else ""
+            for call in console.print.call_args_list
+        )
+        assert "empty" in all_calls.lower() or "Warning" in all_calls
