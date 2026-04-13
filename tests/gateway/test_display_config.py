@@ -189,14 +189,8 @@ class TestPlatformDefaults:
         """Mattermost, Matrix, Feishu, WhatsApp default to 'new' tool progress."""
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("mattermost", "matrix", "feishu", "whatsapp"):
+        for plat in ("slack", "mattermost", "matrix", "feishu", "whatsapp"):
             assert resolve_display_setting({}, plat, "tool_progress") == "new", plat
-
-    def test_slack_defaults_tool_progress_off(self):
-        """Slack defaults to quiet tool progress (permanent chat noise otherwise)."""
-        from gateway.display_config import resolve_display_setting
-
-        assert resolve_display_setting({}, "slack", "tool_progress") == "off"
 
     def test_low_tier_platforms(self):
         """Signal, BlueBubbles, etc. default to 'off' tool progress."""
