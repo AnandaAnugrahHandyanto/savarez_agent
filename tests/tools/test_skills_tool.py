@@ -1382,3 +1382,35 @@ class TestSkillViewPluginNotFoundErrors:
 
         assert result["success"] is False
         assert "not found" in result["error"].lower()
+
+
+class TestSkillViewStaleRegistrySelfHeal:
+    def test_stale_entry_self_heals(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+
+        plugin_dir = tmp_path / "plugins" / "myplugin"
+        skill_dir = plugin_dir / "skills" / "foo"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text("---\nname: foo\n---\n\nBody.\n")
+
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path / "empty")
+        (tmp_path / "empty").mkdir()
+
+        from hermes_cli.plugins import PluginManager
+        import hermes_cli.plugins as plugins_mod
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", PluginManager())
+
+        pm = plugins_mod.get_plugin_manager()
+        pm._register_plugin_skill("myplugin", "foo", skill_md, "")
+
+        # 已注册，但现在在注册表不知情的情况下删除文件
+        skill_md.unlink()
+
+        raw = skill_view("myplugin:foo")
+        result = json.loads(raw)
+
+        assert result["success"] is False
+        assert "no longer exists" in result["error"]
+        # 条目应已从注册表中移除
+        assert pm.find_plugin_skill("myplugin:foo") is None

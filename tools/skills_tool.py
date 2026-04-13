@@ -950,7 +950,22 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             pm = get_plugin_manager()
             plugin_skill_md = pm.find_plugin_skill(name)
 
-            if plugin_skill_md is not None and plugin_skill_md.exists():
+            if plugin_skill_md is not None:
+                if not plugin_skill_md.exists():
+                    # 自愈：文件已被删除但注册表条目仍存在，清理过期条目
+                    pm._remove_plugin_skill(name)
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error": (
+                                f"Skill '{name}' file no longer exists at "
+                                f"{plugin_skill_md}. The registry entry has "
+                                f"been cleaned up — try again after the plugin "
+                                f"is reloaded."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
                 return _serve_plugin_skill(
                     plugin_skill_md, namespace, bare, file_path
                 )
