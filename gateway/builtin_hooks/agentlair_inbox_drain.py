@@ -5,17 +5,20 @@ the agent has deterministic state before it begins planning. Unread messages
 are fetched, formatted into a prompt, and processed by a one-shot AIAgent
 before the gateway accepts the first user message.
 
+This hook fires **once** at gateway:startup. Per-session draining is handled
+by the ``hermes-agentlair`` plugin (on_session_start / on_session_end lifecycle
+hooks), which also implements the peek+ack pattern for crash-safe processing.
+
 Configuration
 -------------
 AGENTLAIR_API_KEY    — required; hook is a no-op without it.
-AGENTLAIR_FROM       — claimed inbox address (e.g. publisher@agentlair.dev).
-                       Messages addressed to this address are drained.
+AGENTLAIR_ADDRESS    — claimed inbox address (e.g. publisher@agentlair.dev).
 
 Skipping
 --------
 The hook silently returns (no error) when:
   - AGENTLAIR_API_KEY is not set
-  - AGENTLAIR_FROM is not set
+  - AGENTLAIR_ADDRESS is not set
   - The inbox is empty
 
 Design note
@@ -27,10 +30,41 @@ until the drain completes. This matches voidborne-d's guidance (issue #344):
 state before planning starts."
 """
 
+import json
 import logging
 import os
+from urllib.parse import quote, urlencode
+from urllib.request import Request, urlopen
 
 logger = logging.getLogger("hooks.agentlair-inbox-drain")
+
+_API_BASE = "https://agentlair.dev/v1"
+
+
+# ---------------------------------------------------------------------------
+# Inbox helpers
+# ---------------------------------------------------------------------------
+
+def _api_key() -> str:
+    return os.environ.get("AGENTLAIR_API_KEY", "")
+
+
+def _fetch_unread(address: str, limit: int = 20) -> list[dict]:
+    """Return unread messages for *address* from the AgentLair inbox."""
+    params = urlencode({"address": address, "limit": limit})
+    req = Request(
+        f"{_API_BASE}/email/inbox?{params}",
+        headers={"Authorization": f"Bearer {_api_key()}"},
+        method="GET",
+    )
+    try:
+        with urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        messages = data.get("messages", [])
+        return [m for m in messages if not m.get("read", False)]
+    except Exception as exc:
+        logger.warning("agentlair-inbox-drain: inbox fetch failed: %s", exc)
+        return []
 
 
 def _build_drain_prompt(messages: list[dict]) -> str:
@@ -55,23 +89,24 @@ def _build_drain_prompt(messages: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Hook handler
+# ---------------------------------------------------------------------------
+
 async def handle(event_type: str, context: dict) -> None:
     """Drain the AgentLair inbox synchronously on gateway:startup."""
-    api_key = os.environ.get("AGENTLAIR_API_KEY", "")
-    address = os.environ.get("AGENTLAIR_FROM", "")
+    api_key = _api_key()
+    address = os.environ.get("AGENTLAIR_ADDRESS", "")
 
     if not api_key:
         logger.debug("agentlair-inbox-drain: AGENTLAIR_API_KEY not set, skipping")
         return
     if not address:
-        logger.debug("agentlair-inbox-drain: AGENTLAIR_FROM not set, skipping")
+        logger.debug("agentlair-inbox-drain: AGENTLAIR_ADDRESS not set, skipping")
         return
 
-    # Import here to avoid circular imports at module load time
-    from tools.agentlair_tool import drain_inbox
-
     logger.info("agentlair-inbox-drain: checking inbox for %s", address)
-    messages = drain_inbox(address)
+    messages = _fetch_unread(address)
 
     if not messages:
         logger.info("agentlair-inbox-drain: inbox empty, nothing to do")
