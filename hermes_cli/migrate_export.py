@@ -20,6 +20,7 @@ from hermes_cli.migrate_core import (
     _should_skip_file,
     _is_text_file,
     _remap_content,
+    _SECRET_FILES,
     create_manifest,
     detect_platform,
     _log_warning,
@@ -36,7 +37,7 @@ def _add_file_to_tarball(tf, full_path: Path, arcname: str, source_home: Path) -
     rewritten to _TARGET_HOME_PLACEHOLDER so they can be restored on a different
     machine. Binary files are added verbatim.
     """
-    if _is_text_file(arcname):
+    if _is_text_file(Path(arcname).name):
         content = full_path.read_text(encoding="utf-8", errors="replace")
         remapped = _remap_content(content, source_home, Path(_TARGET_HOME_PLACEHOLDER))
         data = remapped.encode("utf-8")
@@ -87,7 +88,7 @@ def export_bundle(output_path: Optional[str], preset: str = "safe") -> Path:
                         dirs[:] = [d for d in dirs if not _should_skip_dir(d, source_platform["os"])]
                         for fname in files:
                             # Secret files (nested at any depth) are excluded by safe preset
-                            if preset != "full" and fname in {".env", "auth.json"}:
+                            if preset != "full" and fname in _SECRET_FILES:
                                 continue
                             if _should_skip_file(fname, source_platform["os"]):
                                 continue

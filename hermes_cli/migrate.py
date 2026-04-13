@@ -38,7 +38,7 @@ def run_migrate(args):
 
     if action is None:
         print("Run 'hermes migrate --help' to see available subcommands.")
-        return
+        return False
 
     interactive = getattr(args, "interactive", False)
 

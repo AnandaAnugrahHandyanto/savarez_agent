@@ -5884,7 +5884,7 @@ Examples:
     # migrate export
     migrate_export = migrate_subparsers.add_parser("export", help="Export Hermes to migration bundle")
     migrate_export.add_argument(
-        "--preset", "-p",
+        "--preset",
         choices=["safe", "full"],
         default="safe",
         help="Preset: 'safe' excludes secrets (default), 'full' includes them"
