@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Activity, BarChart3, Clock, FileText, KeyRound, MessageSquare, Package, Settings } from "lucide-react";
 import StatusPage from "@/pages/StatusPage";
 import ConfigPage from "@/pages/ConfigPage";
@@ -36,8 +36,15 @@ const PAGE_COMPONENTS: Record<PageId, React.FC> = {
 export default function App() {
   const [page, setPage] = useState<PageId>("status");
   const [animKey, setAnimKey] = useState(0);
+  const initialRef = useRef(true);
 
   useEffect(() => {
+    // Skip the animation key bump on initial mount to avoid re-mounting
+    // the default page component (which causes duplicate API requests).
+    if (initialRef.current) {
+      initialRef.current = false;
+      return;
+    }
     setAnimKey((k) => k + 1);
   }, [page]);
 
@@ -68,8 +75,8 @@ export default function App() {
                 onClick={() => setPage(id)}
                 className={`group relative inline-flex items-center gap-1.5 border-r border-border px-4 py-2 font-display text-[0.8rem] tracking-[0.12em] uppercase whitespace-nowrap transition-colors cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
                   page === id
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground"
+                    ? "text-foreground font-semibold"
+                    : "text-muted-foreground font-normal hover:text-foreground"
                 }`}
               >
                 <Icon className="h-3.5 w-3.5" />

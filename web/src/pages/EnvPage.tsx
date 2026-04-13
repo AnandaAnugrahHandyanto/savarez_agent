@@ -18,6 +18,7 @@ import { api } from "@/lib/api";
 import type { EnvVarInfo } from "@/lib/api";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
+import { OAuthProvidersCard } from "@/components/OAuthProvidersCard";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -287,7 +288,7 @@ function ProviderGroupCard({
       <button
         type="button"
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center justify-between gap-3 px-4 py-3 cursor-pointer hover:bg-primary/5 transition-colors"
+        className="flex w-full items-center justify-between gap-3 px-4 py-2 cursor-pointer hover:bg-primary/5 transition-colors"
       >
         <div className="flex items-center gap-3 min-w-0">
           {expanded ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
@@ -494,6 +495,12 @@ export default function EnvPage() {
           {showAdvanced ? "Hide Advanced" : "Show Advanced"}
         </Button>
       </div>
+
+      {/* ═══════════════ OAuth Logins (sits above API keys — distinct auth mode) ══ */}
+      <OAuthProvidersCard
+        onError={(msg) => showToast(msg, "error")}
+        onSuccess={(msg) => showToast(msg, "success")}
+      />
 
       {/* ═══════════════ LLM Providers (grouped) ═══════════════ */}
       <Card>
