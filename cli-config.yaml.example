@@ -737,6 +737,53 @@ delegation:
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  # reasoning_effort: "low"                   # Override reasoning effort for subagents
+
+  # ── Task-tier profiles ──────────────────────────────────────────────────
+  # Named presets for model/routing/reasoning/iterations per task type.
+  # Use via delegate_task(tier="review") or per-task in batch mode:
+  #   delegate_task(tasks=[{"goal":"...","tier":"light"},{"goal":"...","tier":"review"}])
+  #
+  # Reasoning floor guardrails: heavy/research >= medium, planning/review >= high.
+  # The floor prevents silent reasoning degradation even if the tier sets it lower.
+  #
+  # default_tier: "heavy"                      # Tier used when none specified
+  # tiers:
+  #   light:                                    # Cheap/fast — simple lookups, formatting
+  #     model: "gpt-5.4-mini"
+  #     reasoning_effort: "low"
+  #     max_iterations: 25
+  #   heavy:                                    # Default — general coding, debugging
+  #     model: "gpt-5.4"
+  #     reasoning_effort: "medium"
+  #     max_iterations: 50
+  #   review:                                   # Deep reasoning — code review, security audit
+  #     model: "gpt-5.4"
+  #     reasoning_effort: "xhigh"               # Floor ensures >= high
+  #     max_iterations: 60
+  #   planning:                                 # Architectural decisions, system design
+  #     model: "xiaomi/mimo-v2-pro"
+  #     provider: "nous"
+  #     reasoning_effort: "high"                # Floor ensures >= high
+  #     max_iterations: 60
+  #   research:                                 # Deep research, literature review
+  #     model: "gpt-5.4"
+  #     reasoning_effort: "high"                # Floor ensures >= medium
+  #     max_iterations: 60
+
+  # ── Model pool (optional validation) ────────────────────────────────────
+  # When set, subagent models are validated against this list.
+  # Pool entries are also injected into the tool description so the
+  # orchestrator LLM can auto-select the best model per task.
+  # pool:
+  #   - model: "gpt-5.4-mini"
+  #     strengths: "quick lookups, simple tasks"
+  #   - model: "gpt-5.4"
+  #     provider: "openai-codex"
+  #     strengths: "coding, debugging, review"
+  #   - model: "xiaomi/mimo-v2-pro"
+  #     provider: "nous"
+  #     strengths: "planning, research"
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)
