@@ -16,6 +16,16 @@ state.db-shm
 # Playwright MCP scratch
 .playwright-mcp/
 
+# Runtime session dumps
+sessions/
+
+# Runtime caches / outputs
+models_dev_cache.json
+test_final_output.log
+
+# User cron schedule (per-user state, not source)
+cron/jobs.json
+
 .venv/
 .vscode/
 .env
