@@ -879,7 +879,9 @@ def _serve_plugin_skill(
     # 构建 bundle 上下文 banner — 失败时降级处理
     from hermes_cli.plugins import get_plugin_manager
     try:
-        siblings = get_plugin_manager().list_plugin_skills(namespace)
+        all_skills = get_plugin_manager().list_plugin_skills(namespace)
+        # 排除当前正在服务的 skill —— "siblings" 表示 bundle 中的其他 skill
+        siblings = [s for s in all_skills if s != bare]
         banner = _build_bundle_context_banner(namespace, siblings)
     except Exception as exc:
         logger.warning("Failed to build bundle context banner: %s", exc)

@@ -1292,3 +1292,44 @@ class TestPluginSkillBannerInjection:
         result = json.loads(raw)
 
         assert "foo body." in result["content"]
+
+    def test_banner_excludes_self_from_siblings(self, tmp_path, monkeypatch):
+        """The banner's sibling list should not include the skill being served."""
+        from tools.skills_tool import skill_view
+
+        self._setup(tmp_path, monkeypatch, skills=("foo", "bar", "baz"))
+
+        raw = skill_view("myplugin:foo")
+        result = json.loads(raw)
+        content = result["content"]
+
+        # Find the "Sibling skills: ..." line in the banner
+        # It should list bar and baz but NOT foo
+        sibling_line = None
+        for line in content.split("\n"):
+            if "Sibling skills:" in line:
+                sibling_line = line
+                break
+
+        assert sibling_line is not None, "Expected a 'Sibling skills:' line in banner"
+        assert "bar" in sibling_line
+        assert "baz" in sibling_line
+        assert "foo" not in sibling_line, (
+            "Banner should exclude the currently-served skill from siblings"
+        )
+
+    def test_banner_single_skill_plugin_drops_to_short_form(self, tmp_path, monkeypatch):
+        """When the plugin has only one skill, after self-exclusion the siblings list is empty,
+        so the banner should use the short single-line form."""
+        from tools.skills_tool import skill_view
+
+        self._setup(tmp_path, monkeypatch, skills=("only-skill",))
+
+        raw = skill_view("myplugin:only-skill")
+        result = json.loads(raw)
+        content = result["content"]
+
+        # Single-line banner form: no "Sibling skills:" line
+        assert "Bundle context" in content
+        assert "only-skill body." in content
+        assert "Sibling skills:" not in content
