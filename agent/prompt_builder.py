@@ -170,6 +170,30 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+ADVISOR_GUIDANCE = (
+    "\n## Advisor Tool\n"
+    "You have access to an `advisor` tool backed by a stronger reviewer model. "
+    "It takes NO parameters — when you call advisor(), your entire conversation "
+    "history is automatically forwarded. They see the task, every tool call "
+    "you've made, every result you've seen.\n\n"
+    "Call advisor BEFORE substantive work — before writing, before committing "
+    "to an interpretation, before building on an assumption. If the task "
+    "requires orientation first (finding files, fetching a source, seeing "
+    "what's there), do that, then call advisor. Orientation is not substantive "
+    "work. Writing, editing, and declaring an answer are.\n\n"
+    "Also call advisor:\n"
+    "- When you believe the task is complete. BEFORE this call, make your "
+    "deliverable durable: write the file, save the result, commit the change.\n"
+    "- When stuck — errors recurring, approach not converging.\n"
+    "- When considering a change of approach.\n\n"
+    "The advisor should respond in under 100 words and use enumerated steps, "
+    "not explanations.\n\n"
+    "Give the advice serious weight. If you follow a step and it fails "
+    "empirically, or you have primary-source evidence that contradicts a "
+    "specific claim, adapt. If your evidence conflicts with the advice, "
+    "surface the conflict in one more advisor call.\n"
+)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

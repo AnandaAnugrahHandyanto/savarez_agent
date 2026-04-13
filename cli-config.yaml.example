@@ -742,6 +742,46 @@ delegation:
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
 
 # =============================================================================
+# Advisor Tool (Anthropic Beta)
+# =============================================================================
+# Pairs a fast executor model (e.g. Sonnet) with a stronger advisor (e.g. Opus)
+# via Anthropic's server-side advisor tool. The executor handles all tool calls
+# at its normal speed, but can consult the advisor for strategic guidance on
+# planning, architecture, and complex reasoning.
+#
+# Requirements:
+#   - Anthropic provider (direct API only — not OpenRouter or third-party proxies)
+#   - API key with access to both executor and advisor models
+#
+# The advisor is a server-side tool: Hermes injects the tool definition and
+# Anthropic handles the advisor inference transparently. The executor decides
+# when to call it.
+#
+# Docs: https://docs.anthropic.com/en/docs/build-with-claude/advisor
+advisor:
+  # Enable the advisor tool (default: true)
+  # Toggle at runtime with /advisor [on|off]
+  enabled: true
+
+  # Advisor model — should be more capable than the executor.
+  # Typical pairing: executor=claude-sonnet-4-6, advisor=claude-opus-4-6
+  model: claude-opus-4-6
+
+  # Max advisor calls per API request (0 = unlimited).
+  # Set to 2-3 for cost control on long conversations.
+  max_uses: 0
+
+  # Enable advisor-side prompt caching.
+  # Reduces cost when the executor makes 3+ advisor calls per turn.
+  # Sets clear_thinking: {keep: "all"} for cache stability.
+  caching: false
+
+  # Auto-reduce executor thinking effort to "medium" when advisor is active.
+  # The advisor handles strategic thinking, so the executor can spend less
+  # on its own reasoning. Disable to keep executor at full effort.
+  auto_effort: true
+
+# =============================================================================
 # Honcho Integration (Cross-Session User Modeling)
 # =============================================================================
 # AI-native persistent memory via Honcho (https://honcho.dev/).

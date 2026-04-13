@@ -419,6 +419,72 @@ automatically scope to the active profile.
    This is intentional — it lets `hermes -p coder profile list` see all profiles regardless
    of which one is active.
 
+## Anthropic Advisor Tool (`agent/anthropic_adapter.py`)
+
+The advisor tool pairs a fast executor model (Sonnet) with a stronger advisor (Opus) via
+Anthropic's `advisor_20260301` server-side tool. The executor decides when to consult the
+advisor. Anthropic runs the advisor inference server-side — Hermes never dispatches it
+locally. Config section: `advisor` in `config.yaml` / `DEFAULT_CONFIG`.
+
+Key files: `agent/anthropic_adapter.py` (injection, normalization, round-trip),
+`run_agent.py` (config threading, streaming, `pause_turn` resume),
+`agent/prompt_builder.py` (`ADVISOR_GUIDANCE` prompt), `cli.py` (`/advisor` command).
+
+### Invariant 1: Block ordering in `convert_messages_to_anthropic()`
+
+When an assistant turn contains BOTH advisor blocks AND regular tool calls, the content
+array MUST be ordered: `server_tool_use` + `advisor_tool_result` BEFORE `tool_use` blocks.
+
+If `tool_use` precedes `server_tool_use`, block indices shift — the API sees thinking
+blocks at different positions than the original response and returns HTTP 400:
+`"thinking or redacted_thinking blocks cannot be modified"`. **The error message is
+misleading** — it blames thinking blocks, not block ordering.
+
+In `convert_messages_to_anthropic()`, always inject `advisor_blocks` first, then iterate
+`tool_calls`. Regression test: `test_advisor_blocks_before_tool_calls_in_round_trip`.
+
+### Invariant 2: Sanitize `advisor_tool_result` blocks before storage
+
+The Anthropic SDK uses `model_config = {'extra': 'allow'}`, so extra fields the API
+returns (e.g. `citations` on `advisor_tool_result`) get included by `model_dump()`. If
+echoed back in subsequent turns, the API rejects them:
+`"advisor_tool_result.citations: Extra inputs are not permitted"`.
+
+All `advisor_tool_result` blocks MUST go through `_sanitize_advisor_tool_result()` before
+being stored in `advisor_blocks`. This function strips to only fields present in the
+`BetaAdvisorToolResultBlockParam` TypedDicts:
+- Top-level: `{type, tool_use_id, content, cache_control}`
+- `advisor_result`: `{type, text}`
+- `advisor_redacted_result`: `{type, encrypted_content}`
+- `advisor_tool_result_error`: `{type, error_code}`
+
+Never store raw `_to_plain_data()` output for these blocks.
+
+### Invariant 3: Beta header composition — do not add separate `extra_headers`
+
+Per-request `extra_headers` OVERRIDES (not merges with) client-level `default_headers` for
+the `anthropic-beta` key. If `fast_mode` and `advisor` both set `extra_headers`
+independently, the second clobbers the first.
+
+All beta features (common betas, OAuth betas, fast mode, advisor) must be composed into
+ONE unified `anthropic-beta` header string via the `extra_betas` list pattern in
+`build_anthropic_kwargs()`. Do not add a second `extra_headers` assignment.
+
+### Other advisor notes
+
+- **`pause_turn` stop reason**: When the executor calls the advisor, the stream pauses
+  with `stop_reason="pause_turn"`. The agent loop must append the partial message and
+  `continue` to re-send — the server resumes the advisor sub-inference automatically.
+- **`include_advisor_blocks` parameter**: `convert_messages_to_anthropic()` accepts this
+  flag. Set to `False` when advisor is disabled or on provider fallback/model switch — 
+  otherwise orphaned advisor blocks in history cause API 400 errors.
+- **Third-party endpoints**: `_is_third_party_anthropic_endpoint()` guards against sending
+  advisor tools to proxies. Only direct `api.anthropic.com` connections get the advisor.
+- **Caching + `clear_thinking`**: When advisor caching is enabled, `clear_thinking` must
+  be set to `{keep: "all"}` to prevent cache misses from shifting transcripts.
+
+---
+
 ## Known Pitfalls
 
 ### DO NOT hardcode `~/.hermes` paths
