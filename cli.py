@@ -3893,17 +3893,15 @@ class HermesCLI:
     
     def _handle_profile_command(self):
         """Display active profile name and home directory."""
-        from hermes_constants import get_hermes_home, display_hermes_home
+        from hermes_constants import (
+            display_hermes_home,
+            get_hermes_home,
+            profile_name_if_under_std_profiles,
+        )
 
         home = get_hermes_home()
         display = display_hermes_home()
-
-        profiles_parent = Path.home() / ".hermes" / "profiles"
-        try:
-            rel = home.relative_to(profiles_parent)
-            profile_name = str(rel).split("/")[0]
-        except ValueError:
-            profile_name = None
+        profile_name = profile_name_if_under_std_profiles(home)
 
         print()
         if profile_name:
