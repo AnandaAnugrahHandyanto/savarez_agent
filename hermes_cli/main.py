@@ -3810,7 +3810,7 @@ def cmd_update(args):
             import shutil
             if shutil.which("npm"):
                 print("→ Updating Node.js dependencies...")
-                subprocess.run(["npm", "install", "--silent"], cwd=PROJECT_ROOT, check=False)
+                subprocess.run(["npm", "ci", "--silent"], cwd=PROJECT_ROOT, check=False)
         
         print()
         print("✓ Code updated!")
