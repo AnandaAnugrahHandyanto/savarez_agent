@@ -18,17 +18,18 @@ from hermes_cli.migrate_export import export_bundle
 def migrate_env(tmp_path, monkeypatch):
     """Set up an isolated HERMES_HOME for export tests.
 
-    HERMES_HOME is cached in migrate_export / migrate_core at import time,
-    so we must patch the module-level constant directly — setting the
-    env var alone does not override an already-imported value.
+    Both migrate_export and migrate_core now call get_hermes_home() at runtime
+    rather than using a cached module-level constant, so we patch the function
+    in both modules. The env var is set as a fallback for any other consumers.
     """
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
-    # Patch HERMES_HOME in both modules (export reads from migrate_export,
-    # which imports it from migrate_core)
+    # Patch get_hermes_home() in both modules so that at runtime, when
+    # export_bundle() and _collect_migration_items() call get_hermes_home(),
+    # they get our isolated temp directory instead of the real ~/.hermes/.
     for module_name in ("hermes_cli.migrate_export", "hermes_cli.migrate_core"):
-        monkeypatch.setattr(f"{module_name}.HERMES_HOME", hermes_home)
-    # Also set the env var for any code that calls get_hermes_home() directly
+        monkeypatch.setattr(f"{module_name}.get_hermes_home", lambda: hermes_home)
+    # Set the env var as a fallback for any code that reads HERMES_HOME directly
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     return hermes_home
 
@@ -40,8 +41,8 @@ def migrate_env(tmp_path, monkeypatch):
 class TestExportBundle:
     def test_raises_when_hermes_home_missing(self, tmp_path, monkeypatch):
         missing = tmp_path / "nonexistent"
-        # Patch HERMES_HOME directly (env var alone doesn't override the cached value)
-        with patch("hermes_cli.migrate_export.HERMES_HOME", missing):
+        # Patch get_hermes_home() so export_bundle() gets the missing path at runtime
+        with patch("hermes_cli.migrate_export.get_hermes_home", return_value=missing):
             with pytest.raises(FileNotFoundError, match="Hermes home not found"):
                 export_bundle(None, "safe")
 

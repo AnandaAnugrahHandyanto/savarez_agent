@@ -14,7 +14,7 @@ from typing import Optional
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.migrate_core import (
-    HERMES_HOME,
+    get_hermes_home,
     _collect_migration_items,
     _should_skip_dir,
     _should_skip_file,
@@ -26,8 +26,9 @@ from hermes_cli.migrate_core import (
 
 def export_bundle(output_path: Optional[str], preset: str = "safe") -> Path:
     """Create a migration bundle from current Hermes installation."""
-    if not HERMES_HOME.exists():
-        raise FileNotFoundError(f"Hermes home not found: {HERMES_HOME}")
+    hermes_home = get_hermes_home()
+    if not hermes_home.exists():
+        raise FileNotFoundError(f"Hermes home not found: {hermes_home}")
 
     if output_path:
         output = Path(output_path)
@@ -49,7 +50,7 @@ def export_bundle(output_path: Optional[str], preset: str = "safe") -> Path:
         tf.addfile(manifest_info, BytesIO(manifest_bytes))
 
         for rel_path, item_info in items.items():
-            src = HERMES_HOME / rel_path
+            src = hermes_home / rel_path
             if not src.exists():
                 continue
 
@@ -68,7 +69,7 @@ def export_bundle(output_path: Optional[str], preset: str = "safe") -> Path:
                             if _should_skip_file(fname, source_platform["os"]):
                                 continue
                             full_path = Path(parent) / fname
-                            arcname = full_path.relative_to(HERMES_HOME).as_posix()
+                            arcname = full_path.relative_to(hermes_home).as_posix()
                             tf.add(str(full_path), arcname=arcname)
                             migrated_count += 1
                 else:

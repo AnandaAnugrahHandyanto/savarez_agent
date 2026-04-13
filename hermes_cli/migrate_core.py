@@ -17,7 +17,11 @@ from hermes_cli.colors import Colors, color
 from hermes_constants import get_hermes_home
 
 
-HERMES_HOME = get_hermes_home()
+HERMES_HOME = get_hermes_home()  # cached at import time for backwards compat
+# All internal code uses get_hermes_home() (below) to pick up the env var at
+# runtime. This is required so that tests can patch get_hermes_home() and get
+# a fresh value — patching the cached module-level constant breaks under
+# pytest-xdist parallel workers because module state is shared per-worker.
 BUNDLE_VERSION = "1.0"
 
 # Files/directories that are NEVER migrated (platform-specific or runtime)
@@ -195,9 +199,10 @@ def _remap_content(content: str, source_home: Path, target_home: Path) -> str:
 def _collect_migration_items(preset: str) -> dict:
     """Collect list of items to migrate with their status."""
     items = {}
+    hermes_home = get_hermes_home()
 
     for dirname in ["memories", "sessions", "skills", "profiles", "hooks", "cron"]:
-        dest = HERMES_HOME / dirname
+        dest = hermes_home / dirname
         items[dirname] = {
             "type": "directory",
             "status": "migrated" if dest.exists() else "skipped",
@@ -205,7 +210,7 @@ def _collect_migration_items(preset: str) -> dict:
         }
 
     for fname in ["config.yaml", "SOUL.md"]:
-        dest = HERMES_HOME / fname
+        dest = hermes_home / fname
         items[fname] = {
             "type": "file",
             "status": "migrated" if dest.exists() else "skipped",
@@ -213,7 +218,7 @@ def _collect_migration_items(preset: str) -> dict:
         }
 
     for fname in [".env", "auth.json"]:
-        dest = HERMES_HOME / fname
+        dest = hermes_home / fname
         if fname in _SECRET_FILES and preset != "full":
             items[fname] = {"type": "file", "status": "skipped", "reason": "secrets excluded (use --preset full)"}
         else:
