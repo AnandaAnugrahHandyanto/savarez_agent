@@ -597,7 +597,7 @@ DEFAULT_CONFIG = {
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
-        "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count
+
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
@@ -1233,7 +1233,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 23,
+    "_config_version": 17,
 }
 
 # =============================================================================
@@ -3250,155 +3250,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         print(f"  ✓ Migrated compression.summary_* → auxiliary.compression: {', '.join(migrated_keys)}")
                     else:
                         print("  ✓ Removed unused compression.summary_* keys")
-
-    # ── Version 20 → 21: plugins are now opt-in; grandfather existing user plugins ──
-    # The loader now requires plugins to appear in ``plugins.enabled`` before
-    # loading. Existing installs had all discovered plugins loading by default
-    # (minus anything in ``plugins.disabled``). To avoid silently breaking
-    # those setups on upgrade, populate ``plugins.enabled`` with the set of
-    # currently-installed user plugins that aren't already disabled.
-    #
-    # Bundled plugins (shipped in the repo itself) are NOT grandfathered —
-    # they ship off for everyone, including existing users, so any user who
-    # wants one has to opt in explicitly.
-    if current_ver < 21:
-        config = read_raw_config()
-        plugins_cfg = config.get("plugins")
-        if not isinstance(plugins_cfg, dict):
-            plugins_cfg = {}
-        # Only migrate if the enabled allow-list hasn't been set yet.
-        if "enabled" not in plugins_cfg:
-            disabled = plugins_cfg.get("disabled", []) or []
-            if not isinstance(disabled, list):
-                disabled = []
-            disabled_set = set(disabled)
-
-            # Scan ``$HERMES_HOME/plugins/`` for currently installed user plugins.
-            grandfathered: List[str] = []
-            try:
-                user_plugins_dir = get_hermes_home() / "plugins"
-                if user_plugins_dir.is_dir():
-                    for child in sorted(user_plugins_dir.iterdir()):
-                        if not child.is_dir():
-                            continue
-                        manifest_file = child / "plugin.yaml"
-                        if not manifest_file.exists():
-                            manifest_file = child / "plugin.yml"
-                        if not manifest_file.exists():
-                            continue
-                        try:
-                            with open(manifest_file) as _mf:
-                                manifest = yaml.safe_load(_mf) or {}
-                        except Exception:
-                            manifest = {}
-                        name = manifest.get("name") or child.name
-                        if name in disabled_set:
-                            continue
-                        grandfathered.append(name)
-            except Exception:
-                grandfathered = []
-
-            plugins_cfg["enabled"] = grandfathered
-            config["plugins"] = plugins_cfg
-            save_config(config)
-            results["config_added"].append(
-                f"plugins.enabled (opt-in allow-list, {len(grandfathered)} grandfathered)"
-            )
-            if not quiet:
-                if grandfathered:
-                    print(
-                        f"  ✓ Plugins now opt-in: grandfathered "
-                        f"{len(grandfathered)} existing plugin(s) into plugins.enabled"
-                    )
-                else:
-                    print(
-                        "  ✓ Plugins now opt-in: no existing plugins to grandfather. "
-                        "Use `hermes plugins enable <name>` to activate."
-                    )
-
-    # ── Version 22 → 23: seed curator defaults + create logs/curator/ ──
-    # The curator (background skill maintenance) was added in PR #16049, but
-    # existing configs from before that PR (or before the April 2026
-    # unification under `auxiliary.curator`) never wrote the curator section
-    # to disk. The runtime deep-merge in `load_config()` fills defaults at
-    # read time, so the curator *functions*; but users can't see/edit the
-    # settings in their `config.yaml`, and `hermes curator status` has no
-    # stable logs dir to point at until the first run mkdir's it.
-    #
-    # This migration:
-    #   1. Writes the `curator` top-level section to config.yaml (enabled,
-    #      interval_hours, min_idle_hours, stale_after_days, archive_after_days)
-    #      — only keys the user hasn't already overridden.
-    #   2. Writes the `auxiliary.curator` aux-task slot (provider, model,
-    #      base_url, api_key, timeout, extra_body) — canonical slot for
-    #      routing the curator fork to a cheaper aux model.
-    #   3. Creates `~/.hermes/logs/curator/` if missing (belt-and-suspenders
-    #      on top of ensure_hermes_home() — old profiles that predate this
-    #      migration still benefit).
-    if current_ver < 23:
-        try:
-            curator_dir = get_hermes_home() / "logs" / "curator"
-            curator_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            results["warnings"].append(f"Could not create {curator_dir}: {e}")
-
-        config = read_raw_config()
-        touched = False
-
-        # (1) Top-level curator section — only add missing keys
-        _curator_defaults = DEFAULT_CONFIG.get("curator", {})
-        raw_curator = config.get("curator")
-        if not isinstance(raw_curator, dict):
-            raw_curator = {}
-        added_curator: List[str] = []
-        for k, v in _curator_defaults.items():
-            if k not in raw_curator:
-                raw_curator[k] = copy.deepcopy(v)
-                added_curator.append(k)
-        if added_curator:
-            config["curator"] = raw_curator
-            touched = True
-
-        # (2) auxiliary.curator task slot
-        _aux_curator_defaults = (
-            DEFAULT_CONFIG.get("auxiliary", {}).get("curator", {})
-        )
-        raw_aux = config.get("auxiliary")
-        if not isinstance(raw_aux, dict):
-            raw_aux = {}
-        raw_aux_curator = raw_aux.get("curator")
-        if not isinstance(raw_aux_curator, dict):
-            raw_aux_curator = {}
-        added_aux: List[str] = []
-        for k, v in _aux_curator_defaults.items():
-            if k not in raw_aux_curator:
-                raw_aux_curator[k] = copy.deepcopy(v)
-                added_aux.append(k)
-        if added_aux:
-            raw_aux["curator"] = raw_aux_curator
-            config["auxiliary"] = raw_aux
-            touched = True
-
-        if touched:
-            save_config(config)
-            if added_curator:
-                results["config_added"].append(
-                    f"curator ({len(added_curator)} default key(s))"
-                )
-                if not quiet:
-                    print(
-                        "  ✓ Seeded curator defaults in config.yaml: "
-                        f"{', '.join(added_curator)}"
-                    )
-            if added_aux:
-                results["config_added"].append(
-                    f"auxiliary.curator ({len(added_aux)} default key(s))"
-                )
-                if not quiet:
-                    print(
-                        "  ✓ Seeded auxiliary.curator defaults in config.yaml: "
-                        f"{', '.join(added_aux)}"
-                    )
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
