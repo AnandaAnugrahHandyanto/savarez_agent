@@ -86,23 +86,23 @@ class TestHermesToolsGeneration(unittest.TestCase):
             self.assertIn(f"def {tool}(", src)
 
     def test_generates_subset(self):
-        src = generate_hermes_tools_module(["terminal", "web_search"])
-        self.assertIn("def terminal(", src)
+        src = generate_hermes_tools_module(["read_file", "web_search"])
+        self.assertIn("def read_file(", src)
         self.assertIn("def web_search(", src)
-        self.assertNotIn("def read_file(", src)
+        self.assertNotIn("def write_file(", src)
 
     def test_empty_list_generates_nothing(self):
         src = generate_hermes_tools_module([])
-        self.assertNotIn("def terminal(", src)
+        self.assertNotIn("def read_file(", src)
         self.assertIn("def _call(", src)  # infrastructure still present
 
     def test_non_allowed_tools_ignored(self):
-        src = generate_hermes_tools_module(["vision_analyze", "terminal"])
-        self.assertIn("def terminal(", src)
+        src = generate_hermes_tools_module(["vision_analyze", "read_file"])
+        self.assertIn("def read_file(", src)
         self.assertNotIn("def vision_analyze(", src)
 
     def test_rpc_infrastructure_present(self):
-        src = generate_hermes_tools_module(["terminal"])
+        src = generate_hermes_tools_module(["read_file"])
         self.assertIn("HERMES_RPC_SOCKET", src)
         self.assertIn("AF_UNIX", src)
         self.assertIn("def _connect(", src)
@@ -110,7 +110,7 @@ class TestHermesToolsGeneration(unittest.TestCase):
 
     def test_convenience_helpers_present(self):
         """Verify json_parse, shell_quote, and retry helpers are generated."""
-        src = generate_hermes_tools_module(["terminal"])
+        src = generate_hermes_tools_module(["read_file"])
         self.assertIn("def json_parse(", src)
         self.assertIn("def shell_quote(", src)
         self.assertIn("def retry(", src)
@@ -191,24 +191,24 @@ class TestExecuteCode(unittest.TestCase):
         self.assertIn("hermes_constants.py", result["output"])
 
     def test_single_tool_call(self):
-        """Script calls terminal and prints the result."""
+        """Script calls read_file and prints the result."""
         code = """
-from hermes_tools import terminal
-result = terminal("echo hello")
-print(result.get("output", ""))
+from hermes_tools import read_file
+result = read_file("test.py")
+print(result.get("total_lines", 0))
 """
         result = self._run(code)
         self.assertEqual(result["status"], "success")
-        self.assertIn("mock output for: echo hello", result["output"])
+        self.assertIn("3", result["output"])
         self.assertEqual(result["tool_calls_made"], 1)
 
     def test_multi_tool_chain(self):
         """Script calls multiple tools sequentially."""
         code = """
-from hermes_tools import terminal, read_file
-r1 = terminal("ls")
+from hermes_tools import web_search, read_file
+r1 = web_search("ls")
 r2 = read_file("test.py")
-print(f"terminal: {r1['output'][:20]}")
+print(f"results: {len(r1['results'])}")
 print(f"file lines: {r2['total_lines']}")
 """
         result = self._run(code)
@@ -233,9 +233,17 @@ from hermes_tools import terminal
 result = terminal("echo hi")
 print(result)
 """
-        # Only enable web_search -- terminal should be excluded
+        # terminal is intentionally unavailable inside execute_code
         result = self._run(code, enabled_tools=["web_search"])
-        # terminal won't be in hermes_tools.py, so import fails
+        self.assertEqual(result["status"], "error")
+
+    def test_terminal_not_exposed_even_when_enabled(self):
+        """execute_code must never expose terminal(), even if the session has it."""
+        code = """
+from hermes_tools import terminal
+print("should not import")
+"""
+        result = self._run(code, enabled_tools=["terminal", "read_file"])
         self.assertEqual(result["status"], "error")
 
     def test_empty_code(self):
@@ -484,37 +492,37 @@ class TestBuildExecuteCodeSchema(unittest.TestCase):
         self.assertEqual(schema["parameters"]["required"], ["code"])
 
     def test_subset_only_lists_enabled_tools(self):
-        enabled = {"terminal", "read_file"}
+        enabled = {"read_file", "write_file"}
         schema = build_execute_code_schema(enabled)
         desc = schema["description"]
-        self.assertIn("terminal(", desc)
         self.assertIn("read_file(", desc)
+        self.assertIn("write_file(", desc)
         self.assertNotIn("web_search(", desc)
         self.assertNotIn("web_extract(", desc)
-        self.assertNotIn("write_file(", desc)
+        self.assertIn("Shell access is intentionally unavailable", desc)
 
     def test_single_tool(self):
-        schema = build_execute_code_schema({"terminal"})
+        schema = build_execute_code_schema({"read_file"})
         desc = schema["description"]
-        self.assertIn("terminal(", desc)
+        self.assertIn("read_file(", desc)
         self.assertNotIn("web_search(", desc)
 
-    def test_import_examples_prefer_web_search_and_terminal(self):
-        enabled = {"web_search", "terminal", "read_file"}
+    def test_import_examples_prefer_web_search_and_read_file(self):
+        enabled = {"web_search", "write_file", "read_file"}
         schema = build_execute_code_schema(enabled)
         code_desc = schema["parameters"]["properties"]["code"]["description"]
         self.assertIn("web_search", code_desc)
-        self.assertIn("terminal", code_desc)
+        self.assertIn("read_file", code_desc)
 
     def test_import_examples_fallback_when_no_preferred(self):
-        """When neither web_search nor terminal are enabled, falls back to
+        """When neither preferred tool is enabled, falls back to
         sorted first two tools."""
-        enabled = {"read_file", "write_file", "patch"}
+        enabled = {"write_file", "patch"}
         schema = build_execute_code_schema(enabled)
         code_desc = schema["parameters"]["properties"]["code"]["description"]
-        # Should use sorted first 2: patch, read_file
+        # Should use sorted first 2: patch, write_file
         self.assertIn("patch", code_desc)
-        self.assertIn("read_file", code_desc)
+        self.assertIn("write_file", code_desc)
 
     def test_empty_set_produces_valid_description(self):
         """build_execute_code_schema(set()) must not produce 'import , ...'
@@ -535,7 +543,7 @@ class TestBuildExecuteCodeSchema(unittest.TestCase):
             dynamic_schema = build_execute_code_schema(sandbox_enabled)
 
         SANDBOX_ALLOWED_TOOLS = {web_search, web_extract, read_file, write_file,
-                                  search_files, patch, terminal}
+                                  search_files, patch}
         tools_to_include  = {"execute_code"}
         intersection      = empty set
         """
@@ -572,6 +580,7 @@ class TestBuildExecuteCodeSchema(unittest.TestCase):
         self.assertIn("5-minute timeout", desc)
         self.assertIn("50KB", desc)
         self.assertIn("50 tool calls", desc)
+        self.assertIn("Shell access is intentionally unavailable", desc)
 
     def test_description_mentions_helpers(self):
         schema = build_execute_code_schema()
@@ -705,13 +714,16 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
     def test_whitespace_only_code(self):
         result = json.loads(execute_code("   \n\t  ", task_id="test"))
         self.assertIn("error", result)
-        self.assertIn("No code", result["error"])
+        if sys.platform == "win32":
+            self.assertIn("Windows", result["error"])
+        else:
+            self.assertIn("No code", result["error"])
 
     @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
     def test_none_enabled_tools_uses_all(self):
         """When enabled_tools is None, all sandbox tools should be available."""
         code = (
-            "from hermes_tools import terminal, web_search, read_file\n"
+            "from hermes_tools import web_search, read_file\n"
             "print('all imports ok')\n"
         )
         with patch("model_tools.handle_function_call",
@@ -725,7 +737,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
     def test_empty_enabled_tools_uses_all(self):
         """When enabled_tools is [] (empty), all sandbox tools should be available."""
         code = (
-            "from hermes_tools import terminal, web_search\n"
+            "from hermes_tools import web_search, read_file\n"
             "print('imports ok')\n"
         )
         with patch("model_tools.handle_function_call",
@@ -740,7 +752,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         """When enabled_tools has no overlap with SANDBOX_ALLOWED_TOOLS,
         should fall back to all allowed tools."""
         code = (
-            "from hermes_tools import terminal\n"
+            "from hermes_tools import read_file\n"
             "print('fallback ok')\n"
         )
         with patch("model_tools.handle_function_call",
@@ -812,6 +824,7 @@ class TestInterruptHandling(unittest.TestCase):
             t.join(timeout=3)
 
 
+@unittest.skipIf(sys.platform == "win32", "execute_code is not available on Windows")
 class TestHeadTailTruncation(unittest.TestCase):
     """Tests for head+tail truncation of large stdout in execute_code."""
 

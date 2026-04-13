@@ -51,8 +51,13 @@ logger = logging.getLogger(__name__)
 
 SANDBOX_AVAILABLE = sys.platform != "win32"
 
-# The 7 tools allowed inside the sandbox. The intersection of this list
-# and the session's enabled tools determines which stubs are generated.
+# The tools allowed inside the sandbox. The intersection of this list and the
+# session's enabled tools determines which stubs are generated.
+#
+# Security note: terminal() is intentionally excluded. Allowing arbitrary shell
+# commands from inside execute_code lets sandboxed scripts read host files and
+# re-encode secrets before output redaction runs, which defeats the sandbox's
+# credential-isolation guarantees.
 SANDBOX_ALLOWED_TOOLS = frozenset([
     "web_search",
     "web_extract",
@@ -60,7 +65,6 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
     "write_file",
     "search_files",
     "patch",
-    "terminal",
 ])
 
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
@@ -117,12 +121,6 @@ _TOOL_STUBS = {
         'path: str = None, old_string: str = None, new_string: str = None, replace_all: bool = False, mode: str = "replace", patch: str = None',
         '"""Targeted find-and-replace (mode="replace") or V4A multi-file patches (mode="patch"). Returns dict with status."""',
         '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch}',
-    ),
-    "terminal": (
-        "terminal",
-        "command: str, timeout: int = None, workdir: str = None",
-        '"""Run a shell command (foreground only). Returns dict with "output" and "exit_code"."""',
-        '{"command": command, "timeout": timeout, "workdir": workdir}',
     ),
 }
 
@@ -1285,9 +1283,6 @@ _TOOL_DOC_LINES = [
     ("patch",
      "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
      "    Replaces old_string with new_string in the file."),
-    ("terminal",
-     "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
-     "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),
 ]
 
 
@@ -1307,7 +1302,7 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
     )
 
     # Build example import list from enabled tools
-    import_examples = [n for n in ("web_search", "terminal") if n in enabled_sandbox_tools]
+    import_examples = [n for n in ("web_search", "read_file") if n in enabled_sandbox_tools]
     if not import_examples:
         import_examples = sorted(enabled_sandbox_tools)[:2]
     if import_examples:
@@ -1323,11 +1318,12 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
         "(fetch N pages, process N files, retry on failure).\n\n"
         "Use normal tool calls instead when: single tool call with no processing, "
         "you need to see the full result and apply complex reasoning, "
+        "you need shell access via terminal(), "
         "or the task requires interactive user input.\n\n"
         f"Available via `from hermes_tools import ...`:\n\n"
         f"{tool_lines}\n\n"
         "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
-        "terminal() is foreground-only (no background or pty). "
+        "Shell access is intentionally unavailable inside execute_code for sandbox safety. "
         "If the session uses a cloud sandbox backend, treat it as resumable task state rather than a durable always-on machine.\n\n"
         "Print your final result to stdout. Use Python stdlib (json, re, math, csv, "
         "datetime, collections, etc.) for processing between tool calls.\n\n"
