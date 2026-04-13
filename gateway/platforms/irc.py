@@ -700,6 +700,12 @@ class IRCAdapter(BasePlatformAdapter):
         target = params[0]  # Channel or our nick (for DMs)
         text = trailing
 
+        # Handle space-prefixed IRC commands (user workaround for client interception)
+        # If message starts with "/" after lstrip(), trim the leading whitespace
+        # so upstream command detection (is_command()) works correctly
+        if text.lstrip().startswith("/"):
+            text = text.lstrip()
+
         logger.info("IRC: PRIVMSG from %s to %s: %s", prefix, target, text[:100])
 
         # Check if this message is part of a multiline batch *before* filtering empty text
