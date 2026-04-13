@@ -34,6 +34,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hermes_constants import get_hermes_home
+from gateway.feishu_usage_footer import build_feishu_usage_footer_from_agent_result
 from hermes_cli.config import load_config
 from hermes_time import now as _hermes_now
 
@@ -60,6 +61,53 @@ _hermes_home = get_hermes_home()
 # File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
 _LOCK_DIR = _hermes_home / "cron"
 _LOCK_FILE = _LOCK_DIR / ".tick.lock"
+
+
+def _build_cron_feishu_footer(agent_result: dict) -> str:
+    """
+    Build Feishu footer content with usage statistics from agent_result.
+    Mirrors Gateway._build_feishu_usage_footer but standalone for cron.
+    """
+    return build_feishu_usage_footer_from_agent_result(
+        agent_result,
+        response_time=float(agent_result.get("response_time") or 0),
+        provider=str(agent_result.get("provider") or ""),
+        base_url=str(agent_result.get("base_url") or ""),
+        api_key="",
+        default_model="unknown",
+    )
+
+
+def _build_cron_feishu_sections(content: str, agent_result: dict) -> str:
+    """
+    Build complete Feishu-formatted content with HERMES_STATUS, HERMES_REASONING,
+    HERMES_TOOLS (if available), and HERMES_FOOTER markers.
+    """
+    sections = [f"[[HERMES_STATUS:completed]]\n{content.rstrip()}"]
+
+    # Add reasoning if available
+    last_reasoning = str(agent_result.get("last_reasoning") or "").strip()
+    if last_reasoning:
+        sections.append(
+            f"[[HERMES_REASONING]]\n{last_reasoning}\n[[/HERMES_REASONING]]"
+        )
+
+    # Add tool activity if available (from progress_callback in gateway context)
+    tool_activity = [
+        str(line).strip()
+        for line in (agent_result.get("tool_activity") or [])
+        if str(line).strip()
+    ]
+    if tool_activity:
+        sections.append(
+            "[[HERMES_TOOLS]]\n" + "\n".join(tool_activity) + "\n[[/HERMES_TOOLS]]"
+        )
+
+    # Add footer with usage stats
+    _feishu_footer = _build_cron_feishu_footer(agent_result)
+    sections.append(f"[[HERMES_FOOTER]]\n{_feishu_footer}\n[[/HERMES_FOOTER]]")
+
+    return "\n\n".join(sections)
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -196,7 +244,7 @@ def _send_media_via_adapter(adapter, chat_id: str, media_files: list, metadata: 
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
+def _deliver_result(job: dict, content: str, adapters=None, loop=None, agent_result: dict = None) -> Optional[str]:
     """
     Deliver job output to the configured target (origin chat, specific platform, etc.).
 
@@ -204,6 +252,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     use the live adapter first — this supports E2EE rooms (e.g. Matrix) where
     the standalone HTTP path cannot encrypt.  Falls back to standalone send if
     the adapter path fails or is unavailable.
+
+    When ``agent_result`` is provided, includes usage statistics in the footer
+    for Feishu platform (tokens, cache, context, etc.).
 
     Returns None on success, or an error string on failure.
     """
@@ -277,6 +328,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # Optionally wrap the content with a header/footer so the user knows this
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
     # in config.yaml for clean output.
+    #
+    # For Feishu platform with agent_result, use HERMES_FOOTER markers so the
+    # card renderer displays usage statistics (tokens, cache, context, etc.)
     wrap_response = True
     try:
         user_cfg = load_config()
@@ -285,13 +339,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         pass
 
     if wrap_response:
-        task_name = job.get("name", job["id"])
-        delivery_content = (
-            f"Cronjob Response: {task_name}\n"
-            f"-------------\n\n"
-            f"{content}\n\n"
-            f"Note: The agent cannot see this message, and therefore cannot respond to it."
-        )
+        # For Feishu with agent_result, generate full Feishu card sections
+        # (HERMES_STATUS, HERMES_REASONING, HERMES_TOOLS, HERMES_FOOTER)
+        if platform == Platform.FEISHU and agent_result:
+            delivery_content = _build_cron_feishu_sections(content, agent_result)
+        else:
+            task_name = job.get("name", job["id"])
+            delivery_content = (
+                f"Cronjob Response: {task_name}\n"
+                f"-------------\n\n"
+                f"{content}\n\n"
+                f"Note: The agent cannot see this message, and therefore cannot respond to it."
+            )
     else:
         delivery_content = content
 
@@ -572,14 +631,16 @@ def _build_job_prompt(job: dict) -> str:
     return "\n".join(parts)
 
 
-def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+def run_job(job: dict) -> tuple[bool, str, str, Optional[str], Optional[dict]]:
     """
     Execute a single cron job.
     
     Returns:
-        Tuple of (success, full_output_doc, final_response, error_message)
+        Tuple of (success, full_output_doc, final_response, error_message, agent_result)
+        agent_result contains stats like input_tokens, output_tokens, cache tokens, etc.
     """
     from run_agent import AIAgent
+    import time as _time_module
     
     # Initialize SQLite session store so cron job messages are persisted
     # and discoverable via session_search (same pattern as gateway/run.py).
@@ -765,6 +826,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         _cron_timeout = float(os.getenv("HERMES_CRON_TIMEOUT", 600))
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         _POLL_INTERVAL = 5.0
+        _start_time = _time_module.time()
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         _cron_future = _cron_pool.submit(agent.run_conversation, prompt)
         _inactivity_timeout = False
@@ -832,6 +894,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
         
+        # Compute elapsed time and add to result for Feishu footer stats
+        _response_time = _time_module.time() - _start_time
+        result["response_time"] = _response_time
+
         output = f"""# Cron Job: {job_name}
 
 **Job ID:** {job_id}
@@ -848,7 +914,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 """
         
         logger.info("Job '%s' completed successfully", job_name)
-        return True, output, final_response, None
+        return True, output, final_response, None, result
         
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
@@ -870,7 +936,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 {error_msg}
 ```
 """
-        return False, output, "", error_msg
+        return False, output, "", error_msg, None
 
     finally:
         # Clean up injected env vars so they don't leak to other jobs
@@ -944,7 +1010,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 # One-shot jobs are left alone so they can retry on restart.
                 advance_next_run(job["id"])
 
-                success, output, final_response, error = run_job(job)
+                success, output, final_response, error, agent_result = run_job(job)
 
                 output_file = save_job_output(job["id"], output)
                 if verbose:
@@ -962,7 +1028,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 delivery_error = None
                 if should_deliver:
                     try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop, agent_result=agent_result)
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)

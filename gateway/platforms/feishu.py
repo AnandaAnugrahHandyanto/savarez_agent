@@ -34,9 +34,6 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
 # aiohttp/websockets are independent optional deps — import outside lark_oapi
 # so they remain available for tests and webhook mode even if lark_oapi is missing.
@@ -118,6 +115,18 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+_HERMES_STATUS_RE = re.compile(r"^\[\[HERMES_STATUS:(thinking|completed|ended)\]\]\s*", re.IGNORECASE)
+_HERMES_REASONING_SECTION_RE = re.compile(r"\[\[HERMES_REASONING\]\]\s*([\s\S]*?)\s*\[\[/HERMES_REASONING\]\]", re.IGNORECASE)
+_HERMES_TOOLS_SECTION_RE = re.compile(r"\[\[HERMES_TOOLS\]\]\s*([\s\S]*?)\s*\[\[/HERMES_TOOLS\]\]", re.IGNORECASE)
+_HERMES_FOOTER_SECTION_RE = re.compile(r"\[\[HERMES_FOOTER\]\]\s*([\s\S]*?)\s*\[\[/HERMES_FOOTER\]\]", re.IGNORECASE)
+_THINK_BLOCK_RE = re.compile(r"<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>[\s\S]*?</(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>", re.IGNORECASE)
+_THINK_TAG_RE = re.compile(r"</?(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>", re.IGNORECASE)
+_COMMENT_THINK_BLOCK_RE = re.compile(r"/\*\*[\s\S]*?\*/")
+_MARKDOWN_TABLE_BLOCK_RE = re.compile(
+    r"(?ms)(^ *\|.+\|\s*$\n^ *\|(?:[-: ]+\|)+\s*$\n(?:^ *\|.+\|\s*$\n?)*)"
+)
+_MARKDOWN_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+_MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*$")
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -172,19 +181,6 @@ _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup win
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 _FEISHU_ACK_EMOJI = "OK"
-
-# QR onboarding constants
-_ONBOARD_ACCOUNTS_URLS = {
-    "feishu": "https://accounts.feishu.cn",
-    "lark": "https://accounts.larksuite.com",
-}
-_ONBOARD_OPEN_URLS = {
-    "feishu": "https://open.feishu.cn",
-    "lark": "https://open.larksuite.com",
-}
-_REGISTRATION_PATH = "/oauth/v1/app/registration"
-_ONBOARD_REQUEST_TIMEOUT_S = 10
-
 # ---------------------------------------------------------------------------
 # Fallback display strings
 # ---------------------------------------------------------------------------
@@ -383,6 +379,7 @@ def _strip_markdown_to_plain_text(text: str) -> str:
     horizontal rules, \\r\\n normalisation).
     """
     from gateway.platforms.helpers import strip_markdown
+    _, text = _extract_status_marker(text)
     plain = text.replace("\r\n", "\n")
     plain = _MARKDOWN_LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2).strip()})", plain)
     plain = re.sub(r"^>\s?", "", plain, flags=re.MULTILINE)
@@ -412,7 +409,21 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _convert_markdown_tables_to_code_blocks(text: str) -> str:
+    """Convert any remaining standard markdown tables to code blocks for safe display."""
+    if "|" not in (text or ""):
+        return text or ""
+
+    def _wrap(match: re.Match[str]) -> str:
+        table = match.group(0).rstrip("\n")
+        return f"```\n{table}\n```"
+
+    return _MARKDOWN_TABLE_BLOCK_RE.sub(_wrap, text)
+
+
 def _build_markdown_post_payload(content: str) -> str:
+    _, content = _extract_status_marker(_render_markdown_tables_for_feishu(_strip_reasoning_for_display(content)))
+    content = _convert_markdown_tables_to_code_blocks(content)
     return json.dumps(
         {
             "zh_cn": {
@@ -428,6 +439,346 @@ def _build_markdown_post_payload(content: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _extract_status_marker(content: str) -> tuple[str, str]:
+    text = content or ""
+    match = _HERMES_STATUS_RE.match(text)
+    if not match:
+        return "", text
+    return match.group(1).lower(), text[match.end():]
+
+
+def _status_presentation(status: str) -> tuple[str, str, str]:
+    normalized = (status or "").strip().lower()
+    if normalized == "thinking":
+        return "思考中", "blue", ""
+    if normalized == "completed":
+        return "已完成", "green", "已完成"
+    if normalized == "ended":
+        return "已结束", "grey", "已结束"
+    return "", "blue", ""
+
+
+def _strip_reasoning_for_display(text: str) -> str:
+    cleaned = text or ""
+    cleaned = _HERMES_REASONING_SECTION_RE.sub("", cleaned)
+    cleaned = _HERMES_TOOLS_SECTION_RE.sub("", cleaned)
+    cleaned = _HERMES_FOOTER_SECTION_RE.sub("", cleaned)
+    cleaned = _THINK_BLOCK_RE.sub("", cleaned)
+    cleaned = _THINK_TAG_RE.sub("", cleaned)
+    cleaned = _COMMENT_THINK_BLOCK_RE.sub("", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _extract_marker_section(text: str, pattern: re.Pattern[str]) -> str:
+    cleaned = text or ""
+    matches = [match.strip() for match in pattern.findall(cleaned) if match and match.strip()]
+    return "\n\n".join(matches).strip()
+
+
+def _extract_reasoning_content(text: str) -> str:
+    """Extract reasoning content from explicit sections or think tags."""
+    section_reasoning = _extract_marker_section(text, _HERMES_REASONING_SECTION_RE)
+    if section_reasoning:
+        return section_reasoning
+
+    cleaned = text or ""
+    matches = _THINK_BLOCK_RE.findall(cleaned)
+    if not matches:
+        return ""
+
+    reasoning_parts = []
+    for match in matches:
+        content = _THINK_TAG_RE.sub("", match).strip()
+        if content:
+            reasoning_parts.append(content)
+    return "\n\n".join(reasoning_parts)
+
+
+def _extract_tool_content(text: str) -> str:
+    return _extract_marker_section(text, _HERMES_TOOLS_SECTION_RE)
+
+
+def _extract_footer_content(text: str) -> str:
+    return _extract_marker_section(text, _HERMES_FOOTER_SECTION_RE)
+
+
+def _build_footer_elements(footer_content: str, status_line: str) -> List[Dict[str, Any]]:
+    """Build footer elements with a single markdown block to avoid extra gaps."""
+    lines = [
+        line.strip()
+        for line in str(footer_content or "").splitlines()
+        if line and line.strip()
+    ]
+    if not lines and status_line:
+        return [{
+            "tag": "markdown",
+            "content": status_line,
+            "text_size": "notation",
+        }]
+    if not lines:
+        return []
+
+    return [
+        {"tag": "hr"},
+        {
+            "tag": "markdown",
+            "content": "\n".join(lines),
+            "text_size": "notation",
+        },
+    ]
+
+
+def _parse_markdown_table(md_text):
+    """解析 Markdown 表格，返回 (headers, rows) 或 None"""
+    lines = md_text.strip().split('\n')
+    
+    # 找表格行（包含 | 的行）
+    table_lines = []
+    for line in lines:
+        if '|' in line and not line.strip().startswith('```'):
+            table_lines.append(line.strip())
+    
+    if len(table_lines) < 2:
+        return None
+    
+    # 第一行是表头
+    header_line = table_lines[0]
+    headers = [h.strip() for h in header_line.split('|') if h.strip()]
+    
+    # 第二行是分隔符（跳过）
+    # 剩余是数据行
+    rows = []
+    for line in table_lines[2:]:
+        cells = [c.strip() for c in line.split('|') if c.strip()]
+        if len(cells) == len(headers):
+            rows.append(cells)
+    
+    return headers, rows
+
+def _build_table_element(headers, rows):
+    """构建飞书 table 元素 JSON"""
+    columns = []
+    for i, h in enumerate(headers):
+        columns.append({
+            "name": f"c{i}",
+            "displayName": h
+        })
+    
+    table_rows = []
+    for row in rows:
+        row_data = {}
+        for i, cell in enumerate(row):
+            row_data[f"c{i}"] = {"data": cell}
+        table_rows.append(row_data)
+    
+    return {
+        "tag": "table",
+        "rows": table_rows,
+        "columns": columns
+    }
+
+def _convert_content_with_tables(md_text):
+    """将 Markdown 文本（含表格）转为飞书卡片元素列表"""
+    result = _parse_markdown_table(md_text)
+    
+    if not result:
+        # 没有表格，返回 markdown 元素
+        return [{"tag": "markdown", "content": md_text or " "}]
+    
+    headers, rows = result
+    table_elem = _build_table_element(headers, rows)
+    
+    # 提取表格前后的其他内容
+    lines = md_text.strip().split('\n')
+    before = []
+    after = []
+    in_table = False
+    table_started = False
+    
+    for line in lines:
+        if '|' in line and not line.strip().startswith('```'):
+            if not table_started:
+                table_started = True
+                in_table = True
+            if in_table:
+                continue
+        else:
+            if in_table:
+                in_table = False
+            if not table_started:
+                before.append(line)
+            else:
+                after.append(line)
+    
+    elements = []
+    if before:
+        before_text = '\n'.join(before).strip()
+        if before_text:
+            elements.append({"tag": "markdown", "content": before_text})
+    
+    elements.append(table_elem)
+    
+    if after:
+        after_text = '\n'.join(after).strip()
+        if after_text:
+            elements.append({"tag": "markdown", "content": after_text})
+    
+    return elements
+
+
+def _render_markdown_tables_for_feishu(text: str) -> str:
+    """Render markdown tables into stable row-based markdown for Feishu cards."""
+    if "|" not in (text or ""):
+        return text or ""
+
+    def _replace(match: re.Match[str]) -> str:
+        block = match.group(1).strip("\n")
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if len(lines) < 2:
+            return block
+
+        header_cells = [cell.strip() for cell in lines[0].strip("|").split("|")]
+        if not header_cells:
+            return block
+
+        body_rows = [
+            [cell.strip() for cell in row.strip("|").split("|")]
+            for row in lines[2:]
+        ]
+        header_line = " ｜ ".join(f"**{cell or '-'}**" for cell in header_cells)
+        rendered = [header_line]
+        for row in body_rows:
+            padded = list(row) + [""] * (len(header_cells) - len(row))
+            rendered.append(" ｜ ".join(cell or "-" for cell in padded[: len(header_cells)]))
+        return "\n".join(rendered).rstrip()
+
+    return _MARKDOWN_TABLE_BLOCK_RE.sub(_replace, text)
+
+
+def _contains_status_marker(content: str) -> bool:
+    status, _ = _extract_status_marker(content or "")
+    return bool(status)
+
+
+def _extract_card_title(content: str) -> str:
+    _, content = _extract_status_marker(content)
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^#{1,6}\s*", "", line)
+        line = _strip_markdown_to_plain_text(line)
+        return line[:60] if line else "Hermes"
+    return "Hermes"
+
+
+def _build_interactive_card_payload(content: str) -> str:
+    reasoning_content = _extract_reasoning_content(content)
+    tool_content = _extract_tool_content(content)
+    footer_content = _extract_footer_content(content)
+
+    stripped_body = _strip_reasoning_for_display(content)
+    status, body_content_raw = _extract_status_marker(stripped_body)
+    body_content = _render_markdown_tables_for_feishu(body_content_raw)
+    status_title, template, status_line = _status_presentation(status)
+    title = _extract_card_title(body_content_raw)
+    if status_title:
+        title = f"{status_title} | {title}"
+    
+    card = {
+        "config": {
+            "wide_screen_mode": True,
+        },
+        "header": {
+            "title": {"content": title, "tag": "plain_text"},
+            "template": template,
+        },
+        "elements": [],
+    }
+    
+    if _MARKDOWN_TABLE_BLOCK_RE.search(body_content_raw or ""):
+        card["elements"].extend(_convert_content_with_tables(body_content_raw))
+    else:
+        card["elements"].append({
+            "tag": "markdown",
+            "content": body_content or " ",
+        })
+
+    if reasoning_content:
+        display_reasoning = reasoning_content[:500]
+        if len(reasoning_content) > 500:
+            display_reasoning += "..."
+
+        card["elements"].append({
+            "tag": "collapsible_panel",
+            "expanded": False,
+            "header": {
+                "title": {
+                    "tag": "plain_text",
+                "content": "💭 思考过程",
+                    "text_color": "grey",
+                    "text_size": "notation",
+                },
+                "vertical_align": "center",
+                "icon": {
+                    "tag": "standard_icon",
+                    "token": "down-small-ccm_outlined",
+                    "color": "grey",
+                    "size": "16px 16px",
+                },
+                "icon_position": "right",
+                "icon_expanded_angle": -180,
+            },
+            "border": {"color": "grey", "corner_radius": "5px"},
+            "vertical_spacing": "4px",
+            "padding": "8px 8px 8px 8px",
+            "elements": [{
+                "tag": "markdown",
+                "content": display_reasoning,
+                "text_size": "notation",
+            }],
+        })
+
+    if tool_content:
+        display_tools = tool_content[:1000]
+        if len(tool_content) > 1000:
+            display_tools += "..."
+        card["elements"].append({
+            "tag": "collapsible_panel",
+            "expanded": False,
+            "header": {
+                "title": {
+                    "tag": "plain_text",
+                    "content": "🛠️ 工具调用",
+                    "text_color": "grey",
+                    "text_size": "notation",
+                },
+                "vertical_align": "center",
+                "icon": {
+                    "tag": "standard_icon",
+                    "token": "down-small-ccm_outlined",
+                    "color": "grey",
+                    "size": "16px 16px",
+                },
+                "icon_position": "right",
+                "icon_expanded_angle": -180,
+            },
+            "border": {"color": "grey", "corner_radius": "5px"},
+            "vertical_spacing": "4px",
+            "padding": "8px 8px 8px 8px",
+            "elements": [{
+                "tag": "markdown",
+                "content": display_tools,
+                "text_size": "notation",
+            }],
+        })
+
+    card["elements"].extend(_build_footer_elements(footer_content, status_line))
+
+    return json.dumps(card, ensure_ascii=False)
 
 
 def parse_feishu_post_content(raw_content: str) -> FeishuPostParseResult:
@@ -1077,6 +1428,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._media_batch_state = FeishuBatchState()
         self._pending_media_batches = self._media_batch_state.events
         self._pending_media_batch_tasks = self._media_batch_state.tasks
+        self._ack_reaction_ids: Dict[str, str] = {}
         # Exec approval button state (approval_id → {session_key, message_id, chat_id})
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
@@ -1350,7 +1702,47 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        raw_content = content or ""
         formatted = self.format_message(content)
+
+        # Check if content has HERMES markers (reasoning/tools) that must not be split
+        has_hermes_markers = (
+            _HERMES_STATUS_RE.search(raw_content)
+            or _HERMES_REASONING_SECTION_RE.search(raw_content)
+            or _HERMES_TOOLS_SECTION_RE.search(raw_content)
+            or _HERMES_FOOTER_SECTION_RE.search(raw_content)
+        )
+
+        # If HERMES markers exist, build card FIRST then truncate body only (keep markers intact)
+        if has_hermes_markers:
+            msg_type, payload = self._build_outbound_payload(raw_content)
+            # payload is the full card JSON - send as single message (don't split)
+            try:
+                response = await self._feishu_send_with_retry(
+                    chat_id=chat_id,
+                    msg_type=msg_type,
+                    payload=payload,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                return self._finalize_send_result(response, "send failed")
+            except Exception as exc:
+                if msg_type == "interactive":
+                    logger.warning(
+                        "[Feishu] Interactive card send failed; falling back to post: %s",
+                        exc,
+                    )
+                    response = await self._feishu_send_with_retry(
+                        chat_id=chat_id,
+                        msg_type="post",
+                        payload=_build_markdown_post_payload(raw_content),
+                        reply_to=reply_to,
+                        metadata=metadata,
+                    )
+                    return self._finalize_send_result(response, "send failed")
+                raise
+
+        # Normal flow: split and send
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
@@ -1366,19 +1758,54 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type == "interactive":
+                        logger.warning(
+                            "[Feishu] Interactive card send failed; falling back to post: %s",
+                            exc,
+                        )
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="post",
+                            payload=_build_markdown_post_payload(chunk),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    elif msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                    else:
+                        logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                if (
+                    msg_type == "interactive"
+                    and not self._response_succeeded(response)
+                ):
+                    logger.warning(
+                        "[Feishu] Interactive card rejected by API response; falling back to post: code=%s msg=%s",
+                        getattr(response, "code", None),
+                        getattr(response, "msg", None),
+                    )
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                        msg_type="post",
+                        payload=_build_markdown_post_payload(chunk),
                         reply_to=reply_to,
                         metadata=metadata,
                     )
                 if (
-                    msg_type == "post"
-                    and not self._response_succeeded(response)
+                    getattr(response, "success", lambda: True)() is False
+                    and (
+                        msg_type == "post"
+                        or (
+                            msg_type == "interactive"
+                            and not self._response_succeeded(response)
+                        )
+                    )
                     and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
                 ):
                     logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
@@ -1408,6 +1835,18 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             msg_type, payload = self._build_outbound_payload(content)
+            # Feishu message updates are significantly less tolerant of
+            # interactive cards than initial sends. Keep edits conservative:
+            # update progress/intermediate messages as post/text only, and
+            # reserve interactive cards for final sends.
+            if msg_type == "interactive":
+                rendered = _render_markdown_tables_for_feishu(_strip_reasoning_for_display(content))
+                if _MARKDOWN_HINT_RE.search(rendered):
+                    msg_type = "post"
+                    payload = _build_markdown_post_payload(rendered)
+                else:
+                    msg_type = "text"
+                    payload = json.dumps({"text": _strip_markdown_to_plain_text(rendered)}, ensure_ascii=False)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
@@ -1750,7 +2189,15 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def format_message(self, content: str) -> str:
         """Feishu text messages are plain text by default."""
-        return content.strip()
+        return _render_markdown_tables_for_feishu(_strip_reasoning_for_display(content))
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: Any) -> None:
+        message_id = getattr(event, "message_id", None)
+        if not message_id:
+            return
+        reaction_id = self._ack_reaction_ids.pop(message_id, None)
+        if reaction_id:
+            await self._remove_ack_reaction(message_id, reaction_id)
 
     # =========================================================================
     # Inbound event handlers
@@ -2059,7 +2506,9 @@ class FeishuAdapter(BasePlatformAdapter):
         async with chat_lock:
             message_id = event.message_id
             if message_id:
-                await self._add_ack_reaction(message_id)
+                reaction_id = await self._add_ack_reaction(message_id)
+                if reaction_id:
+                    self._ack_reaction_ids[message_id] = reaction_id
             await self.handle_message(event)
 
     async def _add_ack_reaction(self, message_id: str) -> Optional[str]:
@@ -2095,6 +2544,37 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[Feishu] Failed to add ack reaction to %s", message_id, exc_info=True)
         return None
+
+    async def _remove_ack_reaction(self, message_id: str, reaction_id: str) -> None:
+        if not self._client or not message_id or not reaction_id:
+            return
+        try:
+            from lark_oapi.api.im.v1 import DeleteMessageReactionRequest
+
+            request = (
+                DeleteMessageReactionRequest.builder()
+                .message_id(message_id)
+                .reaction_id(reaction_id)
+                .build()
+            )
+            response = await asyncio.to_thread(self._client.im.v1.message_reaction.delete, request)
+            if response and getattr(response, "success", lambda: False)():
+                logger.info("[Feishu] Removed ack reaction %s from %s", reaction_id, message_id)
+                return
+            logger.warning(
+                "[Feishu] Failed to remove ack reaction %s from %s: code=%s msg=%s",
+                reaction_id,
+                message_id,
+                getattr(response, "code", None),
+                getattr(response, "msg", None),
+            )
+        except Exception:
+            logger.warning(
+                "[Feishu] Failed to remove ack reaction %s from %s",
+                reaction_id,
+                message_id,
+                exc_info=True,
+            )
 
     # =========================================================================
     # Webhook server and security
@@ -3172,10 +3652,16 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        if _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
-        text_payload = {"text": content}
-        return "text", json.dumps(text_payload, ensure_ascii=False)
+        cleaned = _strip_reasoning_for_display(content)
+        if _contains_status_marker(content):
+            return "interactive", _build_interactive_card_payload(content)
+        # For Feishu: always use interactive card for markdown content
+        if _MARKDOWN_HINT_RE.search(cleaned):
+            # Add default status marker if missing
+            if not _contains_status_marker(content):
+                content = f"[[HERMES_STATUS:completed]]\n{content}"
+            return "interactive", _build_interactive_card_payload(content)
+        return "text", json.dumps({"text": _strip_markdown_to_plain_text(cleaned)}, ensure_ascii=False)
 
     async def _send_uploaded_file_message(
         self,
@@ -3637,328 +4123,3 @@ class FeishuAdapter(BasePlatformAdapter):
             return _FEISHU_FILE_UPLOAD_TYPE, "file"
 
         return _FEISHU_FILE_UPLOAD_TYPE, "file"
-
-
-# =============================================================================
-# QR scan-to-create onboarding
-#
-# Device-code flow: user scans a QR code with Feishu/Lark mobile app and the
-# platform creates a fully configured bot application automatically.
-# Called by `hermes gateway setup` via _setup_feishu() in hermes_cli/gateway.py.
-# =============================================================================
-
-
-def _accounts_base_url(domain: str) -> str:
-    return _ONBOARD_ACCOUNTS_URLS.get(domain, _ONBOARD_ACCOUNTS_URLS["feishu"])
-
-
-def _onboard_open_base_url(domain: str) -> str:
-    return _ONBOARD_OPEN_URLS.get(domain, _ONBOARD_OPEN_URLS["feishu"])
-
-
-def _post_registration(base_url: str, body: Dict[str, str]) -> dict:
-    """POST form-encoded data to the registration endpoint, return parsed JSON.
-
-    The registration endpoint returns JSON even on 4xx (e.g. poll returns
-    authorization_pending as a 400). We always parse the body regardless of
-    HTTP status.
-    """
-    url = f"{base_url}{_REGISTRATION_PATH}"
-    data = urlencode(body).encode("utf-8")
-    req = Request(url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
-    try:
-        with urlopen(req, timeout=_ONBOARD_REQUEST_TIMEOUT_S) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except HTTPError as exc:
-        body_bytes = exc.read()
-        if body_bytes:
-            try:
-                return json.loads(body_bytes.decode("utf-8"))
-            except (ValueError, json.JSONDecodeError):
-                raise exc from None
-        raise
-
-
-def _init_registration(domain: str = "feishu") -> None:
-    """Verify the environment supports client_secret auth.
-
-    Raises RuntimeError if not supported.
-    """
-    base_url = _accounts_base_url(domain)
-    res = _post_registration(base_url, {"action": "init"})
-    methods = res.get("supported_auth_methods") or []
-    if "client_secret" not in methods:
-        raise RuntimeError(
-            f"Feishu / Lark registration environment does not support client_secret auth. "
-            f"Supported: {methods}"
-        )
-
-
-def _begin_registration(domain: str = "feishu") -> dict:
-    """Start the device-code flow. Returns device_code, qr_url, user_code, interval, expire_in."""
-    base_url = _accounts_base_url(domain)
-    res = _post_registration(base_url, {
-        "action": "begin",
-        "archetype": "PersonalAgent",
-        "auth_method": "client_secret",
-        "request_user_info": "open_id",
-    })
-    device_code = res.get("device_code")
-    if not device_code:
-        raise RuntimeError("Feishu / Lark registration did not return a device_code")
-    qr_url = res.get("verification_uri_complete", "")
-    if "?" in qr_url:
-        qr_url += "&from=hermes&tp=hermes"
-    else:
-        qr_url += "?from=hermes&tp=hermes"
-    return {
-        "device_code": device_code,
-        "qr_url": qr_url,
-        "user_code": res.get("user_code", ""),
-        "interval": res.get("interval") or 5,
-        "expire_in": res.get("expire_in") or 600,
-    }
-
-
-def _poll_registration(
-    *,
-    device_code: str,
-    interval: int,
-    expire_in: int,
-    domain: str = "feishu",
-) -> Optional[dict]:
-    """Poll until the user scans the QR code, or timeout/denial.
-
-    Returns dict with app_id, app_secret, domain, open_id on success.
-    Returns None on failure.
-    """
-    deadline = time.time() + expire_in
-    current_domain = domain
-    domain_switched = False
-    poll_count = 0
-
-    while time.time() < deadline:
-        base_url = _accounts_base_url(current_domain)
-        try:
-            res = _post_registration(base_url, {
-                "action": "poll",
-                "device_code": device_code,
-                "tp": "ob_app",
-            })
-        except (URLError, OSError, json.JSONDecodeError):
-            time.sleep(interval)
-            continue
-
-        poll_count += 1
-        if poll_count == 1:
-            print("  Fetching configuration results...", end="", flush=True)
-        elif poll_count % 6 == 0:
-            print(".", end="", flush=True)
-
-        # Domain auto-detection
-        user_info = res.get("user_info") or {}
-        tenant_brand = user_info.get("tenant_brand")
-        if tenant_brand == "lark" and not domain_switched:
-            current_domain = "lark"
-            domain_switched = True
-            # Fall through — server may return credentials in this same response.
-
-        # Success
-        if res.get("client_id") and res.get("client_secret"):
-            if poll_count > 0:
-                print()  # newline after "Fetching configuration results..." dots
-            return {
-                "app_id": res["client_id"],
-                "app_secret": res["client_secret"],
-                "domain": current_domain,
-                "open_id": user_info.get("open_id"),
-            }
-
-        # Terminal errors
-        error = res.get("error", "")
-        if error in ("access_denied", "expired_token"):
-            if poll_count > 0:
-                print()
-            logger.warning("[Feishu onboard] Registration %s", error)
-            return None
-
-        # authorization_pending or unknown — keep polling
-        time.sleep(interval)
-
-    if poll_count > 0:
-        print()
-    logger.warning("[Feishu onboard] Poll timed out after %ds", expire_in)
-    return None
-
-
-try:
-    import qrcode as _qrcode_mod
-except (ImportError, TypeError):
-    _qrcode_mod = None  # type: ignore[assignment]
-
-
-def _render_qr(url: str) -> bool:
-    """Try to render a QR code in the terminal. Returns True if successful."""
-    if _qrcode_mod is None:
-        return False
-    try:
-        qr = _qrcode_mod.QRCode()
-        qr.add_data(url)
-        qr.make(fit=True)
-        qr.print_ascii(invert=True)
-        return True
-    except Exception:
-        return False
-
-
-def probe_bot(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
-    """Verify bot connectivity via /open-apis/bot/v3/info.
-
-    Uses lark_oapi SDK when available, falls back to raw HTTP otherwise.
-    Returns {"bot_name": ..., "bot_open_id": ...} on success, None on failure.
-    """
-    if FEISHU_AVAILABLE:
-        return _probe_bot_sdk(app_id, app_secret, domain)
-    return _probe_bot_http(app_id, app_secret, domain)
-
-
-def _build_onboard_client(app_id: str, app_secret: str, domain: str) -> Any:
-    """Build a lark Client for the given credentials and domain."""
-    sdk_domain = LARK_DOMAIN if domain == "lark" else FEISHU_DOMAIN
-    return (
-        lark.Client.builder()
-        .app_id(app_id)
-        .app_secret(app_secret)
-        .domain(sdk_domain)
-        .log_level(lark.LogLevel.WARNING)
-        .build()
-    )
-
-
-def _parse_bot_response(data: dict) -> Optional[dict]:
-    """Extract bot_name and bot_open_id from a /bot/v3/info response."""
-    if data.get("code") != 0:
-        return None
-    bot = data.get("bot") or data.get("data", {}).get("bot") or {}
-    return {
-        "bot_name": bot.get("bot_name"),
-        "bot_open_id": bot.get("open_id"),
-    }
-
-
-def _probe_bot_sdk(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
-    """Probe bot info using lark_oapi SDK."""
-    try:
-        client = _build_onboard_client(app_id, app_secret, domain)
-        resp = client.request(
-            method="GET",
-            url="/open-apis/bot/v3/info",
-            body=None,
-            raw_response=True,
-        )
-        return _parse_bot_response(json.loads(resp.content))
-    except Exception as exc:
-        logger.debug("[Feishu onboard] SDK probe failed: %s", exc)
-        return None
-
-
-def _probe_bot_http(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
-    """Fallback probe using raw HTTP (when lark_oapi is not installed)."""
-    base_url = _onboard_open_base_url(domain)
-    try:
-        token_data = json.dumps({"app_id": app_id, "app_secret": app_secret}).encode("utf-8")
-        token_req = Request(
-            f"{base_url}/open-apis/auth/v3/tenant_access_token/internal",
-            data=token_data,
-            headers={"Content-Type": "application/json"},
-        )
-        with urlopen(token_req, timeout=_ONBOARD_REQUEST_TIMEOUT_S) as resp:
-            token_res = json.loads(resp.read().decode("utf-8"))
-
-        access_token = token_res.get("tenant_access_token")
-        if not access_token:
-            return None
-
-        bot_req = Request(
-            f"{base_url}/open-apis/bot/v3/info",
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json",
-            },
-        )
-        with urlopen(bot_req, timeout=_ONBOARD_REQUEST_TIMEOUT_S) as resp:
-            bot_res = json.loads(resp.read().decode("utf-8"))
-
-        return _parse_bot_response(bot_res)
-    except (URLError, OSError, KeyError, json.JSONDecodeError) as exc:
-        logger.debug("[Feishu onboard] HTTP probe failed: %s", exc)
-        return None
-
-
-def qr_register(
-    *,
-    initial_domain: str = "feishu",
-    timeout_seconds: int = 600,
-) -> Optional[dict]:
-    """Run the Feishu / Lark scan-to-create QR registration flow.
-
-    Returns on success::
-
-        {
-            "app_id": str,
-            "app_secret": str,
-            "domain": "feishu" | "lark",
-            "open_id": str | None,
-            "bot_name": str | None,
-            "bot_open_id": str | None,
-        }
-
-    Returns None on expected failures (network, auth denied, timeout).
-    Unexpected errors (bugs, protocol regressions) propagate to the caller.
-    """
-    try:
-        return _qr_register_inner(initial_domain=initial_domain, timeout_seconds=timeout_seconds)
-    except (RuntimeError, URLError, OSError, json.JSONDecodeError) as exc:
-        logger.warning("[Feishu onboard] Registration failed: %s", exc)
-        return None
-
-
-def _qr_register_inner(
-    *,
-    initial_domain: str,
-    timeout_seconds: int,
-) -> Optional[dict]:
-    """Run init → begin → poll → probe. Raises on network/protocol errors."""
-    print("  Connecting to Feishu / Lark...", end="", flush=True)
-    _init_registration(initial_domain)
-    begin = _begin_registration(initial_domain)
-    print(" done.")
-
-    print()
-    qr_url = begin["qr_url"]
-    if _render_qr(qr_url):
-        print(f"\n  Scan the QR code above, or open this URL directly:\n  {qr_url}")
-    else:
-        print(f"  Open this URL in Feishu / Lark on your phone:\n\n  {qr_url}\n")
-        print("  Tip: pip install qrcode  to display a scannable QR code here next time")
-    print()
-
-    result = _poll_registration(
-        device_code=begin["device_code"],
-        interval=begin["interval"],
-        expire_in=min(begin["expire_in"], timeout_seconds),
-        domain=initial_domain,
-    )
-    if not result:
-        return None
-
-    # Probe bot — best-effort, don't fail the registration
-    bot_info = probe_bot(result["app_id"], result["app_secret"], result["domain"])
-    if bot_info:
-        result["bot_name"] = bot_info.get("bot_name")
-        result["bot_open_id"] = bot_info.get("bot_open_id")
-    else:
-        result["bot_name"] = None
-        result["bot_open_id"] = None
-
-    return result

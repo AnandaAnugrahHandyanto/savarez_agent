@@ -3087,6 +3087,53 @@ def _update_via_zip(args):
     print("✓ Update complete!")
 
 
+def _auto_commit_if_needed(git_cmd: list[str], cwd: Path) -> bool:
+    """Auto-commit any uncommitted changes before update."""
+    status = subprocess.run(
+        git_cmd + ["status", "--porcelain"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if not status.stdout.strip():
+        return False  # No changes to commit
+    
+    # Check if there are untracked files
+    untracked = subprocess.run(
+        git_cmd + ["ls-files", "--others", "--exclude-standard"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    has_untracked = bool(untracked.stdout.strip())
+    
+    # Add all changes (tracked and untracked)
+    print("→ Auto-committing local changes before update...")
+    subprocess.run(
+        git_cmd + ["add", "-A"],
+        cwd=cwd,
+        check=True,
+    )
+    
+    # Create commit with timestamp
+    from datetime import datetime, timezone
+    commit_msg = f"Auto-commit before update {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+    result = subprocess.run(
+        git_cmd + ["commit", "-m", commit_msg],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    
+    if result.returncode == 0:
+        print(f"  ✓ Changes committed: {commit_msg}")
+        return True
+    else:
+        print(f"  ⚠ Commit failed: {result.stderr.strip()}")
+        return False
+
+
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
     status = subprocess.run(
         git_cmd + ["status", "--porcelain"],
@@ -3680,6 +3727,8 @@ def cmd_update(args):
         if current_branch != "main":
             label = "detached HEAD" if current_branch == "HEAD" else f"branch '{current_branch}'"
             print(f"  ⚠ Currently on {label} — switching to main for update...")
+            # Auto-commit any uncommitted changes before checkout
+            _auto_commit_if_needed(git_cmd, PROJECT_ROOT)
             # Stash before checkout so uncommitted work isn't lost
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
             subprocess.run(
@@ -3690,6 +3739,8 @@ def cmd_update(args):
                 check=True,
             )
         else:
+            # Auto-commit any uncommitted changes before update
+            _auto_commit_if_needed(git_cmd, PROJECT_ROOT)
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
         prompt_for_restore = auto_stash_ref is not None and (

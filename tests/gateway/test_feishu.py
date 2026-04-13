@@ -101,6 +101,98 @@ class TestGatewayIntegration(unittest.TestCase):
 
 
 class TestFeishuPostParsing(unittest.TestCase):
+    def test_build_interactive_card_payload_uses_lark_md_and_strips_thinking(self):
+        from gateway.platforms.feishu import _build_interactive_card_payload
+
+        payload = json.loads(
+            _build_interactive_card_payload(
+                "[[HERMES_STATUS:thinking]]\n"
+                "[[HERMES_REASONING]]\ninternal\n[[/HERMES_REASONING]]\n"
+                "## 已完成\n正文 **保留**"
+            )
+        )
+
+        self.assertEqual(payload["header"]["title"]["content"], "思考中 | 已完成")
+        self.assertEqual(payload["elements"][0]["tag"], "markdown")
+        self.assertIn("正文 **保留**", payload["elements"][0]["content"])
+        self.assertEqual(payload["elements"][1]["tag"], "collapsible_panel")
+        self.assertEqual(payload["elements"][1]["header"]["title"]["content"], "💭 思考过程")
+        self.assertEqual(payload["elements"][1]["elements"][0]["content"], "internal")
+
+    def test_build_interactive_card_payload_converts_markdown_tables(self):
+        from gateway.platforms.feishu import _build_interactive_card_payload
+
+        payload = json.loads(
+            _build_interactive_card_payload(
+                "[[HERMES_STATUS:completed]]\n| A | B |\n| - | - |\n| 1 | 2 |"
+            )
+        )
+
+        self.assertEqual(payload["elements"][0]["tag"], "table")
+        self.assertEqual(payload["elements"][0]["columns"][0]["displayName"], "A")
+        self.assertEqual(payload["elements"][0]["columns"][1]["displayName"], "B")
+        self.assertEqual(payload["elements"][0]["rows"][0]["c0"]["data"], "1")
+        self.assertEqual(payload["elements"][0]["rows"][0]["c1"]["data"], "2")
+        self.assertEqual(payload["elements"][1]["tag"], "markdown")
+        self.assertEqual(payload["elements"][1]["content"], "已完成")
+
+    def test_build_interactive_card_payload_renders_tools_and_footer_sections(self):
+        from gateway.platforms.feishu import _build_interactive_card_payload
+
+        payload = json.loads(
+            _build_interactive_card_payload(
+                "[[HERMES_STATUS:completed]]\n"
+                "结果正文\n\n"
+                "[[HERMES_TOOLS]]\n🛠️ read_file...\n🛠️ edit_file...\n[[/HERMES_TOOLS]]\n\n"
+                "[[HERMES_FOOTER]]\n已完成 · 耗时 26s · MiniMax-M2.7\n↑ 509k ↓ 4.7k\n[[/HERMES_FOOTER]]"
+            )
+        )
+
+        self.assertEqual(payload["elements"][0]["tag"], "markdown")
+        self.assertEqual(payload["elements"][1]["tag"], "collapsible_panel")
+        self.assertEqual(payload["elements"][1]["header"]["title"]["content"], "🛠️ 工具调用")
+        self.assertIn("🛠️ read_file", payload["elements"][1]["elements"][0]["content"])
+        self.assertEqual(payload["elements"][2]["tag"], "hr")
+        self.assertEqual(payload["elements"][3]["tag"], "markdown")
+        self.assertIn("已完成 · 耗时 26s", payload["elements"][3]["content"])
+        self.assertIn("↑ 509k ↓ 4.7k", payload["elements"][3]["content"])
+
+    @patch.dict(os.environ, {"HOME": "/home/butterfly443"}, clear=True)
+    def test_edit_message_downgrades_interactive_updates_to_post(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def update(self, request):
+                captured["request"] = request
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.edit_message(
+                    chat_id="oc_chat",
+                    message_id="om_progress",
+                    content="[[HERMES_STATUS:completed]]\n结果正文\n\n[[HERMES_FOOTER]]\n已完成 · 耗时 3s\n[[/HERMES_FOOTER]]",
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "text")
+
     def test_parse_post_content_extracts_text_mentions_and_media_refs(self):
         from gateway.platforms.feishu import parse_feishu_post_content
 
@@ -461,7 +553,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             json.dumps({"text": "📖 read_file: \"/tmp/image.png\""}, ensure_ascii=False),
         )
 
-    @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(os.environ, {"HOME": "/home/butterfly443"}, clear=True)
     def test_edit_message_falls_back_to_text_when_post_update_is_rejected(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -503,6 +595,16 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             captured["calls"][1].request_body.content,
             json.dumps({"text": "可以用 粗体 和 斜体。"}, ensure_ascii=False),
         )
+
+    @patch.dict(os.environ, {"HOME": "/home/butterfly443"}, clear=True)
+    def test_format_message_strips_thinking_blocks(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        content = "<think>internal</think>\n/** hidden */\n可见内容"
+        self.assertEqual(adapter.format_message(content), "可见内容")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):
@@ -2557,6 +2659,53 @@ class TestAdapterBehavior(unittest.TestCase):
             captured["calls"][1].request_body.content,
             json.dumps({"text": "可以用 粗体 和 斜体。"}, ensure_ascii=False),
         )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_preserves_feishu_footer_marker_for_interactive_cards(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_interactive_footer"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = (
+            "[[HERMES_STATUS:completed]]\n"
+            "结果正文\n\n"
+            "[[HERMES_FOOTER]]\n"
+            "已完成 · 耗时 26s · MiniMax-M2.7\n"
+            "↑ 509k ↓ 4.7k\n"
+            "[[/HERMES_FOOTER]]"
+        )
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        payload = json.loads(captured["request"].request_body.content)
+        self.assertEqual(payload["elements"][-2]["tag"], "hr")
+        self.assertEqual(payload["elements"][-1]["tag"], "markdown")
+        self.assertIn("已完成 · 耗时 26s", payload["elements"][-1]["content"])
+        self.assertIn("↑ 509k ↓ 4.7k", payload["elements"][-1]["content"])
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_post_for_advanced_markdown_lines(self):
