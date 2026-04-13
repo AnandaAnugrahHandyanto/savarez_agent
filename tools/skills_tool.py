@@ -792,16 +792,30 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         return tool_error(str(e), success=False)
 
 
+def _build_bundle_context_banner(namespace: str, siblings: List[str]) -> str:
+    """构建插件 skill 响应前置的元数据 banner。
+
+    告知 agent 此 skill 属于某个插件 bundle，并列出兄弟 skill，
+    以便正文中的裸名引用可在上下文中被解读为限定引用。
+    """
+    if not siblings:
+        return f"[Bundle context: This skill is part of the '{namespace}' plugin.]"
+    sibling_list = ", ".join(siblings)
+    return (
+        f"[Bundle context: This skill is part of the '{namespace}' plugin.\n"
+        f"Sibling skills: {sibling_list}.\n"
+        f"When invoking a sibling skill, use the qualified form "
+        f"(e.g. {namespace}:{siblings[0]}).]"
+    )
+
+
 def _serve_plugin_skill(
     skill_md: Path,
     namespace: str,
     bare: str,
     file_path: Optional[str],
 ) -> str:
-    """读取插件 skill，执行平台/禁用/注入检查，返回 JSON 响应。
-
-    Banner 注入在后续 Task 中添加。
-    """
+    """读取插件 skill，执行平台/禁用/注入检查，返回 JSON 响应。"""
     from hermes_cli.plugins import _get_disabled_plugins
 
     # 检查：插件是否已被禁用（最优先，无需 I/O）
@@ -862,6 +876,17 @@ def _serve_plugin_skill(
     if len(description) > MAX_DESCRIPTION_LENGTH:
         description = description[: MAX_DESCRIPTION_LENGTH - 3] + "..."
 
+    # 构建 bundle 上下文 banner — 失败时降级处理
+    from hermes_cli.plugins import get_plugin_manager
+    try:
+        siblings = get_plugin_manager().list_plugin_skills(namespace)
+        banner = _build_bundle_context_banner(namespace, siblings)
+    except Exception as exc:
+        logger.warning("Failed to build bundle context banner: %s", exc)
+        banner = ""
+
+    final_content = f"{banner}\n\n{content}" if banner else content
+
     # 注意：`name` 字段回显调用方提供的限定名称
     # （plugin_name:directory_name），而不是 frontmatter 中的 `name`。
     # 插件 skill 在注册时按目录名作为 key 存入 registry
@@ -873,7 +898,7 @@ def _serve_plugin_skill(
         {
             "success": True,
             "name": f"{namespace}:{bare}",
-            "content": content,
+            "content": final_content,
             "description": description,
             "linked_files": None,
             "readiness_status": SkillReadinessStatus.AVAILABLE.value,

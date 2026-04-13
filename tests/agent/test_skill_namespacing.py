@@ -110,3 +110,39 @@ class TestBuildDoesNotValidate:
         assert build_qualified_name(" ", "skill") == " :skill"
         # Confirm that the validator WOULD reject it if asked
         assert not is_valid_namespace(" ")
+
+
+class TestBuildBundleContextBanner:
+    def test_with_multiple_siblings(self):
+        from tools.skills_tool import _build_bundle_context_banner
+
+        banner = _build_bundle_context_banner(
+            "superpowers",
+            ["brainstorming", "writing-plans", "test-driven-development"],
+        )
+
+        assert "superpowers" in banner
+        assert "brainstorming" in banner
+        assert "writing-plans" in banner
+        assert "test-driven-development" in banner
+        assert "qualified form" in banner.lower() or "superpowers:" in banner
+
+    def test_with_single_sibling(self):
+        from tools.skills_tool import _build_bundle_context_banner
+
+        banner = _build_bundle_context_banner("solo", ["only-skill"])
+        assert "solo" in banner
+        assert "only-skill" in banner
+
+    def test_with_no_siblings(self):
+        from tools.skills_tool import _build_bundle_context_banner
+
+        banner = _build_bundle_context_banner("empty", [])
+        assert "empty" in banner
+        assert banner  # non-empty
+
+    def test_namespace_appears_verbatim(self):
+        from tools.skills_tool import _build_bundle_context_banner
+
+        banner = _build_bundle_context_banner("my-plugin", ["foo"])
+        assert "my-plugin" in banner

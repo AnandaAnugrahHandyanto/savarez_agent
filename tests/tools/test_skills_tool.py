@@ -1234,3 +1234,61 @@ class TestSkillViewPluginSkillGuards:
         # NEW: confirm the actual skill body is served, not an empty payload
         assert "Ignore previous instructions" in result["content"]
         assert any("injection" in r.message.lower() for r in caplog.records)
+
+
+class TestPluginSkillBannerInjection:
+    def _setup(self, tmp_path, monkeypatch, skills=("foo", "bar", "baz")):
+        plugin_dir = tmp_path / "plugins" / "myplugin"
+        skills_dir = plugin_dir / "skills"
+        skills_dir.mkdir(parents=True)
+
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path / "empty")
+        (tmp_path / "empty").mkdir()
+
+        from hermes_cli.plugins import PluginManager
+        import hermes_cli.plugins as plugins_mod
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", PluginManager())
+
+        pm = plugins_mod.get_plugin_manager()
+        for name in skills:
+            skill_dir = skills_dir / name
+            skill_dir.mkdir()
+            skill_md = skill_dir / "SKILL.md"
+            skill_md.write_text(
+                f"---\nname: {name}\ndescription: {name} desc\n---\n\n{name} body.\n"
+            )
+            pm._register_plugin_skill("myplugin", name, skill_md, "")
+        return pm
+
+    def test_response_contains_banner(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+
+        self._setup(tmp_path, monkeypatch)
+
+        raw = skill_view("myplugin:foo")
+        result = json.loads(raw)
+
+        assert result["success"] is True
+        assert "[Bundle context:" in result["content"] or "Bundle context" in result["content"]
+
+    def test_banner_lists_all_siblings(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+
+        self._setup(tmp_path, monkeypatch, skills=("foo", "bar", "baz"))
+
+        raw = skill_view("myplugin:foo")
+        result = json.loads(raw)
+
+        assert "foo" in result["content"]
+        assert "bar" in result["content"]
+        assert "baz" in result["content"]
+
+    def test_original_content_preserved_after_banner(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+
+        self._setup(tmp_path, monkeypatch)
+
+        raw = skill_view("myplugin:foo")
+        result = json.loads(raw)
+
+        assert "foo body." in result["content"]
