@@ -6433,9 +6433,14 @@ class AIAgent:
                 except Exception:
                     pass
 
+        # Strip <think> blocks from stored content so they never leak to
+        # messaging platforms via session transcript (#8878).  The reasoning
+        # text is already captured separately above.
+        clean_content = self._strip_think_blocks(assistant_message.content or "").strip()
+
         msg = {
             "role": "assistant",
-            "content": assistant_message.content or "",
+            "content": clean_content,
             "reasoning": reasoning_text,
             "finish_reason": finish_reason,
         }

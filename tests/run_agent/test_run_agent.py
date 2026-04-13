@@ -1036,6 +1036,25 @@ class TestBuildAssistantMessage:
         result = agent._build_assistant_message(msg, "tool_calls")
         assert "extra_content" not in result["tool_calls"][0]
 
+    def test_think_blocks_stripped_from_content(self, agent):
+        """Think blocks must be stripped from stored content so they don't
+        leak to messaging platforms via session transcript (#8878)."""
+        msg = _mock_assistant_msg(
+            content="<think>internal reasoning</think>The actual answer."
+        )
+        result = agent._build_assistant_message(msg, "stop")
+        assert "<think>" not in result["content"]
+        assert "internal reasoning" not in result["content"]
+        assert "The actual answer." in result["content"]
+        # The reasoning should be captured separately
+        assert result["reasoning"] == "internal reasoning"
+
+    def test_think_blocks_stripped_preserves_normal_content(self, agent):
+        """Content without think blocks should pass through unchanged."""
+        msg = _mock_assistant_msg(content="No thinking here.")
+        result = agent._build_assistant_message(msg, "stop")
+        assert result["content"] == "No thinking here."
+
 
 class TestFormatToolsForSystemMessage:
     def test_no_tools_returns_empty_array(self, agent):
