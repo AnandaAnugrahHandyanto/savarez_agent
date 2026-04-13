@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import collections
 import hashlib
 import json
 import logging
@@ -902,6 +903,28 @@ def _message_type_from_media(media_types: List[str], text: str) -> MessageType:
     return MessageType.TEXT
 
 
+class GroupContextBuffer:
+    """Per-group ring buffer that stores recent messages for context injection."""
+
+    def __init__(self, maxlen: int = 50) -> None:
+        self._buf: collections.deque[Tuple[str, str, datetime]] = collections.deque(maxlen=maxlen)
+
+    def add(self, sender: str, text: str, ts: Optional[datetime] = None) -> None:
+        """Append a message to the ring buffer."""
+        self._buf.append((sender, text, ts or datetime.now()))
+
+    def format_context(self) -> str:
+        """Return formatted context string for injection into a prompt."""
+        if not self._buf:
+            return ""
+        lines = []
+        for sender, text, ts in self._buf:
+            stamp = ts.strftime("%H:%M")
+            lines.append(f"[{stamp}] {sender}: {text}")
+        count = len(self._buf)
+        return f"[群聊上下文 - 最近{count}条消息]\n" + "\n".join(lines) + "\n---\n"
+
+
 def _sync_buf_path(hermes_home: str, account_id: str) -> Path:
     return _account_dir(hermes_home) / f"{account_id}.sync.json"
 
@@ -1089,6 +1112,22 @@ class WeixinAdapter(BasePlatformAdapter):
             group_allow_from = os.getenv("WEIXIN_GROUP_ALLOWED_USERS", "")
         self._allow_from = self._coerce_list(allow_from)
         self._group_allow_from = self._coerce_list(group_allow_from)
+        self._group_require_mention = _coerce_bool(
+            extra.get("group_require_mention")
+            or os.getenv("WEIXIN_GROUP_REQUIRE_MENTION", "true"),
+            default=True,
+        )
+        self._group_silent = _coerce_bool(
+            extra.get("group_silent") or os.getenv("WEIXIN_GROUP_SILENT", "false"),
+            default=False,
+        )
+        self._bot_name = str(extra.get("bot_name") or os.getenv("WEIXIN_BOT_NAME", "")).strip()
+        self._group_context_limit = int(
+            extra.get("group_context_messages") or os.getenv("WEIXIN_GROUP_CONTEXT_MESSAGES", "50")
+        )
+        self._group_context: Dict[str, GroupContextBuffer] = {}
+        self._group_context_max_chats = 100  # Cap tracked groups to prevent unbounded growth
+        self._bot_name_warning_logged = False
         self._split_multiline_messages = _coerce_bool(
             extra.get("split_multiline_messages")
             or os.getenv("WEIXIN_SPLIT_MULTILINE_MESSAGES"),
@@ -1250,9 +1289,60 @@ class WeixinAdapter(BasePlatformAdapter):
 
         item_list = message.get("item_list") or []
         text = _extract_text(item_list)
+
+        # -- Group intelligence: context buffer, silent mode, mention gating --
+        if chat_type == "group" and text:
+            if effective_chat_id not in self._group_context:
+                # Evict oldest group context if at capacity
+                if len(self._group_context) >= self._group_context_max_chats:
+                    oldest = next(iter(self._group_context))
+                    del self._group_context[oldest]
+                self._group_context[effective_chat_id] = GroupContextBuffer(
+                    maxlen=self._group_context_limit
+                )
+            ctx_buf = self._group_context[effective_chat_id]
+            ctx_buf.add(sender_id, text)
+
+            if self._group_silent:
+                logger.debug(
+                    "[Weixin] Silent mode: buffered group message from %s in %s",
+                    _safe_id(sender_id),
+                    _safe_id(effective_chat_id),
+                )
+                return
+
+            if self._group_require_mention:
+                if not self._bot_name:
+                    if not self._bot_name_warning_logged:
+                        logger.warning(
+                            "[Weixin] WEIXIN_BOT_NAME not set — cannot gate on @mentions, "
+                            "responding to all group messages. Set WEIXIN_BOT_NAME to enable "
+                            "mention gating."
+                        )
+                        self._bot_name_warning_logged = True
+                else:
+                    mentioned = re.search(
+                        rf"@{re.escape(self._bot_name)}[\s\u2005\u00a0]?",
+                        text,
+                        re.IGNORECASE,
+                    )
+                    if not mentioned:
+                        return
+                    # Strip the @mention from text before sending to agent
+                    text = re.sub(
+                        rf"@{re.escape(self._bot_name)}[\s\u2005\u00a0]?",
+                        "",
+                        text,
+                        flags=re.IGNORECASE,
+                    ).strip()
+
+            # Prepend group context to the message
+            context_prefix = ctx_buf.format_context()
+            if context_prefix:
+                text = context_prefix + text
+
         media_paths: List[str] = []
         media_types: List[str] = []
-
         for item in item_list:
             await self._collect_media(item, media_paths, media_types)
             ref_message = item.get("ref_msg") or {}
