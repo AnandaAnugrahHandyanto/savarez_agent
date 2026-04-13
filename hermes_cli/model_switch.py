@@ -365,7 +365,20 @@ def _resolve_alias_fallback(
     Falls back to ``("openrouter", "nous")`` only when no authenticated
     providers are supplied (backwards compat for non-interactive callers).
     """
-    providers = authenticated_providers or ("openrouter", "nous")
+    from hermes_cli.providers import is_aggregator
+
+    if not authenticated_providers:
+        providers: list[str] = ["openrouter", "nous"]
+    else:
+        # Prefer direct API providers over aggregators (OpenRouter, Nous).
+        # Otherwise ``/model minimax`` matches ``minimax/minimax-*`` on
+        # OpenRouter first whenever OPENROUTER_API_KEY is set, even if
+        # MINIMAX_API_KEY is also set — users expect native MiniMax.
+        providers = sorted(
+            list(authenticated_providers),
+            key=lambda s: (is_aggregator(s), s),
+        )
+
     for provider in providers:
         result = resolve_alias(raw_input, provider)
         if result is not None:

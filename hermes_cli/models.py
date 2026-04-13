@@ -1031,6 +1031,40 @@ def detect_provider_for_model(
         # give a clear error rather than silently using the wrong provider
         return (direct_match, name)
 
+    # --- Step 1b: vendor/model slugs that exist on OpenRouter AND as native API ---
+    # Typing `minimax/MiniMax-M2.7` (or OR's `minimax/minimax-m2.7`) was matching
+    # Step 2 and switching to OpenRouter even when MINIMAX_API_KEY is set — same
+    # string is a valid direct MiniMax model id. Prefer native API when creds exist.
+    if "/" in name:
+        prefix, remainder = name.split("/", 1)
+        prefix_key = _PROVIDER_ALIASES.get(prefix.strip().lower(), prefix.strip().lower())
+        remainder = remainder.strip()
+        if (
+            prefix_key
+            and remainder
+            and prefix_key in _PROVIDER_MODELS
+            and prefix_key not in _AGGREGATORS
+        ):
+            for mid in _PROVIDER_MODELS[prefix_key]:
+                if mid.lower() == remainder.lower():
+                    has_native_creds = False
+                    try:
+                        from hermes_cli.auth import PROVIDER_REGISTRY
+
+                        pconfig = PROVIDER_REGISTRY.get(prefix_key)
+                        if pconfig and pconfig.auth_type == "api_key":
+                            import os
+
+                            for env_var in pconfig.api_key_env_vars:
+                                if os.getenv(env_var, "").strip():
+                                    has_native_creds = True
+                                    break
+                    except Exception:
+                        pass
+                    if has_native_creds:
+                        return (prefix_key, mid)
+                    break
+
     # --- Step 2: check OpenRouter catalog ---
     # First try exact match (handles provider/model format)
     or_slug = _find_openrouter_slug(name)
