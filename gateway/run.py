@@ -310,6 +310,28 @@ logger = logging.getLogger(__name__)
 _AGENT_PENDING_SENTINEL = object()
 
 
+def _format_usage_compact(value: int) -> str:
+    value = int(value or 0)
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}m".replace(".0m", "m")
+    if value >= 100_000:
+        return f"{value / 1_000:.0f}k"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}k".replace(".0k", "k")
+    return str(value)
+
+
+def _format_elapsed_compact(seconds: float) -> str:
+    total_seconds = max(0, int(round(seconds or 0)))
+    minutes, secs = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances."""
     from hermes_cli.runtime_provider import (
@@ -1000,15 +1022,6 @@ class GatewayRunner:
         if source.platform != Platform.FEISHU:
             return ""
 
-        runtime = _resolve_runtime_agent_kwargs()
-        return build_feishu_usage_footer_from_agent_result(
-            agent_result,
-            response_time=response_time,
-            provider=runtime.get("provider") or "",
-            base_url=runtime.get("base_url") or "",
-            api_key=runtime.get("api_key") or "",
-            default_model=_resolve_gateway_model() or "unknown",
-        )
 
     def _append_feishu_usage_footer(
         self,
@@ -1027,13 +1040,6 @@ class GatewayRunner:
         )
         if not footer:
             return response
-        return (
-            "[[HERMES_STATUS:completed]]\n"
-            f"{response.rstrip()}\n\n"
-            "[[HERMES_FOOTER]]\n"
-            f"{footer}\n"
-            "[[/HERMES_FOOTER]]"
-        )
 
     def _queue_during_drain_enabled(self) -> bool:
         return self._restart_requested and self._busy_input_mode == "queue"
@@ -2367,9 +2373,17 @@ class GatewayRunner:
         source = event.source
 
         # Internal events (e.g. background-process completion notifications)
-        # are system-generated and must skip user authorization.
+        # are system-generated and must skip user authorization AND skip the
+        # agent entirely. They are purely informational — the notification
+        # text has already been delivered via adapter.send() or is being
+        # handled by a dedicated watcher. Running them through the agent would:
+        #   1. Consume an API call
+        #   2. Pollute conversation history
+        #   3. Chain-trigger session hygiene on every notification
+        #   4. Cause cascading compression
         if getattr(event, "internal", False):
-            pass
+            logger.debug("Dropping internal event (no agent run): %s", getattr(event, "text", "")[:60])
+            return None
         elif source.user_id is None:
             # Messages with no user identity (Telegram service messages,
             # channel forwards, anonymous admin actions) cannot be
@@ -3612,28 +3626,6 @@ class GatewayRunner:
                     else:
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
-
-            if response and source.platform == Platform.FEISHU:
-                feishu_sections = [response.rstrip()]
-                last_reasoning = str(agent_result.get("last_reasoning") or "").strip()
-                if last_reasoning:
-                    feishu_sections.append(
-                        "[[HERMES_REASONING]]\n"
-                        f"{last_reasoning}\n"
-                        "[[/HERMES_REASONING]]"
-                    )
-                tool_activity = [
-                    str(line).strip()
-                    for line in (agent_result.get("tool_activity") or [])
-                    if str(line).strip()
-                ]
-                if tool_activity:
-                    feishu_sections.append(
-                        "[[HERMES_TOOLS]]\n"
-                        + "\n".join(tool_activity)
-                        + "\n[[/HERMES_TOOLS]]"
-                    )
-                response = "\n\n".join(section for section in feishu_sections if section.strip())
 
             if response:
                 response = self._append_feishu_usage_footer(

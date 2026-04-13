@@ -116,9 +116,6 @@ _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 _HERMES_STATUS_RE = re.compile(r"^\[\[HERMES_STATUS:(thinking|completed|ended)\]\]\s*", re.IGNORECASE)
-_HERMES_REASONING_SECTION_RE = re.compile(r"\[\[HERMES_REASONING\]\]\s*([\s\S]*?)\s*\[\[/HERMES_REASONING\]\]", re.IGNORECASE)
-_HERMES_TOOLS_SECTION_RE = re.compile(r"\[\[HERMES_TOOLS\]\]\s*([\s\S]*?)\s*\[\[/HERMES_TOOLS\]\]", re.IGNORECASE)
-_HERMES_FOOTER_SECTION_RE = re.compile(r"\[\[HERMES_FOOTER\]\]\s*([\s\S]*?)\s*\[\[/HERMES_FOOTER\]\]", re.IGNORECASE)
 _THINK_BLOCK_RE = re.compile(r"<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>[\s\S]*?</(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>", re.IGNORECASE)
 _THINK_TAG_RE = re.compile(r"</?(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>", re.IGNORECASE)
 _COMMENT_THINK_BLOCK_RE = re.compile(r"/\*\*[\s\S]*?\*/")
@@ -409,18 +406,6 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _convert_markdown_tables_to_code_blocks(text: str) -> str:
-    """Convert any remaining standard markdown tables to code blocks for safe display."""
-    if "|" not in (text or ""):
-        return text or ""
-
-    def _wrap(match: re.Match[str]) -> str:
-        table = match.group(0).rstrip("\n")
-        return f"```\n{table}\n```"
-
-    return _MARKDOWN_TABLE_BLOCK_RE.sub(_wrap, text)
-
-
 def _build_markdown_post_payload(content: str) -> str:
     _, content = _extract_status_marker(_render_markdown_tables_for_feishu(_strip_reasoning_for_display(content)))
     content = _convert_markdown_tables_to_code_blocks(content)
@@ -452,19 +437,16 @@ def _extract_status_marker(content: str) -> tuple[str, str]:
 def _status_presentation(status: str) -> tuple[str, str, str]:
     normalized = (status or "").strip().lower()
     if normalized == "thinking":
-        return "思考中", "blue", ""
+        return "思考中", "blue", "状态：思考中"
     if normalized == "completed":
-        return "已完成", "green", "已完成"
+        return "已完成", "green", "状态：已完成"
     if normalized == "ended":
-        return "已结束", "grey", "已结束"
+        return "已结束", "grey", "状态：已结束"
     return "", "blue", ""
 
 
 def _strip_reasoning_for_display(text: str) -> str:
     cleaned = text or ""
-    cleaned = _HERMES_REASONING_SECTION_RE.sub("", cleaned)
-    cleaned = _HERMES_TOOLS_SECTION_RE.sub("", cleaned)
-    cleaned = _HERMES_FOOTER_SECTION_RE.sub("", cleaned)
     cleaned = _THINK_BLOCK_RE.sub("", cleaned)
     cleaned = _THINK_TAG_RE.sub("", cleaned)
     cleaned = _COMMENT_THINK_BLOCK_RE.sub("", cleaned)
@@ -472,165 +454,8 @@ def _strip_reasoning_for_display(text: str) -> str:
     return cleaned.strip()
 
 
-def _extract_marker_section(text: str, pattern: re.Pattern[str]) -> str:
-    cleaned = text or ""
-    matches = [match.strip() for match in pattern.findall(cleaned) if match and match.strip()]
-    return "\n\n".join(matches).strip()
-
-
-def _extract_reasoning_content(text: str) -> str:
-    """Extract reasoning content from explicit sections or think tags."""
-    section_reasoning = _extract_marker_section(text, _HERMES_REASONING_SECTION_RE)
-    if section_reasoning:
-        return section_reasoning
-
-    cleaned = text or ""
-    matches = _THINK_BLOCK_RE.findall(cleaned)
-    if not matches:
-        return ""
-
-    reasoning_parts = []
-    for match in matches:
-        content = _THINK_TAG_RE.sub("", match).strip()
-        if content:
-            reasoning_parts.append(content)
-    return "\n\n".join(reasoning_parts)
-
-
-def _extract_tool_content(text: str) -> str:
-    return _extract_marker_section(text, _HERMES_TOOLS_SECTION_RE)
-
-
-def _extract_footer_content(text: str) -> str:
-    return _extract_marker_section(text, _HERMES_FOOTER_SECTION_RE)
-
-
-def _build_footer_elements(footer_content: str, status_line: str) -> List[Dict[str, Any]]:
-    """Build footer elements with a single markdown block to avoid extra gaps."""
-    lines = [
-        line.strip()
-        for line in str(footer_content or "").splitlines()
-        if line and line.strip()
-    ]
-    if not lines and status_line:
-        return [{
-            "tag": "markdown",
-            "content": status_line,
-            "text_size": "notation",
-        }]
-    if not lines:
-        return []
-
-    return [
-        {"tag": "hr"},
-        {
-            "tag": "markdown",
-            "content": "\n".join(lines),
-            "text_size": "notation",
-        },
-    ]
-
-
-def _parse_markdown_table(md_text):
-    """解析 Markdown 表格，返回 (headers, rows) 或 None"""
-    lines = md_text.strip().split('\n')
-    
-    # 找表格行（包含 | 的行）
-    table_lines = []
-    for line in lines:
-        if '|' in line and not line.strip().startswith('```'):
-            table_lines.append(line.strip())
-    
-    if len(table_lines) < 2:
-        return None
-    
-    # 第一行是表头
-    header_line = table_lines[0]
-    headers = [h.strip() for h in header_line.split('|') if h.strip()]
-    
-    # 第二行是分隔符（跳过）
-    # 剩余是数据行
-    rows = []
-    for line in table_lines[2:]:
-        cells = [c.strip() for c in line.split('|') if c.strip()]
-        if len(cells) == len(headers):
-            rows.append(cells)
-    
-    return headers, rows
-
-def _build_table_element(headers, rows):
-    """构建飞书 table 元素 JSON"""
-    columns = []
-    for i, h in enumerate(headers):
-        columns.append({
-            "name": f"c{i}",
-            "displayName": h
-        })
-    
-    table_rows = []
-    for row in rows:
-        row_data = {}
-        for i, cell in enumerate(row):
-            row_data[f"c{i}"] = {"data": cell}
-        table_rows.append(row_data)
-    
-    return {
-        "tag": "table",
-        "rows": table_rows,
-        "columns": columns
-    }
-
-def _convert_content_with_tables(md_text):
-    """将 Markdown 文本（含表格）转为飞书卡片元素列表"""
-    result = _parse_markdown_table(md_text)
-    
-    if not result:
-        # 没有表格，返回 markdown 元素
-        return [{"tag": "markdown", "content": md_text or " "}]
-    
-    headers, rows = result
-    table_elem = _build_table_element(headers, rows)
-    
-    # 提取表格前后的其他内容
-    lines = md_text.strip().split('\n')
-    before = []
-    after = []
-    in_table = False
-    table_started = False
-    
-    for line in lines:
-        if '|' in line and not line.strip().startswith('```'):
-            if not table_started:
-                table_started = True
-                in_table = True
-            if in_table:
-                continue
-        else:
-            if in_table:
-                in_table = False
-            if not table_started:
-                before.append(line)
-            else:
-                after.append(line)
-    
-    elements = []
-    if before:
-        before_text = '\n'.join(before).strip()
-        if before_text:
-            elements.append({"tag": "markdown", "content": before_text})
-    
-    elements.append(table_elem)
-    
-    if after:
-        after_text = '\n'.join(after).strip()
-        if after_text:
-            elements.append({"tag": "markdown", "content": after_text})
-    
-    return elements
-
-
 def _render_markdown_tables_for_feishu(text: str) -> str:
-    """Render markdown tables into stable row-based markdown for Feishu cards."""
+    """Render markdown tables as code blocks so Feishu keeps them readable."""
     if "|" not in (text or ""):
         return text or ""
 
@@ -648,12 +473,23 @@ def _render_markdown_tables_for_feishu(text: str) -> str:
             [cell.strip() for cell in row.strip("|").split("|")]
             for row in lines[2:]
         ]
-        header_line = " ｜ ".join(f"**{cell or '-'}**" for cell in header_cells)
-        rendered = [header_line]
+        widths = [len(cell) for cell in header_cells]
         for row in body_rows:
-            padded = list(row) + [""] * (len(header_cells) - len(row))
-            rendered.append(" ｜ ".join(cell or "-" for cell in padded[: len(header_cells)]))
-        return "\n".join(rendered).rstrip()
+            for idx, cell in enumerate(row):
+                if idx >= len(widths):
+                    widths.append(len(cell))
+                else:
+                    widths[idx] = max(widths[idx], len(cell))
+
+        def _fmt(row: List[str]) -> str:
+            padded = list(row) + [""] * (len(widths) - len(row))
+            return " | ".join(
+                cell.ljust(widths[idx]) for idx, cell in enumerate(padded[: len(widths)])
+            )
+
+        rendered = [_fmt(header_cells), "-+-".join("-" * width for width in widths)]
+        rendered.extend(_fmt(row) for row in body_rows)
+        return "```text\n" + "\n".join(rendered).rstrip() + "\n```"
 
     return _MARKDOWN_TABLE_BLOCK_RE.sub(_replace, text)
 
@@ -661,6 +497,31 @@ def _render_markdown_tables_for_feishu(text: str) -> str:
 def _contains_status_marker(content: str) -> bool:
     status, _ = _extract_status_marker(content or "")
     return bool(status)
+
+
+def _convert_markdown_tables_to_code_blocks(text: str) -> str:
+    lines = (text or "").splitlines()
+    converted: List[str] = []
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        if (
+            idx + 1 < len(lines)
+            and _MARKDOWN_TABLE_ROW_RE.match(line or "")
+            and _MARKDOWN_TABLE_SEPARATOR_RE.match(lines[idx + 1] or "")
+        ):
+            table_lines = [line, lines[idx + 1]]
+            idx += 2
+            while idx < len(lines) and _MARKDOWN_TABLE_ROW_RE.match(lines[idx] or ""):
+                table_lines.append(lines[idx])
+                idx += 1
+            converted.append("```text")
+            converted.extend(table_lines)
+            converted.append("```")
+            continue
+        converted.append(line)
+        idx += 1
+    return "\n".join(converted)
 
 
 def _extract_card_title(content: str) -> str:
@@ -676,18 +537,12 @@ def _extract_card_title(content: str) -> str:
 
 
 def _build_interactive_card_payload(content: str) -> str:
-    reasoning_content = _extract_reasoning_content(content)
-    tool_content = _extract_tool_content(content)
-    footer_content = _extract_footer_content(content)
-
-    stripped_body = _strip_reasoning_for_display(content)
-    status, body_content_raw = _extract_status_marker(stripped_body)
-    body_content = _render_markdown_tables_for_feishu(body_content_raw)
+    status, body_content = _extract_status_marker(_render_markdown_tables_for_feishu(_strip_reasoning_for_display(content)))
     status_title, template, status_line = _status_presentation(status)
-    title = _extract_card_title(body_content_raw)
+    body_content = _convert_markdown_tables_to_code_blocks(body_content)
+    title = _extract_card_title(body_content)
     if status_title:
         title = f"{status_title} | {title}"
-    
     card = {
         "config": {
             "wide_screen_mode": True,
@@ -698,86 +553,25 @@ def _build_interactive_card_payload(content: str) -> str:
         },
         "elements": [],
     }
-    
-    if _MARKDOWN_TABLE_BLOCK_RE.search(body_content_raw or ""):
-        card["elements"].extend(_convert_content_with_tables(body_content_raw))
-    else:
-        card["elements"].append({
-            "tag": "markdown",
-            "content": body_content or " ",
-        })
-
-    if reasoning_content:
-        display_reasoning = reasoning_content[:500]
-        if len(reasoning_content) > 500:
-            display_reasoning += "..."
-
-        card["elements"].append({
-            "tag": "collapsible_panel",
-            "expanded": False,
-            "header": {
-                "title": {
-                    "tag": "plain_text",
-                "content": "💭 思考过程",
-                    "text_color": "grey",
-                    "text_size": "notation",
+    if status_line:
+        card["elements"].append(
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": f"**{status_line}**",
                 },
-                "vertical_align": "center",
-                "icon": {
-                    "tag": "standard_icon",
-                    "token": "down-small-ccm_outlined",
-                    "color": "grey",
-                    "size": "16px 16px",
-                },
-                "icon_position": "right",
-                "icon_expanded_angle": -180,
+            }
+        )
+    card["elements"].append(
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": body_content or " ",
             },
-            "border": {"color": "grey", "corner_radius": "5px"},
-            "vertical_spacing": "4px",
-            "padding": "8px 8px 8px 8px",
-            "elements": [{
-                "tag": "markdown",
-                "content": display_reasoning,
-                "text_size": "notation",
-            }],
-        })
-
-    if tool_content:
-        display_tools = tool_content[:1000]
-        if len(tool_content) > 1000:
-            display_tools += "..."
-        card["elements"].append({
-            "tag": "collapsible_panel",
-            "expanded": False,
-            "header": {
-                "title": {
-                    "tag": "plain_text",
-                    "content": "🛠️ 工具调用",
-                    "text_color": "grey",
-                    "text_size": "notation",
-                },
-                "vertical_align": "center",
-                "icon": {
-                    "tag": "standard_icon",
-                    "token": "down-small-ccm_outlined",
-                    "color": "grey",
-                    "size": "16px 16px",
-                },
-                "icon_position": "right",
-                "icon_expanded_angle": -180,
-            },
-            "border": {"color": "grey", "corner_radius": "5px"},
-            "vertical_spacing": "4px",
-            "padding": "8px 8px 8px 8px",
-            "elements": [{
-                "tag": "markdown",
-                "content": display_tools,
-                "text_size": "notation",
-            }],
-        })
-
-    card["elements"].extend(_build_footer_elements(footer_content, status_line))
-
+        }
+    )
     return json.dumps(card, ensure_ascii=False)
 
 
@@ -1702,47 +1496,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
-        raw_content = content or ""
         formatted = self.format_message(content)
-
-        # Check if content has HERMES markers (reasoning/tools) that must not be split
-        has_hermes_markers = (
-            _HERMES_STATUS_RE.search(raw_content)
-            or _HERMES_REASONING_SECTION_RE.search(raw_content)
-            or _HERMES_TOOLS_SECTION_RE.search(raw_content)
-            or _HERMES_FOOTER_SECTION_RE.search(raw_content)
-        )
-
-        # If HERMES markers exist, build card FIRST then truncate body only (keep markers intact)
-        if has_hermes_markers:
-            msg_type, payload = self._build_outbound_payload(raw_content)
-            # payload is the full card JSON - send as single message (don't split)
-            try:
-                response = await self._feishu_send_with_retry(
-                    chat_id=chat_id,
-                    msg_type=msg_type,
-                    payload=payload,
-                    reply_to=reply_to,
-                    metadata=metadata,
-                )
-                return self._finalize_send_result(response, "send failed")
-            except Exception as exc:
-                if msg_type == "interactive":
-                    logger.warning(
-                        "[Feishu] Interactive card send failed; falling back to post: %s",
-                        exc,
-                    )
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type="post",
-                        payload=_build_markdown_post_payload(raw_content),
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
-                    return self._finalize_send_result(response, "send failed")
-                raise
-
-        # Normal flow: split and send
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
@@ -1835,22 +1589,22 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             msg_type, payload = self._build_outbound_payload(content)
-            # Feishu message updates are significantly less tolerant of
-            # interactive cards than initial sends. Keep edits conservative:
-            # update progress/intermediate messages as post/text only, and
-            # reserve interactive cards for final sends.
-            if msg_type == "interactive":
-                rendered = _render_markdown_tables_for_feishu(_strip_reasoning_for_display(content))
-                if _MARKDOWN_HINT_RE.search(rendered):
-                    msg_type = "post"
-                    payload = _build_markdown_post_payload(rendered)
-                else:
-                    msg_type = "text"
-                    payload = json.dumps({"text": _strip_markdown_to_plain_text(rendered)}, ensure_ascii=False)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
+            if not result.success and msg_type == "interactive":
+                logger.warning(
+                    "[Feishu] Interactive card update failed; falling back to post: %s",
+                    result.error or getattr(response, "msg", None) or "unknown error",
+                )
+                fallback_body = self._build_update_message_body(
+                    msg_type="post",
+                    content=_build_markdown_post_payload(content),
+                )
+                fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
+                fallback_response = await asyncio.to_thread(self._client.im.v1.message.update, fallback_request)
+                result = self._finalize_send_result(fallback_response, "update failed")
             if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
                 logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
                 fallback_body = self._build_update_message_body(
@@ -3655,12 +3409,8 @@ class FeishuAdapter(BasePlatformAdapter):
         cleaned = _strip_reasoning_for_display(content)
         if _contains_status_marker(content):
             return "interactive", _build_interactive_card_payload(content)
-        # For Feishu: always use interactive card for markdown content
         if _MARKDOWN_HINT_RE.search(cleaned):
-            # Add default status marker if missing
-            if not _contains_status_marker(content):
-                content = f"[[HERMES_STATUS:completed]]\n{content}"
-            return "interactive", _build_interactive_card_payload(content)
+            return "post", _build_markdown_post_payload(cleaned)
         return "text", json.dumps({"text": _strip_markdown_to_plain_text(cleaned)}, ensure_ascii=False)
 
     async def _send_uploaded_file_message(
