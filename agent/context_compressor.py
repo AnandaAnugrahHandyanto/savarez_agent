@@ -50,7 +50,7 @@ _SUMMARY_RATIO = 0.20
 _SUMMARY_TOKENS_CEILING = 12_000
 
 # Placeholder used when pruning old tool results
-_PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
+_PRUNED_TOOL_PLACEHOLDER = "[Earlier tool output trimmed for context; head/tail preserved below]"
 
 # Chars per token rough estimate
 _CHARS_PER_TOKEN = 4
@@ -235,7 +235,14 @@ class ContextCompressor(ContextEngine):
                 continue
             # Only prune if the content is substantial (>200 chars)
             if len(content) > 200:
-                result[i] = {**msg, "content": _PRUNED_TOOL_PLACEHOLDER}
+                result[i] = {
+                    **msg,
+                    "content": (
+                        _PRUNED_TOOL_PLACEHOLDER
+                        + "\n"
+                        + self._truncate_preserving_edges(content, 1400, 900, 350)
+                    ),
+                }
                 pruned += 1
 
         return result, pruned
@@ -264,6 +271,87 @@ class ContextCompressor(ContextEngine):
     _TOOL_ARGS_MAX = 1500     # tool call argument chars
     _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
 
+    @classmethod
+    def _truncate_preserving_edges(
+        cls,
+        content: str,
+        max_chars: int,
+        head_chars: int,
+        tail_chars: int,
+    ) -> str:
+        """Trim long text by preserving both head and tail context."""
+        if len(content) <= max_chars:
+            return content
+        omitted = len(content) - head_chars - tail_chars
+        return (
+            content[:head_chars]
+            + f"\n...[{omitted} chars omitted during context trimming]...\n"
+            + content[-tail_chars:]
+        )
+
+    @classmethod
+    def _serialize_for_raw_fallback(cls, turns: List[Dict[str, Any]]) -> str:
+        """Create a compact raw fallback excerpt from compressed turns."""
+        if not turns:
+            return ""
+
+        lines = []
+        total_budget = 12000
+        for msg in turns:
+            role = (msg.get("role") or "unknown").upper()
+            content = msg.get("content") or ""
+
+            if role == "TOOL":
+                tool_name = msg.get("tool_name") or msg.get("name") or msg.get("tool_call_id") or "result"
+                content = cls._truncate_preserving_edges(content, 1400, 900, 350)
+                lines.append(f"[TOOL:{tool_name}] {content}")
+            elif role == "ASSISTANT":
+                tool_calls = msg.get("tool_calls") or []
+                tc_parts = []
+                for tc in tool_calls:
+                    if isinstance(tc, dict):
+                        fn = tc.get("function", {})
+                        name = fn.get("name", "?")
+                        args = fn.get("arguments", "")
+                    else:
+                        fn = getattr(tc, "function", None)
+                        name = getattr(fn, "name", "?") if fn else "?"
+                        args = getattr(fn, "arguments", "") if fn else ""
+                    args = cls._truncate_preserving_edges(str(args or ""), 600, 450, 100)
+                    tc_parts.append(f"{name}({args})")
+                content = cls._truncate_preserving_edges(content, 1200, 800, 250)
+                if tc_parts:
+                    lines.append(f"[ASSISTANT TOOL_CALLS] {'; '.join(tc_parts)}")
+                if content:
+                    lines.append(f"[ASSISTANT] {content}")
+            else:
+                content = cls._truncate_preserving_edges(content, 1200, 800, 250)
+                lines.append(f"[{role}] {content}")
+
+            joined = "\n\n".join(lines)
+            if len(joined) >= total_budget:
+                return cls._truncate_preserving_edges(joined, total_budget, 8000, 2500)
+
+        return "\n\n".join(lines)
+
+    @classmethod
+    def _build_raw_fallback_summary(cls, turns_to_summarize: List[Dict[str, Any]]) -> str:
+        """Fallback when summary generation fails: keep a compact raw excerpt."""
+        excerpt = cls._serialize_for_raw_fallback(turns_to_summarize)
+        if excerpt:
+            body = (
+                "Summary generation was unavailable, so a compact raw excerpt of the removed turns is preserved below. "
+                "Use it together with the current state of files/resources to continue without repeating work.\n\n"
+                "## Raw Excerpt\n"
+                f"{excerpt}"
+            )
+        else:
+            body = (
+                "Summary generation was unavailable, and the removed turns could not be summarized. "
+                "Continue from the recent messages and current file/resource state."
+            )
+        return cls._with_summary_prefix(body)
+
     def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
         """Serialize conversation turns into labeled text for the summarizer.
 
@@ -280,14 +368,24 @@ class ContextCompressor(ContextEngine):
             if role == "tool":
                 tool_id = msg.get("tool_call_id", "")
                 if len(content) > self._CONTENT_MAX:
-                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+                    content = self._truncate_preserving_edges(
+                        content,
+                        self._CONTENT_MAX,
+                        self._CONTENT_HEAD,
+                        self._CONTENT_TAIL,
+                    )
                 parts.append(f"[TOOL RESULT {tool_id}]: {content}")
                 continue
 
             # Assistant messages: include tool call names AND arguments
             if role == "assistant":
                 if len(content) > self._CONTENT_MAX:
-                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+                    content = self._truncate_preserving_edges(
+                        content,
+                        self._CONTENT_MAX,
+                        self._CONTENT_HEAD,
+                        self._CONTENT_TAIL,
+                    )
                 tool_calls = msg.get("tool_calls", [])
                 if tool_calls:
                     tc_parts = []
@@ -298,7 +396,12 @@ class ContextCompressor(ContextEngine):
                             args = fn.get("arguments", "")
                             # Truncate long arguments but keep enough for context
                             if len(args) > self._TOOL_ARGS_MAX:
-                                args = args[:self._TOOL_ARGS_HEAD] + "..."
+                                args = self._truncate_preserving_edges(
+                                    args,
+                                    self._TOOL_ARGS_MAX,
+                                    self._TOOL_ARGS_HEAD,
+                                    150,
+                                )
                             tc_parts.append(f"  {name}({args})")
                         else:
                             fn = getattr(tc, "function", None)
@@ -751,19 +854,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 )
             compressed.append(msg)
 
-        # If LLM summary failed, insert a static fallback so the model
-        # knows context was lost rather than silently dropping everything.
+        # If LLM summary failed, keep a compact raw fallback so the model
+        # still has actionable context instead of a useless marker.
         if not summary:
             if not self.quiet_mode:
-                logger.warning("Summary generation failed — inserting static fallback context marker")
-            n_dropped = compress_end - compress_start
-            summary = (
-                f"{SUMMARY_PREFIX}\n"
-                f"Summary generation was unavailable. {n_dropped} conversation turns were "
-                f"removed to free context space but could not be summarized. The removed "
-                f"turns contained earlier work in this session. Continue based on the "
-                f"recent messages below and the current state of any files or resources."
-            )
+                logger.warning("Summary generation failed — inserting raw fallback excerpt")
+            summary = self._build_raw_fallback_summary(turns_to_summarize)
 
         _merge_summary_into_tail = False
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
