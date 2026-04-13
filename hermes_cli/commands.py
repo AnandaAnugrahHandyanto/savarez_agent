@@ -69,7 +69,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[name]"),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
-    CommandDef("compress", "Manually compress conversation context", "Session"),
+    CommandDef("compress", "Manually compress conversation context", "Session",
+               args_hint="[focus topic]"),
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
     CommandDef("stop", "Kill all running background processes", "Session"),
@@ -153,6 +154,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="<path>"),
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                gateway_only=True),
+    CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
 
     # Exit
     CommandDef("quit", "Exit the CLI", "Exit",
