@@ -913,6 +913,11 @@ class GroupContextBuffer:
         """Append a message to the ring buffer."""
         self._buf.append((sender, text, ts or datetime.now()))
 
+    def recent(self, n: int = 5) -> List[Tuple[str, str, datetime]]:
+        """Return the *n* most recent entries (oldest-first)."""
+        items = list(self._buf)
+        return items[-n:] if len(items) > n else items
+
     def format_context(self) -> str:
         """Return formatted context string for injection into a prompt."""
         if not self._buf:
@@ -923,6 +928,69 @@ class GroupContextBuffer:
             lines.append(f"[{stamp}] {sender}: {text}")
         count = len(self._buf)
         return f"[群聊上下文 - 最近{count}条消息]\n" + "\n".join(lines) + "\n---\n"
+
+
+class GroupActivityMonitor:
+    """Per-group sliding-window activity tracker with spike detection.
+
+    Maintains a deque of message timestamps per group.  ``is_hot`` returns
+    *True* when the number of messages inside the sliding window exceeds the
+    configured threshold.  ``should_notify`` adds a per-group cooldown so that
+    notifications are not sent too frequently.
+    """
+
+    def __init__(
+        self,
+        threshold: int = 10,
+        window_seconds: int = 300,
+        cooldown_seconds: int = 1800,
+    ) -> None:
+        self._threshold = threshold
+        self._window = window_seconds
+        self._cooldown = cooldown_seconds
+        self._timestamps: Dict[str, collections.deque] = {}
+        self._last_notified: Dict[str, float] = {}
+
+    # -- public API ----------------------------------------------------------
+
+    def record(self, chat_id: str) -> None:
+        """Record a message timestamp for *chat_id*."""
+        now = time.time()
+        if chat_id not in self._timestamps:
+            self._timestamps[chat_id] = collections.deque()
+        dq = self._timestamps[chat_id]
+        dq.append(now)
+        # Prune entries outside the window
+        cutoff = now - self._window
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+
+    def is_hot(self, chat_id: str) -> bool:
+        """Return *True* if message count in window exceeds threshold."""
+        dq = self._timestamps.get(chat_id)
+        if not dq:
+            return False
+        now = time.time()
+        cutoff = now - self._window
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+        return len(dq) >= self._threshold
+
+    def should_notify(self, chat_id: str) -> bool:
+        """Return *True* if the group is hot AND the cooldown has expired."""
+        if not self.is_hot(chat_id):
+            return False
+        last = self._last_notified.get(chat_id, 0.0)
+        return (time.time() - last) >= self._cooldown
+
+    def mark_notified(self, chat_id: str) -> None:
+        """Record that a notification was just sent for *chat_id*."""
+        self._last_notified[chat_id] = time.time()
+
+    def window_count(self, chat_id: str) -> int:
+        """Return the number of messages in the current window."""
+        dq = self._timestamps.get(chat_id)
+        return len(dq) if dq else 0
 
 
 def _sync_buf_path(hermes_home: str, account_id: str) -> Path:
@@ -1128,6 +1196,44 @@ class WeixinAdapter(BasePlatformAdapter):
         self._group_context: Dict[str, GroupContextBuffer] = {}
         self._group_context_max_chats = 100  # Cap tracked groups to prevent unbounded growth
         self._bot_name_warning_logged = False
+
+        # -- Persistent group message log --
+        self._group_log = _coerce_bool(
+            extra.get("group_log") or os.getenv("WEIXIN_GROUP_LOG", "false"),
+            default=False,
+        )
+        self._group_log_dir = Path(
+            extra.get("group_log_dir") or os.getenv("WEIXIN_GROUP_LOG_DIR", "")
+            or str(Path(hermes_home) / "weixin" / "group-logs")
+        )
+
+        # -- Activity spike detection --
+        self._group_activity_enabled = _coerce_bool(
+            extra.get("group_activity_enabled")
+            or os.getenv("WEIXIN_GROUP_ACTIVITY_ENABLED", "false"),
+            default=False,
+        )
+        self._group_activity_threshold = int(
+            extra.get("group_activity_threshold")
+            or os.getenv("WEIXIN_GROUP_ACTIVITY_THRESHOLD", "10")
+        )
+        self._group_activity_window = int(
+            extra.get("group_activity_window")
+            or os.getenv("WEIXIN_GROUP_ACTIVITY_WINDOW", "300")
+        )
+        self._group_activity_cooldown = int(
+            extra.get("group_activity_cooldown")
+            or os.getenv("WEIXIN_GROUP_ACTIVITY_COOLDOWN", "1800")
+        )
+        self._activity_monitor = GroupActivityMonitor(
+            threshold=self._group_activity_threshold,
+            window_seconds=self._group_activity_window,
+            cooldown_seconds=self._group_activity_cooldown,
+        )
+        self._home_contact = str(
+            extra.get("home_contact") or os.getenv("WEIXIN_HOME_CONTACT", "")
+        ).strip()
+
         self._split_multiline_messages = _coerce_bool(
             extra.get("split_multiline_messages")
             or os.getenv("WEIXIN_SPLIT_MULTILINE_MESSAGES"),
@@ -1303,6 +1409,26 @@ class WeixinAdapter(BasePlatformAdapter):
             ctx_buf = self._group_context[effective_chat_id]
             ctx_buf.add(sender_id, text)
 
+            # -- Persistent group message log --
+            if self._group_log:
+                self._append_group_log(
+                    chat_id=effective_chat_id,
+                    sender=sender_id,
+                    text=text,
+                    msg_id=message_id,
+                )
+
+            # -- Activity spike detection --
+            if self._group_activity_enabled:
+                self._activity_monitor.record(effective_chat_id)
+                if self._activity_monitor.should_notify(effective_chat_id):
+                    self._activity_monitor.mark_notified(effective_chat_id)
+                    asyncio.create_task(
+                        self._send_activity_spike_notification(
+                            effective_chat_id, ctx_buf,
+                        )
+                    )
+
             if self._group_silent:
                 logger.debug(
                     "[Weixin] Silent mode: buffered group message from %s in %s",
@@ -1378,6 +1504,118 @@ class WeixinAdapter(BasePlatformAdapter):
         if self._dm_policy == "allowlist":
             return sender_id in self._allow_from
         return True
+
+    # -- Group log helpers ---------------------------------------------------
+
+    def _append_group_log(
+        self,
+        *,
+        chat_id: str,
+        sender: str,
+        text: str,
+        msg_id: str,
+    ) -> None:
+        """Append a single group message to a date-partitioned JSONL log file."""
+        try:
+            now = datetime.now()
+            date_dir = self._group_log_dir / now.strftime("%Y-%m-%d")
+            date_dir.mkdir(parents=True, exist_ok=True)
+            log_path = date_dir / f"{chat_id}.jsonl"
+            entry = json.dumps(
+                {
+                    "ts": now.isoformat(),
+                    "sender": sender,
+                    "text": text,
+                    "msg_id": msg_id,
+                },
+                ensure_ascii=False,
+            )
+            with open(log_path, "a", encoding="utf-8") as fh:
+                fh.write(entry + "\n")
+        except Exception as exc:
+            logger.warning(
+                "[Weixin] Failed to write group log for %s: %s",
+                _safe_id(chat_id),
+                exc,
+            )
+
+    async def _send_activity_spike_notification(
+        self,
+        chat_id: str,
+        ctx_buf: GroupContextBuffer,
+    ) -> None:
+        """Send an activity spike notification to the home contact (fire-and-forget)."""
+        if not self._home_contact:
+            logger.debug("[Weixin] Activity spike in %s but no WEIXIN_HOME_CONTACT set", _safe_id(chat_id))
+            return
+        count = self._activity_monitor.window_count(chat_id)
+        window = self._group_activity_window
+        recent = ctx_buf.recent(5)
+        preview_lines: List[str] = []
+        for sender, text, ts in recent:
+            stamp = ts.strftime("%H:%M")
+            preview_lines.append(f"  [{stamp}] {_safe_id(sender)}: {text[:80]}")
+        preview = "\n".join(preview_lines) if preview_lines else "  (无预览)"
+        body = (
+            f"🔥 群 {_safe_id(chat_id)} 活跃度飙升！"
+            f"最近{window}秒内{count}条消息\n\n"
+            f"最近消息预览：\n{preview}"
+        )
+        logger.info("[Weixin] Activity spike notification for group %s (%d msgs in %ds)", _safe_id(chat_id), count, window)
+        try:
+            await self.send(self._home_contact, body)
+        except Exception as exc:
+            logger.warning("[Weixin] Failed to send activity spike notification: %s", exc)
+
+    def get_group_log_dir(self) -> Path:
+        """Return the configured group log directory path."""
+        return self._group_log_dir
+
+    @staticmethod
+    def generate_daily_digest(
+        log_dir: Path,
+        date: str,
+        chat_ids: Optional[List[str]] = None,
+    ) -> Dict[str, List[dict]]:
+        """Read JSONL log files for *date* and return ``{chat_id: [messages]}``.
+
+        Parameters
+        ----------
+        log_dir:
+            Root group-logs directory (contains date sub-directories).
+        date:
+            Date string in ``YYYY-MM-DD`` format.
+        chat_ids:
+            Optional list of chat IDs to include.  ``None`` means all.
+
+        Returns
+        -------
+        Dict mapping chat ID to a list of message dicts read from the JSONL
+        files.  Returns an empty dict when no data is found.
+        """
+        date_dir = log_dir / date
+        result: Dict[str, List[dict]] = {}
+        if not date_dir.is_dir():
+            return result
+        for log_file in sorted(date_dir.glob("*.jsonl")):
+            cid = log_file.stem
+            if chat_ids is not None and cid not in chat_ids:
+                continue
+            messages: List[dict] = []
+            try:
+                with open(log_file, "r", encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if line:
+                            try:
+                                messages.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                continue
+            except Exception:
+                continue
+            if messages:
+                result[cid] = messages
+        return result
 
     async def _collect_media(self, item: Dict[str, Any], media_paths: List[str], media_types: List[str]) -> None:
         item_type = item.get("type")
