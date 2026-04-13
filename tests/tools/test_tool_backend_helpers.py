@@ -285,3 +285,14 @@ class TestResolveOpenaiAudioApiKey:
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "  voice-key  ")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         assert resolve_openai_audio_api_key() == "voice-key"
+
+    def test_refreshes_profile_env_when_process_env_missing(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / ".env").write_text("OPENAI_API_KEY=test-audio-key\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        assert resolve_openai_audio_api_key() == "test-audio-key"
