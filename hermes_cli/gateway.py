@@ -804,6 +804,17 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
         return str(current_hermes)
 
 
+def _resolved_systemd_reload_command() -> str:
+    """Return an absolute kill path for ExecReload, falling back conservatively.
+
+    systemd unit commands should use an absolute executable path when possible.
+    On hosts like NixOS, /bin/kill may not exist even though kill is installed,
+    so resolve the real binary first and preserve /bin/kill as a compatibility
+    fallback when discovery fails.
+    """
+    return shutil.which("kill") or "/bin/kill"
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
@@ -811,6 +822,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
     venv_bin = str(detected_venv / "bin") if detected_venv else str(PROJECT_ROOT / "venv" / "bin")
     node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
+    reload_command = _resolved_systemd_reload_command()
 
     path_entries = [venv_bin, node_bin]
     resolved_node = shutil.which("node")
@@ -862,7 +874,7 @@ RestartSec=30
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
-ExecReload=/bin/kill -USR1 $MAINPID
+ExecReload={reload_command} -USR1 $MAINPID
 TimeoutStopSec={restart_timeout}
 StandardOutput=journal
 StandardError=journal
@@ -894,7 +906,7 @@ RestartSec=30
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
-ExecReload=/bin/kill -USR1 $MAINPID
+ExecReload={reload_command} -USR1 $MAINPID
 TimeoutStopSec={restart_timeout}
 StandardOutput=journal
 StandardError=journal
