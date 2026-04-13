@@ -61,6 +61,12 @@ LINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024   # 10 MB
 LINE_AUDIO_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
 LINE_VIDEO_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
 
+# Module-level registry of connected LineAdapter instances, keyed by
+# channel_access_token.  Used so that the send_message tool can reuse
+# the already-running webhook/media server instead of creating a fresh
+# (unconnected) adapter that has no server to serve media tokens.
+_running_adapters: Dict[str, "LineAdapter"] = {}
+
 
 def _make_preview_png() -> bytes:
     """Return a minimal 1×1 white PNG suitable for LINE video previewImageUrl.
@@ -166,6 +172,13 @@ class LineAdapter(BasePlatformAdapter):
         self.webhook_path: str = (
             extra.get("webhook_path")
             or os.getenv("LINE_WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH)
+        )
+        # Optional public base URL (e.g. https://my-ngrok.io) used by _media_url()
+        # when the bind host (webhook_host) is not the externally reachable address.
+        # Set LINE_PUBLIC_URL or public_url in config.
+        self.public_base_url: Optional[str] = (
+            (extra.get("public_url") or os.getenv("LINE_PUBLIC_URL", ""))
+            .rstrip("/") or None
         )
         self._http_client: Optional[httpx.AsyncClient] = None
         self._webhook_app: Optional[web.Application] = None
@@ -273,10 +286,13 @@ class LineAdapter(BasePlatformAdapter):
             return False
 
         self._mark_connected()
+        # Register this adapter so send_message tool can reuse the running server
+        _running_adapters[self.channel_access_token] = self
         return True
 
     async def disconnect(self) -> None:
         """Stop the webhook server and close HTTP client."""
+        _running_adapters.pop(self.channel_access_token, None)
         if self._webhook_runner:
             try:
                 await self._webhook_runner.cleanup()
@@ -601,10 +617,20 @@ class LineAdapter(BasePlatformAdapter):
         return token
 
     def _media_url(self, token: str, filename: str) -> str:
-        """Build the public HTTPS URL for a registered media token."""
-        host = self.webhook_host
-        port = self.webhook_port
-        base = f"https://{host}" if port == 443 else f"https://{host}:{port}"
+        """Build the public HTTPS URL for a registered media token.
+
+        Uses ``public_base_url`` (from ``LINE_PUBLIC_URL`` env var or the
+        ``public_url`` config key) when set, so the URL is reachable from
+        LINE's servers even when the webhook server binds on 0.0.0.0 or is
+        behind a reverse proxy.  Falls back to ``webhook_host:webhook_port``
+        for setups where the bind address is already publicly routable.
+        """
+        if self.public_base_url:
+            base = self.public_base_url
+        else:
+            host = self.webhook_host
+            port = self.webhook_port
+            base = f"https://{host}" if port == 443 else f"https://{host}:{port}"
         safe_name = _urlquote(filename, safe="")
         return f"{base}/line/media/{token}/{safe_name}"
 

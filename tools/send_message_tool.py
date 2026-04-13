@@ -989,7 +989,7 @@ async def _send_bluebubbles(extra, chat_id, message):
 async def _send_line(pconfig, chat_id, message, media_files=None):
     """Send via LINE Messaging API using the adapter's Push API."""
     try:
-        from gateway.platforms.line import LineAdapter, check_line_requirements
+        from gateway.platforms.line import LineAdapter, check_line_requirements, _running_adapters
         if not check_line_requirements():
             return {"error": "LINE requirements not met (need httpx + aiohttp + credentials)."}
     except ImportError:
@@ -998,7 +998,11 @@ async def _send_line(pconfig, chat_id, message, media_files=None):
     media_files = media_files or []
 
     try:
-        adapter = LineAdapter(pconfig)
+        # Prefer the already-running gateway adapter so that media tokens are
+        # served by the existing webhook server.  Fall back to a fresh instance
+        # for text-only sends when no gateway is active.
+        token = pconfig.token or ""
+        adapter = _running_adapters.get(token) or LineAdapter(pconfig)
         last_result = None
 
         if message.strip():
