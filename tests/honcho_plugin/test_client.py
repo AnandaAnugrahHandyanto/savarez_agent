@@ -232,6 +232,24 @@ class TestFromGlobalConfig:
         config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.base_url == "http://root:9000"
 
+    def test_timeout_seconds_default(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "abc"}))
+
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.timeout_seconds == 60.0
+
+    def test_timeout_seconds_host_block_wins(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "abc",
+            "timeoutSeconds": 120,
+            "hosts": {"hermes": {"timeoutSeconds": 180}},
+        }))
+
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.timeout_seconds == 180.0
+
 
 class TestResolveSessionName:
     def test_manual_override(self):
@@ -549,3 +567,21 @@ class TestResetHonchoClient:
         assert mod._honcho_client is not None
         reset_honcho_client()
         assert mod._honcho_client is None
+
+
+class TestGetHonchoClient:
+    def test_passes_timeout_to_sdk(self):
+        reset_honcho_client()
+        mock_sdk_client = MagicMock()
+        config = HonchoClientConfig(
+            api_key="key",
+            enabled=True,
+            timeout_seconds=180.0,
+        )
+
+        with patch("honcho.Honcho", return_value=mock_sdk_client) as mock_honcho:
+            result = get_honcho_client(config)
+
+        assert result is mock_sdk_client
+        mock_honcho.assert_called_once()
+        assert mock_honcho.call_args.kwargs["timeout"] == 180.0

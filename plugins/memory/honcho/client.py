@@ -159,6 +159,8 @@ class HonchoClientConfig:
     environment: str = "production"
     # Optional base URL for self-hosted Honcho (overrides environment mapping)
     base_url: str | None = None
+    # Client-side HTTP timeout in seconds for Honcho SDK requests
+    timeout_seconds: float = 60.0
     # Identity
     peer_name: str | None = None
     ai_peer: str = "hermes"
@@ -224,12 +226,14 @@ class HonchoClientConfig:
         resolved_host = host or resolve_active_host()
         api_key = os.environ.get("HONCHO_API_KEY")
         base_url = os.environ.get("HONCHO_BASE_URL", "").strip() or None
+        timeout_seconds = float(os.environ.get("HONCHO_TIMEOUT_SECONDS", "60"))
         return cls(
             host=resolved_host,
             workspace_id=workspace_id,
             api_key=api_key,
             environment=os.environ.get("HONCHO_ENVIRONMENT", "production"),
             base_url=base_url,
+            timeout_seconds=timeout_seconds,
             ai_peer=resolved_host,
             enabled=bool(api_key or base_url),
         )
@@ -340,6 +344,12 @@ class HonchoClientConfig:
             enabled=enabled,
             save_messages=save_messages,
             write_frequency=write_frequency,
+            timeout_seconds=float(
+                host_block.get("timeoutSeconds")
+                or raw.get("timeoutSeconds")
+                or os.environ.get("HONCHO_TIMEOUT_SECONDS")
+                or 60
+            ),
             context_tokens=host_block.get("contextTokens") or raw.get("contextTokens"),
             dialectic_reasoning_level=(
                 host_block.get("dialecticReasoningLevel")
@@ -550,6 +560,7 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         "workspace_id": config.workspace_id,
         "api_key": effective_api_key,
         "environment": config.environment,
+        "timeout": config.timeout_seconds,
     }
     if resolved_base_url:
         kwargs["base_url"] = resolved_base_url
