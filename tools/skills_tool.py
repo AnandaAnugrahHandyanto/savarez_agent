@@ -777,11 +777,11 @@ def skills_list(category: str = None, task_id: str = None) -> str:
 
 
 def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
-    """
-    View the content of a skill or a specific file within a skill directory.
+    """View the content of a skill or a specific file within a skill directory.
 
     Args:
-        name: Name or path of the skill (e.g., "axolotl" or "03-fine-tuning/axolotl")
+        name: Name or path of the skill (e.g., "axolotl" or "03-fine-tuning/axolotl").
+            Qualified names like "plugin:skill" resolve to plugin-provided skills.
         file_path: Optional path to a specific file within the skill (e.g., "references/api.md")
         task_id: Optional task identifier used to probe the active backend
 
@@ -789,6 +789,28 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         JSON string with skill content or error message
     """
     try:
+        # 新增：带命名空间的限定名称分发 — 路由到插件提供的 skill
+        if ":" in name:
+            from agent.skill_utils import (
+                is_valid_namespace,
+                parse_qualified_name,
+            )
+
+            namespace, bare = parse_qualified_name(name)
+            if not is_valid_namespace(namespace):
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            f"Invalid namespace '{namespace}' in '{name}'. "
+                            f"Namespaces must match [a-zA-Z0-9_-]+."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            # 后续 Task 6-10 在此处添加 _serve_plugin_skill 解析逻辑。
+            # 当前先穿透 — 已有的平铺扫描路径会返回 not-found。
+
         from agent.skill_utils import get_external_skills_dirs
 
         # Build list of all skill directories to search

@@ -1046,3 +1046,44 @@ Do the legacy thing.
         assert result["setup_needed"] is False
         assert result["missing_required_environment_variables"] == []
         assert result["readiness_status"] == "available"
+
+
+class TestSkillViewQualifiedNameDispatch:
+    """Tests for the qualified name detection branch of skill_view."""
+
+    def test_invalid_namespace_returns_error(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path)
+        raw = skill_view("bad.namespace:foo")
+        result = json.loads(raw)
+
+        assert result["success"] is False
+        assert "Invalid namespace" in result["error"]
+
+    def test_empty_namespace_returns_error(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path)
+        raw = skill_view(":foo")
+        result = json.loads(raw)
+
+        assert result["success"] is False
+        assert "Invalid namespace" in result["error"]
+
+    def test_bare_name_unchanged_still_falls_through(self, tmp_path, monkeypatch):
+        """skill_view without ':' in name goes to the existing flat scan path."""
+        from tools.skills_tool import skill_view
+
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: my-skill\ndescription: local\n---\n\nBody.\n"
+        )
+
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path)
+        raw = skill_view("my-skill")
+        result = json.loads(raw)
+
+        assert result["success"] is True
+        assert result["name"] == "my-skill"
