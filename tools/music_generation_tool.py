@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Music generation tool backed by FAL's ElevenLabs music endpoint."""
+"""Music generation tool backed by FAL's Minimax music endpoint."""
 
 import datetime
 import json
@@ -10,46 +10,65 @@ from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "fal-ai/elevenlabs/music"
-DEFAULT_DURATION_SECONDS = 30
-MIN_DURATION_SECONDS = 10
-MAX_DURATION_SECONDS = 300
+DEFAULT_MODEL = "fal-ai/minimax-music/v2.6"
+MIN_PROMPT_LENGTH = 10
+MAX_PROMPT_LENGTH = 300
+MAX_LYRICS_LENGTH = 1000
 
 
-def _validate_duration_seconds(duration_seconds) -> int:
-    if duration_seconds is None:
-        return DEFAULT_DURATION_SECONDS
-    if not isinstance(duration_seconds, int):
-        raise ValueError("duration_seconds must be an integer")
-    if duration_seconds < MIN_DURATION_SECONDS or duration_seconds > MAX_DURATION_SECONDS:
+def _validate_prompt(prompt: str) -> str:
+    if not isinstance(prompt, str):
+        raise ValueError("prompt must be a string")
+
+    normalized_prompt = prompt.strip()
+    if not normalized_prompt:
+        raise ValueError("prompt is required and must be a non-empty string")
+
+    if len(normalized_prompt) < MIN_PROMPT_LENGTH or len(normalized_prompt) > MAX_PROMPT_LENGTH:
         raise ValueError(
-            f"duration_seconds must be between {MIN_DURATION_SECONDS} and {MAX_DURATION_SECONDS}"
+            f"prompt must be between {MIN_PROMPT_LENGTH} and {MAX_PROMPT_LENGTH} characters"
         )
-    return duration_seconds
+
+    return normalized_prompt
+
+
+def _validate_lyrics(lyrics, instrumental: bool) -> str:
+    if lyrics is None:
+        normalized_lyrics = ""
+    elif not isinstance(lyrics, str):
+        raise ValueError("lyrics must be a string")
+    else:
+        normalized_lyrics = lyrics.strip()
+
+    if not instrumental and not normalized_lyrics:
+        raise ValueError("lyrics are required when instrumental is false")
+
+    if len(normalized_lyrics) > MAX_LYRICS_LENGTH:
+        raise ValueError(f"lyrics must be {MAX_LYRICS_LENGTH} characters or fewer")
+
+    return normalized_lyrics
 
 
 def music_generate_tool(
     prompt: str,
-    duration_seconds: int = DEFAULT_DURATION_SECONDS,
     instrumental: bool = True,
+    lyrics: str = "",
 ) -> str:
     """Generate a music clip from a text prompt via FAL."""
     start_time = datetime.datetime.now()
 
     try:
-        if not prompt or not isinstance(prompt, str) or not prompt.strip():
-            raise ValueError("prompt is required and must be a non-empty string")
-
         if not image_generation_tool.check_image_generation_requirements():
             raise ValueError("FAL music generation is unavailable because FAL credentials are not configured")
 
-        validated_duration = _validate_duration_seconds(duration_seconds)
+        validated_prompt = _validate_prompt(prompt)
+        validated_lyrics = _validate_lyrics(lyrics, instrumental)
         arguments = {
-            "prompt": prompt.strip(),
-            "music_length_ms": validated_duration * 1000,
+            "prompt": validated_prompt,
+            "is_instrumental": instrumental,
         }
-        if instrumental:
-            arguments["force_instrumental"] = True
+        if validated_lyrics:
+            arguments["lyrics"] = validated_lyrics
 
         logger.info("Submitting music generation request to %s", DEFAULT_MODEL)
         handler = image_generation_tool._submit_fal_request(DEFAULT_MODEL, arguments=arguments)
@@ -66,7 +85,8 @@ def music_generate_tool(
                 "audio": audio_url,
                 "content_type": audio.get("content_type"),
                 "file_name": audio.get("file_name"),
-                "duration_seconds": validated_duration,
+                "instrumental": instrumental,
+                "lyrics_provided": bool(validated_lyrics),
             },
             indent=2,
             ensure_ascii=False,
@@ -90,25 +110,26 @@ def music_generate_tool(
 
 MUSIC_GENERATE_SCHEMA = {
     "name": "music_generate",
-    "description": "Generate a short music clip from a text prompt using FAL. Returns a downloadable audio URL.",
+    "description": "Generate music from a text prompt using FAL's Minimax Music model. Supports either instrumental tracks or lyric-based songs and returns a downloadable audio URL.",
     "parameters": {
         "type": "object",
         "properties": {
             "prompt": {
                 "type": "string",
-                "description": "Describe the mood, style, instrumentation, and pacing you want in the generated music.",
-            },
-            "duration_seconds": {
-                "type": "integer",
-                "description": "Target clip length in seconds.",
-                "default": DEFAULT_DURATION_SECONDS,
-                "minimum": MIN_DURATION_SECONDS,
-                "maximum": MAX_DURATION_SECONDS,
+                "description": "Describe the style, mood, genre, instrumentation, and scenario for the music you want.",
+                "minLength": MIN_PROMPT_LENGTH,
+                "maxLength": MAX_PROMPT_LENGTH,
             },
             "instrumental": {
                 "type": "boolean",
-                "description": "When true, force instrumental music without vocals.",
+                "description": "When true, generate instrumental music without vocals. When false, provide lyrics for the sung track.",
                 "default": True,
+            },
+            "lyrics": {
+                "type": "string",
+                "description": "Lyrics for the song. Required when instrumental is false.",
+                "maxLength": MAX_LYRICS_LENGTH,
+                "default": "",
             },
         },
         "required": ["prompt"],
@@ -122,8 +143,8 @@ def _handle_music_generate(args, **kw):
         return tool_error("prompt is required for music generation")
     return music_generate_tool(
         prompt=prompt,
-        duration_seconds=args.get("duration_seconds", DEFAULT_DURATION_SECONDS),
         instrumental=args.get("instrumental", True),
+        lyrics=args.get("lyrics", ""),
     )
 
 

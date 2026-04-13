@@ -12,7 +12,7 @@ class TestMusicToolRegistration:
 
 
 class TestMusicGenerationTool:
-    def test_successful_generation(self, monkeypatch):
+    def test_successful_instrumental_generation(self, monkeypatch):
         from tools import music_generation_tool
 
         monkeypatch.setattr(
@@ -47,18 +47,70 @@ class TestMusicGenerationTool:
         result = json.loads(
             music_generation_tool.music_generate_tool(
                 prompt="cinematic ambient piano with soft strings",
-                duration_seconds=40,
-                instrumental=False,
+                instrumental=True,
             )
         )
 
         assert result["success"] is True
         assert result["audio"] == "https://cdn.example.com/track.mp3"
         assert result["file_name"] == "track.mp3"
+        assert result["instrumental"] is True
+        assert result["lyrics_provided"] is False
         assert captured["model"] == music_generation_tool.DEFAULT_MODEL
         assert captured["arguments"] == {
             "prompt": "cinematic ambient piano with soft strings",
-            "music_length_ms": 40000,
+            "is_instrumental": True,
+        }
+
+    def test_successful_vocal_generation_requires_lyrics(self, monkeypatch):
+        from tools import music_generation_tool
+
+        monkeypatch.setattr(
+            music_generation_tool.image_generation_tool,
+            "check_image_generation_requirements",
+            lambda: True,
+        )
+
+        captured = {}
+
+        class FakeHandle:
+            def get(self):
+                return {
+                    "audio": {
+                        "url": "https://cdn.example.com/vocal-track.mp3",
+                        "content_type": "audio/mpeg",
+                        "file_name": "vocal-track.mp3",
+                    }
+                }
+
+        def fake_submit(model, arguments):
+            captured["model"] = model
+            captured["arguments"] = arguments
+            return FakeHandle()
+
+        monkeypatch.setattr(
+            music_generation_tool.image_generation_tool,
+            "_submit_fal_request",
+            fake_submit,
+        )
+
+        result = json.loads(
+            music_generation_tool.music_generate_tool(
+                prompt="upbeat indie pop with bright guitars and warm female lead",
+                instrumental=False,
+                lyrics="[Verse]\nCity lights keep calling me home",
+            )
+        )
+
+        assert result["success"] is True
+        assert result["audio"] == "https://cdn.example.com/vocal-track.mp3"
+        assert result["instrumental"] is False
+        assert result["lyrics_provided"] is True
+        assert captured["model"] == music_generation_tool.DEFAULT_MODEL
+        assert captured["arguments"] == {
+            "prompt": "upbeat indie pop with bright guitars and warm female lead",
+            "is_instrumental": False,
+            "lyrics": "[Verse]\nCity lights keep calling me home",
         }
 
     def test_returns_error_when_requirements_missing(self, monkeypatch):
@@ -75,7 +127,7 @@ class TestMusicGenerationTool:
         assert result["success"] is False
         assert "FAL music generation is unavailable" in result["error"]
 
-    def test_returns_error_for_invalid_duration(self, monkeypatch):
+    def test_returns_error_when_vocal_generation_has_no_lyrics(self, monkeypatch):
         from tools import music_generation_tool
 
         monkeypatch.setattr(
@@ -85,11 +137,30 @@ class TestMusicGenerationTool:
         )
 
         result = json.loads(
-            music_generation_tool.music_generate_tool("test prompt", duration_seconds=5)
+            music_generation_tool.music_generate_tool(
+                "upbeat indie pop with female vocals",
+                instrumental=False,
+            )
         )
 
         assert result["success"] is False
-        assert "duration_seconds must be between" in result["error"]
+        assert "lyrics are required when instrumental is false" in result["error"]
+
+    def test_returns_error_for_short_prompt(self, monkeypatch):
+        from tools import music_generation_tool
+
+        monkeypatch.setattr(
+            music_generation_tool.image_generation_tool,
+            "check_image_generation_requirements",
+            lambda: True,
+        )
+
+        result = json.loads(
+            music_generation_tool.music_generate_tool("too short")
+        )
+
+        assert result["success"] is False
+        assert "prompt must be between" in result["error"]
 
     def test_handle_requires_prompt(self):
         from tools.music_generation_tool import _handle_music_generate

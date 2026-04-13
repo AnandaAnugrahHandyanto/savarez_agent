@@ -248,17 +248,21 @@ def test_music_generation_uses_shared_managed_fal_gateway(monkeypatch):
 
     monkeypatch.setattr(image_generation_tool, "_submit_fal_request", wrapped_submit)
 
-    result = music_generation_tool.music_generate_tool("warm synthwave groove", duration_seconds=45)
+    result = music_generation_tool.music_generate_tool(
+        "warm synthwave groove with retro textures",
+        instrumental=False,
+        lyrics="[Verse]\nNeon lights shimmer through the rain",
+    )
 
     payload = json.loads(result)
     assert payload["success"] is True
     assert payload["audio"] == "https://cdn.example.com/generated.mp3"
-    assert captured["music_model"] == "fal-ai/elevenlabs/music"
-    assert captured["submit_url"] == "http://127.0.0.1:3009/fal-ai/elevenlabs/music"
+    assert captured["music_model"] == "fal-ai/minimax-music/v2.6"
+    assert captured["submit_url"] == "http://127.0.0.1:3009/fal-ai/minimax-music/v2.6"
     assert captured["arguments"] == {
-        "prompt": "warm synthwave groove",
-        "music_length_ms": 45000,
-        "force_instrumental": True,
+        "prompt": "warm synthwave groove with retro textures",
+        "is_instrumental": False,
+        "lyrics": "[Verse]\nNeon lights shimmer through the rain",
     }
 
 
