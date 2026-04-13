@@ -170,6 +170,23 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+SDAO_DELEGATION_GUIDANCE = (
+    "# Strict delegation & orchestration\n"
+    "When the delegate_task tool is available, follow SDAO: stay solo by default. "
+    "Use sequential delegation for complex work with dependencies, and use parallel "
+    "delegation only when the subtasks are independently executable with explicit "
+    "evidence of independence.\n"
+    "If the user says 'no subagents' or gives an equivalent instruction, do not delegate.\n"
+    "Ambiguous task structure or ambiguity about dependencies must resolve conservatively to solo, "
+    "or sequential if dependency evidence is strong.\n"
+    "Prefer sequential over parallel when uncertain.\n"
+    "Do not use decorative delegation or parallelize for style only. Reject surface-level or superficial "
+    "parallelism signals such as tasks that are merely topically similar or only look separable at first glance.\n"
+    "Justify delegation internally before calling delegate_task. Confirm that the task "
+    "is complex enough, delegation materially helps, and the chosen mode matches the "
+    "task's dependencies and independence."
+)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

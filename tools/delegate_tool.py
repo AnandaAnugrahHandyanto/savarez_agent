@@ -26,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
+from agent.orchestration_policy import decide_orchestration_mode
 
 
 # Tools that children must never have access to
@@ -80,6 +81,155 @@ def _get_max_concurrent_children() -> int:
 DEFAULT_MAX_ITERATIONS = 50
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+
+
+def _infer_complexity(task_list: List[Dict[str, Any]]) -> str:
+    combined = "\n".join(
+        f"{task.get('goal', '')}\n{task.get('context', '')}" for task in task_list
+    ).lower()
+    if any(token in combined for token in ("simple", "one-step", "one step", "quick lookup", "quick task")):
+        return "simple"
+    if any(token in combined for token in ("complex", "multi-step", "multi step", "migration", "audit", "investigate")):
+        return "complex"
+    return "medium"
+
+
+def _has_dependency_markers(task_list: List[Dict[str, Any]]) -> bool:
+    combined = "\n".join(
+        f"{task.get('goal', '')}\n{task.get('context', '')}" for task in task_list
+    ).lower()
+    dependency_markers = (
+        "depends on",
+        "dependent on",
+        "depends upon",
+        "after task",
+        "after the plan",
+        "output of step",
+        "result of task",
+        "requires the result",
+    )
+    return any(marker in combined for marker in dependency_markers)
+
+
+def _infer_independence(task_list: List[Dict[str, Any]]) -> Optional[bool]:
+    if len(task_list) < 2:
+        return False
+    texts = [f"{task.get('goal', '')}\n{task.get('context', '')}".lower() for task in task_list]
+    negative = (
+        "no explicit statement",
+        "not explicit",
+        "unclear independence",
+        "unknown dependencies",
+        "uncertain dependencies",
+    )
+    if any(marker in text for text in texts for marker in negative):
+        return None
+    positive = ("independent", "no dependencies", "safe to run in parallel", "parallel")
+    if all(any(marker in text for marker in positive) for text in texts):
+        return True
+    return None
+
+
+def _explicit_no_subagents(task_list: List[Dict[str, Any]]) -> bool:
+    combined = "\n".join(
+        f"{task.get('goal', '')}\n{task.get('context', '')}" for task in task_list
+    ).lower()
+    markers = (
+        "no subagents",
+        "do not use subagents",
+        "don't use subagents",
+        "without subagents",
+    )
+    return any(marker in combined for marker in markers)
+
+
+def _explicit_ambiguity(task_list: List[Dict[str, Any]]) -> bool:
+    combined = "\n".join(
+        f"{task.get('goal', '')}\n{task.get('context', '')}" for task in task_list
+    ).lower()
+    markers = (
+        "ambiguous",
+        "unclear",
+        "not sure if independent",
+        "unknown dependencies",
+        "uncertain dependencies",
+    )
+    return any(marker in combined for marker in markers)
+
+
+def _explicit_decorative_parallelization(task_list: List[Dict[str, Any]]) -> bool:
+    combined = "\n".join(
+        f"{task.get('goal', '')}\n{task.get('context', '')}" for task in task_list
+    ).lower()
+    markers = (
+        "for style only",
+        "parallelize for style",
+        "for optics",
+        "optics rather than necessity",
+        "looks more impressive",
+        "looks impressive",
+        "impressive-looking",
+        "for appearance only",
+        "for show",
+    )
+    return any(marker in combined for marker in markers)
+
+
+def _explicit_single_task_justification(task_list: List[Dict[str, Any]]) -> bool:
+    combined = "\n".join(
+        f"{task.get('goal', '')}\n{task.get('context', '')}" for task in task_list
+    ).lower()
+    markers = (
+        "subagent justified",
+        "justify a child",
+        "isolated investigation",
+        "independent review",
+        "need isolation",
+        "specialized child",
+        "delegate this",
+    )
+    return any(marker in combined for marker in markers)
+
+
+def _enforce_sdao_gate(task_list: List[Dict[str, Any]]) -> Optional[str]:
+    explicit_no_subagents = _explicit_no_subagents(task_list)
+    complexity = _infer_complexity(task_list)
+    has_dependencies = _has_dependency_markers(task_list)
+    subtasks_independent = _infer_independence(task_list)
+    explicit_ambiguity = _explicit_ambiguity(task_list)
+    explicit_decorative_parallelization = _explicit_decorative_parallelization(task_list)
+    explicit_single_task_justification = _explicit_single_task_justification(task_list)
+
+    mode = decide_orchestration_mode(
+        task_count_estimate=len(task_list),
+        has_dependencies=has_dependencies,
+        complexity=complexity,
+        subtasks_independent=subtasks_independent,
+        explicit_no_subagents=explicit_no_subagents,
+    )
+
+    if len(task_list) == 1:
+        if explicit_no_subagents:
+            return "SDAO policy blocked delegation: explicit no subagents preference detected, so this task must stay solo."
+        if complexity == "simple" and mode == "solo":
+            return "SDAO policy blocked delegation: this task should stay solo rather than spawning a subagent."
+        if complexity == "complex" and not explicit_single_task_justification:
+            return "SDAO policy blocked delegation: complex single-task delegation requires an explicit justification; otherwise it must stay solo."
+        return None
+
+    if explicit_no_subagents:
+        return "SDAO policy blocked parallel delegation: explicit no subagents preference detected, so this work must stay solo."
+    if explicit_decorative_parallelization:
+        return "SDAO policy blocked parallel delegation: decorative or style-only parallelization is not allowed under SDAO."
+    if mode == "sequential":
+        return "SDAO policy blocked parallel delegation: these tasks appear dependent, so handle them sequentially instead of in one parallel delegate_task batch."
+    if complexity == "complex" and subtasks_independent is not True:
+        return "SDAO policy blocked parallel delegation: complex multi-task work requires explicit independence before parallel subagents are allowed."
+    if explicit_ambiguity:
+        return "SDAO policy blocked parallel delegation: these tasks are ambiguous and should stay solo unless independence is made explicit."
+    if mode == "parallel":
+        return None
+    return None
 
 
 def check_delegate_requirements() -> bool:
@@ -691,6 +841,10 @@ def delegate_task(
     for i, task in enumerate(task_list):
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+    gate_error = _enforce_sdao_gate(task_list)
+    if gate_error:
+        return tool_error(gate_error)
 
     overall_start = time.monotonic()
     results = []
