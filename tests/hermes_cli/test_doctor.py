@@ -31,6 +31,55 @@ class TestDoctorPlatformHints:
         assert doctor._system_package_install_cmd("ripgrep") == "sudo apt install ripgrep"
 
 
+class TestDoctorNpmAuditHints:
+    def test_uses_plain_audit_fix_when_no_manual_review_is_needed(self):
+        hint = doctor._npm_audit_remediation_hint(
+            "/tmp/repo",
+            {
+                "vulnerabilities": {
+                    "lodash": {"fixAvailable": True},
+                }
+            },
+        )
+
+        assert hint == "run: cd /tmp/repo && npm audit fix"
+
+    def test_mentions_dependency_upgrade_when_semver_major_fix_is_required(self):
+        hint = doctor._npm_audit_remediation_hint(
+            "/tmp/repo",
+            {
+                "vulnerabilities": {
+                    "lodash": {
+                        "fixAvailable": {
+                            "name": "agent-browser",
+                            "version": "0.25.4",
+                            "isSemVerMajor": True,
+                        }
+                    }
+                }
+            },
+        )
+
+        assert "npm audit fix" in hint
+        assert "review pinned dependencies" in hint
+        assert "agent-browser" in hint
+
+    def test_mentions_pinned_dependencies_when_no_fix_is_available(self):
+        hint = doctor._npm_audit_remediation_hint(
+            "/tmp/repo",
+            {
+                "vulnerabilities": {
+                    "lodash": {"fixAvailable": False},
+                }
+            },
+        )
+
+        assert hint == (
+            "run: cd /tmp/repo && npm audit fix; if issues remain, "
+            "review pinned dependencies"
+        )
+
+
 class TestProviderEnvDetection:
     def test_detects_openai_api_key(self):
         content = "OPENAI_BASE_URL=http://localhost:1234/v1\nOPENAI_API_KEY=***"

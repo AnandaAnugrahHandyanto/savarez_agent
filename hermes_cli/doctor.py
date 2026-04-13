@@ -83,6 +83,41 @@ def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
     return steps
 
 
+def _npm_audit_remediation_hint(npm_dir: str, audit_data: dict) -> str:
+    """Return a remediation hint tailored to the audit report shape."""
+    base_hint = f"run: cd {npm_dir} && npm audit fix"
+    vulnerabilities = audit_data.get("vulnerabilities", {})
+    if not isinstance(vulnerabilities, dict):
+        return base_hint
+
+    manual_review_targets: list[str] = []
+    needs_manual_review = False
+    for vuln in vulnerabilities.values():
+        if not isinstance(vuln, dict):
+            continue
+        fix_available = vuln.get("fixAvailable")
+        if fix_available in (None, False):
+            needs_manual_review = True
+            continue
+        if isinstance(fix_available, dict) and fix_available.get("isSemVerMajor"):
+            needs_manual_review = True
+            name = str(fix_available.get("name", "")).strip()
+            if name:
+                manual_review_targets.append(name)
+
+    if not needs_manual_review:
+        return base_hint
+
+    if manual_review_targets:
+        deps = ", ".join(sorted(set(manual_review_targets)))
+        return (
+            f"{base_hint}; if issues remain, review pinned dependencies "
+            f"and consider upgrading {deps}"
+        )
+
+    return f"{base_hint}; if issues remain, review pinned dependencies"
+
+
 def _has_provider_env_config(content: str) -> bool:
     """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
     return any(key in content for key in _PROVIDER_ENV_HINTS)
@@ -731,7 +766,10 @@ def run_doctor(args):
                 elif critical > 0 or high > 0:
                     check_warn(
                         f"{label} deps",
-                        f"({critical} critical, {high} high, {moderate} moderate — run: cd {npm_dir} && npm audit fix)"
+                        (
+                            f"({critical} critical, {high} high, {moderate} moderate — "
+                            f"{_npm_audit_remediation_hint(str(npm_dir), audit_data)})"
+                        )
                     )
                     issues.append(f"{label} has {total} npm vulnerability(ies)")
                 else:
