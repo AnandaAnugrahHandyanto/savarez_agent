@@ -281,6 +281,7 @@ Type these during an interactive chat session.
 ### Utility
 ```
 /branch (/fork)      Branch the current session
+/btw                 Ephemeral side question (doesn't interrupt main task)
 /fast                Toggle priority/fast processing
 /browser             Open CDP browser connection
 /history             Show conversation history (CLI)
@@ -336,6 +337,7 @@ Edit with `hermes config edit` or `hermes config set section.key value`.
 | `memory` | `memory_enabled`, `user_profile_enabled`, `provider` |
 | `security` | `tirith_enabled`, `website_blocklist` |
 | `delegation` | `model`, `provider`, `base_url`, `api_key`, `max_iterations` (50), `reasoning_effort` |
+| `smart_model_routing` | `enabled`, `cheap_model` |
 | `checkpoints` | `enabled`, `max_snapshots` (50) |
 
 Full config reference: https://hermes-agent.nousresearch.com/docs/user-guide/configuration
@@ -390,7 +392,6 @@ Enable/disable via `hermes tools` (interactive) or `hermes tools enable/disable 
 | `session_search` | Search past conversations |
 | `delegation` | Subagent task delegation |
 | `cronjob` | Scheduled task management |
-| `clarify` | Ask user clarifying questions |
 | `messaging` | Cross-platform message sending |
 | `search` | Web search only (subset of `web`) |
 | `todo` | In-session task planning and tracking |
