@@ -287,8 +287,11 @@ def _iter_custom_providers(config: Optional[dict] = None):
         config = _load_config_safe()
     if config is None:
         return
-    custom_providers = config.get("custom_providers")
-    if not isinstance(custom_providers, list):
+    try:
+        from hermes_cli.config import get_compatible_custom_providers
+
+        custom_providers = get_compatible_custom_providers(config)
+    except Exception:
         return
     for entry in custom_providers:
         if not isinstance(entry, dict):

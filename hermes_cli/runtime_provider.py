@@ -26,7 +26,7 @@ from hermes_cli.auth import (
     resolve_external_process_provider_credentials,
     has_usable_secret,
 )
-from hermes_cli.config import load_config, providers_dict_to_custom_providers
+from hermes_cli.config import get_compatible_custom_providers, load_config
 from hermes_constants import OPENROUTER_BASE_URL
 
 
@@ -276,17 +276,17 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
 
     config = load_config()
     custom_providers = config.get("custom_providers")
-    if not isinstance(custom_providers, list):
-        if isinstance(custom_providers, dict):
-            logger.warning(
-                "custom_providers in config.yaml is a dict, not a list. "
-                "Each entry must be prefixed with '-' in YAML. "
-                "Run 'hermes doctor' for details."
-            )
-            return None
-        custom_providers = providers_dict_to_custom_providers(config.get("providers"))
-        if not custom_providers:
-            return None
+    if isinstance(custom_providers, dict):
+        logger.warning(
+            "custom_providers in config.yaml is a dict, not a list. "
+            "Each entry must be prefixed with '-' in YAML. "
+            "Run 'hermes doctor' for details."
+        )
+        return None
+
+    custom_providers = get_compatible_custom_providers(config)
+    if not custom_providers:
+        return None
 
     for entry in custom_providers:
         if not isinstance(entry, dict):
@@ -297,13 +297,21 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             continue
         name_norm = _normalize_custom_provider_name(name)
         menu_key = f"custom:{name_norm}"
-        if requested_norm not in {name_norm, menu_key}:
+        provider_key = str(entry.get("provider_key", "") or "").strip()
+        provider_key_norm = _normalize_custom_provider_name(provider_key) if provider_key else ""
+        provider_menu_key = f"custom:{provider_key_norm}" if provider_key_norm else ""
+        if requested_norm not in {name_norm, menu_key, provider_key_norm, provider_menu_key}:
             continue
         result = {
             "name": name.strip(),
             "base_url": base_url.strip(),
             "api_key": str(entry.get("api_key", "") or "").strip(),
         }
+        key_env = str(entry.get("key_env", "") or "").strip()
+        if key_env:
+            result["key_env"] = key_env
+        if provider_key:
+            result["provider_key"] = provider_key
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
             result["api_mode"] = api_mode
@@ -345,6 +353,7 @@ def _resolve_named_custom_runtime(
     api_key_candidates = [
         (explicit_api_key or "").strip(),
         str(custom_provider.get("api_key", "") or "").strip(),
+        os.getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
         os.getenv("OPENAI_API_KEY", "").strip(),
         os.getenv("OPENROUTER_API_KEY", "").strip(),
     ]

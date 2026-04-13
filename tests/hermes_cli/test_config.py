@@ -10,6 +10,7 @@ from hermes_cli.config import (
     DEFAULT_CONFIG,
     get_hermes_home,
     ensure_hermes_home,
+    get_compatible_custom_providers,
     load_config,
     load_env,
     migrate_config,
@@ -427,7 +428,7 @@ class TestAnthropicTokenMigration:
 class TestCustomProviderCompatibilityMigration:
     """Custom provider migrations must preserve the runtime-compatible shape."""
 
-    def test_v11_upgrade_keeps_custom_providers_alongside_providers(self, tmp_path):
+    def test_v11_upgrade_moves_custom_providers_into_providers(self, tmp_path):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             yaml.safe_dump(
@@ -466,20 +467,12 @@ class TestCustomProviderCompatibilityMigration:
             "name": "OpenAI Direct",
             "transport": "codex_responses",
         }
-        assert raw["custom_providers"] == [
-            {
-                "name": "OpenAI Direct",
-                "base_url": "https://api.openai.com/v1",
-                "api_key": "direct-key",
-                "api_mode": "codex_responses",
-                "model": "gpt-5-mini",
-            }
-        ]
+        assert "custom_providers" not in raw
         assert raw["fallback_providers"] == [
             {"provider": "openai-direct", "model": "gpt-5-mini"}
         ]
 
-    def test_v16_upgrade_restores_custom_providers_from_providers_dict(self, tmp_path):
+    def test_v16_upgrade_keeps_runtime_compatibility_in_memory_only(self, tmp_path):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             yaml.safe_dump(
@@ -507,17 +500,39 @@ class TestCustomProviderCompatibilityMigration:
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
         assert raw["_config_version"] == 17
-        assert raw["custom_providers"] == [
-            {
-                "name": "OpenAI Direct",
-                "base_url": "https://api.openai.com/v1",
-                "api_key": "direct-key",
-                "api_mode": "codex_responses",
-                "model": "gpt-5-mini",
-            }
-        ]
+        assert "custom_providers" not in raw
         assert raw["fallback_providers"] == [
             {"provider": "openai-direct", "model": "gpt-5-mini"}
+        ]
+
+    def test_compatible_custom_providers_prefers_api_then_url_then_base_url(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "providers": {
+                        "my-provider": {
+                            "name": "My Provider",
+                            "api": "https://api.example.com/v1",
+                            "url": "https://url.example.com/v1",
+                            "base_url": "https://base.example.com/v1",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert compatible == [
+            {
+                "name": "My Provider",
+                "base_url": "https://api.example.com/v1",
+                "provider_key": "my-provider",
+            }
         ]
 
 

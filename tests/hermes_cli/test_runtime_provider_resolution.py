@@ -580,11 +580,11 @@ def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch
         "load_config",
         lambda: {
             "providers": {
-                "openai-direct": {
+                "openai-direct-primary": {
                     "api": "https://api.openai.com/v1",
                     "api_key": "dir-key",
                     "default_model": "gpt-5-mini",
-                    "name": "OpenAI Direct",
+                    "name": "OpenAI Direct (Primary)",
                     "transport": "codex_responses",
                 }
             }
@@ -600,15 +600,54 @@ def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch
         ),
     )
 
-    resolved = rp.resolve_runtime_provider(requested="openai-direct")
+    resolved = rp.resolve_runtime_provider(requested="openai-direct-primary")
 
     assert resolved["provider"] == "custom"
     assert resolved["api_mode"] == "codex_responses"
     assert resolved["base_url"] == "https://api.openai.com/v1"
     assert resolved["api_key"] == "dir-key"
-    assert resolved["requested_provider"] == "openai-direct"
-    assert resolved["source"] == "custom_provider:OpenAI Direct"
+    assert resolved["requested_provider"] == "openai-direct-primary"
+    assert resolved["source"] == "custom_provider:OpenAI Direct (Primary)"
     assert resolved["model"] == "gpt-5-mini"
+
+
+def test_named_custom_provider_uses_providers_key_env_when_list_missing(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("MYCORP_API_KEY", "env-secret")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "mycorp-proxy": {
+                    "base_url": "https://proxy.example.com/v1",
+                    "default_model": "acme-large",
+                    "key_env": "MYCORP_API_KEY",
+                    "name": "MyCorp Proxy",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="mycorp-proxy")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://proxy.example.com/v1"
+    assert resolved["api_key"] == "env-secret"
+    assert resolved["requested_provider"] == "mycorp-proxy"
+    assert resolved["source"] == "custom_provider:MyCorp Proxy"
+    assert resolved["model"] == "acme-large"
 
 
 def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):

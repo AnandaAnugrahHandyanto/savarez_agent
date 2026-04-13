@@ -175,6 +175,31 @@ class TestResolveProviderClientNamedCustom:
         assert model == "my-model"
         assert "direct.local" in str(client.base_url)
 
+    def test_named_custom_provider_from_providers_dict_uses_key_env(self, tmp_path, monkeypatch):
+        _write_config(tmp_path, {
+            "model": {"default": "main-model"},
+            "providers": {
+                "mycorp-proxy": {
+                    "base_url": "http://proxy.local/v1",
+                    "default_model": "acme-large",
+                    "key_env": "MYCORP_API_KEY",
+                    "name": "MyCorp Proxy",
+                }
+            },
+        })
+        monkeypatch.setenv("MYCORP_API_KEY", "env-secret")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client("mycorp-proxy")
+
+        assert client is not None
+        assert model == "acme-large"
+        mock_openai.assert_called_once()
+        assert mock_openai.call_args.kwargs["api_key"] == "env-secret"
+        assert mock_openai.call_args.kwargs["base_url"] == "http://proxy.local/v1"
+
     def test_named_custom_no_api_key_uses_fallback(self, tmp_path):
         _write_config(tmp_path, {
             "model": {"default": "test"},
