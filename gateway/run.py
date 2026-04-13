@@ -6871,6 +6871,22 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Failed to write restart dedup marker: %s", e)
 
+        # Save the requester's routing info so the new gateway process can
+        # notify them once it comes back online.
+        try:
+            import json as _json
+            notify_data = {
+                "platform": event.source.platform.value if event.source.platform else None,
+                "chat_id": event.source.chat_id,
+            }
+            if event.source.thread_id:
+                notify_data["thread_id"] = event.source.thread_id
+            (_hermes_home / ".restart_notify.json").write_text(
+                _json.dumps(notify_data)
+            )
+        except Exception as e:
+            logger.debug("Failed to write restart notify file: %s", e)
+
         active_agents = self._running_agent_count()
         # When running under a service manager (systemd/launchd), use the
         # service restart path: exit with code 75 so the service manager
@@ -10185,12 +10201,14 @@ class GatewayRunner:
 
     async def _send_restart_notification(self) -> None:
         """Notify the chat that initiated /restart that the gateway is back."""
+        import json as _json
+
         notify_path = _hermes_home / ".restart_notify.json"
         if not notify_path.exists():
             return
 
         try:
-            data = json.loads(notify_path.read_text())
+            data = _json.loads(notify_path.read_text())
             platform_str = data.get("platform")
             chat_id = data.get("chat_id")
             thread_id = data.get("thread_id")
