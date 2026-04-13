@@ -120,160 +120,6 @@ def _normalize_chat_content(
         return ""
 
 
-# Content part type aliases used by the OpenAI Chat Completions and Responses
-# APIs.  We accept both spellings on input and emit a single canonical internal
-# shape (``{"type": "text", ...}`` / ``{"type": "image_url", ...}``) that the
-# rest of the agent pipeline already understands.
-_TEXT_PART_TYPES = frozenset({"text", "input_text", "output_text"})
-_IMAGE_PART_TYPES = frozenset({"image_url", "input_image"})
-_FILE_PART_TYPES = frozenset({"file", "input_file"})
-
-
-def _normalize_multimodal_content(content: Any) -> Any:
-    """Validate and normalize multimodal content for the API server.
-
-    Returns a plain string when the content is text-only, or a list of
-    ``{"type": "text"|"image_url", ...}`` parts when images are present.
-    The output shape is the native OpenAI Chat Completions vision format,
-    which the agent pipeline accepts verbatim (OpenAI-wire providers) or
-    converts (``_preprocess_anthropic_content`` for Anthropic).
-
-    Raises ``ValueError`` with an OpenAI-style code on invalid input:
-      * ``unsupported_content_type`` — file/input_file/file_id parts, or
-        non-image ``data:`` URLs.
-      * ``invalid_image_url`` — missing URL or unsupported scheme.
-      * ``invalid_content_part`` — malformed text/image objects.
-
-    Callers translate the ValueError into a 400 response.
-    """
-    # Scalar passthrough mirrors ``_normalize_chat_content``.
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content[:MAX_NORMALIZED_TEXT_LENGTH] if len(content) > MAX_NORMALIZED_TEXT_LENGTH else content
-    if not isinstance(content, list):
-        # Mirror the legacy text-normalizer's fallback so callers that
-        # pre-existed image support still get a string back.
-        return _normalize_chat_content(content)
-
-    items = content[:MAX_CONTENT_LIST_SIZE] if len(content) > MAX_CONTENT_LIST_SIZE else content
-    normalized_parts: List[Dict[str, Any]] = []
-    text_accum_len = 0
-
-    for part in items:
-        if isinstance(part, str):
-            if part:
-                trimmed = part[:MAX_NORMALIZED_TEXT_LENGTH]
-                normalized_parts.append({"type": "text", "text": trimmed})
-                text_accum_len += len(trimmed)
-            continue
-
-        if not isinstance(part, dict):
-            # Ignore unknown scalars for forward compatibility with future
-            # Responses API additions (e.g. ``refusal``).  The same policy
-            # the text normalizer applies.
-            continue
-
-        raw_type = part.get("type")
-        part_type = str(raw_type or "").strip().lower()
-
-        if part_type in _TEXT_PART_TYPES:
-            text = part.get("text")
-            if text is None:
-                continue
-            if not isinstance(text, str):
-                text = str(text)
-            if text:
-                trimmed = text[:MAX_NORMALIZED_TEXT_LENGTH]
-                normalized_parts.append({"type": "text", "text": trimmed})
-                text_accum_len += len(trimmed)
-            continue
-
-        if part_type in _IMAGE_PART_TYPES:
-            detail = part.get("detail")
-            image_ref = part.get("image_url")
-            # OpenAI Responses sends ``input_image`` with a top-level
-            # ``image_url`` string; Chat Completions sends ``image_url`` as
-            # ``{"url": "...", "detail": "..."}``.  Support both.
-            if isinstance(image_ref, dict):
-                url_value = image_ref.get("url")
-                detail = image_ref.get("detail", detail)
-            else:
-                url_value = image_ref
-            if not isinstance(url_value, str) or not url_value.strip():
-                raise ValueError("invalid_image_url:Image parts must include a non-empty image URL.")
-            url_value = url_value.strip()
-            lowered = url_value.lower()
-            if lowered.startswith("data:"):
-                if not lowered.startswith("data:image/") or "," not in url_value:
-                    raise ValueError(
-                        "unsupported_content_type:Only image data URLs are supported. "
-                        "Non-image data payloads are not supported."
-                    )
-            elif not (lowered.startswith("http://") or lowered.startswith("https://")):
-                raise ValueError(
-                    "invalid_image_url:Image inputs must use http(s) URLs or data:image/... URLs."
-                )
-            image_part: Dict[str, Any] = {"type": "image_url", "image_url": {"url": url_value}}
-            if detail is not None:
-                if not isinstance(detail, str) or not detail.strip():
-                    raise ValueError("invalid_content_part:Image detail must be a non-empty string when provided.")
-                image_part["image_url"]["detail"] = detail.strip()
-            normalized_parts.append(image_part)
-            continue
-
-        if part_type in _FILE_PART_TYPES:
-            raise ValueError(
-                "unsupported_content_type:Inline image inputs are supported, "
-                "but uploaded files and document inputs are not supported on this endpoint."
-            )
-
-        # Unknown part type — reject explicitly so clients get a clear error
-        # instead of a silently dropped turn.
-        raise ValueError(
-            f"unsupported_content_type:Unsupported content part type {raw_type!r}. "
-            "Only text and image_url/input_image parts are supported."
-        )
-
-    if not normalized_parts:
-        return ""
-
-    # Text-only: collapse to a plain string so downstream logging/trajectory
-    # code sees the native shape and prompt caching on text-only turns is
-    # unaffected.
-    if all(p.get("type") == "text" for p in normalized_parts):
-        return "\n".join(p["text"] for p in normalized_parts if p.get("text"))
-
-    return normalized_parts
-
-
-def _content_has_visible_payload(content: Any) -> bool:
-    """True when content has any text or image attachment.  Used to reject empty turns."""
-    if isinstance(content, str):
-        return bool(content.strip())
-    if isinstance(content, list):
-        for part in content:
-            if isinstance(part, dict):
-                ptype = str(part.get("type") or "").strip().lower()
-                if ptype in _TEXT_PART_TYPES and str(part.get("text") or "").strip():
-                    return True
-                if ptype in _IMAGE_PART_TYPES:
-                    return True
-    return False
-
-
-def _multimodal_validation_error(exc: ValueError, *, param: str) -> "web.Response":
-    """Translate a ``_normalize_multimodal_content`` ValueError into a 400 response."""
-    raw = str(exc)
-    code, _, message = raw.partition(":")
-    if not message:
-        code, message = "invalid_content_part", raw
-    return web.json_response(
-        _openai_error(message, code=code, param=param),
-        status=400,
-    )
-
-
 def check_api_server_requirements() -> bool:
     """Check if API server dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -884,7 +730,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         for idx, msg in enumerate(messages):
             role = msg.get("role", "")
-            raw_content = msg.get("content", "")
+            content = _normalize_chat_content(msg.get("content", ""))
             if role == "system":
                 # System messages don't support images (Anthropic rejects, OpenAI
                 # text-model systems don't render them).  Flatten to text.
@@ -1788,10 +1634,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     input_messages.append({"role": "user", "content": item})
                 elif isinstance(item, dict):
                     role = item.get("role", "user")
-                    try:
-                        content = _normalize_multimodal_content(item.get("content", ""))
-                    except ValueError as exc:
-                        return _multimodal_validation_error(exc, param=f"input[{idx}].content")
+                    content = _normalize_chat_content(item.get("content", ""))
                     input_messages.append({"role": role, "content": content})
         else:
             return web.json_response(_openai_error("'input' must be a string or array"), status=400)
