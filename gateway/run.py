@@ -7813,7 +7813,7 @@ class GatewayRunner:
             adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
             if hasattr(adapter, "_voice_sources"):
                 adapter._voice_sources[guild_id] = event.source.to_dict()
-            self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "all"
+            self._voice_mode[event.source.chat_id] = "all"
             self._save_voice_modes()
             self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
             return (
@@ -13503,7 +13503,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     def restart_signal_handler():
         runner.request_restart(detached=False, via_service=True)
     
-    loop = asyncio.get_running_loop()
+    loop = asyncio.get_event_loop()
     if threading.current_thread() is threading.main_thread():
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
