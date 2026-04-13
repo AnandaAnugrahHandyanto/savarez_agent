@@ -111,6 +111,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4.1",
         "gpt-4o",
         "gpt-4o-mini",
+        "claude-opus-4.6-1m",
         "claude-opus-4.6",
         "claude-sonnet-4.6",
         "claude-sonnet-4.5",
@@ -1405,6 +1406,14 @@ _COPILOT_MODEL_ALIASES = {
     "anthropic/claude-sonnet-4.6": "claude-sonnet-4.6",
     "anthropic/claude-sonnet-4.5": "claude-sonnet-4.5",
     "anthropic/claude-haiku-4.5": "claude-haiku-4.5",
+    # Extended context variants — claude-opus-4.6-1m is a real, distinct
+    # model ID in the Copilot catalog (1M context).  Do NOT strip "-1m".
+    "claude-opus-4.6-1m": "claude-opus-4.6-1m",
+    "anthropic/claude-opus-4.6-1m": "claude-opus-4.6-1m",
+    # claude-sonnet-4.6-1m does NOT exist in the Copilot catalog as of
+    # 2026-04; graceful fallback to the base 200K variant.
+    "claude-sonnet-4.6-1m": "claude-sonnet-4.6",
+    "anthropic/claude-sonnet-4.6-1m": "claude-sonnet-4.6",
 }
 
 

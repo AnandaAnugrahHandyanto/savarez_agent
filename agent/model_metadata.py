@@ -102,6 +102,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "claude-opus-4-6": 1000000,
     "claude-sonnet-4-6": 1000000,
     "claude-opus-4.6": 1000000,
+    "claude-opus-4.6-1m": 1000000,
     "claude-sonnet-4.6": 1000000,
     # Catch-all for older Claude models (must sort after specific entries)
     "claude": 200000,
@@ -167,6 +168,7 @@ _CONTEXT_LENGTH_KEYS = (
     "context_length",
     "context_window",
     "max_context_length",
+    "max_context_window_tokens",
     "max_position_embeddings",
     "max_model_len",
     "max_input_tokens",
