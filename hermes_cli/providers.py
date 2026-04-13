@@ -88,11 +88,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_env_var="KIMI_BASE_URL",
     ),
     "minimax": HermesOverlay(
-        transport="openai_chat",
+        transport="anthropic_messages",
         base_url_env_var="MINIMAX_BASE_URL",
     ),
     "minimax-cn": HermesOverlay(
-        transport="openai_chat",
+        transport="anthropic_messages",
         base_url_env_var="MINIMAX_CN_BASE_URL",
     ),
     "deepseek": HermesOverlay(
@@ -127,6 +127,15 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="HF_BASE_URL",
     ),
+    "xai": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://api.x.ai/v1",
+        base_url_env_var="XAI_BASE_URL",
+    ),
+    "xiaomi": HermesOverlay(
+        transport="openai_chat",
+        base_url_env_var="XIAOMI_BASE_URL",
+    ),
 }
 
 
@@ -148,10 +157,6 @@ class ProviderDef:
     doc: str = ""
     source: str = ""                      # "models.dev", "hermes", "user-config"
 
-    @property
-    def is_user_defined(self) -> bool:
-        return self.source == "user-config"
-
 
 # -- Aliases ------------------------------------------------------------------
 # Maps human-friendly / legacy names to canonical provider IDs.
@@ -166,6 +171,10 @@ ALIASES: Dict[str, str] = {
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
+
+    # xai
+    "x-ai": "xai",
+    "x.ai": "xai",
 
     # kimi-for-coding (models.dev ID)
     "kimi": "kimi-for-coding",
@@ -217,6 +226,10 @@ ALIASES: Dict[str, str] = {
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
 
+    # xiaomi
+    "mimo": "xiaomi",
+    "xiaomi-mimo": "xiaomi",
+
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
@@ -237,6 +250,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
+    "xiaomi": "Xiaomi MiMo",
     "local": "Local endpoint",
 }
 
@@ -260,12 +274,6 @@ def normalize_provider(name: str) -> str:
     """
     key = name.strip().lower()
     return ALIASES.get(key, key)
-
-
-def get_overlay(provider_id: str) -> Optional[HermesOverlay]:
-    """Get Hermes overlay for a provider, if one exists."""
-    canonical = normalize_provider(provider_id)
-    return HERMES_OVERLAYS.get(canonical)
 
 
 def get_provider(name: str) -> Optional[ProviderDef]:
@@ -350,36 +358,6 @@ def get_label(provider_id: str) -> str:
     return canonical
 
 
-# For direct import compat, expose as module-level dict
-# Built on demand by get_label() calls
-LABELS: Dict[str, str] = {
-    # Static entries for backward compat — get_label() is the proper API
-    "openrouter": "OpenRouter",
-    "nous": "Nous Portal",
-    "openai-codex": "OpenAI Codex",
-    "copilot-acp": "GitHub Copilot ACP",
-    "github-copilot": "GitHub Copilot",
-    "anthropic": "Anthropic",
-    "zai": "Z.AI / GLM",
-    "kimi-for-coding": "Kimi / Moonshot",
-    "minimax": "MiniMax",
-    "minimax-cn": "MiniMax (China)",
-    "deepseek": "DeepSeek",
-    "alibaba": "Alibaba Cloud (DashScope)",
-    "vercel": "Vercel AI Gateway",
-    "opencode": "OpenCode Zen",
-    "opencode-go": "OpenCode Go",
-    "kilo": "Kilo Gateway",
-    "huggingface": "Hugging Face",
-    "local": "Local endpoint",
-    "custom": "Custom endpoint",
-    # Legacy Hermes IDs (point to same providers)
-    "ai-gateway": "Vercel AI Gateway",
-    "kilocode": "Kilo Gateway",
-    "copilot": "GitHub Copilot",
-    "kimi-coding": "Kimi / Moonshot",
-    "opencode-zen": "OpenCode Zen",
-}
 
 
 def is_aggregator(provider: str) -> bool:

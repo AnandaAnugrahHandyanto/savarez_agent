@@ -40,11 +40,18 @@ def reset_current_session_key(token: contextvars.Token[str]) -> None:
 
 
 def get_current_session_key(default: str = "default") -> str:
-    """Return the active session key, preferring context-local state."""
+    """Return the active session key, preferring context-local state.
+
+    Resolution order:
+    1. approval-specific contextvars (set by gateway before agent.run)
+    2. session_context contextvars (set by _set_session_env)
+    3. os.environ fallback (CLI, cron, tests)
+    """
     session_key = _approval_session_key.get()
     if session_key:
         return session_key
-    return os.getenv("HERMES_SESSION_KEY", default)
+    from gateway.session_context import get_session_env
+    return get_session_env("HERMES_SESSION_KEY", default)
 
 # Sensitive write targets that should trigger approval even when referenced
 # via shell expansions like $HOME or $HERMES_HOME.
@@ -99,10 +106,30 @@ DANGEROUS_PATTERNS = [
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     # Self-termination protection: prevent agent from killing its own process
     (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
+    # Self-termination via kill + command substitution (pgrep/pidof).
+    # The name-based pattern above catches `pkill hermes` but not
+    # `kill -9 $(pgrep -f hermes)` because the substitution is opaque
+    # to regex at detection time. Catch the structural pattern instead.
+    (r'\bkill\b.*\$\(\s*pgrep\b', "kill process via pgrep expansion (self-termination)"),
+    (r'\bkill\b.*`\s*pgrep\b', "kill process via backtick pgrep expansion (self-termination)"),
     # File copy/move/edit into sensitive system paths
     (r'\b(cp|mv|install)\b.*\s/etc/', "copy/move file into /etc/"),
     (r'\bsed\s+-[^\s]*i.*\s/etc/', "in-place edit of system config"),
     (r'\bsed\s+--in-place\b.*\s/etc/', "in-place edit of system config (long flag)"),
+    # Script execution via heredoc — bypasses the -e/-c flag patterns above.
+    # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
+    (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
+    # Git destructive operations that can lose uncommitted work or rewrite
+    # shared history. Not captured by rm/chmod/etc patterns.
+    (r'\bgit\s+reset\s+--hard\b', "git reset --hard (destroys uncommitted changes)"),
+    (r'\bgit\s+push\b.*--force\b', "git force push (rewrites remote history)"),
+    (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
+    (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
+    # Script execution after chmod +x — catches the two-step pattern where
+    # a script is first made executable then immediately run. The script
+    # content may contain dangerous commands that individual patterns miss.
+    (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
 ]
 
 
@@ -258,28 +285,10 @@ def has_blocking_approval(session_key: str) -> bool:
         return bool(_gateway_queues.get(session_key))
 
 
-def pending_approval_count(session_key: str) -> int:
-    """Return the number of pending blocking approvals for a session."""
-    with _lock:
-        return len(_gateway_queues.get(session_key, []))
-
-
 def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
     with _lock:
         _pending[session_key] = approval
-
-
-def pop_pending(session_key: str) -> Optional[dict]:
-    """Retrieve and remove a pending approval for a session."""
-    with _lock:
-        return _pending.pop(session_key, None)
-
-
-def has_pending(session_key: str) -> bool:
-    """Check if a session has a pending approval request."""
-    with _lock:
-        return session_key in _pending
 
 
 def approve_session(session_key: str, pattern_key: str):
@@ -354,6 +363,7 @@ def clear_session(session_key: str):
         entries = _gateway_queues.pop(session_key, [])
         for entry in entries:
             entry.event.set()
+
 
 
 # =========================================================================
