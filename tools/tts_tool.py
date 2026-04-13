@@ -980,4 +980,5 @@ registry.register(
         output_path=args.get("output_path")),
     check_fn=check_tts_requirements,
     emoji="🔊",
+    mutates_local_fs=True,
 )

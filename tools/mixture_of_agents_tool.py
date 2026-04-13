@@ -559,4 +559,5 @@ registry.register(
     requires_env=["OPENROUTER_API_KEY"],
     is_async=True,
     emoji="🧠",
+    mutates_agent_state=True,
 )

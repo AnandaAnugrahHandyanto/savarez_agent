@@ -265,4 +265,6 @@ registry.register(
         todos=args.get("todos"), merge=args.get("merge", False), store=kw.get("store")),
     check_fn=check_todo_requirements,
     emoji="📋",
+    mutates_agent_state=True,
+    allowed_in_plan_mode_default=True,
 )

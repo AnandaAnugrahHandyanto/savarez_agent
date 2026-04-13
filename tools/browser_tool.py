@@ -2106,6 +2106,7 @@ registry.register(
     check_fn=check_browser_requirements,
     emoji="🌐",
     mutates_browser_session=True,
+    risk_level="medium",
 )
 registry.register(
     name="browser_snapshot",
