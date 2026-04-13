@@ -4100,6 +4100,13 @@ class HermesCLI:
                 self.agent.flush_memories(self.conversation_history)
             except (Exception, KeyboardInterrupt):
                 pass
+            # Commit OpenViking session BEFORE session_id changes so memory
+            # extraction runs against the correct session.
+            if hasattr(self.agent, "commit_memory_session"):
+                try:
+                    self.agent.commit_memory_session(self.conversation_history)
+                except Exception:
+                    pass
             self._notify_session_boundary("on_session_finalize")
         elif self.agent:
             # First session or empty history — still finalize the old session
@@ -4123,6 +4130,13 @@ class HermesCLI:
         if self.agent:
             self.agent.session_id = self.session_id
             self.agent.session_start = self.session_start
+            # Reinitialize external memory providers with the new session_id so
+            # subsequent turns are tracked in the new session.
+            if hasattr(self.agent, "reinitialize_memory_session"):
+                try:
+                    self.agent.reinitialize_memory_session(self.session_id)
+                except Exception:
+                    pass
             self.agent.reset_session_state()
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = 0

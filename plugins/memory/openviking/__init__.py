@@ -10,7 +10,7 @@ lifecycle instead of read-only search endpoints.
 Config via environment variables (profile-scoped via each profile's .env):
   OPENVIKING_ENDPOINT  — Server URL (default: http://127.0.0.1:1933)
   OPENVIKING_API_KEY   — API key (required for authenticated servers)
-  OPENVIKING_ACCOUNT   — Tenant account (default: root)
+  OPENVIKING_ACCOUNT   — Tenant account (default: default)
   OPENVIKING_USER      — Tenant user (default: default)
 
 Capabilities:
@@ -83,7 +83,7 @@ class _VikingClient:
                  account: str = "", user: str = ""):
         self._endpoint = endpoint.rstrip("/")
         self._api_key = api_key
-        self._account = account or os.environ.get("OPENVIKING_ACCOUNT", "root")
+        self._account = account or os.environ.get("OPENVIKING_ACCOUNT", "default")
         self._user = user or os.environ.get("OPENVIKING_USER", "default")
         self._httpx = _get_httpx()
         if self._httpx is None:
@@ -292,9 +292,21 @@ class OpenVikingMemoryProvider(MemoryProvider):
             },
             {
                 "key": "api_key",
-                "description": "OpenViking API key",
+                "description": "OpenViking API key (leave blank for local dev mode)",
                 "secret": True,
                 "env_var": "OPENVIKING_API_KEY",
+            },
+            {
+                "key": "account",
+                "description": "OpenViking tenant account ID (default: default)",
+                "default": "default",
+                "env_var": "OPENVIKING_ACCOUNT",
+            },
+            {
+                "key": "user",
+                "description": "OpenViking user ID within the account (default: default)",
+                "default": "default",
+                "env_var": "OPENVIKING_USER",
             },
         ]
 
@@ -452,6 +464,36 @@ class OpenVikingMemoryProvider(MemoryProvider):
             logger.info("OpenViking session %s committed (%d turns)", self._session_id, self._turn_count)
         except Exception as e:
             logger.warning("OpenViking session commit failed: %s", e)
+
+    def reset_session(self, new_session_id: str) -> None:
+        """Start a new OpenViking session after the old one has been committed.
+
+        Called by the CLI after /new. Lighter than initialize() — keeps the
+        existing HTTP client but updates the session_id and resets per-session
+        counters. Must be called AFTER on_session_end() has committed the old
+        session.
+        """
+        # Wait for any in-flight background threads before switching session_id
+        for t in (self._sync_thread, self._prefetch_thread):
+            if t and t.is_alive():
+                t.join(timeout=5.0)
+
+        self._session_id = new_session_id
+        self._turn_count = 0
+        self._prefetch_result = ""
+        self._sync_thread = None
+        self._prefetch_thread = None
+
+        if self._client:
+            try:
+                self._client.post("/api/v1/sessions", {"session_id": self._session_id})
+                logger.info("OpenViking new session %s created", self._session_id)
+            except Exception as e:
+                logger.debug("OpenViking new session creation: %s", e)
+
+        # Keep the atexit reference pointing at the active provider
+        global _last_active_provider
+        _last_active_provider = self
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
         """Mirror built-in memory writes to OpenViking as explicit memories."""

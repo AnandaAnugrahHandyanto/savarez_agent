@@ -3040,6 +3040,33 @@ class AIAgent:
             except Exception:
                 pass
     
+    def commit_memory_session(self, messages: list = None) -> None:
+        """Commit the current OpenViking session without shutting down providers.
+
+        Called by /new BEFORE the session_id is updated. Triggers memory
+        extraction for the current session so that context accumulated during
+        this session is not lost when the session_id changes.
+        """
+        if not self._memory_manager:
+            return
+        try:
+            self._memory_manager.on_session_end(messages or [])
+        except Exception as e:
+            logger.debug("commit_memory_session failed: %s", e)
+
+    def reinitialize_memory_session(self, new_session_id: str) -> None:
+        """Reinitialize external memory providers for a new session_id.
+
+        Called by /new AFTER the session_id is updated. External providers
+        are transitioned to the new session without full teardown.
+        """
+        if not self._memory_manager:
+            return
+        try:
+            self._memory_manager.restart_session(new_session_id)
+        except Exception as e:
+            logger.debug("reinitialize_memory_session failed: %s", e)
+
     def close(self) -> None:
         """Release all resources held by this agent instance.
 
