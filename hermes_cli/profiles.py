@@ -167,6 +167,15 @@ def validate_profile_name(name: str) -> None:
         )
 
 
+def validate_alias_name(name: str) -> None:
+    """Raise ``ValueError`` if *name* is not a safe wrapper alias."""
+    if not _PROFILE_ID_RE.match(name):
+        raise ValueError(
+            f"Invalid alias name {name!r}. Alias names must match "
+            f"[a-z0-9][a-z0-9_-]{{0,63}}"
+        )
+
+
 def get_profile_dir(name: str) -> Path:
     """Resolve a profile name to its HERMES_HOME directory."""
     if name == "default":
@@ -190,6 +199,11 @@ def check_alias_collision(name: str) -> Optional[str]:
 
     Checks: reserved names, hermes subcommands, existing binaries in PATH.
     """
+    try:
+        validate_alias_name(name)
+    except ValueError as e:
+        return str(e)
+
     if name in _RESERVED_NAMES:
         return f"'{name}' is a reserved name"
     if name in _HERMES_SUBCOMMANDS:
@@ -229,6 +243,7 @@ def create_wrapper_script(name: str) -> Optional[Path]:
 
     Returns the path to the created wrapper, or None if creation failed.
     """
+    validate_alias_name(name)
     wrapper_dir = _get_wrapper_dir()
     try:
         wrapper_dir.mkdir(parents=True, exist_ok=True)
@@ -248,6 +263,7 @@ def create_wrapper_script(name: str) -> Optional[Path]:
 
 def remove_wrapper_script(name: str) -> bool:
     """Remove the wrapper script for a profile. Returns True if removed."""
+    validate_alias_name(name)
     wrapper_path = _get_wrapper_dir() / name
     if wrapper_path.exists():
         try:
