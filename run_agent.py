@@ -2675,7 +2675,7 @@ class AIAgent:
         if "reset_at" not in context:
             message = context.get("message") or ""
             if isinstance(message, str):
-                delay_match = re.search(r"quotaResetDelay[:\s\"]+(\\d+(?:\\.\\d+)?)(ms|s)", message, re.IGNORECASE)
+                delay_match = re.search(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", message, re.IGNORECASE)
                 if delay_match:
                     value = float(delay_match.group(1))
                     seconds = value / 1000.0 if delay_match.group(2).lower() == "ms" else value

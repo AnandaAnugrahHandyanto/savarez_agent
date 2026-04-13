@@ -939,15 +939,17 @@ def is_persistent_env(task_id: str) -> bool:
 
 def get_active_environments_info() -> Dict[str, Any]:
     """Get information about currently active environments."""
-    info = {
-        "count": len(_active_environments),
-        "task_ids": list(_active_environments.keys()),
-        "workdirs": {},
-    }
-    
+    with _env_lock:
+        info = {
+            "count": len(_active_environments),
+            "task_ids": list(_active_environments.keys()),
+            "workdirs": {},
+        }
+        task_ids_snapshot = list(_active_environments.keys())
+
     # Calculate total disk usage (per-task to avoid double-counting)
     total_size = 0
-    for task_id in _active_environments:
+    for task_id in task_ids_snapshot:
         scratch_dir = _get_scratch_dir()
         pattern = f"hermes-*{task_id[:8]}*"
         import glob
