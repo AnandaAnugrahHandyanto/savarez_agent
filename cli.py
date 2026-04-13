@@ -70,7 +70,7 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-from hermes_constants import get_hermes_home, display_hermes_home
+from hermes_constants import expand_real_user_path, get_hermes_home, display_hermes_home, get_real_home
 from hermes_cli.env_loader import load_hermes_dotenv
 
 _hermes_home = get_hermes_home()
@@ -93,7 +93,7 @@ def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
     """
     if not file_path:
         return []
-    path = Path(file_path).expanduser()
+    path = expand_real_user_path(file_path)
     if not path.is_absolute():
         path = _hermes_home / path
     if not path.exists():
@@ -1155,7 +1155,7 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
     if not token:
         return None
 
-    expanded = os.path.expandvars(os.path.expanduser(token))
+    expanded = os.path.expandvars(str(expand_real_user_path(token)))
     path = Path(expanded)
     if not path.is_absolute():
         base_dir = Path(os.getenv("TERMINAL_CWD", os.getcwd()))
@@ -3788,7 +3788,7 @@ class HermesCLI:
         home = get_hermes_home()
         display = display_hermes_home()
 
-        profiles_parent = Path.home() / ".hermes" / "profiles"
+        profiles_parent = get_real_home() / ".hermes" / "profiles"
         try:
             rel = home.relative_to(profiles_parent)
             profile_name = str(rel).split("/")[0]

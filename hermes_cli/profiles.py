@@ -149,7 +149,8 @@ def _get_active_profile_path() -> Path:
 
 def _get_wrapper_dir() -> Path:
     """Return the directory for wrapper scripts."""
-    return Path.home() / ".local" / "bin"
+    from hermes_constants import get_real_home
+    return get_real_home() / ".local" / "bin"
 
 
 # ---------------------------------------------------------------------------
@@ -610,7 +611,8 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
 
         if _platform.system() == "Linux":
             svc_name = get_service_name()
-            svc_file = Path.home() / ".config" / "systemd" / "user" / f"{svc_name}.service"
+            from hermes_constants import get_real_home
+            svc_file = get_real_home() / ".config" / "systemd" / "user" / f"{svc_name}.service"
             if svc_file.exists():
                 subprocess.run(
                     ["systemctl", "--user", "disable", svc_name],

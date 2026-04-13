@@ -72,6 +72,28 @@ class TestReadFileHandler:
         assert "error" in result
         assert "terminal not available" in result["error"]
 
+    @patch("tools.file_tools.has_binary_extension", return_value=False)
+    @patch("tools.file_tools._get_file_ops")
+    def test_tilde_uses_real_home_override(self, mock_get, _mock_binary, tmp_path, monkeypatch):
+        machine_home = tmp_path / "machine-home"
+        profile_home = tmp_path / "profile-home"
+        target = machine_home / "notes.txt"
+        machine_home.mkdir()
+        profile_home.mkdir()
+        target.write_text("hello")
+        monkeypatch.setenv("HERMES_REAL_HOME", str(machine_home))
+
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "hello"
+        result_obj.to_dict.return_value = {"content": "hello", "total_lines": 1}
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import read_file_tool
+        read_file_tool("~/notes.txt")
+        mock_ops.read_file.assert_called_once_with(str(target), 1, 500)
+
 
 class TestWriteFileHandler:
     @patch("tools.file_tools._get_file_ops")
@@ -309,6 +331,5 @@ class TestSearchHints:
         raw = search_tool(pattern="foo", offset=50, limit=50)
         assert "[Hint:" in raw
         assert "offset=100" in raw
-
 
 

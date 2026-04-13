@@ -154,6 +154,18 @@ class TestHasDirectModalCredentials:
         with patch.object(Path, "home", return_value=tmp_path):
             assert has_direct_modal_credentials() is True
 
+    def test_config_file_uses_real_home_override(self, monkeypatch, tmp_path):
+        machine_home = tmp_path / "machine-home"
+        profile_home = tmp_path / "profile-home"
+        machine_home.mkdir()
+        profile_home.mkdir()
+        (machine_home / ".modal.toml").touch()
+        monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
+        monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
+        monkeypatch.setenv("HERMES_REAL_HOME", str(machine_home))
+        with patch.object(Path, "home", return_value=profile_home):
+            assert has_direct_modal_credentials() is True
+
     def test_env_vars_take_priority_over_file(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MODAL_TOKEN_ID", "id-123")
         monkeypatch.setenv("MODAL_TOKEN_SECRET", "sec-456")

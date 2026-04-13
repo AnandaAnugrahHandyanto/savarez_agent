@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 from pathlib import Path
+from hermes_constants import expand_real_user_path
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import ShellFileOperations
 from agent.redact import redact_sensitive_text
@@ -79,7 +80,7 @@ def _is_blocked_device(filepath: str) -> bool:
     through (e.g. /dev/stdin → /proc/self/fd/0 → /dev/pts/0), defeating
     the check.
     """
-    normalized = os.path.expanduser(filepath)
+    normalized = str(expand_real_user_path(filepath))
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
@@ -99,7 +100,7 @@ _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 def _check_sensitive_path(filepath: str) -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
-        resolved = os.path.realpath(os.path.expanduser(filepath))
+        resolved = os.path.realpath(str(expand_real_user_path(filepath)))
     except (OSError, ValueError):
         resolved = filepath
     for prefix in _SENSITIVE_PATH_PREFIXES:
@@ -291,7 +292,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 ),
             })
 
-        _resolved = Path(path).expanduser().resolve()
+        _expanded_path = str(expand_real_user_path(path))
+        _resolved = Path(_expanded_path).resolve()
 
         # ── Binary file guard ─────────────────────────────────────────
         # Block binary files by extension (no I/O).
@@ -356,7 +358,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Perform the read ──────────────────────────────────────────
         file_ops = _get_file_ops(task_id)
-        result = file_ops.read_file(path, offset, limit)
+        result = file_ops.read_file(_expanded_path, offset, limit)
         result_dict = result.to_dict()
 
         # ── Character-count guard ─────────────────────────────────────
@@ -527,7 +529,7 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
     refreshes the stored timestamp to match the file's new state.
     """
     try:
-        resolved = str(Path(filepath).expanduser().resolve())
+        resolved = str(expand_real_user_path(filepath).resolve())
         current_mtime = os.path.getmtime(resolved)
     except (OSError, ValueError):
         return
@@ -545,7 +547,7 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     or was never read.  Does not block — the write still proceeds.
     """
     try:
-        resolved = str(Path(filepath).expanduser().resolve())
+        resolved = str(expand_real_user_path(filepath).resolve())
     except (OSError, ValueError):
         return None
     with _read_tracker_lock:
@@ -576,7 +578,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     try:
         stale_warning = _check_file_staleness(path, task_id)
         file_ops = _get_file_ops(task_id)
-        result = file_ops.write_file(path, content)
+        expanded_path = str(expand_real_user_path(path))
+        result = file_ops.write_file(expanded_path, content)
         result_dict = result.to_dict()
         if stale_warning:
             result_dict["_warning"] = stale_warning
@@ -623,7 +626,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 return tool_error("path required")
             if old_string is None or new_string is None:
                 return tool_error("old_string and new_string required")
-            result = file_ops.patch_replace(path, old_string, new_string, replace_all)
+            expanded_path = str(expand_real_user_path(path))
+            result = file_ops.patch_replace(expanded_path, old_string, new_string, replace_all)
         elif mode == "patch":
             if not patch:
                 return tool_error("patch content required")
@@ -690,8 +694,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             }, ensure_ascii=False)
 
         file_ops = _get_file_ops(task_id)
+        expanded_path = str(expand_real_user_path(path))
         result = file_ops.search(
-            pattern=pattern, path=path, target=target, file_glob=file_glob,
+            pattern=pattern, path=expanded_path, target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
         if hasattr(result, 'matches'):

@@ -19,7 +19,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, get_real_home
 from typing import Any, Optional
 
 _GATEWAY_KIND = "hermes-gateway"
@@ -45,7 +45,7 @@ def _get_lock_dir() -> Path:
     override = os.getenv("HERMES_GATEWAY_LOCK_DIR")
     if override:
         return Path(override)
-    state_home = Path(os.getenv("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    state_home = Path(os.getenv("XDG_STATE_HOME", get_real_home() / ".local" / "state"))
     return state_home / "hermes" / _LOCKS_DIRNAME
 
 

@@ -32,6 +32,7 @@ from hermes_cli.profiles import (
     generate_zsh_completion,
     _get_profiles_root,
     _get_default_hermes_home,
+    _get_wrapper_dir,
 )
 
 
@@ -106,6 +107,19 @@ class TestGetProfileDir:
         tmp_path = profile_env
         result = get_profile_dir("coder")
         assert result == tmp_path / ".hermes" / "profiles" / "coder"
+
+
+class TestWrapperDir:
+    def test_uses_real_home_override(self, profile_env, monkeypatch):
+        tmp_path = profile_env
+        machine_home = tmp_path / "machine-home"
+        profile_home = tmp_path / "profile-home"
+        machine_home.mkdir()
+        profile_home.mkdir()
+        monkeypatch.setenv("HERMES_REAL_HOME", str(machine_home))
+        monkeypatch.setattr(Path, "home", lambda: profile_home)
+
+        assert _get_wrapper_dir() == machine_home / ".local" / "bin"
 
 
 # ===================================================================

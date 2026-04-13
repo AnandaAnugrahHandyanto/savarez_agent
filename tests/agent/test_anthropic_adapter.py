@@ -162,6 +162,26 @@ class TestReadClaudeCodeCredentials:
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert read_claude_code_credentials() is None
 
+    def test_uses_real_home_override_when_profile_home_differs(self, tmp_path, monkeypatch):
+        machine_home = tmp_path / "machine-home"
+        profile_home = tmp_path / "profile-home"
+        cred_file = machine_home / ".claude" / ".credentials.json"
+        machine_home.mkdir()
+        profile_home.mkdir()
+        cred_file.parent.mkdir(parents=True)
+        cred_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "sk-ant-oat01-token",
+                "refreshToken": "sk-ant-oat01-refresh",
+            }
+        }))
+        monkeypatch.setenv("HERMES_REAL_HOME", str(machine_home))
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: profile_home)
+
+        creds = read_claude_code_credentials()
+        assert creds is not None
+        assert creds["accessToken"] == "sk-ant-oat01-token"
+
 
 class TestIsClaudeCodeTokenValid:
     def test_valid_token(self):

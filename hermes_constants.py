@@ -8,13 +8,40 @@ import os
 from pathlib import Path
 
 
+def get_real_home() -> Path:
+    """Return the caller's real OS home directory.
+
+    Hermes may give subprocesses a profile-local ``HOME`` under
+    ``{HERMES_HOME}/home`` for tool/config isolation. Code that needs the
+    user's actual machine home should use this helper instead of ``Path.home()``.
+
+    Child processes receive ``HERMES_REAL_HOME`` from the parent before any
+    per-profile ``HOME`` override is applied, so sandboxed Python code can
+    still resolve the original home directory.
+    """
+    override = os.getenv("HERMES_REAL_HOME", "").strip()
+    if override:
+        return Path(override)
+    return Path.home()
+
+
+def expand_real_user_path(path: str | os.PathLike[str]) -> Path:
+    """Expand ``~`` against :func:`get_real_home` instead of ``HOME``."""
+    text = os.fspath(path)
+    if text == "~":
+        return get_real_home()
+    if text.startswith(("~/", "~\\")):
+        return get_real_home() / text[2:].lstrip("/\\")
+    return Path(os.path.expanduser(text))
+
+
 def get_hermes_home() -> Path:
     """Return the Hermes home directory (default: ~/.hermes).
 
     Reads HERMES_HOME env var, falls back to ~/.hermes.
     This is the single source of truth — all other copies should import this.
     """
-    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    return Path(os.getenv("HERMES_HOME", get_real_home() / ".hermes"))
 
 
 def get_default_hermes_root() -> Path:
@@ -33,7 +60,7 @@ def get_default_hermes_root() -> Path:
 
     Import-safe — no dependencies beyond stdlib.
     """
-    native_home = Path.home() / ".hermes"
+    native_home = get_real_home() / ".hermes"
     env_home = os.environ.get("HERMES_HOME", "")
     if not env_home:
         return native_home
@@ -106,7 +133,7 @@ def display_hermes_home() -> str:
     """
     home = get_hermes_home()
     try:
-        return "~/" + str(home.relative_to(Path.home()))
+        return "~/" + str(home.relative_to(get_real_home()))
     except ValueError:
         return str(home)
 

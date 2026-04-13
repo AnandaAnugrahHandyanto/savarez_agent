@@ -85,6 +85,7 @@ class TestMakeRunEnvHomeInjection:
         hermes_home.mkdir()
         (hermes_home / "home").mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_REAL_HOME", "/home/real-user")
         monkeypatch.setenv("HOME", "/root")
         monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
@@ -92,6 +93,7 @@ class TestMakeRunEnvHomeInjection:
         result = _make_run_env({})
 
         assert result["HOME"] == str(hermes_home / "home")
+        assert result["HERMES_REAL_HOME"] == "/home/real-user"
 
     def test_no_injection_when_home_dir_missing(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
@@ -129,12 +131,14 @@ class TestSanitizeSubprocessEnvHomeInjection:
         hermes_home.mkdir()
         (hermes_home / "home").mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_REAL_HOME", "/home/real-user")
 
         base_env = {"HOME": "/root", "PATH": "/usr/bin", "USER": "root"}
         from tools.environments.local import _sanitize_subprocess_env
         result = _sanitize_subprocess_env(base_env)
 
         assert result["HOME"] == str(hermes_home / "home")
+        assert result["HERMES_REAL_HOME"] == "/home/real-user"
 
     def test_no_injection_when_home_dir_missing(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"

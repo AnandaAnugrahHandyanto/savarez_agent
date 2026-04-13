@@ -2,12 +2,24 @@
 
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 from gateway import status
 
 
 class TestGatewayPidState:
+    def test_lock_dir_uses_real_home_override(self, tmp_path, monkeypatch):
+        machine_home = tmp_path / "machine-home"
+        profile_home = tmp_path / "profile-home"
+        machine_home.mkdir()
+        profile_home.mkdir()
+        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+        monkeypatch.setenv("HERMES_REAL_HOME", str(machine_home))
+        monkeypatch.setattr(status.Path, "home", lambda: profile_home)
+
+        assert status._get_lock_dir() == machine_home / ".local" / "state" / "hermes" / "gateway-locks"
+
     def test_write_pid_file_records_gateway_metadata(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

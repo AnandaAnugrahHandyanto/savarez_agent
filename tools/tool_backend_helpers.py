@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Any, Dict
 
+from hermes_constants import get_real_home
 from utils import env_var_enabled
 
 _DEFAULT_BROWSER_PROVIDER = "local"
@@ -41,7 +41,7 @@ def has_direct_modal_credentials() -> bool:
     """Return True when direct Modal credentials/config are available."""
     return bool(
         (os.getenv("MODAL_TOKEN_ID") and os.getenv("MODAL_TOKEN_SECRET"))
-        or (Path.home() / ".modal.toml").exists()
+        or (get_real_home() / ".modal.toml").exists()
     )
 
 

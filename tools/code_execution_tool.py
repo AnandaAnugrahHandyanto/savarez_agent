@@ -1022,7 +1022,8 @@ def execute_code(
 
         # Per-profile HOME isolation: redirect system tool configs into
         # {HERMES_HOME}/home/ when that directory exists.
-        from hermes_constants import get_subprocess_home
+        from hermes_constants import get_real_home, get_subprocess_home
+        child_env.setdefault("HERMES_REAL_HOME", str(get_real_home()))
         _profile_home = get_subprocess_home()
         if _profile_home:
             child_env["HOME"] = _profile_home

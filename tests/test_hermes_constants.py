@@ -7,7 +7,19 @@ from unittest.mock import patch
 import pytest
 
 import hermes_constants
-from hermes_constants import get_default_hermes_root, is_container
+from hermes_constants import display_hermes_home, get_default_hermes_root, get_real_home, is_container
+
+
+class TestGetRealHome:
+    def test_prefers_explicit_real_home_override(self, tmp_path, monkeypatch):
+        profile_home = tmp_path / "profile-home"
+        machine_home = tmp_path / "machine-home"
+        profile_home.mkdir()
+        machine_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: profile_home)
+        monkeypatch.setenv("HERMES_REAL_HOME", str(machine_home))
+
+        assert get_real_home() == machine_home
 
 
 class TestGetDefaultHermesRoot:
@@ -18,6 +30,17 @@ class TestGetDefaultHermesRoot:
         monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         assert get_default_hermes_root() == tmp_path / ".hermes"
+
+    def test_real_home_override_beats_profile_home(self, tmp_path, monkeypatch):
+        """When HOME points at a profile sandbox, use HERMES_REAL_HOME instead."""
+        profile_home = tmp_path / "profile-home"
+        machine_home = tmp_path / "machine-home"
+        profile_home.mkdir()
+        machine_home.mkdir()
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: profile_home)
+        monkeypatch.setenv("HERMES_REAL_HOME", str(machine_home))
+        assert get_default_hermes_root() == machine_home / ".hermes"
 
     def test_hermes_home_is_native(self, tmp_path, monkeypatch):
         """When HERMES_HOME = ~/.hermes, returns ~/.hermes."""
@@ -61,7 +84,6 @@ class TestGetDefaultHermesRoot:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(profile))
         assert get_default_hermes_root() == docker_root
-
 
 class TestIsContainer:
     """Tests for is_container() — Docker/Podman detection."""
@@ -111,3 +133,18 @@ class TestIsContainer:
         # Even if we make os.path.exists return False, cached value wins
         monkeypatch.setattr(os.path, "exists", lambda p: False)
         assert is_container() is True
+
+
+class TestDisplayHermesHome:
+    def test_uses_real_home_for_tilde_display(self, tmp_path, monkeypatch):
+        machine_home = tmp_path / "machine-home"
+        profile_home = tmp_path / "profile-home"
+        hermes_home = machine_home / ".hermes" / "profiles" / "coder"
+        machine_home.mkdir()
+        profile_home.mkdir()
+        hermes_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: profile_home)
+        monkeypatch.setenv("HERMES_REAL_HOME", str(machine_home))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert display_hermes_home() == "~/.hermes/profiles/coder"
