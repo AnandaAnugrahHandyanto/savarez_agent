@@ -17,6 +17,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
 | **Server channels** | By default, Hermes only responds when you `@mention` it. If you post in a channel without mentioning it, Hermes ignores the message. |
 | **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. |
+| **Mention-required exceptions** | If you mostly want free-response but need a few channels to stay explicit, use `DISCORD_MENTION_REQUIRED_CHANNELS` to require `@mentions` only in those channels. |
 | **Threads** | Hermes replies in the same thread. Mention rules still apply unless that thread or its parent channel is configured as free-response. Threads stay isolated from the parent channel for session history. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel for safety and clarity. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
 | **Messages mentioning other users** | When `DISCORD_IGNORE_NO_MENTION` is `true` (the default), Hermes stays silent if a message @mentions other users but does **not** mention the bot. This prevents the bot from jumping into conversations directed at other people. Set to `false` if you want the bot to respond to all messages regardless of who is mentioned. This only applies in server channels, not DMs. |
@@ -274,8 +275,9 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_ALLOWED_USERS` | **Yes** | — | Comma-separated Discord user IDs allowed to interact with the bot. Without this, the gateway denies all users. |
 | `DISCORD_HOME_CHANNEL` | No | — | Channel ID where the bot sends proactive messages (cron output, reminders, notifications). |
 | `DISCORD_HOME_CHANNEL_NAME` | No | `"Home"` | Display name for the home channel in logs and status output. |
-| `DISCORD_REQUIRE_MENTION` | No | `true` | When `true`, the bot only responds in server channels when `@mentioned`. Set to `false` to respond to all messages in every channel. |
+| `DISCORD_REQUIRE_MENTION` | No | `true` | When `true`, the bot only responds in server channels when `@mentioned`. Set to `false` to respond to all messages in every channel by default. |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. |
+| `DISCORD_MENTION_REQUIRED_CHANNELS` | No | — | Comma-separated channel IDs where the bot still requires an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `false`. If a channel appears in both Discord channel lists, mention-required wins. |
 | `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
 | `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. |
@@ -291,12 +293,13 @@ The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. Con
 ```yaml
 # Discord-specific settings
 discord:
-  require_mention: true           # Require @mention in server channels
-  free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
-  auto_thread: true               # Auto-create threads on @mention
-  reactions: true                 # Add emoji reactions during processing
-  ignored_channels: []            # Channel IDs where bot never responds
-  no_thread_channels: []          # Channel IDs where bot responds without threading
+  require_mention: true            # Require @mention in server channels
+  free_response_channels: ""       # Comma-separated channel IDs (or YAML list)
+  mention_required_channels: ""    # Comma-separated channel IDs (or YAML list)
+  auto_thread: true                # Auto-create threads on @mention
+  reactions: true                  # Add emoji reactions during processing
+  ignored_channels: []             # Channel IDs where bot never responds
+  no_thread_channels: []           # Channel IDs where bot responds without threading
 
 # Session isolation (applies to all gateway platforms, not just Discord)
 group_sessions_per_user: true     # Isolate sessions per user in shared channels
@@ -327,6 +330,26 @@ discord:
 ```
 
 If a thread's parent channel is in this list, the thread also becomes mention-free.
+
+#### `discord.mention_required_channels`
+
+**Type:** string or list — **Default:** `""`
+
+Channel IDs where the bot still requires an `@mention` even when `require_mention` is globally disabled. Accepts either a comma-separated string or a YAML list:
+
+```yaml
+# String format
+discord:
+  mention_required_channels: "1234567890,9876543210"
+
+# List format
+discord:
+  mention_required_channels:
+    - 1234567890
+    - 9876543210
+```
+
+If a thread's parent channel is in this list, that thread also requires a mention. If a channel appears in both `free_response_channels` and `mention_required_channels`, the mention-required rule wins.
 
 #### `discord.auto_thread`
 

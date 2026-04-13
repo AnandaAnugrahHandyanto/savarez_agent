@@ -324,6 +324,31 @@ def test_config_bridges_no_thread_channels(monkeypatch, tmp_path):
     assert os.getenv("DISCORD_NO_THREAD_CHANNELS") == "333"
 
 
+def test_config_bridges_mention_required_channels(monkeypatch, tmp_path):
+    """gateway/config.py bridges discord.mention_required_channels to env var."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "mention_required_channels": ["444", "555"],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_MENTION_REQUIRED_CHANNELS", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_MENTION_REQUIRED_CHANNELS") == "444,555"
+
+
+def test_default_config_includes_mention_required_channels():
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["discord"]["mention_required_channels"] == ""
+
+
 def test_config_env_var_takes_precedence(monkeypatch, tmp_path):
     """Env vars should take precedence over config.yaml values."""
     import yaml
@@ -331,14 +356,17 @@ def test_config_env_var_takes_precedence(monkeypatch, tmp_path):
     config_file.write_text(yaml.dump({
         "discord": {
             "ignored_channels": ["111"],
+            "mention_required_channels": ["222"],
         },
     }))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "999")
+    monkeypatch.setenv("DISCORD_MENTION_REQUIRED_CHANNELS", "888")
 
     from gateway.config import load_gateway_config
     load_gateway_config()
 
     import os
-    # Env var should NOT be overwritten
+    # Env vars should NOT be overwritten
     assert os.getenv("DISCORD_IGNORED_CHANNELS") == "999"
+    assert os.getenv("DISCORD_MENTION_REQUIRED_CHANNELS") == "888"
