@@ -130,10 +130,14 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
             sanitized[key] = value
 
     # Per-profile HOME isolation for background processes (same as _make_run_env).
-    from hermes_constants import get_subprocess_home
+    # Controlled by config: terminal.profile_home_isolation (default: true).
+    from hermes_constants import get_subprocess_home, get_real_home
     _profile_home = get_subprocess_home()
-    if _profile_home:
+    _isolate = _should_isolate_profile_home()
+    if _profile_home and _isolate:
         sanitized["HOME"] = _profile_home
+    elif _profile_home and not _isolate:
+        sanitized["HOME"] = str(get_real_home())
 
     return sanitized
 
@@ -176,6 +180,30 @@ def _find_bash() -> str:
 _find_shell = _find_bash
 
 
+# Cached config value — read once to avoid repeated YAML parsing.
+_profile_home_isolation: bool | None = None
+
+
+def _should_isolate_profile_home() -> bool:
+    """Return True if profile HOME isolation is enabled in config."""
+    global _profile_home_isolation
+    if _profile_home_isolation is not None:
+        return _profile_home_isolation
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        _profile_home_isolation = cfg.get("terminal", {}).get(
+            "profile_home_isolation", True
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            "profile_home_isolation config read failed: %s, defaulting to True", e
+        )
+        _profile_home_isolation = True  # safe default
+    return _profile_home_isolation
+
+
 # Standard PATH entries for environments with minimal PATH.
 _SANE_PATH = (
     "/opt/homebrew/bin:/opt/homebrew/sbin:"
@@ -205,10 +233,16 @@ def _make_run_env(env: dict) -> dict:
     # Per-profile HOME isolation: redirect system tool configs (git, ssh, gh,
     # npm …) into {HERMES_HOME}/home/ when that directory exists.  Only the
     # subprocess sees the override — the Python process keeps the real HOME.
-    from hermes_constants import get_subprocess_home
+    # Controlled by config: terminal.profile_home_isolation (default: true).
+    from hermes_constants import get_subprocess_home, get_real_home
     _profile_home = get_subprocess_home()
-    if _profile_home:
+    _isolate = _should_isolate_profile_home()
+    if _profile_home and _isolate:
         run_env["HOME"] = _profile_home
+    elif _profile_home and not _isolate:
+        # Explicitly restore real HOME when isolation is disabled, in case
+        # the parent process already has the profile HOME set.
+        run_env["HOME"] = str(get_real_home())
 
     return run_env
 

@@ -4,8 +4,47 @@ Import-safe module with no dependencies — can be imported from anywhere
 without risk of circular imports.
 """
 
+from __future__ import annotations
+
 import os
+import pwd
 from pathlib import Path
+
+
+# ── Real user home (captured at import time) ──────────────────────────────
+#
+# The terminal sandbox overrides ``HOME`` to ``{HERMES_HOME}/home/`` for
+# per-profile subprocess isolation.  ``Path.home()`` reads the overridden
+# value, so any code that needs the *real* OS user home must use this
+# module-level constant instead.
+#
+# We use ``pwd.getpwuid()`` to bypass the ``HOME`` env var entirely and
+# get the actual user home from the system password database.  Falls back
+# to ``Path.home()`` on non-Unix platforms.
+
+def _get_real_home() -> Path:
+    try:
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (KeyError, ImportError, AttributeError):
+        return Path.home()
+
+_REAL_HOME: Path = _get_real_home()
+
+
+def get_real_home() -> Path:
+    """Return the real OS user home directory.
+
+    Unlike ``Path.home()`` — which returns the sandbox-overridden ``HOME``
+    when running inside a profile — this always returns the actual user
+    home (e.g. ``/Users/alice``).
+
+    Use this when:
+    - Looking for external tool configs (``~/.claude.json``, ``~/.modal.toml``)
+    - Resolving the hermes root directory (``~/.hermes``)
+    - Creating wrapper scripts (``~/.local/bin``)
+    - Expanding user file paths (``~/Documents/file.txt``)
+    """
+    return _REAL_HOME
 
 
 def get_hermes_home() -> Path:
@@ -14,7 +53,7 @@ def get_hermes_home() -> Path:
     Reads HERMES_HOME env var, falls back to ~/.hermes.
     This is the single source of truth — all other copies should import this.
     """
-    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    return Path(os.getenv("HERMES_HOME", get_real_home() / ".hermes"))
 
 
 def get_default_hermes_root() -> Path:
@@ -33,7 +72,7 @@ def get_default_hermes_root() -> Path:
 
     Import-safe — no dependencies beyond stdlib.
     """
-    native_home = Path.home() / ".hermes"
+    native_home = get_real_home() / ".hermes"
     env_home = os.environ.get("HERMES_HOME", "")
     if not env_home:
         return native_home
