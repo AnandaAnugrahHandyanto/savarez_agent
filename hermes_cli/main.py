@@ -5860,6 +5860,75 @@ Examples:
     acp_parser.set_defaults(func=cmd_acp)
 
     # =========================================================================
+    # server command — standalone HTTP API server
+    # =========================================================================
+    server_parser = subparsers.add_parser(
+        "server",
+        help="Start the OpenAI-compatible HTTP API server",
+        description=(
+            "Start a standalone OpenAI-compatible API server for Hermes Agent.\n\n"
+            "Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,\n"
+            "AnythingLLM, NextChat, ChatBox, etc.) can connect by pointing at\n"
+            "http://localhost:8642/v1.\n\n"
+            "Endpoints:\n"
+            "  POST /v1/chat/completions  — Chat Completions API\n"
+            "  POST /v1/responses         — Responses API (stateful)\n"
+            "  GET  /v1/models            — List available models\n"
+            "  GET  /health               — Health check"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  hermes server                          # localhost:8642, no auth\n"
+            "  hermes server --port 9000              # custom port\n"
+            "  hermes server --host 0.0.0.0 --key sk-my-secret  # network-accessible\n"
+            "  hermes server -v                       # verbose logging\n"
+            "\n"
+            "Environment variables:\n"
+            "  API_SERVER_KEY           API key (alternative to --key)\n"
+            "  API_SERVER_HOST          Bind host (alternative to --host)\n"
+            "  API_SERVER_PORT          Bind port (alternative to --port)\n"
+            "  API_SERVER_MODEL_NAME    Advertised model name\n"
+            "  API_SERVER_CORS_ORIGINS  Comma-separated allowed CORS origins"
+        ),
+    )
+    server_parser.add_argument(
+        "--port", type=int, default=8642,
+        help="Port to listen on (default: 8642)",
+    )
+    server_parser.add_argument(
+        "--host", default="127.0.0.1",
+        help="Host to bind to (default: 127.0.0.1)",
+    )
+    server_parser.add_argument(
+        "--key", default="",
+        help="API key for authentication (or set API_SERVER_KEY env var)",
+    )
+    server_parser.add_argument(
+        "--cors-origins", default="",
+        help="Comma-separated CORS origins (e.g. 'http://localhost:3000')",
+    )
+    server_parser.add_argument(
+        "--model-name", default="",
+        help="Advertised model name in /v1/models (default: hermes-agent)",
+    )
+    server_parser.add_argument(
+        "-v", "--verbose", action="count", default=0,
+        help="Increase stderr log verbosity (-v=INFO, -vv=DEBUG)",
+    )
+    server_parser.add_argument(
+        "-q", "--quiet", action="store_true",
+        help="Suppress all stderr log output",
+    )
+
+    def cmd_server(args):
+        """Start the standalone API server."""
+        from hermes_cli.api_server import server_command
+        server_command(args)
+
+    server_parser.set_defaults(func=cmd_server)
+
+    # =========================================================================
     # profile command
     # =========================================================================
     profile_parser = subparsers.add_parser(
