@@ -307,6 +307,12 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         model_name = str(entry.get("model", "") or "").strip()
         if model_name:
             result["model"] = model_name
+        provider_type = str(entry.get("provider_type", "") or "").strip().lower()
+        if provider_type:
+            result["provider_type"] = provider_type
+        api_version = str(entry.get("api_version", "") or "").strip()
+        if api_version:
+            result["api_version"] = api_version
         return result
 
     return None
@@ -347,8 +353,11 @@ def _resolve_named_custom_runtime(
     ]
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
+    provider_type = custom_provider.get("provider_type", "").strip().lower()
+    resolved_provider = provider_type if provider_type in {"azure"} else "custom"
+
     result = {
-        "provider": "custom",
+        "provider": resolved_provider,
         "api_mode": custom_provider.get("api_mode")
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",
@@ -360,6 +369,9 @@ def _resolve_named_custom_runtime(
     # provider name differs from the actual model string the API expects.
     if custom_provider.get("model"):
         result["model"] = custom_provider["model"]
+    # Propagate api_version for Azure OpenAI
+    if custom_provider.get("api_version"):
+        result["api_version"] = custom_provider["api_version"]
     return result
 
 

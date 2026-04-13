@@ -1249,6 +1249,21 @@ def _to_async_client(sync_client, model: str):
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
 
+    # Azure OpenAI — sync client is AzureOpenAI, convert to AsyncAzureOpenAI
+    try:
+        from openai import AzureOpenAI as _AzureOpenAI, AsyncAzureOpenAI
+        if isinstance(sync_client, _AzureOpenAI):
+            azure_kwargs = {
+                "azure_endpoint": str(sync_client.base_url).rstrip("/openai/").rstrip("/"),
+                "api_key": sync_client.api_key,
+                "api_version": getattr(sync_client, "_api_version", None) or "2025-01-01-preview",
+            }
+            if hasattr(sync_client, "_default_headers") and sync_client._default_headers:
+                azure_kwargs["default_headers"] = dict(sync_client._default_headers)
+            return AsyncAzureOpenAI(**azure_kwargs), model
+    except Exception:
+        pass
+
     async_kwargs = {
         "api_key": sync_client.api_key,
         "base_url": str(sync_client.base_url),
@@ -1458,6 +1473,40 @@ def resolve_provider_client(
                         else (client, final_model))
         logger.warning("resolve_provider_client: custom/main requested "
                        "but no endpoint credentials found")
+        return None, None
+
+    # ── Azure OpenAI provider ─────────────────────────────────────────
+    if provider == "azure":
+        try:
+            from openai import AzureOpenAI
+            from hermes_cli.runtime_provider import _get_named_custom_provider as _gncp
+            # Find the azure entry in custom_providers
+            _azure_entry = None
+            try:
+                from hermes_cli.config import load_config as _lc
+                _cfg = _lc()
+                for _entry in (_cfg.get("custom_providers") or []):
+                    if isinstance(_entry, dict) and str(_entry.get("provider_type", "")).lower() == "azure":
+                        _azure_entry = _entry
+                        break
+            except Exception:
+                pass
+            if _azure_entry:
+                _azure_endpoint = (_azure_entry.get("base_url") or "").strip()
+                _azure_key = (_azure_entry.get("api_key") or explicit_api_key or "").strip() or "no-key-required"
+                _azure_version = (_azure_entry.get("api_version") or "2025-01-01-preview").strip()
+                final_model = _normalize_resolved_model(
+                    model or _azure_entry.get("model") or "gpt-4o", provider)
+                client = AzureOpenAI(
+                    azure_endpoint=_azure_endpoint,
+                    api_key=_azure_key,
+                    api_version=_azure_version,
+                )
+                logger.debug("resolve_provider_client: azure provider (%s @ %s)", final_model, _azure_endpoint)
+                return (_to_async_client(client, final_model) if async_mode else (client, final_model))
+        except ImportError:
+            pass
+        logger.warning("resolve_provider_client: azure requested but no azure entry found in custom_providers")
         return None, None
 
     # ── Named custom providers (config.yaml custom_providers list) ───

@@ -2725,6 +2725,9 @@ class HermesCLI:
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
+        # Store api_version for Azure OpenAI
+        if resolved_provider == "azure" and runtime.get("api_version"):
+            self._azure_api_version = runtime["api_version"]
 
         # When a custom_provider entry carries an explicit `model` field,
         # use it as the effective model name.  Without this, running

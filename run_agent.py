@@ -638,6 +638,7 @@ class AIAgent:
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
         self.base_url = base_url or ""
+        self._azure_api_version = None  # set by _ensure_runtime_credentials for azure provider
         provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
@@ -855,6 +856,10 @@ class AIAgent:
                 # Explicit credentials from CLI/gateway — construct directly.
                 # The runtime provider resolver already handled auth for us.
                 client_kwargs = {"api_key": api_key, "base_url": base_url}
+                # Carry api_version for Azure OpenAI
+                if self.provider == "azure":
+                    _azure_ver = getattr(self, "_azure_api_version", None) or "2025-01-01-preview"
+                    client_kwargs["api_version"] = _azure_ver
                 if self.provider == "copilot-acp":
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
@@ -4032,6 +4037,23 @@ class AIAgent:
             client = CopilotACPClient(**client_kwargs)
             logger.info(
                 "Copilot ACP client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
+            return client
+        if self.provider == "azure" or client_kwargs.get("_azure"):
+            from openai import AzureOpenAI
+            azure_kwargs = {
+                "azure_endpoint": client_kwargs.get("base_url", ""),
+                "api_key": client_kwargs.get("api_key", ""),
+                "api_version": client_kwargs.get("api_version") or getattr(self, "_azure_api_version", None) or "2025-01-01-preview",
+            }
+            if client_kwargs.get("default_headers"):
+                azure_kwargs["default_headers"] = client_kwargs["default_headers"]
+            client = AzureOpenAI(**azure_kwargs)
+            logger.info(
+                "AzureOpenAI client created (%s, shared=%s) %s",
                 reason,
                 shared,
                 self._client_log_context(),
