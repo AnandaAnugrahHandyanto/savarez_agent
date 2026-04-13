@@ -523,23 +523,37 @@ def score_debug_fixture(test_case: Dict) -> TestResult:
         spec = args_spec if len(expected_names) == 1 else args_spec.get(func_name, {})
         args: Dict = {}
 
+        # Determine which keys are handled by higher-priority checks so we
+        # don't clobber them with a plain string fallback in the required_args pass.
+        arg_substring_keys = set(spec.get("arg_substring_checks", {}).keys())
+        lfc = spec.get("list_field_check")
+        list_field_key = lfc["field"] if lfc else None
+        arg_type_keys = set(spec.get("arg_types", {}).keys())
+
+        # Type-default map for arg_types — produce a correctly-typed value.
+        _type_defaults: Dict[str, Any] = {"int": 0, "str": "test_val", "bool": True, "float": 0.0, "list": [], "dict": {}}
+
         for k in spec.get("required_args", []):
-            args[k] = spec.get("arg_values", {}).get(k, f"test_{k}")
+            if k in arg_substring_keys or k == list_field_key:
+                # Will be filled by the appropriate block below; skip fallback.
+                continue
+            if k in arg_type_keys:
+                type_name = spec["arg_types"][k]
+                args[k] = _type_defaults.get(type_name, 0)
+            else:
+                args[k] = spec.get("arg_values", {}).get(k, f"test_{k}")
         for k, v in spec.get("arg_values", {}).items():
             args[k] = v
         for k, substr in spec.get("arg_substring_checks", {}).items():
-            if k not in args:
-                args[k] = substr
+            args[k] = substr
 
-        lfc = spec.get("list_field_check")
         if lfc:
             field = lfc["field"]
             min_items = lfc.get("min_items", 1)
-            if field not in args:
-                args[field] = [
-                    {"id": f"t{j}", "content": f"task {j}", "status": "pending"}
-                    for j in range(min_items)
-                ]
+            args[field] = [
+                {"id": f"t{j}", "content": f"task {j}", "status": "pending"}
+                for j in range(min_items)
+            ]
 
         tool_calls_raw.append({
             "id": f"call_{i}",
