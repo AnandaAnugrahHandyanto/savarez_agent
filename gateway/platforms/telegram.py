@@ -572,10 +572,19 @@ class TelegramAdapter(BasePlatformAdapter):
             else:
                 if proxy_configured:
                     logger.info("[%s] Proxy configured; skipping Telegram fallback-IP transport", self.name)
-                elif disable_fallback:
-                    logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
-                request = HTTPXRequest(**request_kwargs)
-                get_updates_request = HTTPXRequest(**request_kwargs)
+                    proxy_url = (
+                        os.getenv("HTTPS_PROXY") or os.getenv("https_proxy") or
+                        os.getenv("HTTP_PROXY") or os.getenv("http_proxy") or
+                        os.getenv("ALL_PROXY") or os.getenv("all_proxy")
+                    )
+                    logger.info("[%s] Using explicit proxy for HTTPXRequest: %s", self.name, proxy_url)
+                    request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+                    get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+                else:
+                    if disable_fallback:
+                        logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
+                    request = HTTPXRequest(**request_kwargs)
+                    get_updates_request = HTTPXRequest(**request_kwargs)
 
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
