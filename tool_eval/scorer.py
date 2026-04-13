@@ -400,6 +400,7 @@ def score_test(test_case: Dict, raw_response: Dict) -> TestResult:
             )
 
     # Resolve expected tool name(s)
+    missing_tools: List[str] = []
     expected_names: List[str] = (
         expected.get("function_names")
         or ([expected["function_name"]] if expected.get("function_name") else [])
