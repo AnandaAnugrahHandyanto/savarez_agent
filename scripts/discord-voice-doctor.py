@@ -176,9 +176,9 @@ def check_env_vars():
 
     # Load .env
     try:
-        from dotenv import load_dotenv
-        if ENV_FILE.exists():
-            load_dotenv(ENV_FILE)
+        from hermes_cli.env_loader import load_dotenv_path
+
+        load_dotenv_path(ENV_FILE, override=True)
     except ImportError:
         pass
 
