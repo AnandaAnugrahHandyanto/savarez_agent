@@ -581,52 +581,12 @@ def _build_table_element(headers, rows):
     }
 
 def _convert_content_with_tables(md_text):
-    """将 Markdown 文本（含表格）转为飞书卡片元素列表"""
-    result = _parse_markdown_table(md_text)
-    
-    if not result:
-        # 没有表格，返回 markdown 元素
-        return [{"tag": "markdown", "content": md_text or " "}]
-    
-    headers, rows = result
-    table_elem = _build_table_element(headers, rows)
-    
-    # 提取表格前后的其他内容
-    lines = md_text.strip().split('\n')
-    before = []
-    after = []
-    in_table = False
-    table_started = False
-    
-    for line in lines:
-        if '|' in line and not line.strip().startswith('```'):
-            if not table_started:
-                table_started = True
-                in_table = True
-            if in_table:
-                continue
-        else:
-            if in_table:
-                in_table = False
-            if not table_started:
-                before.append(line)
-            else:
-                after.append(line)
-    
-    elements = []
-    if before:
-        before_text = '\n'.join(before).strip()
-        if before_text:
-            elements.append({"tag": "markdown", "content": before_text})
-    
-    elements.append(table_elem)
-    
-    if after:
-        after_text = '\n'.join(after).strip()
-        if after_text:
-            elements.append({"tag": "markdown", "content": after_text})
-    
-    return elements
+    """将 Markdown 文本（含表格）转为飞书卡片元素列表。
+
+    跟 OpenClaw fallback 一样：不做 table 元素转换，直接把 markdown 原文
+    放在 markdown 元素里，让飞书自行渲染。table 元素在移动端不渲染。
+    """
+    return [{"tag": "markdown", "content": md_text or " "}]
 
 
 def _render_markdown_tables_for_feishu(text: str) -> str:
