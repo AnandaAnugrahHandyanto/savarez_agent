@@ -3627,8 +3627,36 @@ class HermesCLI:
                 preview = preview[:117] + "..."
             _cprint(f"  ↪ live message from {sender}: {preview}")
             if body and hasattr(self, "_pending_input"):
-                self._pending_input.put(body)
+                self._pending_input.put({"type": "live_message", "body": body, "event": event})
         return events
+
+    def _maybe_send_live_completion(self, live_event: dict | None, response: str, result: dict | None) -> None:
+        self._ensure_live_session_state()
+        if not live_event or not self._session_db:
+            return
+        if getattr(self, "_live_role", None) != "executor":
+            return
+        target_session_id = live_event.get("sender_session_id")
+        if not target_session_id:
+            return
+        if result and result.get("interrupted"):
+            return
+
+        sender_label = getattr(self, "_live_role", None) or self.session_id
+        status = "failed" if result and result.get("failed") else "completed"
+        response_text = (response or "").strip() or "(no response)"
+        outbound = (
+            f"[Live task {status} by {sender_label}]\n"
+            f"From prompt: {(live_event.get('body') or '').strip()}\n\n"
+            f"Result:\n{response_text}"
+        )
+        self._session_db.queue_live_message(
+            target_session_id=target_session_id,
+            body=outbound,
+            sender_session_id=self.session_id,
+            sender_label=sender_label,
+            sender_model=getattr(self, "model", None),
+        )
 
     def _list_live_sessions(self, cmd_original: str) -> None:
         self._ensure_live_session_state()
@@ -7839,6 +7867,11 @@ class HermesCLI:
                     self._voice_continuous = False
                     _cprint(f"\n{_DIM}Continuous voice mode stopped due to error.{_RST}")
 
+            try:
+                self._maybe_send_live_completion(live_event, response, result)
+            except Exception:
+                logger.debug("Failed to send live completion", exc_info=True)
+
             # Handle interrupt - check if we were interrupted
             pending_message = None
             if result and result.get("interrupted"):
@@ -9529,7 +9562,11 @@ class HermesCLI:
 
                     # Unpack image payload: (text, [Path, ...]) or plain str
                     submit_images = []
-                    if isinstance(user_input, tuple):
+                    live_event = None
+                    if isinstance(user_input, dict) and user_input.get("type") == "live_message":
+                        live_event = user_input.get("event")
+                        user_input = user_input.get("body", "")
+                    elif isinstance(user_input, tuple):
                         user_input, submit_images = user_input
                     
                     # Check for commands — but detect dragged/pasted file paths first.
