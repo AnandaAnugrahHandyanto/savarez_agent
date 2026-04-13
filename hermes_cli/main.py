@@ -5071,7 +5071,6 @@ def cmd_dump(args):
 def cmd_debug(args):
     """Debug tools (share report, etc.)."""
     from hermes_cli.debug import run_debug
-
     run_debug(args)
 
 
@@ -8039,7 +8038,40 @@ def cmd_logs(args):
 
 def main():
     """Main entry point for hermes CLI."""
-    from hermes_cli._parser import build_top_level_parser
+    parser = argparse.ArgumentParser(
+        prog="hermes",
+        description="Hermes Agent - AI assistant with tool-calling capabilities",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    hermes                        Start interactive chat
+    hermes chat -q "Hello"        Single query mode
+    hermes -c                     Resume the most recent session
+    hermes -c "my project"        Resume a session by name (latest in lineage)
+    hermes --resume <session_id>  Resume a specific session by ID
+    hermes setup                  Run setup wizard
+    hermes logout                 Clear stored authentication
+    hermes auth add <provider>    Add a pooled credential
+    hermes auth list              List pooled credentials
+    hermes auth remove <p> <t>    Remove pooled credential by index, id, or label
+    hermes auth reset <provider>  Clear exhaustion status for a provider
+    hermes model                  Select default model
+    hermes config                 View configuration
+    hermes config edit            Edit config in $EDITOR
+    hermes config set model gpt-4 Set a config value
+    hermes gateway                Run messaging gateway
+    hermes -s hermes-agent-dev,github-auth
+    hermes -w                     Start in isolated git worktree
+    hermes gateway install        Install gateway background service
+    hermes sessions list          List past sessions
+    hermes sessions browse        Interactive session picker
+    hermes sessions rename ID T   Rename/title a session
+    hermes logs                   View agent.log (last 50 lines)
+    hermes logs -f                Follow agent.log in real time
+    hermes logs errors            View errors.log
+    hermes logs --since 1h        Lines from the last hour
+    hermes debug share             Upload debug report for support
+    hermes update                 Update to latest version
 
     parser, subparsers, chat_parser = build_top_level_parser()
     chat_parser.set_defaults(func=cmd_chat)
@@ -8790,8 +8822,8 @@ def main():
         "debug",
         help="Debug tools — upload logs and system info for support",
         description="Debug utilities for Hermes Agent. Use 'hermes debug share' to "
-        "upload a debug report (system info + recent logs) to a paste "
-        "service and get a shareable URL.",
+                    "upload a debug report (system info + recent logs) to a paste "
+                    "service and get a shareable URL.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
@@ -8799,7 +8831,6 @@ Examples:
     hermes debug share --lines 500  Include more log lines
     hermes debug share --expire 30  Keep paste for 30 days
     hermes debug share --local      Print report locally (no upload)
-    hermes debug delete <url>       Delete a previously uploaded paste
 """,
     )
     debug_sub = debug_parser.add_subparsers(dest="debug_command")
@@ -8808,31 +8839,16 @@ Examples:
         help="Upload debug report to a paste service and print a shareable URL",
     )
     share_parser.add_argument(
-        "--lines",
-        type=int,
-        default=200,
+        "--lines", type=int, default=200,
         help="Number of log lines to include per log file (default: 200)",
     )
     share_parser.add_argument(
-        "--expire",
-        type=int,
-        default=7,
+        "--expire", type=int, default=7,
         help="Paste expiry in days (default: 7)",
     )
     share_parser.add_argument(
-        "--local",
-        action="store_true",
+        "--local", action="store_true",
         help="Print the report locally instead of uploading",
-    )
-    delete_parser = debug_sub.add_parser(
-        "delete",
-        help="Delete a paste uploaded by 'hermes debug share'",
-    )
-    delete_parser.add_argument(
-        "urls",
-        nargs="*",
-        default=[],
-        help="One or more paste URLs to delete (e.g. https://paste.rs/abc123)",
     )
     debug_parser.set_defaults(func=cmd_debug)
 
