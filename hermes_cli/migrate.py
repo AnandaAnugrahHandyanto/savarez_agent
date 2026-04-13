@@ -50,8 +50,7 @@ def run_migrate(args):
             import_bundle = _lazy_import_import()
             import_bundle(
                 getattr(args, "input", None),
-                getattr(args, "preset", "safe"),
-                getattr(args, "dry_run", False),
+                dry_run=getattr(args, "dry_run", False),
                 interactive=interactive,
             )
         elif action == "verify":
@@ -96,7 +95,6 @@ Examples:
 
     imp = subparsers.add_parser("import", help="Import from a migration bundle")
     imp.add_argument("--input", "-i", required=True)
-    imp.add_argument("--preset", "-p", choices=["safe", "full"], default="safe")
     imp.add_argument("--dry-run", action="store_true")
     imp.add_argument("--interactive", action="store_true")
 

@@ -5890,12 +5890,6 @@ Examples:
         help="Input .tar.gz bundle path"
     )
     migrate_import.add_argument(
-        "--preset", "-p",
-        choices=["safe", "full"],
-        default="safe",
-        help="Preset used during export (default: safe)"
-    )
-    migrate_import.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would be imported without applying"
