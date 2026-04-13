@@ -26,6 +26,9 @@ from agent.prompt_builder import (
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
+    OBJECTIVITY_GUIDANCE,
+    NO_TIME_ESTIMATES_GUIDANCE,
+    CONTEXT_EFFICIENCY_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
 )
@@ -45,9 +48,23 @@ class TestGuidanceConstants:
         assert "like a diary" not in MEMORY_GUIDANCE
         assert ">80%" not in MEMORY_GUIDANCE
 
-    def test_session_search_guidance_is_simple_cross_session_recall(self):
+    def test_session_search_guidance_mentions_trigger_patterns(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
+        assert "that bug" in SESSION_SEARCH_GUIDANCE
+        assert "specific topic or noun phrases" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_objectivity_guidance_prioritizes_truth_over_agreement(self):
+        assert "truthfulness" in OBJECTIVITY_GUIDANCE
+        assert "respectfully" in OBJECTIVITY_GUIDANCE
+
+    def test_no_time_estimates_guidance_discourages_duration_guesses(self):
+        assert "Do not give time estimates" in NO_TIME_ESTIMATES_GUIDANCE
+        assert "dependencies" in NO_TIME_ESTIMATES_GUIDANCE
+
+    def test_context_efficiency_guidance_prefers_targeted_search(self):
+        assert "targeted search" in CONTEXT_EFFICIENCY_GUIDANCE
+        assert "Parallelize" in CONTEXT_EFFICIENCY_GUIDANCE
 
 
 # =========================================================================

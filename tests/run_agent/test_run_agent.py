@@ -20,7 +20,13 @@ import pytest
 import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
-from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.prompt_builder import (
+    DEFAULT_AGENT_IDENTITY,
+    OBJECTIVITY_GUIDANCE,
+    NO_TIME_ESTIMATES_GUIDANCE,
+    CONTEXT_EFFICIENCY_GUIDANCE,
+    SESSION_SEARCH_GUIDANCE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -647,6 +653,11 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert DEFAULT_AGENT_IDENTITY in prompt
 
+    def test_includes_global_objectivity_and_no_time_estimates_guidance(self, agent):
+        prompt = agent._build_system_prompt()
+        assert OBJECTIVITY_GUIDANCE in prompt
+        assert NO_TIME_ESTIMATES_GUIDANCE in prompt
+
     def test_includes_system_message(self, agent):
         prompt = agent._build_system_prompt(system_message="Custom instruction")
         assert "Custom instruction" in prompt
@@ -662,6 +673,50 @@ class TestBuildSystemPrompt:
 
         prompt = agent._build_system_prompt()
         assert MEMORY_GUIDANCE not in prompt
+
+    def test_session_search_guidance_when_session_search_tool_loaded(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search", "session_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+
+        prompt = a._build_system_prompt()
+        assert SESSION_SEARCH_GUIDANCE in prompt
+
+    def test_context_efficiency_guidance_when_context_tools_loaded(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("search_files", "read_file"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+
+        prompt = a._build_system_prompt()
+        assert CONTEXT_EFFICIENCY_GUIDANCE in prompt
+
+    def test_context_efficiency_guidance_not_included_without_context_tools(self, agent):
+        prompt = agent._build_system_prompt()
+        assert CONTEXT_EFFICIENCY_GUIDANCE not in prompt
 
     def test_includes_datetime(self, agent):
         prompt = agent._build_system_prompt()
