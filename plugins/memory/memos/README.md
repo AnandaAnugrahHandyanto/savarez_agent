@@ -26,11 +26,10 @@ Config file: `$HERMES_HOME/memos.json`
 | Key | Default | Description |
 |-----|---------|-------------|
 | `api_key` | `""` | MemOS API key |
-| `base_url` | `https://memos.memtensor.cn/api/openmem/v1` | MemOS API Base URL |
 | `user_id` | `hermes_user` | User identifier on MemOS |
-| `knowledgebase` | `None` | Knowledgebase ID or list of IDs for searching |
-| `allowedAgents` | `None` | List of agent IDs allowed to use memory |
-| `multiAgentMode` | `False` | Enable multi-agent memory isolation |
+| `knowledgebase` | `None` | (Optional) Knowledgebase ID or list of IDs for searching |
+| `allowedAgents` | `None` | (Optional) List of agent IDs allowed to use memory |
+| `multiAgentMode` | `False` | (Optional) Enable multi-agent memory isolation |
 
 ## Tools
 | Tool | Description |

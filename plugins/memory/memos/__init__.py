@@ -25,7 +25,6 @@ def _load_config() -> dict:
 
     config = {
         "api_key": os.environ.get("MEMOS_API_KEY", ""),
-        "base_url": os.environ.get("MEMOS_BASE_URL", "https://memos.memtensor.cn/api/openmem/v1"),
         "user_id": os.environ.get("MEMOS_USER_ID", "hermes_user"),
         "knowledgebase": None,
         "allowedAgents": None,
@@ -82,7 +81,6 @@ class MemosMemoryProvider(MemoryProvider):
         self._client = None
         self._client_lock = threading.Lock()
         self._api_key = ""
-        self._base_url = ""
         self._user_id = "hermes_user"
         self._agent_id = ""
         self._session_id = ""
@@ -128,18 +126,18 @@ class MemosMemoryProvider(MemoryProvider):
             },
             {
                 "key": "knowledgebase",
-                "description": "Knowledgebase ID or list of IDs for searching. e.g., 'kb-123' or ['kb-123', 'kb-456']",
+                "description": "Knowledgebase ID or list of IDs for searching. (Optional) e.g., 'kb-123' or ['kb-123', 'kb-456']",
                 "required": False,
             },
             {
                 "key": "allowedAgents",
                 "type": "list",
-                "description": "List of agent IDs allowed to use memory. If empty, all agents are allowed. e.g., ['agent-1', 'agent-2']",
+                "description": "List of agent IDs allowed to use memory. (Optional) If empty, all agents are allowed. e.g., ['agent-1', 'agent-2']",
                 "required": False,
             },
             {
                 "key": "multiAgentMode",
-                "description": "Enable multi-agent memory isolation. e.g., true (for isolation) or false (for shared)",
+                "description": "Enable multi-agent memory isolation. (Optional) e.g., true (for isolation) or false (for shared)",
                 "required": False,
                 "default": False,
             }
@@ -151,8 +149,6 @@ class MemosMemoryProvider(MemoryProvider):
                 return self._client
             try:
                 from memos.api.client import MemOSClient
-                if self._base_url:
-                    os.environ["MEMOS_BASE_URL"] = self._base_url
                 self._client = MemOSClient(api_key=self._api_key)
                 return self._client
             except ImportError:
@@ -161,7 +157,6 @@ class MemosMemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = _load_config()
         self._api_key = self._config.get("api_key", "")
-        self._base_url = self._config.get("base_url", "")
         self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes_user")
         self._agent_id = kwargs.get("agent_id") or kwargs.get("agent_identity", "hermes")
         self._session_id = session_id
