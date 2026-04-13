@@ -1087,3 +1087,70 @@ class TestSkillViewQualifiedNameDispatch:
 
         assert result["success"] is True
         assert result["name"] == "my-skill"
+
+
+class TestSkillViewPluginSkillResolution:
+    def _setup_plugin_skill(self, tmp_path, plugin_name="superpowers", skill_name="writing-plans"):
+        """创建一个假的插件目录，包含一个 skill，返回 (plugin_dir, skill_md)。"""
+        plugin_dir = tmp_path / "plugins" / plugin_name
+        skill_dir = plugin_dir / "skills" / skill_name
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(
+            "---\n"
+            f"name: {skill_name}\n"
+            "description: Plugin-provided skill\n"
+            "---\n\n"
+            "Plugin skill body content.\n"
+        )
+        return plugin_dir, skill_md
+
+    def _register_fake_plugin(self, plugin_name, skill_name, skill_md):
+        """直接向 PluginManager 注册一个假的插件 skill。"""
+        from hermes_cli.plugins import get_plugin_manager
+        pm = get_plugin_manager()
+        pm._register_plugin_skill(
+            plugin_name=plugin_name,
+            skill_name=skill_name,
+            path=skill_md,
+            description="Plugin-provided skill",
+        )
+        return pm
+
+    def test_qualified_name_resolves_plugin_skill(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+
+        plugin_dir, skill_md = self._setup_plugin_skill(tmp_path)
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path / "empty-local")
+        (tmp_path / "empty-local").mkdir()
+
+        # 清除前一个测试可能残留的 PluginManager 状态
+        from hermes_cli.plugins import PluginManager
+        import hermes_cli.plugins as plugins_mod
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", PluginManager())
+
+        self._register_fake_plugin("superpowers", "writing-plans", skill_md)
+
+        raw = skill_view("superpowers:writing-plans")
+        result = json.loads(raw)
+
+        assert result["success"] is True
+        assert result["name"] == "superpowers:writing-plans"
+        assert "Plugin skill body content." in result["content"]
+
+    def test_plugin_skill_description_from_frontmatter(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+
+        plugin_dir, skill_md = self._setup_plugin_skill(tmp_path)
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path / "empty-local")
+        (tmp_path / "empty-local").mkdir()
+
+        from hermes_cli.plugins import PluginManager
+        import hermes_cli.plugins as plugins_mod
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", PluginManager())
+        self._register_fake_plugin("superpowers", "writing-plans", skill_md)
+
+        raw = skill_view("superpowers:writing-plans")
+        result = json.loads(raw)
+
+        assert result["description"] == "Plugin-provided skill"

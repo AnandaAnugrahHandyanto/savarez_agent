@@ -776,6 +776,50 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         return tool_error(str(e), success=False)
 
 
+def _serve_plugin_skill(
+    skill_md: Path,
+    namespace: str,
+    bare: str,
+    file_path: Optional[str],
+) -> str:
+    """读取插件 skill，执行检查，返回 JSON 响应。
+
+    最小版本 — 平台/禁用检查、banner 注入、链接文件支持在后续 Task 中添加。
+    """
+    try:
+        content = skill_md.read_text(encoding="utf-8")
+    except Exception as e:
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"Failed to read skill '{namespace}:{bare}': {e}",
+            },
+            ensure_ascii=False,
+        )
+
+    parsed_frontmatter: Dict[str, Any] = {}
+    try:
+        parsed_frontmatter, _ = _parse_frontmatter(content)
+    except Exception:
+        parsed_frontmatter = {}
+
+    description = str(parsed_frontmatter.get("description", ""))
+    if len(description) > MAX_DESCRIPTION_LENGTH:
+        description = description[: MAX_DESCRIPTION_LENGTH - 3] + "..."
+
+    return json.dumps(
+        {
+            "success": True,
+            "name": f"{namespace}:{bare}",
+            "content": content,
+            "description": description,
+            "linked_files": [],
+            "readiness_status": SkillReadinessStatus.AVAILABLE.value,
+        },
+        ensure_ascii=False,
+    )
+
+
 def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
     """View the content of a skill or a specific file within a skill directory.
 
@@ -808,8 +852,20 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                     },
                     ensure_ascii=False,
                 )
-            # 后续 Task 6-10 在此处添加 _serve_plugin_skill 解析逻辑。
-            # 当前先穿透 — 已有的平铺扫描路径会返回 not-found。
+            from hermes_cli.plugins import (
+                discover_plugins,
+                get_plugin_manager,
+            )
+
+            discover_plugins()  # 幂等的懒发现
+            pm = get_plugin_manager()
+            plugin_skill_md = pm.find_plugin_skill(name)
+
+            if plugin_skill_md is not None and plugin_skill_md.exists():
+                return _serve_plugin_skill(
+                    plugin_skill_md, namespace, bare, file_path
+                )
+            # 穿透到平铺扫描以获取 "not found" 错误及建议
 
         from agent.skill_utils import get_external_skills_dirs
 
