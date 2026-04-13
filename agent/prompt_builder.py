@@ -4,6 +4,7 @@ All functions are stateless. AIAgent._build_system_prompt() calls these to
 assemble pieces, then combines them with memory and ephemeral prompts.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -594,8 +595,17 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
     return manifest
 
 
-def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
-    """Load the disk snapshot if it exists and its manifest still matches."""
+def _load_skills_snapshot(
+    skills_dir: Path,
+    manifest: dict[str, list[int]] | None = None,
+) -> Optional[dict]:
+    """Load the disk snapshot if it exists and its manifest still matches.
+
+    Args:
+        skills_dir: The local skills directory.
+        manifest: Pre-computed manifest to avoid redundant filesystem walks.
+            When *None*, builds the manifest from scratch.
+    """
     snapshot_path = _skills_prompt_snapshot_path()
     if not snapshot_path.exists():
         return None
@@ -607,7 +617,9 @@ def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
         return None
     if snapshot.get("version") != _SKILLS_SNAPSHOT_VERSION:
         return None
-    if snapshot.get("manifest") != _build_skills_manifest(skills_dir):
+    if manifest is None:
+        manifest = _build_skills_manifest(skills_dir)
+    if snapshot.get("manifest") != manifest:
         return None
     return snapshot
 
@@ -742,6 +754,9 @@ def build_skills_system_prompt(
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
+    # The manifest fingerprint ensures file additions/deletions/edits
+    # automatically invalidate the cache (fixes phantom skill entries
+    # when files are deleted outside the skill manager).
     from gateway.session_context import get_session_env
     _platform_hint = (
         os.environ.get("HERMES_PLATFORM")
@@ -749,6 +764,10 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+    manifest = _build_skills_manifest(skills_dir)
+    manifest_fingerprint = hashlib.md5(
+        json.dumps(manifest, sort_keys=True).encode()
+    ).hexdigest()
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -756,6 +775,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        manifest_fingerprint,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -764,7 +784,7 @@ def build_skills_system_prompt(
             return cached
 
     # ── Layer 2: disk snapshot ────────────────────────────────────────
-    snapshot = _load_skills_snapshot(skills_dir)
+    snapshot = _load_skills_snapshot(skills_dir, manifest=manifest)
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
@@ -833,7 +853,7 @@ def build_skills_system_prompt(
 
         _write_skills_snapshot(
             skills_dir,
-            _build_skills_manifest(skills_dir),
+            manifest,
             skill_entries,
             category_descriptions,
         )
