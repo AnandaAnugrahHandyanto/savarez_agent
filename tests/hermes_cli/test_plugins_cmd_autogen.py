@@ -75,3 +75,105 @@ class TestGenerateMinimalManifest:
 
         with pytest.raises(ValueError, match="invalid characters"):
             _generate_minimal_manifest(plugin_dir)
+
+
+from unittest.mock import MagicMock
+
+
+class TestAutogenPluginShimHappyPath:
+    def _make_fake_bundle(self, tmp_path, name="testbundle", with_skills=True):
+        """Create a fake skill-only bundle directory (no plugin.yaml, no __init__.py)."""
+        plugin_dir = tmp_path / name
+        plugin_dir.mkdir()
+        if with_skills:
+            skills_dir = plugin_dir / "skills"
+            skills_dir.mkdir()
+            for skill_name in ("alpha", "beta", "gamma"):
+                skill_dir = skills_dir / skill_name
+                skill_dir.mkdir()
+                (skill_dir / "SKILL.md").write_text(
+                    f"---\nname: {skill_name}\n---\n\nBody.\n"
+                )
+        return plugin_dir
+
+    def test_generates_init_py_from_static_template(self, tmp_path):
+        from hermes_cli.plugins_cmd import _autogen_plugin_shim, _SHIM_INIT_PY_TEMPLATE_V1
+
+        plugin_dir = self._make_fake_bundle(tmp_path)
+        console = MagicMock()
+
+        _autogen_plugin_shim(plugin_dir, console)
+
+        init_py = plugin_dir / "__init__.py"
+        assert init_py.exists()
+        assert init_py.read_text(encoding="utf-8") == _SHIM_INIT_PY_TEMPLATE_V1
+
+    def test_generates_plugin_yaml(self, tmp_path):
+        from hermes_cli.plugins_cmd import _autogen_plugin_shim
+
+        plugin_dir = self._make_fake_bundle(tmp_path)
+        console = MagicMock()
+
+        _autogen_plugin_shim(plugin_dir, console)
+
+        plugin_yaml = plugin_dir / "plugin.yaml"
+        assert plugin_yaml.exists()
+        content = plugin_yaml.read_text(encoding="utf-8")
+        assert "HERMES_AUTOGEN_MANIFEST_V1" in content
+        assert f"name: {plugin_dir.name}" in content
+
+    def test_creates_sidecar_lock_file(self, tmp_path):
+        import json
+        from hermes_cli.plugins_cmd import _autogen_plugin_shim
+
+        plugin_dir = self._make_fake_bundle(tmp_path)
+        console = MagicMock()
+
+        _autogen_plugin_shim(plugin_dir, console)
+
+        lock_file = plugin_dir / ".hermes-autogen" / "shim.lock"
+        assert lock_file.exists()
+        lock = json.loads(lock_file.read_text(encoding="utf-8"))
+        assert lock["schema_version"] == 1
+        generated_paths = {entry["path"] for entry in lock["generated_files"]}
+        assert "__init__.py" in generated_paths
+        assert "plugin.yaml" in generated_paths
+
+    def test_noop_if_no_skills_dir(self, tmp_path):
+        from hermes_cli.plugins_cmd import _autogen_plugin_shim
+
+        plugin_dir = self._make_fake_bundle(tmp_path, with_skills=False)
+        console = MagicMock()
+
+        _autogen_plugin_shim(plugin_dir, console)
+
+        assert not (plugin_dir / "__init__.py").exists()
+        assert not (plugin_dir / "plugin.yaml").exists()
+        assert not (plugin_dir / ".hermes-autogen").exists()
+
+    def test_noop_if_init_py_already_exists(self, tmp_path):
+        from hermes_cli.plugins_cmd import _autogen_plugin_shim
+
+        plugin_dir = self._make_fake_bundle(tmp_path)
+        existing_init = plugin_dir / "__init__.py"
+        existing_init.write_text("# upstream's own init\n")
+        console = MagicMock()
+
+        _autogen_plugin_shim(plugin_dir, console)
+
+        assert existing_init.read_text(encoding="utf-8") == "# upstream's own init\n"
+        assert not (plugin_dir / ".hermes-autogen").exists()
+
+    def test_prints_skill_count(self, tmp_path):
+        from hermes_cli.plugins_cmd import _autogen_plugin_shim
+
+        plugin_dir = self._make_fake_bundle(tmp_path)
+        console = MagicMock()
+
+        _autogen_plugin_shim(plugin_dir, console)
+
+        all_calls = " ".join(
+            str(call.args[0]) if call.args else ""
+            for call in console.print.call_args_list
+        )
+        assert "3 skills" in all_calls or "3 skill" in all_calls

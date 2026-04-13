@@ -101,6 +101,107 @@ def _generate_minimal_manifest(plugin_dir: Path) -> str:
     )
 
 
+def _autogen_plugin_shim(plugin_dir: Path, console) -> None:
+    """若插件是仅含 skills 的 bundle 且缺少 hermes 封装，
+    则根据静态模板生成 __init__.py 和（可选的）plugin.yaml。
+
+    在 .hermes-autogen/shim.lock 中跟踪已生成的文件，以便更新时
+    可安全地重新生成而不覆盖用户自定义内容。
+
+    以下情况为空操作 (no-op)：
+    - skills/ 子目录不存在
+    - __init__.py 已存在（不覆盖上游文件）
+    """
+    skills_dir = plugin_dir / "skills"
+    if not skills_dir.is_dir():
+        return  # 不是 skill bundle
+
+    # 拒绝插件名中含 ':' 的情况，避免命名空间限定名歧义
+    if ":" in plugin_dir.name:
+        raise ValueError(
+            f"Plugin directory name '{plugin_dir.name}' contains ':' which "
+            f"would conflict with namespaced skill resolution. Rename the "
+            f"plugin directory."
+        )
+
+    init_py = plugin_dir / "__init__.py"
+    plugin_yaml = plugin_dir / "plugin.yaml"
+
+    init_existed = init_py.exists()
+    yaml_existed = plugin_yaml.exists()
+
+    if init_existed:
+        return  # 上游已提供 __init__.py，保持不变
+
+    # 统计 skills 数量以便输出提示
+    skill_count = sum(
+        1 for child in skills_dir.iterdir()
+        if child.is_dir() and (child / "SKILL.md").exists()
+    )
+    if skill_count == 0:
+        console.print(
+            "[yellow]Warning:[/yellow] skills/ directory is empty. "
+            "Generated shim will be a no-op."
+        )
+
+    written: list[Path] = []
+    try:
+        init_py.write_text(_SHIM_INIT_PY_TEMPLATE_V1, encoding="utf-8")
+        written.append(init_py)
+
+        if not yaml_existed:
+            yaml_content = _generate_minimal_manifest(plugin_dir)
+            plugin_yaml.write_text(yaml_content, encoding="utf-8")
+            written.append(plugin_yaml)
+
+        lock_dir = plugin_dir / ".hermes-autogen"
+        lock_dir.mkdir(exist_ok=True)
+        lock_file = lock_dir / "shim.lock"
+        lock_data = {
+            "schema_version": 1,
+            "generated_files": [
+                {
+                    "path": p.relative_to(plugin_dir).as_posix(),
+                    "shim_version": "v1",
+                    "generated_at": _iso_now(),
+                }
+                for p in written
+            ],
+            "source_fingerprint": {
+                "had_init_py_at_install": init_existed,
+                "had_plugin_yaml_at_install": yaml_existed,
+            },
+        }
+        lock_file.write_text(
+            _json_autogen.dumps(lock_data, indent=2),
+            encoding="utf-8",
+        )
+    except (PermissionError, OSError) as e:
+        # 回滚已写入的文件
+        for p in written:
+            try:
+                p.unlink()
+            except Exception:
+                pass
+        lock_dir_path = plugin_dir / ".hermes-autogen"
+        if lock_dir_path.exists():
+            try:
+                for f in lock_dir_path.iterdir():
+                    f.unlink()
+                lock_dir_path.rmdir()
+            except Exception:
+                pass
+        raise RuntimeError(
+            f"Failed to generate plugin shim: {e}. "
+            f"Check write permissions on {plugin_dir}."
+        ) from e
+
+    console.print(
+        f"[dim]  Generated plugin wrapper for skill bundle "
+        f"({skill_count} skills detected)[/dim]"
+    )
+
+
 # Minimum manifest version this installer understands.
 # Plugins may declare ``manifest_version: 1`` in plugin.yaml;
 # future breaking changes to the manifest schema bump this.
