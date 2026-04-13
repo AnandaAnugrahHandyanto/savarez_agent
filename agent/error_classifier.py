@@ -20,6 +20,40 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
+# ── Tool execution exceptions ──────────────────────────────────────────
+# Structured exception hierarchy for tool dispatch errors.
+# The registry dispatch() method raises these internally so callers
+# (model_tools.py handle_function_call) can catch specific types to
+# implement differentiated recovery logic.
+
+class ToolError(Exception):
+    """Base exception for all tool dispatch errors."""
+
+    def __init__(self, message: str, tool_name: str = "") -> None:
+        self.tool_name = tool_name
+        super().__init__(message)
+
+
+class ToolNotFoundError(ToolError):
+    """Raised when dispatching a tool that is not registered."""
+
+    def __init__(self, tool_name: str) -> None:
+        super().__init__(f"Unknown tool: {tool_name}", tool_name=tool_name)
+
+
+class ToolExecutionError(ToolError):
+    """Raised when a registered tool handler raises during execution."""
+
+    def __init__(
+        self,
+        message: str,
+        tool_name: str = "",
+        original_exception: Optional[Exception] = None,
+    ) -> None:
+        self.original_exception = original_exception
+        super().__init__(message, tool_name=tool_name)
+
+
 # ── Error taxonomy ──────────────────────────────────────────────────────
 
 class FailoverReason(enum.Enum):

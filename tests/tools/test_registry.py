@@ -309,3 +309,38 @@ class TestSecretCaptureResultContract:
             "validated": False,
         }
         assert "secret" not in json.dumps(result).lower()
+
+
+class TestDispatchTyped:
+    """Verify dispatch_typed() raises structured exceptions."""
+
+    def test_unknown_tool_raises_not_found(self):
+        from agent.error_classifier import ToolNotFoundError
+        reg = ToolRegistry()
+        try:
+            reg.dispatch_typed("nonexistent", {})
+            assert False, "Should have raised"
+        except ToolNotFoundError as e:
+            assert "nonexistent" in str(e)
+            assert e.tool_name == "nonexistent"
+
+    def test_execution_error_wraps_original(self):
+        from agent.error_classifier import ToolExecutionError
+        reg = ToolRegistry()
+
+        def bad_handler(args, **kw):
+            raise ValueError("bad value")
+
+        reg.register(name="bad", toolset="s", schema=_make_schema(), handler=bad_handler)
+        try:
+            reg.dispatch_typed("bad", {})
+            assert False, "Should have raised"
+        except ToolExecutionError as e:
+            assert "bad" in e.tool_name
+            assert isinstance(e.original_exception, ValueError)
+
+    def test_successful_dispatch_returns_result(self):
+        reg = ToolRegistry()
+        reg.register(name="ok", toolset="s", schema=_make_schema(), handler=_dummy_handler)
+        result = reg.dispatch_typed("ok", {})
+        assert json.loads(result) == {"ok": True}

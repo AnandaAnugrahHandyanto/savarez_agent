@@ -151,11 +151,16 @@ class ToolRegistry:
 
         * Async handlers are bridged automatically via ``_run_async()``.
         * All exceptions are caught and returned as ``{"error": "..."}``
-          for consistent error format.
+          with a structured ``error_type`` field for programmatic handling.
+        * For callers that need typed exceptions, use ``dispatch_typed()``
+          which raises ``ToolNotFoundError`` or ``ToolExecutionError``.
         """
         entry = self._tools.get(name)
         if not entry:
-            return json.dumps({"error": f"Unknown tool: {name}"})
+            return json.dumps({
+                "error": f"Unknown tool: {name}",
+                "error_type": "unknown_tool",
+            })
         try:
             if entry.is_async:
                 from model_tools import _run_async
@@ -163,7 +168,38 @@ class ToolRegistry:
             return entry.handler(args, **kwargs)
         except Exception as e:
             logger.exception("Tool %s dispatch error: %s", name, e)
-            return json.dumps({"error": f"Tool execution failed: {type(e).__name__}: {e}"})
+            return json.dumps({
+                "error": f"Tool execution failed: {type(e).__name__}: {e}",
+                "error_type": "execution_error",
+                "error_class": type(e).__name__,
+            })
+
+    def dispatch_typed(self, name: str, args: dict, **kwargs) -> str:
+        """Execute a tool handler, raising typed exceptions on failure.
+
+        Like ``dispatch()`` but raises exceptions instead of returning
+        JSON error strings.  Useful when the caller wants to handle
+        tool errors with try/except instead of parsing JSON.
+
+        Raises:
+            ToolNotFoundError: The tool is not registered.
+            ToolExecutionError: The tool handler raised an exception.
+        """
+        from agent.error_classifier import ToolNotFoundError, ToolExecutionError
+        entry = self._tools.get(name)
+        if not entry:
+            raise ToolNotFoundError(name)
+        try:
+            if entry.is_async:
+                from model_tools import _run_async
+                return _run_async(entry.handler(args, **kwargs))
+            return entry.handler(args, **kwargs)
+        except Exception as e:
+            raise ToolExecutionError(
+                f"Tool execution failed: {type(e).__name__}: {e}",
+                tool_name=name,
+                original_exception=e,
+            ) from e
 
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)
