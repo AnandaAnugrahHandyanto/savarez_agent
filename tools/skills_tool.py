@@ -807,13 +807,20 @@ def _serve_plugin_skill(
     if len(description) > MAX_DESCRIPTION_LENGTH:
         description = description[: MAX_DESCRIPTION_LENGTH - 3] + "..."
 
+    # 注意：`name` 字段回显调用方提供的限定名称
+    # （plugin_name:directory_name），而不是 frontmatter 中的 `name`。
+    # 插件 skill 在注册时按目录名作为 key 存入 registry
+    # （参见 Task 3 的 ctx.register_skill），所以通过
+    # skill_view(result["name"]) 往返查询时必须产出相同的限定名称。
+    # 这与本地 skill 路径不同 —— 本地路径从 frontmatter 派生 skill_name，
+    # 但插件 skill 必须保持 registry-key 不变，故采用此形式。
     return json.dumps(
         {
             "success": True,
             "name": f"{namespace}:{bare}",
             "content": content,
             "description": description,
-            "linked_files": [],
+            "linked_files": None,
             "readiness_status": SkillReadinessStatus.AVAILABLE.value,
         },
         ensure_ascii=False,
