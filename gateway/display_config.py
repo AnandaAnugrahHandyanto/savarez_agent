@@ -27,7 +27,7 @@ from typing import Any
 # and don't participate in per-platform resolution.
 
 _GLOBAL_DEFAULTS: dict[str, Any] = {
-    "tool_progress": "all",
+    "tool_progress": "off",
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
@@ -42,14 +42,14 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
 # Tier 4 (minimal): Batch/non-interactive delivery
 
 _TIER_HIGH = {
-    "tool_progress": "all",
+    "tool_progress": "off",
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": None,  # follow global
 }
 
 _TIER_MEDIUM = {
-    "tool_progress": "new",
+    "tool_progress": "off",
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": None,
@@ -82,7 +82,7 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
 
     # Tier 3 — no edit support, progress messages are permanent
     "signal":          _TIER_LOW,
-    "whatsapp":        _TIER_LOW,
+    "whatsapp":        _TIER_MEDIUM,  # Baileys bridge supports /edit
     "bluebubbles":     _TIER_LOW,
     "weixin":          _TIER_LOW,
     "wecom":           _TIER_LOW,

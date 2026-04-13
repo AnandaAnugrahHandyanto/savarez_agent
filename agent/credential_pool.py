@@ -1330,6 +1330,40 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
 
     return changed, active_sources
 
+def _seed_from_config_strategies(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
+    changed = False
+    active_sources: Set[str] = set()
+    try:
+        config = _load_config_safe()
+        strategies = config.get("credential_pool_strategies", {}) if config else {}
+        if not isinstance(strategies, dict):
+            return changed, active_sources
+
+        vars_to_seed = strategies.get(provider)
+        if not vars_to_seed or not isinstance(vars_to_seed, list):
+            return changed, active_sources
+
+        pconfig = PROVIDER_REGISTRY.get(provider)
+        auth_type = AUTH_TYPE_API_KEY
+        if pconfig and pconfig.auth_type == AUTH_TYPE_OAUTH:
+            auth_type = AUTH_TYPE_OAUTH
+
+        for env_var in vars_to_seed:
+            token = os.getenv(env_var, "").strip()
+            if not token:
+                continue
+            source = f"config_strategy:{env_var}"
+            active_sources.add(source)
+            base_url = pconfig.inference_base_url if pconfig else None
+            changed |= _upsert_entry(
+                entries,
+                provider,
+                source,
+                {"source": source, "auth_type": auth_type, "access_token": token, "base_url": base_url, "label": env_var},
+            )
+    except Exception as e:
+        logger.debug("Failed to seed from config strategies for %s: %s", provider, e)
+    return changed, active_sources
 
 def load_pool(provider: str) -> CredentialPool:
     provider = (provider or "").strip().lower()
@@ -1344,10 +1378,10 @@ def load_pool(provider: str) -> CredentialPool:
     else:
         singleton_changed, singleton_sources = _seed_from_singletons(provider, entries)
         env_changed, env_sources = _seed_from_env(provider, entries)
-        changed = singleton_changed or env_changed
-        changed |= _prune_stale_seeded_entries(entries, singleton_sources | env_sources)
+        strat_changed, strat_sources = _seed_from_config_strategies(provider, entries)
+        changed = singleton_changed or env_changed or strat_changed
+        changed |= _prune_stale_seeded_entries(entries, singleton_sources | env_sources | strat_sources)
         changed |= _normalize_pool_priorities(provider, entries)
-
     if changed:
         write_credential_pool(
             provider,
