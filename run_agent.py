@@ -807,6 +807,40 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
     return found
 
 
+def _sanitize_tools_non_ascii(tools: list) -> bool:
+    """Strip non-ASCII characters from tool payloads in-place."""
+    return _sanitize_structure_non_ascii(tools)
+
+
+def _sanitize_structure_non_ascii(payload: Any) -> bool:
+    """Strip non-ASCII characters from nested dict/list payloads in-place."""
+    found = False
+
+    def _walk(node):
+        nonlocal found
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if isinstance(value, str):
+                    sanitized = _strip_non_ascii(value)
+                    if sanitized != value:
+                        node[key] = sanitized
+                        found = True
+                elif isinstance(value, (dict, list)):
+                    _walk(value)
+        elif isinstance(node, list):
+            for idx, value in enumerate(node):
+                if isinstance(value, str):
+                    sanitized = _strip_non_ascii(value)
+                    if sanitized != value:
+                        node[idx] = sanitized
+                        found = True
+                elif isinstance(value, (dict, list)):
+                    _walk(value)
+
+    _walk(payload)
+    return found
+
+
 
 
 
@@ -11696,35 +11730,17 @@ class AIAgent:
                         # _unicode_sanitization_passes < 2 (outer guard).
                         if _surrogates_found or _is_surrogate_error:
                             self._unicode_sanitization_passes += 1
-                            if _surrogates_found:
-                                self._vprint(
-                                    f"{self.log_prefix}⚠️  Stripped invalid surrogate characters from messages. Retrying...",
-                                    force=True,
-                                )
-                            else:
-                                self._vprint(
-                                    f"{self.log_prefix}⚠️  Surrogate encoding error — retrying after full-payload sanitization...",
-                                    force=True,
-                                )
+                            self._vprint(
+                                f"{self.log_prefix}⚠️  Stripped invalid surrogate characters from messages. Retrying...",
+                                force=True,
+                            )
                             continue
                         if _is_ascii_codec:
                             self._force_ascii_payload = True
                             # ASCII codec: the system encoding can't handle
                             # non-ASCII characters at all. Sanitize all
                             # non-ASCII content from messages/tool schemas and retry.
-                            # Sanitize both the canonical `messages` list and
-                            # `api_messages` (the API-copy built before the retry
-                            # loop, which may contain extra fields like
-                            # reasoning_content that are not in `messages`).
                             _messages_sanitized = _sanitize_messages_non_ascii(messages)
-                            if isinstance(api_messages, list):
-                                _sanitize_messages_non_ascii(api_messages)
-                            # Also sanitize the last api_kwargs if already built,
-                            # so a leftover non-ASCII value in a transformed field
-                            # (e.g. extra_body, reasoning_content) doesn't survive
-                            # into the next attempt via _build_api_kwargs cache paths.
-                            if isinstance(api_kwargs, dict):
-                                _sanitize_structure_non_ascii(api_kwargs)
                             _prefill_sanitized = False
                             if isinstance(getattr(self, "prefill_messages", None), list):
                                 _prefill_sanitized = _sanitize_messages_non_ascii(self.prefill_messages)
@@ -11755,61 +11771,21 @@ class AIAgent:
                             if isinstance(_default_headers, dict):
                                 _headers_sanitized = _sanitize_structure_non_ascii(_default_headers)
 
-                            # Sanitize the API key — non-ASCII characters in
-                            # credentials (e.g. ʋ instead of v from a bad
-                            # copy-paste) cause httpx to fail when encoding
-                            # the Authorization header as ASCII.  This is the
-                            # most common cause of persistent UnicodeEncodeError
-                            # that survives message/tool sanitization (#6843).
-                            _credential_sanitized = False
-                            _raw_key = getattr(self, "api_key", None) or ""
-                            if _raw_key:
-                                _clean_key = _strip_non_ascii(_raw_key)
-                                if _clean_key != _raw_key:
-                                    self.api_key = _clean_key
-                                    if isinstance(getattr(self, "_client_kwargs", None), dict):
-                                        self._client_kwargs["api_key"] = _clean_key
-                                    # Also update the live client — it holds its
-                                    # own copy of api_key which auth_headers reads
-                                    # dynamically on every request.
-                                    if getattr(self, "client", None) is not None and hasattr(self.client, "api_key"):
-                                        self.client.api_key = _clean_key
-                                    _credential_sanitized = True
-                                    self._vprint(
-                                        f"{self.log_prefix}⚠️  API key contained non-ASCII characters "
-                                        f"(bad copy-paste?) — stripped them. If auth fails, "
-                                        f"re-copy the key from your provider's dashboard.",
-                                        force=True,
-                                    )
-
-                            # Always retry on ASCII codec detection —
-                            # _force_ascii_payload guarantees the full
-                            # api_kwargs payload is sanitized on the
-                            # next iteration (line ~8475).  Even when
-                            # per-component checks above find nothing
-                            # (e.g. non-ASCII only in api_messages'
-                            # reasoning_content), the flag catches it.
-                            # Bounded by _unicode_sanitization_passes < 2.
-                            self._unicode_sanitization_passes += 1
-                            _any_sanitized = (
+                            if (
                                 _messages_sanitized
                                 or _prefill_sanitized
                                 or _tools_sanitized
                                 or _system_sanitized
                                 or _headers_sanitized
-                                or _credential_sanitized
-                            )
-                            if _any_sanitized:
+                            ):
+                                self._unicode_sanitization_passes += 1
                                 self._vprint(
                                     f"{self.log_prefix}⚠️  System encoding is ASCII — stripped non-ASCII characters from request payload. Retrying...",
                                     force=True,
                                 )
-                            else:
-                                self._vprint(
-                                    f"{self.log_prefix}⚠️  System encoding is ASCII — enabling full-payload sanitization for retry...",
-                                    force=True,
-                                )
-                            continue
+                                continue
+                        # Nothing to sanitize in any payload component.
+                        # Fall through to normal error path.
 
                     status_code = getattr(api_error, "status_code", None)
                     error_context = self._extract_api_error_context(api_error)
