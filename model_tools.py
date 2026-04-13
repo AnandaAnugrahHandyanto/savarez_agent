@@ -9,7 +9,7 @@ the public API that run_agent.py, cli.py, batch_runner.py, and the RL
 environments consume.
 
 Public API (signatures preserved from the original 2,400-line version):
-    get_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode) -> list
+    get_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode, activated_tools) -> list
     handle_function_call(function_name, function_args, task_id, user_task) -> str
     TOOL_TO_TOOLSET_MAP: dict          (for batch_runner.py)
     TOOLSET_REQUIREMENTS: dict         (for cli.py, doctor.py)
@@ -158,6 +158,7 @@ def _discover_tools():
         "tools.send_message_tool",
         # "tools.honcho_tools",  # Removed — Honcho is now a memory provider plugin
         "tools.homeassistant_tool",
+        "tools.tool_search_tool",
         "tools.plan_tool",
     ]
     import importlib
@@ -236,6 +237,7 @@ def get_tool_definitions(
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
     quiet_mode: bool = False,
+    activated_tools: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -246,10 +248,13 @@ def get_tool_definitions(
         enabled_toolsets: Only include tools from these toolsets.
         disabled_toolsets: Exclude tools from these toolsets (if enabled_toolsets is None).
         quiet_mode: Suppress status prints.
+        activated_tools: Explicit tool names to include even when deferred.
 
     Returns:
         Filtered list of OpenAI-format tool definitions.
     """
+    activated_tools_set = set(activated_tools or [])
+
     # Determine which tool names the caller wants
     tools_to_include: set = set()
 
@@ -293,6 +298,32 @@ def get_tool_definitions(
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
+    if activated_tools_set:
+        unknown_activated = activated_tools_set.difference(registry.get_all_tool_names())
+        if unknown_activated and not quiet_mode:
+            print(f"⚠️  Unknown activated tools ignored: {', '.join(sorted(unknown_activated))}")
+        tools_to_include.update(activated_tools_set)
+
+    always_load_tools = {
+        name for name in registry.get_all_tool_names()
+        if registry.get_metadata(name).get("always_load")
+    }
+    tools_to_include.update(always_load_tools)
+
+    eligible_tools: set = set()
+    for name in tools_to_include:
+        meta = registry.get_metadata(name)
+        if not meta:
+            continue
+        if meta.get("always_load"):
+            eligible_tools.add(name)
+            continue
+        if meta.get("deferred") and name not in activated_tools_set:
+            if not quiet_mode:
+                print(f"⏸️  Deferred tool '{name}' not loaded by default")
+            continue
+        eligible_tools.add(name)
+
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
     # all check the tool registry for plugin-provided toolsets.  No bypass
@@ -300,7 +331,7 @@ def get_tool_definitions(
     # other toolset.
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
-    filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
+    filtered_tools = registry.get_definitions(eligible_tools, quiet=quiet_mode)
 
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references

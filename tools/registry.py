@@ -105,6 +105,17 @@ class ToolRegistry:
         search_hint: str = "",
     ):
         """Register a tool.  Called at module-import time by each tool file."""
+        description_text = description or schema.get("description", "")
+        if deferred and always_load:
+            raise ValueError(
+                f"Tool '{name}' cannot be both deferred and always_load"
+            )
+        if deferred and not search_hint and not description_text:
+            logger.warning(
+                "Deferred tool '%s' has no search_hint or description; it may be hard to discover",
+                name,
+            )
+
         existing = self._tools.get(name)
         if existing and existing.toolset != toolset:
             logger.warning(
@@ -120,7 +131,7 @@ class ToolRegistry:
             check_fn=check_fn,
             requires_env=requires_env or [],
             is_async=is_async,
-            description=description or schema.get("description", ""),
+            description=description_text,
             emoji=emoji,
             max_result_size_chars=max_result_size_chars,
             mutates_local_fs=mutates_local_fs,
