@@ -123,6 +123,21 @@ DANGEROUS_PATTERNS = [
     # a script is first made executable then immediately run. The script
     # content may contain dangerous commands that individual patterns miss.
     (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
+    # ── Shell bypass / obfuscation techniques ──
+    # Variable-based command reconstruction: a=rm; $a -rf /
+    (r'\b\w+=\s*["\']?(rm|mkfs|dd|chmod|chown)\b', "variable assignment of dangerous command name"),
+    # Hex/octal encoded execution: $'\x72\x6d' -rf /
+    (r"\$'(\\x[0-9a-fA-F]{2}){2,}'", "hex-encoded shell string (possible obfuscation)"),
+    (r"\$'(\\[0-7]{3}){2,}'", "octal-encoded shell string (possible obfuscation)"),
+    # Newline injection in single-line commands
+    (r'\\n\s*(rm|mkfs|dd|chmod\s+777|curl.*\|\s*sh)', "newline-injected dangerous command"),
+    # Environment manipulation to weaken security
+    (r'\bexport\s+(PATH|LD_PRELOAD|LD_LIBRARY_PATH)\s*=', "modifying security-sensitive environment variable"),
+    # Additional pipe-to-exec patterns
+    (r'\b(wget)\b.*-O\s*-\s*\|\s*(python|perl|ruby|node)', "pipe remote content to interpreter"),
+    (r'\b(curl|wget)\b.*\|\s*(python[23]?|perl|ruby|node)\b', "pipe remote content to interpreter"),
+    # Process substitution to bypass argument-based detection
+    (r'<\(\s*(curl|wget|fetch)\b', "process substitution with remote fetch"),
 ]
 
 

@@ -95,6 +95,11 @@ def _is_blocked_device(filepath: str) -> bool:
 _SENSITIVE_PATH_PREFIXES = ("/etc/", "/boot/", "/usr/lib/systemd/")
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
+# Hermes internal files that must not be written by file tools to prevent
+# agent-driven persistence attacks (e.g. a prompt-injected skill overwriting
+# config.yaml to disable security features or .env to steal API keys).
+_HERMES_PROTECTED_FILES = frozenset({"config.yaml", ".env", "profiles"})
+
 
 def _check_sensitive_path(filepath: str) -> str | None:
     """Return an error message if the path targets a sensitive system location."""
@@ -113,6 +118,48 @@ def _check_sensitive_path(filepath: str) -> str | None:
             f"Refusing to write to sensitive system path: {filepath}\n"
             "Use the terminal tool with sudo if you need to modify system files."
         )
+    return None
+
+
+def _check_symlink_write(filepath: str) -> str | None:
+    """Return an error message if a write target is a symlink pointing to a sensitive location.
+
+    Prevents symlink traversal attacks where a symlink like ``./innocent.txt -> /etc/passwd``
+    would pass the literal-path check but write to a protected system file.
+    Also blocks writes to Hermes internal configuration files (config.yaml, .env)
+    to prevent agent-driven persistence attacks.
+    """
+    try:
+        expanded = os.path.expanduser(filepath)
+        # Check if the path itself (or any parent component) is a symlink
+        # that resolves to a sensitive location.
+        resolved = os.path.realpath(expanded)
+        if os.path.islink(expanded) and resolved != os.path.abspath(expanded):
+            # The path is a symlink — recheck the *resolved* target against
+            # sensitive paths, since the literal path already passed.
+            sensitive_err = _check_sensitive_path(resolved)
+            if sensitive_err:
+                return (
+                    f"Refusing to write via symlink: {filepath} -> {resolved}\n"
+                    "The symlink target is a sensitive system path. "
+                    "Use the terminal tool with sudo if you need to modify system files."
+                )
+        # Block writes to Hermes internal configuration files regardless of path.
+        from hermes_constants import get_hermes_home as _ghh
+        try:
+            hermes_home_resolved = _ghh().resolve()
+            resolved_path = Path(resolved)
+            if resolved_path.parent == hermes_home_resolved:
+                if resolved_path.name in _HERMES_PROTECTED_FILES:
+                    return (
+                        f"Refusing to write to Hermes internal file: {filepath}\n"
+                        "Modifying Hermes configuration files directly is not allowed "
+                        "to prevent persistence attacks. Use `/config` commands instead."
+                    )
+        except (OSError, ValueError):
+            pass
+    except (OSError, ValueError):
+        pass  # If we can't resolve, let the write proceed and fail naturally
     return None
 
 
@@ -573,6 +620,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     sensitive_err = _check_sensitive_path(path)
     if sensitive_err:
         return tool_error(sensitive_err)
+    symlink_err = _check_symlink_write(path)
+    if symlink_err:
+        return tool_error(symlink_err)
     try:
         stale_warning = _check_file_staleness(path, task_id)
         file_ops = _get_file_ops(task_id)
@@ -608,6 +658,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         sensitive_err = _check_sensitive_path(_p)
         if sensitive_err:
             return tool_error(sensitive_err)
+        symlink_err = _check_symlink_write(_p)
+        if symlink_err:
+            return tool_error(symlink_err)
     try:
         # Check staleness for all files this patch will touch.
         stale_warnings = []

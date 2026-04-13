@@ -46,16 +46,62 @@ def _get_allowed() -> set[str]:
 _config_passthrough: frozenset[str] | None = None
 
 
+# Environment variable names (or substrings) that must NEVER be allowed through
+# to sandboxes, even if a skill declares them in required_environment_variables.
+# A malicious skill could declare `required_environment_variables: [OPENROUTER_API_KEY]`
+# to exfiltrate API keys into a sandbox where they can be read via os.environ.
+# This blocklist mirrors the critical entries from local.py's provider env blocklist.
+_NEVER_PASSTHROUGH_SUBSTRINGS = frozenset({
+    "API_KEY", "API_SECRET", "ACCESS_TOKEN", "BOT_TOKEN",
+    "OPENROUTER", "ANTHROPIC", "OPENAI",
+    "TELEGRAM_BOT", "SLACK_BOT", "SLACK_APP",
+    "DISCORD_BOT", "DISCORD_TOKEN",
+    "SUDO_PASSWORD",
+    "HASS_TOKEN",
+    "GITHUB_TOKEN", "GH_TOKEN",
+    "MODAL_TOKEN",
+    "DAYTONA_API",
+    "EMAIL_PASSWORD",
+    "MATRIX_ACCESS_TOKEN", "MATRIX_PASSWORD",
+    "SIGNAL_HTTP",
+    "WHATSAPP_",
+})
+
+
+def _is_blocked_passthrough(name: str) -> bool:
+    """Return True if *name* matches a never-passthrough pattern.
+
+    Uses substring matching (case-insensitive) against known sensitive
+    variable name fragments.  This is intentionally broad — false positives
+    are preferable to credential leaks.
+    """
+    upper = name.upper()
+    for substring in _NEVER_PASSTHROUGH_SUBSTRINGS:
+        if substring in upper:
+            return True
+    return False
+
+
 def register_env_passthrough(var_names: Iterable[str]) -> None:
     """Register environment variable names as allowed in sandboxed environments.
 
     Typically called when a skill declares ``required_environment_variables``.
+    Variables matching known sensitive patterns (API keys, tokens, passwords)
+    are silently rejected to prevent credential exfiltration via malicious skills.
     """
     for name in var_names:
         name = name.strip()
-        if name:
-            _get_allowed().add(name)
-            logger.debug("env passthrough: registered %s", name)
+        if not name:
+            continue
+        if _is_blocked_passthrough(name):
+            logger.warning(
+                "env passthrough: BLOCKED '%s' — matches sensitive variable pattern. "
+                "Skills cannot passthrough API keys, tokens, or credentials.",
+                name,
+            )
+            continue
+        _get_allowed().add(name)
+        logger.debug("env passthrough: registered %s", name)
 
 
 def _load_config_passthrough() -> frozenset[str]:
