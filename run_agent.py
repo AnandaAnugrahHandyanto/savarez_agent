@@ -99,6 +99,7 @@ from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
+    get_skin_verbs,
     _detect_tool_failure,
     get_tool_emoji as _get_tool_emoji,
 )
@@ -1085,6 +1086,22 @@ class AIAgent:
             _agent_cfg = _load_agent_config()
         except Exception:
             _agent_cfg = {}
+
+        self._llama_cpp_parallel_tool_calls = False
+        self._llama_cpp_parser_chain = ["llama3_json", "hermes"]
+        if self.provider == "llama-cpp":
+            try:
+                from hermes_cli.llama_cpp import agent_runtime_settings
+
+                _llama_settings = agent_runtime_settings(_agent_cfg)
+                self._llama_cpp_parallel_tool_calls = bool(
+                    _llama_settings.get("parallel_tool_calls", False)
+                )
+                self._llama_cpp_parser_chain = list(
+                    _llama_settings.get("parser_chain") or self._llama_cpp_parser_chain
+                )
+            except Exception:
+                pass
 
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
@@ -4908,7 +4925,13 @@ class AIAgent:
             # prefill on large contexts before producing the first token.
             # Auto-increase the httpx read timeout unless the user explicitly
             # overrode HERMES_STREAM_READ_TIMEOUT.
-            if _stream_read_timeout == 120.0 and self.base_url and is_local_endpoint(self.base_url):
+            if (
+                _stream_read_timeout == 120.0
+                and (
+                    self._is_llama_cpp_provider()
+                    or (self.base_url and is_local_endpoint(self.base_url))
+                )
+            ):
                 _stream_read_timeout = _base_timeout
                 logger.debug(
                     "Local provider detected (%s) — stream read timeout raised to %.0fs",
@@ -5928,6 +5951,51 @@ class AIAgent:
                     content[-1]["cache_control"] = {"type": "ephemeral"}
                 break
 
+    def _is_llama_cpp_provider(self) -> bool:
+        return (getattr(self, "provider", "") or "").lower() == "llama-cpp"
+
+    def _ensure_tool_call_ids(self, tool_calls: list) -> list:
+        """Assign deterministic ids to tool calls that arrive without one."""
+        normalized = []
+        for idx, tool_call in enumerate(tool_calls or []):
+            raw_id = getattr(tool_call, "id", None)
+            if not isinstance(raw_id, str) or not raw_id.strip():
+                fn = getattr(tool_call, "function", None)
+                fn_name = getattr(fn, "name", "") if fn else ""
+                fn_args = getattr(fn, "arguments", "{}") if fn else "{}"
+                setattr(tool_call, "id", self._deterministic_call_id(fn_name, fn_args, idx))
+            normalized.append(tool_call)
+        return normalized
+
+    def _maybe_parse_llama_cpp_tool_calls(self, assistant_message):
+        """Recover structured tool calls from llama.cpp text fallbacks."""
+        if not self._is_llama_cpp_provider():
+            return assistant_message
+        if getattr(assistant_message, "tool_calls", None):
+            assistant_message.tool_calls = self._ensure_tool_call_ids(assistant_message.tool_calls)
+            return assistant_message
+
+        content = getattr(assistant_message, "content", None)
+        if not isinstance(content, str) or not content.strip():
+            return assistant_message
+
+        try:
+            from environments.tool_call_parsers import get_parser
+        except Exception:
+            return assistant_message
+
+        for parser_name in self._llama_cpp_parser_chain:
+            try:
+                parsed_content, parsed_tool_calls = get_parser(parser_name).parse(content)
+            except Exception:
+                continue
+            if not parsed_tool_calls:
+                continue
+            assistant_message.content = parsed_content
+            assistant_message.tool_calls = self._ensure_tool_call_ids(list(parsed_tool_calls))
+            return assistant_message
+        return assistant_message
+
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
         if self.api_mode == "anthropic_messages":
@@ -6105,6 +6173,8 @@ class AIAgent:
             }
         if self.tools:
             api_kwargs["tools"] = self.tools
+            if self._is_llama_cpp_provider():
+                api_kwargs["parallel_tool_calls"] = bool(self._llama_cpp_parallel_tool_calls)
 
         if self.max_tokens is not None:
             api_kwargs.update(self._max_tokens_param(self.max_tokens))
@@ -8055,7 +8125,7 @@ class AIAgent:
             else:
                 # Animated thinking spinner in quiet mode
                 face = random.choice(KawaiiSpinner.KAWAII_THINKING)
-                verb = random.choice(KawaiiSpinner.THINKING_VERBS)
+                verb = random.choice(get_skin_verbs() or KawaiiSpinner.THINKING_VERBS)
                 if self.thinking_callback:
                     # CLI TUI mode: use prompt_toolkit widget instead of raw spinner
                     # (works in both streaming and non-streaming modes)
@@ -9426,6 +9496,13 @@ class AIAgent:
                         assistant_message.content = "\n".join(parts)
                     else:
                         assistant_message.content = str(raw)
+
+                if self._is_llama_cpp_provider():
+                    if finish_reason == "tool":
+                        finish_reason = "tool_calls"
+                    assistant_message = self._maybe_parse_llama_cpp_tool_calls(assistant_message)
+                    if getattr(assistant_message, "tool_calls", None):
+                        finish_reason = "tool_calls"
 
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook

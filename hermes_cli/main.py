@@ -9,6 +9,11 @@ Usage:
     hermes gateway start       # Start gateway as service
     hermes gateway stop        # Stop gateway service
     hermes gateway status      # Show gateway status
+    hermes local status        # Show managed local llama.cpp status
+    hermes local start         # Start managed local llama.cpp
+    hermes local stop          # Stop managed local llama.cpp
+    hermes local restart       # Restart managed local llama.cpp
+    hermes local logs          # Show managed local llama.cpp logs
     hermes gateway install     # Install gateway service
     hermes gateway uninstall   # Uninstall gateway service
     hermes setup               # Interactive setup wizard
@@ -789,6 +794,94 @@ def cmd_gateway(args):
     gateway_command(args)
 
 
+def _local_acceleration_label(status: dict) -> str:
+    requested = str(status.get("requested_acceleration") or "").strip()
+    resolved = str(status.get("resolved_acceleration") or "").strip()
+    if requested and resolved:
+        label = resolved if requested == resolved else f"{requested} -> {resolved}"
+    else:
+        label = resolved or requested or "cpu"
+    gpu_layers = int(status.get("gpu_layers") or 0)
+    configured_gpu_layers = int(status.get("configured_gpu_layers") or 0)
+    if gpu_layers > 0:
+        layer_label = "all" if configured_gpu_layers < 0 else str(gpu_layers)
+        label += f" ({layer_label} gpu layers)"
+    return label
+
+
+def _print_local_status(status: dict) -> None:
+    if status.get("healthy"):
+        summary = "healthy"
+    elif status.get("process_running"):
+        summary = "running"
+    elif status.get("installed"):
+        summary = "installed"
+    else:
+        summary = "not installed"
+
+    print(f"llama.cpp: {summary}")
+    print(f"Endpoint: {status.get('base_url')}")
+    if status.get("installed_version"):
+        print(f"Version: {status.get('installed_version')}")
+    if status.get("binary_path"):
+        print(f"Binary: {status.get('binary_path')}")
+    print(f"Model: {status.get('model_spec')}")
+    if status.get("actual_model_id"):
+        print(f"Loaded: {status.get('actual_model_id')}")
+    print(f"Acceleration: {_local_acceleration_label(status)}")
+    if status.get("started_at"):
+        print(f"Started: {status.get('started_at')}")
+    if status.get("stopped_at") and not status.get("healthy") and not status.get("process_running"):
+        print(f"Stopped: {status.get('stopped_at')}")
+    if status.get("log_path"):
+        print(f"Logs: {status.get('log_path')}")
+    smoke = status.get("smoke_tests") if isinstance(status.get("smoke_tests"), dict) else {}
+    if smoke:
+        print(f"Smoke tests: {'passed' if smoke.get('passed') else 'not passed'}")
+
+
+def cmd_local(args):
+    """Managed local llama.cpp lifecycle commands."""
+    from hermes_cli.config import load_config
+    from hermes_cli.llama_cpp import ensure_runtime_ready, get_status, read_recent_logs, stop_server
+
+    config = load_config()
+    action = getattr(args, "local_command", None) or "status"
+
+    if action == "status":
+        _print_local_status(get_status(config, check_health=True))
+        return
+
+    if action == "start":
+        status = ensure_runtime_ready(config, progress_callback=print)
+        _print_local_status(status)
+        return
+
+    if action == "stop":
+        result = stop_server(config, force=getattr(args, "force", False))
+        if result.get("stopped"):
+            print(f"Stopped managed local llama.cpp on {result.get('base_url')}")
+        else:
+            print(f"No managed local llama.cpp process was running on {result.get('base_url')}")
+        return
+
+    if action == "restart":
+        stop_server(config, force=getattr(args, "force", False))
+        status = ensure_runtime_ready(config, progress_callback=print)
+        _print_local_status(status)
+        return
+
+    if action == "logs":
+        text = read_recent_logs(config, lines=getattr(args, "lines", 80))
+        if text:
+            print(text)
+        else:
+            print("No llama.cpp logs found.")
+        return
+
+    raise ValueError(f"Unknown local command: {action}")
+
+
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
     _require_tty("whatsapp")
@@ -987,8 +1080,12 @@ def cmd_model(args):
     _require_tty("model")
     select_provider_and_model(args=args)
 
-
-def select_provider_and_model(args=None):
+def select_provider_and_model(
+    args=None,
+    *,
+    preferred_provider: str | None = None,
+    skip_provider_prompt: bool = False,
+):
     """Core provider selection + model picking logic.
 
     Shared by ``cmd_model`` (``hermes model``) and the setup wizard
@@ -1035,6 +1132,7 @@ def select_provider_and_model(args=None):
         active = "custom"
 
     provider_labels = {
+        "llama-cpp": "Local",
         "openrouter": "OpenRouter",
         "nous": "Nous Portal",
         "openai-codex": "OpenAI Codex",
@@ -1065,6 +1163,7 @@ def select_provider_and_model(args=None):
 
     # Step 1: Provider selection — top providers shown first, rest behind "More..."
     top_providers = [
+        ("local", "Local (managed llama.cpp model)"),
         ("nous", "Nous Portal (Nous Research subscription)"),
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
         ("anthropic", "Anthropic (Claude models — API key or Claude Code)"),
@@ -1121,21 +1220,28 @@ def select_provider_and_model(args=None):
         model_hint = f" — {saved_model}" if saved_model else ""
         top_providers.append((key, f"{name} ({short_url}){model_hint}"))
 
-    top_keys = {k for k, _ in top_providers}
     extended_keys = {k for k, _ in extended_providers}
 
+    active_menu_key = "local" if active == "llama-cpp" else active
+
+    # Keep the active provider at the top of the primary menu so tests and
+    # non-interactive wrappers that select index 0 continue to target it.
+    if active_menu_key:
+        active_top = [(k, l) for k, l in top_providers if k == active_menu_key]
+        if active_top:
+            top_providers = active_top + [(k, l) for k, l in top_providers if k != active_menu_key]
+
     # If the active provider is in the extended list, promote it into top
-    if active and active in extended_keys:
-        promoted = [(k, l) for k, l in extended_providers if k == active]
-        extended_providers = [(k, l) for k, l in extended_providers if k != active]
+    if active_menu_key and active_menu_key in extended_keys:
+        promoted = [(k, l) for k, l in extended_providers if k == active_menu_key]
+        extended_providers = [(k, l) for k, l in extended_providers if k != active_menu_key]
         top_providers = promoted + top_providers
-        top_keys.add(active)
 
     # Build the primary menu
     ordered = []
     default_idx = 0
     for key, label in top_providers:
-        if active and key == active:
+        if active_menu_key and key == active_menu_key:
             ordered.append((key, f"{label}  ← currently active"))
             default_idx = len(ordered) - 1
         else:
@@ -1144,14 +1250,19 @@ def select_provider_and_model(args=None):
     ordered.append(("more", "More providers..."))
     ordered.append(("cancel", "Cancel"))
 
-    provider_idx = _prompt_provider_choice(
-        [label for _, label in ordered], default=default_idx,
-    )
-    if provider_idx is None or ordered[provider_idx][0] == "cancel":
-        print("No change.")
-        return
-
-    selected_provider = ordered[provider_idx][0]
+    selected_provider = None
+    if skip_provider_prompt and preferred_provider:
+        selected_provider = preferred_provider
+    else:
+        provider_idx = _prompt_provider_choice(
+            [label for _, label in ordered],
+            title="Select provider:",
+            default=default_idx,
+        )
+        if provider_idx is None or ordered[provider_idx][0] == "cancel":
+            print("No change.")
+            return
+        selected_provider = ordered[provider_idx][0]
 
     # "More providers..." — show the extended list
     if selected_provider == "more":
@@ -1170,7 +1281,9 @@ def select_provider_and_model(args=None):
         selected_provider = ext_ordered[ext_idx][0]
 
     # Step 2: Provider-specific setup + model selection
-    if selected_provider == "openrouter":
+    if selected_provider in {"llama-cpp", "local"}:
+        _model_flow_llama_cpp(config, current_model)
+    elif selected_provider == "openrouter":
         _model_flow_openrouter(config, current_model)
     elif selected_provider == "nous":
         _model_flow_nous(config, current_model, args=args)
@@ -1239,7 +1352,19 @@ def _clear_stale_openai_base_url():
               else f"Cleared stale OPENAI_BASE_URL from .env (was: {stale_url})")
 
 
-def _prompt_provider_choice(choices, *, default=0):
+def _format_compact_number(value):
+    try:
+        num = int(value)
+    except Exception:
+        return str(value or "")
+    if num >= 1_000_000:
+        return f"{num / 1_000_000:.1f}M"
+    if num >= 1_000:
+        return f"{num / 1_000:.1f}k"
+    return str(num)
+
+
+def _prompt_provider_choice(choices, *, title="Select provider:", default=0):
     """Show provider selection menu with curses arrow-key navigation.
 
     Falls back to a numbered list when curses is unavailable (e.g. piped
@@ -1248,7 +1373,7 @@ def _prompt_provider_choice(choices, *, default=0):
     """
     try:
         from hermes_cli.setup import _curses_prompt_choice
-        idx = _curses_prompt_choice("Select provider:", choices, default)
+        idx = _curses_prompt_choice(title, choices, default)
         if idx >= 0:
             print()
             return idx
@@ -1256,7 +1381,7 @@ def _prompt_provider_choice(choices, *, default=0):
         pass
 
     # Fallback: numbered list
-    print("Select provider:")
+    print(title)
     for i, c in enumerate(choices, 1):
         marker = "→" if i - 1 == default else " "
         print(f"  {marker} {i}. {c}")
@@ -1275,6 +1400,219 @@ def _prompt_provider_choice(choices, *, default=0):
         except (KeyboardInterrupt, EOFError):
             print()
             return None
+
+def _model_flow_llama_cpp(config, current_model=""):
+    """Managed local llama.cpp flow.
+
+    Installs/uses a managed llama.cpp binary, selects a vetted local model tier,
+    starts the server, runs smoke tests, and persists the resulting provider
+    selection as ``llama-cpp``.
+    """
+    from hermes_cli.auth import deactivate_provider
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.llama_cpp import (
+        configure_selected_model,
+        curated_entry_for_tier,
+        ensure_engine_config_section,
+        ensure_runtime_ready,
+        get_status,
+        spec_string,
+        sync_config_model_fields,
+    )
+    from hermes_cli.llama_cpp_hf import (
+        list_huggingface_gguf_quants,
+        preferred_quant,
+        search_huggingface_models,
+    )
+
+    fresh_config = load_config()
+    current_status = get_status(fresh_config, check_health=False)
+    current_spec = current_status.get("model_spec") or ""
+
+    print("Managed local setup:")
+    if current_spec:
+        print(f"  Current local:   {current_spec}")
+    print()
+
+    options = []
+    option_keys = []
+    if current_spec:
+        options.append(f"Keep current ({current_spec})")
+        option_keys.append(("current", ""))
+
+    for tier in ("tiny", "balanced", "large"):
+        entry = curated_entry_for_tier(tier)
+        label = f"{tier.capitalize()} — {spec_string(entry['model_repo'], entry['quant'])}"
+        if tier == "balanced":
+            label += "  ← default"
+        options.append(label)
+        option_keys.append(("tier", tier))
+
+    options.append("Search Hugging Face GGUF (llama.cpp)")
+    option_keys.append(("search", ""))
+
+    options.append("Custom HuggingFace GGUF (enter repo:quant)")
+    option_keys.append(("custom", ""))
+
+    options.append("Cancel")
+    option_keys.append(("cancel", ""))
+
+    choice = _prompt_provider_choice(options)
+    if choice is None:
+        print("No change.")
+        return
+
+    action, tier = option_keys[choice]
+    if action == "cancel":
+        print("No change.")
+        return
+
+    working = load_config()
+
+    if action == "current":
+        # Keep whatever is in the config — don't override with a curated tier.
+        pass
+    elif action == "search":
+        try:
+            query = input("Search query [blank = trending]: ").strip()
+            pipeline_tag = input("Pipeline tag [image-text-to-text, 'any' to disable]: ").strip() or "image-text-to-text"
+            num_parameters = input("Parameter filter [min:0,max:32B, 'any' to disable]: ").strip() or "min:0,max:32B"
+        except (EOFError, KeyboardInterrupt):
+            print("\nNo change.")
+            return
+
+        if pipeline_tag.lower() in {"any", "none", "*"}:
+            pipeline_tag = ""
+        if num_parameters.lower() in {"any", "none", "*"}:
+            num_parameters = ""
+
+        print()
+        print("Searching Hugging Face...")
+        try:
+            results = search_huggingface_models(
+                query=query,
+                pipeline_tag=pipeline_tag,
+                num_parameters=num_parameters,
+            )
+        except Exception as exc:
+            print(f"Hugging Face search failed: {exc}")
+            return
+        if not results:
+            print("No matching llama.cpp repos found.")
+            return
+
+        search_labels = []
+        for item in results:
+            meta = []
+            if item.get("pipeline_tag"):
+                meta.append(str(item["pipeline_tag"]))
+            if item.get("downloads"):
+                meta.append(f"{_format_compact_number(item['downloads'])} downloads")
+            if item.get("likes"):
+                meta.append(f"{_format_compact_number(item['likes'])} likes")
+            label = str(item["id"])
+            if meta:
+                label += " — " + " • ".join(meta)
+            search_labels.append(label)
+        search_labels.append("Cancel")
+
+        selected_idx = _prompt_provider_choice(search_labels, title="Select Hugging Face model:")
+        if selected_idx is None or selected_idx >= len(results):
+            print("No change.")
+            return
+
+        selected_repo = results[selected_idx]["id"]
+        print()
+        print(f"Fetching GGUF quants for {selected_repo}...")
+        try:
+            quants = list_huggingface_gguf_quants(selected_repo)
+        except Exception as exc:
+            print(f"Could not inspect GGUF files: {exc}")
+            return
+
+        quant = ""
+        if not quants:
+            try:
+                quant = input("Could not infer quants automatically. Enter quant manually: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nNo change.")
+                return
+            if not quant:
+                print("No change.")
+                return
+        elif len(quants) == 1:
+            quant = quants[0]
+            print(f"Using only available quant: {quant}")
+        else:
+            quant_labels = []
+            preferred = preferred_quant(quants)
+            for value in quants:
+                label = value
+                if value == preferred:
+                    label += "  ← default"
+                quant_labels.append(label)
+            quant_labels.append("Cancel")
+            quant_idx = _prompt_provider_choice(quant_labels, title="Select GGUF quant:")
+            if quant_idx is None or quant_idx >= len(quants):
+                print("No change.")
+                return
+            quant = quants[quant_idx]
+
+        llama_cfg = ensure_engine_config_section(working)
+        llama_cfg["model"] = spec_string(selected_repo, quant)
+        llama_cfg["context_length"] = 0
+    elif action == "custom":
+        try:
+            raw = input("Enter model spec (repo:quant, e.g. ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_K_M): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nNo change.")
+            return
+        if not raw:
+            print("No change.")
+            return
+        from hermes_cli.llama_cpp import parse_model_spec
+        parsed = parse_model_spec(raw)
+        if not parsed.get("model_repo"):
+            print("Invalid model spec.")
+            return
+        llama_cfg = ensure_engine_config_section(working)
+        llama_cfg["model"] = spec_string(parsed["model_repo"], parsed.get("quant", ""))
+        llama_cfg["context_length"] = 0
+    else:
+        working = configure_selected_model(working, tier=tier)
+
+    llama_cfg = ensure_engine_config_section(working)
+    for legacy_key in ("selected_tier", "model_repo", "quant"):
+        llama_cfg.pop(legacy_key, None)
+
+    print()
+    print("Installing / starting managed llama.cpp. This can take a while on first use.")
+    try:
+        runtime = ensure_runtime_ready(working)
+    except Exception as exc:
+        print(f"llama.cpp setup failed: {exc}")
+        return
+
+    smoke = runtime.get("smoke_tests") if isinstance(runtime.get("smoke_tests"), dict) else {}
+
+    working = sync_config_model_fields(working, runtime)
+    save_config(working)
+    deactivate_provider()
+
+    # Sync caller state so setup wizard final save preserves the changes.
+    config["model"] = dict(working.get("model") or {})
+    if working.get("local_engines"):
+        config["local_engines"] = working["local_engines"]
+
+    selected_model = working.get("model", {}).get("default") if isinstance(working.get("model"), dict) else current_model
+    print(f"Default model set to: {selected_model} (via managed llama.cpp)")
+    print(f"  Endpoint: {runtime.get('base_url')}")
+    if runtime.get("installed_version"):
+        print(f"  Binary:   {runtime.get('installed_version')}")
+    if smoke.get("passed"):
+        print("  Smoke tests: passed")
+    else:
+        print("  Smoke tests: not passed")
 
 
 def _model_flow_openrouter(config, current_model=""):
@@ -4760,7 +5098,31 @@ For more help on a command:
     gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
 
     gateway_parser.set_defaults(func=cmd_gateway)
-    
+
+    # =========================================================================
+    # local command
+    # =========================================================================
+    local_parser = subparsers.add_parser(
+        "local",
+        help="Managed local llama.cpp lifecycle",
+        description="Start, stop, inspect, and tail logs for the managed local llama.cpp runtime",
+    )
+    local_subparsers = local_parser.add_subparsers(dest="local_command")
+
+    local_subparsers.add_parser("status", help="Show managed local llama.cpp status")
+    local_subparsers.add_parser("start", help="Start managed local llama.cpp")
+
+    local_stop = local_subparsers.add_parser("stop", help="Stop managed local llama.cpp")
+    local_stop.add_argument("--force", action="store_true", help="Force-stop the local llama.cpp process")
+
+    local_restart = local_subparsers.add_parser("restart", help="Restart managed local llama.cpp")
+    local_restart.add_argument("--force", action="store_true", help="Force-stop before restart")
+
+    local_logs = local_subparsers.add_parser("logs", help="Show recent managed local llama.cpp logs")
+    local_logs.add_argument("-n", "--lines", type=int, default=80, help="Number of log lines to show (default: 80)")
+
+    local_parser.set_defaults(func=cmd_local, local_command="status")
+
     # =========================================================================
     # setup command
     # =========================================================================

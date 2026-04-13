@@ -138,6 +138,14 @@ def get_skin_tool_prefix() -> str:
     return "┊"
 
 
+def get_skin_verbs() -> list[str]:
+    """Get thinking verbs from the active skin, or an empty list."""
+    skin = _get_skin()
+    if skin:
+        return skin.get_spinner_list("thinking_verbs")
+    return []
+
+
 def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
     """Get the display emoji for a tool.
 

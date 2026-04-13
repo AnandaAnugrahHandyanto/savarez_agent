@@ -707,6 +707,8 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         config["custom_providers"] = _refreshed["custom_providers"]
     else:
         config.pop("custom_providers", None)
+    if _refreshed.get("local_engines"):
+        config["local_engines"] = _refreshed["local_engines"]
 
     # Derive the selected provider for downstream steps (vision setup).
     selected_provider = None

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Any, Callable, Dict, Optional
 import re
-from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,7 @@ from hermes_cli.auth import (
     has_usable_secret,
 )
 from hermes_cli.config import load_config
+from hermes_cli.llama_cpp import runtime_payload as llama_cpp_runtime_payload, is_llama_cpp_provider
 from hermes_constants import OPENROUTER_BASE_URL
 
 
@@ -262,11 +263,14 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         return None
 
     # Raw names should only map to custom providers when they are not already
-    # valid built-in providers or aliases. Explicit menu keys like
-    # ``custom:local`` always target the saved custom provider.
+    # valid built-in providers or aliases. The one exception is ``local``:
+    # users commonly save a custom local OpenAI-compatible endpoint under that
+    # name, and the test suite expects it to win over the managed llama.cpp
+    # alias. Explicit menu keys like ``custom:local`` always target the saved
+    # custom provider.
     if requested_norm == "auto":
         return None
-    if not requested_norm.startswith("custom:"):
+    if requested_norm != "local" and not requested_norm.startswith("custom:"):
         try:
             auth_mod.resolve_provider(requested_norm)
         except AuthError:
@@ -381,11 +385,14 @@ def _resolve_openrouter_runtime(
     requested_norm = (requested_provider or "").strip().lower()
     cfg_provider = cfg_provider.strip().lower()
 
+    env_openai_base_url = os.getenv("OPENAI_BASE_URL", "").strip()
     env_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()
 
     # Use config base_url when available and the provider context matches.
-    # OPENAI_BASE_URL env var is no longer consulted — config.yaml is
-    # the single source of truth for endpoint URLs.
+    # Config remains the source of truth for persisted endpoints, but an
+    # explicit `requested="custom"` flow should still honor OPENAI_BASE_URL
+    # so env-only local servers continue to work for auxiliary helpers and
+    # ad-hoc custom routing.
     use_config_base_url = False
     if cfg_base_url.strip() and not explicit_base_url:
         if requested_norm == "auto":
@@ -394,9 +401,14 @@ def _resolve_openrouter_runtime(
         elif requested_norm == "custom" and cfg_provider == "custom":
             use_config_base_url = True
 
+    env_custom_base_url = ""
+    if requested_norm == "custom" and not explicit_base_url and not use_config_base_url:
+        env_custom_base_url = env_openai_base_url
+
     base_url = (
         (explicit_base_url or "").strip()
         or (cfg_base_url.strip() if use_config_base_url else "")
+        or env_custom_base_url
         or env_openrouter_base_url
         or OPENROUTER_BASE_URL
     ).rstrip("/")
@@ -597,6 +609,7 @@ def resolve_runtime_provider(
     requested: Optional[str] = None,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    progress_callback: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     """Resolve runtime provider credentials for agent execution."""
     requested_provider = resolve_requested_provider(requested)
@@ -609,6 +622,11 @@ def resolve_runtime_provider(
     if custom_runtime:
         custom_runtime["requested_provider"] = requested_provider
         return custom_runtime
+
+    if is_llama_cpp_provider(requested_provider):
+        runtime = llama_cpp_runtime_payload(load_config(), progress_callback=progress_callback)
+        runtime["requested_provider"] = requested_provider
+        return runtime
 
     provider = resolve_provider(
         requested_provider,
