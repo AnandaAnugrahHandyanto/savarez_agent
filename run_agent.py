@@ -1756,9 +1756,10 @@ class AIAgent:
             # Read user-configured context_length for the compression model.
             # This is the most specific override, so it should win over the
             # primary-model and custom_provider fallbacks below.
-            _aux_cfg = (
-                getattr(self, "_agent_config", {}) or {}
-            ).get("auxiliary", {}).get("compression", {})
+            _config_source = getattr(self, "config", None)
+            if not isinstance(_config_source, dict):
+                _config_source = getattr(self, "_agent_config", {}) or {}
+            _aux_cfg = _config_source.get("auxiliary", {}).get("compression", {})
             aux_config_context_length = (
                 _aux_cfg.get("context_length") if isinstance(_aux_cfg, dict) else None
             )
@@ -1770,7 +1771,7 @@ class AIAgent:
 
             if aux_config_context_length is None:
                 aux_config_context_length = resolve_config_context_length(
-                    getattr(self, "_agent_config", None),
+                    _config_source,
                     aux_model,
                     aux_base_url,
                     primary_model=getattr(self, "model", None),

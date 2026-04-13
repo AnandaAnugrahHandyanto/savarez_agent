@@ -142,6 +142,45 @@ def test_no_warning_when_aux_context_from_custom_provider_config(mock_ctx_len, m
 
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
 @patch("agent.model_metadata.get_model_context_length")
+def test_custom_provider_context_resolution_uses_runtime_config_source(mock_ctx_len, mock_get_client):
+    """resolve_config_context_length should use the active runtime config source."""
+    agent = _make_agent(main_context=258_000, threshold_percent=0.50)
+    agent.config = {
+        "custom_providers": [
+            {
+                "name": "Example Gateway",
+                "base_url": "https://example-gateway.invalid/v1",
+                "models": {
+                    "gpt-5.4": {"context_length": 258_000},
+                },
+            }
+        ]
+    }
+    agent._agent_config = {}
+
+    mock_client = MagicMock()
+    mock_client.base_url = "https://example-gateway.invalid/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "gpt-5.4")
+
+    def _context_lookup(model, **kwargs):
+        if kwargs.get("config_context_length") == 258_000:
+            return 258_000
+        return 128_000
+
+    mock_ctx_len.side_effect = _context_lookup
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    agent._check_compression_model_feasibility()
+
+    assert len(messages) == 0
+    assert agent._compression_warning is None
+
+
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+@patch("agent.model_metadata.get_model_context_length")
 def test_aux_feasibility_does_not_reuse_main_model_context_override_for_other_summary_models(
     mock_ctx_len,
     mock_get_client,
