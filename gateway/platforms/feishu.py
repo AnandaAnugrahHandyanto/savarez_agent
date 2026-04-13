@@ -76,6 +76,7 @@ try:
     from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
     from lark_oapi.ws import Client as FeishuWSClient
 
+
     FEISHU_AVAILABLE = True
 except ImportError:
     FEISHU_AVAILABLE = False
@@ -86,14 +87,59 @@ except ImportError:
     FEISHU_DOMAIN = None  # type: ignore[assignment]
     LARK_DOMAIN = None  # type: ignore[assignment]
 
+# CardKit imports are separated so that an older lark_oapi without cardkit.v1
+# doesn't break the entire Feishu adapter — only streaming cards are disabled.
+try:
+    from lark_oapi.api.cardkit.v1 import (
+        CreateCardRequest,
+        CreateCardRequestBody,
+        ContentCardElementRequest,
+        ContentCardElementRequestBody,
+        SettingsCardRequest,
+        SettingsCardRequestBody,
+    )
+
+    FEISHU_CARDKIT_AVAILABLE = True
+except ImportError:
+    FEISHU_CARDKIT_AVAILABLE = False
+    CreateCardRequest = None  # type: ignore[assignment]
+    CreateCardRequestBody = None  # type: ignore[assignment]
+    ContentCardElementRequest = None  # type: ignore[assignment]
+    ContentCardElementRequestBody = None  # type: ignore[assignment]
+    SettingsCardRequest = None  # type: ignore[assignment]
+    SettingsCardRequestBody = None  # type: ignore[assignment]
+
+
+_HERMES_STATUS_RE = re.compile(r"^\[\[HERMES_STATUS:(thinking|completed|ended)\]\]\s*", re.IGNORECASE)
+
+
+def _extract_status_marker(content: str) -> tuple[str, str]:
+    text = content or ""
+    match = _HERMES_STATUS_RE.match(text)
+    if not match:
+        return "", text
+    return match.group(1).lower(), text[match.end():]
+
+
+def _status_presentation(status: str) -> tuple[str, str, str]:
+    normalized = (status or "").strip().lower()
+    if normalized == "thinking":
+        return "思考中", "blue", "状态：思考中"
+    if normalized == "completed":
+        return "已完成", "green", "状态：已完成"
+    if normalized == "ended":
+        return "已结束", "grey", "状态：已结束"
+    return "", "blue", ""
+
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, _coerce_bool
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
     cache_document_from_bytes,
@@ -185,6 +231,14 @@ _ONBOARD_OPEN_URLS = {
 _REGISTRATION_PATH = "/oauth/v1/app/registration"
 _ONBOARD_REQUEST_TIMEOUT_S = 10
 
+# ---------------------------------------------------------------------------
+# Streaming card constants
+# ---------------------------------------------------------------------------
+
+_STREAMING_CARD_ELEMENT_ID = "streaming_md_1"
+_STREAMING_CARD_PRINT_FREQUENCY_MS = 50
+_STREAMING_CARD_PRINT_STEP = 2
+_STREAMING_CARD_PRINT_STRATEGY = "fast"
 # ---------------------------------------------------------------------------
 # Fallback display strings
 # ---------------------------------------------------------------------------
@@ -291,6 +345,9 @@ class FeishuAdapterSettings:
     ws_reconnect_interval: int = 120
     ws_ping_interval: Optional[int] = None
     ws_ping_timeout: Optional[int] = None
+    ack_emoji: str = _FEISHU_ACK_EMOJI
+    clear_ack_on_complete: bool = True
+    ack_min_display_seconds: float = 1.5
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
@@ -310,6 +367,16 @@ class FeishuBatchState:
     events: Dict[str, MessageEvent] = field(default_factory=dict)
     tasks: Dict[str, asyncio.Task] = field(default_factory=dict)
     counts: Dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class _FeishuStreamingCard:
+    """Tracks state for a single streaming card session."""
+
+    card_id: str
+    element_id: str
+    message_id: str
+    sequence: int = 1  # Strictly increasing across all card operations
 
 
 # ---------------------------------------------------------------------------
@@ -375,13 +442,14 @@ def _render_code_block_element(element: Dict[str, Any]) -> str:
     return f"```{language}\n{code}{trailing_newline}```"
 
 
-def _strip_markdown_to_plain_text(text: str) -> str:
+def _strip_markdown_to_plain_text(text) -> str:
     """Strip markdown formatting to plain text for Feishu text fallbacks.
 
     Delegates common markdown stripping to the shared helper and adds
     Feishu-specific patterns (blockquotes, strikethrough, underline tags,
     horizontal rules, \\r\\n normalisation).
     """
+    _, text = _extract_status_marker(text)
     from gateway.platforms.helpers import strip_markdown
     plain = text.replace("\r\n", "\n")
     plain = _MARKDOWN_LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2).strip()})", plain)
@@ -413,6 +481,7 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 
 
 def _build_markdown_post_payload(content: str) -> str:
+    _, content = _extract_status_marker(content)
     return json.dumps(
         {
             "zh_cn": {
@@ -428,6 +497,175 @@ def _build_markdown_post_payload(content: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _extract_card_title(content: str) -> str:
+    _, content = _extract_status_marker(content)
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^#{1,6}\s*", "", line)
+        line = _strip_markdown_to_plain_text(line)
+        return line[:60] if line else "Hermes"
+    return "Hermes"
+
+
+def _split_markdown_blocks(content: str) -> List[tuple[str, str]]:
+    lines = content.splitlines()
+    blocks: List[tuple[str, str]] = []
+    text_lines: List[str] = []
+    table_lines: List[str] = []
+
+    def flush_text() -> None:
+        nonlocal text_lines
+        text = "\n".join(text_lines).strip()
+        if text:
+            blocks.append(("markdown", text))
+        text_lines = []
+
+    def flush_table() -> None:
+        nonlocal table_lines
+        text = "\n".join(table_lines).strip()
+        if text:
+            blocks.append(("table", text))
+        table_lines = []
+
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        is_table_line = line.strip().startswith("|") and line.strip().endswith("|")
+        if is_table_line:
+            flush_text()
+            table_lines.append(line)
+            continue
+        flush_table()
+        text_lines.append(line)
+
+    flush_table()
+    flush_text()
+    return blocks
+
+
+def _parse_markdown_table(table_text: str) -> Optional[Dict[str, List[List[str]]]]:
+    lines = [line.strip() for line in table_text.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+
+    def parse_row(line: str) -> List[str]:
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        return [_strip_markdown_to_plain_text(cell) for cell in cells]
+
+    def is_separator_row(line: str) -> bool:
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if not cells:
+            return False
+        return all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells)
+
+    header = parse_row(lines[0])
+    if not is_separator_row(lines[1]):
+        return None
+
+    rows = [parse_row(line) for line in lines[2:]]
+    rows = [row for row in rows if any(cell for cell in row)]
+    if not header or not rows:
+        return None
+
+    width = len(header)
+    if width == 0:
+        return None
+    normalized_rows: List[List[str]] = []
+    for row in rows:
+        padded = (row + [""] * width)[:width]
+        normalized_rows.append(padded)
+    return {"header": [header[:width]], "rows": normalized_rows}
+
+
+def _build_table_column(cell_text: str, *, bold: bool = False, background_style: str = "default") -> Dict[str, Any]:
+    content = cell_text or " "
+    if bold:
+        content = f"**{content}**"
+    return {
+        "tag": "column",
+        "width": "weighted",
+        "weight": 1,
+        "vertical_align": "top",
+        "elements": [
+            {
+                "tag": "markdown",
+                "content": content,
+                "text_align": "left",
+                "text_size": "normal_v2",
+            }
+        ],
+        "background_style": background_style,
+    }
+
+
+def _build_markdown_table_elements(table_text: str) -> List[Dict[str, Any]]:
+    parsed = _parse_markdown_table(table_text)
+    if not parsed:
+        return [{"tag": "markdown", "content": table_text}]
+
+    elements: List[Dict[str, Any]] = []
+    header = parsed["header"][0]
+    elements.append(
+        {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "background_style": "grey",
+            "columns": [_build_table_column(cell, bold=True, background_style="grey") for cell in header],
+        }
+    )
+    for index, row in enumerate(parsed["rows"]):
+        elements.append(
+            {
+                "tag": "column_set",
+                "flex_mode": "none",
+                "background_style": "default" if index % 2 == 0 else "grey",
+                "columns": [
+                    _build_table_column(
+                        cell,
+                        background_style="default" if index % 2 == 0 else "grey",
+                    )
+                    for cell in row
+                ],
+            }
+        )
+    return elements
+
+
+def _build_interactive_card_payload(content: str) -> str:
+    status, body_content = _extract_status_marker(content)
+    status_title, template, status_line = _status_presentation(status)
+    title = _extract_card_title(body_content)
+    if status_title:
+        title = f"{status_title} | {title}"
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"content": title, "tag": "plain_text"},
+            "template": template,
+        },
+        "elements": [],
+    }
+    if status_line:
+        card["elements"].append(
+            {
+                "tag": "markdown",
+                "content": f"**{status_line}**",
+            }
+        )
+    for block_type, block_text in _split_markdown_blocks(body_content):
+        if block_type == "table":
+            card["elements"].extend(_build_markdown_table_elements(block_text))
+        else:
+            card["elements"].append(
+                {
+                    "tag": "markdown",
+                    "content": block_text,
+                }
+            )
+    return json.dumps(card, ensure_ascii=False)
 
 
 def parse_feishu_post_content(raw_content: str) -> FeishuPostParseResult:
@@ -1068,6 +1306,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id (for reaction routing)
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
+        self._ack_reaction_ids: Dict[str, str] = {}  # inbound message_id -> ack reaction_id
         self._message_text_cache: Dict[str, Optional[str]] = {}
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
@@ -1080,6 +1319,8 @@ class FeishuAdapter(BasePlatformAdapter):
         # Exec approval button state (approval_id → {session_key, message_id, chat_id})
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
+        # CardKit streaming card state (message_id → _FeishuStreamingCard)
+        self._streaming_cards: Dict[str, _FeishuStreamingCard] = {}
         self._load_seen_message_ids()
 
     @staticmethod
@@ -1157,6 +1398,23 @@ class FeishuAdapter(BasePlatformAdapter):
             ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
             ws_ping_interval=_coerce_int(extra.get("ws_ping_interval"), default=None, min_value=1),
             ws_ping_timeout=_coerce_int(extra.get("ws_ping_timeout"), default=None, min_value=1),
+            ack_emoji=str(
+                extra.get("ack_emoji")
+                or os.getenv("HERMES_FEISHU_ACK_EMOJI", _FEISHU_ACK_EMOJI)
+            ).strip() or _FEISHU_ACK_EMOJI,
+            clear_ack_on_complete=_coerce_bool(
+                extra.get("clear_ack_on_complete", os.getenv("HERMES_FEISHU_CLEAR_ACK_ON_COMPLETE")),
+                default=True,
+            ),
+            ack_min_display_seconds=max(
+                0.0,
+                float(
+                    extra.get(
+                        "ack_min_display_seconds",
+                        os.getenv("HERMES_FEISHU_ACK_MIN_DISPLAY_SECONDS", "1.5"),
+                    )
+                ),
+            ),
             admins=admins,
             default_group_policy=default_group_policy,
             group_rules=group_rules,
@@ -1190,6 +1448,9 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_reconnect_interval = settings.ws_reconnect_interval
         self._ws_ping_interval = settings.ws_ping_interval
         self._ws_ping_timeout = settings.ws_ping_timeout
+        self._ack_emoji = settings.ack_emoji or _FEISHU_ACK_EMOJI
+        self._clear_ack_on_complete = bool(settings.clear_ack_on_complete)
+        self._ack_min_display_seconds = max(0.0, float(settings.ack_min_display_seconds))
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -1366,9 +1627,50 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type == "interactive":
+                        logger.warning("[Feishu] Interactive card send failed; falling back to post")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="post",
+                            payload=_build_markdown_post_payload(chunk),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    elif msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                    else:
+                        logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                if (
+                    msg_type == "interactive"
+                    and not self._response_succeeded(response)
+                ):
+                    logger.warning("[Feishu] Interactive card rejected by API response; falling back to post")
+                    response = await self._feishu_send_with_retry(
+                        chat_id=chat_id,
+                        msg_type="post",
+                        payload=_build_markdown_post_payload(chunk),
+                        reply_to=reply_to,
+                        metadata=metadata,
+                    )
+                if (
+                    getattr(response, "success", lambda: True)() is False
+                    and (
+                        msg_type == "post"
+                        or (
+                            msg_type == "interactive"
+                            and not self._response_succeeded(response)
+                        )
+                    )
+                    and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
+                ):
+                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -1376,7 +1678,7 @@ class FeishuAdapter(BasePlatformAdapter):
                         reply_to=reply_to,
                         metadata=metadata,
                     )
-                if (
+                elif (
                     msg_type == "post"
                     and not self._response_succeeded(response)
                     and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
@@ -1402,16 +1704,38 @@ class FeishuAdapter(BasePlatformAdapter):
         message_id: str,
         content: str,
     ) -> SendResult:
-        """Edit a previously sent Feishu text/post message."""
+        """Edit a previously sent Feishu text/post message.
+
+        If the *message_id* is associated with an active streaming card
+        (created via :meth:`send_streaming_card`), the edit is performed via
+        the CardKit streaming text update API instead of the regular IM update.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        content = self.format_message(content)
+
+        # --- CardKit streaming card path ---
+        sc = self._streaming_cards.get(message_id)
+        if sc is not None:
+            return await self._update_streaming_card_content(sc, content)
+
+        # --- Regular IM update path ---
         try:
             msg_type, payload = self._build_outbound_payload(content)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
+            if not result.success and msg_type == "interactive":
+                logger.warning("[Feishu] Interactive card update failed; falling back to post")
+                fallback_body = self._build_update_message_body(
+                    msg_type="post",
+                    content=_build_markdown_post_payload(content),
+                )
+                fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
+                fallback_response = await asyncio.to_thread(self._client.im.v1.message.update, fallback_request)
+                result = self._finalize_send_result(fallback_response, "update failed")
             if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
                 logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
                 fallback_body = self._build_update_message_body(
@@ -1427,6 +1751,198 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+
+    # =========================================================================
+    # CardKit streaming card support
+    # =========================================================================
+
+    @property
+    def streaming_cards_enabled(self) -> bool:
+        """Return *True* if the CardKit streaming API is usable."""
+        return bool(FEISHU_CARDKIT_AVAILABLE and self._client)
+
+    async def send_streaming_card(
+        self,
+        chat_id: str,
+        content: str = "",
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Create a streaming card entity and send it as a message.
+
+        Returns a :class:`SendResult` whose *message_id* can be used with
+        :meth:`edit_message` (which will route through the CardKit streaming
+        text update API) and finally :meth:`stop_streaming_card`.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        if not FEISHU_CARDKIT_AVAILABLE:
+            return SendResult(success=False, error="CardKit SDK not available")
+
+        try:
+            # 1. Create card entity with streaming_mode enabled
+            card_json = self._build_streaming_card_json(content)
+            create_body = (
+                CreateCardRequestBody.builder()
+                .type("card_json")
+                .data(json.dumps(card_json, ensure_ascii=False))
+                .build()
+            )
+            create_req = (
+                CreateCardRequest.builder()
+                .request_body(create_body)
+                .build()
+            )
+            create_resp = await asyncio.to_thread(
+                self._client.cardkit.v1.card.create, create_req,
+            )
+            if not create_resp or create_resp.code != 0:
+                err_msg = getattr(create_resp, "msg", "unknown error") if create_resp else "no response"
+                logger.warning("[Feishu] CardKit card.create failed: code=%s msg=%s",
+                               getattr(create_resp, "code", "?"), err_msg)
+                return SendResult(success=False, error=f"CardKit create failed: {err_msg}")
+
+            card_id = create_resp.data.card_id
+            logger.debug("[Feishu] Created streaming card: %s", card_id)
+
+            # 2. Send the card as a message via IM API
+            card_content = json.dumps(
+                {"type": "card", "data": {"card_id": card_id}},
+                ensure_ascii=False,
+            )
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=card_content,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            result = self._finalize_send_result(response, "send streaming card failed")
+            if not result.success:
+                return result
+
+            message_id = result.message_id
+            # 3. Track the streaming card state
+            sc = _FeishuStreamingCard(
+                card_id=card_id,
+                element_id=_STREAMING_CARD_ELEMENT_ID,
+                message_id=message_id,
+                sequence=1,
+            )
+            self._streaming_cards[message_id] = sc
+            logger.debug("[Feishu] Streaming card %s linked to message %s", card_id, message_id)
+            return result
+
+        except Exception as exc:
+            logger.error("[Feishu] send_streaming_card error: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    async def _update_streaming_card_content(
+        self,
+        sc: "_FeishuStreamingCard",
+        content: str,
+    ) -> SendResult:
+        """Push a streaming text update to a card element.
+
+        *content* should be the **full accumulated text** — the Feishu platform
+        diffs it against the previous value and renders the delta with a
+        typewriter effect.
+        """
+        try:
+            sc.sequence += 1
+            body = (
+                ContentCardElementRequestBody.builder()
+                .uuid(str(uuid.uuid4()))
+                .sequence(sc.sequence)
+                .content(content)
+                .build()
+            )
+            req = (
+                ContentCardElementRequest.builder()
+                .card_id(sc.card_id)
+                .element_id(sc.element_id)
+                .request_body(body)
+                .build()
+            )
+            resp = await asyncio.to_thread(
+                self._client.cardkit.v1.card_element.content, req,
+            )
+            if resp and resp.code == 0:
+                return SendResult(success=True, message_id=sc.message_id)
+            err_msg = getattr(resp, "msg", "unknown") if resp else "no response"
+            logger.warning("[Feishu] Streaming card content update failed: code=%s msg=%s",
+                           getattr(resp, "code", "?"), err_msg)
+            return SendResult(success=False, error=f"streaming update failed: {err_msg}")
+        except Exception as exc:
+            logger.error("[Feishu] _update_streaming_card_content error: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    async def stop_streaming_card(self, message_id: str) -> bool:
+        """Disable streaming mode on a card and clean up tracking state.
+
+        Returns *True* on success.  Safe to call even if the message is not a
+        streaming card (returns *True* immediately).
+        """
+        sc = self._streaming_cards.get(message_id)
+        if sc is None:
+            return True
+        if not self._client:
+            return False
+        try:
+            sc.sequence += 1
+            settings_json = json.dumps({"config": {"streaming_mode": False}}, ensure_ascii=False)
+            body = (
+                SettingsCardRequestBody.builder()
+                .settings(settings_json)
+                .sequence(sc.sequence)
+                .build()
+            )
+            req = (
+                SettingsCardRequest.builder()
+                .card_id(sc.card_id)
+                .request_body(body)
+                .build()
+            )
+            resp = await asyncio.to_thread(
+                self._client.cardkit.v1.card.settings, req,
+            )
+            if resp and resp.code == 0:
+                self._streaming_cards.pop(message_id, None)
+                logger.debug("[Feishu] Stopped streaming card %s", sc.card_id)
+                return True
+            logger.warning("[Feishu] Failed to stop streaming card %s: code=%s msg=%s",
+                           sc.card_id, getattr(resp, "code", "?"), getattr(resp, "msg", "?"))
+            return False
+        except Exception as exc:
+            logger.error("[Feishu] stop_streaming_card error: %s", exc, exc_info=True)
+            return False
+
+    @staticmethod
+    def _build_streaming_card_json(initial_content: str = "") -> dict:
+        """Build a Card JSON 2.0 structure with streaming mode enabled."""
+        return {
+            "schema": "2.0",
+            "config": {
+                "streaming_mode": True,
+                "summary": {"content": ""},
+                "streaming_config": {
+                    "print_frequency_ms": {"default": _STREAMING_CARD_PRINT_FREQUENCY_MS},
+                    "print_step": {"default": _STREAMING_CARD_PRINT_STEP},
+                    "print_strategy": _STREAMING_CARD_PRINT_STRATEGY,
+                },
+            },
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": initial_content,
+                        "element_id": _STREAMING_CARD_ELEMENT_ID,
+                    }
+                ],
+            },
+        }
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
@@ -1750,7 +2266,8 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def format_message(self, content: str) -> str:
         """Feishu text messages are plain text by default."""
-        return content.strip()
+        # Strip model-generated /** ... */ thinking/comment blocks (MiniMax, Qwen-QwQ, etc.)
+        return re.sub(r"\/\*\*[\s\S]*?\*\/", "", content).strip()
 
     # =========================================================================
     # Inbound event handlers
@@ -1840,7 +2357,7 @@ class FeishuAdapter(BasePlatformAdapter):
         loop = self._loop
         if (
             operator_type in {"bot", "app"}
-            or emoji_type == _FEISHU_ACK_EMOJI
+            or emoji_type == self._ack_emoji
             or not message_id
             or loop is None
             or bool(getattr(loop, "is_closed", lambda: False)())
@@ -2047,20 +2564,40 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _handle_message_with_guards(self, event: MessageEvent) -> None:
         """Dispatch a single event through the agent pipeline with per-chat serialization
-        and a persistent ACK emoji reaction before processing starts.
+        before processing starts.
 
         - Per-chat lock: ensures messages in the same chat are processed one at a time
           (matches openclaw's createChatQueue serial queue behaviour).
-        - ACK indicator: adds a CHECK reaction to the triggering message before handing
-          off to the agent and leaves it in place as a receipt marker.
         """
         chat_id = getattr(event.source, "chat_id", "") or "" if event.source else ""
         chat_lock = self._get_chat_lock(chat_id)
         async with chat_lock:
-            message_id = event.message_id
-            if message_id:
-                await self._add_ack_reaction(message_id)
             await self.handle_message(event)
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add an ACK reaction when background processing actually starts."""
+        message_id = getattr(event, "message_id", None)
+        if not message_id:
+            return
+        reaction_id = await self._add_ack_reaction(message_id)
+        if reaction_id:
+            self._ack_reaction_ids[message_id] = reaction_id
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """Remove the ACK reaction only after the full task completes."""
+        if not self._clear_ack_on_complete:
+            return
+        message_id = getattr(event, "message_id", None)
+        if not message_id:
+            return
+        reaction_id = self._ack_reaction_ids.pop(message_id, None)
+        if not reaction_id:
+            return
+        if outcome == ProcessingOutcome.CANCELLED:
+            return
+        if self._ack_min_display_seconds > 0:
+            await asyncio.sleep(self._ack_min_display_seconds)
+        await self._remove_ack_reaction(message_id, reaction_id)
 
     async def _add_ack_reaction(self, message_id: str) -> Optional[str]:
         """Add a persistent ACK emoji reaction to signal the message was received."""
@@ -2073,7 +2610,7 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             body = (
                 CreateMessageReactionRequestBody.builder()
-                .reaction_type({"emoji_type": _FEISHU_ACK_EMOJI})
+                .reaction_type({"emoji_type": self._ack_emoji})
                 .build()
             )
             request = (
@@ -2085,7 +2622,14 @@ class FeishuAdapter(BasePlatformAdapter):
             response = await asyncio.to_thread(self._client.im.v1.message_reaction.create, request)
             if response and getattr(response, "success", lambda: False)():
                 data = getattr(response, "data", None)
-                return getattr(data, "reaction_id", None)
+                reaction_id = getattr(data, "reaction_id", None)
+                logger.info(
+                    "[Feishu] Added ack reaction %s (%s) to %s",
+                    reaction_id,
+                    self._ack_emoji,
+                    message_id,
+                )
+                return reaction_id
             logger.warning(
                 "[Feishu] Failed to add ack reaction to %s: code=%s msg=%s",
                 message_id,
@@ -2095,6 +2639,39 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[Feishu] Failed to add ack reaction to %s", message_id, exc_info=True)
         return None
+
+    async def _remove_ack_reaction(self, message_id: str, reaction_id: str) -> bool:
+        """Remove the temporary ACK emoji reaction after processing completes."""
+        if not self._client or not message_id or not reaction_id:
+            return False
+        try:
+            from lark_oapi.api.im.v1 import DeleteMessageReactionRequest
+
+            request = (
+                DeleteMessageReactionRequest.builder()
+                .message_id(message_id)
+                .reaction_id(reaction_id)
+                .build()
+            )
+            response = await asyncio.to_thread(self._client.im.v1.message_reaction.delete, request)
+            if response and getattr(response, "success", lambda: False)():
+                logger.info("[Feishu] Removed ack reaction %s from %s", reaction_id, message_id)
+                return True
+            logger.warning(
+                "[Feishu] Failed to remove ack reaction %s from %s: code=%s msg=%s",
+                reaction_id,
+                message_id,
+                getattr(response, "code", None),
+                getattr(response, "msg", None),
+            )
+        except Exception:
+            logger.warning(
+                "[Feishu] Failed to remove ack reaction %s from %s",
+                reaction_id,
+                message_id,
+                exc_info=True,
+            )
+        return False
 
     # =========================================================================
     # Webhook server and security
@@ -3172,10 +3749,9 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        if _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
-        text_payload = {"text": content}
-        return "text", json.dumps(text_payload, ensure_ascii=False)
+        # Prefer true Feishu interactive cards for normal outbound replies.
+        # The send/edit pipeline falls back to post, then plain text.
+        return "interactive", _build_interactive_card_payload(content)
 
     async def _send_uploaded_file_message(
         self,
