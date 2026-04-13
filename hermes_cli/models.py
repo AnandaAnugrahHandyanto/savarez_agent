@@ -14,11 +14,14 @@ import urllib.error
 from difflib import get_close_matches
 from typing import Any, Optional
 
+from hermes_cli.providers import custom_provider_slug
+
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
 COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
 COPILOT_EDITOR_VERSION = "vscode/1.104.1"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
+_CUSTOM_PROVIDER_MODEL_PROBE_TIMEOUT = 1.5
 
 
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
@@ -926,6 +929,92 @@ def _get_custom_base_url() -> str:
     return ""
 
 
+def _dedupe_model_ids(model_ids: list[Any]) -> list[str]:
+    """Return a de-duplicated model ID list while preserving order."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in model_ids:
+        model_id = str(value or "").strip()
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        result.append(model_id)
+    return result
+
+
+def _custom_provider_api_url(entry: dict[str, Any]) -> str:
+    return str(
+        entry.get("base_url", "")
+        or entry.get("url", "")
+        or entry.get("api", "")
+        or ""
+    ).strip()
+
+
+def _load_custom_provider_entries() -> list[dict[str, Any]]:
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        entries = config.get("custom_providers")
+        if isinstance(entries, list):
+            return [entry for entry in entries if isinstance(entry, dict)]
+    except Exception:
+        pass
+    return []
+
+
+def _resolve_named_custom_provider_entry(
+    provider: Optional[str],
+    custom_providers: Optional[list[dict[str, Any]]] = None,
+) -> Optional[dict[str, Any]]:
+    requested = str(provider or "").strip().lower()
+    if not requested.startswith("custom:"):
+        return None
+
+    entries = custom_providers if isinstance(custom_providers, list) else _load_custom_provider_entries()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        display_name = str(entry.get("name") or "").strip()
+        if display_name and requested == custom_provider_slug(display_name):
+            return entry
+    return None
+
+
+def custom_provider_model_ids(
+    provider: Optional[str],
+    *,
+    custom_providers: Optional[list[dict[str, Any]]] = None,
+    timeout: float = _CUSTOM_PROVIDER_MODEL_PROBE_TIMEOUT,
+) -> list[str]:
+    """Return the best known model IDs for a named ``custom:<slug>`` provider."""
+    entry = _resolve_named_custom_provider_entry(provider, custom_providers)
+    if not isinstance(entry, dict):
+        return []
+
+    configured_models = entry.get("models")
+    if isinstance(configured_models, dict) and configured_models:
+        return _dedupe_model_ids(list(configured_models.keys()))
+
+    api_url = _custom_provider_api_url(entry)
+    if api_url:
+        from hermes_cli.auth import has_usable_secret
+
+        api_key = str(entry.get("api_key") or "").strip()
+        if not has_usable_secret(api_key):
+            api_key = (
+                os.getenv("CUSTOM_API_KEY", "")
+                or os.getenv("OPENAI_API_KEY", "")
+                or os.getenv("OPENROUTER_API_KEY", "")
+            )
+        live = fetch_api_models(api_key, api_url, timeout=timeout)
+        if live:
+            return _dedupe_model_ids(live)
+
+    return _dedupe_model_ids([entry.get("model")])
+
+
 def curated_models_for_provider(
     provider: Optional[str],
     *,
@@ -1184,6 +1273,8 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     falling back to static lists.
     """
     normalized = normalize_provider(provider)
+    if str(provider or "").strip().lower().startswith("custom:"):
+        return custom_provider_model_ids(provider)
     if normalized == "openrouter":
         return model_ids(force_refresh=force_refresh)
     if normalized == "openai-codex":
@@ -1227,9 +1318,9 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 or os.getenv("OPENAI_API_KEY", "")
                 or os.getenv("OPENROUTER_API_KEY", "")
             )
-            live = fetch_api_models(api_key, base_url)
+            live = fetch_api_models(api_key, base_url, timeout=_CUSTOM_PROVIDER_MODEL_PROBE_TIMEOUT)
             if live:
-                return live
+                return _dedupe_model_ids(live)
     return list(_PROVIDER_MODELS.get(normalized, []))
 
 

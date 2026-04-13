@@ -753,7 +753,7 @@ def list_authenticated_providers(
         get_provider_info as _mdev_pinfo,
     )
     from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
+    from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS, custom_provider_model_ids
 
     results: List[dict] = []
     seen_slugs: set = set()
@@ -954,18 +954,21 @@ def list_authenticated_providers(
             if slug in seen_slugs:
                 continue
 
-            models_list = []
-            default_model = (entry.get("model") or "").strip()
-            if default_model:
-                models_list.append(default_model)
+            if max_models <= 0:
+                model_ids = []
+            else:
+                model_ids = custom_provider_model_ids(
+                    slug,
+                    custom_providers=custom_providers,
+                )
 
             results.append({
                 "slug": slug,
                 "name": display_name,
                 "is_current": slug == current_provider,
                 "is_user_defined": True,
-                "models": models_list,
-                "total_models": len(models_list),
+                "models": model_ids[:max_models],
+                "total_models": len(model_ids),
                 "source": "user-config",
                 "api_url": api_url,
             })
