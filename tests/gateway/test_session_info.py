@@ -72,6 +72,29 @@ class TestFormatSessionInfo:
         assert "localhost:11434" in info
         assert "8K" in info
 
+    def test_custom_provider_model_list_context_length(self, runner, tmp_path):
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            (
+                "model:\n"
+                "  default: my-huge-model\n"
+                "  provider: custom\n"
+                "  base_url: https://my-gateway.io/v1\n"
+                "custom_providers:\n"
+                "  - name: my-custom\n"
+                "    base_url: https://my-gateway.io/v1\n"
+                "    models:\n"
+                "      - name: my-huge-model\n"
+                "        context_length: 1100000\n"
+            ),
+            "my-huge-model",
+            {"provider": "custom", "base_url": "https://my-gateway.io/v1", "api_key": ""},
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "1.1M" in info
+        assert "config" in info
+
     def test_cloud_endpoint_hidden(self, runner, tmp_path):
         p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: test-model\n  provider: openrouter\n",
                                   "test-model",
