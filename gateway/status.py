@@ -415,8 +415,24 @@ def get_running_pid() -> Optional[int]:
         return None
 
     try:
-        os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
-    except (ProcessLookupError, PermissionError):
+        if _IS_WINDOWS:
+            # os.kill(pid, 0) throws WinError 87 on Windows. Native fallback:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            # 0x1000 = PROCESS_QUERY_LIMITED_INFORMATION
+            handle = kernel32.OpenProcess(0x1000, False, pid)
+            if handle == 0:
+                raise ProcessLookupError
+            
+            exit_code = ctypes.c_ulong()
+            kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+            kernel32.CloseHandle(handle)
+            
+            if exit_code.value != 259:  # 259 = STILL_ACTIVE
+                raise ProcessLookupError
+        else:
+            os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
+    except (ProcessLookupError, PermissionError, OSError):
         remove_pid_file()
         return None
 
