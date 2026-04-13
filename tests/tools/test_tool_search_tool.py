@@ -1,10 +1,15 @@
 """Tests for deferred tool loading and the tool_search tool."""
 
 import json
+import os
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from model_tools import get_tool_definitions
+import run_agent
+from run_agent import AIAgent
 from tools.registry import ToolRegistry, registry
 
 
@@ -18,6 +23,35 @@ def _schema(name: str, description: str = "") -> dict:
         "description": description,
         "parameters": {"type": "object", "properties": {}},
     }
+
+
+def _tool_call(name: str, arguments: str = "{}", call_id: str = "call-1") -> SimpleNamespace:
+    return SimpleNamespace(
+        id=call_id,
+        function=SimpleNamespace(name=name, arguments=arguments),
+    )
+
+
+def _assistant_message(*tool_calls: SimpleNamespace) -> SimpleNamespace:
+    return SimpleNamespace(tool_calls=list(tool_calls))
+
+
+def _make_agent(*, enabled_toolsets: list[str], hermes_home) -> AIAgent:
+    with (
+        patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+        patch.object(run_agent, "_hermes_home", hermes_home),
+        patch("run_agent.OpenAI", return_value=MagicMock()),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            enabled_toolsets=enabled_toolsets,
+        )
+    agent.client = MagicMock()
+    agent.tool_progress_callback = lambda *args, **kwargs: None
+    return agent
 
 
 @pytest.fixture
@@ -128,6 +162,104 @@ def test_deferred_tool_not_in_get_tool_definitions_default_output(register_tools
     assert name in activated_names
 
 
+def test_tool_search_activates_deferred_tools_in_agent_runtime(register_tools, tmp_path):
+    toolset = "c2_runtime_activation_toolset"
+    deferred_name = register_tools(
+        "c2_runtime_deferred_tool",
+        toolset=toolset,
+        description="Deferred runtime activation target.",
+        search_hint="orion activation",
+        deferred=True,
+    )
+    hidden_name = register_tools(
+        "c2_still_hidden_tool",
+        toolset=toolset,
+        description="Should remain hidden until searched.",
+        search_hint="andromeda hidden",
+        deferred=True,
+    )
+    always_name = register_tools(
+        "c2_runtime_always_tool",
+        toolset="c2_runtime_always_toolset",
+        description="Always visible regardless of activation.",
+        always_load=True,
+    )
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    agent = _make_agent(enabled_toolsets=[toolset], hermes_home=hermes_home)
+    assert deferred_name not in agent.valid_tool_names
+    assert hidden_name not in agent.valid_tool_names
+    assert always_name in agent.valid_tool_names
+    assert "tool_search" in agent.valid_tool_names
+
+    tool_call = _tool_call("tool_search", arguments='{"query":"orion"}', call_id="search-1")
+    assistant_message = _assistant_message(tool_call)
+    messages = []
+
+    with patch(
+        "run_agent.handle_function_call",
+        side_effect=lambda function_name, function_args, *_args, **_kwargs: registry.dispatch(function_name, function_args),
+    ):
+        agent._execute_tool_calls_sequential(assistant_message, messages, "task-1")
+
+    assert deferred_name in agent._activated_deferred_tools
+    assert hidden_name not in agent._activated_deferred_tools
+    assert deferred_name in agent.valid_tool_names
+    assert hidden_name not in agent.valid_tool_names
+    assert always_name in agent.valid_tool_names
+
+    next_defs = get_tool_definitions(
+        enabled_toolsets=[toolset],
+        quiet_mode=True,
+        activated_tools=sorted(agent._activated_deferred_tools),
+    )
+    next_names = {tool["function"]["name"] for tool in next_defs}
+    assert deferred_name in next_names
+    assert hidden_name not in next_names
+    assert always_name in next_names
+
+
+def test_tool_search_activation_hydrates_from_history(register_tools, tmp_path):
+    toolset = "c2_history_activation_toolset"
+    deferred_name = register_tools(
+        "c2_history_deferred_tool",
+        toolset=toolset,
+        description="Recovered from prior search history.",
+        search_hint="perseus restore",
+        deferred=True,
+    )
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    agent = _make_agent(enabled_toolsets=[toolset], hermes_home=hermes_home)
+    search_result = registry.dispatch("tool_search", {"query": "perseus"})
+    history = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call-restore",
+                    "call_id": "call-restore",
+                    "type": "function",
+                    "function": {"name": "tool_search", "arguments": '{"query":"perseus"}'},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-restore",
+            "content": search_result,
+        },
+    ]
+
+    agent._hydrate_activated_deferred_tools_from_history(history)
+    agent._refresh_tool_definitions()
+
+    assert deferred_name in agent._activated_deferred_tools
+    assert deferred_name in agent.valid_tool_names
+
+
 def test_always_load_tool_always_in_get_tool_definitions_output(register_tools):
     name = register_tools(
         "c2_always_loaded_tool",
@@ -152,6 +284,37 @@ def test_normal_tool_in_get_tool_definitions_output(register_tools):
     defs = get_tool_definitions(enabled_toolsets=[toolset], quiet_mode=True)
     names = {tool["function"]["name"] for tool in defs}
     assert name in names
+
+
+def test_invalid_deferred_tool_name_is_ignored_during_activation(register_tools, tmp_path):
+    toolset = "c2_invalid_activation_toolset"
+    valid_name = register_tools(
+        "c2_valid_activation_tool",
+        toolset=toolset,
+        description="Valid deferred activation target.",
+        search_hint="lyra valid",
+        deferred=True,
+    )
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    agent = _make_agent(enabled_toolsets=[toolset], hermes_home=hermes_home)
+    activated = agent._activate_deferred_tools_from_search_result(
+        json.dumps(
+            {
+                "query": "mixed",
+                "count": 2,
+                "results": [
+                    {"name": valid_name, "deferred": True},
+                    {"name": "c2_missing_activation_tool", "deferred": True},
+                ],
+            }
+        )
+    )
+
+    assert activated == {valid_name}
+    assert agent._activated_deferred_tools == {valid_name}
+    assert "c2_missing_activation_tool" not in agent._activated_deferred_tools
 
 
 def test_deferred_and_always_load_on_same_tool_raises_value_error():

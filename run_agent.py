@@ -715,6 +715,7 @@ class AIAgent:
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
         self.disabled_toolsets = disabled_toolsets
+        self._activated_deferred_tools: set[str] = set()
         
         # Model response configuration
         self.max_tokens = max_tokens  # None = use model default
@@ -948,27 +949,9 @@ class AIAgent:
                       " → ".join(f"{f['model']} ({f['provider']})" for f in self._fallback_chain))
 
         # Get available tools with filtering
-        self.tools = get_tool_definitions(
-            enabled_toolsets=enabled_toolsets,
-            disabled_toolsets=disabled_toolsets,
-            quiet_mode=self.quiet_mode,
-        )
-        
-        # Show tool configuration and store valid tool names for validation
+        self.tools = []
         self.valid_tool_names = set()
-        if self.tools:
-            self.valid_tool_names = {tool["function"]["name"] for tool in self.tools}
-            tool_names = sorted(self.valid_tool_names)
-            if not self.quiet_mode:
-                print(f"🛠️  Loaded {len(self.tools)} tools: {', '.join(tool_names)}")
-                
-                # Show filtering info if applied
-                if enabled_toolsets:
-                    print(f"   ✅ Enabled toolsets: {', '.join(enabled_toolsets)}")
-                if disabled_toolsets:
-                    print(f"   ❌ Disabled toolsets: {', '.join(disabled_toolsets)}")
-        elif not self.quiet_mode:
-            print("🛠️  No tools loaded (all tools filtered out or unavailable)")
+        self._refresh_tool_definitions(announce=not self.quiet_mode)
         
         # Check tool requirements
         if self.tools and not self.quiet_mode:
@@ -1156,7 +1139,7 @@ class AIAgent:
                 self._memory_manager = None
 
         # Inject memory provider tool schemas into the tool surface
-        if self._memory_manager and self.tools is not None:
+        if getattr(self, "_memory_manager", None) and self.tools is not None:
             for _schema in self._memory_manager.get_all_tool_schemas():
                 _wrapped = {"type": "function", "function": _schema}
                 self.tools.append(_wrapped)
@@ -2704,14 +2687,118 @@ class AIAgent:
         """Check if an interrupt has been requested."""
         return self._interrupt_requested
 
+    def _refresh_tool_definitions(self, announce: bool = False) -> None:
+        """Rebuild the tool schema for the current session state."""
+        self.tools = get_tool_definitions(
+            enabled_toolsets=self.enabled_toolsets,
+            disabled_toolsets=self.disabled_toolsets,
+            quiet_mode=self.quiet_mode,
+            activated_tools=sorted(self._activated_deferred_tools),
+        )
 
+        self.valid_tool_names = {
+            tool["function"]["name"]
+            for tool in (self.tools or [])
+            if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+        }
 
+        if getattr(self, "_memory_manager", None) and self.tools is not None:
+            for _schema in self._memory_manager.get_all_tool_schemas():
+                _wrapped = {"type": "function", "function": _schema}
+                self.tools.append(_wrapped)
+                _tname = _schema.get("name", "")
+                if _tname:
+                    self.valid_tool_names.add(_tname)
 
+        if announce:
+            if self.tools:
+                tool_names = sorted(self.valid_tool_names)
+                print(f"🛠️  Loaded {len(self.tools)} tools: {', '.join(tool_names)}")
+                if self.enabled_toolsets:
+                    print(f"   ✅ Enabled toolsets: {', '.join(self.enabled_toolsets)}")
+                if self.disabled_toolsets:
+                    print(f"   ❌ Disabled toolsets: {', '.join(self.disabled_toolsets)}")
+            else:
+                print("🛠️  No tools loaded (all tools filtered out or unavailable)")
 
+    def _extract_deferred_tool_names_from_search_result(self, function_result: str) -> set[str]:
+        """Return valid deferred tool names from a tool_search JSON result."""
+        try:
+            payload = json.loads(function_result)
+        except (json.JSONDecodeError, TypeError):
+            return set()
 
+        if not isinstance(payload, dict):
+            return set()
 
+        results = payload.get("results")
+        if not isinstance(results, list):
+            return set()
 
+        activated = set()
+        for item in results:
+            if not isinstance(item, dict) or item.get("deferred") is not True:
+                continue
+            name = item.get("name")
+            if not isinstance(name, str):
+                continue
+            normalized_name = name.strip()
+            if not normalized_name:
+                continue
+            meta = registry.get_metadata(normalized_name)
+            if meta.get("deferred"):
+                activated.add(normalized_name)
+        return activated
 
+    def _activate_deferred_tools_from_search_result(self, function_result: str) -> set[str]:
+        """Activate deferred tools discovered by tool_search for future turns."""
+        activated = self._extract_deferred_tool_names_from_search_result(function_result)
+        new_tools = activated.difference(self._activated_deferred_tools)
+        if not new_tools:
+            return set()
+
+        self._activated_deferred_tools.update(new_tools)
+        self._refresh_tool_definitions()
+        logger.info(
+            "Activated deferred tools for session %s: %s",
+            self.session_id or "none",
+            ", ".join(sorted(new_tools)),
+        )
+        return new_tools
+
+    def _hydrate_activated_deferred_tools_from_history(
+        self, history: Optional[List[Dict[str, Any]]]
+    ) -> None:
+        """Recover deferred tool activations from prior tool_search results."""
+        if not history:
+            return
+
+        tool_search_call_ids = set()
+        for msg in history:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            for tool_call in msg.get("tool_calls") or []:
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function") or {}
+                if not isinstance(function, dict) or function.get("name") != "tool_search":
+                    continue
+                call_id = tool_call.get("call_id") or tool_call.get("id")
+                if isinstance(call_id, str) and call_id.strip():
+                    tool_search_call_ids.add(call_id.strip())
+
+        if not tool_search_call_ids:
+            return
+
+        for msg in history:
+            if not isinstance(msg, dict) or msg.get("role") != "tool":
+                continue
+            tool_call_id = msg.get("tool_call_id")
+            if tool_call_id not in tool_search_call_ids:
+                continue
+            activated = self._extract_deferred_tool_names_from_search_result(msg.get("content", ""))
+            if activated:
+                self._activated_deferred_tools.update(activated)
 
     def _build_system_prompt(self, system_message: str = None) -> str:
         """
@@ -6518,6 +6605,9 @@ class AIAgent:
                 except Exception as cb_err:
                     logging.debug(f"Tool complete callback error: {cb_err}")
 
+            if name == "tool_search":
+                self._activate_deferred_tools_from_search_result(function_result)
+
             function_result = maybe_persist_tool_result(
                 content=function_result,
                 tool_name=name,
@@ -6855,6 +6945,9 @@ class AIAgent:
                     self.tool_complete_callback(tool_call.id, function_name, function_args, function_result)
                 except Exception as cb_err:
                     logging.debug(f"Tool complete callback error: {cb_err}")
+
+            if function_name == "tool_search":
+                self._activate_deferred_tools_from_search_result(function_result)
 
             function_result = maybe_persist_tool_result(
                 content=function_result,
@@ -7241,7 +7334,9 @@ class AIAgent:
         # making tool calls in ALL subsequent turns.
         if messages:
             _strip_budget_warnings_from_history(messages)
-        
+            self._hydrate_activated_deferred_tools_from_history(messages)
+        self._refresh_tool_definitions()
+
         # Hydrate todo store from conversation history (gateway creates a fresh
         # AIAgent per message, so the in-memory store is empty -- we need to
         # recover the todo state from the most recent todo tool response in history)
