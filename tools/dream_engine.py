@@ -1,0 +1,843 @@
+"""
+Dream Engine — 5-stage dream processing pipeline for Hermes Agent.
+
+Processes recent session memories during idle time, mimicking human sleep stages:
+
+  Stage 1: HARVEST      — Extract session digests from state.db (pure code, no LLM)
+  Stage 2: CONSOLIDATE  — Find new facts, update memory (LLM call #1, cheap model)
+  Stage 3: CONNECT      — Find cross-session patterns (same LLM call as stage 2)
+  Stage 4: IMAGINE      — Creative connections and ideas (LLM call #2, creative model)
+  Stage 5: JOURNAL      — Write dream log, update memory, advance cursor (pure code)
+
+The engine separates code-only stages (1, 5) from LLM stages (2+3, 4) so cheap
+models handle bulk analysis while the creative model only processes refined input.
+
+Config section in config.yaml:
+
+  dream:
+    enabled: true
+    model: claude-haiku-4-5-20251001
+    creative_model: claude-sonnet-4-6
+    provider: anthropic
+    idle_minutes: 30
+    sessions_to_process: 4
+    max_messages_per_session: 50
+    deliver: true
+"""
+
+import json
+import logging
+import os
+import re
+import tempfile
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+ENTRY_DELIMITER = "\n§\n"
+
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+DEFAULT_DREAM_CONFIG = {
+    "enabled": False,
+    "model": "claude-haiku-4-5-20251001",
+    "creative_model": "",
+    "provider": "",
+    "base_url": "",
+    "api_key": "",
+    "idle_minutes": 30,
+    "sessions_to_process": 4,
+    "max_messages_per_session": 50,
+    "deliver": True,
+}
+
+
+def get_dream_dir() -> Path:
+    """Return dream output directory, creating it if needed."""
+    home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    dream_dir = home / "dreams"
+    dream_dir.mkdir(parents=True, exist_ok=True)
+    return dream_dir
+
+
+def load_dream_config() -> Dict[str, Any]:
+    """Load dream config from config.yaml with defaults."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception:
+        return dict(DEFAULT_DREAM_CONFIG)
+    dream_cfg = cfg.get("dream", {})
+    if not isinstance(dream_cfg, dict):
+        dream_cfg = {}
+    merged = dict(DEFAULT_DREAM_CONFIG)
+    merged.update({k: v for k, v in dream_cfg.items() if v is not None and v != ""})
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# Dream State (cursor tracking)
+# ---------------------------------------------------------------------------
+
+class DreamState:
+    """Tracks which sessions have been processed and dream history."""
+
+    def __init__(self, dream_dir: Optional[Path] = None):
+        self._dir = dream_dir or get_dream_dir()
+        self._path = self._dir / "state.json"
+
+    def load(self) -> Dict[str, Any]:
+        if self._path.exists():
+            try:
+                return json.loads(self._path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {
+            "last_processed_session": None,
+            "last_dream_at": None,
+            "dream_count": 0,
+        }
+
+    def save(self, state: Dict[str, Any]):
+        self._dir.mkdir(parents=True, exist_ok=True)
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(self._dir), suffix=".tmp", prefix=".dream_state_"
+        )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, str(self._path))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+
+# ---------------------------------------------------------------------------
+# Dream Engine
+# ---------------------------------------------------------------------------
+
+class DreamEngine:
+    """5-stage dream processing pipeline."""
+
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        self.config = config or load_dream_config()
+        self.sessions_to_process = int(self.config.get("sessions_to_process", 4))
+        self.max_messages = int(self.config.get("max_messages_per_session", 50))
+        self.model = self.config.get("model", "claude-haiku-4-5-20251001")
+        self.creative_model = self.config.get("creative_model", "") or self.model
+        self.state = DreamState()
+
+    # =====================================================================
+    # Stage 1: HARVEST — Extract session digests (pure code, no LLM)
+    # =====================================================================
+
+    def harvest(self) -> List[Dict[str, Any]]:
+        """Extract digests from recent unprocessed sessions.
+
+        Reads state.db directly — user messages, tool names, metadata.
+        Returns list of digest dicts, newest first.
+        """
+        cursor_state = self.state.load()
+        last_processed = cursor_state.get("last_processed_session")
+
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+        except Exception as e:
+            logger.warning("Dream harvest: cannot open state.db: %s", e)
+            return []
+
+        try:
+            conn = db._conn
+            sessions = self._query_new_sessions(conn, last_processed)
+            if not sessions:
+                return []
+
+            digests = []
+            for row in sessions:
+                digest = self._extract_digest(conn, row)
+                if digest:
+                    digests.append(digest)
+
+            return digests
+        except Exception as e:
+            logger.error("Dream harvest failed: %s", e)
+            return []
+        finally:
+            db.close()
+
+    def _query_new_sessions(self, conn, last_processed: Optional[str]) -> list:
+        """Query sessions newer than the last processed one."""
+        if last_processed:
+            cursor = conn.execute(
+                "SELECT started_at FROM sessions WHERE id = ?",
+                (last_processed,),
+            )
+            row = cursor.fetchone()
+            if row:
+                return conn.execute(
+                    "SELECT id, source, title, message_count, tool_call_count, "
+                    "started_at, ended_at, end_reason "
+                    "FROM sessions WHERE started_at > ? AND message_count > 0 "
+                    "ORDER BY started_at DESC LIMIT ?",
+                    (row[0], self.sessions_to_process),
+                ).fetchall()
+
+        # No cursor or cursor session not found — take most recent
+        return conn.execute(
+            "SELECT id, source, title, message_count, tool_call_count, "
+            "started_at, ended_at, end_reason "
+            "FROM sessions WHERE message_count > 0 "
+            "ORDER BY started_at DESC LIMIT ?",
+            (self.sessions_to_process,),
+        ).fetchall()
+
+    def _extract_digest(self, conn, session_row: tuple) -> Optional[Dict[str, Any]]:
+        """Build a digest dict from a session row + its messages."""
+        session_id = session_row[0]
+
+        digest = {
+            "session_id": session_id,
+            "platform": session_row[1] or "unknown",
+            "title": session_row[2] or "(untitled)",
+            "message_count": session_row[3] or 0,
+            "tool_call_count": session_row[4] or 0,
+            "started_at": self._ts(session_row[5]),
+            "ended_at": self._ts(session_row[6]),
+            "end_reason": session_row[7],
+        }
+
+        # User messages — the most valuable signal for dream processing
+        user_rows = conn.execute(
+            "SELECT content FROM messages "
+            "WHERE session_id = ? AND role = 'user' AND content != '' "
+            "ORDER BY timestamp LIMIT ?",
+            (session_id, self.max_messages),
+        ).fetchall()
+        digest["user_messages"] = [r[0] for r in user_rows if r[0]]
+
+        # Last assistant response — the session outcome
+        last_resp = conn.execute(
+            "SELECT content FROM messages "
+            "WHERE session_id = ? AND role = 'assistant' AND content != '' "
+            "ORDER BY timestamp DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        digest["last_response"] = (
+            last_resp[0][:500] if last_resp and last_resp[0] else ""
+        )
+
+        # Tool names used — what capabilities were exercised
+        tool_rows = conn.execute(
+            "SELECT DISTINCT tool_name FROM messages "
+            "WHERE session_id = ? AND tool_name IS NOT NULL AND tool_name != ''",
+            (session_id,),
+        ).fetchall()
+        digest["tools_used"] = [t[0] for t in tool_rows]
+
+        return digest
+
+    @staticmethod
+    def _ts(unix_ts) -> Optional[str]:
+        """Format unix timestamp to ISO string."""
+        if unix_ts:
+            try:
+                return datetime.fromtimestamp(float(unix_ts)).strftime(
+                    "%Y-%m-%d %H:%M"
+                )
+            except (ValueError, TypeError, OSError):
+                pass
+        return None
+
+    # =====================================================================
+    # Stage 2+3: CONSOLIDATE + CONNECT (LLM call #1)
+    # =====================================================================
+
+    def build_analysis_prompt(
+        self,
+        digests: List[Dict],
+        memory_content: str,
+        user_content: str,
+    ) -> str:
+        """Build prompt for consolidation + pattern detection."""
+        session_text = "\n\n---\n\n".join(
+            self._format_digest(d) for d in digests
+        )
+
+        return (
+            "You are processing dream memories for an AI agent. "
+            "Analyze recent sessions against current memory to find "
+            "new knowledge and patterns.\n\n"
+            "## Current Agent Memory\n"
+            f"{memory_content or '(empty)'}\n\n"
+            "## Current User Profile\n"
+            f"{user_content or '(empty)'}\n\n"
+            "## Recent Sessions\n"
+            f"{session_text}\n\n"
+            "## Instructions\n\n"
+            "### CONSOLIDATE\n"
+            "Compare sessions against current memory. Find:\n"
+            "- New facts not in memory (topics, decisions, preferences)\n"
+            "- Outdated memory entries that need updating\n"
+            "- User behavior patterns (work hours, style, recurring topics)\n\n"
+            "### CONNECT\n"
+            "Find cross-session patterns:\n"
+            "- Topics appearing across multiple sessions\n"
+            "- Evolving projects or ongoing work\n"
+            "- Unfinished tasks or recurring problems\n\n"
+            "Respond in this exact JSON format:\n"
+            "```json\n"
+            "{\n"
+            '  "insights": [\n'
+            '    "new fact or observation worth noting",\n'
+            '    "user preference or behavior pattern discovered"\n'
+            "  ],\n"
+            '  "patterns": ["cross-session pattern 1", "pattern 2"],\n'
+            '  "open_threads": ["unfinished task or ongoing work"],\n'
+            '  "session_summary": "2-3 sentence summary of what happened"\n'
+            "}\n"
+            "```\n\n"
+            "Only include genuine findings. Do not fabricate. "
+            "If nothing new stands out, keep lists short."
+        )
+
+    def parse_analysis_response(self, response: str) -> Dict[str, Any]:
+        """Parse JSON from analysis LLM response."""
+        if not response:
+            return self._empty_analysis()
+
+        # Extract JSON from markdown code blocks
+        match = re.search(r"```(?:json)?\s*\n(.*?)\n```", response, re.DOTALL)
+        text = match.group(1) if match else response
+
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # Fallback: find first JSON object
+        brace_start = text.find("{")
+        brace_end = text.rfind("}")
+        if brace_start >= 0 and brace_end > brace_start:
+            try:
+                return json.loads(text[brace_start : brace_end + 1])
+            except json.JSONDecodeError:
+                pass
+
+        logger.warning("Dream: could not parse analysis JSON, using raw text")
+        return {
+            "session_summary": response[:500],
+            "insights": [],
+            "patterns": [],
+            "open_threads": [],
+        }
+
+    @staticmethod
+    def _empty_analysis() -> Dict[str, Any]:
+        return {
+            "session_summary": "",
+            "insights": [],
+            "patterns": [],
+            "open_threads": [],
+        }
+
+    # =====================================================================
+    # Stage 4: IMAGINE (LLM call #2)
+    # =====================================================================
+
+    def build_creative_prompt(
+        self, analysis: Dict[str, Any], memory_content: str
+    ) -> str:
+        """Build prompt for creative dream generation."""
+        patterns = "\n".join(
+            f"- {p}" for p in analysis.get("patterns", [])
+        ) or "None detected"
+        threads = "\n".join(
+            f"- {t}" for t in analysis.get("open_threads", [])
+        ) or "None"
+        insights = "\n".join(
+            f"- {i}" if isinstance(i, str) else f"- {i.get('content', str(i))}"
+            for i in analysis.get("insights", [])
+        ) or "None"
+        summary = analysis.get("session_summary", "No summary available")
+
+        # Load SOUL.md for personality context
+        soul = ""
+        try:
+            home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+            soul_path = home / "SOUL.md"
+            if soul_path.exists():
+                soul = soul_path.read_text(encoding="utf-8")[:2000]
+        except OSError:
+            pass
+
+        # Load USER.md for user profile context
+        _, user_content = self._load_memory_files()
+
+        parts = [
+            "You are an AI agent in dream mode. "
+            "Your analytical mind has processed recent sessions. "
+            "Now let your subconscious make connections.\n",
+        ]
+
+        if soul:
+            parts.append(f"## Your personality\n{soul}\n")
+
+        parts.extend([
+            f"## What happened recently\n{summary}\n",
+            f"## Insights discovered\n{insights}\n",
+            f"## Patterns found\n{patterns}\n",
+            f"## Open threads\n{threads}\n",
+            f"## Your memory\n{memory_content or '(empty)'}\n",
+        ])
+
+        if user_content:
+            parts.append(f"## User profile\n{user_content}\n")
+
+        parts.append(
+            "## Dream\n\n"
+            "Let your mind wander across everything above. "
+            "Like a human dream, mix contexts — a pattern from one project "
+            "might solve a problem in another. An open thread might connect "
+            "to a forgotten memory.\n\n"
+            "Write only a dream narrative (5-12 sentences). First person. "
+            "Be vivid but grounded — real observations, not generic platitudes. "
+            "If two unrelated things genuinely connect, explore that. "
+            "If nothing connects, be honest.\n\n"
+            "Do not add suggestions, recommendations, or action items. "
+            "Just the dream."
+        )
+
+        return "\n".join(parts)
+
+    # =====================================================================
+    # Stage 5: JOURNAL — Write log, apply memory, advance cursor
+    # =====================================================================
+
+    def write_journal(
+        self,
+        digests: List[Dict],
+        analysis: Dict[str, Any],
+        dream_narrative: str,
+    ) -> Path:
+        """Write dream log file and return its path."""
+        dream_dir = get_dream_dir()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_path = dream_dir / f"dream_{timestamp}.md"
+
+        lines = [
+            f"# Dream — {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            "",
+            f"**Sessions processed:** {len(digests)}",
+            "**Platforms:** "
+            + ", ".join(sorted(set(d["platform"] for d in digests))),
+            "",
+        ]
+
+        if analysis.get("session_summary"):
+            lines.extend(["## Summary", "", analysis["session_summary"], ""])
+
+        if analysis.get("patterns"):
+            lines.append("## Patterns")
+            lines.append("")
+            for p in analysis["patterns"]:
+                lines.append(f"- {p}")
+            lines.append("")
+
+        if analysis.get("open_threads"):
+            lines.append("## Open Threads")
+            lines.append("")
+            for t in analysis["open_threads"]:
+                lines.append(f"- {t}")
+            lines.append("")
+
+        if analysis.get("insights"):
+            lines.append("## Insights")
+            lines.append("")
+            for insight in analysis["insights"]:
+                if isinstance(insight, str):
+                    lines.append(f"- {insight}")
+                elif isinstance(insight, dict):
+                    lines.append(f"- {insight.get('content', str(insight))}")
+            lines.append("")
+
+        if dream_narrative:
+            lines.extend(["## Dream", "", dream_narrative, ""])
+
+        # Session details appendix
+        lines.append("## Sessions")
+        lines.append("")
+        for d in digests:
+            lines.append(
+                f"- **{d['title']}** ({d['platform']}, "
+                f"{d['message_count']} msgs, "
+                f"{d['tool_call_count']} tools)"
+            )
+        lines.append("")
+
+        log_path.write_text("\n".join(lines), encoding="utf-8")
+        return log_path
+
+    def advance_cursor(self, digests: List[Dict]):
+        """Update state cursor to the newest processed session."""
+        state = self.state.load()
+        if digests:
+            state["last_processed_session"] = digests[0]["session_id"]
+        state["last_dream_at"] = datetime.now().isoformat()
+        state["dream_count"] = state.get("dream_count", 0) + 1
+        self.state.save(state)
+
+    # =====================================================================
+    # LLM call
+    # =====================================================================
+
+    def make_llm_call(
+        self, prompt: str, model: Optional[str] = None
+    ) -> Optional[str]:
+        """Make an LLM call for dream processing.
+
+        Uses Hermes' own token resolution (OAuth, env vars, credential files)
+        so dream works with the same auth as the main agent.
+        """
+        model = model or self.model
+        provider = self.config.get("provider", "").strip()
+        api_key = self.config.get("api_key", "").strip()
+        base_url = self.config.get("base_url", "").strip()
+
+        # Resolve provider from main config if not set
+        if not provider:
+            try:
+                from hermes_cli.config import load_config
+                cfg = load_config()
+                provider = cfg.get("model", {}).get("provider", "anthropic")
+            except Exception:
+                provider = "anthropic"
+
+        # Resolve API key using Hermes' auth chain (OAuth, env vars, credentials)
+        if not api_key:
+            api_key = self._resolve_api_key(provider)
+
+        if not api_key:
+            logger.error("Dream: no API key available for provider %s", provider)
+            return None
+
+        logger.info(
+            "Dream LLM call: provider=%s model=%s prompt_len=%d",
+            provider, model, len(prompt),
+        )
+
+        try:
+            return self._call_provider(provider, model, api_key, base_url, prompt)
+        except Exception as e:
+            logger.error("Dream LLM call failed (%s/%s): %s", provider, model, e)
+            return None
+
+    @staticmethod
+    def _resolve_api_key(provider: str) -> str:
+        """Resolve API key using Hermes' full auth chain."""
+        if provider == "anthropic":
+            # Use Hermes' resolve_anthropic_token which handles:
+            # ANTHROPIC_TOKEN (OAuth), CLAUDE_CODE_OAUTH_TOKEN,
+            # Claude Code credentials (~/.claude.json), ANTHROPIC_API_KEY
+            try:
+                from agent.anthropic_adapter import resolve_anthropic_token
+                token = resolve_anthropic_token()
+                if token:
+                    return token
+            except ImportError:
+                pass
+            return os.getenv("ANTHROPIC_API_KEY", "")
+        elif provider in ("openai", "codex"):
+            return os.getenv("OPENAI_API_KEY", "")
+        elif provider == "openrouter":
+            return os.getenv("OPENROUTER_API_KEY", "")
+        return os.getenv("ANTHROPIC_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
+
+    def _call_provider(
+        self,
+        provider: str,
+        model: str,
+        api_key: str,
+        base_url: str,
+        prompt: str,
+    ) -> Optional[str]:
+        """Dispatch LLM call to the appropriate provider SDK."""
+        if provider == "anthropic" and not base_url:
+            # Use Hermes' build_anthropic_client which handles OAuth tokens,
+            # Bearer auth, user-agent headers, and beta flags correctly.
+            try:
+                from agent.anthropic_adapter import build_anthropic_client
+                client = build_anthropic_client(api_key, base_url)
+            except ImportError:
+                import anthropic
+                client = anthropic.Anthropic(api_key=api_key)
+
+            # OAuth tokens require Claude Code identity in system prompt
+            # for correct routing. Without this, Sonnet/Opus get 429.
+            try:
+                from agent.anthropic_adapter import _is_oauth_token
+                is_oauth = _is_oauth_token(api_key)
+            except ImportError:
+                is_oauth = api_key.startswith("sk-ant-oat")
+
+            system_blocks = []
+            if is_oauth:
+                system_blocks.append({
+                    "type": "text",
+                    "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+                    "cache_control": {"type": "ephemeral"},
+                })
+            system_blocks.append({
+                "type": "text",
+                "text": "You are a dream processing engine for an AI agent.",
+                "cache_control": {"type": "ephemeral"},
+            })
+
+            response = client.messages.create(
+                model=model,
+                max_tokens=8000,
+                system=system_blocks,
+                messages=[{
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": prompt,
+                        "cache_control": {"type": "ephemeral"},
+                    }],
+                }],
+            )
+            return response.content[0].text if response.content else None
+
+        # OpenAI-compatible (openai, openrouter, nous, custom)
+        import openai
+
+        client_kwargs = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        elif provider == "openrouter":
+            client_kwargs["base_url"] = "https://openrouter.ai/api/v1"
+
+        client = openai.OpenAI(**client_kwargs)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=2000,
+        )
+        choice = response.choices[0] if response.choices else None
+        return choice.message.content if choice else None
+
+    # =====================================================================
+    # Full pipeline
+    # =====================================================================
+
+    def run(self) -> Optional[Dict[str, Any]]:
+        """Run the complete 5-stage dream pipeline.
+
+        Returns a result dict on success, None if nothing to process.
+        Uses a file lock to prevent concurrent dream runs.
+        """
+        lock_path = get_dream_dir() / ".dream.lock"
+        try:
+            lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_WRONLY)
+            import fcntl
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, IOError):
+            logger.info("Dream: another dream cycle is already running")
+            return None
+        except ImportError:
+            # fcntl not available on Windows — skip locking
+            lock_fd = None
+
+        try:
+            return self._run_pipeline()
+        finally:
+            if lock_fd is not None:
+                try:
+                    import fcntl
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    os.close(lock_fd)
+                except (OSError, IOError):
+                    pass
+
+    def _run_pipeline(self) -> Optional[Dict[str, Any]]:
+        """Internal pipeline execution (called with lock held)."""
+        # Stage 1: HARVEST
+        digests = self.harvest()
+        if not digests:
+            logger.info("Dream: no new sessions to process")
+            return None
+
+        logger.info("Dream: harvested %d session digests", len(digests))
+
+        # Load current memory for context
+        memory_content, user_content = self._load_memory_files()
+
+        # Stage 2+3: CONSOLIDATE + CONNECT
+        analysis_prompt = self.build_analysis_prompt(
+            digests, memory_content, user_content
+        )
+        analysis_response = self.make_llm_call(analysis_prompt, model=self.model)
+        if not analysis_response:
+            logger.warning("Dream: analysis LLM call failed, skipping cycle (cursor not advanced)")
+            return None
+        analysis = self.parse_analysis_response(analysis_response)
+
+        logger.info(
+            "Dream analysis: %d insights, %d patterns, %d threads",
+            len(analysis.get("insights", [])),
+            len(analysis.get("patterns", [])),
+            len(analysis.get("open_threads", [])),
+        )
+
+        # Brief pause between LLM calls to avoid rate limit contention
+        time.sleep(5)
+
+        # Stage 4: IMAGINE
+        creative_prompt = self.build_creative_prompt(analysis, memory_content)
+        dream_narrative = self.make_llm_call(
+            creative_prompt, model=self.creative_model
+        ) or ""
+
+        # Stage 5: JOURNAL — write log only, never touch memory
+        log_path = self.write_journal(digests, analysis, dream_narrative)
+        self.advance_cursor(digests)
+
+        logger.info("Dream complete: %s", log_path)
+
+        return {
+            "log_path": str(log_path),
+            "sessions_processed": len(digests),
+            "patterns": analysis.get("patterns", []),
+            "open_threads": analysis.get("open_threads", []),
+            "session_summary": analysis.get("session_summary", ""),
+            "dream_narrative": dream_narrative,
+        }
+
+    # =====================================================================
+    # Helpers
+    # =====================================================================
+
+    def _format_digest(self, digest: Dict[str, Any]) -> str:
+        """Format a single session digest for LLM consumption."""
+        lines = [
+            f"### {digest['title']}",
+            f"Platform: {digest['platform']} | "
+            f"Messages: {digest['message_count']} | "
+            f"Tools: {digest['tool_call_count']}",
+            f"Time: {digest['started_at'] or '?'} → "
+            f"{digest['ended_at'] or 'ongoing'}",
+        ]
+        if digest.get("end_reason"):
+            lines.append(f"End reason: {digest['end_reason']}")
+        if digest.get("tools_used"):
+            lines.append(f"Tools used: {', '.join(digest['tools_used'])}")
+
+        if digest.get("user_messages"):
+            lines.append("")
+            lines.append("User messages:")
+            for msg in digest["user_messages"]:
+                preview = msg[:300].replace("\n", " ")
+                if len(msg) > 300:
+                    preview += "..."
+                lines.append(f"  - {preview}")
+
+        if digest.get("last_response"):
+            lines.append("")
+            resp_preview = digest["last_response"][:300].replace("\n", " ")
+            lines.append(f"Final response: {resp_preview}")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _load_memory_files() -> Tuple[str, str]:
+        """Read current MEMORY.md and USER.md contents."""
+        try:
+            from tools.memory_tool import get_memory_dir
+
+            mem_dir = get_memory_dir()
+        except ImportError:
+            home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+            mem_dir = home / "memories"
+
+        memory = ""
+        user = ""
+        mem_path = mem_dir / "MEMORY.md"
+        user_path = mem_dir / "USER.md"
+        if mem_path.exists():
+            try:
+                memory = mem_path.read_text(encoding="utf-8")
+            except OSError:
+                pass
+        if user_path.exists():
+            try:
+                user = user_path.read_text(encoding="utf-8")
+            except OSError:
+                pass
+        return memory, user
+
+    # =====================================================================
+    # Status / History
+    # =====================================================================
+
+    def get_status(self) -> Dict[str, Any]:
+        """Return current dream state and config summary."""
+        state = self.state.load()
+        dream_dir = get_dream_dir()
+        logs = sorted(dream_dir.glob("dream_*.md"), reverse=True)
+        return {
+            "enabled": self.config.get("enabled", False),
+            "model": self.model,
+            "creative_model": self.creative_model,
+            "idle_minutes": self.config.get("idle_minutes", 30),
+            "sessions_to_process": self.sessions_to_process,
+            "last_dream_at": state.get("last_dream_at"),
+            "dream_count": state.get("dream_count", 0),
+            "last_processed_session": state.get("last_processed_session"),
+            "log_count": len(logs),
+            "latest_log": str(logs[0]) if logs else None,
+        }
+
+    @staticmethod
+    def list_dreams(limit: int = 10) -> List[Dict[str, str]]:
+        """List recent dream logs."""
+        dream_dir = get_dream_dir()
+        logs = sorted(dream_dir.glob("dream_*.md"), reverse=True)[:limit]
+        results = []
+        for log in logs:
+            # Extract date from filename: dream_YYYYMMDD_HHMMSS.md
+            name = log.stem  # dream_20260406_233000
+            try:
+                ts = datetime.strptime(name, "dream_%Y%m%d_%H%M%S")
+                date_str = ts.strftime("%Y-%m-%d %H:%M")
+            except ValueError:
+                date_str = name
+
+            # Read first few lines for preview
+            try:
+                content = log.read_text(encoding="utf-8")
+                # Find summary section
+                summary = ""
+                for line in content.split("\n"):
+                    if line and not line.startswith("#") and not line.startswith("**"):
+                        summary = line[:120]
+                        break
+            except OSError:
+                summary = ""
+
+            results.append({
+                "path": str(log),
+                "date": date_str,
+                "preview": summary,
+            })
+        return results

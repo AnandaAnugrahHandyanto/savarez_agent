@@ -167,6 +167,12 @@ TOOLSETS = {
         "tools": ["memory"],
         "includes": []
     },
+
+    "dream": {
+        "description": "Dream processing — idle-time session analysis, memory consolidation, creative connections",
+        "tools": ["dream"],
+        "includes": []
+    },
     
     "session_search": {
         "description": "Search and recall past conversations with summarization",

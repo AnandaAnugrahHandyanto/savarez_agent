@@ -2518,6 +2518,8 @@ class GatewayRunner:
         if _quick_key in self._running_agents:
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
+            if event.get_command() == "dream":
+                return await self._handle_dream_command(event)
 
             # Resolve the command once for all early-intercept checks below.
             from hermes_cli.commands import resolve_command as _resolve_cmd_inner
@@ -2695,6 +2697,9 @@ class GatewayRunner:
 
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
+
+        if canonical == "dream":
+            return await self._handle_dream_command(event)
 
         if canonical == "model":
             return await self._handle_model_command(event)
@@ -4100,6 +4105,58 @@ class GatewayRunner:
 
         return "\n".join(lines)
     
+    async def _handle_dream_command(self, event: MessageEvent) -> str:
+        """Handle /dream command — trigger, status, or history.
+
+        /dream          — trigger a dream cycle
+        /dream status   — show dream state
+        /dream history  — list recent dreams
+        """
+        args = event.get_command_args().strip().lower() if hasattr(event, "get_command_args") else ""
+
+        try:
+            from tools.dream_engine import DreamEngine, load_dream_config
+            config = load_dream_config()
+            engine = DreamEngine(config)
+        except ImportError:
+            return "Dream engine not available."
+
+        if args == "status":
+            status = engine.get_status()
+            lines = [
+                "**Dream Status**",
+                "",
+                f"Enabled: {status['enabled']}",
+                f"Model: {status['model']}",
+                f"Creative model: {status['creative_model']}",
+                f"Idle threshold: {status['idle_minutes']}m",
+                f"Sessions per dream: {status['sessions_to_process']}",
+                f"Total dreams: {status['dream_count']}",
+                f"Last dream: {status['last_dream_at'] or 'never'}",
+            ]
+            return "\n".join(lines)
+
+        if args == "history":
+            dreams = engine.list_dreams(limit=5)
+            if not dreams:
+                return "No dream logs yet."
+            lines = ["**Recent Dreams**", ""]
+            for d in dreams:
+                lines.append(f"- {d['date']}: {d['preview'][:80] or '(no preview)'}")
+            return "\n".join(lines)
+
+        # Default: trigger a dream
+        if not config.get("enabled", False):
+            return "Dream is disabled. Enable in config.yaml: `dream: {enabled: true}`"
+
+        result = await asyncio.to_thread(engine.run)
+        if result is None:
+            return "No new sessions to process since last dream."
+
+        if result.get("dream_narrative"):
+            return result["dream_narrative"]
+        return f"Dream complete. Sessions processed: {result['sessions_processed']}"
+
     async def _handle_stop_command(self, event: MessageEvent) -> str:
         """Handle /stop command - interrupt a running agent.
 
@@ -8639,6 +8696,158 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     logger.info("Cron ticker stopped")
 
 
+def _start_dream_ticker(stop_event: threading.Event, adapters=None, loop=None, gateway_config=None):
+    """
+    Background thread that checks for idle sessions and triggers dream processing.
+
+    Runs every 60 seconds.  When the agent has been idle for longer than the
+    configured ``dream.idle_minutes`` threshold AND there are unprocessed
+    sessions, it spawns a dream cycle.
+
+    Dream results can optionally be delivered to the user via the configured
+    platform adapter.
+    """
+    import time
+
+    try:
+        from tools.dream_engine import DreamEngine, load_dream_config
+    except ImportError:
+        logger.debug("Dream engine not available, dream ticker disabled")
+        return
+
+    config = load_dream_config()
+    if not config.get("enabled", False):
+        logger.debug("Dream disabled in config, dream ticker not started")
+        return
+
+    idle_minutes = int(config.get("idle_minutes", 30))
+    idle_seconds = idle_minutes * 60
+    _last_activity = time.time()
+    _dream_running = False
+
+    logger.info("Dream ticker started (idle_threshold=%dm)", idle_minutes)
+
+    while not stop_event.is_set():
+        try:
+            # Check if any adapter has active sessions
+            has_active = False
+            if adapters:
+                for adapter in adapters.values():
+                    if hasattr(adapter, "_active_sessions") and adapter._active_sessions:
+                        has_active = True
+                        _last_activity = time.time()
+                        break
+
+            idle_duration = time.time() - _last_activity
+
+            if idle_duration >= idle_seconds and not _dream_running:
+                _dream_running = True
+                logger.info(
+                    "Dream: idle for %.0f minutes, starting dream cycle",
+                    idle_duration / 60,
+                )
+                try:
+                    # Reload config each cycle in case user changed it
+                    fresh_config = load_dream_config()
+                    if not fresh_config.get("enabled", False):
+                        _dream_running = False
+                        stop_event.wait(timeout=60)
+                        continue
+
+                    engine = DreamEngine(fresh_config)
+                    result = engine.run()
+
+                    if result and fresh_config.get("deliver", True) and adapters and loop:
+                        _deliver_dream(result, adapters, loop, gateway_config)
+
+                except Exception as e:
+                    logger.error("Dream cycle failed: %s", e)
+                finally:
+                    _dream_running = False
+                    # After a dream, reset activity timer to avoid back-to-back dreams
+                    _last_activity = time.time()
+
+        except Exception as e:
+            logger.debug("Dream tick error: %s", e)
+
+        stop_event.wait(timeout=60)
+
+    logger.info("Dream ticker stopped")
+
+
+def _deliver_dream(result: dict, adapters: dict, loop, gateway_config=None) -> None:
+    """Deliver dream summary to the first platform with a configured home channel."""
+    narrative = result.get("dream_narrative", "")
+    summary = result.get("session_summary", "")
+    patterns = result.get("patterns", [])
+
+    if not narrative and not summary:
+        return
+
+    lines = []
+    if summary:
+        lines.append(f"**Dream Summary:** {summary}")
+    if patterns:
+        lines.append("")
+        lines.append("**Patterns:**")
+        for p in patterns:
+            lines.append(f"- {p}")
+    if narrative:
+        lines.append("")
+        lines.append(f"**Dream:**\n{narrative}")
+
+    message = "\n".join(lines)
+
+    # Try home channel first, fall back to last active chat
+    import asyncio
+
+    for platform, adapter in adapters.items():
+        if not hasattr(adapter, "send") or not hasattr(adapter, "_running"):
+            continue
+        if not adapter._running:
+            continue
+
+        # Try home channel from gateway config
+        chat_id = None
+        if gateway_config and hasattr(gateway_config, "get_home_channel"):
+            home_channel = gateway_config.get_home_channel(platform)
+            if home_channel:
+                chat_id = home_channel.chat_id
+
+        # Fall back to last active session's chat_id
+        if not chat_id and hasattr(adapter, "_active_sessions"):
+            for session_key in adapter._active_sessions:
+                parts = session_key.split(":")
+                if len(parts) >= 4:
+                    chat_id = parts[3]
+                    break
+
+        # Fall back to channel directory JSON (last known chats per platform)
+        if not chat_id:
+            try:
+                import json as _json
+                _dir_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "channel_directory.json"
+                if _dir_path.exists():
+                    _dir_data = _json.loads(_dir_path.read_text(encoding="utf-8"))
+                    _plat_channels = _dir_data.get("platforms", {}).get(platform.value, [])
+                    if _plat_channels:
+                        chat_id = str(_plat_channels[0].get("id", ""))
+            except Exception:
+                pass
+
+        if chat_id:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    adapter.send(chat_id=chat_id, content=message), loop
+                )
+                logger.info("Dream delivered to %s (chat=%s)", type(adapter).__name__, chat_id)
+                return
+            except Exception as e:
+                logger.warning("Dream delivery failed for %s: %s", type(adapter).__name__, e)
+
+    logger.info("Dream: no suitable chat found for delivery")
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
@@ -8798,18 +9007,31 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         name="cron-ticker",
     )
     cron_thread.start()
-    
+
+    # Start background dream ticker for idle-time memory processing.
+    dream_stop = threading.Event()
+    dream_thread = threading.Thread(
+        target=_start_dream_ticker,
+        args=(dream_stop,),
+        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop(), "gateway_config": runner.config},
+        daemon=True,
+        name="dream-ticker",
+    )
+    dream_thread.start()
+
     # Wait for shutdown
     await runner.wait_for_shutdown()
+
+    # Stop cron and dream tickers cleanly (always, even on failure)
+    cron_stop.set()
+    dream_stop.set()
+    cron_thread.join(timeout=5)
+    dream_thread.join(timeout=5)
 
     if runner.should_exit_with_failure:
         if runner.exit_reason:
             logger.error("Gateway exiting with failure: %s", runner.exit_reason)
         return False
-    
-    # Stop cron ticker cleanly
-    cron_stop.set()
-    cron_thread.join(timeout=5)
 
     # Close MCP server connections
     try:
