@@ -605,6 +605,11 @@ DEFAULT_CONFIG = {
                                # independent of the parent's max_iterations)
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
+        # Optional tiered delegation profiles. When configured, delegate_task()
+        # can select a tier-specific model/provider/reasoning budget.
+        # Supported tier names: light, heavy, review, planning, research.
+        "default_tier": "",    # optional default tier when delegate_task() omits one
+        "tiers": {},
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

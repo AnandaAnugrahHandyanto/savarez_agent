@@ -22,6 +22,7 @@ from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     _get_max_concurrent_children,
     MAX_DEPTH,
+    SUPPORTED_TIERS,
     check_delegate_requirements,
     delegate_task,
     _build_child_agent,
@@ -29,6 +30,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    resolve_tier_config,
 )
 
 
@@ -1276,6 +1278,120 @@ class TestDelegationReasoningEffort(unittest.TestCase):
         )
         call_kwargs = MockAgent.call_args[1]
         self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "medium"})
+
+
+class TestTierResolution(unittest.TestCase):
+    def test_returns_flat_config_without_tiers(self):
+        cfg = {"model": "gpt-5.4-mini", "reasoning_effort": "low"}
+        self.assertEqual(resolve_tier_config(cfg, tier="review"), cfg)
+
+    def test_explicit_tier_overrides_flat_values(self):
+        cfg = {
+            "model": "gpt-5.4-mini",
+            "reasoning_effort": "low",
+            "max_iterations": 25,
+            "tiers": {
+                "heavy": {
+                    "model": "claude-opus-4-6",
+                    "reasoning_effort": "medium",
+                    "max_iterations": 50,
+                }
+            },
+        }
+        result = resolve_tier_config(cfg, tier="heavy")
+        self.assertEqual(result["model"], "claude-opus-4-6")
+        self.assertEqual(result["reasoning_effort"], "medium")
+        self.assertEqual(result["max_iterations"], 50)
+        self.assertNotIn("tiers", result)
+        self.assertNotIn("default_tier", result)
+
+    def test_default_tier_is_used_when_no_explicit_tier(self):
+        cfg = {
+            "model": "gpt-5.4-mini",
+            "reasoning_effort": "low",
+            "default_tier": "review",
+            "tiers": {
+                "review": {
+                    "model": "claude-opus-4-6",
+                    "reasoning_effort": "high",
+                }
+            },
+        }
+        result = resolve_tier_config(cfg)
+        self.assertEqual(result["model"], "claude-opus-4-6")
+        self.assertEqual(result["reasoning_effort"], "high")
+
+    def test_review_tier_has_reasoning_floor(self):
+        cfg = {
+            "model": "gpt-5.4-mini",
+            "reasoning_effort": "low",
+            "tiers": {
+                "review": {
+                    "model": "gpt-5.4-mini",
+                    "reasoning_effort": "low",
+                }
+            },
+        }
+        result = resolve_tier_config(cfg, tier="review")
+        self.assertEqual(result["reasoning_effort"], "high")
+
+    def test_schema_includes_tier_fields(self):
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        self.assertIn("tier", props)
+        self.assertEqual(props["tier"]["enum"], sorted(SUPPORTED_TIERS))
+        task_props = props["tasks"]["items"]["properties"]
+        self.assertIn("tier", task_props)
+        self.assertEqual(task_props["tier"]["enum"], sorted(SUPPORTED_TIERS))
+
+    @patch("tools.delegate_tool._load_config")
+    def test_task_specific_tier_sets_child_effort_and_iterations(self, mock_cfg):
+        import types
+        import sys
+
+        mock_cfg.return_value = {
+            "model": "gpt-5.4-mini",
+            "reasoning_effort": "low",
+            "max_iterations": 25,
+            "tiers": {
+                "light": {
+                    "model": "gpt-5.4-mini",
+                    "reasoning_effort": "low",
+                    "max_iterations": 25,
+                },
+                "review": {
+                    "model": "gpt-5.4",
+                    "reasoning_effort": "high",
+                    "max_iterations": 60,
+                },
+            },
+        }
+        mock_child = MagicMock()
+        mock_child.run_conversation.return_value = {"final_response": "ok", "completed": True, "api_calls": 1}
+        fake_mod = types.SimpleNamespace(AIAgent=MagicMock(return_value=mock_child))
+        parent = _make_mock_parent()
+        old = sys.modules.get("run_agent")
+        sys.modules["run_agent"] = fake_mod
+        try:
+            delegate_task(
+                tasks=[
+                    {"goal": "Quick inspect", "tier": "light"},
+                    {"goal": "Deep review", "tier": "review"},
+                ],
+                parent_agent=parent,
+            )
+        finally:
+            if old is None:
+                sys.modules.pop("run_agent", None)
+            else:
+                sys.modules["run_agent"] = old
+
+        calls = fake_mod.AIAgent.call_args_list
+        self.assertEqual(calls[0].kwargs["model"], "gpt-5.4-mini")
+        self.assertEqual(calls[0].kwargs["reasoning_config"], {"enabled": True, "effort": "low"})
+        self.assertEqual(calls[0].kwargs["max_iterations"], 25)
+        self.assertEqual(calls[1].kwargs["model"], "gpt-5.4")
+        self.assertEqual(calls[1].kwargs["reasoning_config"], {"enabled": True, "effort": "high"})
+        self.assertEqual(calls[1].kwargs["max_iterations"], 60)
 
 
 if __name__ == "__main__":
