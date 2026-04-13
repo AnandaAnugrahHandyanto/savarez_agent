@@ -36,7 +36,7 @@ import sys
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
 
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled
@@ -113,6 +113,7 @@ class LoadedPlugin:
     module: Optional[types.ModuleType] = None
     tools_registered: List[str] = field(default_factory=list)
     hooks_registered: List[str] = field(default_factory=list)
+    web_surfaces_registered: List[str] = field(default_factory=list)
     enabled: bool = False
     error: Optional[str] = None
 
@@ -124,9 +125,18 @@ class LoadedPlugin:
 class PluginContext:
     """Facade given to plugins so they can register tools and hooks."""
 
-    def __init__(self, manifest: PluginManifest, manager: "PluginManager"):
+    def __init__(self, manifest: PluginManifest, manager: "PluginManager", module: types.ModuleType | None = None):
         self.manifest = manifest
         self._manager = manager
+        self._plugin_root = self._derive_plugin_root(module)
+
+    def _derive_plugin_root(self, module: types.ModuleType | None) -> Path | None:
+        module_file = getattr(module, "__file__", None)
+        if module_file:
+            return Path(module_file).resolve().parent
+        if self.manifest.path and self.manifest.source in ("user", "project"):
+            return Path(self.manifest.path).resolve()
+        return None
 
     # -- tool registration --------------------------------------------------
 
@@ -244,6 +254,67 @@ class PluginContext:
             self.manifest.name, engine.name,
         )
 
+    # -- web surface registration --------------------------------------------
+
+    def register_web_surface(
+        self,
+        *,
+        surface_id: str,
+        static_dir: str | Path,
+        spa_fallback: bool = True,
+        extra_files: Mapping[str, str | Path] | None = None,
+        bootstrap_factory: Callable[[Any], Mapping[str, Any]] | None = None,
+    ) -> None:
+        """Register a prebuilt static web surface mounted under ``/web/<surface_id>/``."""
+        from gateway.platforms.web_surfaces import WebSurfaceSpec
+
+        normalized_surface_id = str(surface_id).strip()
+        if not normalized_surface_id or "/" in normalized_surface_id:
+            raise ValueError(f"Invalid web surface id: {surface_id!r}")
+
+        static_path = self._resolve_plugin_path(static_dir, kind="static_dir")
+        if not static_path.is_dir():
+            raise ValueError(f"Web surface static_dir does not exist: {static_path}")
+
+        normalized_extra_files: dict[str, Path] = {}
+        for route_name, file_path in (extra_files or {}).items():
+            normalized_route_name = str(route_name).strip().lstrip("/")
+            if normalized_route_name == "__hermes__.json":
+                raise ValueError("'__hermes__.json' is reserved for bootstrap payloads")
+            if not normalized_route_name or normalized_route_name.endswith("/"):
+                raise ValueError(f"Invalid web surface extra file route: {route_name!r}")
+            resolved_extra = self._resolve_plugin_path(
+                file_path,
+                kind=f"extra file {normalized_route_name!r}",
+            )
+            if not resolved_extra.is_file():
+                raise ValueError(f"Web surface extra file does not exist: {resolved_extra}")
+            normalized_extra_files[normalized_route_name] = resolved_extra
+
+        self._manager.register_web_surface(
+            WebSurfaceSpec(
+                surface_id=normalized_surface_id,
+                plugin_name=self.manifest.name,
+                static_dir=static_path,
+                spa_fallback=spa_fallback,
+                extra_files=normalized_extra_files,
+                bootstrap_factory=bootstrap_factory,
+            )
+        )
+        logger.debug(
+            "Plugin %s registered web surface: %s",
+            self.manifest.name,
+            normalized_surface_id,
+        )
+
+    def _resolve_plugin_path(self, value: str | Path, *, kind: str) -> Path:
+        path = Path(value)
+        if path.is_absolute():
+            return path.resolve()
+        if self._plugin_root is None:
+            raise ValueError(f"Relative {kind} requires a filesystem-backed plugin")
+        return (self._plugin_root / path).resolve()
+
     # -- hook registration --------------------------------------------------
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:
@@ -276,6 +347,7 @@ class PluginManager:
         self._hooks: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
+        self._web_surfaces: Dict[str, "WebSurfaceSpec"] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
@@ -400,6 +472,7 @@ class PluginManager:
     def _load_plugin(self, manifest: PluginManifest) -> None:
         """Import a plugin module and call its ``register(ctx)`` function."""
         loaded = LoadedPlugin(manifest=manifest)
+        rollback_state = None
 
         try:
             if manifest.source in ("user", "project"):
@@ -415,7 +488,20 @@ class PluginManager:
                 loaded.error = "no register() function"
                 logger.warning("Plugin '%s' has no register() function", manifest.name)
             else:
-                ctx = PluginContext(manifest, self)
+                ctx = PluginContext(manifest, self, module)
+                existing_surface_ids = set(self._web_surfaces)
+                from tools.registry import registry
+
+                rollback_state = {
+                    "plugin_tool_names": set(self._plugin_tool_names),
+                    "hooks": {name: list(callbacks) for name, callbacks in self._hooks.items()},
+                    "cli_commands": dict(self._cli_commands),
+                    "context_engine": self._context_engine,
+                    "web_surfaces": dict(self._web_surfaces),
+                    "registry": registry,
+                    "registry_tools": dict(registry._tools),
+                    "toolset_checks": dict(registry._toolset_checks),
+                }
                 register_fn(ctx)
                 loaded.tools_registered = [
                     t for t in self._plugin_tool_names
@@ -437,9 +523,19 @@ class PluginManager:
                         for h in p.hooks_registered
                     }
                 )
+                loaded.web_surfaces_registered = sorted(set(self._web_surfaces) - existing_surface_ids)
                 loaded.enabled = True
 
         except Exception as exc:
+            if rollback_state is not None:
+                self._plugin_tool_names = rollback_state["plugin_tool_names"]
+                self._hooks = rollback_state["hooks"]
+                self._cli_commands = rollback_state["cli_commands"]
+                self._context_engine = rollback_state["context_engine"]
+                self._web_surfaces = rollback_state["web_surfaces"]
+                registry = rollback_state["registry"]
+                registry._tools = rollback_state["registry_tools"]
+                registry._toolset_checks = rollback_state["toolset_checks"]
             loaded.error = str(exc)
             logger.warning("Failed to load plugin '%s': %s", manifest.name, exc)
 
@@ -533,6 +629,18 @@ class PluginManager:
                 )
         return results
 
+    def register_web_surface(self, spec: "WebSurfaceSpec") -> None:
+        existing = self._web_surfaces.get(spec.surface_id)
+        if existing is not None:
+            raise ValueError(
+                f"Duplicate web surface id {spec.surface_id!r} from plugin {spec.plugin_name!r} "
+                f"(already registered by {existing.plugin_name!r})"
+            )
+        self._web_surfaces[spec.surface_id] = spec
+
+    def get_web_surfaces(self) -> List["WebSurfaceSpec"]:
+        return [self._web_surfaces[key] for key in sorted(self._web_surfaces)]
+
     # -----------------------------------------------------------------------
     # Introspection
     # -----------------------------------------------------------------------
@@ -550,6 +658,7 @@ class PluginManager:
                     "enabled": loaded.enabled,
                     "tools": len(loaded.tools_registered),
                     "hooks": len(loaded.hooks_registered),
+                    "web_surfaces": len(loaded.web_surfaces_registered),
                     "error": loaded.error,
                 }
             )
@@ -601,6 +710,11 @@ def get_plugin_cli_commands() -> Dict[str, dict]:
 def get_plugin_context_engine():
     """Return the plugin-registered context engine, or None."""
     return get_plugin_manager()._context_engine
+
+
+def get_plugin_web_surfaces() -> List["WebSurfaceSpec"]:
+    """Return web surfaces registered by general plugins."""
+    return get_plugin_manager().get_web_surfaces()
 
 
 def get_plugin_toolsets() -> List[tuple]:

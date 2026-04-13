@@ -84,6 +84,7 @@ Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable
 | Add tools | `ctx.register_tool(name, schema, handler)` |
 | Add hooks | `ctx.register_hook("post_tool_call", callback)` |
 | Add CLI commands | `ctx.register_cli_command(name, help, setup_fn, handler_fn)` — adds `hermes <plugin> <subcommand>` |
+| Mount lightweight web surfaces | `ctx.register_web_surface(surface_id=..., static_dir=...)` — serves under `/web/<surface_id>/` |
 | Inject messages | `ctx.inject_message(content, role="user")` — see [Injecting Messages](#injecting-messages) |
 | Ship data files | `Path(__file__).parent / "data" / "file.yaml"` |
 | Bundle skills | Copy `skill.md` to `~/.hermes/skills/` at load time |
@@ -97,6 +98,26 @@ Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable
 | User | `~/.hermes/plugins/` | Personal plugins |
 | Project | `.hermes/plugins/` | Project-specific plugins (requires `HERMES_ENABLE_PROJECT_PLUGINS=true`) |
 | pip | `hermes_agent.plugins` entry_points | Distributed packages |
+
+## Lightweight web surfaces
+
+Plugins can mount prebuilt static browser UIs on the existing API server with:
+
+```python
+ctx.register_web_surface(
+    surface_id="dashboard",
+    static_dir=Path(__file__).parent / "web-dist",
+    extra_files={"manifest.webmanifest": Path(__file__).parent / "web-dist" / "manifest.webmanifest"},
+)
+```
+
+Hermes serves the surface from a reserved namespace:
+
+- `/web/<surface_id>/`
+- `/web/<surface_id>/__hermes__.json` when `bootstrap_factory` is provided
+- `/web/<surface_id>/<extra-file>` for optional manifests and other single files
+
+This seam is intentionally small: single-user, same-origin, and static-file oriented. In v1 Hermes only mounts these surfaces when the API server itself is running without `API_SERVER_KEY`; if you need remote access, put Hermes behind an authenticated edge proxy instead of turning this into a second browser auth stack.
 
 ## Available hooks
 

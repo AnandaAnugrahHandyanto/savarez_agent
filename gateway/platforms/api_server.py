@@ -246,9 +246,9 @@ if AIOHTTP_AVAILABLE:
         origin = request.headers.get("Origin", "")
         cors_headers = None
         if adapter is not None:
-            if not adapter._origin_allowed(origin):
+            if not adapter._origin_allowed(origin, request=request):
                 return web.Response(status=403)
-            cors_headers = adapter._cors_headers_for_origin(origin)
+            cors_headers = adapter._cors_headers_for_origin(origin, request=request)
 
         if request.method == "OPTIONS":
             if cors_headers is None:
@@ -430,9 +430,12 @@ class APIServerAdapter(BasePlatformAdapter):
             pass
         return "hermes-agent"
 
-    def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
-        """Return CORS headers for an allowed browser origin."""
-        if not origin or not self._cors_origins:
+    def _cors_headers_for_origin(self, origin: str, request: Optional["web.Request"] = None) -> Optional[Dict[str, str]]:
+        """Return CORS headers for an allowed cross-origin browser request."""
+        if not origin or self._is_same_origin(origin, request):
+            return None
+
+        if not self._cors_origins:
             return None
 
         if "*" in self._cors_origins:
@@ -450,15 +453,55 @@ class APIServerAdapter(BasePlatformAdapter):
         headers["Access-Control-Max-Age"] = "600"
         return headers
 
-    def _origin_allowed(self, origin: str) -> bool:
-        """Allow non-browser clients and explicitly configured browser origins."""
+    def _origin_allowed(self, origin: str, request: Optional["web.Request"] = None) -> bool:
+        """Allow non-browser clients, same-origin requests, and configured CORS origins."""
         if not origin:
+            return True
+
+        if self._is_same_origin(origin, request):
             return True
 
         if not self._cors_origins:
             return False
 
         return "*" in self._cors_origins or origin in self._cors_origins
+
+    @classmethod
+    def _is_same_origin(cls, origin: str, request: Optional["web.Request"] = None) -> bool:
+        if request is None or not origin:
+            return False
+        return origin.rstrip("/") == cls._request_origin(request)
+
+    @staticmethod
+    def _request_origin(request: "web.Request") -> str:
+        forwarded = request.headers.get("Forwarded", "")
+        forwarded_origin = APIServerAdapter._origin_from_forwarded_header(forwarded, fallback_scheme=request.scheme)
+        if forwarded_origin:
+            return forwarded_origin
+
+        forwarded_host = request.headers.get("X-Forwarded-Host", "").split(",", 1)[0].strip()
+        if forwarded_host:
+            forwarded_proto = request.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip() or request.scheme
+            return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
+
+        return f"{request.scheme}://{request.host}".rstrip("/")
+
+    @staticmethod
+    def _origin_from_forwarded_header(value: str, *, fallback_scheme: str) -> Optional[str]:
+        if not value:
+            return None
+        first_hop = value.split(",", 1)[0]
+        parts = {}
+        for item in first_hop.split(";"):
+            if "=" not in item:
+                continue
+            key, raw = item.split("=", 1)
+            parts[key.strip().lower()] = raw.strip().strip('"')
+        host = parts.get("host")
+        if not host:
+            return None
+        scheme = parts.get("proto") or fallback_scheme
+        return f"{scheme}://{host}".rstrip("/")
 
     # ------------------------------------------------------------------
     # Auth helper
@@ -1768,6 +1811,25 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._run_streams.pop(run_id, None)
                 self._run_streams_created.pop(run_id, None)
 
+    def _mount_plugin_web_surfaces(self) -> None:
+        if self._app is None:
+            return
+        if self._api_key:
+            logger.warning(
+                "[%s] Skipping plugin web surfaces because API_SERVER_KEY is set. "
+                "Mounted browser surfaces are local/no-key only in v1; use an edge proxy "
+                "if you need remote access.",
+                self.name,
+            )
+            return
+
+        from gateway.platforms.web_surfaces import mount_web_surface
+        from hermes_cli.plugins import discover_plugins, get_plugin_web_surfaces
+
+        discover_plugins()
+        for spec in get_plugin_web_surfaces():
+            mount_web_surface(self._app, spec)
+
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface
     # ------------------------------------------------------------------
@@ -1801,6 +1863,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
+            self._mount_plugin_web_surfaces()
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:
