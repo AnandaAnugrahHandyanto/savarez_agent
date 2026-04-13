@@ -585,8 +585,30 @@ def _convert_content_with_tables(md_text):
 
     跟 OpenClaw fallback 一样：不做 table 元素转换，直接把 markdown 原文
     放在 markdown 元素里，让飞书自行渲染。table 元素在移动端不渲染。
+
+    表格包在 ``` 代码块中以保持列对齐。
     """
-    return [{"tag": "markdown", "content": md_text or " "}]
+    if not md_text:
+        return [{"tag": "markdown", "content": " "}]
+
+    # 提取 markdown 表格并用代码块包裹以保持对齐
+    table_matches = list(_MARKDOWN_TABLE_BLOCK_RE.finditer(md_text))
+
+    if not table_matches:
+        return [{"tag": "markdown", "content": md_text}]
+
+    # 逆序替换每个表格为 ``` 包裹的版本
+    # 由于逆序处理，offset 可以基于已处理的片段累计
+    result = md_text
+    for m in reversed(table_matches):
+        original = m.group(0)
+        # 去掉表格末尾多余的换行（最多2个），避免代码块后换行过多
+        trimmed = original.rstrip('\n')
+        # 代码块末尾加 \n 与后续文本隔开
+        code_wrapped = f"```\n{trimmed}\n```\n"
+        result = result[:m.start()] + code_wrapped + result[m.end():]
+
+    return [{"tag": "markdown", "content": result}]
 
 
 def _render_markdown_tables_for_feishu(text: str) -> str:
