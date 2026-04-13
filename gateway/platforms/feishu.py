@@ -127,6 +127,10 @@ _MARKDOWN_TABLE_BLOCK_RE = re.compile(
 )
 _MARKDOWN_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 _MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*$")
+# Heading: ## Text (level 1-6, multiline)
+_MARKDOWN_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
+# Horizontal rule: --- or *** or ___ (standalone lines)
+_MARKDOWN_HR_RE = re.compile(r"^\s*[-*_]{3,}\s*$", re.MULTILINE)
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -581,17 +585,86 @@ def _build_table_element(headers, rows):
     }
 
 def _convert_content_with_tables(md_text):
-    """将 Markdown 文本（含表格）转为飞书 Schema 2.0 元素列表。
+    """将 Markdown 文本转为飞书 Schema 2.0 元素列表。
 
-    优先使用 table 元素渲染（桌面端支持良好）。
-    如果解析失败或无表格，降级为 markdown 元素。
+    处理：tables → native table, headings → native heading, HRs → native hr,
+    其余内容 → markdown 元素。
     """
-    parsed = _parse_markdown_table(md_text)
-    if parsed:
-        headers, rows = parsed
-        if headers and rows:
-            return [_build_table_element(headers, rows)]
-    return [{"tag": "markdown", "content": md_text or " "}]
+    if not md_text:
+        return [{"tag": "markdown", "content": " "}]
+
+    # Check for markdown table first
+    has_table = bool(_MARKDOWN_TABLE_BLOCK_RE.search(md_text))
+
+    elements: List[Dict[str, Any]] = []
+    pending_markdown_lines: List[str] = []
+
+    def _flush_markdown():
+        nonlocal pending_markdown_lines
+        if pending_markdown_lines:
+            elements.append({"tag": "markdown", "content": "\n".join(pending_markdown_lines)})
+            pending_markdown_lines = []
+
+    # Split text by headings, HRs, and tables
+    # We'll iterate line by line and detect special constructs
+    lines = md_text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # Check for HR first (before heading since HR pattern matches ---)
+        if _MARKDOWN_HR_RE.match(line):
+            _flush_markdown()
+            elements.append({"tag": "hr"})
+            i += 1
+            continue
+
+        # Check for heading
+        heading_match = _MARKDOWN_HEADING_RE.match(line)
+        if heading_match:
+            _flush_markdown()
+            level = len(heading_match.group(1))
+            content = heading_match.group(2).strip()
+            elements.append({
+                "tag": "heading",
+                "content": content,
+                "level": level,
+            })
+            i += 1
+            continue
+
+        # Check for markdown table block (multiline)
+        table_match = _MARKDOWN_TABLE_BLOCK_RE.match(md_text[i:] if i == 0 else "\n".join(lines[i:]))
+        if table_match and i == 0:
+            # Table at start - parse it
+            parsed = _parse_markdown_table(md_text)
+            if parsed:
+                headers, rows = parsed
+                if headers and rows:
+                    _flush_markdown()
+                    elements.append(_build_table_element(headers, rows))
+                    # Table block consumed - done
+                    return elements
+        elif has_table and _MARKDOWN_TABLE_ROW_RE.match(line):
+            # We're in a table section - collect raw lines for table parser
+            # Actually, let the table parser handle it
+            pass
+
+        # Regular line - accumulate for markdown
+        pending_markdown_lines.append(line)
+        i += 1
+
+    _flush_markdown()
+
+    if not elements:
+        return [{"tag": "markdown", "content": md_text or " "}]
+
+    return elements
+
+
+def _parse_markdown_table_block(text: str):
+    """Parse a single markdown table block from text. Returns (headers, rows) or None."""
+    return _parse_markdown_table(text)
 
 
 def _render_markdown_tables_for_feishu(text: str) -> str:
@@ -666,13 +739,7 @@ def _build_interactive_card_payload(content: str) -> str:
     }
     elements = card["body"]["elements"]
 
-    if _MARKDOWN_TABLE_BLOCK_RE.search(body_content_raw or ""):
-        elements.extend(_convert_content_with_tables(body_content_raw))
-    else:
-        elements.append({
-            "tag": "markdown",
-            "content": body_content or " ",
-        })
+    elements.extend(_convert_content_with_tables(body_content_raw or ""))
 
     if reasoning_content:
         display_reasoning = reasoning_content[:500]
