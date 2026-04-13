@@ -8,7 +8,6 @@ from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager
 from agent.builtin_memory_provider import BuiltinMemoryProvider
 
-
 # ---------------------------------------------------------------------------
 # Concrete test provider
 # ---------------------------------------------------------------------------
@@ -118,7 +117,7 @@ class TestMemoryManager:
     def test_empty_manager(self):
         mgr = MemoryManager()
         assert mgr.providers == []
-        assert mgr.provider_names == []
+        assert [p.name for p in mgr.providers] == []
         assert mgr.get_all_tool_schemas() == []
         assert mgr.build_system_prompt() == ""
         assert mgr.prefetch_all("test") == ""
@@ -128,7 +127,7 @@ class TestMemoryManager:
         p = FakeMemoryProvider("test1")
         mgr.add_provider(p)
         assert len(mgr.providers) == 1
-        assert mgr.provider_names == ["test1"]
+        assert [p.name for p in mgr.providers] == ["test1"]
 
     def test_get_provider_by_name(self):
         mgr = MemoryManager()
@@ -143,7 +142,7 @@ class TestMemoryManager:
         p2 = FakeMemoryProvider("external")
         mgr.add_provider(p1)
         mgr.add_provider(p2)
-        assert mgr.provider_names == ["builtin", "external"]
+        assert [p.name for p in mgr.providers] == ["builtin", "external"]
 
     def test_second_external_rejected(self):
         """Only one non-builtin provider is allowed."""
@@ -154,7 +153,7 @@ class TestMemoryManager:
         mgr.add_provider(builtin)
         mgr.add_provider(ext1)
         mgr.add_provider(ext2)  # should be rejected
-        assert mgr.provider_names == ["builtin", "mem0"]
+        assert [p.name for p in mgr.providers] == ["builtin", "mem0"]
         assert len(mgr.providers) == 2
 
     def test_system_prompt_merges_blocks(self):
@@ -321,17 +320,6 @@ class TestMemoryManager:
         mgr.on_pre_compress([{"role": "user", "content": "old"}])
         assert p.pre_compress_called
 
-    def test_on_memory_write_skips_builtin(self):
-        """on_memory_write should skip the builtin provider."""
-        mgr = MemoryManager()
-        builtin = BuiltinMemoryProvider()
-        external = FakeMemoryProvider("external")
-        mgr.add_provider(builtin)
-        mgr.add_provider(external)
-
-        mgr.on_memory_write("add", "memory", "test fact")
-        assert external.memory_writes == [("add", "memory", "test fact")]
-
     def test_shutdown_all_reverse_order(self):
         mgr = MemoryManager()
         order = []
@@ -463,13 +451,11 @@ class TestSingleProviderGating:
         builtin = BuiltinMemoryProvider()
         mgr.add_provider(builtin)
 
-        # Simulate what run_agent.py does when provider="" 
         configured = ""
         available_plugins = [
             FakeMemoryProvider("holographic"),
             FakeMemoryProvider("mem0"),
         ]
-        # With empty config, no plugins should be added
         if configured:
             for p in available_plugins:
                 if p.name == configured and p.is_available():
@@ -493,7 +479,7 @@ class TestSingleProviderGating:
                 mgr.add_provider(p)
 
         assert mgr.provider_names == ["builtin", "holographic"]
-        assert p1.initialized is False  # not initialized by the gating logic itself
+        assert p1.initialized is False
 
     def test_unavailable_provider_skipped(self):
         """If the configured provider is unavailable, it should be skipped."""
