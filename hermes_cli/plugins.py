@@ -594,8 +594,13 @@ class PluginManager:
             if qn.startswith(prefix)
         )
 
-    def _remove_stale_plugin_skill(self, qualified_name: str) -> None:
-        """自愈：删除 SKILL.md 已不存在的注册条目。"""
+    def _remove_plugin_skill(self, qualified_name: str) -> None:
+        """按限定名删除一条插件技能注册条目。
+
+        缺失的键会被静默忽略——即使条目可能不存在也可安全调用。
+        是否需要删除由调用方决定（例如 skill_view 限定名路径中的
+        过期文件检测）。
+        """
         self._plugin_skills.pop(qualified_name, None)
 
 

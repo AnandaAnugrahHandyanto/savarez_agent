@@ -651,7 +651,7 @@ class TestPluginManagerSkillRegistry:
         pm = PluginManager()
         assert pm.list_plugin_skills("nonexistent") == []
 
-    def test_remove_stale_plugin_skill(self, tmp_path):
+    def test_remove_plugin_skill(self, tmp_path):
         from hermes_cli.plugins import PluginManager
 
         skill_path = tmp_path / "skill.md"
@@ -661,12 +661,39 @@ class TestPluginManagerSkillRegistry:
         pm._register_plugin_skill("myplugin", "foo", skill_path, "")
         assert pm.find_plugin_skill("myplugin:foo") is not None
 
-        pm._remove_stale_plugin_skill("myplugin:foo")
+        pm._remove_plugin_skill("myplugin:foo")
         assert pm.find_plugin_skill("myplugin:foo") is None
 
-    def test_remove_stale_plugin_skill_noop_on_missing(self):
+    def test_remove_plugin_skill_noop_on_missing(self):
         from hermes_cli.plugins import PluginManager
 
         pm = PluginManager()
         # Should not raise
-        pm._remove_stale_plugin_skill("nonexistent:skill")
+        pm._remove_plugin_skill("nonexistent:skill")
+
+    def test_register_plugin_skill_overwrites_on_duplicate(self, tmp_path):
+        """Re-registering the same qualified name replaces the previous entry."""
+        from hermes_cli.plugins import PluginManager
+        old_path = tmp_path / "old.md"
+        new_path = tmp_path / "new.md"
+        old_path.write_text("")
+        new_path.write_text("")
+
+        pm = PluginManager()
+        pm._register_plugin_skill("myplugin", "foo", old_path, "old desc")
+        pm._register_plugin_skill("myplugin", "foo", new_path, "new desc")
+
+        assert pm.find_plugin_skill("myplugin:foo") == new_path
+        assert pm._plugin_skills["myplugin:foo"]["description"] == "new desc"
+
+    def test_list_plugin_skills_no_prefix_collision(self):
+        """Plugin 'foo' listing must not include skills from plugin 'foo-bar'."""
+        from hermes_cli.plugins import PluginManager
+        from pathlib import Path
+
+        pm = PluginManager()
+        pm._register_plugin_skill("foo", "alpha", Path("/a"), "")
+        pm._register_plugin_skill("foo-bar", "beta", Path("/b"), "")
+
+        assert pm.list_plugin_skills("foo") == ["alpha"]
+        assert pm.list_plugin_skills("foo-bar") == ["beta"]
