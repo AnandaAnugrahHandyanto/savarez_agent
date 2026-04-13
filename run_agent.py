@@ -767,27 +767,34 @@ class AIAgent:
         self._anthropic_client = None
         self._is_anthropic_oauth = False
 
-        if self.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
-            # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
-            # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
-            # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
-            _is_native_anthropic = self.provider == "anthropic"
-            effective_key = (api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or "")
+        def _init_anthropic_client(effective_key: str, effective_base_url: str):
+            from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token as _is_oat
+
+            self.api_mode = "anthropic_messages"
             self.api_key = effective_key
+            self.base_url = effective_base_url or ""
             self._anthropic_api_key = effective_key
-            self._anthropic_base_url = base_url
-            from agent.anthropic_adapter import _is_oauth_token as _is_oat
+            self._anthropic_base_url = effective_base_url
             self._is_anthropic_oauth = _is_oat(effective_key)
-            self._anthropic_client = build_anthropic_client(effective_key, base_url)
-            # No OpenAI client needed for Anthropic mode
+            self._anthropic_client = build_anthropic_client(effective_key, effective_base_url)
             self.client = None
             self._client_kwargs = {}
             if not self.quiet_mode:
                 print(f"🤖 AI Agent initialized with model: {self.model} (Anthropic native)")
                 if effective_key and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+
+        if self.api_mode == "anthropic_messages":
+            from agent.anthropic_adapter import resolve_anthropic_token
+
+            # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
+            # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
+            _is_native_anthropic = self.provider == "anthropic"
+            effective_key = (api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or "")
+            _init_anthropic_client(effective_key, base_url)
         else:
+            client_kwargs = None
+
             if api_key and base_url:
                 # Explicit credentials from CLI/gateway — construct directly.
                 # The runtime provider resolver already handled auth for us.
@@ -811,76 +818,104 @@ class AIAgent:
                         "User-Agent": "KimiCLI/1.3",
                     }
             else:
-                # No explicit creds — use the centralized provider router
-                from agent.auxiliary_client import resolve_provider_client
-                _routed_client, _ = resolve_provider_client(
-                    self.provider or "auto", model=self.model, raw_codex=True)
-                if _routed_client is not None:
-                    client_kwargs = {
-                        "api_key": _routed_client.api_key,
-                        "base_url": str(_routed_client.base_url),
-                    }
-                    # Preserve any default_headers the router set
-                    if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
-                        client_kwargs["default_headers"] = dict(_routed_client._default_headers)
-                else:
-                    # When the user explicitly chose a non-OpenRouter provider
-                    # but no credentials were found, fail fast with a clear
-                    # message instead of silently routing through OpenRouter.
-                    _explicit = (self.provider or "").strip().lower()
-                    if _explicit and _explicit not in ("auto", "openrouter", "custom"):
-                        raise RuntimeError(
-                            f"Provider '{_explicit}' is set in config.yaml but no API key "
-                            f"was found. Set the {_explicit.upper()}_API_KEY environment "
-                            f"variable, or switch to a different provider with `hermes model`."
-                        )
-                    # Final fallback: try raw OpenRouter key
-                    client_kwargs = {
-                        "api_key": os.getenv("OPENROUTER_API_KEY", ""),
-                        "base_url": OPENROUTER_BASE_URL,
-                        "default_headers": {
-                            "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-                            "X-OpenRouter-Title": "Hermes Agent",
-                            "X-OpenRouter-Categories": "productivity,cli-agent",
-                        },
-                    }
-            
-            self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
+                runtime = None
+                try:
+                    from hermes_cli.runtime_provider import resolve_runtime_provider
+                    runtime = resolve_runtime_provider(requested=self.provider or "auto")
+                except Exception:
+                    runtime = None
 
-            # Enable fine-grained tool streaming for Claude on OpenRouter.
-            # Without this, Anthropic buffers the entire tool call and goes
-            # silent for minutes while thinking — OpenRouter's upstream proxy
-            # times out during the silence.  The beta header makes Anthropic
-            # stream tool call arguments token-by-token, keeping the
-            # connection alive.
-            _effective_base = str(client_kwargs.get("base_url", "")).lower()
-            if "openrouter" in _effective_base and "claude" in (self.model or "").lower():
-                headers = client_kwargs.get("default_headers") or {}
-                existing_beta = headers.get("x-anthropic-beta", "")
-                _FINE_GRAINED = "fine-grained-tool-streaming-2025-05-14"
-                if _FINE_GRAINED not in existing_beta:
-                    if existing_beta:
-                        headers["x-anthropic-beta"] = f"{existing_beta},{_FINE_GRAINED}"
-                    else:
-                        headers["x-anthropic-beta"] = _FINE_GRAINED
-                    client_kwargs["default_headers"] = headers
+                if isinstance(runtime, dict):
+                    runtime_mode = runtime.get("api_mode") or "chat_completions"
+                    runtime_base = str(runtime.get("base_url") or "")
+                    runtime_key = runtime.get("api_key") or ""
+                    runtime_pool = runtime.get("credential_pool")
+                    if runtime_pool is not None:
+                        self._credential_pool = runtime_pool
+                    runtime_model = runtime.get("model")
+                    if runtime_model and not self.model:
+                        self.model = runtime_model
 
-            self.api_key = client_kwargs.get("api_key", "")
-            try:
-                self.client = self._create_openai_client(client_kwargs, reason="agent_init", shared=True)
-                if not self.quiet_mode:
-                    print(f"🤖 AI Agent initialized with model: {self.model}")
-                    if base_url:
-                        print(f"🔗 Using custom base URL: {base_url}")
-                    # Always show API key info (masked) for debugging auth issues
-                    key_used = client_kwargs.get("api_key", "none")
-                    if key_used and key_used != "dummy-key" and len(key_used) > 12:
-                        print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
+                    if runtime_mode == "anthropic_messages":
+                        _init_anthropic_client(runtime_key, runtime_base)
                     else:
-                        print(f"⚠️  Warning: API key appears invalid or missing (got: '{key_used[:20] if key_used else 'none'}...')")
-            except Exception as e:
-                raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
-        
+                        client_kwargs = {
+                            "api_key": runtime_key,
+                            "base_url": runtime_base,
+                        }
+
+                if client_kwargs is None and self.api_mode != "anthropic_messages":
+                    # No explicit creds — use the centralized provider router
+                    from agent.auxiliary_client import resolve_provider_client
+                    _routed_client, _ = resolve_provider_client(
+                        self.provider or "auto", model=self.model, raw_codex=True)
+                    if _routed_client is not None:
+                        client_kwargs = {
+                            "api_key": _routed_client.api_key,
+                            "base_url": str(_routed_client.base_url),
+                        }
+                        # Preserve any default_headers the router set
+                        if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
+                            client_kwargs["default_headers"] = dict(_routed_client._default_headers)
+                    else:
+                        # When the user explicitly chose a non-OpenRouter provider
+                        # but no credentials were found, fail fast with a clear
+                        # message instead of silently routing through OpenRouter.
+                        _explicit = (self.provider or "").strip().lower()
+                        if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                            raise RuntimeError(
+                                f"Provider '{_explicit}' is set in config.yaml but no API key "
+                                f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                                f"variable, or switch to a different provider with `hermes model`."
+                            )
+                        # Final fallback: try raw OpenRouter key
+                        client_kwargs = {
+                            "api_key": os.getenv("OPENROUTER_API_KEY", ""),
+                            "base_url": OPENROUTER_BASE_URL,
+                            "default_headers": {
+                                "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+                                "X-OpenRouter-Title": "Hermes Agent",
+                                "X-OpenRouter-Categories": "productivity,cli-agent",
+                            },
+                        }
+
+            if self.api_mode != "anthropic_messages":
+                self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
+
+                # Enable fine-grained tool streaming for Claude on OpenRouter.
+                # Without this, Anthropic buffers the entire tool call and goes
+                # silent for minutes while thinking — OpenRouter's upstream proxy
+                # times out during the silence.  The beta header makes Anthropic
+                # stream tool call arguments token-by-token, keeping the
+                # connection alive.
+                _effective_base = str(client_kwargs.get("base_url", "")).lower()
+                if "openrouter" in _effective_base and "claude" in (self.model or "").lower():
+                    headers = client_kwargs.get("default_headers") or {}
+                    existing_beta = headers.get("x-anthropic-beta", "")
+                    _FINE_GRAINED = "fine-grained-tool-streaming-2025-05-14"
+                    if _FINE_GRAINED not in existing_beta:
+                        if existing_beta:
+                            headers["x-anthropic-beta"] = f"{existing_beta},{_FINE_GRAINED}"
+                        else:
+                            headers["x-anthropic-beta"] = _FINE_GRAINED
+                        client_kwargs["default_headers"] = headers
+
+                self.api_key = client_kwargs.get("api_key", "")
+                self.base_url = client_kwargs.get("base_url", self.base_url)
+                try:
+                    self.client = self._create_openai_client(client_kwargs, reason="agent_init", shared=True)
+                    if not self.quiet_mode:
+                        print(f"🤖 AI Agent initialized with model: {self.model}")
+                        if self.base_url:
+                            print(f"🔗 Using custom base URL: {self.base_url}")
+                        # Always show API key info (masked) for debugging auth issues
+                        key_used = client_kwargs.get("api_key", "none")
+                        if key_used and key_used != "dummy-key" and len(key_used) > 12:
+                            print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
+                        else:
+                            print(f"⚠️  Warning: API key appears invalid or missing (got: '{key_used[:20] if key_used else 'none'}...')")
+                except Exception as e:
+                    raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
         # Provider fallback chain — ordered list of backup providers tried
         # when the primary is exhausted (rate-limit, overload, connection
         # failure).  Supports both legacy single-dict ``fallback_model`` and
