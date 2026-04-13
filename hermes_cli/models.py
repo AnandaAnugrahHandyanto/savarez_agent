@@ -1785,7 +1785,7 @@ def validate_requested_model(
             "message": "Model names cannot contain spaces.",
         }
 
-    if normalized == "custom":
+    if normalized == "custom" or normalized.startswith("custom:"):
         probe = probe_api_models(api_key, base_url, api_mode=api_mode)
         api_models = probe.get("models")
         if api_models is not None:
@@ -1864,7 +1864,7 @@ def validate_requested_model(
             }
 
     # Probe the live API to check if the model actually exists
-    api_models = fetch_api_models(api_key, base_url)
+    api_models = fetch_api_models(api_key, base_url, api_mode=api_mode)
 
     if api_models is not None:
         if requested_for_lookup in set(api_models):
