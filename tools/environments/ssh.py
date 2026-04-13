@@ -197,8 +197,12 @@ class SSHEnvironment(BaseEnvironment):
                 os.makedirs(os.path.dirname(staged), exist_ok=True)
                 try:
                     os.symlink(os.path.abspath(host_path), staged)
-                except OSError:
-                    shutil.copy2(host_path, staged)
+                except OSError as e:
+                    # WinError 1314: symlink privilege not held (Windows without Dev Mode)
+                    if getattr(e, "winerror", None) == 1314:
+                        shutil.copy2(host_path, staged)
+                    else:
+                        raise
 
             tar_cmd = ["tar", "-chf", "-", "-C", staging, "."]
             ssh_cmd = self._build_ssh_command()
