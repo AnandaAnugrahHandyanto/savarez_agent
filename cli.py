@@ -3699,8 +3699,8 @@ class HermesCLI:
 
         model_name = getattr(self, "model", "") or ""
         if is_nous_hermes_non_agentic(model_name):
-            self._console_print()
-            self._console_print(
+            self.console.print()
+            self.console.print(
                 "[bold yellow]⚠  Nous Research Hermes 3 & 4 models are NOT agentic and are not "
                 "designed for use with Hermes Agent.[/]"
             )
