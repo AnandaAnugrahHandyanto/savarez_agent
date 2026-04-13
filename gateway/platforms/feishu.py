@@ -601,9 +601,10 @@ def _convert_content_with_tables(md_text):
 
     def _flush_markdown():
         nonlocal pending_markdown_lines
-        if pending_markdown_lines:
-            elements.append({"tag": "markdown", "content": "\n".join(pending_markdown_lines)})
-            pending_markdown_lines = []
+        stripped = "\n".join(pending_markdown_lines).strip()
+        if stripped:
+            elements.append({"tag": "markdown", "content": stripped})
+        pending_markdown_lines = []
 
     # Split text by headings, HRs, and tables
     # We'll iterate line by line and detect special constructs
