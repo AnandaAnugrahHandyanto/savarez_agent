@@ -25,6 +25,7 @@ Inspired by Clawdbot's ``normalizeAnthropicModelId`` pattern.
 
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 # ---------------------------------------------------------------------------
@@ -96,6 +97,17 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "xiaomi",
     "custom",
 })
+
+
+def _arcee_route_is_openrouter() -> bool:
+    """Sniff current environment to decide if arcee is routed via OpenRouter.
+
+    Mirrors the precedence in auth._resolve_arcee_base_url: a direct key
+    wins; otherwise an OPENROUTER_API_KEY triggers the OpenRouter path.
+    """
+    if os.getenv("ARCEEAI_API_KEY", "").strip():
+        return False
+    return bool(os.getenv("OPENROUTER_API_KEY", "").strip())
 
 # ---------------------------------------------------------------------------
 # DeepSeek special handling
@@ -385,6 +397,15 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         if "/" in bare:
             return bare
         return _normalize_for_deepseek(bare)
+
+    # --- Arcee: bare native names for direct API, "arcee/<model>" for OpenRouter ---
+    if provider == "arcee":
+        bare = _strip_matching_provider_prefix(name, provider)
+        if "/" in bare:
+            return bare
+        if _arcee_route_is_openrouter():
+            return f"arcee/{bare}"
+        return bare
 
     # --- Direct providers: repair matching provider prefixes only ---
     if provider in _MATCHING_PREFIX_STRIP_PROVIDERS:

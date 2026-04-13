@@ -28,6 +28,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
     "xiaomi",
+    "arcee",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
@@ -36,6 +37,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
     "qwen-portal",
+    "arcee-ai", "arceeai",
 })
 
 
@@ -212,6 +214,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.z.ai": "zai",
     "api.moonshot.ai": "kimi-coding",
     "api.moonshot.cn": "kimi-coding-cn",
+    "api.arcee.ai": "arcee",
     "api.kimi.com": "kimi-coding",
     "api.minimax": "minimax",
     "dashscope.aliyuncs.com": "alibaba",

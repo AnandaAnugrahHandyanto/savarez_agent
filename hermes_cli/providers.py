@@ -136,6 +136,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="XIAOMI_BASE_URL",
     ),
+    "arcee": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://api.arcee.ai/api/v1",
+        base_url_env_var="ARCEE_BASE_URL",
+        extra_env_vars=("ARCEEAI_API_KEY", "OPENROUTER_API_KEY"),
+    ),
 }
 
 
@@ -230,6 +236,10 @@ ALIASES: Dict[str, str] = {
     # xiaomi
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
+
+    # arcee
+    "arcee-ai": "arcee",
+    "arceeai": "arcee",
 
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",

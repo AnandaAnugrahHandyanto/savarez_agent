@@ -200,6 +200,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "mimo-v2-omni",
         "mimo-v2-flash",
     ],
+    "arcee": [
+        "trinity-large-thinking",
+        "trinity-large-preview",
+        "trinity-mini",
+    ],
     "opencode-zen": [
         "gpt-5.4-pro",
         "gpt-5.4",
@@ -510,6 +515,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("openrouter",   "OpenRouter",               "top",      "OpenRouter (100+ models, pay-per-use)"),
     ProviderEntry("anthropic",    "Anthropic",                "top",      "Anthropic (Claude models — API key or Claude Code)"),
     ProviderEntry("openai-codex", "OpenAI Codex",             "top",      "OpenAI Codex"),
+    ProviderEntry("arcee",        "Arcee AI",                 "top",      "Arcee AI (Trinity models — direct or via OpenRouter)"),
     ProviderEntry("qwen-oauth",   "Qwen OAuth (Portal)",      "top",      "Qwen OAuth (reuses local Qwen CLI login)"),
     ProviderEntry("copilot",      "GitHub Copilot",           "top",      "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
     ProviderEntry("huggingface",  "Hugging Face",             "top",      "Hugging Face Inference Providers (20+ open models)"),
@@ -553,6 +559,8 @@ _PROVIDER_ALIASES = {
     "moonshot": "kimi-coding",
     "kimi-cn": "kimi-coding-cn",
     "moonshot-cn": "kimi-coding-cn",
+    "arcee-ai": "arcee",
+    "arceeai": "arcee",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
@@ -879,6 +887,7 @@ def list_available_providers() -> list[dict[str, str]]:
     """
     # Derive display order from canonical list + custom
     provider_order = [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]
+
 
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}

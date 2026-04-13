@@ -167,6 +167,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.moonshot.cn/v1",
         api_key_env_vars=("KIMI_CN_API_KEY",),
     ),
+    "arcee": ProviderConfig(
+        id="arcee",
+        name="Arcee AI",
+        auth_type="api_key",
+        inference_base_url="https://api.arcee.ai/api/v1",
+        api_key_env_vars=("ARCEEAI_API_KEY", "OPENROUTER_API_KEY"),
+        base_url_env_var="ARCEE_BASE_URL",
+    ),
     "minimax": ProviderConfig(
         id="minimax",
         name="MiniMax",
@@ -313,6 +321,28 @@ def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) ->
     if api_key.startswith("sk-kimi-"):
         return KIMI_CODE_BASE_URL
     return default_url
+
+
+ARCEE_DIRECT_BASE_URL = "https://api.arcee.ai/api/v1"
+ARCEE_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+
+def _resolve_arcee_base_url(api_key: str, key_source: str, env_override: str) -> str:
+    """Return the correct Arcee base URL based on which key was resolved.
+
+    Precedence:
+      1. Explicit ARCEE_BASE_URL override wins.
+      2. Key came from OPENROUTER_API_KEY → OpenRouter endpoint.
+      3. Key prefix sk-or- → OpenRouter (ambiguous source, e.g. config file).
+      4. Default → Arcee direct endpoint.
+    """
+    if env_override:
+        return env_override
+    if key_source == "OPENROUTER_API_KEY":
+        return ARCEE_OPENROUTER_BASE_URL
+    if api_key.startswith("sk-or-"):
+        return ARCEE_OPENROUTER_BASE_URL
+    return ARCEE_DIRECT_BASE_URL
 
 
 
@@ -900,6 +930,7 @@ def resolve_provider(
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
+        "arcee-ai": "arcee", "arceeai": "arcee",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
         "github": "copilot", "github-copilot": "copilot",
@@ -2427,6 +2458,8 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif provider_id == "arcee":
+        base_url = _resolve_arcee_base_url(api_key, key_source, env_url)
     elif env_url:
         base_url = env_url.rstrip("/")
     else:
