@@ -6450,8 +6450,6 @@ class HermesCLI:
             self._show_usage()
         elif canonical == "insights":
             self._show_insights(cmd_original)
-        elif canonical == "copy":
-            self._handle_copy_command(cmd_original)
         elif canonical == "debug":
             self._handle_debug_command()
         elif canonical == "paste":
@@ -7569,6 +7567,14 @@ class HermesCLI:
 
             except Exception as e:
                 print(f"  ❌ Compression failed: {e}")
+
+    def _handle_debug_command(self):
+        """Handle /debug — upload debug report + logs and print paste URLs."""
+        from hermes_cli.debug import run_debug_share
+        from types import SimpleNamespace
+
+        args = SimpleNamespace(lines=200, expire=7, local=False)
+        run_debug_share(args)
 
     def _handle_debug_command(self):
         """Handle /debug — upload debug report + logs and print paste URLs."""
