@@ -81,6 +81,21 @@ class TestConfigEnvOverrides(unittest.TestCase):
 
         self.assertIn(Platform.FEISHU, config.get_connected_platforms())
 
+    @patch.dict(os.environ, {
+        "FEISHU_APP_ID": "cli_xxx",
+        "FEISHU_APP_SECRET": "secret_xxx",
+    }, clear=False)
+    def test_feishu_yaml_disabled_wins_over_env(self):
+        """platforms.feishu.enabled: false must not be overridden by shell/.env."""
+        from gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_overrides
+
+        config = GatewayConfig()
+        config.platforms[Platform.FEISHU] = PlatformConfig(enabled=False)
+        _apply_env_overrides(config)
+
+        self.assertFalse(config.platforms[Platform.FEISHU].enabled)
+        self.assertNotIn(Platform.FEISHU, config.get_connected_platforms())
+
 
 class TestGatewayIntegration(unittest.TestCase):
     def test_feishu_in_adapter_factory(self):
