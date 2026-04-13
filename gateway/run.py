@@ -6900,57 +6900,7 @@ class GatewayRunner:
             self.request_restart(detached=True, via_service=False)
         if active_agents:
             return f"⏳ Draining {active_agents} active agent(s) before restart..."
-        return EphemeralReply("♻ Restarting gateway. If you aren't notified within 60 seconds, restart from the console with `hermes gateway restart`.")
-
-    def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:
-        """Return True if this /restart is a Telegram re-delivery we already handled.
-
-        The previous gateway wrote ``.restart_last_processed.json`` with the
-        triggering platform + update_id when it processed the /restart.  If
-        we now see a /restart on the same platform with an update_id <= that
-        recorded value AND the marker is recent (< 5 minutes), it's a
-        redelivery and should be ignored.
-
-        Only applies to Telegram today (the only platform that exposes a
-        numeric cross-session update ordering); other platforms return False.
-        """
-        if event is None or event.source is None:
-            return False
-        if event.platform_update_id is None:
-            return False
-        if event.source.platform is None:
-            return False
-        # Only Telegram populates platform_update_id currently; be explicit
-        # so future platforms aren't accidentally gated by this check.
-        try:
-            platform_value = event.source.platform.value
-        except Exception:
-            return False
-        if platform_value != "telegram":
-            return False
-
-        try:
-            marker_path = _hermes_home / ".restart_last_processed.json"
-            if not marker_path.exists():
-                return False
-            data = json.loads(marker_path.read_text())
-        except Exception:
-            return False
-
-        if data.get("platform") != platform_value:
-            return False
-        recorded_uid = data.get("update_id")
-        if not isinstance(recorded_uid, int):
-            return False
-        # Staleness guard: ignore markers older than 5 minutes.  A legitimately
-        # old marker (e.g. crash recovery where notify never fired) should not
-        # swallow a fresh /restart from the user.
-        requested_at = data.get("requested_at")
-        if isinstance(requested_at, (int, float)):
-            if time.time() - requested_at > 300:
-                return False
-        return event.platform_update_id <= recorded_uid
-
+        return "♻ Restarting gateway. If you aren't notified within 60 seconds, restart from the console with `hermes gateway restart`."
 
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
