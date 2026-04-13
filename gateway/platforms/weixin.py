@@ -931,54 +931,78 @@ class GroupContextBuffer:
 
 
 class GroupActivityMonitor:
-    """Per-group sliding-window activity tracker with spike detection.
+    """Per-group adaptive activity tracker with burst detection.
 
-    Maintains a deque of message timestamps per group.  ``is_hot`` returns
-    *True* when the number of messages inside the sliding window exceeds the
-    configured threshold.  ``should_notify`` adds a per-group cooldown so that
-    notifications are not sent too frequently.
+    Instead of a fixed threshold, each group learns its own "normal" message
+    rate via an exponential moving average (EMA).  A burst is detected when
+    the current window count exceeds ``burst_multiplier × EMA``.
+
+    Cold-start protection: during the first ``warmup_windows`` observation
+    periods a group only learns — no notifications are emitted.
+
+    A hard ``min_absolute`` floor prevents spurious alerts in very quiet groups
+    (e.g. 1→3 messages should never trigger).
     """
 
     def __init__(
         self,
-        threshold: int = 10,
         window_seconds: int = 300,
         cooldown_seconds: int = 1800,
+        burst_multiplier: float = 3.0,
+        min_absolute: int = 5,
+        warmup_windows: int = 6,
+        ema_alpha: float = 0.3,
     ) -> None:
-        self._threshold = threshold
         self._window = window_seconds
         self._cooldown = cooldown_seconds
+        self._burst_multiplier = burst_multiplier
+        self._min_absolute = min_absolute
+        self._warmup_windows = warmup_windows
+        self._ema_alpha = ema_alpha
+
+        # Per-group state
         self._timestamps: Dict[str, collections.deque] = {}
         self._last_notified: Dict[str, float] = {}
+        self._ema: Dict[str, float] = {}              # exponential moving average
+        self._last_ema_update: Dict[str, float] = {}   # last window boundary timestamp
+        self._observation_count: Dict[str, int] = {}   # windows observed (for warmup)
 
     # -- public API ----------------------------------------------------------
 
     def record(self, chat_id: str) -> None:
-        """Record a message timestamp for *chat_id*."""
+        """Record a message timestamp for *chat_id* and update EMA."""
         now = time.time()
         if chat_id not in self._timestamps:
             self._timestamps[chat_id] = collections.deque()
+            self._ema[chat_id] = 0.0
+            self._last_ema_update[chat_id] = now
+            self._observation_count[chat_id] = 0
         dq = self._timestamps[chat_id]
         dq.append(now)
         # Prune entries outside the window
         cutoff = now - self._window
         while dq and dq[0] < cutoff:
             dq.popleft()
+        # Update EMA once per window boundary
+        self._maybe_update_ema(chat_id, now)
 
     def is_hot(self, chat_id: str) -> bool:
-        """Return *True* if message count in window exceeds threshold."""
-        dq = self._timestamps.get(chat_id)
-        if not dq:
+        """Return *True* if current activity is a burst above the learned baseline."""
+        count = self.window_count(chat_id)
+        if count < self._min_absolute:
             return False
-        now = time.time()
-        cutoff = now - self._window
-        while dq and dq[0] < cutoff:
-            dq.popleft()
-        return len(dq) >= self._threshold
+        ema = self._ema.get(chat_id, 0.0)
+        if ema < 1.0:
+            # Not enough history — use absolute minimum only
+            return count >= self._min_absolute * 2
+        return count >= ema * self._burst_multiplier
 
     def should_notify(self, chat_id: str) -> bool:
-        """Return *True* if the group is hot AND the cooldown has expired."""
+        """Return *True* if burst detected, warmup passed, and cooldown expired."""
         if not self.is_hot(chat_id):
+            return False
+        # Warmup protection: don't notify until we've seen enough windows
+        if self._observation_count.get(chat_id, 0) < self._warmup_windows:
             return False
         last = self._last_notified.get(chat_id, 0.0)
         return (time.time() - last) >= self._cooldown
@@ -990,7 +1014,31 @@ class GroupActivityMonitor:
     def window_count(self, chat_id: str) -> int:
         """Return the number of messages in the current window."""
         dq = self._timestamps.get(chat_id)
-        return len(dq) if dq else 0
+        if not dq:
+            return 0
+        now = time.time()
+        cutoff = now - self._window
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+        return len(dq)
+
+    def get_ema(self, chat_id: str) -> float:
+        """Return the current EMA baseline for *chat_id*."""
+        return self._ema.get(chat_id, 0.0)
+
+    # -- internals -----------------------------------------------------------
+
+    def _maybe_update_ema(self, chat_id: str, now: float) -> None:
+        """Update EMA if a full window period has elapsed since last update."""
+        last_update = self._last_ema_update.get(chat_id, now)
+        if (now - last_update) < self._window:
+            return
+        count = len(self._timestamps.get(chat_id, []))
+        old_ema = self._ema.get(chat_id, 0.0)
+        alpha = self._ema_alpha
+        self._ema[chat_id] = alpha * count + (1 - alpha) * old_ema
+        self._last_ema_update[chat_id] = now
+        self._observation_count[chat_id] = self._observation_count.get(chat_id, 0) + 1
 
 
 def _sync_buf_path(hermes_home: str, account_id: str) -> Path:
@@ -1215,7 +1263,7 @@ class WeixinAdapter(BasePlatformAdapter):
         )
         self._group_activity_threshold = int(
             extra.get("group_activity_threshold")
-            or os.getenv("WEIXIN_GROUP_ACTIVITY_THRESHOLD", "10")
+            or os.getenv("WEIXIN_GROUP_ACTIVITY_THRESHOLD", "5")
         )
         self._group_activity_window = int(
             extra.get("group_activity_window")
@@ -1225,10 +1273,20 @@ class WeixinAdapter(BasePlatformAdapter):
             extra.get("group_activity_cooldown")
             or os.getenv("WEIXIN_GROUP_ACTIVITY_COOLDOWN", "1800")
         )
+        self._group_activity_burst_multiplier = float(
+            extra.get("group_activity_burst_multiplier")
+            or os.getenv("WEIXIN_GROUP_ACTIVITY_BURST_MULTIPLIER", "3.0")
+        )
+        self._group_activity_warmup = int(
+            extra.get("group_activity_warmup")
+            or os.getenv("WEIXIN_GROUP_ACTIVITY_WARMUP", "6")
+        )
         self._activity_monitor = GroupActivityMonitor(
-            threshold=self._group_activity_threshold,
             window_seconds=self._group_activity_window,
             cooldown_seconds=self._group_activity_cooldown,
+            burst_multiplier=self._group_activity_burst_multiplier,
+            min_absolute=self._group_activity_threshold,
+            warmup_windows=self._group_activity_warmup,
         )
         self._home_contact = str(
             extra.get("home_contact") or os.getenv("WEIXIN_HOME_CONTACT", "")
@@ -1549,6 +1607,7 @@ class WeixinAdapter(BasePlatformAdapter):
             logger.debug("[Weixin] Activity spike in %s but no WEIXIN_HOME_CONTACT set", _safe_id(chat_id))
             return
         count = self._activity_monitor.window_count(chat_id)
+        ema = self._activity_monitor.get_ema(chat_id)
         window = self._group_activity_window
         recent = ctx_buf.recent(5)
         preview_lines: List[str] = []
@@ -1558,7 +1617,7 @@ class WeixinAdapter(BasePlatformAdapter):
         preview = "\n".join(preview_lines) if preview_lines else "  (无预览)"
         body = (
             f"🔥 群 {_safe_id(chat_id)} 活跃度飙升！"
-            f"最近{window}秒内{count}条消息\n\n"
+            f"最近{window}秒内{count}条消息（基线: {ema:.1f}）\n\n"
             f"最近消息预览：\n{preview}"
         )
         logger.info("[Weixin] Activity spike notification for group %s (%d msgs in %ds)", _safe_id(chat_id), count, window)
