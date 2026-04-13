@@ -1302,6 +1302,7 @@ def copilot_default_headers() -> dict[str, str]:
         return {
             "Editor-Version": COPILOT_EDITOR_VERSION,
             "User-Agent": "HermesAgent/1.0",
+            "Copilot-Integration-Id": "copilot-developer-cli",
             "Openai-Intent": "conversation-edits",
             "x-initiator": "agent",
         }
