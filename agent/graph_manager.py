@@ -434,6 +434,70 @@ class GraphManager:
         fused_ids = sorted(rrf_scores.keys(), key=lambda i: rrf_scores[i], reverse=True)
         return [items_by_id[i] for i in fused_ids]
 
+    async def _expand_query(self, query: str) -> List[str]:
+        """Multi-query expansion: rewrite search query into keyword-rich variations."""
+        prompt = (
+            f"You are a search query router. Convert the following user query into 3 distinct, keyword-rich variations "
+            f"for a knowledge graph search. Output ONLY a valid JSON array of strings and nothing else.\n\nQuery: '{query}'"
+        )
+        try:
+            provider, model, base_url, api_key = self._resolve_provider()
+            import urllib.request
+            import urllib.error
+            import asyncio
+            import json
+            
+            url = f"{base_url.rstrip('/')}/chat/completions"
+            if provider == "anthropic":
+                url = f"{base_url.rstrip('/')}/messages"
+                data = {
+                    "model": model,
+                    "max_tokens": 200,
+                    "messages": [{"role": "user", "content": prompt}],
+                }
+                headers = {
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                }
+            else:
+                data = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                }
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                }
+                
+            def fetch():
+                req = urllib.request.Request(url, data=json.dumps(data).encode("utf-8"), headers=headers)
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    return json.loads(response.read().decode("utf-8"))
+                    
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, fetch)
+            
+            if provider == "anthropic":
+                content = result.get("content", [{}])[0].get("text", "[]")
+            else:
+                content = result["choices"][0]["message"]["content"]
+                
+            # clean up markdown code blocks if LLM ignores format instruction
+            content = content.replace("```json", "").replace("```", "").strip()
+            variations = json.loads(content)
+            
+            if isinstance(variations, dict):
+                for k, v in variations.items():
+                    if isinstance(v, list): return v + [query]
+            if isinstance(variations, list):
+                variations.append(query)
+                return list(set(variations))
+        except Exception as e:
+            logger.debug(f"Multi-query expansion failed, falling back to original query: {e}")
+            
+        return [query]
+
     async def search(
         self,
         query: str,
@@ -454,63 +518,68 @@ class GraphManager:
         await self._ensure_initialized()
         driver = self._graphiti.driver
 
-        # Stream 1: Graphiti Native Search (Vector Embedding + Graph Traversal)
-        try:
-            vector_graph_edges = await self._graphiti.search(
-                query=query,
-                num_results=limit,
-                group_ids=group_ids or ["personal"],
-            )
-        except Exception:
-            vector_graph_edges = []
+        expanded_queries = await self._expand_query(query)
+        logger.info("Multi-query expansion generated: %s", expanded_queries)
 
-        # Stream 2: Keyword / BM25 Naive Surrogate via Kuzu wildcard matching
+        vector_graph_edges = []
         keyword_edges = []
-        try:
-            tables_res = await driver.execute_query("CALL show_tables() RETURN name, type")
-            edge_tables = [t["name"] for t in tables_res if t["type"] == "REL"]
-            terms = [t for t in query.lower().split() if len(t) > 3]
-            
-            # Fetch matching edges manually and mock a Graphiti edge object
-            class MockEdge:
-                def __init__(self, e):
-                    self.uuid = e.get("uuid")
-                    self.name = e.get("name")
-                    self.fact = e.get("fact")
-                    self.source_node_uuid = e.get("source_node_uuid")
-                    self.target_node_uuid = e.get("target_node_uuid")
-                    from datetime import datetime, timezone
-                    now_str = datetime.now(timezone.utc).isoformat()
-                    # Safely handle Kuzu TIMESTAMP parsing, fallback None
-                    self.valid_at = self._parse_tsz(e.get("valid_at"))
-                    self.invalid_at = self._parse_tsz(e.get("invalid_at"))
-                    self.expired_at = self._parse_tsz(e.get("expired_at"))
-                    self.episodes = []
-                
-                def _parse_tsz(self, val):
-                    if not val: return None
-                    from datetime import datetime
-                    if isinstance(val, str):
-                        try:
-                            return datetime.fromisoformat(val)
-                        except (ValueError, TypeError) as exc:
-                            logger.debug("graph timestamp parse failed for %r: %s", val, exc)
-                    return None
 
-            for table in edge_tables:
-                for term in terms[:3]: # limit query explosion
-                    # Kuzu string functions: contains
-                    res = await driver.execute_query(
-                        f"MATCH ()-[e:{table}]->() WHERE lower(e.fact) CONTAINS $term "
-                        "RETURN e.uuid as uuid, e.name as name, e.fact as fact, "
-                        "e.valid_at as valid_at, e.invalid_at as invalid_at, "
-                        "e.expired_at as expired_at LIMIT 10",
-                        term=term
-                    )
-                    for r in res:
-                        keyword_edges.append(MockEdge(r))
-        except Exception as e:
-            logger.debug("Keyword search stream failed: %s", e)
+        for q in expanded_queries:
+            # Stream 1: Graphiti Native Search (Vector Embedding + Graph Traversal)
+            try:
+                edges = await self._graphiti.search(
+                    query=q,
+                    num_results=limit,
+                    group_ids=group_ids or ["personal"],
+                )
+                vector_graph_edges.extend(edges)
+            except Exception:
+                pass
+
+            # Stream 2: Keyword / BM25 Naive Surrogate via Kuzu wildcard matching
+            try:
+                tables_res = await driver.execute_query("CALL show_tables() RETURN name, type")
+                edge_tables = [t["name"] for t in tables_res if t["type"] == "REL"]
+                terms = [t for t in q.lower().split() if len(t) > 3]
+                
+                # Fetch matching edges manually and mock a Graphiti edge object
+                class MockEdge:
+                    def __init__(self, e):
+                        self.uuid = e.get("uuid")
+                        self.name = e.get("name")
+                        self.fact = e.get("fact")
+                        self.source_node_uuid = e.get("source_node_uuid")
+                        self.target_node_uuid = e.get("target_node_uuid")
+                        from datetime import datetime, timezone
+                        now_str = datetime.now(timezone.utc).isoformat()
+                        self.valid_at = self._parse_tsz(e.get("valid_at"))
+                        self.invalid_at = self._parse_tsz(e.get("invalid_at"))
+                        self.expired_at = self._parse_tsz(e.get("expired_at"))
+                        self.episodes = []
+                    
+                    def _parse_tsz(self, val):
+                        if not val: return None
+                        from datetime import datetime
+                        if isinstance(val, str):
+                            try:
+                                return datetime.fromisoformat(val)
+                            except (ValueError, TypeError):
+                                pass
+                        return None
+                        
+                for table in edge_tables:
+                    for term in terms[:3]: # limit query explosion
+                        res = await driver.execute_query(
+                            f"MATCH ()-[e:{table}]->() WHERE lower(e.fact) CONTAINS $term "
+                            "RETURN e.uuid as uuid, e.name as name, e.fact as fact, "
+                            "e.valid_at as valid_at, e.invalid_at as invalid_at, "
+                            "e.expired_at as expired_at LIMIT 10",
+                            term=term
+                        )
+                        for r in res:
+                            keyword_edges.append(MockEdge(r))
+            except Exception as e:
+                logger.debug("Keyword search stream failed: %s", e)
 
         # Mathematical RRF Fusion
         fused_edges = self.reciprocal_rank_fusion([vector_graph_edges, keyword_edges])

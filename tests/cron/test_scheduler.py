@@ -220,7 +220,7 @@ class TestDeliverResultWrapping:
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
-             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+             patch("cron.scheduler.load_config", return_value=type("MockCfg", (), {"cron": type("MockCron", (), {"wrap_response": False})()})()):
             job = {
                 "id": "test-job",
                 "name": "daily-report",
@@ -246,7 +246,7 @@ class TestDeliverResultWrapping:
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
-             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+             patch("cron.scheduler.load_config", return_value=type("MockCfg", (), {"cron": type("MockCron", (), {"wrap_response": False})()})()):
             job = {
                 "id": "voice-job",
                 "deliver": "origin",
@@ -295,7 +295,7 @@ class TestDeliverResultWrapping:
         }
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler.load_config", return_value=type("MockCfg", (), {"cron": type("MockCron", (), {"wrap_response": False})()})()), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             _deliver_result(
                 job,
@@ -345,7 +345,7 @@ class TestDeliverResultWrapping:
         }
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler.load_config", return_value=type("MockCfg", (), {"cron": type("MockCron", (), {"wrap_response": False})()})()), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             _deliver_result(
                 job,
@@ -387,7 +387,7 @@ class TestDeliverResultWrapping:
         }
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler.load_config", return_value=type("MockCfg", (), {"cron": type("MockCron", (), {"wrap_response": False})()})()), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             _deliver_result(
                 job,
@@ -431,7 +431,7 @@ class TestDeliverResultWrapping:
         }
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler.load_config", return_value=type("MockCfg", (), {"cron": type("MockCron", (), {"wrap_response": False})()})()), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             _deliver_result(
                 job,
@@ -949,6 +949,7 @@ class TestSilentDelivery:
             from cron.scheduler import tick
             with caplog.at_level(logging.INFO, logger="cron.scheduler"):
                 tick(verbose=False)
+        print("CAPLOG TRACE:\\n", caplog.text)
         deliver_mock.assert_not_called()
         assert any(SILENT_MARKER in r.message for r in caplog.records)
 

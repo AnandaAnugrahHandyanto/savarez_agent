@@ -17,6 +17,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.obsidian_sync import compute_content_hash, ensure_managed_structure, extract_markdown_metadata, get_entity_dir
+
 logger = logging.getLogger(__name__)
 
 class KnowledgeManager:
@@ -37,10 +39,7 @@ class KnowledgeManager:
         
         if self.vault_path:
             try:
-                self.vault_path.mkdir(parents=True, exist_ok=True)
-                # Ensure structure
-                for folder in ["Notes", "People", "Projects", "Decisions", "Episodes"]:
-                    (self.vault_path / self.agent_prefix / folder).mkdir(parents=True, exist_ok=True)
+                ensure_managed_structure(str(self.vault_path), self.agent_prefix)
             except Exception as e:
                 logger.error("Failed to create vault structure in %s: %s", self.vault_path, e)
                 self.vault_path = None
@@ -49,18 +48,7 @@ class KnowledgeManager:
         """Get the directory for an entity type within the vault."""
         if not self.vault_path:
             return None
-        
-        folder_map = {
-            "note": "Notes",
-            "person": "People",
-            "project": "Projects",
-            "decision": "Decisions",
-            "episode": "Episodes"
-        }
-        folder = folder_map.get(entity_type, "Misc")
-        path = self.vault_path / self.agent_prefix / folder
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+        return get_entity_dir(str(self.vault_path), self.agent_prefix, entity_type)
 
     def _sanitize_filename(self, name: str) -> str:
         """Sanitize a string for use as a filename."""
@@ -109,7 +97,37 @@ class KnowledgeManager:
         
         try:
             file_path.write_text(content, encoding="utf-8")
-            return str(file_path.relative_to(self.vault_path))
+            relative_path = str(file_path.relative_to(self.vault_path))
+            if hasattr(self.db, "upsert_obsidian_managed_file"):
+                metadata = extract_markdown_metadata(content)
+                self.db.upsert_obsidian_managed_file(
+                    vault_relative_path=relative_path,
+                    managed_relative_path=str(file_path.relative_to(self.vault_path / self.agent_prefix)),
+                    uuid=str(fm.get("uuid")) if fm.get("uuid") else None,
+                    entity_type=entity_type,
+                    wiki_page_type=None,
+                    file_ext=file_path.suffix.lower(),
+                    content_hash=compute_content_hash(content),
+                    last_vault_mtime=file_path.stat().st_mtime,
+                    last_vault_size=file_path.stat().st_size,
+                    last_db_revision_id=None,
+                    last_sync_direction="db_to_vault",
+                    sync_status="synced",
+                    conflict_state="none",
+                    source_origin="managed",
+                    tombstoned=False,
+                    metadata=metadata,
+                )
+            if hasattr(self.db, "record_obsidian_sync_event"):
+                self.db.record_obsidian_sync_event(
+                    event_type="db_write",
+                    path=relative_path,
+                    direction="db_to_vault",
+                    status="ok",
+                    detail=f"Wrote {entity_type} markdown to Obsidian vault",
+                    metadata={"entity_type": entity_type, "relative_path": relative_path},
+                )
+            return relative_path
         except Exception as e:
             logger.error("Failed to write markdown to %s: %s", file_path, e)
             return None

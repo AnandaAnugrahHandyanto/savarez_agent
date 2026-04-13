@@ -3,6 +3,8 @@ import logging
 import xml.etree.ElementTree as ET
 import urllib.parse
 import urllib.robotparser
+import requests
+import time
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -130,3 +132,81 @@ def safe_parse_polymarket(market_json: Dict[str, Any]) -> Dict[str, Any]:
             parsed['probabilities'] = []
             
     return parsed
+
+class CitationVerifier:
+    \"\"\"
+    Federated Citation Verifier using arXiv (for Tech/AI) and OpenAlex (for everything else).
+    Validates LLM-generated citations to prevent hallucinations from entering the Knowledge Graph.
+    \"\"\"
+    def __init__(self, email: str = \"hermes-agent@example.com\"):
+        self.email = email
+        
+    def verify(self, query: str, context: str = \"\") -> Optional[Dict[str, Any]]:
+        \"\"\"Verify a citation query. Returns structured metadata if found, None if hallucinated.\"\"\"
+        if not query or len(query) < 5:
+            return None
+            
+        if self._is_tech_topic(query + \" \" + context):
+            res = self._check_arxiv(query)
+            if res:
+                return res
+                
+        # Fallback to OpenAlex
+        return self._check_openalex(query)
+            
+    def _is_tech_topic(self, text: str) -> bool:
+        tech_keywords = [
+            'ai', 'machine learning', 'deep learning', 'neural network', 'llm', 
+            'computer science', 'physics', 'quantum', 'algorithm', 'transformers'
+        ]
+        text_lower = text.lower()
+        return any(keyword in text_lower for keyword in tech_keywords)
+
+    def _check_arxiv(self, query: str) -> Optional[Dict[str, Any]]:
+        # arXiv search API
+        url = f\"http://export.arxiv.org/api/query?search_query=all:{urllib.parse.quote(query)}&max_results=1\"
+        try:
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                papers = safe_parse_arxiv(resp.text)
+                if papers:
+                    p = papers[0]
+                    # basic sanity check to avoid wildly irrelevant matches
+                    # e.g., if query is \"Attention is all you need\", we expect \"Attention\" to be in the title
+                    first_word = query.split()[0].lower()
+                    if first_word in p['title'].lower() or first_word in p['summary'].lower():
+                        return {
+                            \"source\": \"arxiv\",
+                            \"title\": p['title'],
+                            \"authors\": p['authors'][:5], # Up to 5 authors
+                            \"url\": p.get('pdf_url', p['url']),
+                            \"year\": p['published'][:4]
+                        }
+        except Exception as e:
+            logger.debug(\"ArXiv verification failed: %s\", e)
+        return None
+
+    def _check_openalex(self, query: str) -> Optional[Dict[str, Any]]:
+        # OpenAlex API
+        url = f\"https://api.openalex.org/works?search={urllib.parse.quote(query)}&mailto={self.email}&per-page=1\"
+        try:
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get(\"results\"):
+                    res = data[\"results\"][0]
+                    title = res.get(\"title\")
+                    if title:
+                        first_word = query.split()[0].lower()
+                        if first_word in title.lower():
+                            authors = [a.get(\"author\", {}).get(\"display_name\") for a in res.get(\"authorships\", [])]
+                            return {
+                                \"source\": \"openalex\",
+                                \"title\": title,
+                                \"authors\": authors[:5],
+                                \"url\": res.get(\"doi\") or res.get(\"id\"),
+                                \"year\": str(res.get(\"publication_year\"))
+                            }
+        except Exception as e:
+            logger.debug(\"OpenAlex verification failed: %s\", e)
+        return None
