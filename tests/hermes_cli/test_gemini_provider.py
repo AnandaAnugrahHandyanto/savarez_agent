@@ -211,6 +211,51 @@ class TestGeminiAgentInit:
             assert agent.api_mode == "chat_completions"
             assert agent.provider == "gemini"
 
+    def test_gemini_uses_x_goog_api_key_not_bearer(self, monkeypatch):
+        """Gemini must use x-goog-api-key header, not Authorization: Bearer.
+
+        Regression test for #7893: Google's API returns HTTP 400
+        'Multiple authentication credentials received' when both
+        x-goog-api-key and Authorization: Bearer are present.
+        """
+        monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
+        with patch("run_agent.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from run_agent import AIAgent
+            AIAgent(
+                model="gemini-2.5-flash",
+                provider="gemini",
+                api_key="test-google-key",
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            )
+            call_kwargs = mock_openai.call_args[1]
+            headers = call_kwargs.get("default_headers", {})
+            assert headers.get("x-goog-api-key") == "test-google-key"
+            # api_key must not be the real key (would cause Bearer header)
+            assert call_kwargs.get("api_key") != "test-google-key"
+
+    def test_apply_headers_sets_gemini_header_on_model_switch(self, monkeypatch):
+        """_apply_client_headers_for_base_url must also set x-goog-api-key.
+
+        This path is used when switching models mid-session.
+        """
+        monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
+        with patch("run_agent.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from run_agent import AIAgent
+            agent = AIAgent(
+                model="gemini-2.5-flash",
+                provider="gemini",
+                api_key="test-google-key",
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            )
+            # Simulate the model-switch header update path
+            agent._client_kwargs = {"api_key": "test-google-key", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai"}
+            agent._apply_client_headers_for_base_url("https://generativelanguage.googleapis.com/v1beta/openai")
+            headers = agent._client_kwargs.get("default_headers", {})
+            assert headers.get("x-goog-api-key") == "test-google-key"
+            assert agent._client_kwargs.get("api_key") != "test-google-key"
+
 
 # ── models.dev Integration ──
 
