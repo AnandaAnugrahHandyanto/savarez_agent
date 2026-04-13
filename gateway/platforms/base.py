@@ -167,6 +167,21 @@ def resolve_proxy_url(platform_env_var: str | None = None) -> str | None:
     return _detect_macos_system_proxy()
 
 
+
+def _build_socks_connector(proxy_url: str):
+    """Try to build a SOCKS ProxyConnector. Returns connector or None."""
+    try:
+        from aiohttp_socks import ProxyConnector
+        return ProxyConnector.from_url(proxy_url, rdns=True)
+    except ImportError:
+        logger.warning(
+            "aiohttp_socks not installed — SOCKS proxy %s ignored. "
+            "Run: pip install aiohttp-socks",
+            proxy_url,
+        )
+        return None
+
+
 def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
     """Build kwargs for ``commands.Bot()`` / ``discord.Client()`` with proxy.
 
@@ -182,18 +197,8 @@ def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
     if not proxy_url:
         return {}
     if proxy_url.lower().startswith("socks"):
-        try:
-            from aiohttp_socks import ProxyConnector
-
-            connector = ProxyConnector.from_url(proxy_url, rdns=True)
-            return {"connector": connector}
-        except ImportError:
-            logger.warning(
-                "aiohttp_socks not installed — SOCKS proxy %s ignored. "
-                "Run: pip install aiohttp-socks",
-                proxy_url,
-            )
-            return {}
+        connector = _build_socks_connector(proxy_url)
+        return {"connector": connector} if connector else {}
     return {"proxy": proxy_url}
 
 
@@ -215,18 +220,8 @@ def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
     if not proxy_url:
         return {}, {}
     if proxy_url.lower().startswith("socks"):
-        try:
-            from aiohttp_socks import ProxyConnector
-
-            connector = ProxyConnector.from_url(proxy_url, rdns=True)
-            return {"connector": connector}, {}
-        except ImportError:
-            logger.warning(
-                "aiohttp_socks not installed — SOCKS proxy %s ignored. "
-                "Run: pip install aiohttp-socks",
-                proxy_url,
-            )
-            return {}, {}
+        connector = _build_socks_connector(proxy_url)
+        return ({"connector": connector}, {}) if connector else ({}, {})
     return {}, {"proxy": proxy_url}
 
 
@@ -432,15 +427,14 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
     raise last_exc
 
 
-def cleanup_image_cache(max_age_hours: int = 24) -> int:
-    """
-    Delete cached images older than *max_age_hours*.
+def _cleanup_cache_dir(cache_dir: Path, max_age_hours: int = 24) -> int:
+    """Delete cached files older than *max_age_hours* from *cache_dir*.
 
+    Shared implementation for image, audio, and document cache cleanup.
     Returns the number of files removed.
     """
     import time
 
-    cache_dir = get_image_cache_dir()
     cutoff = time.time() - (max_age_hours * 3600)
     removed = 0
     for f in cache_dir.iterdir():
@@ -451,6 +445,15 @@ def cleanup_image_cache(max_age_hours: int = 24) -> int:
             except OSError:
                 pass
     return removed
+
+
+def cleanup_image_cache(max_age_hours: int = 24) -> int:
+    """
+    Delete cached images older than *max_age_hours*.
+
+    Returns the number of files removed.
+    """
+    return _cleanup_cache_dir(get_image_cache_dir(), max_age_hours)
 
 
 # ---------------------------------------------------------------------------
@@ -616,19 +619,7 @@ def cleanup_document_cache(max_age_hours: int = 24) -> int:
 
     Returns the number of files removed.
     """
-    import time
-
-    cache_dir = get_document_cache_dir()
-    cutoff = time.time() - (max_age_hours * 3600)
-    removed = 0
-    for f in cache_dir.iterdir():
-        if f.is_file() and f.stat().st_mtime < cutoff:
-            try:
-                f.unlink()
-                removed += 1
-            except OSError:
-                pass
-    return removed
+    return _cleanup_cache_dir(get_document_cache_dir(), max_age_hours)
 
 
 class MessageType(Enum):
