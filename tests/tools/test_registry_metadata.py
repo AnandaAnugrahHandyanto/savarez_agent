@@ -29,6 +29,15 @@ def test_real_registry_browser_click_metadata():
     assert meta["risk_level"] == "medium"
 
 
+def test_real_registry_terminal_metadata_uses_command_level_approval():
+    importlib.import_module("tools.terminal_tool")
+    meta = registry.get_metadata("terminal")
+    assert meta["mutates_local_fs"] is True
+    assert meta["mutates_external_world"] is False
+    assert meta["requires_confirmation_default"] is False
+    assert meta["risk_level"] == "medium"
+
+
 class TestBackwardCompat:
     """Old-style register() calls must not break."""
 

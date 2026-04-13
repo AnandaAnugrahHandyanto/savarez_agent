@@ -47,6 +47,26 @@ class TestTerminalRules:
     def test_safe_grep(self):
         assert evaluate_permission("terminal", {"command": "grep foo bar.txt"}) is None
 
+    def test_terminal_metadata_does_not_force_global_confirmation(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_get_tool_metadata", lambda tool_name: {
+            "risk_level": "high",
+            "mutates_external_world": True,
+            "requires_confirmation_default": True,
+        })
+        assert evaluate_permission("terminal", {"command": "git status --short --branch"}) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "source venv/bin/activate && git status --short --branch",
+            "cd /tmp/project && git log --oneline -5",
+            "bash -lc 'git diff --stat'",
+            "zsh -lc 'python -m pytest -q tests/plugins/test_permission_engine.py'",
+        ],
+    )
+    def test_wrapped_safe_local_dev_commands_allowed(self, command):
+        assert evaluate_permission("terminal", {"command": command}) is None
+
     def test_rm_rf_root_denied(self):
         result = evaluate_permission("terminal", {"command": "rm -rf /"})
         assert result is not None

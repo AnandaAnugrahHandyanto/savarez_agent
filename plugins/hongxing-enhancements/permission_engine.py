@@ -10,6 +10,17 @@ Five-layer permission evaluation:
 
 import os
 import re
+import shlex
+
+
+_SAFE_LOCAL_DEV_COMMAND_PATTERNS = [
+    r"^git\s+(status|log|diff|show|branch|rev-parse|remote)(\s|$)",
+    r"^(python|python3)\s+-m\s+pytest(\s|$)",
+    r"^pytest(\s|$)",
+    r"^lsof(\s|$)",
+    r"^pgrep(\s|$)",
+    r"^launchctl\s+list(\s|$)",
+]
 
 
 def _get_tool_metadata(tool_name: str) -> dict:
@@ -59,6 +70,54 @@ HIGH_RISK_PATHS = [
 ]
 
 
+_COMMAND_WRAPPER_PREFIXES = (
+    "source ",
+    ". ",
+    "cd ",
+)
+
+
+def _unwrap_shell_command(command: str) -> list[str]:
+    candidates: list[str] = []
+    queue = [command.strip()]
+    seen: set[str] = set()
+
+    while queue:
+        current = queue.pop(0).strip()
+        if not current or current in seen:
+            continue
+        seen.add(current)
+        candidates.append(current)
+
+        for separator in ("&&", ";"):
+            if separator in current:
+                parts = [part.strip() for part in current.split(separator) if part.strip()]
+                queue.extend(parts)
+                if parts:
+                    queue.append(parts[-1])
+
+        try:
+            tokens = shlex.split(current)
+        except ValueError:
+            tokens = []
+
+        if len(tokens) >= 3 and tokens[0] in {"bash", "sh", "zsh"} and tokens[1] == "-lc":
+            queue.append(tokens[2])
+
+        if any(current.startswith(prefix) for prefix in _COMMAND_WRAPPER_PREFIXES):
+            queue.extend(part.strip() for part in re.split(r"&&|;", current) if part.strip())
+
+    return candidates
+
+
+def _is_safe_local_dev_command(command: str) -> bool:
+    for candidate in _unwrap_shell_command(command):
+        for pattern in _SAFE_LOCAL_DEV_COMMAND_PATTERNS:
+            if re.search(pattern, candidate):
+                return True
+    return False
+
+
 def evaluate_permission(tool_name: str, args: dict) -> dict | None:
     """Return None to allow, or a dict with 'action' and 'reason'."""
 
@@ -70,16 +129,7 @@ def evaluate_permission(tool_name: str, args: dict) -> dict | None:
     if tool_name in ALWAYS_DENY:
         return {"action": "deny", "reason": f"Tool '{tool_name}' is blocked"}
 
-    # Layer 3: registry metadata rules
-    metadata = _get_tool_metadata(tool_name)
-    if metadata.get("risk_level") == "high":
-        return {"action": "ask", "reason": "high risk tool"}
-    if metadata.get("mutates_external_world") is True:
-        return {"action": "ask", "reason": "mutates external world"}
-    if metadata.get("requires_confirmation_default") is True:
-        return {"action": "ask", "reason": "requires confirmation"}
-
-    # Layer 4: risk rules — dangerous / ask commands
+    # Layer 3: risk rules — dangerous / ask commands
     if tool_name in ("terminal", "execute_code"):
         cmd = args.get("command", "")
         for pattern in DANGEROUS_COMMAND_PATTERNS:
@@ -94,8 +144,19 @@ def evaluate_permission(tool_name: str, args: dict) -> dict | None:
                     "action": "ask",
                     "reason": f"High-risk command requires confirmation: {cmd[:80]}",
                 }
+        if _is_safe_local_dev_command(cmd):
+            return None
 
-    # Layer 4: risk rules — high-risk write paths
+    # Layer 4: registry metadata rules
+    metadata = _get_tool_metadata(tool_name)
+    if metadata.get("mutates_external_world") is True:
+        return {"action": "ask", "reason": "mutates external world"}
+    if tool_name not in ("terminal", "execute_code") and metadata.get("risk_level") == "high":
+        return {"action": "ask", "reason": "high risk tool"}
+    if tool_name not in ("terminal", "execute_code") and metadata.get("requires_confirmation_default") is True:
+        return {"action": "ask", "reason": "requires confirmation"}
+
+    # Layer 5: risk rules — high-risk write paths
     if tool_name in ("write_file", "patch"):
         path = args.get("file_path", args.get("path", ""))
         for risk_path in HIGH_RISK_PATHS:
@@ -105,7 +166,7 @@ def evaluate_permission(tool_name: str, args: dict) -> dict | None:
                     "reason": f"Writing to high-risk path: {path}",
                 }
 
-    # Layer 5: default allow
+    # Layer 6: default allow
     return None
 
 
