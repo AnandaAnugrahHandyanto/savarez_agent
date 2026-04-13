@@ -1518,9 +1518,9 @@ class WeixinAdapter(BasePlatformAdapter):
         self,
         chat_id: str,
         image_url: str,
-        caption: str,
+        caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs
     ) -> SendResult:
         if image_url.startswith(("http://", "https://")):
             file_path = await self._download_remote_media(image_url)
@@ -1531,7 +1531,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 file_path = os.path.abspath(file_path)
             cleanup = False
         try:
-            return await self.send_document(chat_id, file_path, caption=caption, metadata=metadata)
+            return await self.send_document(chat_id, file_path, caption=caption, **kwargs)
         finally:
             if cleanup and file_path and os.path.exists(file_path):
                 try:
@@ -1542,24 +1542,26 @@ class WeixinAdapter(BasePlatformAdapter):
     async def send_image_file(
         self,
         chat_id: str,
-        path: str,
-        caption: str = "",
+        image_path: str,
+        caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs
     ) -> SendResult:
-        return await self.send_document(chat_id, path, caption=caption, metadata=metadata)
+        return await self.send_document(chat_id, file_path=image_path, caption=caption or "", **kwargs)
 
     async def send_document(
         self,
         chat_id: str,
-        path: str,
-        caption: str = "",
-        metadata: Optional[Dict[str, Any]] = None,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs
     ) -> SendResult:
         if not self._session or not self._token:
             return SendResult(success=False, error="Not connected")
         try:
-            message_id = await self._send_file(chat_id, path, caption)
+            message_id = await self._send_file(chat_id, file_path, caption or "")
             return SendResult(success=True, message_id=message_id)
         except Exception as exc:
             logger.error("[%s] send_document failed to=%s: %s", self.name, _safe_id(chat_id), exc)
@@ -1571,7 +1573,7 @@ class WeixinAdapter(BasePlatformAdapter):
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs
     ) -> SendResult:
         if not self._session or not self._token:
             return SendResult(success=False, error="Not connected")
@@ -1588,9 +1590,9 @@ class WeixinAdapter(BasePlatformAdapter):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs
     ) -> SendResult:
-        return await self.send_document(chat_id, audio_path, caption=caption or "", metadata=metadata)
+        return await self.send_document(chat_id, file_path=audio_path, caption=caption or "", **kwargs)
 
     async def _download_remote_media(self, url: str) -> str:
         from tools.url_safety import is_safe_url
