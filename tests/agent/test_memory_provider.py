@@ -1,8 +1,12 @@
 """Tests for the memory provider interface, manager, and builtin provider."""
 
 import json
-import pytest
+import os
+import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager
@@ -373,7 +377,34 @@ class TestMemoryManager:
 
 
 class TestPluginMemoryDiscovery:
-    """Memory providers are discovered from plugins/memory/ directory."""
+    """Memory providers are discovered from bundled and user plugin directories."""
+
+    def _make_user_memory_plugin(self, name: str, description: str = "User test provider") -> Path:
+        plugins_dir = Path(os.environ["HERMES_HOME"]) / "plugins"
+        plugin_dir = plugins_dir / name
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n"
+            "\n"
+            "class TestUserProvider(MemoryProvider):\n"
+            "    @property\n"
+            "    def name(self):\n"
+            f"        return {name!r}\n"
+            "    def is_available(self):\n"
+            "        return True\n"
+            "    def initialize(self, session_id, **kwargs):\n"
+            "        pass\n"
+            "    def get_tool_schemas(self):\n"
+            "        return []\n"
+            "\n"
+            "def register(ctx):\n"
+            "    ctx.register_memory_provider(TestUserProvider())\n"
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            f"name: {name}\n"
+            f"description: {description}\n"
+        )
+        return plugin_dir
 
     def test_discover_finds_providers(self):
         """discover_memory_providers returns available providers."""
@@ -394,6 +425,72 @@ class TestPluginMemoryDiscovery:
         """load_memory_provider returns None for unknown names."""
         from plugins.memory import load_memory_provider
         assert load_memory_provider("nonexistent_provider") is None
+
+    def test_discovers_user_installed_provider_from_hermes_home_plugins(self):
+        """User-installed providers under HERMES_HOME/plugins are discovered."""
+        plugin_name = "brainctl_test_provider"
+        self._make_user_memory_plugin(plugin_name, description="Brainctl-style provider")
+
+        from plugins.memory import discover_memory_providers
+
+        providers = discover_memory_providers()
+        names = [name for name, _, _ in providers]
+
+        try:
+            assert plugin_name in names
+        finally:
+            sys.modules.pop(f"plugins.memory.{plugin_name}", None)
+
+    def test_loads_user_installed_provider_from_hermes_home_plugins(self):
+        """load_memory_provider supports providers installed under HERMES_HOME/plugins."""
+        plugin_name = "brainctl_load_provider"
+        self._make_user_memory_plugin(plugin_name)
+
+        from plugins.memory import load_memory_provider
+
+        try:
+            provider = load_memory_provider(plugin_name)
+            assert provider is not None
+            assert provider.name == plugin_name
+            assert provider.is_available()
+        finally:
+            sys.modules.pop(f"plugins.memory.{plugin_name}", None)
+
+    def test_bundled_provider_takes_precedence_over_user_plugin_name_collision(self):
+        """Bundled providers win when a user plugin reuses an existing provider name."""
+        plugin_name = "holographic"
+        plugin_dir = Path(os.environ["HERMES_HOME"]) / "plugins" / plugin_name
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n"
+            "\n"
+            "class CollidingProvider(MemoryProvider):\n"
+            "    @property\n"
+            "    def name(self):\n"
+            "        return 'collision'\n"
+            "    def is_available(self):\n"
+            "        return True\n"
+            "    def initialize(self, session_id, **kwargs):\n"
+            "        pass\n"
+            "    def get_tool_schemas(self):\n"
+            "        return []\n"
+            "\n"
+            "def register(ctx):\n"
+            "    ctx.register_memory_provider(CollidingProvider())\n"
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: holographic\n"
+            "description: Colliding user provider\n"
+        )
+
+        from plugins.memory import load_memory_provider
+
+        try:
+            provider = load_memory_provider(plugin_name)
+            assert provider is not None
+            assert provider.name == "holographic"
+        finally:
+            sys.modules.pop("plugins.memory.holographic", None)
 
 
 # ---------------------------------------------------------------------------

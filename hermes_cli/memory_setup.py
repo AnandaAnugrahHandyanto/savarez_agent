@@ -12,7 +12,7 @@ import os
 import sys
 from pathlib import Path
 
-from hermes_constants import get_hermes_home
+from hermes_constants import display_hermes_home, get_hermes_home
 
 
 # ---------------------------------------------------------------------------
@@ -56,11 +56,15 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 # ---------------------------------------------------------------------------
 
 def _install_dependencies(provider_name: str) -> None:
-    """Install pip dependencies declared in plugin.yaml."""
+    """Install pip dependencies declared in a memory provider manifest."""
     import subprocess
-    from pathlib import Path as _Path
 
-    plugin_dir = _Path(__file__).parent.parent / "plugins" / "memory" / provider_name
+    from plugins.memory import _find_provider_dir
+
+    plugin_dir = _find_provider_dir(provider_name)
+    if plugin_dir is None:
+        return
+
     yaml_path = plugin_dir / "plugin.yaml"
     if not yaml_path.exists():
         return
@@ -141,9 +145,9 @@ def _install_dependencies(provider_name: str) -> None:
 
 
 def _get_available_providers() -> list:
-    """Discover memory providers from plugins/memory/.
+    """Discover bundled and user-installed memory providers.
 
-    Returns list of (name, description, provider_instance) tuples.
+    Returns list of ``(name, description, provider_instance)`` tuples.
     """
     try:
         from plugins.memory import discover_memory_providers, load_memory_provider
@@ -224,7 +228,7 @@ def cmd_setup(args) -> None:
 
     if not providers:
         print("\n  No memory provider plugins detected.")
-        print("  Install a plugin to ~/.hermes/plugins/ and try again.\n")
+        print(f"  Install a plugin to {display_hermes_home()}/plugins/ and try again.\n")
         return
 
     # Build picker items
@@ -424,7 +428,7 @@ def cmd_status(args) -> None:
                     break
         else:
             print(f"\n  Plugin:    NOT installed ✗")
-            print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
+            print(f"  Install the '{provider_name}' memory plugin to {display_hermes_home()}/plugins/")
 
     providers = _get_available_providers()
     if providers:

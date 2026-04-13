@@ -1,12 +1,13 @@
 """Memory provider plugin discovery.
 
-Scans ``plugins/memory/<name>/`` directories for memory provider plugins.
+Scans bundled ``plugins/memory/<name>/`` directories and user-installed
+``$HERMES_HOME/plugins/<name>/`` directories for memory provider plugins.
 Each subdirectory must contain ``__init__.py`` with a class implementing
 the MemoryProvider ABC.
 
-Memory providers are separate from the general plugin system — they live
-in the repo and are always available without user installation. Only ONE
-can be active at a time, selected via ``memory.provider`` in config.yaml.
+Bundled providers take precedence when a user plugin reuses the same name.
+Only ONE memory provider can be active at a time, selected via
+``memory.provider`` in config.yaml.
 
 Usage:
     from plugins.memory import discover_memory_providers, load_memory_provider
@@ -22,31 +23,60 @@ import importlib.util
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Iterator, List, Optional, Tuple
+
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
 _MEMORY_PLUGINS_DIR = Path(__file__).parent
 
 
-def discover_memory_providers() -> List[Tuple[str, str, bool]]:
-    """Scan plugins/memory/ for available providers.
+def _get_user_memory_plugins_dir() -> Path:
+    """Return the third-party memory provider directory under HERMES_HOME."""
+    return get_hermes_home() / "plugins"
 
-    Returns list of (name, description, is_available) tuples.
-    Does NOT import the providers — just reads plugin.yaml for metadata
-    and does a lightweight availability check.
+
+def _iter_provider_dirs() -> Iterator[tuple[Path, bool]]:
+    """Yield candidate provider directories with bundled providers first.
+
+    Returns ``(provider_dir, is_bundled)`` tuples. Name collisions are
+    de-duplicated so bundled providers always win.
+    """
+    seen_names: set[str] = set()
+    for root, is_bundled in ((_MEMORY_PLUGINS_DIR, True), (_get_user_memory_plugins_dir(), False)):
+        if not root.is_dir():
+            continue
+        for child in sorted(root.iterdir()):
+            if not child.is_dir() or child.name.startswith(("_", ".")):
+                continue
+            if child.name in seen_names:
+                continue
+            if not (child / "__init__.py").exists():
+                continue
+            seen_names.add(child.name)
+            yield child, is_bundled
+
+
+def _find_provider_dir(name: str) -> Optional[Path]:
+    """Resolve a provider directory by name, preferring bundled plugins."""
+    for provider_dir, _is_bundled in _iter_provider_dirs():
+        if provider_dir.name == name:
+            return provider_dir
+    return None
+
+
+def discover_memory_providers() -> List[Tuple[str, str, bool]]:
+    """Scan bundled and user-installed directories for available providers.
+
+    Returns list of ``(name, description, is_available)`` tuples. Bundled
+    providers are always listed. User-installed providers are listed only
+    when they can be resolved as memory providers, which avoids polluting
+    the memory picker with general-purpose plugins under ``$HERMES_HOME/plugins``.
     """
     results = []
-    if not _MEMORY_PLUGINS_DIR.is_dir():
-        return results
 
-    for child in sorted(_MEMORY_PLUGINS_DIR.iterdir()):
-        if not child.is_dir() or child.name.startswith(("_", ".")):
-            continue
-        init_file = child / "__init__.py"
-        if not init_file.exists():
-            continue
-
+    for child, is_bundled in _iter_provider_dirs():
         # Read description from plugin.yaml if available
         desc = ""
         yaml_file = child / "plugin.yaml"
@@ -60,6 +90,7 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
                 pass
 
         # Quick availability check — try loading and calling is_available()
+        provider = None
         available = True
         try:
             provider = _load_provider_from_dir(child)
@@ -70,6 +101,9 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
         except Exception:
             available = False
 
+        if provider is None and not is_bundled:
+            continue
+
         results.append((child.name, desc, available))
 
     return results
@@ -79,10 +113,11 @@ def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
     """Load and return a MemoryProvider instance by name.
 
     Returns None if the provider is not found or fails to load.
+    Bundled providers take precedence over user-installed providers.
     """
-    provider_dir = _MEMORY_PLUGINS_DIR / name
-    if not provider_dir.is_dir():
-        logger.debug("Memory provider '%s' not found in %s", name, _MEMORY_PLUGINS_DIR)
+    provider_dir = _find_provider_dir(name)
+    if provider_dir is None:
+        logger.debug("Memory provider '%s' not found in bundled or user plugin dirs", name)
         return None
 
     try:
@@ -249,16 +284,14 @@ def discover_plugin_cli_commands() -> List[dict]:
     any provider is loaded.
     """
     results: List[dict] = []
-    if not _MEMORY_PLUGINS_DIR.is_dir():
-        return results
 
     active_provider = _get_active_memory_provider()
     if not active_provider:
         return results
 
     # Only look at the active provider's directory
-    plugin_dir = _MEMORY_PLUGINS_DIR / active_provider
-    if not plugin_dir.is_dir():
+    plugin_dir = _find_provider_dir(active_provider)
+    if plugin_dir is None:
         return results
 
     cli_file = plugin_dir / "cli.py"
@@ -300,8 +333,7 @@ def discover_plugin_cli_commands() -> List[dict]:
             except Exception:
                 pass
 
-        handler_fn = getattr(cli_mod, f"{active_provider}_command", None) or \
-                     getattr(cli_mod, "honcho_command", None)
+        handler_fn = getattr(cli_mod, f"{active_provider}_command", None) or                      getattr(cli_mod, "honcho_command", None)
 
         results.append({
             "name": active_provider,

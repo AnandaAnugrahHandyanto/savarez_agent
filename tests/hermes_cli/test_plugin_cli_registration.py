@@ -126,6 +126,40 @@ class TestMemoryPluginCliDiscovery:
         assert callable(cmds[0]["setup_fn"])
         assert cmds[0]["handler_fn"].__name__ == "testplugin_command"
 
+    def test_discovers_active_user_installed_plugin_cli(self, monkeypatch):
+        """Active user-installed memory plugin CLI commands are discovered."""
+        plugin_name = "brainctl_cli"
+        plugin_dir = Path(os.environ["HERMES_HOME"]) / "plugins" / plugin_name
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text("pass\n")
+        (plugin_dir / "cli.py").write_text(
+            "def register_cli(subparser):\n"
+            "    subparser.add_argument('--brain')\n"
+            "\n"
+            f"def {plugin_name}_command(args):\n"
+            "    pass\n"
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            f"name: {plugin_name}\n"
+            "description: User-installed provider\n"
+        )
+
+        import plugins.memory as pm
+
+        mod_key = f"plugins.memory.{plugin_name}.cli"
+        sys.modules.pop(mod_key, None)
+        monkeypatch.setattr(pm, "_get_active_memory_provider", lambda: plugin_name)
+        try:
+            cmds = pm.discover_plugin_cli_commands()
+        finally:
+            sys.modules.pop(mod_key, None)
+
+        assert len(cmds) == 1
+        assert cmds[0]["name"] == plugin_name
+        assert cmds[0]["help"] == "User-installed provider"
+        assert callable(cmds[0]["setup_fn"])
+        assert cmds[0]["handler_fn"].__name__ == f"{plugin_name}_command"
+
     def test_returns_nothing_when_no_active_provider(self, tmp_path, monkeypatch):
         """No commands when memory.provider is not set in config."""
         plugin_dir = tmp_path / "testplugin"
