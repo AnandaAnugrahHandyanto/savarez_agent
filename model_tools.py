@@ -170,30 +170,64 @@ def _discover_tools():
             logger.warning("Could not import tool module %s: %s", mod_name, e)
 
 
-_discover_tools()
+# ---------------------------------------------------------------------------
+# Lazy discovery — tools, MCP, and plugins are loaded on first access.
+# Defers ~2-5s of heavy imports until the agent actually needs tool defs.
+# ---------------------------------------------------------------------------
 
-# MCP tool discovery (external MCP servers from config)
-try:
-    from tools.mcp_tool import discover_mcp_tools
-    discover_mcp_tools()
-except Exception as e:
-    logger.debug("MCP tool discovery failed: %s", e)
-
-# Plugin tool discovery (user/project/pip plugins)
-try:
-    from hermes_cli.plugins import discover_plugins
-    discover_plugins()
-except Exception as e:
-    logger.debug("Plugin discovery failed: %s", e)
+_discovery_done = False
+_discovery_lock = threading.Lock()
 
 
-# =============================================================================
-# Backward-compat constants  (built once after discovery)
-# =============================================================================
+def _ensure_discovered() -> None:
+    """Run tool/MCP/plugin discovery exactly once, on first access."""
+    global _discovery_done
+    if _discovery_done:
+        return
+    with _discovery_lock:
+        if _discovery_done:
+            return
+        _discover_tools()
 
-TOOL_TO_TOOLSET_MAP: Dict[str, str] = registry.get_tool_to_toolset_map()
+        try:
+            from tools.mcp_tool import discover_mcp_tools
+            discover_mcp_tools()
+        except Exception as e:
+            logger.debug("MCP tool discovery failed: %s", e)
 
-TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
+        try:
+            from hermes_cli.plugins import discover_plugins
+            discover_plugins()
+        except Exception as e:
+            logger.debug("Plugin discovery failed: %s", e)
+
+        _discovery_done = True
+
+
+# Lazy module-level constants via PEP 562 __getattr__.
+# `from model_tools import TOOL_TO_TOOLSET_MAP` still works because Python
+# falls back to __getattr__ when the name isn't in the module dict.
+# After first access the value is cached in globals() for O(1) lookups.
+
+_MODULE_GLOBALS_POST_DISCOVERY = {
+    "TOOL_TO_TOOLSET_MAP",
+    "TOOLSET_REQUIREMENTS",
+}
+
+
+def __getattr__(name: str):
+    if name in _MODULE_GLOBALS_POST_DISCOVERY:
+        _ensure_discovered()
+        if name == "TOOL_TO_TOOLSET_MAP":
+            val = registry.get_tool_to_toolset_map()
+        elif name == "TOOLSET_REQUIREMENTS":
+            val = registry.get_toolset_requirements()
+        else:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        globals()[name] = val
+        return val
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 # Resolved tool names from the last get_tool_definitions() call.
 # Used by code_execution_tool to know which tools are available in this session.
@@ -239,6 +273,7 @@ def get_tool_definitions(
     disabled_toolsets: List[str] = None,
     quiet_mode: bool = False,
 ) -> List[Dict[str, Any]]:
+    _ensure_discovered()
     """
     Get tool definitions for model API calls with toolset-based filtering.
 
@@ -468,6 +503,7 @@ def handle_function_call(
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
 ) -> str:
+    _ensure_discovered()
     """
     Main function call dispatcher that routes calls to the tool registry.
 
@@ -599,24 +635,29 @@ def handle_function_call(
 
 def get_all_tool_names() -> List[str]:
     """Return all registered tool names."""
+    _ensure_discovered()
     return registry.get_all_tool_names()
 
 
 def get_toolset_for_tool(tool_name: str) -> Optional[str]:
     """Return the toolset a tool belongs to."""
+    _ensure_discovered()
     return registry.get_toolset_for_tool(tool_name)
 
 
 def get_available_toolsets() -> Dict[str, dict]:
     """Return toolset availability info for UI display."""
+    _ensure_discovered()
     return registry.get_available_toolsets()
 
 
 def check_toolset_requirements() -> Dict[str, bool]:
     """Return {toolset: available_bool} for every registered toolset."""
+    _ensure_discovered()
     return registry.check_toolset_requirements()
 
 
 def check_tool_availability(quiet: bool = False) -> Tuple[List[str], List[dict]]:
     """Return (available_toolsets, unavailable_info)."""
+    _ensure_discovered()
     return registry.check_tool_availability(quiet=quiet)

@@ -584,12 +584,11 @@ from toolsets import get_all_toolsets, get_toolset_info, validate_toolset
 # Cron job system for scheduled tasks (execution is handled by the gateway)
 from cron import get_job
 
-# Resource cleanup imports for safe shutdown (terminal VMs, browser sessions)
-from tools.terminal_tool import cleanup_all_environments as _cleanup_all_terminals
+# Callback setup — lightweight, only sets function references
+from hermes_cli.callbacks import prompt_for_secret
 from tools.terminal_tool import set_sudo_password_callback, set_approval_callback
 from tools.skills_tool import set_secret_capture_callback
-from hermes_cli.callbacks import prompt_for_secret
-from tools.browser_tool import _emergency_cleanup_all_sessions as _cleanup_all_browsers
+set_secret_capture_callback(prompt_for_secret)
 
 # Guard to prevent cleanup from running multiple times on exit
 _cleanup_done = False
@@ -603,11 +602,13 @@ def _run_cleanup():
         return
     _cleanup_done = True
     try:
-        _cleanup_all_terminals()
+        from tools.terminal_tool import cleanup_all_environments
+        cleanup_all_environments()
     except Exception:
         pass
     try:
-        _cleanup_all_browsers()
+        from tools.browser_tool import _emergency_cleanup_all_sessions
+        _emergency_cleanup_all_sessions()
     except Exception:
         pass
     try:

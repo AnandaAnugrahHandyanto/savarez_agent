@@ -739,10 +739,13 @@ def cmd_chat(args):
     except Exception:
         pass
 
-    # Sync bundled skills on every CLI launch (fast -- skips unchanged skills)
+    # Sync bundled skills in background (fast -- skips unchanged skills,
+    # but filesystem hashing is still I/O that doesn't need to block startup)
     try:
         from tools.skills_sync import sync_skills
-        sync_skills(quiet=True)
+        import threading
+        _skills_thread = threading.Thread(target=sync_skills, kwargs={"quiet": True}, daemon=True)
+        _skills_thread.start()
     except Exception:
         pass
 
