@@ -93,6 +93,32 @@ class TestCopilotDotPreservation:
         assert result == expected
 
 
+# ── Copilot 1M context model preservation ─────────────────────────────
+
+class TestCopilot1MModelPreservation:
+    """claude-opus-4.6-1m is a real Copilot API model ID — must NOT be stripped."""
+
+    def test_copilot_preserves_1m_suffix(self):
+        result = normalize_model_for_provider("claude-opus-4.6-1m", "copilot")
+        assert result == "claude-opus-4.6-1m"
+
+    def test_copilot_strips_vendor_prefix_preserves_1m(self):
+        """anthropic/ prefix is NOT stripped by normalize_model_for_provider
+        (only matching provider prefixes are stripped — copilot/ would be).
+        The full pipeline handles it via normalize_copilot_model_id aliases."""
+        result = normalize_model_for_provider("anthropic/claude-opus-4.6-1m", "copilot")
+        assert result == "anthropic/claude-opus-4.6-1m"
+
+    def test_copilot_strips_copilot_prefix_preserves_1m(self):
+        result = normalize_model_for_provider("copilot/claude-opus-4.6-1m", "copilot")
+        assert result == "claude-opus-4.6-1m"
+
+    def test_copilot_base_model_unchanged(self):
+        """Base claude-opus-4.6 (200K) should still work."""
+        result = normalize_model_for_provider("claude-opus-4.6", "copilot")
+        assert result == "claude-opus-4.6"
+
+
 # ── Aggregator providers (regression) ──────────────────────────────────
 
 class TestAggregatorProviders:
