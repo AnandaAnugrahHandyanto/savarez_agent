@@ -559,56 +559,39 @@ def _parse_markdown_table(md_text):
     return headers, rows
 
 def _build_table_element(headers, rows):
-    """构建飞书 table 元素 JSON"""
+    """构建飞书 Schema 2.0 table 元素 JSON"""
     columns = []
     for i, h in enumerate(headers):
         columns.append({
             "name": f"c{i}",
-            "displayName": h
+            "display_name": h
         })
-    
+
     table_rows = []
     for row in rows:
         row_data = {}
         for i, cell in enumerate(row):
-            row_data[f"c{i}"] = {"data": cell}
+            row_data[f"c{i}"] = cell  # Schema 2.0: 直接字符串，不用 {data: ...}
         table_rows.append(row_data)
-    
+
     return {
         "tag": "table",
-        "rows": table_rows,
-        "columns": columns
+        "columns": columns,
+        "rows": table_rows
     }
 
 def _convert_content_with_tables(md_text):
-    """将 Markdown 文本（含表格）转为飞书卡片元素列表。
+    """将 Markdown 文本（含表格）转为飞书 Schema 2.0 元素列表。
 
-    跟 OpenClaw fallback 一样：不做 table 元素转换，直接把 markdown 原文
-    放在 markdown 元素里，让飞书自行渲染。table 元素在移动端不渲染。
-
-    表格包在 ``` 代码块中以保持列对齐。
+    优先使用 table 元素渲染（桌面端支持良好）。
+    如果解析失败或无表格，降级为 markdown 元素。
     """
-    if not md_text:
-        return [{"tag": "markdown", "content": " "}]
-
-    # 提取 markdown 表格并用代码块包裹以保持对齐
-    table_matches = list(_MARKDOWN_TABLE_BLOCK_RE.finditer(md_text))
-
-    if not table_matches:
-        return [{"tag": "markdown", "content": md_text}]
-
-    # 逆序替换每个表格为 ``` 包裹的版本
-    # 由于逆序处理，offset 可以基于已处理的片段累计
-    result = md_text
-    for m in reversed(table_matches):
-        original = m.group(0)
-        # 去掉表格末尾多余的换行（最多2个），避免代码块后换行过多
-        trimmed = original.rstrip('\n')
-        # 代码块末尾加 \n 与后续文本隔开
-        code_wrapped = f"```\n{trimmed}\n```\n"
-        result = result[:m.start()] + code_wrapped + result[m.end():]
-
-    return [{"tag": "markdown", "content": result}]
+    parsed = _parse_markdown_table(md_text)
+    if parsed:
+        headers, rows = parsed
+        if headers and rows:
+            return [_build_table_element(headers, rows)]
+    return [{"tag": "markdown", "content": md_text or " "}]
 
 
 def _render_markdown_tables_for_feishu(text: str) -> str:
@@ -671,6 +654,7 @@ def _build_interactive_card_payload(content: str) -> str:
         title = f"{status_title} | {title}"
     
     card = {
+        "schema": "2.0",
         "config": {
             "wide_screen_mode": True,
         },
@@ -678,13 +662,14 @@ def _build_interactive_card_payload(content: str) -> str:
             "title": {"content": title, "tag": "plain_text"},
             "template": template,
         },
-        "elements": [],
+        "body": {"elements": []},
     }
-    
+    elements = card["body"]["elements"]
+
     if _MARKDOWN_TABLE_BLOCK_RE.search(body_content_raw or ""):
-        card["elements"].extend(_convert_content_with_tables(body_content_raw))
+        elements.extend(_convert_content_with_tables(body_content_raw))
     else:
-        card["elements"].append({
+        elements.append({
             "tag": "markdown",
             "content": body_content or " ",
         })
@@ -694,7 +679,7 @@ def _build_interactive_card_payload(content: str) -> str:
         if len(reasoning_content) > 500:
             display_reasoning += "..."
 
-        card["elements"].append({
+        elements.append({
             "tag": "collapsible_panel",
             "expanded": False,
             "header": {
@@ -728,7 +713,7 @@ def _build_interactive_card_payload(content: str) -> str:
         display_tools = tool_content[:1000]
         if len(tool_content) > 1000:
             display_tools += "..."
-        card["elements"].append({
+        elements.append({
             "tag": "collapsible_panel",
             "expanded": False,
             "header": {
@@ -758,7 +743,7 @@ def _build_interactive_card_payload(content: str) -> str:
             }],
         })
 
-    card["elements"].extend(_build_footer_elements(footer_content, status_line))
+    elements.extend(_build_footer_elements(footer_content, status_line))
 
     return json.dumps(card, ensure_ascii=False)
 
