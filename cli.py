@@ -1411,8 +1411,8 @@ def _build_compact_banner() -> str:
     dim_color = _skin.get_color("banner_dim", "#B8860B") if _skin else "#B8860B"
 
     if skin_name == "default":
-        line1 = "⚕ NOUS HERMES - AI Agent Framework"
-        tiny_line = "⚕ NOUS HERMES"
+        line1 = "☤ NOUS HERMES - AI Agent Framework"
+        tiny_line = "☤ NOUS HERMES"
     else:
         agent_name = _skin.get_branding("agent_name", "Hermes Agent") if _skin else "Hermes Agent"
         line1 = f"{agent_name} - AI Agent Framework"
@@ -2043,10 +2043,10 @@ class HermesCLI:
             duration_label = snapshot["duration"]
 
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"☤ {snapshot['model_short']} · {duration_label}"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"☤ {snapshot['model_short']}", percent_label]
                 parts.append(duration_label)
                 return self._trim_status_bar_text(" · ".join(parts), width)
 
@@ -2057,11 +2057,11 @@ class HermesCLI:
             else:
                 context_label = "ctx --"
 
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"☤ {snapshot['model_short']}", context_label, percent_label]
             parts.append(duration_label)
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
-            return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
+            return f"☤ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
     def _get_status_bar_fragments(self):
         if not self._status_bar_visible or getattr(self, '_model_picker_state', None):
@@ -2078,7 +2078,7 @@ class HermesCLI:
 
             if width < 52:
                 frags = [
-                    ("class:status-bar", " ⚕ "),
+                    ("class:status-bar", " ☤ "),
                     ("class:status-bar-strong", snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
@@ -2089,7 +2089,7 @@ class HermesCLI:
                 percent_label = f"{percent}%" if percent is not None else "--"
                 if width < 76:
                     frags = [
-                        ("class:status-bar", " ⚕ "),
+                        ("class:status-bar", " ☤ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
@@ -2107,7 +2107,7 @@ class HermesCLI:
 
                     bar_style = self._status_bar_context_style(percent)
                     frags = [
-                        ("class:status-bar", " ⚕ "),
+                        ("class:status-bar", " ☤ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
@@ -2556,10 +2556,10 @@ class HermesCLI:
             try:
                 from hermes_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
-                label = _skin.get_branding("response_label", "⚕ Hermes")
+                label = _skin.get_branding("response_label", "☤ Hermes")
                 _text_hex = _skin.get_color("banner_text", "#FFF8DC")
             except Exception:
-                label = "⚕ Hermes"
+                label = "☤ Hermes"
                 _text_hex = "#FFF8DC"
             # Build a true-color ANSI escape for the response text color
             # so streamed content matches the Rich Panel appearance.
@@ -5459,6 +5459,10 @@ class HermesCLI:
             self._show_insights(cmd_original)
         elif canonical == "debug":
             self._handle_debug_command()
+        elif canonical == "grep":
+            self._show_grep(cmd_original)
+        elif canonical == "stats":
+            self._show_stats()
         elif canonical == "paste":
             self._handle_paste_command()
         elif canonical == "image":
@@ -5745,11 +5749,11 @@ class HermesCLI:
                     try:
                         from hermes_cli.skin_engine import get_active_skin
                         _skin = get_active_skin()
-                        label = _skin.get_branding("response_label", "⚕ Hermes")
+                        label = _skin.get_branding("response_label", "☤ Hermes")
                         _resp_color = _skin.get_color("response_border", "#CD7F32")
                         _resp_text = _skin.get_color("banner_text", "#FFF8DC")
                     except Exception:
-                        label = "⚕ Hermes"
+                        label = "☤ Hermes"
                         _resp_color = "#CD7F32"
                         _resp_text = "#FFF8DC"
 
@@ -5881,7 +5885,7 @@ class HermesCLI:
 
                     ChatConsole().print(Panel(
                         _rich_text_from_ansi(response),
-                        title=f"[{_resp_color} bold]⚕ /btw[/]",
+                        title=f"[{_resp_color} bold]☤ /btw[/]",
                         title_align="left",
                         border_style=_resp_color,
                         box=rich_box.HORIZONTALS,
@@ -6507,6 +6511,110 @@ class HermesCLI:
             db.close()
         except Exception as e:
             print(f"  Error generating insights: {e}")
+
+    def _show_grep(self, command: str = "/grep"):
+        """Search historical messages in lossless context DB."""
+        parts = command.split(maxsplit=1)
+        if len(parts) < 2:
+            print("Usage: /grep <query>")
+            print("Search historical messages in the lossless context database.")
+            return
+        query = parts[1].strip()
+        if not query:
+            print("Usage: /grep <query>")
+            return
+
+        try:
+            import sys
+            import os
+            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+            from plugins.context_engine.lossless import LosslessContextEngine
+            from hermes_cli.config import load_cli_config
+            cfg = load_cli_config()
+            home = cfg.get("hermes_home", os.path.expanduser("~/.hermes"))
+
+            engine = LosslessContextEngine(hermes_home=home)
+            import json
+            result = engine._lossless_grep(query=query, session_id=None, limit=10)
+            data = json.loads(result)
+
+            if not data.get("results"):
+                print(f"No results found for: {query}")
+                return
+
+            print(f"🔍 Search: {query} ({data['count']} results)\n")
+            for r in data["results"]:
+                import datetime
+                ts = datetime.datetime.fromtimestamp(r["timestamp"]).strftime("%m-%d %H:%M")
+                role = r["role"]
+                content = r["content"][:200].replace("\n", " ")
+                print(f"[{ts}] {role}: {content}...")
+
+        except Exception as e:
+            print(f"  Error searching lossless DB: {e}")
+
+    def _show_stats(self):
+        """Show lossless context DB statistics."""
+        try:
+            import sys
+            import os
+            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+            from hermes_cli.config import load_cli_config
+            import sqlite3
+
+            cfg = load_cli_config()
+            home = cfg.get("hermes_home", os.path.expanduser("~/.hermes"))
+            db_path = os.path.join(home, "state", "lossless_context.db")
+
+            if not os.path.exists(db_path):
+                print("Lossless DB not found.")
+                return
+
+            conn = sqlite3.connect(db_path)
+            cur = conn.cursor()
+
+            cur.execute("SELECT COUNT(*) FROM messages")
+            total_msgs = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM sessions")
+            total_sessions = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM summaries")
+            total_summaries = cur.fetchone()[0]
+
+            db_size = os.path.getsize(db_path)
+            if db_size > 1024 * 1024:
+                db_size_str = f"{db_size / (1024*1024):.1f} MB"
+            else:
+                db_size_str = f"{db_size / 1024:.1f} KB"
+
+            cur.execute("""
+                SELECT session_id, last_updated,
+                       (SELECT COUNT(*) FROM messages WHERE session_id = s.session_id) as msg_count
+                FROM sessions s
+                ORDER BY last_updated DESC
+                LIMIT 5
+            """)
+            recent = cur.fetchall()
+            conn.close()
+
+            import datetime
+            print("📊 Lossless Context Stats")
+            print(f"  DB size: {db_size_str}")
+            print(f"  Total messages: {total_msgs:,}")
+            print(f"  Total sessions: {total_sessions}")
+            print(f"  Total summaries: {total_summaries}")
+            print()
+            print("Recent sessions:")
+            for sid, updated, count in recent:
+                ts = datetime.datetime.fromtimestamp(updated).strftime("%m-%d %H:%M")
+                short_sid = sid[:20] + "..." if len(sid) > 20 else sid
+                print(f"  [{ts}] {short_sid}: {count} msgs")
+
+        except Exception as e:
+            print(f"  Error getting stats: {e}")
 
     def _check_config_mcp_changes(self) -> None:
         """Detect mcp_servers changes in config.yaml and auto-reload MCP connections.
@@ -7645,7 +7753,7 @@ class HermesCLI:
                     if not _streaming_box_opened:
                         _streaming_box_opened = True
                         w = self.console.width
-                        label = " ⚕ Hermes "
+                        label = " ☤ Hermes "
                         fill = w - 2 - len(label)
                         _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
                     _cprint(sentence.rstrip())
@@ -7852,11 +7960,11 @@ class HermesCLI:
                 try:
                     from hermes_cli.skin_engine import get_active_skin
                     _skin = get_active_skin()
-                    label = _skin.get_branding("response_label", "⚕ Hermes")
+                    label = _skin.get_branding("response_label", "☤ Hermes")
                     _resp_color = _skin.get_color("response_border", "#CD7F32")
                     _resp_text = _skin.get_color("banner_text", "#FFF8DC")
                 except Exception:
-                    label = "⚕ Hermes"
+                    label = "☤ Hermes"
                     _resp_color = "#CD7F32"
                     _resp_text = "#FFF8DC"
 
@@ -7991,9 +8099,9 @@ class HermesCLI:
         else:
             try:
                 from hermes_cli.skin_engine import get_active_goodbye
-                goodbye = get_active_goodbye("Goodbye! ⚕")
+                goodbye = get_active_goodbye("Goodbye! ☤")
             except Exception:
-                goodbye = "Goodbye! ⚕"
+                goodbye = "Goodbye! ☤"
             print(goodbye)
 
     def _get_tui_prompt_symbols(self) -> tuple[str, str]:
@@ -8080,7 +8188,7 @@ class HermesCLI:
         if self._command_running:
             return _state_fragment("class:prompt-working", self._command_spinner_frame())
         if self._agent_running:
-            return _state_fragment("class:prompt-working", "⚕")
+            return _state_fragment("class:prompt-working", "☤")
         if self._voice_mode:
             return _state_fragment("class:voice-prompt", "🎤")
         return [("class:prompt", symbol)]
