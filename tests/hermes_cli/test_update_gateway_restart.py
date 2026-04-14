@@ -397,14 +397,45 @@ class TestCmdUpdateLaunchdRestart:
         )
 
         # Mock launchd_restart + find_gateway_pids (new code discovers all gateways)
-        with patch.object(gateway_cli, "launchd_restart") as mock_launchd_restart, \
+        with patch.object(gateway_cli, "launchd_job_is_loaded", return_value=(True, "state = running\n")) as mock_loaded, \
+             patch.object(gateway_cli, "launchd_restart") as mock_launchd_restart, \
              patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
             cmd_update(mock_args)
 
         captured = capsys.readouterr().out
         assert "Restarted" in captured
         assert "Restart manually: hermes gateway run" not in captured
+        mock_loaded.assert_called_once_with(timeout=5)
         mock_launchd_restart.assert_called_once_with()
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_with_launchd_plist_but_helper_not_loaded_skips_launchd_restart(
+        self, mock_run, _mock_which, mock_args, capsys, tmp_path, monkeypatch,
+    ):
+        """When the plist exists but launchd_job_is_loaded() is false, cmd_update
+        should not claim a launchd-managed restart."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist/>")
+
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        mock_run.side_effect = _make_run_side_effect(
+            commit_count="3",
+            launchctl_loaded=False,
+        )
+
+        with patch.object(gateway_cli, "launchd_job_is_loaded", return_value=(False, "")) as mock_loaded, \
+             patch.object(gateway_cli, "launchd_restart") as mock_launchd_restart, \
+             patch.object(gateway_cli, "find_gateway_pids", return_value=[]), \
+             patch("gateway.status.get_running_pid", return_value=None):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        assert "Restarted ai.hermes.gateway" not in captured
+        mock_loaded.assert_called_once_with(timeout=5)
+        mock_launchd_restart.assert_not_called()
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
