@@ -2,7 +2,7 @@
 { inputs, ... }: {
   perSystem = { pkgs, ... }:
     let
-      python = pkgs.python311;
+      python = pkgs.python312;
     in {
       devShells.default = pkgs.mkShell {
         packages = with pkgs; [
@@ -18,7 +18,7 @@
 
           # Create venv if missing
           if [ ! -d .venv ]; then
-            echo "Creating Python 3.11 venv..."
+            echo "Creating Python 3.12 venv..."
             uv venv .venv --python ${python}/bin/python3
           fi
 
