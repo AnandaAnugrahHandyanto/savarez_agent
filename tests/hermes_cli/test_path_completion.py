@@ -155,6 +155,22 @@ class TestIntegration:
         completions = list(completer.get_completions(doc, event))
         assert completions == []
 
+    def test_at_completion_shows_static_refs_and_files(self, completer, monkeypatch):
+        monkeypatch.setattr(
+            completer,
+            "_get_project_files",
+            lambda: ["README.md", "docs/guide.md"],
+        )
+
+        doc = Document("@", cursor_position=1)
+        event = MagicMock()
+        completions = list(completer.get_completions(doc, event))
+        texts = [c.text for c in completions]
+
+        assert "@diff" in texts
+        assert "@file:" in texts
+        assert "@file:README.md" in texts
+
     def test_absolute_path_triggers_completion(self, completer):
         doc = Document("check /etc/hos", cursor_position=14)
         event = MagicMock()
