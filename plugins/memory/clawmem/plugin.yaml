@@ -1,0 +1,5 @@
+name: clawmem
+version: 0.1.0
+description: "ClawMem — GitHub Issues-backed long-term memory with semantic search, conversation mirroring, and multi-agent collaboration."
+hooks:
+  - on_session_end
