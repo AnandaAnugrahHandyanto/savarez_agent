@@ -1756,6 +1756,9 @@ class AIAgent:
             # Read user-configured context_length for the compression model.
             # This is the most specific override, so it should win over the
             # primary-model and custom_provider fallbacks below.
+            # Prefer an explicit auxiliary.compression.context_length override.
+            # If absent, fall back to the same config source used for the active
+            # runtime, then resolve per-model overrides from that same source.
             _config_source = getattr(self, "config", None)
             if not isinstance(_config_source, dict):
                 _config_source = getattr(self, "_agent_config", {}) or {}
