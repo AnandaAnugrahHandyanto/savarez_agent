@@ -36,6 +36,22 @@ async def test_cancel_background_tasks_cancels_inflight_message_processing():
 
 
 @pytest.mark.asyncio
+async def test_cancel_background_tasks_closes_session_store_entries():
+    _runner, adapter = make_restart_runner()
+    session_key = build_session_key(make_restart_source())
+    adapter._session_store = MagicMock()
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    await adapter.cancel_background_tasks(end_reason="gateway_restart")
+
+    adapter._session_store.close_sessions.assert_called_once_with(
+        [session_key],
+        end_reason="gateway_restart",
+    )
+    assert adapter._active_sessions == {}
+
+
+@pytest.mark.asyncio
 async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks():
     runner, adapter = make_restart_runner()
     runner._pending_messages = {"session": "pending text"}
@@ -54,7 +70,9 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
     await asyncio.sleep(0)
 
     disconnect_mock = AsyncMock()
+    cancel_mock = AsyncMock()
     adapter.disconnect = disconnect_mock
+    adapter.cancel_background_tasks = cancel_mock
 
     session_key = build_session_key(event.source)
     running_agent = MagicMock()
@@ -64,6 +82,7 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
         await runner.stop()
 
     running_agent.interrupt.assert_called_once_with("Gateway shutting down")
+    cancel_mock.assert_awaited_once_with(end_reason="gateway_shutdown")
     disconnect_mock.assert_awaited_once()
     assert runner.adapters == {}
     assert runner._running_agents == {}
@@ -118,11 +137,13 @@ async def test_gateway_stop_interrupts_after_drain_timeout():
 async def test_gateway_stop_service_restart_sets_named_exit_code():
     runner, adapter = make_restart_runner()
     adapter.disconnect = AsyncMock()
+    adapter.cancel_background_tasks = AsyncMock()
 
     with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
         await runner.stop(restart=True, service_restart=True)
 
     assert runner._exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE
+    adapter.cancel_background_tasks.assert_awaited_once_with(end_reason="gateway_restart")
 
 
 @pytest.mark.asyncio
