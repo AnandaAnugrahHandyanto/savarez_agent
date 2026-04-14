@@ -73,10 +73,10 @@ interface ProviderGroup {
 }
 
 const CATEGORY_META: Record<string, { label: string; icon: typeof KeyRound }> = {
-  provider: { label: "LLM Providers", icon: Zap },
-  tool: { label: "Tool API Keys", icon: KeyRound },
-  messaging: { label: "Messaging Platforms", icon: MessageSquare },
-  setting: { label: "Agent Settings", icon: Settings },
+  provider: { label: "LLM 供應商", icon: Zap },
+  tool: { label: "工具 API 金鑰", icon: KeyRound },
+  messaging: { label: "通訊平台", icon: MessageSquare },
+  setting: { label: "Agent 設定", icon: Settings },
 };
 
 /* ------------------------------------------------------------------ */
@@ -124,13 +124,13 @@ function EnvVarRow({
           {info.url && (
             <a href={info.url} target="_blank" rel="noreferrer"
               className="inline-flex items-center gap-1 text-[0.65rem] text-primary hover:underline">
-              Get key <ExternalLink className="h-2.5 w-2.5" />
+              取得金鑰 <ExternalLink className="h-2.5 w-2.5" />
             </a>
           )}
           <Button size="sm" variant="outline" className="h-6 text-[0.6rem] px-2"
             onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}>
             <Pencil className="h-2.5 w-2.5" />
-            Set
+            設定
           </Button>
         </div>
       </div>
@@ -149,13 +149,13 @@ function EnvVarRow({
           {info.url && (
             <a href={info.url} target="_blank" rel="noreferrer"
               className="inline-flex items-center gap-1 text-[0.65rem] text-primary hover:underline">
-              Get key <ExternalLink className="h-2.5 w-2.5" />
+              取得金鑰 <ExternalLink className="h-2.5 w-2.5" />
             </a>
           )}
           <Button size="sm" variant="outline" className="h-7 text-[0.6rem]"
             onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}>
             <Pencil className="h-3 w-3" />
-            Set
+            設定
           </Button>
         </div>
       </div>
@@ -169,13 +169,13 @@ function EnvVarRow({
         <div className="flex items-center gap-2">
           <Label className="font-mono-ui text-[0.7rem]">{varKey}</Label>
           <Badge variant={info.is_set ? "success" : "outline"}>
-            {info.is_set ? "Set" : "Not set"}
+            {info.is_set ? "已設定" : "未設定"}
           </Badge>
         </div>
         {info.url && (
           <a href={info.url} target="_blank" rel="noreferrer"
             className="inline-flex items-center gap-1 text-[0.65rem] text-primary hover:underline">
-            Get key <ExternalLink className="h-2.5 w-2.5" />
+            取得金鑰 <ExternalLink className="h-2.5 w-2.5" />
           </a>
         )}
       </div>
@@ -200,8 +200,8 @@ function EnvVarRow({
 
           {info.is_set && (
             <Button size="sm" variant="ghost" onClick={() => onReveal(varKey)}
-              title={isRevealed ? "Hide value" : "Show real value"}
-              aria-label={isRevealed ? `Hide ${varKey}` : `Reveal ${varKey}`}>
+              title={isRevealed ? "隱藏值" : "顯示真實值"}
+              aria-label={isRevealed ? `隱藏 ${varKey}` : `顯示 ${varKey}`}>
               {isRevealed
                 ? <EyeOff className="h-4 w-4" />
                 : <Eye className="h-4 w-4" />}
@@ -211,7 +211,7 @@ function EnvVarRow({
           <Button size="sm" variant="outline"
             onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}>
             <Pencil className="h-3 w-3" />
-            {info.is_set ? "Replace" : "Set"}
+            {info.is_set ? "替換" : "設定"}
           </Button>
 
           {info.is_set && (
@@ -219,7 +219,7 @@ function EnvVarRow({
               className="text-destructive hover:text-destructive hover:bg-destructive/10"
               onClick={() => onClear(varKey)} disabled={saving === varKey}>
               <Trash2 className="h-3 w-3" />
-              {saving === varKey ? "..." : "Clear"}
+              {saving === varKey ? "..." : "清除"}
             </Button>
           )}
         </div>
@@ -229,15 +229,15 @@ function EnvVarRow({
         <div className="flex items-center gap-2">
           <Input autoFocus type="text" value={edits[varKey]}
             onChange={(e) => setEdits((prev) => ({ ...prev, [varKey]: e.target.value }))}
-            placeholder={info.is_set ? `Replace current value (${info.redacted_value ?? "---"})` : "Enter value..."}
+            placeholder={info.is_set ? `替換目前值（${info.redacted_value ?? "---"}）` : "輸入值..."}
             className="flex-1 font-mono-ui text-xs" />
           <Button size="sm" onClick={() => onSave(varKey)}
             disabled={saving === varKey || !edits[varKey]}>
             <Save className="h-3 w-3" />
-            {saving === varKey ? "..." : "Save"}
+            {saving === varKey ? "..." : "儲存"}
           </Button>
           <Button size="sm" variant="ghost" onClick={() => onCancelEdit(varKey)}>
-            <X className="h-3 w-3" /> Cancel
+            <X className="h-3 w-3" /> 取消
           </Button>
         </div>
       )}
@@ -279,7 +279,7 @@ function ProviderGroupCard({
   const hasAnyConfigured = group.entries.some(([, info]) => info.is_set);
   const configuredCount = group.entries.filter(([, info]) => info.is_set).length;
 
-  // Get a representative URL for "Get key" link
+  // Get a representative URL for "取得金鑰" link
   const keyUrl = apiKeys.find(([, info]) => info.url)?.[1]?.url ?? null;
 
   return (
@@ -295,7 +295,7 @@ function ProviderGroupCard({
           <span className="font-semibold text-sm tracking-wide">{group.name}</span>
           {hasAnyConfigured && (
             <Badge variant="success" className="text-[0.6rem]">
-              {configuredCount} set
+              {configuredCount} 項已設
             </Badge>
           )}
         </div>
@@ -304,11 +304,11 @@ function ProviderGroupCard({
             <a href={keyUrl} target="_blank" rel="noreferrer"
               className="inline-flex items-center gap-1 text-[0.65rem] text-primary hover:underline"
               onClick={(e) => e.stopPropagation()}>
-              Get key <ExternalLink className="h-2.5 w-2.5" />
+              取得金鑰 <ExternalLink className="h-2.5 w-2.5" />
             </a>
           )}
           <span className="text-[0.65rem] text-muted-foreground/60">
-            {group.entries.length} key{group.entries.length !== 1 ? "s" : ""}
+            {group.entries.length} 個鍵值
           </span>
         </div>
       </button>
@@ -378,9 +378,9 @@ export default function EnvPage() {
       );
       setEdits((prev) => { const n = { ...prev }; delete n[key]; return n; });
       setRevealed((prev) => { const n = { ...prev }; delete n[key]; return n; });
-      showToast(`${key} saved`, "success");
+      showToast(`${key} 已儲存`, "success");
     } catch (e) {
-      showToast(`Failed to save ${key}: ${e}`, "error");
+      showToast(`儲存 ${key} 失敗：${e}`, "error");
     } finally {
       setSaving(null);
     }
@@ -397,9 +397,9 @@ export default function EnvPage() {
       );
       setEdits((prev) => { const n = { ...prev }; delete n[key]; return n; });
       setRevealed((prev) => { const n = { ...prev }; delete n[key]; return n; });
-      showToast(`${key} removed`, "success");
+      showToast(`${key} 已移除`, "success");
     } catch (e) {
-      showToast(`Failed to remove ${key}: ${e}`, "error");
+      showToast(`移除 ${key} 失敗：${e}`, "error");
     } finally {
       setSaving(null);
     }
@@ -414,7 +414,7 @@ export default function EnvPage() {
       const resp = await api.revealEnvVar(key);
       setRevealed((prev) => ({ ...prev, [key]: resp.value }));
     } catch {
-      showToast(`Failed to reveal ${key}`, "error");
+      showToast(`顯示 ${key} 失敗`, "error");
     }
   };
 
@@ -485,32 +485,32 @@ export default function EnvPage() {
       <div className="flex items-center justify-between">
         <div className="flex flex-col gap-1">
           <p className="text-sm text-muted-foreground">
-            Manage API keys and secrets stored in <code>~/.hermes/.env</code>
+            管理儲存在 <code>~/.hermes/.env</code> 的 API 金鑰與祕密。
           </p>
           <p className="text-[0.7rem] text-muted-foreground/70">
-            Changes are saved to disk immediately. Active sessions pick up new keys automatically.
+            變更會立即寫入磁碟；進行中的會話會自動讀到新金鑰。
           </p>
         </div>
         <Button variant="ghost" size="sm" onClick={() => setShowAdvanced(!showAdvanced)}>
-          {showAdvanced ? "Hide Advanced" : "Show Advanced"}
+          {showAdvanced ? "隱藏進階項目" : "顯示進階項目"}
         </Button>
       </div>
 
-      {/* ═══════════════ OAuth Logins (sits above API keys — distinct auth mode) ══ */}
+      {/* ═══════════════ OAuth 登入（獨立於 API 金鑰）═══════════════ */}
       <OAuthProvidersCard
         onError={(msg) => showToast(msg, "error")}
         onSuccess={(msg) => showToast(msg, "success")}
       />
 
-      {/* ═══════════════ LLM Providers (grouped) ═══════════════ */}
+      {/* ═══════════════ LLM 供應商（分組） ═══════════════ */}
       <Card>
         <CardHeader className="sticky top-14 z-10 bg-card border-b border-border">
           <div className="flex items-center gap-2">
             <Zap className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-base">LLM Providers</CardTitle>
+            <CardTitle className="text-base">LLM 供應商</CardTitle>
           </div>
           <CardDescription>
-            {configuredProviders} of {totalProviders} providers configured
+            {configuredProviders} / {totalProviders} 個供應商已完成設定
           </CardDescription>
         </CardHeader>
 
@@ -526,7 +526,7 @@ export default function EnvPage() {
         </CardContent>
       </Card>
 
-      {/* ═══════════════ Other categories (flat) ═══════════════ */}
+      {/* ═══════════════ 其他類別（平面列表） ═══════════════ */}
       {nonProviderGrouped.map(({ label, icon: Icon, setEntries, unsetEntries, totalEntries, category }) => {
         if (totalEntries === 0) return null;
 
@@ -538,7 +538,7 @@ export default function EnvPage() {
                 <CardTitle className="text-base">{label}</CardTitle>
               </div>
               <CardDescription>
-                {setEntries.length} of {totalEntries} configured
+                {setEntries.length} / {totalEntries} 項已完成設定
               </CardDescription>
             </CardHeader>
 
@@ -568,7 +568,7 @@ export default function EnvPage() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  CollapsibleUnset — for non-provider categories                     */
+/*  CollapsibleUnset — 摺疊顯示未設定項目                     */
 /* ------------------------------------------------------------------ */
 
 function CollapsibleUnset({
@@ -606,7 +606,7 @@ function CollapsibleUnset({
         {collapsed
           ? <ChevronRight className="h-3 w-3" />
           : <ChevronDown className="h-3 w-3" />}
-        <span>{unsetEntries.length} not configured</span>
+        <span>{unsetEntries.length} 項尚未設定</span>
       </button>
 
       {!collapsed && unsetEntries.map(([key, info]) => (

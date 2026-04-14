@@ -404,7 +404,7 @@ export default function SkillsPage() {
                         </p>
                         {ts.enabled && !ts.configured && (
                           <p className="text-[10px] text-amber-300/80 mb-2">
-                            Setup needed
+                            需要先完成設定
                           </p>
                         )}
                         {ts.tools.length > 0 && (

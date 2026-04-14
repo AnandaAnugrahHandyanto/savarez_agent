@@ -45,9 +45,24 @@ const CATEGORY_ICONS: Record<string, string> = {
 };
 
 function prettyCategoryName(cat: string): string {
-  if (cat === "tts") return "Text-to-Speech";
-  if (cat === "stt") return "Speech-to-Text";
-  return cat.charAt(0).toUpperCase() + cat.slice(1);
+  if (cat === "tts") return "文字轉語音";
+  if (cat === "stt") return "語音轉文字";
+  const map: Record<string, string> = {
+    general: "一般",
+    agent: "Agent",
+    terminal: "終端機",
+    display: "顯示",
+    delegation: "委派",
+    memory: "記憶",
+    compression: "壓縮",
+    security: "安全",
+    browser: "瀏覽器",
+    voice: "語音",
+    logging: "日誌",
+    discord: "Discord",
+    auxiliary: "輔助功能",
+  };
+  return map[cat] ?? cat.charAt(0).toUpperCase() + cat.slice(1);
 }
 
 /* ------------------------------------------------------------------ */
@@ -95,7 +110,7 @@ export default function ConfigPage() {
       api
         .getConfigRaw()
         .then((resp) => setYamlText(resp.yaml))
-        .catch(() => showToast("Failed to load raw config", "error"))
+        .catch(() => showToast("載入原始設定失敗", "error"))
         .finally(() => setYamlLoading(false));
     }
   }, [yamlMode]);
@@ -152,9 +167,9 @@ export default function ConfigPage() {
     setSaving(true);
     try {
       await api.saveConfig(config);
-      showToast("Configuration saved", "success");
+      showToast("設定已儲存", "success");
     } catch (e) {
-      showToast(`Failed to save: ${e}`, "error");
+      showToast(`儲存失敗：${e}`, "error");
     } finally {
       setSaving(false);
     }
@@ -164,10 +179,10 @@ export default function ConfigPage() {
     setYamlSaving(true);
     try {
       await api.saveConfigRaw(yamlText);
-      showToast("YAML config saved", "success");
+      showToast("YAML 設定已儲存", "success");
       api.getConfig().then(setConfig).catch(() => {});
     } catch (e) {
-      showToast(`Failed to save YAML: ${e}`, "error");
+      showToast(`儲存 YAML 失敗：${e}`, "error");
     } finally {
       setYamlSaving(false);
     }
@@ -196,9 +211,9 @@ export default function ConfigPage() {
       try {
         const imported = JSON.parse(reader.result as string);
         setConfig(imported);
-        showToast("Config imported — review and save", "success");
+        showToast("設定已匯入，請檢查後儲存", "success");
       } catch {
-        showToast("Invalid JSON file", "error");
+        showToast("無效的 JSON 檔案", "error");
       }
     };
     reader.readAsText(file);
@@ -271,14 +286,14 @@ export default function ConfigPage() {
           </code>
         </div>
         <div className="flex items-center gap-1.5">
-          <Button variant="ghost" size="sm" onClick={handleExport} title="Export config as JSON" aria-label="Export config">
+          <Button variant="ghost" size="sm" onClick={handleExport} title="匯出 JSON 設定" aria-label="匯出設定">
             <Download className="h-3.5 w-3.5" />
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()} title="Import config from JSON" aria-label="Import config">
+          <Button variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()} title="從 JSON 匯入設定" aria-label="匯入設定">
             <Upload className="h-3.5 w-3.5" />
           </Button>
           <input ref={fileInputRef} type="file" accept=".json" className="hidden" onChange={handleImport} />
-          <Button variant="ghost" size="sm" onClick={handleReset} title="Reset to defaults" aria-label="Reset to defaults">
+          <Button variant="ghost" size="sm" onClick={handleReset} title="重設為預設值" aria-label="重設為預設值">
             <RotateCcw className="h-3.5 w-3.5" />
           </Button>
 
@@ -293,7 +308,7 @@ export default function ConfigPage() {
             {yamlMode ? (
               <>
                 <FormInput className="h-3.5 w-3.5" />
-                Form
+                表單
               </>
             ) : (
               <>
@@ -306,12 +321,12 @@ export default function ConfigPage() {
           {yamlMode ? (
             <Button size="sm" onClick={handleYamlSave} disabled={yamlSaving} className="gap-1.5">
               <Save className="h-3.5 w-3.5" />
-              {yamlSaving ? "Saving..." : "Save"}
+              {yamlSaving ? "儲存中..." : "儲存"}
             </Button>
           ) : (
             <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
               <Save className="h-3.5 w-3.5" />
-              {saving ? "Saving..." : "Save"}
+              {saving ? "儲存中..." : "儲存"}
             </Button>
           )}
         </div>
@@ -323,7 +338,7 @@ export default function ConfigPage() {
           <CardHeader className="py-3 px-4">
             <CardTitle className="text-sm flex items-center gap-2">
               <FileText className="h-4 w-4" />
-              Raw YAML Configuration
+              原始 YAML 設定
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
@@ -352,7 +367,7 @@ export default function ConfigPage() {
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                 <Input
                   className="pl-8 h-8 text-xs"
-                  placeholder="Search..."
+                  placeholder="搜尋..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                 />
@@ -409,17 +424,17 @@ export default function ConfigPage() {
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-sm flex items-center gap-2">
                       <Search className="h-4 w-4" />
-                      Search Results
+                      搜尋結果
                     </CardTitle>
                     <Badge variant="secondary" className="text-[10px]">
-                      {searchMatchedFields.length} field{searchMatchedFields.length !== 1 ? "s" : ""}
+                      {searchMatchedFields.length} 個欄位
                     </Badge>
                   </div>
                 </CardHeader>
                 <CardContent className="grid gap-2 px-4 pb-4">
                   {searchMatchedFields.length === 0 ? (
                     <p className="text-sm text-muted-foreground text-center py-8">
-                      No fields match "<span className="text-foreground">{searchQuery}</span>"
+                      沒有欄位符合「<span className="text-foreground">{searchQuery}</span>」
                     </p>
                   ) : (
                     renderFields(searchMatchedFields, true)
@@ -436,7 +451,7 @@ export default function ConfigPage() {
                       {prettyCategoryName(activeCategory)}
                     </CardTitle>
                     <Badge variant="secondary" className="text-[10px]">
-                      {activeFields.length} field{activeFields.length !== 1 ? "s" : ""}
+                      {activeFields.length} 個欄位
                     </Badge>
                   </div>
                 </CardHeader>

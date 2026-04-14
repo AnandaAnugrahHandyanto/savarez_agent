@@ -1,7 +1,9 @@
 import { useEffect, useState, useCallback } from "react";
 import {
   BarChart3,
+  Coins,
   Cpu,
+  Database,
   Hash,
   TrendingUp,
 } from "lucide-react";
@@ -22,6 +24,17 @@ function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
+}
+
+function formatCost(n: number): string {
+  if (n <= 0) return "—";
+  if (n < 0.01) return `$${n.toFixed(4)}`;
+  return `$${n.toFixed(2)}`;
+}
+
+function bestCost(entry: { estimated_cost: number; actual_cost?: number }): number {
+  if (entry.actual_cost && entry.actual_cost > 0) return entry.actual_cost;
+  return entry.estimated_cost;
 }
 
 function formatDate(day: string): string {
@@ -68,16 +81,16 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
       <CardHeader>
         <div className="flex items-center gap-2">
           <BarChart3 className="h-5 w-5 text-muted-foreground" />
-          <CardTitle className="text-base">Daily Token Usage</CardTitle>
+          <CardTitle className="text-base">每日 Token 使用量</CardTitle>
         </div>
-          <div className="flex items-center gap-4 text-xs text-muted-foreground">
+        <div className="flex items-center gap-4 text-xs text-muted-foreground">
           <div className="flex items-center gap-1.5">
             <div className="h-2.5 w-2.5 rounded-sm bg-[#ffe6cb]" />
-            Input
+            輸入
           </div>
           <div className="flex items-center gap-1.5">
             <div className="h-2.5 w-2.5 rounded-sm bg-emerald-500" />
-            Output
+            輸出
           </div>
         </div>
       </CardHeader>
@@ -87,27 +100,29 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
             const total = d.input_tokens + d.output_tokens;
             const inputH = Math.round((d.input_tokens / maxTokens) * CHART_HEIGHT_PX);
             const outputH = Math.round((d.output_tokens / maxTokens) * CHART_HEIGHT_PX);
+            const cacheReadPct = d.cache_read_tokens > 0
+              ? Math.round((d.cache_read_tokens / (d.input_tokens + d.cache_read_tokens)) * 100)
+              : 0;
             return (
               <div
                 key={d.day}
                 className="flex-1 min-w-0 group relative flex flex-col justify-end"
                 style={{ height: CHART_HEIGHT_PX }}
               >
-                {/* Tooltip */}
                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 pointer-events-none">
                   <div className="rounded-md bg-card border border-border px-2.5 py-1.5 text-[10px] text-foreground shadow-lg whitespace-nowrap">
                     <div className="font-medium">{formatDate(d.day)}</div>
-                    <div>Input: {formatTokens(d.input_tokens)}</div>
-                    <div>Output: {formatTokens(d.output_tokens)}</div>
-                    <div>Total: {formatTokens(total)}</div>
+                    <div>輸入：{formatTokens(d.input_tokens)}</div>
+                    <div>輸出：{formatTokens(d.output_tokens)}</div>
+                    {cacheReadPct > 0 && <div>快取命中：{cacheReadPct}%</div>}
+                    <div>總計：{formatTokens(total)}</div>
+                    {bestCost(d) > 0 && <div>成本：{formatCost(bestCost(d))}</div>}
                   </div>
                 </div>
-                {/* Input bar */}
                 <div
                   className="w-full bg-[#ffe6cb]/70"
                   style={{ height: Math.max(inputH, total > 0 ? 1 : 0) }}
                 />
-                {/* Output bar */}
                 <div
                   className="w-full bg-emerald-500/70"
                   style={{ height: Math.max(outputH, d.output_tokens > 0 ? 1 : 0) }}
@@ -116,7 +131,6 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
             );
           })}
         </div>
-        {/* X-axis labels */}
         <div className="flex justify-between mt-2 text-[10px] text-muted-foreground">
           <span>{daily.length > 0 ? formatDate(daily[0].day) : ""}</span>
           {daily.length > 2 && (
@@ -139,7 +153,7 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
       <CardHeader>
         <div className="flex items-center gap-2">
           <TrendingUp className="h-5 w-5 text-muted-foreground" />
-          <CardTitle className="text-base">Daily Breakdown</CardTitle>
+          <CardTitle className="text-base">每日拆解</CardTitle>
         </div>
       </CardHeader>
       <CardContent>
@@ -147,14 +161,20 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
-                <th className="text-left py-2 pr-4 font-medium">Date</th>
-                <th className="text-right py-2 px-4 font-medium">Sessions</th>
-                <th className="text-right py-2 px-4 font-medium">Input</th>
-                <th className="text-right py-2 pl-4 font-medium">Output</th>
+                <th className="text-left py-2 pr-4 font-medium">日期</th>
+                <th className="text-right py-2 px-4 font-medium">會話數</th>
+                <th className="text-right py-2 px-4 font-medium">輸入</th>
+                <th className="text-right py-2 px-4 font-medium">輸出</th>
+                <th className="text-right py-2 px-4 font-medium">快取命中</th>
+                <th className="text-right py-2 pl-4 font-medium">成本</th>
               </tr>
             </thead>
             <tbody>
               {sorted.map((d) => {
+                const cost = bestCost(d);
+                const cacheHitPct = d.cache_read_tokens > 0 && d.input_tokens > 0
+                  ? Math.round((d.cache_read_tokens / d.input_tokens) * 100)
+                  : 0;
                 return (
                   <tr key={d.day} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
                     <td className="py-2 pr-4 font-medium">{formatDate(d.day)}</td>
@@ -162,8 +182,14 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
                     <td className="text-right py-2 px-4">
                       <span className="text-[#ffe6cb]">{formatTokens(d.input_tokens)}</span>
                     </td>
-                    <td className="text-right py-2 pl-4">
+                    <td className="text-right py-2 px-4">
                       <span className="text-emerald-400">{formatTokens(d.output_tokens)}</span>
+                    </td>
+                    <td className="text-right py-2 px-4 text-muted-foreground">
+                      {cacheHitPct > 0 ? `${cacheHitPct}%` : "—"}
+                    </td>
+                    <td className="text-right py-2 pl-4 text-muted-foreground">
+                      {formatCost(cost)}
                     </td>
                   </tr>
                 );
@@ -188,7 +214,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
       <CardHeader>
         <div className="flex items-center gap-2">
           <Cpu className="h-5 w-5 text-muted-foreground" />
-          <CardTitle className="text-base">Per-Model Breakdown</CardTitle>
+          <CardTitle className="text-base">各模型拆解</CardTitle>
         </div>
       </CardHeader>
       <CardContent>
@@ -196,9 +222,10 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
-                <th className="text-left py-2 pr-4 font-medium">Model</th>
-                <th className="text-right py-2 px-4 font-medium">Sessions</th>
-                <th className="text-right py-2 pl-4 font-medium">Tokens</th>
+                <th className="text-left py-2 pr-4 font-medium">模型</th>
+                <th className="text-right py-2 px-4 font-medium">會話數</th>
+                <th className="text-right py-2 px-4 font-medium">Token</th>
+                <th className="text-right py-2 pl-4 font-medium">成本</th>
               </tr>
             </thead>
             <tbody>
@@ -208,10 +235,13 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
                     <span className="font-mono-ui text-xs">{m.model}</span>
                   </td>
                   <td className="text-right py-2 px-4 text-muted-foreground">{m.sessions}</td>
-                  <td className="text-right py-2 pl-4">
+                  <td className="text-right py-2 px-4">
                     <span className="text-[#ffe6cb]">{formatTokens(m.input_tokens)}</span>
                     {" / "}
                     <span className="text-emerald-400">{formatTokens(m.output_tokens)}</span>
+                  </td>
+                  <td className="text-right py-2 pl-4 text-muted-foreground">
+                    {formatCost(m.estimated_cost)}
                   </td>
                 </tr>
               ))}
@@ -245,9 +275,8 @@ export default function AnalyticsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      {/* Period selector */}
       <div className="flex items-center gap-2">
-        <span className="text-sm text-muted-foreground font-medium">Period:</span>
+        <span className="text-sm text-muted-foreground font-medium">期間：</span>
         {PERIODS.map((p) => (
           <Button
             key={p.label}
@@ -277,32 +306,46 @@ export default function AnalyticsPage() {
 
       {data && (
         <>
-          {/* Summary cards */}
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
             <SummaryCard
               icon={Hash}
-              label="Total Tokens"
+              label="總 Token"
               value={formatTokens(data.totals.total_input + data.totals.total_output)}
-              sub={`${formatTokens(data.totals.total_input)} in / ${formatTokens(data.totals.total_output)} out`}
+              sub={`${formatTokens(data.totals.total_input)} 輸入 / ${formatTokens(data.totals.total_output)} 輸出`}
+            />
+            <SummaryCard
+              icon={Database}
+              label="快取命中"
+              value={data.totals.total_cache_read > 0
+                ? `${Math.round((data.totals.total_cache_read / (data.totals.total_input + data.totals.total_cache_read)) * 100)}%`
+                : "—"}
+              sub={`${formatTokens(data.totals.total_cache_read)} 個來自快取的 token`}
+            />
+            <SummaryCard
+              icon={Coins}
+              label="總成本"
+              value={formatCost(
+                data.totals.total_actual_cost > 0
+                  ? data.totals.total_actual_cost
+                  : data.totals.total_estimated_cost
+              )}
+              sub={data.totals.total_actual_cost > 0 ? "實際" : `估算 · 最近 ${days} 天`}
             />
             <SummaryCard
               icon={BarChart3}
-              label="Total Sessions"
+              label="總會話數"
               value={String(data.totals.total_sessions)}
-              sub={`~${(data.totals.total_sessions / days).toFixed(1)}/day avg`}
+              sub={`平均每天約 ${(data.totals.total_sessions / days).toFixed(1)} 個`}
             />
             <SummaryCard
               icon={TrendingUp}
               label="API Calls"
               value={String(data.daily.reduce((sum, d) => sum + d.sessions, 0))}
-              sub={`across ${data.by_model.length} models`}
+              sub={`涵蓋 ${data.by_model.length} 個模型`}
             />
           </div>
 
-          {/* Bar chart */}
           <TokenBarChart daily={data.daily} />
-
-          {/* Tables */}
           <DailyTable daily={data.daily} />
           <ModelTable models={data.by_model} />
         </>
@@ -313,8 +356,8 @@ export default function AnalyticsPage() {
           <CardContent className="py-12">
             <div className="flex flex-col items-center text-muted-foreground">
               <BarChart3 className="h-8 w-8 mb-3 opacity-40" />
-              <p className="text-sm font-medium">No usage data for this period</p>
-              <p className="text-xs mt-1 text-muted-foreground/60">Start a session to see analytics here</p>
+              <p className="text-sm font-medium">這段期間沒有使用資料</p>
+              <p className="text-xs mt-1 text-muted-foreground/60">開始使用後，這裡會顯示分析資料</p>
             </div>
           </CardContent>
         </Card>

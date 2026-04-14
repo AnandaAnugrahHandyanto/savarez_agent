@@ -41,7 +41,7 @@ export default function CronPage() {
     api
       .getCronJobs()
       .then(setJobs)
-      .catch(() => showToast("Failed to load cron jobs", "error"))
+      .catch(() => showToast("載入排程任務失敗", "error"))
       .finally(() => setLoading(false));
   };
 
@@ -51,7 +51,7 @@ export default function CronPage() {
 
   const handleCreate = async () => {
     if (!prompt.trim() || !schedule.trim()) {
-      showToast("Prompt and schedule are required", "error");
+      showToast("任務內容與排程為必填", "error");
       return;
     }
     setCreating(true);
@@ -62,14 +62,14 @@ export default function CronPage() {
         name: name.trim() || undefined,
         deliver,
       });
-      showToast("Cron job created", "success");
+      showToast("排程任務已建立", "success");
       setPrompt("");
       setSchedule("");
       setName("");
       setDeliver("local");
       loadJobs();
     } catch (e) {
-      showToast(`Failed to create job: ${e}`, "error");
+      showToast(`建立任務失敗：${e}`, "error");
     } finally {
       setCreating(false);
     }
@@ -80,34 +80,34 @@ export default function CronPage() {
       const isPaused = job.state === "paused";
       if (isPaused) {
         await api.resumeCronJob(job.id);
-        showToast(`Resumed "${job.name || job.prompt.slice(0, 30)}"`, "success");
+        showToast(`已恢復「${job.name || job.prompt.slice(0, 30)}」`, "success");
       } else {
         await api.pauseCronJob(job.id);
-        showToast(`Paused "${job.name || job.prompt.slice(0, 30)}"`, "success");
+        showToast(`已暫停「${job.name || job.prompt.slice(0, 30)}」`, "success");
       }
       loadJobs();
     } catch (e) {
-      showToast(`Action failed: ${e}`, "error");
+      showToast(`操作失敗：${e}`, "error");
     }
   };
 
   const handleTrigger = async (job: CronJob) => {
     try {
       await api.triggerCronJob(job.id);
-      showToast(`Triggered "${job.name || job.prompt.slice(0, 30)}"`, "success");
+      showToast(`已立即執行「${job.name || job.prompt.slice(0, 30)}」`, "success");
       loadJobs();
     } catch (e) {
-      showToast(`Trigger failed: ${e}`, "error");
+      showToast(`立即執行失敗：${e}`, "error");
     }
   };
 
   const handleDelete = async (job: CronJob) => {
     try {
       await api.deleteCronJob(job.id);
-      showToast(`Deleted "${job.name || job.prompt.slice(0, 30)}"`, "success");
+      showToast(`已刪除「${job.name || job.prompt.slice(0, 30)}」`, "success");
       loadJobs();
     } catch (e) {
-      showToast(`Delete failed: ${e}`, "error");
+      showToast(`刪除失敗：${e}`, "error");
     }
   };
 
@@ -128,27 +128,27 @@ export default function CronPage() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <Plus className="h-4 w-4" />
-            New Cron Job
+            新排程任務
           </CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid gap-4">
             <div className="grid gap-2">
-              <Label htmlFor="cron-name">Name (optional)</Label>
+              <Label htmlFor="cron-name">名稱（可選）</Label>
               <Input
                 id="cron-name"
-                placeholder="e.g. Daily summary"
+                placeholder="例如：每日摘要"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
               />
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="cron-prompt">Prompt</Label>
+              <Label htmlFor="cron-prompt">任務內容</Label>
               <textarea
                 id="cron-prompt"
                 className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                placeholder="What should the agent do on each run?"
+                placeholder="每次執行時，agent 應該做什麼？"
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
               />
@@ -156,7 +156,7 @@ export default function CronPage() {
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="cron-schedule">Schedule (cron expression)</Label>
+                <Label htmlFor="cron-schedule">排程（cron 表達式）</Label>
                 <Input
                   id="cron-schedule"
                   placeholder="0 9 * * *"
@@ -166,24 +166,24 @@ export default function CronPage() {
               </div>
 
               <div className="grid gap-2">
-                <Label htmlFor="cron-deliver">Deliver to</Label>
+                <Label htmlFor="cron-deliver">投遞到</Label>
                 <Select
                   id="cron-deliver"
                   value={deliver}
                   onChange={(e) => setDeliver(e.target.value)}
                 >
-                  <option value="local">Local</option>
+                  <option value="local">本地</option>
                   <option value="telegram">Telegram</option>
                   <option value="discord">Discord</option>
                   <option value="slack">Slack</option>
-                  <option value="email">Email</option>
+                  <option value="email">電子郵件</option>
                 </Select>
               </div>
 
               <div className="flex items-end">
                 <Button onClick={handleCreate} disabled={creating} className="w-full">
                   <Plus className="h-3 w-3" />
-                  {creating ? "Creating..." : "Create"}
+                  {creating ? "建立中..." : "建立"}
                 </Button>
               </div>
             </div>
@@ -195,13 +195,13 @@ export default function CronPage() {
       <div className="flex flex-col gap-3">
         <h2 className="text-sm font-medium text-muted-foreground flex items-center gap-2">
           <Clock className="h-4 w-4" />
-          Scheduled Jobs ({jobs.length})
+          已排程任務（{jobs.length}）
         </h2>
 
         {jobs.length === 0 && (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No cron jobs configured. Create one above.
+              目前沒有排程任務，請先在上方建立。
             </CardContent>
           </Card>
         )}
@@ -228,9 +228,9 @@ export default function CronPage() {
                   </p>
                 )}
                 <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                  <span className="font-mono">{job.schedule_display}</span>
-                  <span>Last: {formatTime(job.last_run_at)}</span>
-                  <span>Next: {formatTime(job.next_run_at)}</span>
+                  <span className="font-mono">{job.schedule_display || job.schedule.display || job.schedule.expr}</span>
+                  <span>上次：{formatTime(job.last_run_at)}</span>
+                  <span>下次：{formatTime(job.next_run_at)}</span>
                 </div>
                 {job.last_error && (
                   <p className="text-xs text-destructive mt-1">{job.last_error}</p>
@@ -242,8 +242,8 @@ export default function CronPage() {
                 <Button
                   variant="ghost"
                   size="icon"
-                  title={job.state === "paused" ? "Resume" : "Pause"}
-                  aria-label={job.state === "paused" ? "Resume job" : "Pause job"}
+                  title={job.state === "paused" ? "繼續" : "暫停"}
+                  aria-label={job.state === "paused" ? "繼續任務" : "暫停任務"}
                   onClick={() => handlePauseResume(job)}
                 >
                   {job.state === "paused" ? (
@@ -256,8 +256,8 @@ export default function CronPage() {
                 <Button
                   variant="ghost"
                   size="icon"
-                  title="Trigger now"
-                  aria-label="Trigger job now"
+                  title="立即執行"
+                  aria-label="立即執行任務"
                   onClick={() => handleTrigger(job)}
                 >
                   <Zap className="h-4 w-4" />
@@ -266,8 +266,8 @@ export default function CronPage() {
                 <Button
                   variant="ghost"
                   size="icon"
-                  title="Delete"
-                  aria-label="Delete job"
+                  title="刪除"
+                  aria-label="刪除任務"
                   onClick={() => handleDelete(job)}
                 >
                   <Trash2 className="h-4 w-4 text-destructive" />

@@ -10,14 +10,14 @@ import CronPage from "@/pages/CronPage";
 import SkillsPage from "@/pages/SkillsPage";
 
 const NAV_ITEMS = [
-  { id: "status", label: "Status", icon: Activity },
-  { id: "sessions", label: "Sessions", icon: MessageSquare },
-  { id: "analytics", label: "Analytics", icon: BarChart3 },
-  { id: "logs", label: "Logs", icon: FileText },
-  { id: "cron", label: "Cron", icon: Clock },
-  { id: "skills", label: "Skills", icon: Package },
-  { id: "config", label: "Config", icon: Settings },
-  { id: "env", label: "Keys", icon: KeyRound },
+  { id: "status", label: "狀態", icon: Activity },
+  { id: "sessions", label: "會話", icon: MessageSquare },
+  { id: "analytics", label: "分析", icon: BarChart3 },
+  { id: "logs", label: "日誌", icon: FileText },
+  { id: "cron", label: "排程", icon: Clock },
+  { id: "skills", label: "技能", icon: Package },
+  { id: "config", label: "設定", icon: Settings },
+  { id: "env", label: "金鑰", icon: KeyRound },
 ] as const;
 
 type PageId = (typeof NAV_ITEMS)[number]["id"];
@@ -94,7 +94,7 @@ export default function App() {
           {/* Version badge — hidden on mobile */}
           <div className="ml-auto hidden sm:flex items-center px-4 text-muted-foreground">
             <span className="font-display text-[0.7rem] tracking-[0.15em] uppercase opacity-50">
-              Web UI
+              網頁介面
             </span>
           </div>
         </div>
