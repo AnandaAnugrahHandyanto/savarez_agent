@@ -25,6 +25,7 @@ class TestHonchoClientConfigDefaults:
         assert config.workspace_id == "hermes"
         assert config.api_key is None
         assert config.environment == "production"
+        assert config.timeout is None
         assert config.enabled is False
         assert config.save_messages is True
         assert config.session_strategy == "per-directory"
@@ -76,6 +77,11 @@ class TestFromEnv:
         assert config.base_url == "http://localhost:8000"
         assert config.enabled is True
 
+    def test_reads_timeout_from_env(self):
+        with patch.dict(os.environ, {"HONCHO_TIMEOUT": "90"}, clear=True):
+            config = HonchoClientConfig.from_env()
+        assert config.timeout == 90.0
+
 
 class TestFromGlobalConfig:
     def test_missing_config_falls_back_to_env(self, tmp_path):
@@ -87,10 +93,10 @@ class TestFromGlobalConfig:
         assert config.enabled is False
         assert config.api_key is None
 
-    def test_reads_full_config(self, tmp_path):
+    def test_reads_full_config(self, tmp_path, monkeypatch):
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({
-            "apiKey": "my-honcho-key",
+            "apiKey": "***",
             "workspace": "my-workspace",
             "environment": "staging",
             "peerName": "alice",
@@ -108,9 +114,11 @@ class TestFromGlobalConfig:
                 }
             }
         }))
+        # Isolate from real ~/.hermes/honcho.json
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "isolated"))
 
         config = HonchoClientConfig.from_global_config(config_path=config_file)
-        assert config.api_key == "my-honcho-key"
+        assert config.api_key == "***"
         # Host block workspace overrides root workspace
         assert config.workspace_id == "override-ws"
         assert config.ai_peer == "override-ai"
@@ -154,9 +162,30 @@ class TestFromGlobalConfig:
     def test_session_strategy_default_from_global_config(self, tmp_path):
         """from_global_config with no sessionStrategy should match dataclass default."""
         config_file = tmp_path / "config.json"
-        config_file.write_text(json.dumps({"apiKey": "key"}))
+        config_file.write_text(json.dumps({"apiKey": "***"}))
         config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.session_strategy == "per-directory"
+
+    def test_context_tokens_default_is_none(self, tmp_path):
+        """Default context_tokens should be None (uncapped) unless explicitly set."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "***"}))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.context_tokens is None
+
+    def test_context_tokens_explicit_sets_cap(self, tmp_path):
+        """Explicit contextTokens in config sets the cap."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "***", "contextTokens": 1200}))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.context_tokens == 1200
+
+    def test_context_tokens_explicit_overrides_default(self, tmp_path):
+        """Explicit contextTokens in config should override the default."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "***", "contextTokens": 2000}))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.context_tokens == 2000
 
     def test_context_tokens_host_block_wins(self, tmp_path):
         """Host block contextTokens should override root."""
@@ -231,6 +260,20 @@ class TestFromGlobalConfig:
 
         config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.base_url == "http://root:9000"
+
+    def test_timeout_from_config_root(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"timeout": 75}))
+
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.timeout == 75.0
+
+    def test_request_timeout_alias_from_config_root(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"requestTimeout": "82.5"}))
+
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.timeout == 82.5
 
 
 class TestResolveSessionName:
@@ -333,13 +376,14 @@ class TestResolveConfigPath:
         hermes_home.mkdir()
         local_cfg = hermes_home / "honcho.json"
         local_cfg.write_text(json.dumps({
-            "apiKey": "local-key",
+            "apiKey": "***",
             "workspace": "local-ws",
         }))
 
-        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+             patch.object(Path, "home", return_value=tmp_path):
             config = HonchoClientConfig.from_global_config()
-        assert config.api_key == "local-key"
+        assert config.api_key == "***"
         assert config.workspace_id == "local-ws"
 
 
@@ -500,46 +544,57 @@ class TestObservationModeMigration:
         assert cfg.ai_observe_others is True
 
 
-class TestInitOnSessionStart:
-    """Tests for the initOnSessionStart config field."""
+class TestGetHonchoClient:
+    def teardown_method(self):
+        reset_honcho_client()
 
-    def test_default_is_false(self):
-        config = HonchoClientConfig()
-        assert config.init_on_session_start is False
+    def test_passes_timeout_from_config(self):
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="test-key",
+            timeout=91.0,
+            workspace_id="hermes",
+            environment="production",
+        )
 
-    def test_root_level_true(self, tmp_path):
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({
-            "apiKey": "k",
-            "initOnSessionStart": True,
-        }))
-        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
-        assert cfg.init_on_session_start is True
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho:
+            client = get_honcho_client(cfg)
 
-    def test_host_block_overrides_root(self, tmp_path):
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({
-            "apiKey": "k",
-            "initOnSessionStart": True,
-            "hosts": {"hermes": {"initOnSessionStart": False}},
-        }))
-        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
-        assert cfg.init_on_session_start is False
+        assert client is fake_honcho
+        mock_honcho.assert_called_once()
+        assert mock_honcho.call_args.kwargs["timeout"] == 91.0
 
-    def test_host_block_true_overrides_root_absent(self, tmp_path):
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({
-            "apiKey": "k",
-            "hosts": {"hermes": {"initOnSessionStart": True}},
-        }))
-        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
-        assert cfg.init_on_session_start is True
+    def test_hermes_config_timeout_override_used_when_config_timeout_missing(self):
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="test-key",
+            workspace_id="hermes",
+            environment="production",
+        )
 
-    def test_absent_everywhere_defaults_false(self, tmp_path):
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({"apiKey": "k"}))
-        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
-        assert cfg.init_on_session_start is False
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
+             patch("hermes_cli.config.load_config", return_value={"honcho": {"timeout": 88}}):
+            client = get_honcho_client(cfg)
+
+        assert client is fake_honcho
+        mock_honcho.assert_called_once()
+        assert mock_honcho.call_args.kwargs["timeout"] == 88.0
+
+    def test_hermes_request_timeout_alias_used(self):
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="test-key",
+            workspace_id="hermes",
+            environment="production",
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
+             patch("hermes_cli.config.load_config", return_value={"honcho": {"request_timeout": "77.5"}}):
+            client = get_honcho_client(cfg)
+
+        assert client is fake_honcho
+        mock_honcho.assert_called_once()
+        assert mock_honcho.call_args.kwargs["timeout"] == 77.5
 
 
 class TestResolveSessionNameGatewayKey:

@@ -57,7 +57,6 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
 | `hermes claw` | OpenClaw migration helpers. |
-| `hermes web` | Launch the web dashboard for managing config, API keys, and sessions. |
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
 | `hermes completion` | Print shell completion scripts (bash/zsh). |
 | `hermes version` | Show version information. |
@@ -77,7 +76,7 @@ Common options:
 | `-q`, `--query "..."` | One-shot, non-interactive prompt. |
 | `-m`, `--model <model>` | Override the model for this run. |
 | `-t`, `--toolsets <csv>` | Enable a comma-separated set of toolsets. |
-| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `deepseek`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `alibaba`. |
+| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `deepseek`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `alibaba`. |
 | `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
@@ -141,18 +140,14 @@ Subcommands:
 
 | Subcommand | Description |
 |------------|-------------|
-| `run` | Run the gateway in the foreground. Recommended for WSL, Docker, and Termux. |
-| `start` | Start the installed systemd/launchd background service. |
-| `stop` | Stop the service (or foreground process). |
+| `run` | Run the gateway in the foreground. |
+| `start` | Start the installed gateway service. |
+| `stop` | Stop the service. |
 | `restart` | Restart the service. |
 | `status` | Show service status. |
-| `install` | Install as a systemd (Linux) or launchd (macOS) background service. |
+| `install` | Install as a user service (`systemd` on Linux, `launchd` on macOS). |
 | `uninstall` | Remove the installed service. |
 | `setup` | Interactive messaging-platform setup. |
-
-:::tip WSL users
-Use `hermes gateway run` instead of `hermes gateway start` — WSL's systemd support is unreliable. Wrap it in tmux for persistence: `tmux new -s hermes 'hermes gateway run'`. See [WSL FAQ](/docs/reference/faq#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails) for details.
-:::
 
 ## `hermes setup`
 
@@ -520,6 +515,7 @@ Subcommands:
 | `map [name]` | Map the current directory to a Honcho session name. Omit `name` to list current mappings. |
 | `peer` | Show or update peer names and dialectic reasoning level. Options: `--user NAME`, `--ai NAME`, `--reasoning LEVEL`. |
 | `mode [mode]` | Show or set recall mode: `hybrid`, `context`, or `tools`. Omit to show current. |
+| `strategy [name]` | Show or set session strategy: `per-session`, `per-directory`, `per-repo`, `global`. Omit to show current. |
 | `tokens` | Show or set token budgets for context and dialectic. Options: `--context N`, `--dialectic N`. |
 | `identity [file] [--show]` | Seed or show the AI peer identity representation. |
 | `enable` | Enable Honcho for the active profile. |
@@ -661,7 +657,7 @@ hermes insights [--days N] [--source platform]
 hermes claw migrate [options]
 ```
 
-Migrate your OpenClaw setup to Hermes. Reads from `~/.openclaw` (or a custom path) and writes to `~/.hermes`. Automatically detects legacy directory names (`~/.clawdbot`, `~/.moltbot`) and config filenames (`clawdbot.json`, `moltbot.json`).
+Migrate your OpenClaw setup to Hermes. Reads from `~/.openclaw` (or a custom path) and writes to `~/.hermes`. Automatically detects legacy directory names (`~/.clawdbot`, `~/.moldbot`) and config filenames (`clawdbot.json`, `moldbot.json`).
 
 | Option | Description |
 |--------|-------------|
@@ -700,28 +696,6 @@ hermes claw migrate --preset user-data --overwrite
 
 # Migrate from a custom OpenClaw path
 hermes claw migrate --source /home/user/old-openclaw
-```
-
-## `hermes web`
-
-```bash
-hermes web [options]
-```
-
-Launch the web dashboard — a browser-based UI for managing configuration, API keys, and monitoring sessions. Requires `pip install hermes-agent[web]` (FastAPI + Uvicorn). See [Web Dashboard](/docs/user-guide/features/web-dashboard) for full documentation.
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--port` | `9119` | Port to run the web server on |
-| `--host` | `127.0.0.1` | Bind address |
-| `--no-open` | — | Don't auto-open the browser |
-
-```bash
-# Default — opens browser to http://127.0.0.1:9119
-hermes web
-
-# Custom port, no browser
-hermes web --port 8080 --no-open
 ```
 
 ## `hermes profile`
