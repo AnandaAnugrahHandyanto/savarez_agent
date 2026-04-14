@@ -55,8 +55,11 @@ _INTERNAL_NOTE_RE = re.compile(
 
 
 def sanitize_context(text: str) -> str:
-    """Strip fence-escape sequences from provider output."""
-    return _FENCE_TAG_RE.sub('', text)
+    """Strip fence tags, injected context blocks, and system notes from provider output."""
+    text = _INTERNAL_CONTEXT_RE.sub('', text)
+    text = _INTERNAL_NOTE_RE.sub('', text)
+    text = _FENCE_TAG_RE.sub('', text)
+    return text
 
 
 def build_memory_context_block(raw_context: str) -> str:

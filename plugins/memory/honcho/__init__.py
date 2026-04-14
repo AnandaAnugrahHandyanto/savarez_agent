@@ -774,6 +774,8 @@ class HonchoMemoryProvider(MemoryProvider):
                     reasoning_level=reasoning_level,
                     peer=peer,
                 )
+                # Update cadence tracker so auto-injection respects the gap after an explicit call
+                self._last_dialectic_turn = self._turn_count
                 return json.dumps({"result": result or "No result from Honcho."})
 
             elif tool_name == "honcho_context":

@@ -488,7 +488,7 @@ class HonchoClientConfig:
 
         # /title mid-session remap
         if session_title:
-            sanitized = re.sub(r'[^a-zA-Z0-9_-]', '-', session_title).strip('-')
+            sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', session_title).strip('-')
             if sanitized:
                 if self.session_peer_prefix and self.peer_name:
                     return f"{self.peer_name}-{sanitized}"
@@ -500,7 +500,7 @@ class HonchoClientConfig:
         # based resolution because gateway platforms need per-chat isolation that
         # cwd-based strategies cannot provide.
         if gateway_session_key:
-            sanitized = re.sub(r'[^a-zA-Z0-9_-]', '-', gateway_session_key).strip('-')
+            sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', gateway_session_key).strip('-')
             if sanitized:
                 return sanitized
 
