@@ -6335,7 +6335,7 @@ class HermesCLI:
             model = advisor_config.get("model", "claude-opus-4-6")
             _cprint(f"  {_ACCENT}✓ Advisor enabled (model: {model}){_RST}")
             _cprint(f"  {_DIM}  The executor will consult the advisor for strategic guidance.{_RST}")
-            _cprint(f"  {_DIM}  Note: Only works with Anthropic provider. Takes effect on next /reset.{_RST}")
+            _cprint(f"  {_DIM}  Note: Only works with Anthropic provider. Tool active immediately; /reset for system prompt update.{_RST}")
         elif arg in {"off", "disable"}:
             advisor_config = dict(advisor_config)
             advisor_config["enabled"] = False

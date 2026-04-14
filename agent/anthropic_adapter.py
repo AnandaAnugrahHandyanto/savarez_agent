@@ -1419,8 +1419,12 @@ def build_anthropic_kwargs(
             "model": advisor_config.get("model", "claude-opus-4-6"),
         }
         max_uses = advisor_config.get("max_uses", 0)
-        if max_uses and int(max_uses) > 0:
-            advisor_tool["max_uses"] = int(max_uses)
+        try:
+            max_uses_int = int(max_uses) if max_uses else 0
+        except (ValueError, TypeError):
+            max_uses_int = 0
+        if max_uses_int > 0:
+            advisor_tool["max_uses"] = max_uses_int
         if advisor_config.get("caching"):
             advisor_tool["caching"] = {"type": "ephemeral", "ttl": "5m"}
             # Preserve all thinking turns to maintain advisor cache stability.

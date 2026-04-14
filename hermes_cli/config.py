@@ -619,7 +619,7 @@ DEFAULT_CONFIG = {
     # and the executor decides when to call it (typically at task start and end).
     # Docs: https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool
     "advisor": {
-        "enabled": True,            # Set to false to disable advisor tool
+        "enabled": False,           # Set to true to enable advisor tool (Anthropic only)
         "model": "claude-opus-4-6", # Advisor model ID (must be >= executor capability)
         "max_uses": 0,              # Max advisor calls per request (0 = unlimited)
         "caching": False,           # Enable advisor-side prompt caching (worth it for 3+ calls)

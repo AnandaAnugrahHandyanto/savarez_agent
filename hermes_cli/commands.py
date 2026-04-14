@@ -120,7 +120,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("normal", "fast", "status", "on", "off")),
     CommandDef("advisor", "Toggle Anthropic advisor tool (Opus advisor for executor models)",
                "Configuration", args_hint="[on|off|status]",
-               subcommands=("on", "off", "status")),
+               subcommands=("on", "off", "status"), cli_only=True),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
                cli_only=True, args_hint="[name]"),
     CommandDef("voice", "Toggle voice mode", "Configuration",

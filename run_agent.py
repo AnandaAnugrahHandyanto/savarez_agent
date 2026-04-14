@@ -3236,8 +3236,11 @@ class AIAgent:
                     prompt_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
         # Advisor tool: inject guidance that tells the executor when and how
-        # to call the advisor for strategic planning.
-        if getattr(self, "advisor_config", None) and self.advisor_config.get("enabled"):
+        # to call the advisor for strategic planning.  Anthropic-only — the
+        # advisor tool is only injected by the anthropic_adapter, so adding
+        # guidance for other providers would confuse the model.
+        if (getattr(self, "advisor_config", None) and self.advisor_config.get("enabled")
+                and getattr(self, "api_mode", None) == "anthropic_messages"):
             prompt_parts.append(ADVISOR_GUIDANCE)
 
         # so it can refer the user to them rather than reinventing answers.
