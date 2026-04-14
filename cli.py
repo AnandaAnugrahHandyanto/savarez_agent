@@ -1875,6 +1875,20 @@ class HermesCLI:
         filled = round((safe_percent / 100) * width)
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
+    def _get_status_bar_reasoning_effort(self) -> str:
+        """Return the effective reasoning effort label for the status bar."""
+        rc = getattr(getattr(self, "agent", None), "reasoning_config", None)
+        if not isinstance(rc, dict):
+            rc = getattr(self, "reasoning_config", None)
+        if rc is None:
+            return "medium"
+        if not isinstance(rc, dict):
+            return "medium"
+        if rc.get("enabled") is False:
+            return "off"
+        effort = str(rc.get("effort") or "medium").strip().lower()
+        return effort or "medium"
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -1889,10 +1903,13 @@ class HermesCLI:
             model_short = f"{model_short[:23]}..."
 
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
+        reasoning_effort = self._get_status_bar_reasoning_effort()
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
             "duration": format_duration_compact(elapsed_seconds),
+            "reasoning_effort": reasoning_effort,
+            "reasoning_label": f"r:{reasoning_effort}",
             "context_tokens": 0,
             "context_length": None,
             "context_percent": None,
@@ -2042,11 +2059,12 @@ class HermesCLI:
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
 
+            reasoning_label = snapshot["reasoning_label"]
             if width < 52:
                 text = f"⚕ {snapshot['model_short']} · {duration_label}"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"⚕ {snapshot['model_short']}", reasoning_label]
                 parts.append(duration_label)
                 return self._trim_status_bar_text(" · ".join(parts), width)
 
@@ -2057,7 +2075,7 @@ class HermesCLI:
             else:
                 context_label = "ctx --"
 
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"⚕ {snapshot['model_short']}", reasoning_label, context_label, percent_label]
             parts.append(duration_label)
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
@@ -2075,6 +2093,7 @@ class HermesCLI:
             # line and produce duplicated status bar rows over long sessions.
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
+            reasoning_label = snapshot["reasoning_label"]
 
             if width < 52:
                 frags = [
@@ -2092,7 +2111,7 @@ class HermesCLI:
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " · "),
-                        (self._status_bar_context_style(percent), percent_label),
+                        ("class:status-bar-dim", reasoning_label),
                         ("class:status-bar-dim", " · "),
                         ("class:status-bar-dim", duration_label),
                         ("class:status-bar", " "),
@@ -2109,6 +2128,8 @@ class HermesCLI:
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-dim", " │ "),
+                        ("class:status-bar-dim", reasoning_label),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
                         ("class:status-bar-dim", " │ "),

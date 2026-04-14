@@ -11,6 +11,7 @@ def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
+    cli_obj.reasoning_config = None
     return cli_obj
 
 
@@ -28,11 +29,13 @@ def _attach_agent(
     context_tokens: int,
     context_length: int,
     compressions: int = 0,
+    reasoning_config: dict | None = None,
 ):
     cli_obj.agent = SimpleNamespace(
         model=cli_obj.model,
         provider="anthropic" if cli_obj.model.startswith("anthropic/") else None,
         base_url="",
+        reasoning_config=reasoning_config,
         session_input_tokens=input_tokens if input_tokens is not None else prompt_tokens,
         session_output_tokens=output_tokens if output_tokens is not None else completion_tokens,
         session_cache_read_tokens=cache_read_tokens,
@@ -75,6 +78,7 @@ class TestCLIStatusBar:
         text = cli_obj._build_status_bar_text(width=120)
 
         assert "claude-sonnet-4-20250514" in text
+        assert "r:medium" in text
         assert "12.4K/200K" in text
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default
@@ -194,6 +198,7 @@ class TestCLIStatusBar:
         text = cli_obj._build_status_bar_text(width=60)
 
         assert "⚕" in text
+        assert "r:medium" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
         assert "200K" not in text
@@ -205,6 +210,41 @@ class TestCLIStatusBar:
 
         assert "⚕" in text
         assert "claude-sonnet-4-20250514" in text
+        assert "r:medium" in text
+
+    def test_status_bar_uses_explicit_reasoning_setting(self):
+        cli_obj = _make_cli()
+        cli_obj.reasoning_config = {"enabled": False}
+
+        text = cli_obj._build_status_bar_text(width=100)
+
+        assert "r:off" in text
+
+    def test_status_bar_ignores_invalid_reasoning_setting(self):
+        cli_obj = _make_cli()
+        cli_obj.reasoning_config = "high"
+
+        text = cli_obj._build_status_bar_text(width=100)
+
+        assert "r:medium" in text
+
+    def test_status_bar_prefers_agent_reasoning_setting(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        cli_obj.reasoning_config = {"enabled": False}
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "r:high" in text
+        assert "r:off" not in text
 
     def test_minimal_tui_chrome_threshold(self):
         cli_obj = _make_cli()
