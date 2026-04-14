@@ -131,6 +131,19 @@ def _parse_service_tier_config(raw: str) -> str | None:
     return None
 
 
+def _load_codex_cli_preferences(provider: str | None) -> Dict[str, str]:
+    """Best-effort Codex CLI compatibility defaults for openai-codex."""
+    if str(provider or "").strip().lower() != "openai-codex":
+        return {}
+    try:
+        from hermes_cli.codex_models import get_codex_cli_preferences
+
+        return get_codex_cli_preferences()
+    except Exception as exc:
+        logger.debug("Failed to load Codex CLI preferences: %s", exc)
+        return {}
+
+
 
 def _get_chrome_debug_candidates(system: str) -> list[str]:
     """Return likely browser executables for local CDP auto-launch."""
@@ -1741,11 +1754,17 @@ class HermesCLI:
         )
         
         # Reasoning config (OpenRouter reasoning effort level)
+        self._reasoning_effort_config_raw = str(
+            CLI_CONFIG["agent"].get("reasoning_effort", "") or ""
+        ).strip()
+        self._service_tier_config_raw = str(
+            CLI_CONFIG["agent"].get("service_tier", "") or ""
+        ).strip()
         self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", "")
+            self._reasoning_effort_config_raw
         )
         self.service_tier = _parse_service_tier_config(
-            CLI_CONFIG["agent"].get("service_tier", "")
+            self._service_tier_config_raw
         )
         
         # OpenRouter provider routing preferences
@@ -2727,6 +2746,17 @@ class HermesCLI:
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
+
+        if resolved_provider == "openai-codex":
+            codex_prefs = _load_codex_cli_preferences(resolved_provider)
+            if self.reasoning_config is None and not self._reasoning_effort_config_raw:
+                self.reasoning_config = _parse_reasoning_config(
+                    codex_prefs.get("reasoning_effort", "")
+                )
+            if self.service_tier is None and not self._service_tier_config_raw:
+                self.service_tier = _parse_service_tier_config(
+                    codex_prefs.get("service_tier", "")
+                )
 
         # When a custom_provider entry carries an explicit `model` field,
         # use it as the effective model name.  Without this, running
@@ -6261,6 +6291,7 @@ class HermesCLI:
             return
 
         self.reasoning_config = parsed
+        self._reasoning_effort_config_raw = arg
         self.agent = None  # Force agent re-init with new reasoning config
 
         if save_config_value("agent.reasoning_effort", arg):
@@ -6294,10 +6325,12 @@ class HermesCLI:
 
         if arg in {"fast", "on"}:
             self.service_tier = "priority"
+            self._service_tier_config_raw = "fast"
             saved_value = "fast"
             label = "FAST"
         elif arg in {"normal", "off"}:
             self.service_tier = None
+            self._service_tier_config_raw = "normal"
             saved_value = "normal"
             label = "NORMAL"
         else:

@@ -43,6 +43,8 @@ In the `model:` config section, you can use either `default:` or `model:` as the
 
 :::info Codex Note
 The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required.
+
+When `model.provider: openai-codex` is selected and Hermes' own settings are unset, Hermes also falls back to `~/.codex/config.toml` for the Codex CLI default model, `model_reasoning_effort`, and `service_tier`. This keeps `hermes chat`, the gateway, and cron jobs aligned with your Codex CLI defaults without duplicating config.
 :::
 
 :::warning

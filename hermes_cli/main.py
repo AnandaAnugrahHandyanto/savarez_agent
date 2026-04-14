@@ -1431,7 +1431,7 @@ def _model_flow_openai_codex(config, current_model=""):
         _update_config_for_provider, _login_openai_codex,
         PROVIDER_REGISTRY, DEFAULT_CODEX_BASE_URL,
     )
-    from hermes_cli.codex_models import get_codex_model_ids
+    from hermes_cli.codex_models import get_codex_cli_preferences, get_codex_model_ids
     import argparse
 
     status = get_codex_auth_status()
@@ -1467,7 +1467,10 @@ def _model_flow_openai_codex(config, current_model=""):
 
     codex_models = get_codex_model_ids(access_token=_codex_token)
 
-    selected = _prompt_model_selection(codex_models, current_model=current_model)
+    codex_prefs = get_codex_cli_preferences()
+    effective_current_model = current_model or codex_prefs.get("model", "")
+
+    selected = _prompt_model_selection(codex_models, current_model=effective_current_model)
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
