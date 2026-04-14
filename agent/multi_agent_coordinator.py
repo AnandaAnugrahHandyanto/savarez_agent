@@ -468,68 +468,117 @@ Respond ONLY with valid JSON, no markdown, no explanation."""
                 )
             ]
 
-    def execute(
+    async def execute_async(
         self,
         progress_callback: Optional[Callable[[str, str], None]] = None,
+        cancel_token=None,
     ) -> dict:
         """
-        执行工作流。
+        执行工作流（异步版本）。
 
         并行策略：
         - 维护一个待执行队列
         - 同时运行的任务不超过max_concurrent
         - 每当一个任务完成，检查是否有新任务可以开始
         - 支持依赖等待
+        - 集成CancellationToken，支持优雅取消
         """
+        import asyncio as _asyncio
+
         if not self.workflow:
-            raise RuntimeError("Must call decompose() before execute()")
+            raise RuntimeError("Must call decompose() before execute_async()")
 
         self.started_at = time.time()
         results: dict[str, Any] = {}
-
-        # 分阶段执行：每个"层"可以并行，但层间必须等待
-        # 这比真正的DAG调度简单但足够有效
         execution_log = []
 
-        while not self.workflow.is_done():
-            ready_tasks = self.workflow.get_ready_tasks()
+        # 用于跟踪运行中的任务
+        running_tasks: dict[str, asyncio.Task] = {}
+        semaphore = asyncio.Semaphore(self.max_concurrent)
 
-            if not ready_tasks:
-                # 检查是否有任务在运行（有依赖还没完成）
-                running = [n for n in self.workflow.nodes.values() if n.status == "running"]
-                if running:
-                    # 等待一下再检查
-                    time.sleep(0.5)
-                    continue
-                else:
-                    # 没有running也没有ready，说明有环或死锁
-                    logger.error("Workflow deadlock detected: no ready tasks but not done")
-                    break
+        async def run_task(task: TaskNode) -> None:
+            async with semaphore:
+                if cancel_token and cancel_token.is_cancelled():
+                    self.workflow.mark_failed(task.task_id, "Cancelled")
+                    return
 
-            # 按max_concurrent限制
-            for task in ready_tasks[:self.max_concurrent]:
                 self.workflow.mark_running(task.task_id)
-                execution_log.append({
+                log_entry = {
                     "task_id": task.task_id,
                     "role": task.role.value,
                     "started": time.time(),
-                })
+                }
 
-                # 在子线程中执行任务
-                thread = threading.Thread(
-                    target=self._execute_task,
-                    args=(task, progress_callback),
-                    daemon=True,
+                # 在新线程池中运行同步的delegate_task
+                result = await _asyncio.get_event_loop().run_in_executor(
+                    None, self._execute_task_sync, task
                 )
-                thread.start()
 
-            # 等待一会儿再检查
-            time.sleep(0.5)
+                log_entry["completed"] = time.time()
+                execution_log.append(log_entry)
+
+                if progress_callback:
+                    try:
+                        progress_callback(task.task_id, f"Completed {task.role.value}")
+                    except Exception:
+                        pass
+
+        # 等待所有任务完成
+        pending = set()
+
+        while not self.workflow.is_done():
+            # 检查取消
+            if cancel_token and cancel_token.is_cancelled():
+                # 取消所有运行中的任务
+                for t in running_tasks.values():
+                    t.cancel()
+                break
+
+            # 获取可以开始的任务
+            ready_tasks = self.workflow.get_ready_tasks()
+            if not ready_tasks:
+                running = [n for n in self.workflow.nodes.values() if n.status == "running"]
+                if running:
+                    # 等待一下再检查
+                    await asyncio.sleep(0.1)
+                    continue
+                else:
+                    logger.error("Workflow deadlock detected")
+                    break
+
+            # 启动就绪的任务（受限于max_concurrent）
+            for task in ready_tasks[:self.max_concurrent]:
+                t = asyncio.create_task(run_task(task))
+                running_tasks[task.task_id] = t
+
+            # 等待任意一个任务完成
+            if running_tasks:
+                done, pending = await asyncio.wait(
+                    running_tasks.values(),
+                    timeout=0.1,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for d in done:
+                    # 找到对应的task_id
+                    for tid, t in list(running_tasks.items()):
+                        if t is d:
+                            del running_tasks[tid]
+                            break
+
+                # 清理已完成的任务
+                for t in done:
+                    try:
+                        t.result()
+                    except Exception as e:
+                        logger.error("Task error: %s", e)
+
+        # 等待剩余任务
+        if running_tasks:
+            await asyncio.wait(running_tasks.values(), timeout=5.0)
 
         self.completed_at = time.time()
         duration = self.completed_at - self.started_at
 
-        # 收集所有结果
         for task_id, node in self.workflow.nodes.items():
             results[task_id] = {
                 "status": node.status,
@@ -548,6 +597,10 @@ Respond ONLY with valid JSON, no markdown, no explanation."""
             "total_duration": round(duration, 1),
             "execution_log": execution_log,
         }
+
+    def _execute_task_sync(self, task: TaskNode) -> None:
+        """同步版本的任务执行（在线程池中运行）"""
+        self._execute_task(task, None)
 
     def _execute_task(self, task: TaskNode, progress_callback: Optional[Callable]) -> None:
         """在子线程中执行单个任务"""
