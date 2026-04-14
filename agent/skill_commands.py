@@ -279,13 +279,25 @@ def resolve_skill_command_key(command: str) -> Optional[str]:
     (which disallow hyphens, so ``/claude-code`` is registered as
     ``/claude_code`` and comes back in the underscored form).
 
+    Short aliases are also supported via ``_SKILL_ALIASES`` — a static
+    mapping from short names to canonical skill slugs.
+
     Returns the matching ``/slug`` key from ``get_skill_commands()`` or
     ``None`` if no match.
     """
     if not command:
         return None
+    # Check aliases first
+    if command in _SKILL_ALIASES:
+        return _SKILL_ALIASES[command]
     cmd_key = f"/{command.replace('_', '-')}"
     return cmd_key if cmd_key in get_skill_commands() else None
+
+
+# Short aliases: /ada → /alzalddak-dev-agent, etc.
+_SKILL_ALIASES: Dict[str, str] = {
+    "ada": "/alzalddak-dev-agent",
+}
 
 
 def build_skill_invocation_message(

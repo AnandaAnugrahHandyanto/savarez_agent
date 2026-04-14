@@ -28,15 +28,15 @@ import sys
 import os
 
 # 동적 스킬 모듈 로딩
-# 표준 스킬 경로: ~/.hermes/skills/02-dev/unified-dev-agent  (통합 개발 에이전트)
-SKILL_PATH = os.path.expanduser("~/.hermes/skills/02-dev/unified-dev-agent")
+# 표준 스킬 경로: ~/.hermes/skills/02-dev/alzalddak-dev-agent  (알잘딱깔센 개발 에이전트)
+SKILL_PATH = os.path.expanduser("~/.hermes/skills/02-dev/alzalddak-dev-agent")
 if os.path.exists(SKILL_PATH) and SKILL_PATH not in sys.path:
     sys.path.insert(0, SKILL_PATH)
 
 try:
-    # unified-dev-agent 내장 harness 사용 (EnforcementEngine)
+    # ADA (alzalddak-dev-agent) 내장 harness 사용 (EnforcementEngine)
     from modules.harness import EnforcementEngine as HarnessHookManager
-    get_project_harness_config = None  # unified-dev-agent는 config.yaml로 관리
+    get_project_harness_config = None  # ADA는 config.yaml로 관리
 except ImportError:
     HarnessHookManager = None
     get_project_harness_config = None
@@ -50,25 +50,25 @@ AGENT_TYPES = {
     "codex": {"type": "cli", "cli": "codex", "model": "openai/codex"},
     "opencode": {"type": "cli", "cli": "opencode", "model": "zai/glm-5.1", "provider": "zai"},
     "cline": {"type": "cli", "cli": "cline", "model": "fireworks-ai/accounts/fireworks/routers/kimi-k2p5-turbo", "provider": "fireworks"},
-    "gemini": {"type": "api", "model": "google/gemini-2.5-pro"},
+    "gemini": {"type": "cli", "cli": "gemini", "model": "gemini-2.5-pro", "provider": "google"},
 }
 
 # 자동 폴백 체인 (실제 설치된 CLI/API만 포함)
 # 현재 연결 상태:
 # - opencode: ✅ Z.AI GLM 5.1 (설치됨)
-# - cline: ✅ Fireworks Kimi K2.5 (설치됨)  
-# - claude: ✅ Hermes Native (연결됨)
-# - codex: ❌ 미설치 (추가 시 FALLBACK_CHAIN에 포함 가능)
-# - gemini: ❌ API Key 없음 (추가 시 FALLBACK_CHAIN에 포함 가능)
+# - cline:    ✅ Fireworks Kimi K2.5 (설치됨)
+# - gemini:   ✅ CLI 설치됨, GOOGLE_API_KEY 환경변수 필요
+# - claude:   ✅ Hermes Native (연결됨)
+# - codex:    ❌ 미설치 (추가 시 FALLBACK_CHAIN에 포함 가능)
 FALLBACK_CHAIN = {
     "opencode": "cline",   # Z.AI 실패 시 Fireworks로
-    "cline": "claude",     # Fireworks 실패 시 Claude로
+    "cline": "gemini",     # Fireworks 실패 시 Gemini CLI로
+    "gemini": "claude",    # Gemini 실패 시 Claude(Native)로
     # "codex": "opencode",  # TODO: Codex CLI 설치 후 활성화
-    # "gemini": "claude",   # TODO: Gemini API Key 설정 후 활성화
 }
 
 # 폴백 설정
-MAX_FALLBACK_DEPTH = 3      # 최대 폴백 깊이 (opencode→cline→claude)
+MAX_FALLBACK_DEPTH = 4      # 최대 폴백 깊이 (opencode→cline→gemini→claude)
 FALLBACK_INITIAL_DELAY = 2  # 첫 폴백 대기 (초)
 FALLBACK_MAX_DELAY = 30     # 최대 대기 (초)
 
@@ -77,13 +77,14 @@ CLAUDE_MAX_RETRIES = 2      # Native 클라우드 재시도 횟수
 CLAUDE_RETRY_DELAY = 3      # 재시도 간 대기 (초)
 
 # Stage별 기본 에이전트 매핑
+# Claude Code는 과금 모델이므로 최후 백업으로만 사용
 DEFAULT_STAGE_AGENTS = {
-    "plan": "claude",
-    "prd": "claude",
-    "exec": "opencode",  # OpenCode as default for execution
-    "verify": "claude",
-    "fix": "opencode",   # OpenCode as default for fixes
-    "synthesize": "claude",
+    "plan": "opencode",
+    "prd": "opencode",
+    "exec": "opencode",
+    "verify": "cline",
+    "fix": "opencode",
+    "synthesize": "cline",
 }
 
 
@@ -800,6 +801,8 @@ class StagedDelegateOrchestrator:
             context_file = f.name
 
         try:
+            run_env = None  # 기본값: 현재 환경변수 그대로 상속
+
             if cli_name == "opencode":
                 # OpenCode CLI 호출
                 cmd = [
@@ -816,6 +819,18 @@ class StagedDelegateOrchestrator:
                     "--approval-mode", "auto-edit",
                     "--message", prompt,
                 ]
+            elif cli_name == "gemini":
+                # Gemini CLI 호출 (-p: 비대화형, --yolo: 자동 승인)
+                cmd = [
+                    "gemini",
+                    "--prompt", prompt,
+                    "--yolo",
+                    "--output-format", "text",
+                ]
+                # GOOGLE_API_KEY 주입 (환경변수가 있을 때만 override)
+                google_api_key = os.environ.get("GOOGLE_API_KEY", "")
+                if google_api_key:
+                    run_env = {**os.environ, "GOOGLE_API_KEY": google_api_key}
             else:
                 return {"success": False, "error": f"Unknown CLI: {cli_name}"}
 
@@ -826,6 +841,7 @@ class StagedDelegateOrchestrator:
                 text=True,
                 timeout=300,  # 5분 타임아웃
                 cwd=context.get("working_dir", os.getcwd()),
+                env=run_env,
             )
 
             output = result.stdout if result.returncode == 0 else result.stderr
@@ -1123,32 +1139,32 @@ except ImportError:
     pass  # Registry not available during import
 
 
-# Unified Dev Agent 통합 (02-dev/unified-dev-agent)
-# 계층적 개발 에이전트 - 규모 기반 자동 라우팅
+# ADA (Alzalddak Dev Agent) 통합 (02-dev/alzalddak-dev-agent)
+# 알잘딱깔센 계층적 개발 에이전트 - 규모 기반 자동 라우팅
 
 try:
-    UNIFIED_DEV_PATH = os.path.expanduser("~/.hermes/skills/02-dev/unified-dev-agent")
-    if os.path.exists(UNIFIED_DEV_PATH) and UNIFIED_DEV_PATH not in sys.path:
-        sys.path.insert(0, UNIFIED_DEV_PATH)
+    ADA_PATH = os.path.expanduser("~/.hermes/skills/02-dev/alzalddak-dev-agent")
+    if os.path.exists(ADA_PATH) and ADA_PATH not in sys.path:
+        sys.path.insert(0, ADA_PATH)
     
     from unified_dev import dev as unified_dev
-    UNIFIED_DEV_AVAILABLE = True
+    ADA_AVAILABLE = True
 except ImportError:
     unified_dev = None
-    UNIFIED_DEV_AVAILABLE = False
+    ADA_AVAILABLE = False
 
-def unified_dev_delegate(
+def ada_delegate(
     goal: str,
     mode: str = "auto",
     context: Optional[Dict] = None,
     force_mode: Optional[str] = None,
     mock: bool = False,
 ) -> Dict[str, Any]:
-    """Unified Dev Agent 통합 실행"""
-    if not UNIFIED_DEV_AVAILABLE:
+    """ADA (알잘딱깔센 개발 에이전트) 통합 실행"""
+    if not ADA_AVAILABLE:
         return {
             "success": False,
-            "error": "unified-dev-agent not installed",
+            "error": "ada (alzalddak-dev-agent) not installed",
         }
     
     force = force_mode if mode == "auto" else mode
@@ -1163,23 +1179,23 @@ def unified_dev_delegate(
             "full_result": result,
         }
     except Exception as e:
-        logger.exception("unified_dev_delegate failed")
+        logger.exception("ada_delegate failed")
         return {"success": False, "error": str(e)}
 
 
-def _check_unified_dev() -> bool:
-    """Unified Dev Agent 가용성 체크"""
-    return UNIFIED_DEV_AVAILABLE
+def _check_ada() -> bool:
+    """ADA 가용성 체크"""
+    return ADA_AVAILABLE
 
 
-# Unified Dev Agent MCP 도구 등록
+# ADA MCP 도구 등록
 try:
     from mcp_registry import register_tool
     
     register_tool(
-        name="unified_dev",
+        name="ada",
         schema={
-            "description": "Unified Development Agent with auto-routing",
+            "description": "ADA (Alzalddak Dev Agent) - 알잘딱깔센 개발 에이전트 with auto-routing",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1192,15 +1208,15 @@ try:
                 "required": ["goal"]
             }
         },
-        handler=lambda args, **kw: unified_dev_delegate(
+        handler=lambda args, **kw: ada_delegate(
             goal=args.get("goal"),
             mode=args.get("mode", "auto"),
             context=args.get("context"),
             force_mode=args.get("force_mode"),
             mock=args.get("mock", False),
         ),
-        check_fn=_check_unified_dev,
-        description="Unified Development Agent",
+        check_fn=_check_ada,
+        description="ADA (알잘딱깔센 개발 에이전트)",
         emoji="🔧",
     )
 except ImportError:

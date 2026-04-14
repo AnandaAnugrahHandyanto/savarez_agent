@@ -5449,6 +5449,22 @@ class HermesCLI:
                         print(f"  {status} {p['name']}{version}{detail}{error}")
             except Exception as e:
                 print(f"Plugin system error: {e}")
+        elif canonical == "ada":
+            # /ada <goal> — 알잘딱깔센 개발 에이전트 호출
+            from agent.skill_commands import build_skill_invocation_message
+            goal = self._extract_command_args(cmd_original, "ada")
+            if not goal:
+                print("사용법: /ada <개발 목표>")
+                print("  예: /ada OAuth2 구현해줘")
+                print("  예: /ada 버그 수정")
+            else:
+                msg = build_skill_invocation_message(
+                    "/alzalddak-dev-agent", user_instruction=goal
+                )
+                if msg:
+                    self._submit_user_message(msg)
+                else:
+                    print("ADA 스킬을 찾을 수 없습니다.")
         elif canonical == "rollback":
             self._handle_rollback_command(cmd_original)
         elif canonical == "stop":
