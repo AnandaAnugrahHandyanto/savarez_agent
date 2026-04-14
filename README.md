@@ -171,6 +171,12 @@ python -m pytest tests/ -q
 
 ---
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=NousResearch/hermes-agent&type=Date)](https://www.star-history.com/#NousResearch/hermes-agent&Date)
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
