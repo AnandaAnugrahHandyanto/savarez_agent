@@ -2868,6 +2868,23 @@ class HermesCLI:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
+
+            # When smart routing selected a cheap model, prepend the primary
+            # model as the first fallback so the agent retries on the strong
+            # model before giving up or falling through to user-configured
+            # fallback providers.
+            effective_fallback = self._fallback_model
+            if route_label is not None:
+                primary_fb = {
+                    "provider": self.provider,
+                    "model": self.model,
+                    "base_url": self.base_url or "",
+                }
+                if isinstance(effective_fallback, list):
+                    effective_fallback = [primary_fb] + list(effective_fallback)
+                else:
+                    effective_fallback = [primary_fb]
+
             self.agent = AIAgent(
                 model=effective_model,
                 api_key=runtime.get("api_key"),
@@ -2898,7 +2915,7 @@ class HermesCLI:
                 clarify_callback=self._clarify_callback,
                 reasoning_callback=self._current_reasoning_callback(),
 
-                fallback_model=self._fallback_model,
+                fallback_model=effective_fallback,
                 thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,

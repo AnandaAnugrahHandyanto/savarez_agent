@@ -713,6 +713,20 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         )
 
         fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
+
+        # When smart routing selected a cheap model, prepend the primary model
+        # as the first fallback so a 403 retries on the strong model first.
+        if turn_route.get("label") is not None:
+            primary_fb = {
+                "provider": runtime.get("provider", ""),
+                "model": model,
+                "base_url": runtime.get("base_url", ""),
+            }
+            if isinstance(fallback_model, list):
+                fallback_model = [primary_fb] + list(fallback_model)
+            else:
+                fallback_model = [primary_fb] if fallback_model is None else [primary_fb, fallback_model]
+
         credential_pool = None
         runtime_provider = str(turn_route["runtime"].get("provider") or "").strip().lower()
         if runtime_provider:

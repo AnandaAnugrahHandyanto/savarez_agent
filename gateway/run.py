@@ -1302,6 +1302,26 @@ class GatewayRunner:
         return None
 
     @staticmethod
+    def _effective_fallback(turn_route: dict, fallback_model, primary_model: str, primary_provider: str, primary_base_url: str = "") -> list | dict | None:
+        """Prepend the primary model as first fallback when smart routing is active.
+
+        When a cheap model was selected via smart routing (turn_route["label"] is
+        not None), the agent should fall back to the primary (strong) model before
+        trying any user-configured fallback providers.  This ensures a 403 from an
+        unsupported cheap model doesn't kill the request outright.
+        """
+        if turn_route.get("label") is None:
+            return fallback_model
+        primary_fb = {
+            "provider": primary_provider,
+            "model": primary_model,
+            "base_url": primary_base_url or "",
+        }
+        if isinstance(fallback_model, list):
+            return [primary_fb] + list(fallback_model)
+        return [primary_fb] if fallback_model is None else [primary_fb, fallback_model]
+
+    @staticmethod
     def _load_smart_model_routing() -> dict:
         """Load optional smart cheap-vs-strong model routing config."""
         try:
@@ -5381,7 +5401,11 @@ class GatewayRunner:
                     platform=platform_key,
                     user_id=source.user_id,
                     session_db=self._session_db,
-                    fallback_model=self._fallback_model,
+                    fallback_model=self._effective_fallback(
+                        turn_route, self._fallback_model,
+                        model, runtime_kwargs.get("provider", ""),
+                        runtime_kwargs.get("base_url", ""),
+                    ),
                 )
 
                 return agent.run_conversation(
@@ -5561,7 +5585,11 @@ class GatewayRunner:
                     session_id=task_id,
                     platform=platform_key,
                     session_db=None,
-                    fallback_model=self._fallback_model,
+                    fallback_model=self._effective_fallback(
+                        turn_route, self._fallback_model,
+                        model, runtime_kwargs.get("provider", ""),
+                        runtime_kwargs.get("base_url", ""),
+                    ),
                     skip_memory=True,
                     skip_context_files=True,
                     persist_session=False,
@@ -7916,7 +7944,11 @@ class GatewayRunner:
                     platform=platform_key,
                     user_id=source.user_id,
                     session_db=self._session_db,
-                    fallback_model=self._fallback_model,
+                    fallback_model=self._effective_fallback(
+                        turn_route, self._fallback_model,
+                        model, runtime_kwargs.get("provider", ""),
+                        runtime_kwargs.get("base_url", ""),
+                    ),
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
