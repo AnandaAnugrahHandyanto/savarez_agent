@@ -97,6 +97,17 @@ def _honcho_is_configured_for_doctor() -> bool:
         return False
 
 
+# Per-toolset setup hints shown by `hermes doctor` when a toolset's check_fn
+# reports it unavailable but the registry does not expose specific missing
+# env vars (e.g. the backend has multiple auth paths). Without a hint the
+# doctor falls back to the generic "(system dependency not met)" label,
+# which misleads users whose actual blocker is a missing credential /
+# account configuration rather than a system package.
+_TOOLSET_SETUP_HINTS: dict[str, str] = {
+    "image_gen": "(missing FAL_KEY — or sign in via Nous Portal for managed image generation)",
+}
+
+
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
     if not _honcho_is_configured_for_doctor():
@@ -823,10 +834,16 @@ def run_doctor(args):
                 vars_str = ", ".join(env_vars)
                 check_warn(item["name"], f"(missing {vars_str})")
             else:
-                check_warn(item["name"], "(system dependency not met)")
+                hint = _TOOLSET_SETUP_HINTS.get(item.get("name"))
+                check_warn(item["name"], hint or "(system dependency not met)")
 
-        # Count disabled tools with API key requirements
-        api_disabled = [u for u in unavailable if (u.get("missing_vars") or u.get("env_vars"))]
+        # Count disabled tools that look like a configuration/credentials issue
+        # (either explicit missing env vars, or a curated setup hint) so we
+        # nudge the user toward `hermes setup` when it's actually actionable.
+        api_disabled = [
+            u for u in unavailable
+            if (u.get("missing_vars") or u.get("env_vars") or _TOOLSET_SETUP_HINTS.get(u.get("name")))
+        ]
         if api_disabled:
             issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
     except Exception as e:
