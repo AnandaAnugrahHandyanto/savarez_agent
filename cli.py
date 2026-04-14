@@ -1637,6 +1637,7 @@ class HermesCLI:
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
         self._stream_started = False  # True once first delta arrives
         self._stream_box_opened = False  # True once the response box header is printed
+        self._stream_in_code_fence = False  # Preserve fenced code blocks verbatim while streaming
         self._reasoning_preview_buf = ""  # Coalesce tiny reasoning chunks for [thinking] output
         self._pending_edit_snapshots = {}
         
@@ -2577,7 +2578,37 @@ class HermesCLI:
         _tc = getattr(self, "_stream_text_ansi", "")
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
-            _cprint(f"{_tc}{line}{_RST}" if _tc else line)
+            for rendered in self._format_stream_line(line):
+                _cprint(f"{_tc}{rendered}{_RST}" if _tc else rendered)
+
+    def _format_stream_line(self, line: str) -> list[str]:
+        """Wrap plain prose lines while preserving fenced and preformatted text."""
+        if line == "":
+            return [""]
+
+        in_fence = getattr(self, "_stream_in_code_fence", False)
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            self._stream_in_code_fence = not in_fence
+            return [line]
+        if in_fence or line.startswith((" ", "\t")):
+            return [line]
+
+        try:
+            term_width = shutil.get_terminal_size().columns
+        except Exception:
+            term_width = 80
+
+        wrap_width = max(20, term_width - 2)
+        wrapped = textwrap.wrap(
+            line,
+            width=wrap_width,
+            break_long_words=False,
+            break_on_hyphens=False,
+            replace_whitespace=False,
+            drop_whitespace=False,
+        )
+        return wrapped or [line]
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
@@ -2594,7 +2625,8 @@ class HermesCLI:
 
         if self._stream_buf:
             _tc = getattr(self, "_stream_text_ansi", "")
-            _cprint(f"{_tc}{self._stream_buf}{_RST}" if _tc else self._stream_buf)
+            for rendered in self._format_stream_line(self._stream_buf):
+                _cprint(f"{_tc}{rendered}{_RST}" if _tc else rendered)
             self._stream_buf = ""
 
         # Close the response box
@@ -2608,6 +2640,7 @@ class HermesCLI:
         self._stream_started = False
         self._stream_box_opened = False
         self._stream_text_ansi = ""
+        self._stream_in_code_fence = False
         self._stream_prefilt = ""
         self._in_reasoning_block = False
         self._stream_last_was_newline = True
