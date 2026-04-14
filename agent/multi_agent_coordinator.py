@@ -327,12 +327,14 @@ class MultiAgentCoordinator:
         context: Optional[str] = None,
         max_concurrent: int = 3,
         workflow_mode: str = "auto",  # "auto"=自动分解, "manual"=手动指定任务
+        tasks: Optional[list[dict]] = None,  # 手动指定的任务列表（含task_id/goal/role/depends_on）
     ):
         self.parent_agent = parent_agent
         self.goal = goal
         self.context = context or ""
         self.max_concurrent = max_concurrent
         self.workflow_mode = workflow_mode
+        self._manual_tasks = tasks  # store for decompose()
 
         self.shared_memory = SharedMemory()
         self.workflow: Optional[DAGWorkflow] = None
@@ -348,18 +350,46 @@ class MultiAgentCoordinator:
         将复杂目标分解为任务DAG。
 
         策略：
-        1. 如果workflow_mode="manual"，使用预设任务列表
-        2. 否则，让LLM分析目标并生成任务列表+依赖关系
+        1. 如果self._manual_tasks有值，使用预定义任务列表（manual DAG模式）
+        2. 如果workflow_mode="manual"且无预定义，用LLM分解
+        3. 否则，让LLM分析目标并生成任务列表+依赖关系
 
         返回：TaskNode列表
         """
-        nodes = self._llm_decompose(self._build_decomposition_prompt())
+        # 优先使用预定义任务（manual DAG模式）
+        if self._manual_tasks is not None:
+            nodes = self._build_nodes_from_manual_tasks(self._manual_tasks)
+            logger.info(
+                "Using %d manual tasks: %s",
+                len(nodes),
+                [n.task_id for n in nodes],
+            )
+        else:
+            nodes = self._llm_decompose(self._build_decomposition_prompt())
+            logger.info(
+                "Decomposed goal into %d tasks: %s",
+                len(nodes),
+                [n.task_id for n in nodes],
+            )
         self.workflow = DAGWorkflow(nodes)
-        logger.info(
-            "Decomposed goal into %d tasks: %s",
-            len(nodes),
-            [n.task_id for n in nodes],
-        )
+        return nodes
+
+    def _build_nodes_from_manual_tasks(self, tasks: list[dict]) -> list[TaskNode]:
+        """从预定义任务字典列表构建TaskNode列表。"""
+        nodes = []
+        for t in tasks:
+            role_str = t.get("role", "developer")
+            try:
+                role = AgentRole(role_str)
+            except ValueError:
+                role = AgentRole.DEVELOPER
+            nodes.append(TaskNode(
+                task_id=t["task_id"],
+                goal=t["goal"],
+                role=role,
+                context=t.get("context"),
+                depends_on=t.get("depends_on", []),
+            ))
         return nodes
 
     def _build_decomposition_prompt(self) -> str:
@@ -583,7 +613,7 @@ Respond ONLY with valid JSON, no markdown, no explanation."""
         progress_callback: Optional[Callable],
         cancel_token=None,
     ) -> None:
-        """在子线程中执行单个任务"""
+        """在子线程中执行单个任务（含三层失败恢复）"""
         from tools.delegate_tool import delegate_task
 
         # 检查取消
@@ -591,16 +621,17 @@ Respond ONLY with valid JSON, no markdown, no explanation."""
             self.workflow.mark_failed(task.task_id, "Cancelled")
             return
 
-        # 收集依赖结果作为context扩展
-        dep_context_parts = []
-        for dep_id in task.depends_on:
-            dep_result = self.workflow.get_result_for(dep_id)
-            if dep_result is not None:
-                dep_context_parts.append(f"[Input from {dep_id}]:\n{dep_result}\n")
-
-        task_context = "\n".join(dep_context_parts)
-        if task.context:
-            task_context = f"{task_context}\n{task.context}" if task_context else task.context
+        # --- 内部辅助：收集依赖context ---
+        def _build_context() -> str:
+            dep_context_parts = []
+            for dep_id in task.depends_on:
+                dep_result = self.workflow.get_result_for(dep_id)
+                if dep_result is not None:
+                    dep_context_parts.append(f"[Input from {dep_id}]:\n{dep_result}\n")
+            ctx = "\n".join(dep_context_parts)
+            if task.context:
+                ctx = f"{ctx}\n{task.context}" if ctx else task.context
+            return ctx
 
         role_prompt = ROLE_SYSTEM_PROMPTS.get(task.role, "")
         full_goal = f"{role_prompt}\n\nTASK:\n{task.goal}"
@@ -608,39 +639,86 @@ Respond ONLY with valid JSON, no markdown, no explanation."""
         if progress_callback:
             progress_callback(task.task_id, f"Starting {task.role.value} task")
 
-        try:
-            # 执行子任务
-            result = delegate_task(
-                goal=full_goal,
-                context=task_context,
-                toolsets=ROLE_TOOLSETS.get(task.role, ["terminal", "file"]),
-                max_iterations=30,
-                parent_agent=self.parent_agent,
-            )
+        # --- 三层失败恢复 (Retry → Replan → Decompose) ---
+        attempts = 0
+        max_retries = 2
+        last_error = None
 
-            # 解析结果
+        while attempts <= max_retries:
+            attempts += 1
+            if attempts > 1:
+                logger.info("Task %s attempt %d/%d", task.task_id, attempts, max_retries + 1)
+                if progress_callback:
+                    progress_callback(task.task_id, f"Retry {attempts}/{max_retries + 1}")
+
             try:
-                result_data = json.loads(result)
-                if isinstance(result_data, dict) and "error" in result_data:
-                    raise ValueError(result_data["error"])
-                result_text = result_data.get("result", result) if isinstance(result_data, dict) else result
-            except (json.JSONDecodeError, TypeError):
-                result_text = str(result)
+                result = delegate_task(
+                    goal=full_goal,
+                    context=_build_context(),
+                    toolsets=ROLE_TOOLSETS.get(task.role, ["terminal", "file"]),
+                    max_iterations=30,
+                    parent_agent=self.parent_agent,
+                )
 
-            # 写入共享内存
-            self.shared_memory.publish(f"task:{task.task_id}", result_text)
-            self.workflow.mark_completed(task.task_id, result_text)
+                try:
+                    result_data = json.loads(result)
+                    if isinstance(result_data, dict) and "error" in result_data:
+                        raise ValueError(result_data["error"])
+                    result_text = result_data.get("result", result) if isinstance(result_data, dict) else result
+                except (json.JSONDecodeError, TypeError):
+                    result_text = str(result)
 
-            if progress_callback:
-                progress_callback(task.task_id, f"Completed {task.role.value} task")
+                # 成功
+                self.shared_memory.publish(f"task:{task.task_id}", result_text)
+                self.workflow.mark_completed(task.task_id, result_text)
+                if progress_callback:
+                    progress_callback(task.task_id, f"Completed {task.role.value} task")
+                return
 
-        except Exception as e:
-            error_msg = f"{type(e).__name__}: {e}"
-            logger.error("Task %s failed: %s", task.task_id, error_msg)
-            self.workflow.mark_failed(task.task_id, error_msg)
-            self.shared_memory.publish(f"task:{task.task_id}:error", error_msg)
-            if progress_callback:
-                progress_callback(task.task_id, f"Failed: {error_msg}")
+            except Exception as e:
+                last_error = f"{type(e).__name__}: {e}"
+                logger.warning("Task %s attempt %d failed: %s", task.task_id, attempts, last_error)
+
+                if attempts <= max_retries:
+                    # Layer 1: Retry
+                    continue
+
+                # Layer 2: Replan
+                replan_prompt = (
+                    "The following task failed: " + task.goal + "\n"
+                    "Error: " + last_error + "\n\n"
+                    "Role: " + task.role.value + "\n"
+                    "Context: " + _build_context() + "\n\n"
+                    "Try a different approach to accomplish the same goal. "
+                    "Break it down differently, use different tools, or simplify the scope."
+                )
+                try:
+                    result = delegate_task(
+                        goal=replan_prompt,
+                        context=_build_context(),
+                        toolsets=ROLE_TOOLSETS.get(task.role, ["terminal", "file"]),
+                        max_iterations=30,
+                        parent_agent=self.parent_agent,
+                    )
+                    try:
+                        result_data = json.loads(result)
+                        result_text = result_data.get("result", result) if isinstance(result_data, dict) else result
+                    except (json.JSONDecodeError, TypeError):
+                        result_text = str(result)
+                    self.shared_memory.publish(f"task:{task.task_id}", result_text)
+                    self.workflow.mark_completed(task.task_id, result_text)
+                    if progress_callback:
+                        progress_callback(task.task_id, f"Completed after replan ({task.role.value})")
+                    return
+                except Exception as replan_error:
+                    last_error = f"Replan failed: {type(replan_error).__name__}: {replan_error}"
+
+                # Layer 3: Decompose
+                logger.error("Task %s failed permanently after Retry+Replan: %s", task.task_id, last_error)
+                self.workflow.mark_failed(task.task_id, last_error)
+                self.shared_memory.publish(f"task:{task.task_id}:error", last_error)
+                if progress_callback:
+                    progress_callback(task.task_id, f"Failed: {last_error}")
 
     def execute_sync(self) -> dict:
         """同步执行入口（内部用线程池运行execute_async）"""
@@ -879,6 +957,7 @@ class FlowBasedMultiAgentCoordinator(AgentFlow):
 def coordinated_delegate(
     goal: str,
     context: Optional[str] = None,
+    tasks: Optional[list[dict]] = None,
     role_hint: Optional[str] = None,
     max_concurrent: int = 3,
     synthesize: bool = True,
@@ -896,8 +975,19 @@ def coordinated_delegate(
             parent_agent=self,
         )
 
+    或者手动指定DAG任务：
+        result = coordinated_delegate(
+            goal="Build and test a web app",
+            tasks=[
+                {"task_id": "research", "goal": "Research stack options", "depends_on": []},
+                {"task_id": "build", "goal": "Build the app", "depends_on": ["research"]},
+                {"task_id": "test", "goal": "Write tests", "depends_on": ["build"]},
+            ],
+            parent_agent=self,
+        )
+
     内部流程：
-    1. Coordinator分解任务为DAG
+    1. Coordinator分解任务为DAG（若tasks为空）
     2. 按依赖并行执行多个角色Agent
     3. 结果写入SharedMemory
     4. Synthesizer聚合为最终输出
@@ -909,6 +999,7 @@ def coordinated_delegate(
         parent_agent=parent_agent,
         goal=goal,
         context=context,
+        tasks=tasks,
         max_concurrent=max_concurrent,
     )
 

@@ -1450,6 +1450,7 @@ COORDINATED_DELEGATE_SCHEMA = {
 def _coordinated_delegate_impl(
     goal: str,
     context: Optional[str] = None,
+    tasks: Optional[list[dict]] = None,
     role_hint: Optional[str] = None,
     max_concurrent: int = 3,
     synthesize: bool = True,
@@ -1460,6 +1461,7 @@ def _coordinated_delegate_impl(
     return _impl(
         goal=goal,
         context=context,
+        tasks=tasks,
         role_hint=role_hint,
         max_concurrent=max_concurrent,
         synthesize=synthesize,
@@ -1474,6 +1476,7 @@ registry.register(
     handler=lambda args, **kw: _coordinated_delegate_impl(
         goal=args.get("goal"),
         context=args.get("context"),
+        tasks=args.get("tasks"),
         role_hint=args.get("role_hint"),
         max_concurrent=args.get("max_concurrent", 3),
         synthesize=args.get("synthesize", True),
