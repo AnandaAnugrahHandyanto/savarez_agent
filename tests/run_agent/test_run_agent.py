@@ -212,6 +212,15 @@ def _mock_tool_call(name="web_search", arguments="{}", call_id=None):
     )
 
 
+def _todo_replace_args():
+    return {
+        "todos": [
+            {"id": "new", "content": "replacement item", "status": "pending"}
+        ],
+        "merge": "false",
+    }
+
+
 def _mock_response(
     content="Hello",
     finish_reason="stop",
@@ -1488,6 +1497,44 @@ class TestConcurrentToolExecution:
             result = agent._invoke_tool("todo", {"todos": []}, "task-1")
             mock_todo.assert_called_once()
         assert "ok" in result
+
+    def test_invoke_tool_coerces_todo_merge_flag(self, agent):
+        """String boolean args should be coerced before direct todo dispatch."""
+        agent._todo_store.write(
+            [{"id": "old", "content": "existing item", "status": "pending"}]
+        )
+
+        result = json.loads(
+            agent._invoke_tool(
+                "todo",
+                _todo_replace_args(),
+                "task-1",
+            )
+        )
+
+        assert result["todos"] == [
+            {"id": "new", "content": "replacement item", "status": "pending"}
+        ]
+        assert agent._todo_store.read() == result["todos"]
+
+    def test_sequential_tool_calls_coerce_todo_merge_flag(self, agent):
+        """Sequential agent-loop dispatch should coerce string booleans too."""
+        agent._todo_store.write(
+            [{"id": "old", "content": "existing item", "status": "pending"}]
+        )
+        tool_call = _mock_tool_call(
+            name="todo",
+            arguments=json.dumps(_todo_replace_args()),
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert agent._todo_store.read() == [
+            {"id": "new", "content": "replacement item", "status": "pending"}
+        ]
 
 
 class TestPathsOverlap:

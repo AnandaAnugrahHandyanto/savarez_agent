@@ -61,6 +61,7 @@ else:
 
 # Import our tool system
 from model_tools import (
+    coerce_tool_args,
     get_tool_definitions,
     get_toolset_for_tool,
     handle_function_call,
@@ -6890,6 +6891,8 @@ class AIAgent:
         tools. Used by the concurrent execution path; the sequential path retains
         its own inline invocation for backward-compatible display handling.
         """
+        function_args = coerce_tool_args(function_name, function_args)
+
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
             return _todo_tool(
@@ -6993,6 +6996,7 @@ class AIAgent:
                 function_args = {}
             if not isinstance(function_args, dict):
                 function_args = {}
+            function_args = coerce_tool_args(function_name, function_args)
 
             # Checkpoint for file-mutating tools
             if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
@@ -7197,6 +7201,7 @@ class AIAgent:
                 function_args = {}
             if not isinstance(function_args, dict):
                 function_args = {}
+            function_args = coerce_tool_args(function_name, function_args)
 
             if not self.quiet_mode:
                 args_str = json.dumps(function_args, ensure_ascii=False)
