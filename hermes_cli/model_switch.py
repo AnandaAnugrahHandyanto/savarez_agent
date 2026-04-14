@@ -818,6 +818,12 @@ def list_authenticated_providers(
 
         # Use curated list, falling back to models.dev if no curated list
         model_ids = curated.get(hermes_id, [])
+        if not model_ids:
+            mdev_models = pdata.get("models", {})
+            if isinstance(mdev_models, dict):
+                model_ids = [k for k, v in mdev_models.items() if isinstance(v, dict) and v.get("tool_call")]
+                if not model_ids:
+                    model_ids = list(mdev_models.keys())
         total = len(model_ids)
         top = model_ids[:max_models]
 
@@ -992,6 +998,16 @@ def list_authenticated_providers(
             default_model = (entry.get("model") or "").strip()
             if default_model:
                 models_list.append(default_model)
+
+            cfg_models = entry.get("models", [])
+            if isinstance(cfg_models, list):
+                for m in cfg_models:
+                    if m and m not in models_list:
+                        models_list.append(m)
+            elif isinstance(cfg_models, dict):
+                for m in cfg_models.keys():
+                    if m and m not in models_list:
+                        models_list.append(m)
 
             results.append({
                 "slug": slug,
