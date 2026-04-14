@@ -25,6 +25,8 @@ from enum import Enum
 from typing import Any, Callable, Optional
 from collections import defaultdict
 
+from agent.flow import Flow, StatefulFlow, AgentFlow, entry, after
+
 logger = logging.getLogger(__name__)
 
 
@@ -693,6 +695,185 @@ Be thorough and specific. Do not just summarize — synthesize into actionable i
             return synthesis_result
         except Exception as e:
             return f"Synthesis failed: {e}\n\nRaw results: {json.dumps(all_results, indent=2)}"
+
+
+# ---------------------------------------------------------------------------
+# FlowBasedMultiAgentCoordinator — @entry/@after 装饰器风格定义多Agent工作流
+# ---------------------------------------------------------------------------
+
+def agent_step(role: AgentRole, goal_template: str = ""):
+    """
+    标记一个方法作为Agent步骤，配合 @entry / @after 使用。
+
+    用法：
+        class MyFlow(FlowBasedMultiAgentCoordinator):
+            @entry
+            @agent_step(Role.DEVELOPER, "Write code for: {input}")
+            def start(self, input):
+                return input
+
+            @after("start")
+            @agent_step(Role.REVIEWER, "Review the code: {input}")
+            def review(self, input):
+                return input
+    """
+    def decorator(func: Callable) -> Callable:
+        func.__agent_role__ = role
+        func.__agent_goal_template__ = goal_template or func.__name__
+        return func
+    return decorator
+
+
+class FlowBasedMultiAgentCoordinator(AgentFlow):
+    """
+    用 @entry / @after 装饰器定义多Agent工作流。
+
+    每个步骤用 @agent_step(role, goal_template) 标记，
+    coordinator 自动把步骤转换为 TaskNode DAG 并执行。
+
+    用法：
+        class CodeReviewFlow(FlowBasedMultiAgentCoordinator):
+            @entry
+            @agent_step(AgentRole.DEVELOPER, "实现功能：{input}")
+            def develop(self, goal):
+                return goal
+
+            @after("develop")
+            @agent_step(AgentRole.REVIEWER, "审查代码：{input}")
+            def review(self, context):
+                return context
+
+            @after("develop")
+            @agent_step(AgentRole.RESEARCHER, "查找相关资料：{input}")
+            def research(self, context):
+                return context
+
+            @after("review")
+            @after("research")
+            @agent_step(AgentRole.SYNTHESIZER, "综合结果")
+            def synthesize(self, review_result, research_result):
+                return {"review": review_result, "research": research_result}
+
+        flow = CodeReviewFlow(
+            parent_agent=self,
+            initial_goal="某个复杂任务",
+            max_concurrent=3,
+        )
+        result = flow.run()
+    """
+
+    def __init__(
+        self,
+        parent_agent,
+        initial_goal: str = "",
+        max_concurrent: int = 3,
+    ):
+        self.parent_agent = parent_agent
+        self.initial_goal = initial_goal
+        self.max_concurrent = max_concurrent
+        self._results: dict[str, Any] = {}
+
+    def run_agent(self, role: AgentRole, goal: str, context: str) -> str:
+        """执行真实agent（同步，阻塞）"""
+        from tools.delegate_tool import delegate_task
+        role_prompt = ROLE_SYSTEM_PROMPTS.get(role, "")
+        full_goal = f"{role_prompt}\n\nTASK:\n{goal}"
+        try:
+            result = delegate_task(
+                goal=full_goal,
+                context=context,
+                toolsets=ROLE_TOOLSETS.get(role, ["terminal", "file"]),
+                max_iterations=30,
+                parent_agent=self.parent_agent,
+            )
+            try:
+                data = json.loads(result)
+                if isinstance(data, dict) and "error" in data:
+                    raise ValueError(data["error"])
+                return data.get("result", result) if isinstance(data, dict) else result
+            except (json.JSONDecodeError, TypeError):
+                return str(result)
+        except Exception as e:
+            return f"[{type(e).__name__}] {e}"
+
+    async def _run_layer_async(
+        self, layer: list[str], results: dict[str, Any]
+    ) -> dict[str, Any]:
+        """
+        重写 Flow._run_layer_async：
+        每层的方法用信号量限制并发，
+        每个方法调用 run_agent(role, goal, context)。
+        """
+        meta = self._meta()
+
+        async def run_one(name: str):
+            method = meta["nodes"][name]
+            srcs = self._sources_for(name)
+            args = [results[s] for s in srcs if s in results]
+
+            # 收集上游结果作为context
+            context_parts = []
+            for i, src in enumerate(srcs):
+                context_parts.append(f"[From {src}]:\n{args[i] if i < len(args) else ''}")
+            context = "\n\n".join(context_parts)
+
+            # 获取role和goal
+            role: AgentRole = getattr(method, "__agent_role__", AgentRole.DEVELOPER)
+            goal_tpl: str = getattr(method, "__agent_goal_template__", name)
+
+            # 渲染goal：{input} 或 {0}, {1} 等
+            if args:
+                try:
+                    goal = goal_tpl.format(input=args[0], **dict(zip([f"{{{i}}}" for i in range(len(args))], args)))
+                except (IndexError, KeyError):
+                    goal = goal_tpl + "\n\n" + context
+            else:
+                goal = goal_tpl
+
+            # 在线程池中运行同步的run_agent
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, lambda: self.run_agent(role, goal, context)
+            )
+            return name, result
+
+        # 每层并发，受 max_concurrent 限制
+        semaphore = asyncio.Semaphore(self.max_concurrent)
+
+        async def bounded_run_one(name: str):
+            async with semaphore:
+                return await run_one(name)
+
+        tasks = [bounded_run_one(n) for n in layer if n in meta["nodes"]]
+        if not tasks:
+            return results
+
+        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+        new_results = dict(results)
+        for o in outcomes:
+            if isinstance(o, Exception):
+                raise RuntimeError(f"FlowBasedMultiAgentCoordinator error: {o}") from o
+            name, val = o
+            new_results[name] = val
+        self._results = new_results
+        return new_results
+
+    def get_results(self) -> dict[str, Any]:
+        """返回所有步骤的结果"""
+        return dict(self._results)
+
+    def execute_sync(self) -> dict:
+        """同步入口"""
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(self.run_async())
+        finally:
+            loop.close()
+
+    async def run_async(self) -> dict[str, Any]:
+        """执行装饰器定义的工作流"""
+        self._results = await super().run_async()
+        return self._results
 
 
 def coordinated_delegate(
