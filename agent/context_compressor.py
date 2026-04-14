@@ -179,6 +179,16 @@ class ContextCompressor(ContextEngine):
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         return tokens >= self.threshold_tokens
 
+    def should_compress_preflight(self, messages: List[Dict[str, Any]]) -> bool:
+        """Quick rough check before the API call (no real token count yet).
+
+        Uses the same rough char-based estimate as the pruning pass to
+        decide whether compression should fire before paying for a full
+        API call at the current (over-limit) token count.
+        """
+        rough = estimate_messages_tokens_rough(messages)
+        return rough >= self.threshold_tokens
+
     # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)
     # ------------------------------------------------------------------
