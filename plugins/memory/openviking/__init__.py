@@ -110,10 +110,16 @@ class _VikingClient:
         return resp.json()
 
     def post(self, path: str, payload: dict = None, **kwargs) -> dict:
-        resp = self._httpx.post(
-            self._url(path), json=payload or {}, headers=self._headers(),
-            timeout=_TIMEOUT, **kwargs
-        )
+        if "files" in kwargs:
+            resp = self._httpx.post(
+                self._url(path), headers={k: v for k, v in self._headers().items() if k != "Content-Type"},
+                timeout=_TIMEOUT, **kwargs
+            )
+        else:
+            resp = self._httpx.post(
+                self._url(path), json=payload or {}, headers=self._headers(),
+                timeout=_TIMEOUT, **kwargs
+            )
         resp.raise_for_status()
         return resp.json()
 
