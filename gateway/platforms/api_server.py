@@ -1088,8 +1088,19 @@ class APIServerAdapter(BasePlatformAdapter):
         else:
             full_history.append({"role": "assistant", "content": final_response})
 
-        # Build output items (includes tool calls + final message)
-        output_items = self._extract_output_items(result)
+        # Build output items from only the current turn's emitted assistant/tool
+        # messages. Some agent paths return the full replayed transcript plus the
+        # current user input; others return only new assistant/tool messages.
+        # Detect the echoed current user message before choosing the slice.
+        current_turn_start_index = len(conversation_history)
+        if agent_messages[current_turn_start_index:current_turn_start_index + 1] == [
+            {"role": "user", "content": user_message}
+        ]:
+            current_turn_start_index += 1
+        output_items = self._extract_output_items(
+            result,
+            start_index=current_turn_start_index,
+        )
 
         response_data = {
             "id": response_id,
@@ -1405,17 +1416,22 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _extract_output_items(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _extract_output_items(
+        result: Dict[str, Any],
+        start_index: int = 0,
+    ) -> List[Dict[str, Any]]:
         """
-        Build the full output item array from the agent's messages.
+        Build the output item array from the agent's messages.
 
-        Walks *result["messages"]* and emits:
+        Walks *result["messages"]* starting at *start_index* and emits:
         - ``function_call`` items for each tool_call on assistant messages
         - ``function_call_output`` items for each tool-role message
         - a final ``message`` item with the assistant's text reply
         """
         items: List[Dict[str, Any]] = []
         messages = result.get("messages", [])
+        if start_index > 0:
+            messages = messages[start_index:]
 
         for msg in messages:
             role = msg.get("role")

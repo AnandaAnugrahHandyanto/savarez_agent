@@ -1371,6 +1371,115 @@ class TestToolCallsInOutput:
             assert output[2]["content"][0]["text"] == "The result is 42."
 
     @pytest.mark.asyncio
+    async def test_previous_response_id_does_not_reemit_historical_tool_items(self, adapter):
+        """Chained responses should emit only current-turn output items."""
+        first_turn_result = {
+            "final_response": "The result is 42.",
+            "messages": [
+                {"role": "user", "content": "What is 6*7?"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_abc123",
+                            "function": {
+                                "name": "calculator",
+                                "arguments": '{"expression": "6*7"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_abc123",
+                    "content": "42",
+                },
+                {
+                    "role": "assistant",
+                    "content": "The result is 42.",
+                },
+            ],
+            "api_calls": 2,
+        }
+
+        second_turn_result = {
+            "final_response": "Still 42.",
+            "messages": [
+                {"role": "user", "content": "What is 6*7?"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_abc123",
+                            "function": {
+                                "name": "calculator",
+                                "arguments": '{"expression": "6*7"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_abc123",
+                    "content": "42",
+                },
+                {
+                    "role": "assistant",
+                    "content": "The result is 42.",
+                },
+                {"role": "user", "content": "And what was that result again?"},
+                {"role": "assistant", "content": "Still 42."},
+            ],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    first_turn_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp1 = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "What is 6*7?"},
+                )
+
+            assert resp1.status == 200
+            response_id = (await resp1.json())["id"]
+
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    second_turn_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp2 = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "And what was that result again?",
+                        "previous_response_id": response_id,
+                    },
+                )
+
+            assert resp2.status == 200
+            data2 = await resp2.json()
+            assert data2["output"] == [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "Still 42.",
+                        }
+                    ],
+                }
+            ]
+
+    @pytest.mark.asyncio
     async def test_no_tool_calls_still_works(self, adapter):
         """Without tool calls, output is just a message."""
         mock_result = {"final_response": "Hello!", "messages": [], "api_calls": 1}
