@@ -12,6 +12,7 @@ def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
     cli_obj.reasoning_config = None
+    cli_obj.service_tier = None
     return cli_obj
 
 
@@ -30,12 +31,14 @@ def _attach_agent(
     context_length: int,
     compressions: int = 0,
     reasoning_config: dict | None = None,
+    service_tier: str | None = None,
 ):
     cli_obj.agent = SimpleNamespace(
         model=cli_obj.model,
         provider="anthropic" if cli_obj.model.startswith("anthropic/") else None,
         base_url="",
         reasoning_config=reasoning_config,
+        service_tier=service_tier,
         session_input_tokens=input_tokens if input_tokens is not None else prompt_tokens,
         session_output_tokens=output_tokens if output_tokens is not None else completion_tokens,
         session_cache_read_tokens=cache_read_tokens,
@@ -219,6 +222,59 @@ class TestCLIStatusBar:
         text = cli_obj._build_status_bar_text(width=100)
 
         assert "r:off" in text
+
+    def test_status_bar_shows_fast_mode_flag_from_cli_state(self):
+        cli_obj = _make_cli(model="gpt-5.4")
+        cli_obj.service_tier = "priority"
+
+        text = cli_obj._build_status_bar_text(width=100)
+
+        assert "gpt-5.4 F" in text
+
+    def test_status_bar_ignores_invalid_fast_mode_setting(self):
+        cli_obj = _make_cli(model="gpt-5.4")
+        cli_obj.service_tier = 123
+
+        text = cli_obj._build_status_bar_text(width=100)
+
+        assert "gpt-5.4 F" not in text
+
+    def test_status_bar_prefers_agent_fast_mode_setting(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.4"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            service_tier="priority",
+        )
+        cli_obj.service_tier = None
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "gpt-5.4 F" in text
+
+    def test_status_bar_fragments_show_fast_mode_flag(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.4"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            service_tier="priority",
+        )
+        cli_obj._status_bar_visible = True
+
+        mock_app = MagicMock()
+        mock_app.output.get_size.return_value = MagicMock(columns=120)
+        with patch("prompt_toolkit.application.get_app", return_value=mock_app):
+            frags = cli_obj._get_status_bar_fragments()
+
+        assert any("gpt-5.4 F" in text for _, text in frags)
 
     def test_status_bar_ignores_invalid_reasoning_setting(self):
         cli_obj = _make_cli()

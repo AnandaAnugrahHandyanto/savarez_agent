@@ -1889,6 +1889,15 @@ class HermesCLI:
         effort = str(rc.get("effort") or "medium").strip().lower()
         return effort or "medium"
 
+    def _status_bar_fast_mode_enabled(self) -> bool:
+        """Return True when Fast Mode / Priority Processing is enabled."""
+        tier = getattr(getattr(self, "agent", None), "service_tier", None)
+        if not isinstance(tier, str) or not tier.strip():
+            tier = getattr(self, "service_tier", None)
+        if not isinstance(tier, str):
+            return False
+        return tier.strip().lower() == "priority"
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -1904,9 +1913,12 @@ class HermesCLI:
 
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         reasoning_effort = self._get_status_bar_reasoning_effort()
+        fast_mode_enabled = self._status_bar_fast_mode_enabled()
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "model_label": f"{model_short} F" if fast_mode_enabled else model_short,
+            "fast_mode_enabled": fast_mode_enabled,
             "duration": format_duration_compact(elapsed_seconds),
             "reasoning_effort": reasoning_effort,
             "reasoning_label": f"r:{reasoning_effort}",
@@ -2060,11 +2072,12 @@ class HermesCLI:
             duration_label = snapshot["duration"]
 
             reasoning_label = snapshot["reasoning_label"]
+            model_label = snapshot["model_label"]
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"⚕ {model_label} · {duration_label}"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", reasoning_label]
+                parts = [f"⚕ {model_label}", reasoning_label]
                 parts.append(duration_label)
                 return self._trim_status_bar_text(" · ".join(parts), width)
 
@@ -2075,7 +2088,7 @@ class HermesCLI:
             else:
                 context_label = "ctx --"
 
-            parts = [f"⚕ {snapshot['model_short']}", reasoning_label, context_label, percent_label]
+            parts = [f"⚕ {model_label}", reasoning_label, context_label, percent_label]
             parts.append(duration_label)
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
@@ -2094,11 +2107,12 @@ class HermesCLI:
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
             reasoning_label = snapshot["reasoning_label"]
+            model_label = snapshot["model_label"]
 
             if width < 52:
                 frags = [
                     ("class:status-bar", " ⚕ "),
-                    ("class:status-bar-strong", snapshot["model_short"]),
+                    ("class:status-bar-strong", model_label),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
                     ("class:status-bar", " "),
@@ -2109,7 +2123,7 @@ class HermesCLI:
                 if width < 76:
                     frags = [
                         ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-strong", model_label),
                         ("class:status-bar-dim", " · "),
                         ("class:status-bar-dim", reasoning_label),
                         ("class:status-bar-dim", " · "),
@@ -2127,7 +2141,7 @@ class HermesCLI:
                     bar_style = self._status_bar_context_style(percent)
                     frags = [
                         ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-strong", model_label),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", reasoning_label),
                         ("class:status-bar-dim", " │ "),
