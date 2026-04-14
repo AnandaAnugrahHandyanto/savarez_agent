@@ -8116,6 +8116,11 @@ class AIAgent:
                     if reasoning_text:
                         # Add reasoning_content for API compatibility (Moonshot AI, Novita, OpenRouter)
                         api_msg["reasoning_content"] = reasoning_text
+                    # Strip inline <think> blocks from content sent to API —
+                    # reasoning is already carried in reasoning_content above.
+                    # Leaving them doubles context usage and degrades quality.
+                    if isinstance(api_msg.get("content"), str) and "<think>" in api_msg["content"]:
+                        api_msg["content"] = self._strip_think_blocks(api_msg["content"]).strip()
 
                 # Remove 'reasoning' field - it's for trajectory storage only
                 # We've copied it to 'reasoning_content' for the API above
