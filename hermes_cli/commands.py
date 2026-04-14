@@ -734,7 +734,6 @@ class SlashCommandCompleter(Completer):
             return None
         return word
 
-
     def _context_completions(self, word: str, limit: int = 30):
         """Yield Claude Code-style @ context completions.
 
