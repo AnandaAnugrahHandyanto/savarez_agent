@@ -196,9 +196,9 @@ class HonchoMemoryProvider(MemoryProvider):
         # B1: recall_mode — set during initialize from config
         self._recall_mode = "hybrid"  # "context", "tools", or "hybrid"
 
-        # B4: First-turn context baking
-        self._first_turn_context: Optional[str] = None
-        self._first_turn_lock = threading.Lock()
+        # Base context cache — refreshed on context_cadence, not frozen
+        self._base_context_cache: Optional[str] = None
+        self._base_context_lock = threading.Lock()
 
         # B5: Cost-awareness turn counting and cadence
         self._turn_count = 0
@@ -447,9 +447,9 @@ class HonchoMemoryProvider(MemoryProvider):
     def system_prompt_block(self) -> str:
         """Return system prompt text, adapted by recall_mode.
 
-        B4: On the FIRST call, fetch and bake the full Honcho context
-        (user representation, peer card, AI representation, continuity synthesis).
-        Subsequent calls return the cached block for prompt caching stability.
+        Returns only the mode header and tool instructions — static text
+        that doesn't change between turns (prompt-cache friendly).
+        Live context (representation, card) is injected via prefetch().
         """
         if self._cron_skipped:
             return ""
@@ -462,20 +462,6 @@ class HonchoMemoryProvider(MemoryProvider):
                     "honcho_reasoning, honcho_context, and honcho_conclude tools to access user memory."
                 )
             return ""
-
-        # ----- B4: First-turn context baking -----
-        first_turn_block = ""
-        if self._recall_mode in ("context", "hybrid"):
-            with self._first_turn_lock:
-                if self._first_turn_context is None:
-                    # First call — fetch and cache
-                    try:
-                        ctx = self._manager.get_prefetch_context(self._session_key)
-                        self._first_turn_context = self._format_first_turn_context(ctx) if ctx else ""
-                    except Exception as e:
-                        logger.debug("Honcho first-turn context fetch failed: %s", e)
-                        self._first_turn_context = ""
-                first_turn_block = self._first_turn_context
 
         # ----- B1: adapt text based on recall_mode -----
         if self._recall_mode == "context":
@@ -504,12 +490,14 @@ class HonchoMemoryProvider(MemoryProvider):
                 "honcho_conclude to save facts about the user."
             )
 
-        if first_turn_block:
-            return f"{header}\n\n{first_turn_block}"
         return header
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Return prefetched dialectic context from background thread.
+        """Return base context (representation + card) plus dialectic supplement.
+
+        Assembles two layers:
+        1. Base context from peer.context() — cached, refreshed on context_cadence
+        2. Dialectic supplement — cached, refreshed on dialectic_cadence
 
         B1: Returns empty when recall_mode is "tools" (no injection).
         B5: Respects injection_frequency — "first-turn" returns cached/empty after turn 0.
@@ -526,13 +514,50 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._injection_frequency == "first-turn" and self._turn_count > 0:
             return ""
 
+        parts = []
+
+        # ----- Layer 1: Base context (representation + card) -----
+        # On first call, fetch synchronously so turn 1 isn't empty.
+        # After that, serve from cache and refresh in background on cadence.
+        with self._base_context_lock:
+            if self._base_context_cache is None:
+                # First call — synchronous fetch
+                try:
+                    ctx = self._manager.get_prefetch_context(self._session_key)
+                    self._base_context_cache = self._format_first_turn_context(ctx) if ctx else ""
+                    self._last_context_turn = self._turn_count
+                except Exception as e:
+                    logger.debug("Honcho base context fetch failed: %s", e)
+                    self._base_context_cache = ""
+            base_context = self._base_context_cache
+
+        # Check if background context prefetch has a fresher result
+        if self._manager:
+            fresh_ctx = self._manager.pop_context_result(self._session_key)
+            if fresh_ctx:
+                formatted = self._format_first_turn_context(fresh_ctx)
+                if formatted:
+                    with self._base_context_lock:
+                        self._base_context_cache = formatted
+                    base_context = formatted
+
+        if base_context:
+            parts.append(base_context)
+
+        # ----- Layer 2: Dialectic supplement -----
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
-            result = self._prefetch_result
+            dialectic_result = self._prefetch_result
             self._prefetch_result = ""
-        if not result:
+
+        if dialectic_result and dialectic_result.strip():
+            parts.append(dialectic_result)
+
+        if not parts:
             return ""
+
+        result = "\n\n".join(parts)
 
         # ----- Port #3265: token budget enforcement -----
         result = self._truncate_to_budget(result)
@@ -554,9 +579,11 @@ class HonchoMemoryProvider(MemoryProvider):
         return truncated + " …"
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        """Fire a background dialectic query for the upcoming turn.
+        """Fire background prefetch threads for the upcoming turn.
 
-        B5: Checks cadence before firing background threads.
+        B5: Checks cadence independently for dialectic and context refresh.
+        Context refresh updates the base layer (representation + card).
+        Dialectic fires the LLM reasoning supplement.
         """
         if self._cron_skipped:
             return
@@ -567,6 +594,15 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._recall_mode == "tools":
             return
 
+        # ----- Context refresh (base layer) — independent cadence -----
+        if self._context_cadence <= 1 or (self._turn_count - self._last_context_turn) >= self._context_cadence:
+            self._last_context_turn = self._turn_count
+            try:
+                self._manager.prefetch_context(self._session_key, query)
+            except Exception as e:
+                logger.debug("Honcho context prefetch failed: %s", e)
+
+        # ----- Dialectic prefetch (supplement layer) -----
         # B5: cadence check — skip if too soon since last dialectic call
         if self._dialectic_cadence > 1:
             if (self._turn_count - self._last_dialectic_turn) < self._dialectic_cadence:
@@ -591,14 +627,6 @@ class HonchoMemoryProvider(MemoryProvider):
             target=_run, daemon=True, name="honcho-prefetch"
         )
         self._prefetch_thread.start()
-
-        # Also fire context prefetch if cadence allows
-        if self._context_cadence <= 1 or (self._turn_count - self._last_context_turn) >= self._context_cadence:
-            self._last_context_turn = self._turn_count
-            try:
-                self._manager.prefetch_context(self._session_key, query)
-            except Exception as e:
-                logger.debug("Honcho context prefetch failed: %s", e)
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Track turn count for cadence and injection_frequency logic."""

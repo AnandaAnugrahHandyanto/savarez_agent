@@ -942,7 +942,7 @@ class HonchoSessionManager:
             if ctx.messages:
                 recent = ctx.messages[-10:]  # last 10 messages
                 result["recent_messages"] = [
-                    {"role": m.role, "content": m.content[:500]}
+                    {"role": getattr(m, "peer_id", "unknown"), "content": (m.content or "")[:500]}
                     for m in recent
                 ]
 
