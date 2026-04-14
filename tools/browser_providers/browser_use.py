@@ -155,7 +155,7 @@ class BrowserUseProvider(CloudBrowserProvider):
         session_data = response.json()
         if managed_mode:
             _clear_pending_create_key(task_id)
-        session_name = f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
+        session_name = self.make_session_name(task_id)
         external_call_id = response.headers.get("x-external-call-id") if managed_mode else None
 
         logger.info("Created Browser Use session %s", session_name)
@@ -171,45 +171,23 @@ class BrowserUseProvider(CloudBrowserProvider):
         }
 
     def close_session(self, session_id: str) -> bool:
-        try:
-            config = self._get_config()
-        except ValueError:
-            logger.warning("Cannot close Browser Use session %s — missing credentials", session_id)
-            return False
-
-        try:
-            response = requests.patch(
+        def _make_request(config):
+            return requests.patch(
                 f"{config['base_url']}/browsers/{session_id}",
                 headers=self._headers(config),
                 json={"action": "stop"},
                 timeout=10,
             )
-            if response.status_code in (200, 201, 204):
-                logger.debug("Successfully closed Browser Use session %s", session_id)
-                return True
-            else:
-                logger.warning(
-                    "Failed to close Browser Use session %s: HTTP %s - %s",
-                    session_id,
-                    response.status_code,
-                    response.text[:200],
-                )
-                return False
-        except Exception as e:
-            logger.error("Exception closing Browser Use session %s: %s", session_id, e)
-            return False
+        return self._close_session_template(session_id, self._get_config, _make_request)
 
     def emergency_cleanup(self, session_id: str) -> None:
-        config = self._get_config_or_none()
-        if config is None:
-            logger.warning("Cannot emergency-cleanup Browser Use session %s — missing credentials", session_id)
-            return
-        try:
+        def _fire_and_forget(config):
             requests.patch(
                 f"{config['base_url']}/browsers/{session_id}",
                 headers=self._headers(config),
                 json={"action": "stop"},
                 timeout=5,
             )
-        except Exception as e:
-            logger.debug("Emergency cleanup failed for Browser Use session %s: %s", session_id, e)
+        self._emergency_cleanup_template(
+            session_id, self._get_config_or_none, _fire_and_forget,
+        )

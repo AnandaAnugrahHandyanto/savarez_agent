@@ -1,7 +1,11 @@
 """Abstract base class for cloud browser providers."""
 
+import logging
+import uuid
 from abc import ABC, abstractmethod
 from typing import Dict
+
+logger = logging.getLogger(__name__)
 
 
 class CloudBrowserProvider(ABC):
@@ -57,3 +61,85 @@ class CloudBrowserProvider(ABC):
         Called from atexit / signal handlers.  Must tolerate missing
         credentials, network errors, etc. — log and move on.
         """
+
+    # ------------------------------------------------------------------
+    # Shared helpers — reduce duplication across provider implementations
+    # ------------------------------------------------------------------
+
+    def make_session_name(self, task_id: str) -> str:
+        """Generate a consistent, unique session name.
+
+        All providers use the same ``hermes_{task_id}_{random}`` pattern.
+        """
+        return f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
+
+    def _close_session_template(
+        self,
+        session_id: str,
+        get_config,
+        http_request_fn,
+    ) -> bool:
+        """Template method for close_session with standardized error handling.
+
+        Args:
+            session_id: Provider session ID.
+            get_config: Callable returning config dict, or raising ValueError.
+            http_request_fn: Callable(config) -> requests.Response.
+
+        Returns True on success (HTTP 200/201/204), False otherwise.
+        """
+        name = self.provider_name() if callable(self.provider_name) else getattr(self, '_provider_name', 'unknown')
+        try:
+            config = get_config()
+        except (ValueError, KeyError):
+            logger.warning(
+                "Cannot close %s session %s — missing credentials",
+                name, session_id,
+            )
+            return False
+
+        try:
+            response = http_request_fn(config)
+            if response.status_code in (200, 201, 204):
+                logger.debug("Successfully closed %s session %s", name, session_id)
+                return True
+            else:
+                logger.warning(
+                    "Failed to close %s session %s: HTTP %s - %s",
+                    name, session_id,
+                    response.status_code,
+                    response.text[:200],
+                )
+                return False
+        except Exception as e:
+            logger.error("Exception closing %s session %s: %s", name, session_id, e)
+            return False
+
+    def _emergency_cleanup_template(
+        self,
+        session_id: str,
+        get_config_or_none,
+        http_request_fn,
+    ) -> None:
+        """Template method for emergency_cleanup with standardized error handling.
+
+        Args:
+            session_id: Provider session ID.
+            get_config_or_none: Callable returning config dict or None.
+            http_request_fn: Callable(config) -> None (fire-and-forget).
+        """
+        name = self.provider_name() if callable(self.provider_name) else getattr(self, '_provider_name', 'unknown')
+        config = get_config_or_none()
+        if config is None:
+            logger.warning(
+                "Cannot emergency-cleanup %s session %s — missing credentials",
+                name, session_id,
+            )
+            return
+        try:
+            http_request_fn(config)
+        except Exception as e:
+            logger.debug(
+                "Emergency cleanup failed for %s session %s: %s",
+                name, session_id, e,
+            )
