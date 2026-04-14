@@ -771,6 +771,16 @@ class TestPromptBuilderConstants:
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
 
+    def test_cli_platform_hint_encourages_compact_markdown_only_for_cli(self):
+        cli_hint = PLATFORM_HINTS["cli"].lower()
+        assert "compact markdown" in cli_hint
+        assert "terminal-friendly" in cli_hint
+
+        sms_hint = PLATFORM_HINTS["sms"].lower()
+        email_hint = PLATFORM_HINTS["email"].lower()
+        assert "compact markdown" not in sms_hint
+        assert "compact markdown" not in email_hint
+
 
 # =========================================================================
 # Environment hints
@@ -1032,6 +1042,5 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 
 

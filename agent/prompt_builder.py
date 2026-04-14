@@ -341,8 +341,10 @@ PLATFORM_HINTS = {
         "destination — put the primary content directly in your response."
     ),
     "cli": (
-        "You are a CLI AI Agent. Try not to use markdown but simple text "
-        "renderable inside a terminal."
+        "You are a CLI AI Agent. Prefer concise, terminal-friendly responses. "
+        "Use compact Markdown when it improves scanability, especially for short "
+        "headings, lists, quotes, and fenced code blocks. Avoid heavy formatting "
+        "or unnecessary verbosity."
     ),
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text "
