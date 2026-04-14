@@ -278,10 +278,19 @@ class TestEdgeCases:
         paths, _ = _extract("File at /tmp/my file.png here")
         assert paths == []
 
-    def test_windows_path_not_matched(self):
-        """Windows-style paths should not match."""
-        paths, _ = _extract("See C:\\Users\\test\\image.png")
-        assert paths == []
+    def test_windows_backslash_path_matched(self):
+        """Windows absolute paths should be extracted for native delivery."""
+        text = r"See C:\Users\test\image.png"
+        paths, cleaned = _extract(text)
+        assert paths == [r"C:\Users\test\image.png"]
+        assert r"C:\Users\test\image.png" not in cleaned
+
+    def test_windows_forward_slash_path_matched(self):
+        """Windows absolute paths using forward slashes should also match."""
+        text = "See C:/Users/test/image.png"
+        paths, cleaned = _extract(text)
+        assert paths == ["C:/Users/test/image.png"]
+        assert "C:/Users/test/image.png" not in cleaned
 
     def test_relative_path_not_matched(self):
         """Relative paths like ./image.png should not match."""
