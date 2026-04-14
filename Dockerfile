@@ -36,7 +36,18 @@ RUN chown -R hermes:hermes /opt/hermes
 USER hermes
 
 RUN uv venv && \
-    uv pip install --no-cache-dir -e ".[all]"
+    uv pip install --no-cache-dir -e ".[all]" && \
+    uv pip install --no-cache-dir \
+        crawl4ai==0.8.6 \
+        uptime-kuma-api==1.2.1 \
+        openpyxl \
+        xlsxwriter \
+        pandas \
+        python-docx \
+        docxtpl && \
+    uv pip install --no-cache-dir --no-deps \
+        pirateweather==1.0.0 \
+        python-pptx
 
 USER root
 RUN chmod +x /opt/hermes/docker/entrypoint.sh
