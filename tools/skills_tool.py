@@ -182,10 +182,29 @@ def _normalize_setup_metadata(frontmatter_model: "SkillFrontmatter") -> Dict[str
     }
 
 
+def _coerce_frontmatter(
+    frontmatter: "SkillFrontmatter | dict",
+) -> "SkillFrontmatter":
+    """Accept either a SkillFrontmatter model or a raw dict.
+
+    Call sites in tests and legacy loaders pass plain dicts. The internal
+    helpers expect the Pydantic model. Coerce once at the boundary.
+    """
+    from tools.skills_models import SkillFrontmatter
+    if isinstance(frontmatter, SkillFrontmatter):
+        return frontmatter
+    if isinstance(frontmatter, dict):
+        payload = dict(frontmatter)
+        payload.setdefault("name", "")
+        return SkillFrontmatter.model_validate(payload)
+    raise TypeError(f"Expected SkillFrontmatter or dict, got {type(frontmatter).__name__}")
+
+
 def _get_required_environment_variables(
-    frontmatter_model: "SkillFrontmatter",
+    frontmatter_model: "SkillFrontmatter | dict",
     legacy_env_vars: List[str] | None = None,
 ) -> List[Dict[str, Any]]:
+    frontmatter_model = _coerce_frontmatter(frontmatter_model)
     setup = _normalize_setup_metadata(frontmatter_model)
     
     required: List[Dict[str, Any]] = []
