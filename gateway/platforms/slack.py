@@ -286,12 +286,14 @@ class SlackAdapter(BasePlatformAdapter):
             extra_blocks: list = []
             if _SENTINEL in content:
                 sentinel_parts = content.split(_SENTINEL, 1)
-                content = sentinel_parts[0].rstrip()
                 try:
                     parsed = json.loads(sentinel_parts[1].strip())
                     if isinstance(parsed, list):
                         extra_blocks = parsed
+                        # Only strip content AFTER successful JSON parse
+                        content = sentinel_parts[0].rstrip()
                 except Exception as _exc:
+                    # Parse failed — keep original content intact
                     logger.warning("[Slack] Failed to parse SLACK_BLOCKS sentinel JSON: %s", _exc)
 
             # text fallback: mrkdwn-converted (notifications/search)
@@ -1948,17 +1950,21 @@ class SlackAdapter(BasePlatformAdapter):
             logger.warning("[Slack] Failed to update cron action message: %s", e)
 
         # Inject the button value as a new message into the agent
-        from gateway.platforms.base import MessageEvent
-        msg_event = MessageEvent(
-            platform="slack",
-            chat_id=channel_id,
+        source = self._build_source(
+            channel_id=channel_id,
+            chat_type="dm",
             user_id=user_id,
             user_name=user_name,
+            thread_id=thread_ts,
+        )
+        msg_event = MessageEvent(
             text=button_value,
-            raw={},
-            metadata={"thread_id": thread_ts},
+            source=source,
+            raw_message=body,
+            message_id=msg_ts,
         )
         await self.handle_message(msg_event)
+
     async def _handle_slash_command(self, command: dict) -> None:
         """Handle /hermes slash command."""
         text = command.get("text", "").strip()

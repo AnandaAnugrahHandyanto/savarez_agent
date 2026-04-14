@@ -488,7 +488,7 @@ class TestSendToPlatformChunking:
         send.assert_awaited_once_with(
             "***",
             "C123",
-            "*hello* from <https://example.com|Hermes>",
+            "**hello** from [Hermes](<https://example.com>)",
             thread_id=None,
         )
 
@@ -510,7 +510,7 @@ class TestSendToPlatformChunking:
             )
         assert result["success"] is True
         sent_text = send.await_args.args[2]
-        assert "*_important_*" in sent_text
+        assert "***important***" in sent_text
 
     def test_slack_blockquote_formatted_before_send(self, monkeypatch):
         """Blockquote '>' markers must survive formatting (not escaped to '&gt;')."""
@@ -531,7 +531,7 @@ class TestSendToPlatformChunking:
         assert result["success"] is True
         sent_text = send.await_args.args[2]
         assert sent_text.startswith("> important quote")
-        assert "&amp;" in sent_text  # & is escaped
+        assert "& stuff" in sent_text  # raw markdown passes through unescaped
         assert "&gt;" not in sent_text.split("\n")[0]  # > in blockquote is NOT escaped
 
     def test_slack_pre_escaped_entities_not_double_escaped(self, monkeypatch):
@@ -572,7 +572,7 @@ class TestSendToPlatformChunking:
             )
         assert result["success"] is True
         sent_text = send.await_args.args[2]
-        assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in sent_text
+        assert "See [Foo](https://en.wikipedia.org/wiki/Foo_(bar))" in sent_text
 
     def test_telegram_media_attaches_to_last_chunk(self):
 

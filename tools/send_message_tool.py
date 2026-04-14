@@ -610,7 +610,11 @@ async def _send_slack(token, chat_id, message, thread_id=None):
         url = "https://slack.com/api/chat.postMessage"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
-            payload: dict = {"channel": chat_id, "text": message, "mrkdwn": True}
+            payload: dict = {
+                "channel": chat_id,
+                "text": message,
+                "blocks": [{"type": "markdown", "text": message}],
+            }
             if thread_id:
                 payload["thread_ts"] = thread_id
             async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
