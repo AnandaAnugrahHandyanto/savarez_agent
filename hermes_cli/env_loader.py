@@ -5,14 +5,36 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
+
+def _parse_env_file(path: Path, *, encoding: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding=encoding).splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("\"'")
+        if key:
+            values[key] = value
+    return values
 
 
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
+    """Load env vars from *path* even when ``PYTHON_DOTENV_DISABLED=1`` is set.
+
+    ``load_dotenv()`` respects ``PYTHON_DOTENV_DISABLED`` and becomes a no-op.
+    Hermes uses ``.env`` files as explicit user configuration, so this helper
+    parses the file directly and applies precedence itself.
+    """
     try:
-        load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
+        values = _parse_env_file(path, encoding="utf-8")
     except UnicodeDecodeError:
-        load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+        values = _parse_env_file(path, encoding="latin-1")
+
+    for key, value in values.items():
+        if override or key not in os.environ:
+            os.environ[key] = value
 
 
 def load_hermes_dotenv(

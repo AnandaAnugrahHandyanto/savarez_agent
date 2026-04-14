@@ -989,3 +989,64 @@ class TestDiscordSkillCommands:
             assert len(name) <= _CMD_NAME_LIMIT, (
                 f"Name '{name}' is {len(name)} chars (limit {_CMD_NAME_LIMIT})"
             )
+
+    def test_long_names_keep_cmd_key_after_clamping(self, tmp_path, monkeypatch):
+        """Clamped Discord names must still keep the original cmd_key."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        long_name = "a" * 50
+        fake_cmds = {
+            f"/{long_name}": {
+                "name": long_name,
+                "description": "Long name skill",
+                "skill_md_path": f"{fake_skills_dir}/{long_name}/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/{long_name}",
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "skills").mkdir(exist_ok=True)
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            entries, _ = discord_skill_commands(
+                max_slots=50, reserved_names=set(),
+            )
+
+        assert len(entries) == 1
+        assert entries[0][2] == f"/{long_name}"
+
+    def test_colliding_long_names_keep_distinct_cmd_keys(self, tmp_path, monkeypatch):
+        """Collision suffixing should preserve each original cmd_key."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        long_a = "a" * 40 + "x"
+        long_b = "a" * 40 + "y"
+        fake_cmds = {
+            f"/{long_a}": {
+                "name": long_a,
+                "description": "Long collision skill A",
+                "skill_md_path": f"{fake_skills_dir}/{long_a}/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/{long_a}",
+            },
+            f"/{long_b}": {
+                "name": long_b,
+                "description": "Long collision skill B",
+                "skill_md_path": f"{fake_skills_dir}/{long_b}/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/{long_b}",
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "skills").mkdir(exist_ok=True)
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            entries, _ = discord_skill_commands(
+                max_slots=50, reserved_names=set(),
+            )
+
+        returned = {cmd_key for _name, _desc, cmd_key in entries}
+        assert returned == {f"/{long_a}", f"/{long_b}"}

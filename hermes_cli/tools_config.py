@@ -1310,6 +1310,11 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     if config is None:
         config = load_config()
     enabled_platforms = _get_enabled_platforms()
+    if first_install:
+        # Fresh-install flow is intentionally CLI-only. Messaging platforms may
+        # already have tokens in the environment on a developer machine, but the
+        # setup wizard should not fan out into Telegram/Discord/Slack prompts.
+        enabled_platforms = ["cli"]
 
     print()
 

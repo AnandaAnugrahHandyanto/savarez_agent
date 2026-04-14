@@ -390,6 +390,25 @@ def _sanitize_telegram_name(raw: str) -> str:
     return name.strip("_")
 
 
+def _clamp_name(name: str, used: set[str]) -> str | None:
+    """Return a unique <=32-char command name or ``None`` if no slot is free."""
+    if len(name) > _CMD_NAME_LIMIT:
+        candidate = name[:_CMD_NAME_LIMIT]
+        if candidate in used:
+            prefix = name[:_CMD_NAME_LIMIT - 1]
+            for digit in range(10):
+                candidate = f"{prefix}{digit}"
+                if candidate not in used:
+                    break
+            else:
+                return None
+        name = candidate
+    if name in used:
+        return None
+    used.add(name)
+    return name
+
+
 def _clamp_command_names(
     entries: list[tuple[str, str]],
     reserved: set[str],
@@ -405,22 +424,25 @@ def _clamp_command_names(
     used: set[str] = set(reserved)
     result: list[tuple[str, str]] = []
     for name, desc in entries:
-        if len(name) > _CMD_NAME_LIMIT:
-            candidate = name[:_CMD_NAME_LIMIT]
-            if candidate in used:
-                prefix = name[:_CMD_NAME_LIMIT - 1]
-                for digit in range(10):
-                    candidate = f"{prefix}{digit}"
-                    if candidate not in used:
-                        break
-                else:
-                    # All 10 digit slots exhausted — skip entry
-                    continue
-            name = candidate
-        if name in used:
+        clamped = _clamp_name(name, used)
+        if clamped is None:
             continue
-        used.add(name)
-        result.append((name, desc))
+        result.append((clamped, desc))
+    return result
+
+
+def _clamp_command_triples(
+    entries: list[tuple[str, str, str]],
+    reserved: set[str],
+) -> list[tuple[str, str, str]]:
+    """Clamp ``(name, desc, cmd_key)`` entries while preserving cmd_key mapping."""
+    used: set[str] = set(reserved)
+    result: list[tuple[str, str, str]] = []
+    for name, desc, cmd_key in entries:
+        clamped = _clamp_name(name, used)
+        if clamped is None:
+            continue
+        result.append((clamped, desc, cmd_key))
     return result
 
 
@@ -528,17 +550,12 @@ def _collect_gateway_skill_entries(
     except Exception:
         pass
 
-    # Clamp names; _clamp_command_names works on (name, desc) pairs so we
-    # need to zip/unzip.
-    skill_pairs = [(n, d) for n, d, _ in skill_triples]
-    key_by_pair = {(n, d): k for n, d, k in skill_triples}
-    skill_pairs = _clamp_command_names(skill_pairs, reserved_names)
+    skill_triples = _clamp_command_triples(skill_triples, reserved_names)
 
     # Skills fill remaining slots — only tier that gets trimmed
     remaining = max(0, max_slots - len(all_entries))
-    hidden_count = max(0, len(skill_pairs) - remaining)
-    for n, d in skill_pairs[:remaining]:
-        all_entries.append((n, d, key_by_pair.get((n, d), "")))
+    hidden_count = max(0, len(skill_triples) - remaining)
+    all_entries.extend(skill_triples[:remaining])
 
     return all_entries[:max_slots], hidden_count
 
@@ -576,8 +593,12 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
         desc_limit=40,
         sanitize_name=_sanitize_telegram_name,
     )
+    valid_entries = [(n, d, k) for n, d, k in entries if len(n) <= 32]
+    invalid_hidden = len(entries) - len(valid_entries)
+    hidden_count += invalid_hidden
+
     # Drop the cmd_key — Telegram only needs (name, desc) pairs.
-    all_commands.extend((n, d) for n, d, _k in entries)
+    all_commands.extend((n, d) for n, d, _k in valid_entries)
     return all_commands[:max_commands], hidden_count
 
 
