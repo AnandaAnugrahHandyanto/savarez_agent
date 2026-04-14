@@ -211,7 +211,8 @@ class ContextCompressor(ContextEngine):
             min_protect = min(protect_tail_count, len(result) - 1)
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
-                content_len = len(msg.get("content") or "")
+                raw_content = msg.get("content") or ""
+                content_len = sum(len(p.get("text", "")) for p in raw_content) if isinstance(raw_content, list) else len(raw_content)
                 msg_tokens = content_len // _CHARS_PER_TOKEN + 10
                 for tc in msg.get("tool_calls") or []:
                     if isinstance(tc, dict):
@@ -450,7 +451,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     "api_mode": self.api_mode,
                 },
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": summary_budget * 2,
+                "max_tokens": int(summary_budget * 1.3),
                 # timeout resolved from auxiliary.compression.timeout config by call_llm
             }
             if self.summary_model:
@@ -466,6 +467,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             self._summary_failure_cooldown_until = 0.0
             return self._with_summary_prefix(summary)
         except RuntimeError:
+            # No provider configured — long cooldown, unlikely to self-resolve
             self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
             logging.warning("Context compression: no provider available for "
                             "summary. Middle turns will be dropped without summary "
@@ -473,12 +475,14 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                             _SUMMARY_FAILURE_COOLDOWN_SECONDS)
             return None
         except Exception as e:
-            self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
+            # Transient errors (timeout, rate limit, network) — shorter cooldown
+            _transient_cooldown = min(_SUMMARY_FAILURE_COOLDOWN_SECONDS, 60)
+            self._summary_failure_cooldown_until = time.monotonic() + _transient_cooldown
             logging.warning(
                 "Failed to generate context summary: %s. "
                 "Further summary attempts paused for %d seconds.",
                 e,
-                _SUMMARY_FAILURE_COOLDOWN_SECONDS,
+                _transient_cooldown,
             )
             return None
 
@@ -744,11 +748,11 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         compressed = []
         for i in range(compress_start):
             msg = messages[i].copy()
-            if i == 0 and msg.get("role") == "system" and self.compression_count == 0:
-                msg["content"] = (
-                    (msg.get("content") or "")
-                    + "\n\n[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work.]"
-                )
+            if i == 0 and msg.get("role") == "system":
+                existing = msg.get("content") or ""
+                _compression_note = "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work.]"
+                if _compression_note not in existing:
+                    msg["content"] = existing + "\n\n" + _compression_note
             compressed.append(msg)
 
         # If LLM summary failed, insert a static fallback so the model
