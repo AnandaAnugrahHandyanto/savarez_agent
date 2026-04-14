@@ -46,6 +46,9 @@ def get_memory_dir() -> Path:
     """Return the profile-scoped memories directory."""
     return get_hermes_home() / "memories"
 
+
+MEMORY_DIR = get_memory_dir()  # Compat alias for older tests and references
+
 ENTRY_DELIMITER = "\n§\n"
 DEFAULT_MEMORY_TYPE = "uncategorized"
 EXPLICIT_MEMORY_TYPES = ("user", "feedback", "project", "reference")

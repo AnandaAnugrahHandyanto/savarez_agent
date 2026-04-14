@@ -16,10 +16,22 @@ _VALID_POST_ACTIONS = {"allow", "modify_result"}
 
 def is_control_protocol(result: Any) -> bool:
     """Check if a hook result follows the control protocol."""
-    return (
-        isinstance(result, dict)
-        and result.get("action") in (_VALID_PRE_ACTIONS | _VALID_POST_ACTIONS)
-    )
+    if not isinstance(result, dict):
+        return False
+
+    if "action" not in result:
+        return False
+
+    action = result["action"]
+    if action not in (_VALID_PRE_ACTIONS | _VALID_POST_ACTIONS):
+        return False
+
+    if action == "deny":
+        reason = result.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            return False
+
+    return True
 
 
 def resolve_pre_tool_control(hook_results: list, original_args: dict) -> dict:
