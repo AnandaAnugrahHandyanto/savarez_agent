@@ -1392,6 +1392,9 @@ class HermesCLI:
         self._should_exit = False
         self._last_ctrl_c_time = 0
         self._stashed_input = None  # Ctrl+S stash: (text, [images]) or None
+        self._stash_list: list = []   # multi-item stash [{id, text, images, stashed_at, preview}]
+        self._stash_panel_open: bool = False
+        self._stash_panel_cursor: int = 0
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
