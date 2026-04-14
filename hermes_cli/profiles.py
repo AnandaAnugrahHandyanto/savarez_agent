@@ -1165,6 +1165,15 @@ _hermes_completion() {
         esac
     fi
 
+    if [[ "${COMP_WORDS[1]}" == "claw" ]]; then
+        case "$prev" in
+            claw)
+                COMPREPLY=($(compgen -W "migrate cleanup clean" -- "$cur"))
+                return
+                ;;
+        esac
+    fi
+
     # Top-level subcommands
     if [[ "$COMP_CWORD" == 1 ]]; then
         local commands="chat model gateway setup whatsapp login logout auth status cron webhook doctor dump backup import config pairing skills plugins memory tools mcp sessions insights claw version update uninstall acp profile completion dashboard logs debug"
@@ -1244,6 +1253,9 @@ _hermes() {
             ;;
         debug)
             _arguments '1:action:(share)'
+            ;;
+        claw)
+            _arguments '1:action:(migrate cleanup clean)'
             ;;
     esac
 }
