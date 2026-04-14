@@ -305,6 +305,7 @@ class ClawMemProvider(MemoryProvider):
         self._session_issue_number: int | None = None
         self._session_lock = threading.Lock()
         self._first_user_message: str = ""
+        self._is_primary = False  # only mirror conversations for primary agent
         self._auto_recall_limit = int(self._config.get("auto_recall_limit", 3))
 
     @property
@@ -366,6 +367,7 @@ class ClawMemProvider(MemoryProvider):
         from .client import GitHubIssueClient
 
         self._session_id = session_id
+        self._is_primary = kwargs.get("agent_context", "primary") == "primary"
         base_url = self._config.get("base_url", _DEFAULT_BASE_URL)
         token = self._config.get("token", "")
         auth_scheme = self._config.get("auth_scheme", "token")
@@ -401,6 +403,12 @@ class ClawMemProvider(MemoryProvider):
             if token:
                 self._config["token"] = token
                 self._config["default_repo"] = self._repo
+                self._config["base_url"] = base_url
+                self._config["auth_scheme"] = auth_scheme
+                # Persist to config.yaml so token survives restarts
+                hermes_home = kwargs.get("hermes_home", "")
+                if hermes_home:
+                    self.save_config(self._config, str(hermes_home))
                 logger.info("ClawMem auto-provisioned: repo=%s", self._repo)
 
         if not token:
@@ -470,7 +478,7 @@ class ClawMemProvider(MemoryProvider):
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Mirror turn to conversation issue in a background thread."""
-        if not self._client or not self._repo:
+        if not self._client or not self._repo or not self._is_primary:
             return
 
         # Capture first user message for session title
@@ -542,7 +550,7 @@ class ClawMemProvider(MemoryProvider):
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Update conversation issue title from first user message, then close."""
-        if not self._client or not self._repo or not self._session_issue_number:
+        if not self._client or not self._repo or not self._session_issue_number or not self._is_primary:
             return
         try:
             # Derive a meaningful title from the first user message
