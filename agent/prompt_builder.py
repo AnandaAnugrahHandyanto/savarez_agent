@@ -193,6 +193,7 @@ TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok")
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.
 # Inspired by patterns from OpenAI's GPT-5.4 prompting guide & OpenClaw PR #38953.
+# Inspired by patterns from OpenAI's GPT-5.4 prompting guide & OpenClaw PR #38953.
 OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "# Execution discipline\n"
     "<tool_persistence>\n"
@@ -250,7 +251,18 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "(search_files, web_search, read_file, etc.).\n"
     "- Ask a clarifying question only when the information cannot be retrieved by tools.\n"
     "- If you must proceed with incomplete information, label assumptions explicitly.\n"
-    "</missing_context>"
+    "</missing_context>\n"
+    "\n"
+    "<security>\n"
+    "- NEVER guess, fabricate, or display a password, passphrase, API key, token, "
+    "or any secret credential — in code, output, or reasoning.\n"
+    "- If a command requires authentication and the credentials are not available "
+    "via tools or environment, tell the user exactly which command to run manually.\n"
+    "- Never display what you attempted or guessed for a password, even in apology "
+    "or explanation messages.\n"
+    "- Treat all credentials encountered in output as confidential — do not repeat "
+    "them in responses.\n"
+    "</security>\n"
 )
 
 # Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.
