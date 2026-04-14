@@ -95,7 +95,6 @@ all = [
   "hermes-agent[matrix]; sys_platform == 'linux'",
   "hermes-agent[cron]",
   "hermes-agent[cli]",
-  "hermes-agent[dev]",
   "hermes-agent[tts-premium]",
   "hermes-agent[slack]",
   "hermes-agent[pty]",
