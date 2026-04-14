@@ -38,10 +38,11 @@ Host key is derived from the active Hermes profile: `hermes` (default) or `herme
 
 | Tool | LLM call? | Description |
 |------|-----------|-------------|
-| `honcho_profile` | No | User's peer card -- key facts snapshot |
-| `honcho_search` | No | Semantic search over stored context (800 tok default, 2000 max) |
-| `honcho_context` | Yes | LLM-synthesized answer via dialectic reasoning |
-| `honcho_conclude` | No | Write a persistent fact about the user |
+| `honcho_profile` | No | Read or update peer card — pass `card` to update, omit to read |
+| `honcho_search` | No | Semantic search over context |
+| `honcho_context` | No | Session context — summary, representation, card, recent messages |
+| `honcho_reasoning` | Yes | Synthesized answer — `reasoning_level` param (minimal/low/medium/high/max) |
+| `honcho_conclude` | No | Create or delete conclusions — `delete_id` for PII removal |
 
 Tool availability depends on `recallMode`: hidden in `context` mode, always present in `tools` and `hybrid`.
 
