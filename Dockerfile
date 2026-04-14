@@ -42,5 +42,9 @@ USER root
 RUN chmod +x /opt/hermes/docker/entrypoint.sh
 
 ENV HERMES_HOME=/opt/data
+
+# Activate the virtualenv for all interactive bash sessions (docker exec -it hermes bash)
+RUN echo 'source /opt/hermes/.venv/bin/activate' >> /etc/bash.bashrc
+
 VOLUME [ "/opt/data" ]
 ENTRYPOINT [ "/opt/hermes/docker/entrypoint.sh" ]
