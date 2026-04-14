@@ -40,6 +40,28 @@ def _load_plan_mode_hook():
     return mod
 
 
+def _load_project_plugin_init():
+    """Load the project plugin __init__ via importlib."""
+    mod_name = "hongxing_enhancements_plugin"
+    if mod_name in sys.modules:
+        return sys.modules[mod_name]
+    spec = importlib.util.spec_from_file_location(
+        mod_name, os.path.join(_PROJECT_PLUGIN_SRC, "__init__.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _DummyPluginContext:
+    def __init__(self):
+        self.registered_hooks = []
+
+    def register_hook(self, hook_name, callback):
+        self.registered_hooks.append((hook_name, callback))
+
+
 @pytest.fixture(autouse=True)
 def _reset_plan_mode():
     """Ensure plan mode is off before and after each test."""
@@ -93,6 +115,24 @@ class TestPluginDiscovery:
         assert "hongxing-enhancements" in plugins
         # Plugin is enabled (register() was called without error)
         assert plugins["hongxing-enhancements"]["enabled"] is True
+
+    def test_smart_recall_available_after_register(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "hermes_int"
+        fake_home.mkdir()
+        (fake_home / "memories").mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(fake_home))
+        try:
+            import hermes_constants
+            hermes_constants.get_hermes_home.cache_clear()
+        except (ImportError, AttributeError):
+            pass
+
+        mod = _load_project_plugin_init()
+        ctx = _DummyPluginContext()
+        mod.register(ctx)
+
+        assert hasattr(ctx, "smart_recall")
+        assert ctx.smart_recall.__class__.__name__ == "SmartRecall"
 
 
 # ── Tool Discovery Chain ─────────────────────────────────────────────
