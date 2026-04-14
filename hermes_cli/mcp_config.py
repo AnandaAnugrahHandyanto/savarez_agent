@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config import (
@@ -676,6 +677,132 @@ def cmd_mcp_configure(args):
     _info("Start a new session for changes to take effect.")
 
 
+# ─── hermes mcp auth ──────────────────────────────────────────────────────────
+
+def cmd_mcp_auth(args):
+    """Authenticate MCP servers that require OAuth or API keys.
+    
+    Works across all channels (CLI, Telegram, Discord, etc.) by providing
+    clear instructions for browser-based OAuth or prompting for API keys.
+    """
+    servers = _get_mcp_servers()
+    
+    if not servers:
+        _error("No MCP servers configured.")
+        _info("Add one with: hermes mcp add <name> --url <endpoint>")
+        return
+    
+    # Find servers needing auth
+    auth_needed = []
+    for name, cfg in servers.items():
+        auth_type = (cfg.get("auth") or "").lower().strip()
+        headers = cfg.get("headers", {})
+        
+        if auth_type == "oauth":
+            # Check if OAuth tokens exist
+            token_path = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "mcp-tokens" / f"{name}.json"
+            if not token_path.exists():
+                auth_needed.append((name, "oauth", cfg))
+        elif headers and "Authorization" in headers:
+            # Check if API key is set
+            auth_val = headers["Authorization"]
+            if "${" in auth_val:
+                # Env var reference - check if it's set
+                env_match = re.search(r"\$\{(\w+)\}", auth_val)
+                if env_match:
+                    env_key = env_match.group(1)
+                    if not os.getenv(env_key):
+                        auth_needed.append((name, "header", cfg, env_key))
+    
+    if not auth_needed:
+        _success("All MCP servers are authenticated!")
+        return
+    
+    print()
+    print(color("  Servers needing authentication:", Colors.CYAN + Colors.BOLD))
+    print()
+    
+    for item in auth_needed:
+        name = item[0]
+        auth_type = item[1]
+        cfg = item[2]
+        
+        if auth_type == "oauth":
+            print(f"  {color(name, Colors.GREEN):<20} OAuth 2.1 PKCE")
+        else:
+            env_key = item[3]
+            print(f"  {color(name, Colors.GREEN):<20} API key ({env_key})")
+    
+    print()
+    
+    # Process each server
+    for item in auth_needed:
+        name = item[0]
+        auth_type = item[1]
+        cfg = item[2]
+        
+        print()
+        print(color(f"  Authenticating '{name}'...", Colors.CYAN))
+        
+        if auth_type == "oauth":
+            _do_oauth_auth(name, cfg)
+        else:
+            env_key = item[3]
+            _do_header_auth(name, env_key)
+    
+    print()
+    _success("Authentication complete. Start a new session to use these servers.")
+
+
+def _do_oauth_auth(name: str, cfg: dict):
+    """Perform OAuth authentication for an MCP server."""
+    url = cfg.get("url")
+    if not url:
+        _error(f"Server '{name}' has no URL configured.")
+        return
+    
+    try:
+        from tools.mcp_oauth import build_oauth_auth
+        _info(f"Opening browser for OAuth authorization...")
+        oauth_auth = build_oauth_auth(name, url)
+        
+        if oauth_auth:
+            # Trigger the OAuth flow by attempting a connection
+            # The OAuthClientProvider will handle the browser flow
+            _success(f"OAuth flow initiated for '{name}'")
+            _info("Check your browser to complete authorization")
+        else:
+            _error(f"OAuth not available for '{name}' (MCP SDK auth module missing)")
+            _info("Install with: pip install mcp[auth]")
+    except Exception as exc:
+        _error(f"OAuth failed for '{name}': {exc}")
+        _info(f"You may need to re-add the server: hermes mcp remove {name} && hermes mcp add {name} --url {url} --auth oauth")
+
+
+def _do_header_auth(name: str, env_key: str):
+    """Prompt for API key authentication."""
+    from hermes_cli.config import save_env_value
+    
+    existing = get_env_value(env_key)
+    if existing:
+        _success(f"{env_key} already configured")
+        return
+    
+    print()
+    _info(f"API key required for '{name}'")
+    
+    try:
+        api_key = _prompt(f"Enter API key for {env_key}", password=True)
+        if api_key:
+            save_env_value(env_key, api_key)
+            _success(f"Saved to {display_hermes_home()}/.env as {env_key}")
+        else:
+            _warning(f"Skipped - server '{name}' will not be usable until {env_key} is set")
+    except (KeyboardInterrupt, EOFError):
+        print()
+        _warning(f"Skipped - set {env_key} manually in {display_hermes_home()}/.env")
+
+
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 def mcp_command(args):
@@ -696,6 +823,7 @@ def mcp_command(args):
         "test": cmd_mcp_test,
         "configure": cmd_mcp_configure,
         "config": cmd_mcp_configure,
+        "auth": cmd_mcp_auth,
     }
 
     handler = handlers.get(action)
@@ -713,4 +841,5 @@ def mcp_command(args):
         _info("hermes mcp list                               List servers")
         _info("hermes mcp test <name>                        Test connection")
         _info("hermes mcp configure <name>                   Toggle tools")
+        _info("hermes mcp auth                               Authenticate servers")
         print()

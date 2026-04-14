@@ -2758,6 +2758,9 @@ class GatewayRunner:
 
         if canonical == "reload-mcp":
             return await self._handle_reload_mcp_command(event)
+        
+        if canonical == "mcp":
+            return await self._handle_mcp_command(event)
 
         if canonical == "approve":
             return await self._handle_approve_command(event)
@@ -6369,6 +6372,69 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("MCP reload failed: %s", e)
             return f"❌ MCP reload failed: {e}"
+
+    async def _handle_mcp_command(self, event: MessageEvent) -> str:
+        """Handle /mcp command -- list servers and auth status, or authenticate servers.
+        
+        Usage:
+            /mcp              List MCP servers and their authentication status
+            /mcp auth         Authenticate all servers needing OAuth or API keys
+        
+        Works across all gateway channels (Telegram, Discord, WhatsApp, Slack, etc.).
+        """
+        text = (event.text or "").strip()
+        parts = text.split(maxsplit=1)
+        subcommand = parts[1].strip().lower() if len(parts) > 1 else ""
+        
+        loop = asyncio.get_event_loop()
+        
+        if subcommand == "auth":
+            # Authenticate servers needing auth
+            def _run_auth():
+                import sys
+                from io import StringIO
+                from hermes_cli.mcp_config import cmd_mcp_auth
+                from argparse import Namespace
+                
+                # Capture stdout for gateway response
+                old_stdout = sys.stdout
+                sys.stdout = captured = StringIO()
+                try:
+                    cmd_mcp_auth(Namespace())
+                finally:
+                    sys.stdout = old_stdout
+                return captured.getvalue()
+            
+            try:
+                result = await loop.run_in_executor(None, _run_auth)
+                return result or "Authentication complete."
+            except Exception as e:
+                logger.error("MCP auth command error: %s", e, exc_info=True)
+                return f"Error during authentication: {e}"
+        
+        # Default: list servers with auth status
+        def _list_servers():
+            import sys
+            from io import StringIO
+            from hermes_cli.mcp_config import cmd_mcp_list
+            from argparse import Namespace
+            
+            old_stdout = sys.stdout
+            sys.stdout = captured = StringIO()
+            try:
+                cmd_mcp_list(Namespace())
+            finally:
+                sys.stdout = old_stdout
+            return captured.getvalue()
+        
+        try:
+            result = await loop.run_in_executor(None, _list_servers)
+            # Add auth hint
+            result += "\n  💡 Use /mcp auth to authenticate servers"
+            return result
+        except Exception as e:
+            logger.error("MCP list command error: %s", e, exc_info=True)
+            return f"Error listing MCP servers: {e}"
 
     # ------------------------------------------------------------------
     # /approve & /deny — explicit dangerous-command approval
