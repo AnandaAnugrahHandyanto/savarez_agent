@@ -12,6 +12,13 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
+def _current_umask() -> int:
+    """Return the process umask without permanently changing it."""
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
+
+
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
 
 
@@ -71,6 +78,10 @@ def atomic_json_write(
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, path)
+        try:
+            os.chmod(path, 0o666 & ~_current_umask())
+        except OSError:
+            pass
     except BaseException:
         # Intentionally catch BaseException so temp-file cleanup still runs for
         # KeyboardInterrupt/SystemExit before re-raising the original signal.
@@ -119,6 +130,10 @@ def atomic_yaml_write(
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, path)
+        try:
+            os.chmod(path, 0o666 & ~_current_umask())
+        except OSError:
+            pass
     except BaseException:
         # Match atomic_json_write: cleanup must also happen for process-level
         # interruptions before we re-raise them.

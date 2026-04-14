@@ -2,6 +2,8 @@
 
 import json
 import os
+import stat
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -157,3 +159,19 @@ class TestAtomicJsonWrite:
         result = json.loads(target.read_text())
         assert "writer" in result
         assert len(result["data"]) == 100
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions")
+    def test_file_permissions_honor_umask(self, tmp_path):
+        """Resulting file should have umask-respecting permissions, not 0600."""
+        # Read current umask without permanently changing it.
+        current_umask = os.umask(0)
+        os.umask(current_umask)
+
+        target = tmp_path / "perms.json"
+        atomic_json_write(target, {"ok": True})
+
+        mode = stat.S_IMODE(target.stat().st_mode)
+        # mkstemp creates 0600; after the fix, mode should match what a
+        # plain open() would produce: 0o666 & ~umask.
+        expected = 0o666 & ~current_umask
+        assert mode == expected, f"expected {oct(expected)}, got {oct(mode)}"
