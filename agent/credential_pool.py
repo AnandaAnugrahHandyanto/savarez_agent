@@ -781,6 +781,9 @@ class CredentialPool:
         cleared_any = False
         available: List[PooledCredential] = []
         for entry in self._entries:
+            exhausted_until = _exhausted_until(entry)
+            if entry.last_status == STATUS_EXHAUSTED and exhausted_until is not None and now < exhausted_until:
+                continue
             # For anthropic claude_code entries, sync from the credentials file
             # before any status/refresh checks. This picks up tokens refreshed
             # by other processes (Claude Code CLI, other Hermes profiles).
@@ -801,9 +804,6 @@ class CredentialPool:
                     entry = synced
                     cleared_any = True
             if entry.last_status == STATUS_EXHAUSTED:
-                exhausted_until = _exhausted_until(entry)
-                if exhausted_until is not None and now < exhausted_until:
-                    continue
                 if clear_expired:
                     cleared = replace(
                         entry,
@@ -1153,6 +1153,12 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             )
 
     elif provider == "openai-codex":
+        # If the pool already contains explicit manual entries, do not
+        # auto-seed an extra singleton device_code credential from auth.json
+        # or the external Codex CLI file. The pool contents are already
+        # authoritative in that case.
+        if any(_is_manual_source(entry.source) for entry in entries):
+            return changed, active_sources
         state = _load_provider_state(auth_store, "openai-codex")
         tokens = state.get("tokens") if isinstance(state, dict) else None
         # Fallback: import from Codex CLI (~/.codex/auth.json) if Hermes auth

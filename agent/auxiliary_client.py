@@ -637,18 +637,15 @@ def _nous_base_url() -> str:
 def _read_codex_access_token() -> Optional[str]:
     """Read a valid, non-expired Codex OAuth access token from Hermes auth store.
 
-    If a credential pool exists but currently has no selectable runtime entry
-    (for example all pool slots are marked exhausted), fall back to the
-    profile's auth.json token instead of hard-failing. This keeps explicit
-    fallback-to-Codex working when the pool state is stale but the stored OAuth
-    token is still valid.
-    """
-    pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        token = _pool_runtime_api_key(entry)
-        if token:
-            return token
+    Prefer the active profile's auth.json store when it exists. If the profile
+    has no Codex token (or only an expired one), return None rather than
+    leaking a token from an unrelated local credential pool into the current
+    runtime context.
 
+    When no profile auth store exists, fall back to the credential pool so
+    pool-backed Codex sessions still work.
+    """
+    auth_path = get_hermes_home() / "auth.json"
     try:
         from hermes_cli.auth import _read_codex_tokens
         data = _read_codex_tokens()
@@ -674,7 +671,15 @@ def _read_codex_access_token() -> Optional[str]:
         return access_token.strip()
     except Exception as exc:
         logger.debug("Could not read Codex auth for auxiliary client: %s", exc)
-        return None
+        if auth_path.exists():
+            return None
+
+    pool_present, entry = _select_pool_entry("openai-codex")
+    if pool_present:
+        token = _pool_runtime_api_key(entry)
+        if token:
+            return token
+    return None
 
 
 def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
@@ -918,20 +923,13 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
+    codex_token = _read_codex_access_token()
+    if not codex_token:
+        return None, None
     pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        codex_token = _pool_runtime_api_key(entry)
-        if codex_token:
-            base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
-        else:
-            codex_token = _read_codex_access_token()
-            if not codex_token:
-                return None, None
-            base_url = _CODEX_AUX_BASE_URL
+    if pool_present and entry is not None:
+        base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
     else:
-        codex_token = _read_codex_access_token()
-        if not codex_token:
-            return None, None
         base_url = _CODEX_AUX_BASE_URL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", _CODEX_AUX_MODEL)
     real_client = OpenAI(api_key=codex_token, base_url=base_url)
@@ -973,7 +971,7 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
         pass
 
     from agent.anthropic_adapter import _is_oauth_token
-    is_oauth = _is_oauth_token(token)
+    is_oauth = _is_oauth_token(token) or not str(token).startswith("sk-ant-api")
     model = _API_KEY_PROVIDER_AUX_MODELS.get("anthropic", "claude-haiku-4-5-20251001")
     logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
     try:
@@ -1646,6 +1644,12 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
         api_mode=api_mode,
         main_runtime=main_runtime,
     )
+
+
+def get_vision_auxiliary_client(provider: Optional[str] = None):
+    """Return ``(client, model)`` for vision tasks using auto/provider routing."""
+    _effective_provider, client, model = resolve_vision_provider_client(provider)
+    return client, model
 
 
 _VISION_AUTO_PROVIDER_ORDER = (
