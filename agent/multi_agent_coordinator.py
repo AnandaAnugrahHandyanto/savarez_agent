@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import asyncio
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -98,20 +99,48 @@ class SharedMemory:
     """
     跨Agent共享内存池 — 解决#344中"children can't talk to each other"的问题
 
-    使用发布-订阅模式：
+    使用 asyncio.Queue 消息总线 + 发布-订阅模式：
     - 每个Agent可以向池中写入（publish）
     - 每个Agent可以订阅特定类型的更新（subscribe）
     - Coordinator可以读取所有内容
+    - 完全异步，非阻塞
+
+    设计原则（参考 autogen 的 asyncio.Queue 消息总线）：
+    - 用 asyncio.Lock 替代 threading.Lock（非阻塞）
+    - asyncio.Queue 用于异步消息传递
+    - 同步方法保留以兼容现有调用方
     """
-    _lock: threading.Lock = field(default_factory=threading.Lock)
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _data: dict[str, Any] = field(default_factory=dict)
     _subscribers: dict[str, list[Callable]] = field(default_factory=dict)
-    _events: list[dict] = field(default_factory=list)  # 事件日志，用于trace
+    _events: list[dict] = field(default_factory=list)
     _max_events: int = 1000
+    _queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=1000))
 
     def publish(self, key: str, value: Any, event_type: str = "update") -> None:
-        """写入共享数据"""
-        with self._lock:
+        """写入共享数据（同步兼容）"""
+        # Note: asyncio.Lock can't be used in sync context, so we use a simple dict copy
+        # For full async publish, use publish_async()
+        self._data[key] = value
+        event = {
+            "ts": time.time(),
+            "type": event_type,
+            "key": key,
+            "value": repr(value)[:200] if not isinstance(value, str) else value[:200],
+        }
+        self._events.append(event)
+        if len(self._events) > self._max_events:
+            self._events = self._events[-self._max_events:]
+        # 通知订阅者（同步回调，用于兼容）
+        for callback in self._subscribers.get(key, []) + self._subscribers.get("*", []):
+            try:
+                callback(key, value)
+            except Exception as e:
+                logger.debug("Subscriber callback error: %s", e)
+
+    async def publish_async(self, key: str, value: Any, event_type: str = "update") -> None:
+        """异步发布（推荐）"""
+        async with self._lock:
             self._data[key] = value
             event = {
                 "ts": time.time(),
@@ -122,40 +151,77 @@ class SharedMemory:
             self._events.append(event)
             if len(self._events) > self._max_events:
                 self._events = self._events[-self._max_events:]
-            # 通知订阅者
-            for callback in self._subscribers.get(key, []):
-                try:
+        # 非阻塞地放入队列（不持有锁）
+        try:
+            self._queue.put_nowait({"key": key, "value": value, "type": event_type})
+        except asyncio.QueueFull:
+            logger.debug("SharedMemory queue full, dropping event")
+        # 通知订阅者
+        for callback in self._subscribers.get(key, []) + self._subscribers.get("*", []):
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    await callback(key, value)
+                else:
                     callback(key, value)
-                except Exception as e:
-                    logger.debug("Subscriber callback error: %s", e)
-            # 通配符订阅
-            for callback in self._subscribers.get("*", []):
-                try:
-                    callback(key, value)
-                except Exception as e:
-                    logger.debug("Wildcard subscriber error: %s", e)
+            except Exception as e:
+                logger.debug("Subscriber callback error: %s", e)
 
-    def read(self, key: str, default: Any = None) -> Any:
-        """读取共享数据"""
-        with self._lock:
+    async def read_async(self, key: str, default: Any = None) -> Any:
+        """异步读取"""
+        async with self._lock:
             return self._data.get(key, default)
 
-    def read_all(self) -> dict[str, Any]:
-        """读取所有共享数据（快照）"""
-        with self._lock:
+    async def read_all_async(self) -> dict[str, Any]:
+        """异步读取所有"""
+        async with self._lock:
             return dict(self._data)
 
+    def read(self, key: str, default: Any = None) -> Any:
+        """同步读取（兼容现有调用方）"""
+        return self._data.get(key, default)
+
+    def read_all(self) -> dict[str, Any]:
+        """同步读取所有（快照）"""
+        return dict(self._data)
+
     def subscribe(self, key: str, callback: Callable[[str, Any], None]) -> None:
-        """订阅特定key的更新"""
-        with self._lock:
+        """订阅特定key的更新（同步/异步均可）"""
+        if key not in self._subscribers:
+            self._subscribers[key] = []
+        self._subscribers[key].append(callback)
+
+    async def subscribe_async(self, key: str, callback: Callable[[str, Any], None]) -> None:
+        """异步订阅"""
+        async with self._lock:
             if key not in self._subscribers:
                 self._subscribers[key] = []
             self._subscribers[key].append(callback)
 
+    async def wait_for(self, key: str, timeout: float = 30.0) -> Any:
+        """等待特定key有值（类似 asyncio.Queue.get）"""
+        async with self._lock:
+            if key in self._data:
+                return self._data[key]
+            # 临时订阅
+            event = asyncio.Event()
+
+            def _check(key_: str, value: Any) -> None:
+                event.set()
+            self._subscribers.setdefault(key, []).append(_check)
+
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return self._data.get(key)
+        finally:
+            async with self._lock:
+                if key in self._subscribers and _check in self._subscribers[key]:
+                    self._subscribers[key].remove(_check)
+        return self._data.get(key)
+
     def get_events(self, since_ts: float = 0) -> list[dict]:
         """获取事件日志（用于调试和trace）"""
-        with self._lock:
-            return [e for e in self._events if e["ts"] > since_ts]
+        return [e for e in self._events if e["ts"] > since_ts]
 
 
 class DAGWorkflow:

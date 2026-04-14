@@ -136,6 +136,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="XIAOMI_BASE_URL",
     ),
+    "ollama": HermesOverlay(
+        transport="openai_chat",
+        auth_type="none",  # Local, no API key required
+        base_url_override="http://localhost:11434/v1",
+        base_url_env_var="OLLAMA_HOST",  # Ollama's native env var (sets base URL)
+        extra_env_vars=("OLLAMA_MODELS",),  # Model directory
+    ),
 }
 
 

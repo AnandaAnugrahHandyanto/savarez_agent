@@ -58,7 +58,100 @@ class FailoverReason(enum.Enum):
     unknown = "unknown"                  # Unclassifiable — retry with backoff
 
 
-# ── Classification result ───────────────────────────────────────────────
+# ── Exception class hierarchy ─────────────────────────────────────────
+
+class AgentError(Exception):
+    """Base exception for all agent errors."""
+    pass
+
+
+class TemporaryError(AgentError):
+    """
+    Error that may resolve with time or a retry — agent should back off and retry.
+
+    Examples: rate limit (429), timeout, server overload (503), transient auth failure
+    """
+    pass
+
+
+class PermanentError(AgentError):
+    """
+    Error that will not resolve with retries — agent should fail fast.
+
+    Examples: invalid API key, model not found, context overflow, billing exhausted, validation error
+    """
+    pass
+
+
+class RetryExhaustedError(PermanentError):
+    """Raised when all retry strategies have been exhausted."""
+    pass
+
+
+class ValidationError(PermanentError):
+    """Raised when input validation fails."""
+    pass
+
+
+class ConfigurationError(PermanentError):
+    """Raised when agent configuration is invalid."""
+    pass
+
+
+class ContextOverflowError(PermanentError):
+    """Raised when context is too large even after compression."""
+    pass
+
+
+class AuthenticationError(TemporaryError):
+    """Raised when auth fails — may be resolved with token refresh."""
+    pass
+
+
+class AuthenticationExpiredError(PermanentError):
+    """Raised when auth has permanently failed (e.g., invalid key after refresh)."""
+    pass
+
+
+class RateLimitError(TemporaryError):
+    """Raised when rate limit is hit — should back off and retry."""
+    pass
+
+
+class TimeoutError(TemporaryError):
+    """Raised when a network/API call times out."""
+    pass
+
+
+class ToolExecutionError(AgentError):
+    """Raised when a tool fails during execution (not API errors)."""
+    def __init__(self, tool_name: str, message: str, cause: Exception | None = None):
+        super().__init__(f"Tool '{tool_name}' failed: {message}")
+        self.tool_name = tool_name
+        self.cause = cause
+
+
+def error_from_classification(classified: ClassifiedError) -> AgentError:
+    """Convert a ClassifiedError to the appropriate exception class."""
+    reason = classified.reason
+    if not classified.retryable:
+        return PermanentError(f"[{reason.value}] {classified.message}")
+    if reason in (FailoverReason.auth,):
+        return AuthenticationError(classified.message)
+    if reason in (FailoverReason.rate_limit, FailoverReason.overloaded):
+        return RateLimitError(classified.message)
+    if reason in (FailoverReason.timeout,):
+        return TimeoutError(classified.message)
+    if reason == FailoverReason.context_overflow:
+        return ContextOverflowError(classified.message)
+    if reason == FailoverReason.format_error:
+        return ValidationError(f"[format] {classified.message}")
+    if reason == FailoverReason.model_not_found:
+        return PermanentError(f"[model_not_found] {classified.message}")
+    return AgentError(f"[{reason.value}] {classified.message}")
+
+
+# ── Classification result ────────────────────────────────────────────────
 
 @dataclass
 class ClassifiedError:
