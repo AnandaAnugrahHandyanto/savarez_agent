@@ -185,6 +185,102 @@ class TestWebServerEndpoints:
         assert resp.json()["gateway_state"] == "startup_failed"
         assert resp.json()["gateway_platforms"] == {}
 
+    def test_get_profiles_lists_active_and_available_profiles(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "_list_dashboard_profiles",
+            lambda: {
+                "active_profile": "main",
+                "profiles": [
+                    {"name": "default", "label": "default", "is_active": False},
+                    {"name": "main", "label": "main", "is_active": True},
+                    {"name": "pawmela", "label": "pawmela", "is_active": False},
+                ],
+            },
+        )
+
+        resp = self.client.get("/api/profiles")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["active_profile"] == "main"
+        assert [p["name"] for p in data["profiles"]] == ["default", "main", "pawmela"]
+
+    def test_get_sessions_all_profiles_aggregates_and_tags_profile(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "_list_dashboard_profiles",
+            lambda: {
+                "active_profile": "main",
+                "profiles": [
+                    {"name": "main", "label": "main", "is_active": True},
+                    {"name": "pawmela", "label": "pawmela", "is_active": False},
+                ],
+            },
+        )
+        monkeypatch.setattr(
+            web_server,
+            "_load_sessions_for_profile",
+            lambda profile, include_children=False: [
+                {
+                    "id": f"{profile}-1",
+                    "title": f"{profile} session",
+                    "started_at": 100 if profile == "main" else 200,
+                    "last_active": 100 if profile == "main" else 200,
+                    "ended_at": None,
+                    "message_count": 1,
+                    "tool_call_count": 0,
+                    "source": "cli",
+                    "model": "gpt-5.4",
+                    "preview": "hi",
+                }
+            ],
+        )
+
+        resp = self.client.get("/api/sessions?profile=all")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["selected_profile"] == "all"
+        assert data["total"] == 2
+        assert [s["profile"] for s in data["sessions"]] == ["pawmela", "main"]
+        assert data["available_profiles"][0]["name"] == "main"
+
+    def test_get_session_messages_uses_selected_profile(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        class _DB:
+            def resolve_session_id(self, session_id):
+                return session_id if session_id == "abc123" else None
+
+            def get_messages(self, session_id):
+                return [{"role": "user", "content": "hello from pawmela"}]
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            web_server,
+            "_list_dashboard_profiles",
+            lambda: {
+                "active_profile": "main",
+                "profiles": [
+                    {"name": "main", "label": "main", "is_active": True},
+                    {"name": "pawmela", "label": "pawmela", "is_active": False},
+                ],
+            },
+        )
+        monkeypatch.setattr(web_server, "_session_db_for_profile", lambda profile: _DB())
+
+        resp = self.client.get("/api/sessions/abc123/messages?profile=pawmela")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["session_id"] == "abc123"
+        assert data["profile"] == "pawmela"
+        assert data["messages"][0]["content"] == "hello from pawmela"
+
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")
         assert resp.status_code == 200

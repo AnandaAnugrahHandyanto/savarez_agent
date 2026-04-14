@@ -22,14 +22,26 @@ async function getSessionToken(): Promise<string> {
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
-  getSessions: (limit = 20, offset = 0) =>
-    fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
-  getSessionMessages: (id: string) =>
-    fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
-  deleteSession: (id: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, {
+  getProfiles: () => fetchJSON<ProfilesResponse>("/api/profiles"),
+  getSessions: (limit = 20, offset = 0, profile?: string) => {
+    const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (profile) qs.set("profile", profile);
+    return fetchJSON<PaginatedSessions>(`/api/sessions?${qs.toString()}`);
+  },
+  getSessionMessages: (id: string, profile?: string) => {
+    const qs = new URLSearchParams();
+    if (profile) qs.set("profile", profile);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages${suffix}`);
+  },
+  deleteSession: (id: string, profile?: string) => {
+    const qs = new URLSearchParams();
+    if (profile) qs.set("profile", profile);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return fetchJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}${suffix}`, {
       method: "DELETE",
-    }),
+    });
+  },
   getLogs: (params: { file?: string; lines?: number; level?: string; component?: string }) => {
     const qs = new URLSearchParams();
     if (params.file) qs.set("file", params.file);
@@ -110,8 +122,11 @@ export const api = {
   getToolsets: () => fetchJSON<ToolsetInfo[]>("/api/tools/toolsets"),
 
   // Session search (FTS5)
-  searchSessions: (q: string) =>
-    fetchJSON<SessionSearchResponse>(`/api/sessions/search?q=${encodeURIComponent(q)}`),
+  searchSessions: (q: string, profile?: string) => {
+    const qs = new URLSearchParams({ q });
+    if (profile) qs.set("profile", profile);
+    return fetchJSON<SessionSearchResponse>(`/api/sessions/search?${qs.toString()}`);
+  },
 
   // OAuth provider management
   getOAuthProviders: () =>
@@ -196,6 +211,7 @@ export interface StatusResponse {
 
 export interface SessionInfo {
   id: string;
+  profile: string | null;
   source: string | null;
   model: string | null;
   title: string | null;
@@ -215,6 +231,9 @@ export interface PaginatedSessions {
   total: number;
   limit: number;
   offset: number;
+  selected_profile: string;
+  active_profile: string;
+  available_profiles: ProfileOption[];
 }
 
 export interface EnvVarInfo {
@@ -242,6 +261,7 @@ export interface SessionMessage {
 
 export interface SessionMessagesResponse {
   session_id: string;
+  profile: string;
   messages: SessionMessage[];
 }
 
@@ -313,8 +333,20 @@ export interface ToolsetInfo {
   tools: string[];
 }
 
+export interface ProfileOption {
+  name: string;
+  label: string;
+  is_active: boolean;
+}
+
+export interface ProfilesResponse {
+  active_profile: string;
+  profiles: ProfileOption[];
+}
+
 export interface SessionSearchResult {
   session_id: string;
+  profile: string;
   snippet: string;
   role: string | null;
   source: string | null;
@@ -324,6 +356,7 @@ export interface SessionSearchResult {
 
 export interface SessionSearchResponse {
   results: SessionSearchResult[];
+  selected_profile?: string;
 }
 
 // ── Model info types ──────────────────────────────────────────────────
