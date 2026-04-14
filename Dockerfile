@@ -55,15 +55,13 @@ RUN chown -R hermes:hermes /opt/hermes
 USER hermes
 
 # Configure the optional Python extras to install.
-ARG EXTRAS="messaging,cron,cli,modal,tts-premium,voice,pty,honcho,mcp,homeassistant,acp,slack"
 ENV VIRTUAL_ENV=/opt/hermes/.venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
-
 
 # Copy the application source as `hermes` and install Hermes into the virtual environment.
 COPY . .
 RUN uv venv $VIRTUAL_ENV && \
-    uv pip install --no-cache -e ".[$EXTRAS]"
+    uv pip install --no-cache -e ".[all]"
 
 USER root
 RUN chmod +x /opt/hermes/docker/entrypoint.sh
