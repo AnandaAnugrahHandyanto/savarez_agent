@@ -207,6 +207,50 @@ class TestWebServerEndpoints:
         assert data["active_profile"] == "main"
         assert [p["name"] for p in data["profiles"]] == ["default", "main", "pawmela"]
 
+    def test_get_status_all_profiles_returns_profile_summaries(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "_list_dashboard_profiles",
+            lambda: {
+                "active_profile": "main",
+                "profiles": [
+                    {"name": "main", "label": "main", "is_active": True},
+                    {"name": "pawmela", "label": "pawmela", "is_active": False},
+                ],
+            },
+        )
+        monkeypatch.setattr(
+            web_server,
+            "_status_payload_for_profile",
+            lambda profile: {
+                "selected_profile": profile,
+                "active_sessions": 2 if profile == "main" else 1,
+                "gateway_running": profile == "main",
+                "gateway_pid": 123 if profile == "main" else None,
+                "gateway_state": "running" if profile == "main" else "stopped",
+                "gateway_platforms": {},
+                "gateway_exit_reason": None,
+                "gateway_updated_at": None,
+                "hermes_home": f"/tmp/{profile}",
+                "version": "0.9.0",
+                "release_date": "2026.4.13",
+                "config_path": f"/tmp/{profile}/config.yaml",
+                "env_path": f"/tmp/{profile}/.env",
+                "config_version": 1,
+                "latest_config_version": 1,
+            },
+        )
+
+        resp = self.client.get("/api/status?profile=all")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["selected_profile"] == "all"
+        assert data["active_sessions"] == 3
+        assert len(data["profile_summaries"]) == 2
+        assert [p["profile"] for p in data["profile_summaries"]] == ["main", "pawmela"]
+
     def test_get_sessions_all_profiles_aggregates_and_tags_profile(self, monkeypatch):
         import hermes_cli.web_server as web_server
 
@@ -763,6 +807,39 @@ class TestNewEndpoints:
         assert "totals" in data
         assert isinstance(data["daily"], list)
         assert "total_sessions" in data["totals"]
+
+    def test_analytics_usage_all_profiles(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "_list_dashboard_profiles",
+            lambda: {
+                "active_profile": "main",
+                "profiles": [
+                    {"name": "main", "label": "main", "is_active": True},
+                    {"name": "pawmela", "label": "pawmela", "is_active": False},
+                ],
+            },
+        )
+        monkeypatch.setattr(
+            web_server,
+            "_usage_analytics_for_profile",
+            lambda profile, days: {
+                "daily": [{"day": "2026-04-14", "input_tokens": 10, "output_tokens": 5, "cache_read_tokens": 0, "reasoning_tokens": 0, "estimated_cost": 0, "actual_cost": 0, "sessions": 1}],
+                "by_model": [{"model": f"{profile}-model", "input_tokens": 10, "output_tokens": 5, "estimated_cost": 0, "sessions": 1}],
+                "totals": {"total_input": 10, "total_output": 5, "total_cache_read": 0, "total_reasoning": 0, "total_estimated_cost": 0, "total_actual_cost": 0, "total_sessions": 1},
+                "period_days": days,
+                "selected_profile": profile,
+            },
+        )
+
+        resp = self.client.get("/api/analytics/usage?days=7&profile=all")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["selected_profile"] == "all"
+        assert data["totals"]["total_sessions"] == 2
+        assert len(data["profile_summaries"]) == 2
 
     def test_session_token_endpoint(self):
         from hermes_cli.web_server import _SESSION_TOKEN

@@ -21,7 +21,12 @@ async function getSessionToken(): Promise<string> {
 }
 
 export const api = {
-  getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getStatus: (profile?: string) => {
+    const qs = new URLSearchParams();
+    if (profile) qs.set("profile", profile);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return fetchJSON<StatusResponse>(`/api/status${suffix}`);
+  },
   getProfiles: () => fetchJSON<ProfilesResponse>("/api/profiles"),
   getSessions: (limit = 20, offset = 0, profile?: string) => {
     const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
@@ -50,8 +55,11 @@ export const api = {
     if (params.component && params.component !== "all") qs.set("component", params.component);
     return fetchJSON<LogsResponse>(`/api/logs?${qs.toString()}`);
   },
-  getAnalytics: (days: number) =>
-    fetchJSON<AnalyticsResponse>(`/api/analytics/usage?days=${days}`),
+  getAnalytics: (days: number, profile?: string) => {
+    const qs = new URLSearchParams({ days: String(days) });
+    if (profile) qs.set("profile", profile);
+    return fetchJSON<AnalyticsResponse>(`/api/analytics/usage?${qs.toString()}`);
+  },
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
@@ -192,8 +200,22 @@ export interface PlatformStatus {
   updated_at: string;
 }
 
+export interface ProfileStatusSummary {
+  profile: string;
+  active_sessions: number;
+  gateway_running: boolean;
+  gateway_pid: number | null;
+  gateway_state: string | null;
+  gateway_platforms: Record<string, PlatformStatus>;
+  gateway_exit_reason: string | null;
+  gateway_updated_at: string | null;
+  hermes_home: string;
+}
+
 export interface StatusResponse {
   active_sessions: number;
+  active_profile: string;
+  available_profiles: ProfileOption[];
   config_path: string;
   config_version: number;
   env_path: string;
@@ -205,7 +227,9 @@ export interface StatusResponse {
   gateway_updated_at: string | null;
   hermes_home: string;
   latest_config_version: number;
+  profile_summaries: ProfileStatusSummary[];
   release_date: string;
+  selected_profile: string;
   version: string;
 }
 
@@ -289,9 +313,28 @@ export interface AnalyticsModelEntry {
   sessions: number;
 }
 
-export interface AnalyticsResponse {
+export interface ProfileAnalyticsSummary {
+  profile: string;
   daily: AnalyticsDailyEntry[];
   by_model: AnalyticsModelEntry[];
+  totals: {
+    total_input: number;
+    total_output: number;
+    total_cache_read: number;
+    total_reasoning: number;
+    total_estimated_cost: number;
+    total_actual_cost: number;
+    total_sessions: number;
+  };
+}
+
+export interface AnalyticsResponse {
+  active_profile: string;
+  available_profiles: ProfileOption[];
+  daily: AnalyticsDailyEntry[];
+  by_model: AnalyticsModelEntry[];
+  profile_summaries: ProfileAnalyticsSummary[];
+  selected_profile: string;
   totals: {
     total_input: number;
     total_output: number;
