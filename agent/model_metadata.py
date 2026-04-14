@@ -106,7 +106,15 @@ DEFAULT_CONTEXT_LENGTHS = {
     "claude-sonnet-4.6": 1000000,
     # Catch-all for older Claude models (must sort after specific entries)
     "claude": 200000,
-    # OpenAI
+    # OpenAI — specific gpt-5.x variants BEFORE the generic catch-all
+    "gpt-5.4": 1_050_000,
+    "gpt-5.4-mini": 1_050_000,
+    "gpt-5.4-pro": 1_050_000,
+    "gpt-5.4-nano": 1_050_000,
+    "gpt-5.3-codex": 1_048_576,
+    "gpt-5.2-codex": 1_048_576,
+    "gpt-5.1-codex-max": 1_048_576,
+    "gpt-5.1-codex-mini": 1_048_576,
     "gpt-4.1": 1047576,
     "gpt-5": 128000,
     "gpt-4": 128000,
@@ -584,6 +592,20 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
     cache = _load_context_cache()
     if cache.get(key) == length:
         return  # already stored
+    # Sanity guard: reject suspiciously small values for models known to have
+    # large context windows. This prevents max_output_tokens (e.g. 32k for
+    # gpt-5.4 on the Codex endpoint) from being cached as context length.
+    _LARGE_CONTEXT_MODELS = ("gpt-5",)
+    _LARGE_CONTEXT_MIN = 128_001
+    for family in _LARGE_CONTEXT_MODELS:
+        if family in model.lower() and length < _LARGE_CONTEXT_MIN:
+            logger.warning(
+                "Rejecting suspiciously small context cache for %r: %s tokens "
+                "(expected >%s for %s family — may be max_output_tokens, not context length). "
+                "Set model.context_length in config.yaml to force a value.",
+                model, length, _LARGE_CONTEXT_MIN, family,
+            )
+            return
     cache[key] = length
     path = _get_context_cache_path()
     try:

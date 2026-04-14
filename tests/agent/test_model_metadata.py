@@ -709,3 +709,50 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+
+# =========================================================================
+# GPT-5.x context lengths — issue #5173
+# =========================================================================
+
+class TestGpt5ContextLengths:
+    """gpt-5.4 and friends must return 1_050_000 from DEFAULT_CONTEXT_LENGTHS,
+    not fall through to the generic 'gpt-5': 128000 catch-all."""
+
+    @patch("agent.model_metadata.fetch_model_metadata", return_value={})
+    def test_gpt_5_4_returns_1050000(self, mock_fetch, tmp_path):
+        cache_file = tmp_path / "cache.yaml"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            result = get_model_context_length("gpt-5.4")
+        assert result == 1_050_000, f"Expected 1_050_000, got {result}"
+
+    @patch("agent.model_metadata.fetch_model_metadata", return_value={})
+    def test_gpt_5_4_mini_returns_1050000(self, mock_fetch, tmp_path):
+        cache_file = tmp_path / "cache.yaml"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            result = get_model_context_length("gpt-5.4-mini")
+        assert result == 1_050_000, f"Expected 1_050_000, got {result}"
+
+    def test_save_gpt54_small_value_is_rejected(self, tmp_path):
+        """save_context_length with 32k for gpt-5.4 must be silently dropped."""
+        cache_file = tmp_path / "cache.yaml"
+        url = "https://chatgpt.com/backend-api/codex"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("gpt-5.4", url, 32000)
+            assert get_cached_context_length("gpt-5.4", url) is None
+
+    def test_save_gpt54_large_value_is_cached(self, tmp_path):
+        """save_context_length with 1_050_000 for gpt-5.4 must succeed."""
+        cache_file = tmp_path / "cache.yaml"
+        url = "https://chatgpt.com/backend-api/codex"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("gpt-5.4", url, 1_050_000)
+            assert get_cached_context_length("gpt-5.4", url) == 1_050_000
+
+    def test_sanity_guard_does_not_apply_to_non_gpt5(self, tmp_path):
+        """Non-gpt-5 models (e.g. llama-3) can be cached at 32k without restriction."""
+        cache_file = tmp_path / "cache.yaml"
+        url = "http://localhost:11434"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("llama-3-8b", url, 32000)
+            assert get_cached_context_length("llama-3-8b", url) == 32000
