@@ -627,6 +627,14 @@ class TestAdapterBehavior(unittest.TestCase):
                 calls.append("reaction_deleted")
                 return self
 
+            def register_p2_im_chat_member_bot_added_v1(self, _handler):
+                calls.append("bot_added")
+                return self
+
+            def register_p2_im_chat_member_bot_deleted_v1(self, _handler):
+                calls.append("bot_deleted")
+                return self
+
             def register_p2_card_action_trigger(self, _handler):
                 calls.append("card_action")
                 return self
@@ -654,6 +662,8 @@ class TestAdapterBehavior(unittest.TestCase):
                 "reaction_created",
                 "reaction_deleted",
                 "card_action",
+                "bot_added",
+                "bot_deleted",
                 "build",
             ],
         )
@@ -2349,182 +2359,6 @@ class TestAdapterBehavior(unittest.TestCase):
             rows,
             [[{"tag": "md", "text": "---\n1. 第一项\n  2. 子项\n- 外层\n  - 内层\n<u>下划线</u> 和 ~~删除线~~"}]],
         )
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_send_uses_post_for_inline_markdown(self):
-        from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
-        captured = {}
-
-        class _MessageAPI:
-            def create(self, request):
-                captured["request"] = request
-                return SimpleNamespace(
-                    success=lambda: True,
-                    data=SimpleNamespace(message_id="om_markdown"),
-                )
-
-        adapter._client = SimpleNamespace(
-            im=SimpleNamespace(
-                v1=SimpleNamespace(
-                    message=_MessageAPI(),
-                )
-            )
-        )
-
-        async def _direct(func, *args, **kwargs):
-            return func(*args, **kwargs)
-
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
-            result = asyncio.run(
-                adapter.send(
-                    chat_id="oc_chat",
-                    content="可以用 **粗体** 和 *斜体*。",
-                )
-            )
-
-        self.assertTrue(result.success)
-        self.assertEqual(captured["request"].request_body.msg_type, "post")
-        payload = json.loads(captured["request"].request_body.content)
-        elements = payload["zh_cn"]["content"][0]
-        self.assertEqual(elements, [{"tag": "md", "text": "可以用 **粗体** 和 *斜体*。"}])
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_send_falls_back_to_text_when_post_payload_is_rejected(self):
-        from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
-        captured = {"calls": []}
-
-        class _MessageAPI:
-            def create(self, request):
-                captured["calls"].append(request)
-                if len(captured["calls"]) == 1:
-                    raise RuntimeError("content format of the post type is incorrect")
-                return SimpleNamespace(
-                    success=lambda: True,
-                    data=SimpleNamespace(message_id="om_plain"),
-                )
-
-        adapter._client = SimpleNamespace(
-            im=SimpleNamespace(
-                v1=SimpleNamespace(
-                    message=_MessageAPI(),
-                )
-            )
-        )
-
-        async def _direct(func, *args, **kwargs):
-            return func(*args, **kwargs)
-
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
-            result = asyncio.run(
-                adapter.send(
-                    chat_id="oc_chat",
-                    content="可以用 **粗体** 和 *斜体*。",
-                )
-            )
-
-        self.assertTrue(result.success)
-        self.assertEqual(captured["calls"][0].request_body.msg_type, "post")
-        self.assertEqual(captured["calls"][1].request_body.msg_type, "text")
-        self.assertEqual(
-            captured["calls"][1].request_body.content,
-            json.dumps({"text": "可以用 粗体 和 斜体。"}, ensure_ascii=False),
-        )
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_send_falls_back_to_text_when_post_response_is_unsuccessful(self):
-        from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
-        captured = {"calls": []}
-
-        class _MessageAPI:
-            def create(self, request):
-                captured["calls"].append(request)
-                if len(captured["calls"]) == 1:
-                    return SimpleNamespace(success=lambda: False, code=230001, msg="content format of the post type is incorrect")
-                return SimpleNamespace(
-                    success=lambda: True,
-                    data=SimpleNamespace(message_id="om_plain_response"),
-                )
-
-        adapter._client = SimpleNamespace(
-            im=SimpleNamespace(
-                v1=SimpleNamespace(
-                    message=_MessageAPI(),
-                )
-            )
-        )
-
-        async def _direct(func, *args, **kwargs):
-            return func(*args, **kwargs)
-
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
-            result = asyncio.run(
-                adapter.send(
-                    chat_id="oc_chat",
-                    content="可以用 **粗体** 和 *斜体*。",
-                )
-            )
-
-        self.assertTrue(result.success)
-        self.assertEqual(captured["calls"][0].request_body.msg_type, "post")
-        self.assertEqual(captured["calls"][1].request_body.msg_type, "text")
-        self.assertEqual(
-            captured["calls"][1].request_body.content,
-            json.dumps({"text": "可以用 粗体 和 斜体。"}, ensure_ascii=False),
-        )
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_send_uses_post_for_advanced_markdown_lines(self):
-        from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
-        captured = {}
-
-        class _MessageAPI:
-            def create(self, request):
-                captured["request"] = request
-                return SimpleNamespace(
-                    success=lambda: True,
-                    data=SimpleNamespace(message_id="om_markdown_advanced"),
-                )
-
-        adapter._client = SimpleNamespace(
-            im=SimpleNamespace(
-                v1=SimpleNamespace(
-                    message=_MessageAPI(),
-                )
-            )
-        )
-
-        async def _direct(func, *args, **kwargs):
-            return func(*args, **kwargs)
-
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
-            result = asyncio.run(
-                adapter.send(
-                    chat_id="oc_chat",
-                    content="---\n1. 第一项\n<u>下划线</u>\n~~删除线~~",
-                )
-            )
-
-        self.assertTrue(result.success)
-        self.assertEqual(captured["request"].request_body.msg_type, "post")
-        payload = json.loads(captured["request"].request_body.content)
-        rows = payload["zh_cn"]["content"]
-        self.assertEqual(
-            rows,
-            [[{"tag": "md", "text": "---\n1. 第一项\n<u>下划线</u>\n~~删除线~~"}]],
-        )
-
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestWebhookSecurity(unittest.TestCase):

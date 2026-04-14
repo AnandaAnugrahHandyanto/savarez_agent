@@ -1048,11 +1048,11 @@ class TestIsPaymentError:
 class TestGetProviderChain:
     """_get_provider_chain() resolves functions at call time (testable)."""
 
-    def test_returns_five_entries(self):
+    def test_returns_six_entries(self):
         chain = _get_provider_chain()
-        assert len(chain) == 5
+        assert len(chain) == 6
         labels = [label for label, _ in chain]
-        assert labels == ["openrouter", "nous", "local/custom", "openai-codex", "api-key"]
+        assert labels == ["openrouter", "nous", "local/custom", "qianfan", "openai-codex", "api-key"]
 
     def test_picks_up_patched_functions(self):
         """Patches on _try_* functions must be visible in the chain."""
