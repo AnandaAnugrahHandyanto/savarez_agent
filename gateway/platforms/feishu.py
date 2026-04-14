@@ -3407,18 +3407,29 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
-        if reply_to:
+        thread_id = (metadata or {}).get("thread_id")
+        reply_in_thread = bool(thread_id)
+
+        # When targeting a thread but no explicit reply_to is given (e.g.
+        # tool-progress messages, stream-consumer commentary), fall back to
+        # replying to the thread's root message so the Feishu Reply API is
+        # used instead of CreateMessage — CreateMessage always posts to the
+        # parent group, not the thread.
+        effective_reply_to = reply_to
+        if not effective_reply_to and reply_in_thread:
+            effective_reply_to = str(thread_id)
+
+        if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,
                 msg_type=msg_type,
                 reply_in_thread=reply_in_thread,
                 uuid_value=str(uuid.uuid4()),
             )
-            request = self._build_reply_message_request(reply_to, body)
+            request = self._build_reply_message_request(effective_reply_to, body)
             response = await asyncio.to_thread(self._client.im.v1.message.reply, request)
             if reply_in_thread and self._response_succeeded(response):
-                self._track_thread(str((metadata or {}).get("thread_id") or ""))
+                self._track_thread(str(thread_id or ""))
             return response
 
         body = self._build_create_message_body(
