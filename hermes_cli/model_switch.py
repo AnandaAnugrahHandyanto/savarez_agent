@@ -1067,6 +1067,14 @@ def list_authenticated_providers(
             if default_model and default_model not in groups[slug]["models"]:
                 groups[slug]["models"].append(default_model)
 
+            # Also include the full models array from config
+            cfg_models = entry.get("models", [])
+            if isinstance(cfg_models, list):
+                for m in cfg_models:
+                    m_str = str(m).strip()
+                    if m_str and m_str not in groups[slug]["models"]:
+                        groups[slug]["models"].append(m_str)
+
         for slug, grp in groups.items():
             if slug in seen_slugs:
                 continue
