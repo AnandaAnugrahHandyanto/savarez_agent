@@ -389,32 +389,6 @@ async def _get_updates(
         return {"ret": 0, "msgs": [], "get_updates_buf": sync_buf}
 
 
-class iLinkDeliveryError(RuntimeError):
-    """Raised when iLink accepts a sendmessage call but returns an error code."""
-    def __init__(self, ret: Optional[int], errcode: Optional[int], errmsg: str):
-        self.ret = ret
-        self.errcode = errcode
-        self.errmsg = errmsg
-        super().__init__(f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg}")
-
-
-def _check_ilink_response(resp: Dict[str, Any], context: str = "sendmessage") -> None:
-    """Raise iLinkDeliveryError if the API response indicates failure.
-
-    iLink returns ``{}`` on success and ``{"ret": <code>, "errcode": <code>, ...}``
-    on failure.  Some failures (e.g. expired context_token) are silent — the HTTP
-    status is 200 but the message is never delivered.
-    """
-    if not resp:
-        return  # empty dict = success
-    ret = resp.get("ret")
-    errcode = resp.get("errcode")
-    if ret in (0, None) and errcode in (0, None):
-        return
-    errmsg = resp.get("errmsg") or resp.get("msg") or "unknown error"
-    raise iLinkDeliveryError(ret, errcode, errmsg)
-
-
 async def _send_message(
     session: "aiohttp.ClientSession",
     *,
@@ -427,8 +401,8 @@ async def _send_message(
 ) -> Dict[str, Any]:
     """Send a text message via iLink sendmessage API.
 
-    Returns the raw API response dict so callers can inspect ``ret``/``errcode``.
-    Raises ``iLinkDeliveryError`` when iLink returns a non-zero error code.
+    Returns the raw API response dict (may contain error codes like
+    ``errcode: -14`` for session expiry that the caller can inspect).
     """
     if not text or not text.strip():
         raise ValueError("_send_message: text must not be empty")
@@ -442,7 +416,7 @@ async def _send_message(
     }
     if context_token:
         message["context_token"] = context_token
-    resp = await _api_post(
+    return await _api_post(
         session,
         base_url=base_url,
         endpoint=EP_SEND_MESSAGE,
@@ -450,8 +424,6 @@ async def _send_message(
         token=token,
         timeout_ms=API_TIMEOUT_MS,
     )
-    _check_ilink_response(resp)
-    return resp
 
 
 async def _send_typing(
@@ -1460,7 +1432,7 @@ class WeixinAdapter(BasePlatformAdapter):
         retried_without_token = False
         for attempt in range(self._send_chunk_retries + 1):
             try:
-                await _send_message(
+                resp = await _send_message(
                     self._session,
                     base_url=self._base_url,
                     token=self._token,
@@ -1469,38 +1441,32 @@ class WeixinAdapter(BasePlatformAdapter):
                     context_token=context_token,
                     client_id=client_id,
                 )
+                # Check iLink response for session-expired error
+                if resp and isinstance(resp, dict):
+                    ret = resp.get("ret")
+                    errcode = resp.get("errcode")
+                    if (ret is not None and ret not in (0,)) or (errcode is not None and errcode not in (0,)):
+                        is_session_expired = (
+                            ret == SESSION_EXPIRED_ERRCODE
+                            or errcode == SESSION_EXPIRED_ERRCODE
+                        )
+                        # Session expired — strip token and retry once
+                        if is_session_expired and not retried_without_token and context_token:
+                            retried_without_token = True
+                            context_token = None
+                            self._token_store._cache.pop(
+                                self._token_store._key(self._account_id, chat_id), None
+                            )
+                            logger.warning(
+                                "[%s] session expired for %s; retrying without context_token",
+                                self.name, _safe_id(chat_id),
+                            )
+                            continue
+                        errmsg = resp.get("errmsg") or resp.get("msg") or "unknown error"
+                        raise RuntimeError(
+                            f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg}"
+                        )
                 return
-            except iLinkDeliveryError as exc:
-                last_error = exc
-                # Session expired — retry once without context_token
-                if not retried_without_token and context_token and (
-                    exc.ret == SESSION_EXPIRED_ERRCODE or exc.errcode == SESSION_EXPIRED_ERRCODE
-                ):
-                    retried_without_token = True
-                    context_token = None
-                    # Also invalidate the stale token from the store
-                    self._token_store._cache.pop(
-                        self._token_store._key(self._account_id, chat_id), None
-                    )
-                    logger.warning(
-                        "[%s] session expired for %s; retrying without context_token",
-                        self.name, _safe_id(chat_id),
-                    )
-                    continue
-                if attempt >= self._send_chunk_retries:
-                    break
-                wait = self._send_chunk_retry_delay_seconds * (attempt + 1)
-                logger.warning(
-                    "[%s] send chunk failed to=%s attempt=%d/%d, retrying in %.2fs: %s",
-                    self.name,
-                    _safe_id(chat_id),
-                    attempt + 1,
-                    self._send_chunk_retries + 1,
-                    wait,
-                    exc,
-                )
-                if wait > 0:
-                    await asyncio.sleep(wait)
             except Exception as exc:
                 last_error = exc
                 if attempt >= self._send_chunk_retries:
@@ -1544,22 +1510,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 last_message_id = client_id
                 if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
                     await asyncio.sleep(self._send_chunk_delay_seconds)
-            logger.info(
-                "[%s] Sending response (%d chars, %d chunk(s)) to %s (context_token=%s)",
-                self.name,
-                len(content),
-                len(chunks),
-                _safe_id(chat_id),
-                "yes" if context_token else "MISSING",
-            )
             return SendResult(success=True, message_id=last_message_id)
-        except iLinkDeliveryError as exc:
-            logger.error(
-                "[%s] iLink delivery error to=%s: ret=%s errcode=%s errmsg=%s (context_token=%s)",
-                self.name, _safe_id(chat_id), exc.ret, exc.errcode, exc.errmsg,
-                "yes" if context_token else "MISSING",
-            )
-            return SendResult(success=False, error=str(exc))
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
             return SendResult(success=False, error=str(exc))
@@ -1869,12 +1820,6 @@ async def send_weixin_direct(
     token_store = ContextTokenStore(str(get_hermes_home()))
     token_store.restore(account_id)
     context_token = token_store.get(account_id, chat_id)
-    if not context_token:
-        logger.warning(
-            "weixin standalone send: no cached context_token for %s — "
-            "message may be silently dropped by iLink if user has been inactive",
-            _safe_id(chat_id),
-        )
 
     async with aiohttp.ClientSession(trust_env=True) as session:
         adapter = WeixinAdapter(
