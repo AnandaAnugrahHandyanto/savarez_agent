@@ -583,7 +583,7 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
                 # Only re-detect the provider when the model value actually
                 # changed — avoids overwriting an explicit provider when the
                 # user saves unrelated config fields.
-                disk_default = disk_model.get("default", "") or ""
+                disk_default = disk_model.get("default", "") or disk_model.get("name", "") or ""
                 resolved_model = model_val  # default: keep raw input
                 if model_val != disk_default:
                     current_provider = disk_model.get("provider", "") or ""
