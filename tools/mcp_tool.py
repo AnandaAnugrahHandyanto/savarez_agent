@@ -79,6 +79,7 @@ import re
 import shutil
 import threading
 import time
+from collections.abc import Mapping
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -1482,13 +1483,31 @@ def _make_check_fn(server_name: str):
 
 def _normalize_mcp_input_schema(schema: dict | None) -> dict:
     """Normalize MCP input schemas for LLM tool-calling compatibility."""
+
+    def _normalize_node(node):
+        if isinstance(node, Mapping):
+            normalized = {key: _normalize_node(value) for key, value in node.items()}
+
+            if normalized.get("type") == "object" and "properties" not in normalized:
+                normalized["properties"] = {}
+
+            if normalized.get("type") == "array" and "items" not in normalized:
+                normalized["items"] = {}
+
+            return normalized
+
+        if isinstance(node, list):
+            return [_normalize_node(value) for value in node]
+
+        return node
+
     if not schema:
         return {"type": "object", "properties": {}}
 
-    if schema.get("type") == "object" and "properties" not in schema:
-        return {**schema, "properties": {}}
-
-    return schema
+    normalized = _normalize_node(schema)
+    if isinstance(normalized, Mapping):
+        return dict(normalized)
+    return {"type": "object", "properties": {}}
 
 
 def sanitize_mcp_name_component(value: str) -> str:

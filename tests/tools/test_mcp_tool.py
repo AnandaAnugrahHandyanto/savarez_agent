@@ -6,6 +6,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 import asyncio
 import json
 import os
+from collections import UserDict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -117,6 +118,58 @@ class TestSchemaConversion:
         schema = _convert_mcp_schema("crawl4ai", mcp_tool)
 
         assert schema["parameters"] == {"type": "object", "properties": {}}
+
+    def test_nested_array_schema_without_items_gets_normalized(self):
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(
+            name="list_clients",
+            description="List clients",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "sort": {"type": "array"},
+                    "filters": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                    },
+                },
+            },
+        )
+        schema = _convert_mcp_schema("portal", mcp_tool)
+
+        assert schema["parameters"] == {
+            "type": "object",
+            "properties": {
+                "sort": {"type": "array", "items": {}},
+                "filters": {
+                    "type": "array",
+                    "items": {"type": "object", "properties": {}},
+                },
+            },
+        }
+
+    def test_mapping_like_schema_nodes_get_normalized(self):
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(
+            name="list_orders",
+            description="List orders",
+            input_schema=UserDict({
+                "type": "object",
+                "properties": UserDict({
+                    "sort": UserDict({"type": "array"}),
+                }),
+            }),
+        )
+        schema = _convert_mcp_schema("portal", mcp_tool)
+
+        assert schema["parameters"] == {
+            "type": "object",
+            "properties": {
+                "sort": {"type": "array", "items": {}},
+            },
+        }
 
     def test_tool_name_prefix_format(self):
         from tools.mcp_tool import _convert_mcp_schema
@@ -1929,6 +1982,42 @@ class TestSamplingCallbackText:
                 "name": "ask",
                 "description": "Ask Crawl4AI",
                 "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+
+    def test_server_tools_with_nested_array_schema_get_items(self):
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value = _make_llm_response()
+        server_tool = SimpleNamespace(
+            name="list_clients",
+            description="List clients",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "sort": {"type": "array"},
+                },
+            },
+        )
+
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
+        ) as mock_call:
+            params = _make_sampling_params(tools=[server_tool])
+            asyncio.run(self.handler(None, params))
+
+        tools = mock_call.call_args.kwargs["tools"]
+        assert tools == [{
+            "type": "function",
+            "function": {
+                "name": "list_clients",
+                "description": "List clients",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "sort": {"type": "array", "items": {}},
+                    },
+                },
             },
         }]
 
