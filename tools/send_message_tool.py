@@ -384,6 +384,10 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if platform == Platform.WEIXIN:
         return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
 
+    # --- Feishu: use the native one-shot adapter helper for text + media ---
+    if platform == Platform.FEISHU and media_files:
+        return await _send_feishu(pconfig, chat_id, message, media_files=media_files, thread_id=thread_id)
+
     # --- Non-Telegram platforms ---
     if media_files and not message.strip():
         return {

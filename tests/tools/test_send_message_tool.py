@@ -594,6 +594,59 @@ class TestSendToPlatformChunking:
         assert all(call == [] for call in sent_calls[:-1])
         assert sent_calls[-1] == media
 
+    def test_feishu_media_only_routes_to_native_sender(self):
+
+        media = [("/tmp/video.mp4", False)]
+        pconfig = SimpleNamespace(enabled=True, token="tok", extra={})
+        send_mock = AsyncMock(return_value={"success": True, "platform": "feishu", "chat_id": "oc_123", "message_id": "1"})
+
+        with patch("tools.send_message_tool._send_feishu", send_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.FEISHU,
+                    pconfig,
+                    "oc_123",
+                    "",
+                    media_files=media,
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            pconfig,
+            "oc_123",
+            "",
+            media_files=media,
+            thread_id=None,
+        )
+
+    def test_feishu_text_and_media_routes_media_to_native_sender(self):
+
+        media = [("/tmp/audio.opus", True)]
+        pconfig = SimpleNamespace(enabled=True, token="tok", extra={})
+        send_mock = AsyncMock(return_value={"success": True, "platform": "feishu", "chat_id": "oc_123", "message_id": "1"})
+
+        with patch("tools.send_message_tool._send_feishu", send_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.FEISHU,
+                    pconfig,
+                    "oc_123",
+                    "hello",
+                    media_files=media,
+                    thread_id="om_thread",
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            pconfig,
+            "oc_123",
+            "hello",
+            media_files=media,
+            thread_id="om_thread",
+        )
+
 
 # ---------------------------------------------------------------------------
 # HTML auto-detection in Telegram send
