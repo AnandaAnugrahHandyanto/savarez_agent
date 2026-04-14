@@ -25,6 +25,39 @@ _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a"}
 _VOICE_EXTS = {".ogg", ".opus"}
+def _resolve_container_path(media_path: str) -> str:
+    """Resolve container-internal paths to host paths using docker_volumes.
+
+    When an agent running inside a Docker container emits MEDIA:/workspace/foo.docx,
+    the send_message tool runs on the host where /workspace doesn't exist.  This
+    function reads the active profile's docker_volumes config and reverses the
+    mapping (host_path:container_path → container_path → host_path).
+
+    Returns the resolved host path, or the original path if no mapping matches
+    or the file already exists at the given path.
+    """
+    if os.path.exists(media_path):
+        return media_path
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        volumes = cfg.get("terminal", {}).get("docker_volumes", [])
+        for vol in volumes:
+            if ":" not in vol:
+                continue
+            parts = vol.split(":")
+            host_path = parts[0]
+            container_path = parts[1].rstrip("/")
+            if media_path.startswith(container_path + "/") or media_path == container_path:
+                resolved = host_path + media_path[len(container_path):]
+                if os.path.exists(resolved):
+                    logger.info("Resolved container path %s → %s", media_path, resolved)
+                    return resolved
+    except Exception as e:
+        logger.debug("Container path resolution failed: %s", e)
+    return media_path
+
+
 _URL_SECRET_QUERY_RE = re.compile(
     r"([?&](?:access_token|api[_-]?key|auth[_-]?token|token|signature|sig)=)([^&#\s]+)",
     re.IGNORECASE,
@@ -175,6 +208,7 @@ def _handle_send(args):
     from gateway.platforms.base import BasePlatformAdapter
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+    media_files = [(_resolve_container_path(p), v) for p, v in media_files]
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False

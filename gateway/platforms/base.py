@@ -1591,7 +1591,11 @@ class BasePlatformAdapter(ABC):
             if response:
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
-                
+                # Resolve container-internal paths to host paths (e.g. /workspace/ → profile workspace)
+                if media_files:
+                    from tools.send_message_tool import _resolve_container_path
+                    media_files = [(_resolve_container_path(p), v) for p, v in media_files]
+
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
                 # Strip any remaining internal directives from message body (fixes #1561)
