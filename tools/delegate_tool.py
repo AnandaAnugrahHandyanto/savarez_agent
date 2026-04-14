@@ -476,6 +476,7 @@ def _build_child_agent(
     goal: str,
     context: Optional[str],
     toolsets: Optional[List[str]],
+    skills: Optional[List[str]],
     model: Optional[str],
     max_iterations: int,
     parent_agent,
@@ -528,6 +529,24 @@ def _build_child_agent(
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
     child_prompt = _build_child_system_prompt(goal, context, workspace_path=workspace_hint)
+
+    # Inject skills into the child prompt
+    if skills:
+        skill_headers = []
+        for skill_name in skills:
+            try:
+                from tools.skills_tool import skill_view
+                result = skill_view(skill_name)
+                try:
+                    parsed = json.loads(result)
+                    if parsed.get("success") and parsed.get("content"):
+                        skill_headers.append(f"\n=== SKILL: {skill_name} ===\n{parsed['content']}")
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        if skill_headers:
+            child_prompt = child_prompt + "\n\n" + "\n".join(skill_headers)
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -907,6 +926,7 @@ def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
+    skills: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
@@ -976,6 +996,8 @@ def delegate_task(
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
+    task_skills = skills  # top-level skills for single-task mode
+
     if tasks and isinstance(tasks, list):
         if len(tasks) > max_children:
             return tool_error(
@@ -987,7 +1009,7 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
+        task_list = [{"goal": goal, "context": context, "toolsets": toolsets, "skills": skills}]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -1020,7 +1042,9 @@ def delegate_task(
         for i, t in enumerate(task_list):
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
+                toolsets=t.get("toolsets") or toolsets,
+                skills=t.get("skills") or task_skills,
+                model=creds["model"],
                 max_iterations=effective_max_iter, parent_agent=parent_agent,
                 override_provider=creds["provider"], override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
@@ -1360,6 +1384,16 @@ DELEGATE_TASK_SCHEMA = {
                     "Common patterns: ['terminal', 'file'] for code work, "
                     "['web'] for research, ['browser'] for web interaction, "
                     "['terminal', 'file', 'web'] for full-stack tasks."
+                ),
+            },
+            "skills": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Skills to inject into the subagent's context. "
+                    "Each skill's SKILL.md content is loaded and prepended to the system prompt, "
+                    "giving the subagent domain-specific knowledge and workflows. "
+                    "Example: ['novel-writing', 'humanizer', 'marketing-skills']"
                 ),
             },
             "tasks": {
