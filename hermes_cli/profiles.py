@@ -1060,7 +1060,7 @@ _hermes_completion() {
     if [[ "${COMP_WORDS[1]}" == "cron" ]]; then
         case "$prev" in
             cron)
-                COMPREPLY=($(compgen -W "list create add edit pause resume run remove status tick" -- "$cur"))
+                COMPREPLY=($(compgen -W "list create add edit pause resume run remove rm delete status tick" -- "$cur"))
                 return
                 ;;
         esac
@@ -1069,7 +1069,7 @@ _hermes_completion() {
     if [[ "${COMP_WORDS[1]}" == "webhook" ]]; then
         case "$prev" in
             webhook)
-                COMPREPLY=($(compgen -W "subscribe add list remove test" -- "$cur"))
+                COMPREPLY=($(compgen -W "subscribe add list ls remove rm test" -- "$cur"))
                 return
                 ;;
         esac
@@ -1105,7 +1105,7 @@ _hermes_completion() {
     if [[ "${COMP_WORDS[1]}" == "plugins" ]]; then
         case "$prev" in
             plugins)
-                COMPREPLY=($(compgen -W "install update remove list enable disable" -- "$cur"))
+                COMPREPLY=($(compgen -W "install update remove rm uninstall list ls enable disable" -- "$cur"))
                 return
                 ;;
         esac
@@ -1132,7 +1132,7 @@ _hermes_completion() {
     if [[ "${COMP_WORDS[1]}" == "mcp" ]]; then
         case "$prev" in
             mcp)
-                COMPREPLY=($(compgen -W "serve add remove list test configure" -- "$cur"))
+                COMPREPLY=($(compgen -W "serve add remove rm list ls test configure config" -- "$cur"))
                 return
                 ;;
         esac
@@ -1160,6 +1160,15 @@ _hermes_completion() {
         case "$prev" in
             debug)
                 COMPREPLY=($(compgen -W "share" -- "$cur"))
+                return
+                ;;
+        esac
+    fi
+
+    if [[ "${COMP_WORDS[1]}" == "import" ]]; then
+        case "$prev" in
+            import)
+                COMPREPLY=($(compgen -f -- "$cur"))
                 return
                 ;;
         esac
@@ -1219,10 +1228,10 @@ _hermes() {
             _arguments '1:action:(add list remove reset)'
             ;;
         cron)
-            _arguments '1:action:(list create add edit pause resume run remove status tick)'
+            _arguments '1:action:(list create add edit pause resume run remove rm delete status tick)'
             ;;
         webhook)
-            _arguments '1:action:(subscribe add list remove test)'
+            _arguments '1:action:(subscribe add list ls remove rm test)'
             ;;
         config)
             _arguments '1:action:(show edit set path env-path check migrate)'
@@ -1234,7 +1243,7 @@ _hermes() {
             _arguments '1:action:(browse search install inspect list check update audit uninstall publish snapshot tap config)'
             ;;
         plugins)
-            _arguments '1:action:(install update remove list enable disable)'
+            _arguments '1:action:(install update remove rm uninstall list ls enable disable)'
             ;;
         memory)
             _arguments '1:action:(setup status off)'
@@ -1243,13 +1252,16 @@ _hermes() {
             _arguments '1:action:(list disable enable)'
             ;;
         mcp)
-            _arguments '1:action:(serve add remove list test configure)'
+            _arguments '1:action:(serve add remove rm list ls test configure config)'
             ;;
         sessions)
             _arguments '1:action:(list export delete prune stats rename browse)'
             ;;
         logs)
             _arguments '1:action:(agent errors gateway list)'
+            ;;
+        import)
+            _arguments '1:zipfile:_files'
             ;;
         debug)
             _arguments '1:action:(share)'
