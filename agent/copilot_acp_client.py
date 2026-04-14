@@ -28,6 +28,52 @@ _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.D
 _TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
 
 
+class _CompatNamespace(SimpleNamespace):
+    def items(self):
+        return self.__dict__.items()
+
+    def keys(self):
+        return self.__dict__.keys()
+
+    def values(self):
+        return self.__dict__.values()
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.__dict__.get(key, default)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self.__dict__
+
+    def model_dump(self) -> dict[str, Any]:
+        return dict(self.__dict__)
+
+
+class _ACPChatCompletionStream:
+    def __init__(self, chunks: list[_CompatNamespace]):
+        self._chunks = chunks
+        self.response = None
+
+    def __iter__(self):
+        return iter(self._chunks)
+
+    def close(self) -> None:
+        return None
+
+
+def _coerce_timeout_seconds(timeout: Any) -> float:
+    if timeout is None:
+        return _DEFAULT_TIMEOUT_SECONDS
+    if isinstance(timeout, (int, float)):
+        return float(timeout)
+
+    for attr in ("read", "timeout", "connect", "write", "pool"):
+        value = getattr(timeout, attr, None)
+        if isinstance(value, (int, float)):
+            return float(value)
+
+    return _DEFAULT_TIMEOUT_SECONDS
+
+
 def _resolve_command() -> str:
     return (
         os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
@@ -181,12 +227,12 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str
             call_id = f"acp_call_{len(extracted)+1}"
 
         extracted.append(
-            SimpleNamespace(
+            _CompatNamespace(
                 id=call_id,
                 call_id=call_id,
                 response_item_id=None,
                 type="function",
-                function=SimpleNamespace(name=fn_name.strip(), arguments=fn_args),
+                function=_CompatNamespace(name=fn_name.strip(), arguments=fn_args),
             )
         )
 
@@ -245,6 +291,9 @@ class _ACPChatCompletions:
         self._client = client
 
     def create(self, **kwargs: Any) -> Any:
+        if kwargs.pop("stream", False):
+            kwargs.pop("stream_options", None)
+            return self._client._create_chat_completion_stream(**kwargs)
         return self._client._create_chat_completion(**kwargs)
 
 
@@ -315,18 +364,18 @@ class CopilotACPClient:
         )
         response_text, reasoning_text = self._run_prompt(
             prompt_text,
-            timeout_seconds=float(timeout or _DEFAULT_TIMEOUT_SECONDS),
+            timeout_seconds=_coerce_timeout_seconds(timeout),
         )
 
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
 
-        usage = SimpleNamespace(
+        usage = _CompatNamespace(
             prompt_tokens=0,
             completion_tokens=0,
             total_tokens=0,
-            prompt_tokens_details=SimpleNamespace(cached_tokens=0),
+            prompt_tokens_details=_CompatNamespace(cached_tokens=0),
         )
-        assistant_message = SimpleNamespace(
+        assistant_message = _CompatNamespace(
             content=cleaned_text,
             tool_calls=tool_calls,
             reasoning=reasoning_text or None,
@@ -334,12 +383,78 @@ class CopilotACPClient:
             reasoning_details=None,
         )
         finish_reason = "tool_calls" if tool_calls else "stop"
-        choice = SimpleNamespace(message=assistant_message, finish_reason=finish_reason)
-        return SimpleNamespace(
+        choice = _CompatNamespace(message=assistant_message, finish_reason=finish_reason)
+        return _CompatNamespace(
             choices=[choice],
             usage=usage,
             model=model or "copilot-acp",
         )
+
+    def _create_chat_completion_stream(
+        self,
+        *,
+        model: str | None = None,
+        messages: list[dict[str, Any]] | None = None,
+        timeout: float | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: Any = None,
+        **_: Any,
+    ) -> _ACPChatCompletionStream:
+        response = self._create_chat_completion(
+            model=model,
+            messages=messages,
+            timeout=timeout,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+        choice = response.choices[0]
+        message = choice.message
+        raw_tool_calls = getattr(message, "tool_calls", None) or []
+        stream_tool_calls = None
+        if raw_tool_calls:
+            stream_tool_calls = []
+            for index, tool_call in enumerate(raw_tool_calls):
+                fn = getattr(tool_call, "function", None)
+                stream_tool_calls.append(
+                    _CompatNamespace(
+                        index=index,
+                        id=getattr(tool_call, "id", None),
+                        type="function",
+                        function=_CompatNamespace(
+                            name=getattr(fn, "name", None),
+                            arguments=getattr(fn, "arguments", None),
+                        ),
+                    )
+                )
+
+        delta = _CompatNamespace(
+            content=getattr(message, "content", None),
+            tool_calls=stream_tool_calls,
+            reasoning_content=getattr(message, "reasoning_content", None),
+            reasoning=getattr(message, "reasoning", None),
+        )
+        chunks = [
+            _CompatNamespace(
+                choices=[
+                    _CompatNamespace(
+                        index=0,
+                        delta=delta,
+                        finish_reason=getattr(choice, "finish_reason", "stop"),
+                    )
+                ],
+                usage=None,
+                model=getattr(response, "model", model or "copilot-acp"),
+            )
+        ]
+        if getattr(response, "usage", None) is not None:
+            chunks.append(
+                _CompatNamespace(
+                    choices=[],
+                    usage=response.usage,
+                    model=getattr(response, "model", model or "copilot-acp"),
+                )
+            )
+        return _ACPChatCompletionStream(chunks)
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
         try:
