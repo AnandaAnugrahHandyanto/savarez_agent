@@ -6,7 +6,7 @@ Upstream: [brainctl on GitHub](https://github.com/TSchonleber/brainctl) · [PyPI
 
 ## Requirements
 
-- `pip install 'brainctl>=1.3.0'` into Hermes's Python environment
+- `pip install 'brainctl>=1.5.1'` into Hermes's Python environment (ships the safe-upgrade path: `brainctl doctor` migration diagnostics, `brainctl migrate --status-verbose`, `brainctl migrate --mark-applied-up-to N` backfill, Brain() pending-migrations warning)
 - Optional vector recall: `pip install 'brainctl[vec]'` + [Ollama](https://ollama.com) running `nomic-embed-text`
 
 ## Setup
@@ -67,9 +67,11 @@ Config file: `$HERMES_HOME/brainctl/config.json` (profile-scoped). All fields ar
 
 ## Troubleshooting
 
-- **"brainctl is not installed"** — the package isn't in Hermes's venv. Activate the venv Hermes runs under, then `pip install 'brainctl>=1.3.0'`.
+- **"brainctl is not installed"** — the package isn't in Hermes's venv. Activate the venv Hermes runs under, then `pip install 'brainctl>=1.5.1'`.
 - **Vector recall returns nothing** — `recall_method: vsearch` requires `brainctl[vec]` and Ollama serving `nomic-embed-text`. Fall back to `search` if you don't want the vector dependency.
 - **Stale handoffs** — `brain.db` is a plain SQLite file; you can inspect it with `sqlite3` or delete it to reset.
+- **Hermes logs a `[brainctl] N migration(s) pending…` warning on startup** — this fires once per process when your `brain.db` predates the current brainctl schema. It's informational, not an error. Run `brainctl doctor` for diagnosis; brainctl will tell you whether to `brainctl migrate` directly or use `brainctl migrate --mark-applied-up-to N` for databases predating the migration tracking framework. Set `BRAINCTL_SILENT_MIGRATIONS=1` in Hermes's environment to suppress the warning entirely once you've triaged it.
+- **Upgrading an existing `brain.db`** — always back up first (`cp $BRAIN_DB $BRAIN_DB.pre-upgrade`), then run `brainctl doctor` before `brainctl migrate`. The doctor detects the `virgin-tracker-with-drift` case (schema_versions empty but schema has late-migration columns) and prints a 4-step recovery workflow. Blindly running `brainctl migrate` on a pre-v1.3 `brain.db` can crash on column collisions — the doctor check catches it first.
 
 ## License
 
