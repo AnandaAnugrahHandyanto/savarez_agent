@@ -194,6 +194,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "mimo-v2-omni",
         "mimo-v2-flash",
     ],
+    "kwaipilot": [
+        "kat-coder-pro-v2",
+    ],
     "opencode-zen": [
         "gpt-5.4-pro",
         "gpt-5.4",
@@ -500,6 +503,7 @@ _PROVIDER_LABELS = {
     "qwen-oauth": "Qwen OAuth (Portal)",
     "huggingface": "Hugging Face",
     "xiaomi": "Xiaomi MiMo",
+    "kwaipilot": "KwaiPilot KAT",
     "custom": "Custom endpoint",
 }
 
@@ -544,6 +548,9 @@ _PROVIDER_ALIASES = {
     "huggingface-hub": "huggingface",
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
+    "kat": "kwaipilot",
+    "kwai": "kwaipilot",
+    "kat-coder": "kwaipilot",
 }
 
 
@@ -842,7 +849,7 @@ def list_available_providers() -> list[dict[str, str]]:
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
         "gemini", "huggingface",
         "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
-        "qwen-oauth", "xiaomi",
+        "qwen-oauth", "xiaomi", "kwaipilot",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
     ]
