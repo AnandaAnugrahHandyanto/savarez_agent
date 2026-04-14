@@ -517,7 +517,7 @@ DEFAULT_CONFIG = {
     
     # Text-to-speech configuration
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "minimax" | "mistral" | "neutts" (local)
+        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "minimax" | "mistral" | "deepgram" | "neutts" (local)
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -535,6 +535,11 @@ DEFAULT_CONFIG = {
             "model": "voxtral-mini-tts-2603",
             "voice_id": "c69964a6-ab8b-4f8a-9465-ec0925096ec8",  # Paul - Neutral
         },
+        "deepgram": {
+            "model": "aura-2-thalia-en",  # Model ID IS the voice. 102 voices across 7 languages.
+            # English: aura-2-thalia-en, aura-2-luna-en, aura-2-arcas-en, aura-2-orion-en
+            # Other: aura-2-fujin-ja, aura-2-gloria-es, aura-2-viktoria-de, aura-2-agathe-fr
+        },
         "neutts": {
             "ref_audio": "",  # Path to reference voice audio (empty = bundled default)
             "ref_text": "",   # Path to reference voice transcript (empty = bundled default)
@@ -545,9 +550,16 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "deepgram" | "openai" | "mistral"
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
+            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
+        },
+        "groq": {
+            "model": "whisper-large-v3",  # whisper-large-v3, distil-whisper-large-v3-en
+        },
+        "deepgram": {
+            "model": "nova-3",  # nova-3 (latest), nova-2, nova-2-medical, nova-2-phonecall
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
         },
         "openai": {
@@ -1130,6 +1142,14 @@ OPTIONAL_ENV_VARS = {
         "description": "Mistral API key for Voxtral TTS and transcription (STT)",
         "prompt": "Mistral API key",
         "url": "https://console.mistral.ai/",
+        "password": True,
+        "category": "tool",
+    },
+    "DEEPGRAM_API_KEY": {
+        "description": "Deepgram API key for TTS (Aura-2, 102 voices) and STT (Nova-3, HIPAA-eligible). New accounts get $200 free credit.",
+        "prompt": "Deepgram API key (for TTS + STT)",
+        "url": "https://console.deepgram.com/",
+        "tools": ["voice_transcription", "text_to_speech"],
         "password": True,
         "category": "tool",
     },

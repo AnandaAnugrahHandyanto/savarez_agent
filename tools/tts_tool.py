@@ -2,12 +2,13 @@
 """
 Text-to-Speech Tool Module
 
-Supports six TTS providers:
+Supports seven TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
+- Deepgram (Aura-2): Low-latency, 102 voices in 7 languages, HIPAA-eligible, needs DEEPGRAM_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
 
 Output formats:
@@ -91,6 +92,8 @@ DEFAULT_MINIMAX_VOICE_ID = "English_Graceful_Lady"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
 DEFAULT_MISTRAL_TTS_MODEL = "voxtral-mini-tts-2603"
 DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
+DEFAULT_DEEPGRAM_MODEL = "aura-2-thalia-en"
+DEFAULT_DEEPGRAM_BASE_URL = "https://api.deepgram.com/v1/speak"
 
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
@@ -434,6 +437,77 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
 
 # ===========================================================================
+# Provider: Deepgram (Aura-2 — low-latency, 102 voices, HIPAA-eligible)
+# ===========================================================================
+def _generate_deepgram_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using Deepgram Aura-2 TTS API.
+
+    Low-latency REST TTS with 102 voices across 7 languages and native Opus
+    output for Telegram voice bubbles.  Uses raw REST (no SDK needed) — same
+    pattern as MiniMax.  The model ID IS the voice: ``aura-2-thalia-en``
+    selects both architecture and voice character.
+
+    Deepgram is SOC 2 Type II certified and offers HIPAA BAAs, making it
+    suitable for healthcare and compliance-sensitive deployments.
+
+    New accounts receive $200 in free API credit.
+
+    Requires ``DEEPGRAM_API_KEY`` environment variable.
+    """
+    import requests
+
+    api_key = os.getenv("DEEPGRAM_API_KEY", "")
+    if not api_key:
+        raise ValueError(
+            "DEEPGRAM_API_KEY not set. Get one at https://console.deepgram.com/ "
+            "(new accounts get $200 free credit)"
+        )
+
+    dg_config = tts_config.get("deepgram", {})
+    model = dg_config.get("model", DEFAULT_DEEPGRAM_MODEL)
+
+    # Pick encoding from output path extension
+    if output_path.endswith(".ogg"):
+        encoding = "opus"
+    elif output_path.endswith(".wav"):
+        encoding = "linear16"
+    elif output_path.endswith(".flac"):
+        encoding = "flac"
+    elif output_path.endswith(".aac"):
+        encoding = "aac"
+    else:
+        encoding = "mp3"
+
+    # Deepgram uses Token auth, NOT Bearer
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Token {api_key}",
+    }
+
+    params = {"model": model, "encoding": encoding}
+    payload = {"text": text}
+
+    response = requests.post(
+        DEFAULT_DEEPGRAM_BASE_URL,
+        json=payload,
+        headers=headers,
+        params=params,
+        timeout=60,
+    )
+    response.raise_for_status()
+
+    # Response body is raw audio bytes
+    audio_bytes = response.content
+    if not audio_bytes:
+        raise RuntimeError("Deepgram TTS returned empty audio data")
+
+    with open(output_path, "wb") as f:
+        f.write(audio_bytes)
+
+    return output_path
+
+
+# ===========================================================================
 # NeuTTS (local, on-device TTS via neutts_cli)
 # ===========================================================================
 
@@ -561,7 +635,7 @@ def text_to_speech_tool(
         out_dir.mkdir(parents=True, exist_ok=True)
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        if want_opus and provider in ("openai", "elevenlabs", "mistral"):
+        if want_opus and provider in ("openai", "elevenlabs", "mistral", "deepgram"):
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -609,6 +683,10 @@ def text_to_speech_tool(
                 }, ensure_ascii=False)
             logger.info("Generating speech with Mistral Voxtral TTS...")
             _generate_mistral_tts(text, file_str, tts_config)
+
+        elif provider == "deepgram":
+            logger.info("Generating speech with Deepgram Aura TTS...")
+            _generate_deepgram_tts(text, file_str, tts_config)
 
         elif provider == "neutts":
             if not _check_neutts_available():
@@ -664,7 +742,7 @@ def text_to_speech_tool(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in ("elevenlabs", "openai", "mistral"):
+        elif provider in ("elevenlabs", "openai", "mistral", "deepgram"):
             voice_compatible = file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)

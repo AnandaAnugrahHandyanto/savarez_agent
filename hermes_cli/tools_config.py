@@ -158,6 +158,14 @@ TOOL_CATEGORIES = {
                 ],
                 "tts_provider": "mistral",
             },
+            {
+                "name": "Deepgram (Aura TTS)",
+                "tag": "Low-latency, 102 voices, native Opus, HIPAA-eligible, $200 free credit",
+                "env_vars": [
+                    {"key": "DEEPGRAM_API_KEY", "prompt": "Deepgram API key", "url": "https://console.deepgram.com/"},
+                ],
+                "tts_provider": "deepgram",
+            },
         ],
     },
     "web": {

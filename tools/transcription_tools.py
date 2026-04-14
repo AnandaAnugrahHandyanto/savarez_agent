@@ -2,12 +2,14 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with three providers:
+Provides speech-to-text transcription with these providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
   - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
+  - **deepgram** (paid) — Deepgram Nova-3 API, fast and accurate, requires ``DEEPGRAM_API_KEY``.
   - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
+  - **mistral** (paid) — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -56,6 +58,7 @@ def _safe_find_spec(module_name: str) -> bool:
 _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
 _HAS_OPENAI = _safe_find_spec("openai")
 _HAS_MISTRAL = _safe_find_spec("mistralai")
+_HAS_DEEPGRAM = _safe_find_spec("deepgram")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -67,6 +70,7 @@ DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
+DEFAULT_DEEPGRAM_STT_MODEL = os.getenv("STT_DEEPGRAM_MODEL", "nova-3")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -81,6 +85,7 @@ MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 # Known model sets for auto-correction
 OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
 GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
+DEEPGRAM_MODELS = {"nova-3", "nova-2", "nova-2-general", "nova-2-meeting", "nova-2-phonecall", "nova-2-conversationalai", "nova-2-medical", "enhanced", "base"}
 
 # Singleton for the local model — loaded once, reused across calls
 _local_model: Optional[object] = None
@@ -223,9 +228,18 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "deepgram":
+            if _HAS_DEEPGRAM and os.getenv("DEEPGRAM_API_KEY"):
+                return "deepgram"
+            logger.warning(
+                "STT provider 'deepgram' configured but deepgram-sdk "
+                "not installed or DEEPGRAM_API_KEY not set"
+            )
+            return "none"
+
         return provider  # Unknown — let it fail downstream
 
-    # --- Auto-detect (no explicit provider): local > groq > openai > mistral -
+    # --- Auto-detect (no explicit provider): local > groq > deepgram > openai > mistral
 
     if _HAS_FASTER_WHISPER:
         return "local"
@@ -234,6 +248,9 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
         logger.info("No local STT available, using Groq Whisper API")
         return "groq"
+    if _HAS_DEEPGRAM and os.getenv("DEEPGRAM_API_KEY"):
+        logger.info("No local STT available, using Deepgram API")
+        return "deepgram"
     if _HAS_OPENAI and _has_openai_audio_backend():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
@@ -555,6 +572,92 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Provider: Deepgram (Nova-3 / Nova-2 — fast, accurate, HIPAA-eligible)
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_deepgram(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using Deepgram API (Nova-3, fast and accurate).
+
+    Deepgram offers SOC 2 Type II certification and HIPAA BAAs for
+    compliance-sensitive deployments.  The Nova-3 Medical model is
+    purpose-built for healthcare terminology.
+
+    Requires ``DEEPGRAM_API_KEY`` environment variable and the ``deepgram-sdk``
+    Python package (``pip install deepgram-sdk``).
+    """
+    api_key = os.getenv("DEEPGRAM_API_KEY")
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "DEEPGRAM_API_KEY not set"}
+
+    if not _HAS_DEEPGRAM:
+        return {"success": False, "transcript": "", "error": "deepgram-sdk not installed (pip install deepgram-sdk)"}
+
+    # Auto-correct model if caller passed a non-Deepgram model
+    if model_name in OPENAI_MODELS or model_name in GROQ_MODELS:
+        logger.info("Model %s not available on Deepgram, using %s", model_name, DEFAULT_DEEPGRAM_STT_MODEL)
+        model_name = DEFAULT_DEEPGRAM_STT_MODEL
+
+    # Language: config.yaml (stt.deepgram.language) > env var > auto-detect.
+    _forced_lang = (
+        _load_stt_config().get("deepgram", {}).get("language")
+        or os.getenv(LOCAL_STT_LANGUAGE_ENV)
+        or None
+    )
+
+    try:
+        from deepgram import DeepgramClient
+
+        client = DeepgramClient(api_key=api_key)
+
+        with open(file_path, "rb") as audio_file:
+            payload = audio_file.read()
+
+        kwargs = dict(
+            request=payload,
+            model=model_name,
+            smart_format=True,
+            punctuate=True,
+        )
+        if _forced_lang:
+            kwargs["language"] = _forced_lang
+
+        response = client.listen.v1.media.transcribe_file(**kwargs)
+
+        # Extract transcript from Deepgram response
+        transcript_text = ""
+        if hasattr(response, "results") and response.results:
+            channels = response.results.channels
+            if channels and len(channels) > 0:
+                alternatives = channels[0].alternatives
+                if alternatives and len(alternatives) > 0:
+                    transcript_text = alternatives[0].transcript.strip()
+
+        if not transcript_text:
+            # Fallback: try dict-like access
+            try:
+                resp_dict = response.to_dict() if hasattr(response, "to_dict") else dict(response)
+                channels = resp_dict.get("results", {}).get("channels", [])
+                if channels:
+                    transcript_text = channels[0].get("alternatives", [{}])[0].get("transcript", "").strip()
+            except Exception:
+                pass
+
+        logger.info(
+            "Transcribed %s via Deepgram API (%s, %d chars)",
+            Path(file_path).name, model_name, len(transcript_text),
+        )
+
+        return {"success": True, "transcript": transcript_text, "provider": "deepgram"}
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except Exception as e:
+        logger.error("Deepgram transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Deepgram transcription failed: {type(e).__name__}: {e}"}
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -620,6 +723,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
         return _transcribe_mistral(file_path, model_name)
 
+    if provider == "deepgram":
+        deepgram_cfg = stt_config.get("deepgram", {})
+        model_name = model or deepgram_cfg.get("model", DEFAULT_DEEPGRAM_STT_MODEL)
+        return _transcribe_deepgram(file_path, model_name)
+
     # No provider available
     return {
         "success": False,
@@ -627,6 +735,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         "error": (
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
+            "set DEEPGRAM_API_KEY for Deepgram (Nova-3, $200 free credit), "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
             "Voxtral Transcribe, or set VOICE_TOOLS_OPENAI_KEY "
             "or OPENAI_API_KEY for the OpenAI Whisper API."

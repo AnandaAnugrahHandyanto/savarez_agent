@@ -922,6 +922,7 @@ def _setup_tts_provider(config: dict):
         "openai": "OpenAI TTS",
         "minimax": "MiniMax TTS",
         "mistral": "Mistral Voxtral TTS",
+        "deepgram": "Deepgram Aura TTS",
         "neutts": "NeuTTS",
     }
     current_label = provider_labels.get(current_provider, current_provider)
@@ -943,10 +944,11 @@ def _setup_tts_provider(config: dict):
             "OpenAI TTS (good quality, needs API key)",
             "MiniMax TTS (high quality with voice cloning, needs API key)",
             "Mistral Voxtral TTS (multilingual, native Opus, needs API key)",
+            "Deepgram Aura TTS (low-latency, 102 voices, native Opus, $200 free credit)",
             "NeuTTS (local on-device, free, ~300MB model download)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "minimax", "mistral", "neutts"])
+    providers.extend(["edge", "elevenlabs", "openai", "minimax", "mistral", "deepgram", "neutts"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1032,6 +1034,19 @@ def _setup_tts_provider(config: dict):
             if api_key:
                 save_env_value("MISTRAL_API_KEY", api_key)
                 print_success("Mistral TTS API key saved")
+            else:
+                print_warning("No API key provided. Falling back to Edge TTS.")
+                selected = "edge"
+
+    elif selected == "deepgram":
+        existing = get_env_value("DEEPGRAM_API_KEY")
+        if not existing:
+            print()
+            print_info("New Deepgram accounts get $200 free credit: https://console.deepgram.com/")
+            api_key = prompt("Deepgram API key for TTS/STT", password=True)
+            if api_key:
+                save_env_value("DEEPGRAM_API_KEY", api_key)
+                print_success("Deepgram API key saved (enables both TTS and STT)")
             else:
                 print_warning("No API key provided. Falling back to Edge TTS.")
                 selected = "edge"
