@@ -571,6 +571,7 @@ from rich.markup import escape as _escape
 from rich.panel import Panel
 from rich.segment import Segment
 from rich.style import Style
+from rich.theme import Theme
 from rich.text import Text as _RichText
 
 import fire
@@ -1101,14 +1102,58 @@ _NUMERIC_HIGHLIGHT_RE = re.compile(
 )
 
 
-def _numeric_highlight_style() -> Style:
-    """Return the CLI style used for high-value numeric tokens."""
+def _assistant_markdown_palette() -> dict[str, str]:
+    """Return a muted Hermes-aligned palette for markdown emphasis."""
     try:
         from hermes_cli.skin_engine import get_active_skin
 
-        color = get_active_skin().get_color("ui_label", "#4dd0e1")
+        skin = get_active_skin()
+        return {
+            "heading": skin.get_color("session_label", "#DAA520"),
+            "accent": skin.get_color("response_border", "#DAA520"),
+            "muted": skin.get_color("banner_dim", "#B8860B"),
+            "text": skin.get_color("banner_text", "#FFF8DC"),
+            "code_bg": "#1F1A12",
+        }
     except Exception:
-        color = "#4dd0e1"
+        return {
+            "heading": "#DAA520",
+            "accent": "#DAA520",
+            "muted": "#B8860B",
+            "text": "#FFF8DC",
+            "code_bg": "#1F1A12",
+        }
+
+
+def _assistant_markdown_theme() -> Theme:
+    """Build a muted Hermes markdown theme instead of Rich defaults."""
+    palette = _assistant_markdown_palette()
+    return Theme(
+        {
+            "markdown.h1": f"bold {palette['accent']}",
+            "markdown.h1.border": palette["muted"],
+            "markdown.h2": f"bold underline {palette['heading']}",
+            "markdown.h3": f"bold {palette['heading']}",
+            "markdown.h4": f"bold {palette['muted']}",
+            "markdown.h5": f"underline {palette['muted']}",
+            "markdown.h6": palette["muted"],
+            "markdown.strong": f"bold {palette['heading']}",
+            "markdown.block_quote": palette["muted"],
+            "markdown.item.bullet": f"bold {palette['muted']}",
+            "markdown.item.number": f"bold {palette['muted']}",
+            "markdown.hr": palette["muted"],
+            "markdown.link": f"underline {palette['heading']}",
+            "markdown.link_url": f"underline {palette['muted']}",
+            "markdown.code": f"bold {palette['text']} on {palette['code_bg']}",
+            "markdown.code_block": f"{palette['text']} on {palette['code_bg']}",
+        },
+        inherit=True,
+    )
+
+
+def _numeric_highlight_style() -> Style:
+    """Return the CLI style used for high-value numeric tokens."""
+    color = _assistant_markdown_palette()["heading"]
     return Style.parse(f"bold {color}")
 
 
@@ -1119,7 +1164,7 @@ def _highlight_numeric_segment(segment: Segment, numeric_style: Style):
         return
 
     style = segment.style or Style.null()
-    if style != Style.null():
+    if style.bgcolor is not None:
         yield segment
         return
 
@@ -1129,7 +1174,7 @@ def _highlight_numeric_segment(segment: Segment, numeric_style: Style):
         start, end = match.span()
         if start > last:
             yield Segment(segment.text[last:start], segment.style)
-        yield Segment(segment.text[start:end], numeric_style)
+        yield Segment(segment.text[start:end], style + numeric_style)
         last = end
         matched = True
 
@@ -1146,11 +1191,12 @@ class _AssistantMarkdown(Markdown):
 
     def __rich_console__(self, console, options):
         numeric_style = _numeric_highlight_style()
-        for part in super().__rich_console__(console, options):
-            if isinstance(part, Segment):
-                yield from _highlight_numeric_segment(part, numeric_style)
-            else:
-                yield part
+        with console.use_theme(_assistant_markdown_theme()):
+            for part in super().__rich_console__(console, options):
+                if isinstance(part, Segment):
+                    yield from _highlight_numeric_segment(part, numeric_style)
+                else:
+                    yield part
 
 
 def _assistant_response_renderable(text: str):
@@ -1166,8 +1212,8 @@ def _assistant_response_renderable(text: str):
         return _rich_text_from_ansi(text)
     return _AssistantMarkdown(
         text,
-        code_theme="monokai",
-        inline_code_theme="monokai",
+        code_theme="native",
+        inline_code_theme="nord",
         hyperlinks=False,
         style="none",
     )

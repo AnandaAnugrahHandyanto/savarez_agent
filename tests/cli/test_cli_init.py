@@ -225,6 +225,47 @@ class TestHistoryDisplay:
 
 
 class TestAssistantResponseRenderable:
+    def test_plain_assistant_reply_uses_hermes_markdown_theme(self):
+        import importlib
+
+        prompt_toolkit_stubs = {
+            "prompt_toolkit": MagicMock(),
+            "prompt_toolkit.history": MagicMock(),
+            "prompt_toolkit.styles": MagicMock(),
+            "prompt_toolkit.patch_stdout": MagicMock(),
+            "prompt_toolkit.application": MagicMock(),
+            "prompt_toolkit.layout": MagicMock(),
+            "prompt_toolkit.layout.processors": MagicMock(),
+            "prompt_toolkit.filters": MagicMock(),
+            "prompt_toolkit.layout.dimension": MagicMock(),
+            "prompt_toolkit.layout.menus": MagicMock(),
+            "prompt_toolkit.widgets": MagicMock(),
+            "prompt_toolkit.key_binding": MagicMock(),
+            "prompt_toolkit.completion": MagicMock(),
+            "prompt_toolkit.formatted_text": MagicMock(),
+            "prompt_toolkit.auto_suggest": MagicMock(),
+        }
+        with patch.dict(sys.modules, prompt_toolkit_stubs):
+            import cli as _cli_mod
+
+            _cli_mod = importlib.reload(_cli_mod)
+            renderable = _cli_mod._assistant_response_renderable(
+                "## Heading\n\n- item\n\n> quote\n\n**bold**"
+            )
+
+        console = Console(force_terminal=True, color_system="truecolor", width=100)
+        segments = [segment for segment in console.render(renderable) if segment.text.strip()]
+
+        heading_segment = next(segment for segment in segments if segment.text.strip() == "Heading")
+        bullet_segment = next(segment for segment in segments if segment.text.strip() == "•")
+        quote_bar = next(segment for segment in segments if segment.text.strip() == "▌")
+        strong_segment = next(segment for segment in segments if segment.text.strip() == "bold")
+
+        assert heading_segment.style.color.triplet.hex == "#daa520"
+        assert bullet_segment.style.color.triplet.hex == "#b8860b"
+        assert quote_bar.style.color.triplet.hex == "#b8860b"
+        assert strong_segment.style.color.triplet.hex == "#daa520"
+
     def test_plain_assistant_reply_uses_markdown_rendering(self):
         import importlib
 
@@ -294,10 +335,10 @@ class TestAssistantResponseRenderable:
             if segment.style is not None and getattr(segment.style.color, "triplet", None) is not None
         }
         assert highlighted["10"].bold is True
-        assert highlighted["78%"].color.triplet.hex == "#4dd0e1"
-        assert highlighted["2026-04-14"].color.triplet.hex == "#4dd0e1"
-        assert highlighted["$99"].color.triplet.hex == "#4dd0e1"
-        assert highlighted["7800万元"].color.triplet.hex == "#4dd0e1"
+        assert highlighted["78%"].color.triplet.hex == "#daa520"
+        assert highlighted["2026-04-14"].color.triplet.hex == "#daa520"
+        assert highlighted["$99"].color.triplet.hex == "#daa520"
+        assert highlighted["7800万元"].color.triplet.hex == "#daa520"
 
         assert "/path/123" not in highlighted
         assert "gpt-4.1" not in highlighted
@@ -306,7 +347,7 @@ class TestAssistantResponseRenderable:
             for segment in segments
         )
         inline_code_segment = next(segment for segment in segments if segment.text.strip() == "v1.2.3")
-        assert "v1.2.3" not in highlighted
+        assert inline_code_segment.style.color.triplet.hex != "#daa520"
         assert inline_code_segment.style.bgcolor is not None
 
     def test_ansi_assistant_reply_keeps_ansi_fallback(self):
