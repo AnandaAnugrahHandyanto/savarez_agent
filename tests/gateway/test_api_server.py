@@ -1917,6 +1917,39 @@ class TestRunsEndpointSessionReplay:
         assert call_kwargs["user_message"] == "new question"
 
     @pytest.mark.asyncio
+    async def test_runs_without_session_id_does_not_probe_db(self, auth_adapter):
+        """`/v1/runs` should not treat its generated run_id as a persisted session lookup key."""
+        mock_db = MagicMock()
+        auth_adapter._session_db = mock_db
+
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {
+            "final_response": "OK",
+            "messages": [],
+            "api_calls": 1,
+        }
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post(
+                    "/v1/runs",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={"input": "new question"},
+                )
+
+                assert resp.status == 202
+                await asyncio.sleep(0.05)
+
+        mock_db.get_messages_as_conversation.assert_not_called()
+        call_kwargs = mock_agent.run_conversation.call_args.kwargs
+        assert call_kwargs["conversation_history"] == []
+        assert call_kwargs["user_message"] == "new question"
+
+    @pytest.mark.asyncio
     async def test_runs_db_failure_falls_back_to_empty_history(self, auth_adapter):
         """`/v1/runs` should still work if session history lookup fails."""
         auth_adapter._session_db = None
