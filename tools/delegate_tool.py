@@ -28,6 +28,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent.messages import (
+    AgentMessage,
+    ControlMessage,
+    ControlType,
+    TaskResult,
+    TaskStatus,
+    ToolTraceEntry,
+)
+
 from toolsets import TOOLSETS
 
 logger = logging.getLogger(__name__)
@@ -773,24 +782,46 @@ def _run_single_child(
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
 
-        entry: Dict[str, Any] = {
-            "task_index": task_index,
-            "status": status,
-            "summary": summary,
-            "api_calls": api_calls,
-            "duration_seconds": duration,
-            "model": _model if isinstance(_model, str) else None,
-            "exit_reason": exit_reason,
-            "tokens": {
-                "input": _input_tokens if isinstance(_input_tokens, (int, float)) else 0,
-                "output": _output_tokens if isinstance(_output_tokens, (int, float)) else 0,
-            },
-            "tool_trace": tool_trace,
+        # Build typed TaskResult instead of raw dict
+        task_status_map = {
+            "completed": TaskStatus.SUCCESS,
+            "interrupted": TaskStatus.INTERRUPTED,
+            "failed": TaskStatus.FAILED,
         }
-        if status == "failed":
-            entry["error"] = result.get("error", "Subagent did not produce a response.")
+        typed_status = task_status_map.get(status, TaskStatus.FAILED)
 
-        return entry
+        typed_trace = []
+        for t in tool_trace:
+            if isinstance(t, dict):
+                typed_trace.append(ToolTraceEntry(
+                    tool=t.get("tool", "unknown"),
+                    args_bytes=t.get("args_bytes", 0),
+                    result_bytes=t.get("result_bytes", 0),
+                    status=t.get("status", "ok"),
+                ))
+
+        typed_result = TaskResult(
+            task_id=str(task_index),
+            status=typed_status,
+            result=summary,
+            error=result.get("error") if status == "failed" else None,
+            exit_reason=exit_reason,
+            tool_trace=typed_trace,
+            tokens={
+                "input": int(_input_tokens) if isinstance(_input_tokens, (int, float)) else 0,
+                "output": int(_output_tokens) if isinstance(_output_tokens, (int, float)) else 0,
+            },
+            duration_seconds=duration,
+            model=_model if isinstance(_model, str) else None,
+            api_calls=api_calls,
+            metadata={"interrupted": interrupted, "completed": completed},
+        )
+
+        # Return both the typed result AND the legacy dict for backward compat
+        typed_result_as_dict = typed_result.to_dict()
+        typed_result_as_dict["task_index"] = task_index
+        typed_result_as_dict["summary"] = summary
+        return typed_result_as_dict
 
     except Exception as exc:
         duration = round(time.monotonic() - child_start, 2)
