@@ -5061,6 +5061,11 @@ class AIAgent:
                     "Local provider detected (%s) — stream read timeout raised to %.0fs",
                     self.base_url, _stream_read_timeout,
                 )
+            # Thinking/reasoning models with large output budgets may spend
+            # minutes in the reasoning phase without producing any chunk.
+            _output_budget = api_kwargs.get("max_tokens", 0) or 0
+            if _output_budget > 32768:
+                _stream_read_timeout = max(_stream_read_timeout, 180.0)  # 3 min per-chunk
             stream_kwargs = {
                 **api_kwargs,
                 "stream": True,
@@ -5468,7 +5473,12 @@ class AIAgent:
             # healthy connections during the model's thinking phase, producing
             # spurious RemoteProtocolError ("peer closed connection").
             _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
-            if _est_tokens > 100_000:
+            _output_budget = api_kwargs.get("max_tokens", 0) or 0
+            if _output_budget > 65536:
+                _stream_stale_timeout = max(_stream_stale_timeout_base, 420.0)  # 7 min
+            elif _output_budget > 32768:
+                _stream_stale_timeout = max(_stream_stale_timeout_base, 300.0)  # 5 min
+            elif _est_tokens > 100_000:
                 _stream_stale_timeout = max(_stream_stale_timeout_base, 300.0)
             elif _est_tokens > 50_000:
                 _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
@@ -6290,6 +6300,21 @@ class AIAgent:
                 api_kwargs["max_tokens"] = _model_output_limit
             except Exception:
                 pass  # fail open — let the proxy pick its default
+        elif self.api_mode == "chat_completions" and not self._is_direct_openai_url():
+            # Custom OpenAI-compatible providers (Zhipu/GLM, Moonshot, etc.)
+            # often have low default max_tokens (e.g. 4096). When the model
+            # uses thinking/reasoning mode, reasoning tokens share the same
+            # output budget — the model exhausts tokens on reasoning and
+            # produces no visible content.  Set a generous default based on
+            # context_length to prevent this.
+            _ctx_len = getattr(getattr(self, "context_compressor", None), "context_length", 0) or 0
+            if _ctx_len > 0:
+                _default_output = min(max(_ctx_len // 3, 32768), 131072)
+                api_kwargs.update(self._max_tokens_param(_default_output))
+                logger.debug(
+                    "Custom provider: setting max_tokens=%d (context_length=%d)",
+                    _default_output, _ctx_len,
+                )
 
         extra_body = {}
 
@@ -8036,6 +8061,14 @@ class AIAgent:
             
             api_call_count += 1
             self._api_call_count = api_call_count
+            # Clean up dead connections before each API call to prevent hangs
+            # on stale keep-alive sockets (CLOSE-WAIT from provider idle timeout).
+            if api_call_count > 1 and self.api_mode != "anthropic_messages":
+                try:
+                    if self._cleanup_dead_connections():
+                        self._vprint(f"{self.log_prefix}Cleaned up stale connection before API call #{api_call_count}")
+                except Exception:
+                    pass
             self._touch_activity(f"starting API call #{api_call_count}")
 
             # Grace call: the budget is exhausted but we gave the model one
@@ -8234,7 +8267,7 @@ class AIAgent:
             
             api_start_time = time.time()
             retry_count = 0
-            max_retries = 3
+            max_retries = 10
             primary_recovery_attempted = False
             max_compression_attempts = 3
             codex_auth_retry_attempted=False

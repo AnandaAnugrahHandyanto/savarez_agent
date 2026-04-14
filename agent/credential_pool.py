@@ -69,9 +69,9 @@ SUPPORTED_POOL_STRATEGIES = {
 }
 
 # Cooldown before retrying an exhausted credential.
-# 429 (rate-limited) and 402 (billing/quota) both cool down after 1 hour.
+# 429 (rate-limited) and 402 (billing/quota) both cool down after 3 minutes.
 # Provider-supplied reset_at timestamps override these defaults.
-EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
+EXHAUSTED_TTL_429_SECONDS = 60 * 3           # 3 minutes
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
 
 # Pool key prefix for custom OpenAI-compatible endpoints.

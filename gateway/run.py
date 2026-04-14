@@ -8728,7 +8728,11 @@ class GatewayRunner:
                     and getattr(_sc, "already_sent", False)
                 )
             ):
-                response["already_sent"] = True
+                # Don't mark already_sent on failure — the error message is new
+                # content the user hasn't seen (streaming only sent earlier partial
+                # output before the failure).
+                if not response.get("failed"):
+                    response["already_sent"] = True
         
         return response
 
