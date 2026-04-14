@@ -20,6 +20,7 @@ Public API (signatures preserved from the original 2,400-line version):
     check_tool_availability(quiet) -> tuple
 """
 
+import atexit
 import json
 import asyncio
 import logging
@@ -39,6 +40,46 @@ logger = logging.getLogger(__name__)
 _tool_loop = None          # persistent loop for the main (CLI) thread
 _tool_loop_lock = threading.Lock()
 _worker_thread_local = threading.local()  # per-worker-thread persistent loops
+_atexit_registered = False  # lazy atexit registration guard
+
+# Track worker thread loops for cleanup at exit.
+_worker_loops: Dict[int, asyncio.AbstractEventLoop] = {}
+_worker_loops_lock = threading.Lock()
+
+
+def _register_atexit_once():
+    """Lazily register atexit handlers the first time a loop is created."""
+    global _atexit_registered
+    if _atexit_registered:
+        return
+    _atexit_registered = True
+    atexit.register(_cleanup_all_loops)
+
+
+def _cleanup_all_loops():
+    """Close all persistent event loops on process exit to release resources.
+
+    Closes both the main tool loop and any worker-thread loops that are
+    still alive.  Each close() cancels pending tasks and releases file
+    descriptors bound to the loop (httpx transports, DNS resolvers, etc.).
+    """
+    # Close main tool loop
+    global _tool_loop
+    if _tool_loop is not None and not _tool_loop.is_closed():
+        try:
+            _tool_loop.close()
+        except Exception:
+            pass
+
+    # Close worker-thread loops
+    with _worker_loops_lock:
+        for loop in _worker_loops.values():
+            if loop is not None and not loop.is_closed():
+                try:
+                    loop.close()
+                except Exception:
+                    pass
+        _worker_loops.clear()
 
 
 def _get_tool_loop():
@@ -53,6 +94,7 @@ def _get_tool_loop():
     with _tool_loop_lock:
         if _tool_loop is None or _tool_loop.is_closed():
             _tool_loop = asyncio.new_event_loop()
+            _register_atexit_once()
         return _tool_loop
 
 
@@ -75,6 +117,10 @@ def _get_worker_loop():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         _worker_thread_local.loop = loop
+        tid = threading.get_ident()
+        with _worker_loops_lock:
+            _worker_loops[tid] = loop
+        _register_atexit_once()
     return loop
 
 
@@ -110,7 +156,18 @@ def _run_async(coro):
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, coro)
-            return future.result(timeout=300)
+            try:
+                return future.result(timeout=300)
+            except concurrent.futures.TimeoutError:
+                # future.cancel() only cancels the Future wrapper, NOT the
+                # underlying asyncio.run() task. The background thread
+                # continues running until the coroutine finishes or the
+                # process exits. We raise here to unblock the caller.
+                future.cancel()
+                raise TimeoutError(
+                    "_run_async: coroutine did not complete within 300s "
+                    "(background thread continues running)"
+                )
 
     # If we're on a worker thread (e.g., parallel tool execution in
     # delegate_task), use a per-thread persistent loop.  This avoids
