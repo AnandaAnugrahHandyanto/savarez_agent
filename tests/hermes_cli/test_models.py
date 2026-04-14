@@ -159,8 +159,22 @@ class TestDetectProviderForModel:
         with patch(
             "hermes_cli.models.fetch_openrouter_models",
             return_value=[("openai/gpt-5.4-mini", "recommended")],
+        ), patch(
+            "hermes_cli.auth.get_codex_auth_status",
+            return_value={"logged_in": True},
         ):
             assert detect_provider_for_model("openai/gpt-5.4-mini", "openai-codex") is None
+
+    def test_codex_curated_openrouter_model_falls_back_without_codex_auth(self):
+        with patch(
+            "hermes_cli.models.fetch_openrouter_models",
+            return_value=[("openai/gpt-5.4-mini", "recommended")],
+        ), patch(
+            "hermes_cli.auth.get_codex_auth_status",
+            return_value={"logged_in": False},
+        ):
+            result = detect_provider_for_model("openai/gpt-5.4-mini", "openai-codex")
+        assert result == ("openrouter", "openai/gpt-5.4-mini")
 
     def test_non_codex_openrouter_model_can_switch_from_codex(self):
         with patch(

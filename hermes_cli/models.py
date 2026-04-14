@@ -69,6 +69,16 @@ def _codex_curated_models() -> list[str]:
     return _add_forward_compat_models(list(DEFAULT_CODEX_MODELS))
 
 
+def _has_active_codex_auth() -> bool:
+    """Return True when Hermes currently has a usable Codex OAuth session."""
+    try:
+        from hermes_cli.auth import get_codex_auth_status
+
+        return bool(get_codex_auth_status().get("logged_in"))
+    except Exception:
+        return False
+
+
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
         "xiaomi/mimo-v2-pro",
@@ -1071,9 +1081,8 @@ def detect_provider_for_model(
     if or_slug:
         # Keep the active Codex OAuth session for models Codex can already
         # serve, but still allow switching to non-Codex OpenRouter models.
-        if current_provider == "openai-codex":
-            from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, _add_forward_compat_models
-            codex_models = _add_forward_compat_models(list(DEFAULT_CODEX_MODELS))
+        if current_provider == "openai-codex" and _has_active_codex_auth():
+            codex_models = _codex_curated_models()
             codex_bare = {m.split("/")[-1] for m in codex_models}
             bare = or_slug.split("/")[-1]
             if bare in codex_bare:
