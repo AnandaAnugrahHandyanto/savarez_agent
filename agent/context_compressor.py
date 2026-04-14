@@ -415,7 +415,7 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new progress. Move items from "In Progress" to "Done" when completed. Move answered questions to "Resolved Questions". Remove information only if it is clearly obsolete.
+Update the summary using this exact structure. AGGRESSIVELY DEMOTE OR REMOVE older completed topics if the conversation has moved on — the most recent user goal is the current active topic and outranks all historical "Done" entries. Prioritise preserving information related to the most recent user turns. Move items from "In Progress" to "Done" when completed. Move answered questions to "Resolved Questions". Drop or one-line anything that is clearly about a previous abandoned topic.
 
 {_template_sections}"""
         else:
@@ -736,6 +736,23 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 compress_start,
                 tail_msgs,
             )
+
+        # Phase 3: Auto-derive focus_topic from recent user turns (fixes issue #9631)
+        # If no explicit focus_topic was given, extract the last 1-3 user messages
+        # to anchor the summary on the current active topic rather than old completed work.
+        if not focus_topic:
+            recent_user_parts = []
+            for msg in reversed(messages[compress_end:]):
+                if msg.get("role") == "user":
+                    part = (msg.get("content") or "")[:300].strip()
+                    if part:
+                        recent_user_parts.append(part)
+                        if len(recent_user_parts) >= 3:
+                            break
+            if recent_user_parts:
+                focus_topic = " | ".join(reversed(recent_user_parts))
+                if not self.quiet_mode:
+                    logger.info("ContextCompaction: auto-derived focus_topic from recent user turns")
 
         # Phase 3: Generate structured summary
         summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
