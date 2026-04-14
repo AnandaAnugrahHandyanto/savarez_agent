@@ -625,7 +625,7 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] Send error: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
-    async def send_ephemeral(
+    async def send_private_notice(
         self,
         chat_id: str,
         user_id: str,
