@@ -353,3 +353,41 @@ class TestStreamingPerPlatform:
             }
         }
         assert resolve_display_setting(config, "email", "streaming") is True
+
+
+# ---------------------------------------------------------------------------
+# Spelling: OVERRIDABLE_KEYS (was OVERRIDEABLE_KEYS — #9335)
+# ---------------------------------------------------------------------------
+
+class TestSpellingOverridable:
+    """OVERRIDABLE_KEYS uses the correct British/American spelling 'overridable'.
+
+    Regression guard for #9335: the constant was previously named
+    OVERRIDEABLE_KEYS (non-standard) and is now OVERRIDABLE_KEYS.
+    """
+
+    def test_overridable_keys_exported(self):
+        """OVERRIDABLE_KEYS must be importable from gateway.display_config."""
+        from gateway.display_config import OVERRIDABLE_KEYS
+        assert OVERRIDABLE_KEYS is not None
+
+    def test_overridable_keys_is_frozenset(self):
+        from gateway.display_config import OVERRIDABLE_KEYS
+        assert isinstance(OVERRIDABLE_KEYS, frozenset)
+
+    def test_overridable_keys_contains_expected_settings(self):
+        from gateway.display_config import OVERRIDABLE_KEYS
+        for key in ("tool_progress", "show_reasoning", "tool_preview_length", "streaming"):
+            assert key in OVERRIDABLE_KEYS, f"Expected '{key}' in OVERRIDABLE_KEYS"
+
+    def test_old_spelling_not_present(self):
+        """The old misspelling OVERRIDEABLE_KEYS must NOT be exported."""
+        import gateway.display_config as dc
+        assert not hasattr(dc, "OVERRIDEABLE_KEYS"), \
+            "OVERRIDEABLE_KEYS should have been renamed to OVERRIDABLE_KEYS"
+
+    def test_get_effective_display_uses_overridable_keys(self):
+        """get_effective_display returns keys from OVERRIDABLE_KEYS."""
+        from gateway.display_config import OVERRIDABLE_KEYS, get_effective_display
+        result = get_effective_display({}, "telegram")
+        assert set(result.keys()) == OVERRIDABLE_KEYS
