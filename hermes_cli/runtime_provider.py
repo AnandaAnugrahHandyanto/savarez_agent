@@ -389,9 +389,18 @@ def _resolve_named_custom_runtime(
             pool_result["model"] = model_name
         return pool_result
 
+    # Expand env vars in api_key field (e.g., "${QIANFAN_API_KEY}")
+    raw_api_key = str(custom_provider.get("api_key", "") or "").strip()
+    if raw_api_key.startswith("${") and raw_api_key.endswith("}"):
+        # Extract variable name and get from environment
+        var_name = raw_api_key[2:-1]
+        expanded_api_key = os.getenv(var_name, "").strip()
+    else:
+        expanded_api_key = raw_api_key
+
     api_key_candidates = [
         (explicit_api_key or "").strip(),
-        str(custom_provider.get("api_key", "") or "").strip(),
+        expanded_api_key,
         os.getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
         os.getenv("OPENAI_API_KEY", "").strip(),
         os.getenv("OPENROUTER_API_KEY", "").strip(),
