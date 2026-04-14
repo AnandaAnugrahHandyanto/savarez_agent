@@ -17,6 +17,7 @@ Improvements over v2:
   - Richer tool call/result detail in summarizer input
 """
 
+import hashlib
 import logging
 import time
 from typing import Any, Dict, List, Optional
@@ -226,6 +227,27 @@ class ContextCompressor(ContextEngine):
         else:
             prune_boundary = len(result) - protect_tail_count
 
+        # Pass 1: Deduplicate identical tool results.
+        # When the same file is read multiple times, keep only the most recent
+        # full copy and replace older duplicates with a back-reference.
+        content_hashes: dict = {}  # hash -> (index, tool_call_id)
+        for i in range(len(result) - 1, -1, -1):
+            msg = result[i]
+            if msg.get("role") != "tool":
+                continue
+            content = msg.get("content") or ""
+            if len(content) < 200:
+                continue
+            h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]
+            if h in content_hashes:
+                # This is an older duplicate — replace with back-reference
+                _, ref_id = content_hashes[h]
+                result[i] = {**msg, "content": f"[Duplicate of tool result {ref_id} — same content]"}
+                pruned += 1
+            else:
+                content_hashes[h] = (i, msg.get("tool_call_id", "?"))
+
+        # Pass 2: Prune old tool results outside the protected tail
         for i in range(prune_boundary):
             msg = result[i]
             if msg.get("role") != "tool":
@@ -233,10 +255,32 @@ class ContextCompressor(ContextEngine):
             content = msg.get("content", "")
             if not content or content == _PRUNED_TOOL_PLACEHOLDER:
                 continue
+            # Skip already-deduplicated results
+            if content.startswith("[Duplicate of"):
+                continue
             # Only prune if the content is substantial (>200 chars)
             if len(content) > 200:
                 result[i] = {**msg, "content": _PRUNED_TOOL_PLACEHOLDER}
                 pruned += 1
+
+        # Pass 3: Prune large tool_call arguments in assistant messages
+        # outside the protected tail. write_file with 50KB content, for
+        # example, survives pruning entirely without this.
+        for i in range(prune_boundary):
+            msg = result[i]
+            if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+                continue
+            new_tcs = []
+            modified = False
+            for tc in msg["tool_calls"]:
+                if isinstance(tc, dict):
+                    args = tc.get("function", {}).get("arguments", "")
+                    if len(args) > 500:
+                        tc = {**tc, "function": {**tc["function"], "arguments": args[:200] + "...[truncated]"}}
+                        modified = True
+                new_tcs.append(tc)
+            if modified:
+                result[i] = {**msg, "tool_calls": new_tcs}
 
         return result, pruned
 
