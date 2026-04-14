@@ -5,6 +5,9 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
+from rich.markdown import Markdown
+from rich.text import Text
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
@@ -218,6 +221,67 @@ class TestHistoryDisplay:
         assert "20260401_201329_d85961" in output
         assert "/resume" in output
         assert "Current preview" not in output
+
+
+class TestAssistantResponseRenderable:
+    def test_plain_assistant_reply_uses_markdown_rendering(self):
+        import importlib
+
+        prompt_toolkit_stubs = {
+            "prompt_toolkit": MagicMock(),
+            "prompt_toolkit.history": MagicMock(),
+            "prompt_toolkit.styles": MagicMock(),
+            "prompt_toolkit.patch_stdout": MagicMock(),
+            "prompt_toolkit.application": MagicMock(),
+            "prompt_toolkit.layout": MagicMock(),
+            "prompt_toolkit.layout.processors": MagicMock(),
+            "prompt_toolkit.filters": MagicMock(),
+            "prompt_toolkit.layout.dimension": MagicMock(),
+            "prompt_toolkit.layout.menus": MagicMock(),
+            "prompt_toolkit.widgets": MagicMock(),
+            "prompt_toolkit.key_binding": MagicMock(),
+            "prompt_toolkit.completion": MagicMock(),
+            "prompt_toolkit.formatted_text": MagicMock(),
+            "prompt_toolkit.auto_suggest": MagicMock(),
+        }
+        with patch.dict(sys.modules, prompt_toolkit_stubs):
+            import cli as _cli_mod
+
+            _cli_mod = importlib.reload(_cli_mod)
+            renderable = _cli_mod._assistant_response_renderable(
+                "# Title\n\n**bold**\n\n- one\n- two\n\n> quote\n\n```python\nprint('hi')\n```"
+            )
+
+        assert isinstance(renderable, Markdown)
+
+    def test_ansi_assistant_reply_keeps_ansi_fallback(self):
+        import importlib
+
+        prompt_toolkit_stubs = {
+            "prompt_toolkit": MagicMock(),
+            "prompt_toolkit.history": MagicMock(),
+            "prompt_toolkit.styles": MagicMock(),
+            "prompt_toolkit.patch_stdout": MagicMock(),
+            "prompt_toolkit.application": MagicMock(),
+            "prompt_toolkit.layout": MagicMock(),
+            "prompt_toolkit.layout.processors": MagicMock(),
+            "prompt_toolkit.filters": MagicMock(),
+            "prompt_toolkit.layout.dimension": MagicMock(),
+            "prompt_toolkit.layout.menus": MagicMock(),
+            "prompt_toolkit.widgets": MagicMock(),
+            "prompt_toolkit.key_binding": MagicMock(),
+            "prompt_toolkit.completion": MagicMock(),
+            "prompt_toolkit.formatted_text": MagicMock(),
+            "prompt_toolkit.auto_suggest": MagicMock(),
+        }
+        with patch.dict(sys.modules, prompt_toolkit_stubs):
+            import cli as _cli_mod
+
+            _cli_mod = importlib.reload(_cli_mod)
+            renderable = _cli_mod._assistant_response_renderable("\x1b[31mred\x1b[0m")
+
+        assert isinstance(renderable, Text)
+        assert renderable.plain == "red"
 
     def test_resume_without_target_lists_recent_sessions(self, capsys):
         cli = _make_cli()

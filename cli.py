@@ -565,6 +565,7 @@ except Exception:
 
 from rich import box as rich_box
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.markup import escape as _escape
 from rich.panel import Panel
 from rich.text import Text as _RichText
@@ -1059,6 +1060,25 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     ``[not markup]`` while still interpreting real ANSI color codes.
     """
     return _RichText.from_ansi(text or "")
+
+
+def _assistant_response_renderable(text: str):
+    """Render final assistant replies as markdown when safe for the CLI.
+
+    This upgrades the final assistant panel from plain ANSI text to semantic
+    markdown rendering for headings, strong text, lists, blockquotes, and
+    fenced code blocks while keeping ANSI passthrough for escape-coded output.
+    """
+    text = text or ""
+    if "\x1b" in text:
+        return _rich_text_from_ansi(text)
+    return Markdown(
+        text,
+        code_theme="monokai",
+        inline_code_theme="monokai",
+        hyperlinks=False,
+        style="none",
+    )
 
 
 def _cprint(text: str):
@@ -5755,7 +5775,7 @@ class HermesCLI:
 
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                        _assistant_response_renderable(response),
                         title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
                         title_align="left",
                         border_style=_resp_color,
@@ -5880,7 +5900,7 @@ class HermesCLI:
                         _resp_color = "#4F6D4A"
 
                     ChatConsole().print(Panel(
-                        _rich_text_from_ansi(response),
+                        _assistant_response_renderable(response),
                         title=f"[{_resp_color} bold]⚕ /btw[/]",
                         title_align="left",
                         border_style=_resp_color,
@@ -7873,7 +7893,7 @@ class HermesCLI:
                 else:
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                        _assistant_response_renderable(response),
                         title=f"[{_resp_color} bold]{label}[/]",
                         title_align="left",
                         border_style=_resp_color,
