@@ -513,12 +513,19 @@ class ProcessRegistry:
             return
 
         handles = []
+        seen_fds = set()
         for attr in ("stdin", "stdout", "stderr"):
             handle = getattr(proc, attr, None)
             if handle is None:
                 continue
-            if any(handle is existing for existing in handles):
+            try:
+                fileno = handle.fileno()
+            except Exception:
+                fileno = None
+            if fileno is not None and fileno in seen_fds:
                 continue
+            if fileno is not None:
+                seen_fds.add(fileno)
             handles.append(handle)
 
         for handle in handles:

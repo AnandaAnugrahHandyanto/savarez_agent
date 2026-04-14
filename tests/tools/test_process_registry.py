@@ -193,6 +193,37 @@ class TestStdinHelpers:
             registry.kill_process(session.id)
 
 
+
+
+def test_close_process_pipes_dedupes_by_fileno(registry):
+    class Handle:
+        def __init__(self, fileno_value):
+            self._fileno_value = fileno_value
+            self.close_calls = 0
+
+        def fileno(self):
+            return self._fileno_value
+
+        def close(self):
+            self.close_calls += 1
+
+    stdin = Handle(10)
+    stdout = Handle(11)
+    stderr = Handle(11)
+    proc = MagicMock()
+    proc.stdin = stdin
+    proc.stdout = stdout
+    proc.stderr = stderr
+
+    session = _make_session()
+    session.process = proc
+
+    registry._close_process_pipes(session)
+
+    assert stdin.close_calls == 1
+    assert stdout.close_calls == 1
+    assert stderr.close_calls == 0
+
 class TestReaderCleanup:
     def test_reader_loop_closes_process_pipes_when_process_exits(self, registry):
         proc = MagicMock()

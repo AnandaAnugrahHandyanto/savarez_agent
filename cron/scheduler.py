@@ -599,6 +599,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
+    # Sentinel ensures finally cleanup can safely run even if AIAgent(**kwargs)
+    # fails before assigning a live instance.
     agent = None
     try:
         # Inject origin context so the agent's send_message tool knows the chat.
