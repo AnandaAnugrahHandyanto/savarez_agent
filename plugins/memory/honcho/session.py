@@ -915,8 +915,9 @@ class HonchoSessionManager:
 
         honcho_session = self._sessions_cache.get(session.honcho_session_id)
         if not honcho_session:
-            # Fall back to peer-level context
-            return self._fetch_peer_context(session.user_peer_id, target=session.user_peer_id)
+            # Fall back to peer-level context, respecting peer param
+            peer_id = self._resolve_peer_id(session, peer)
+            return self._fetch_peer_context(session.user_peer_id, target=peer_id)
 
         try:
             peer_id = self._resolve_peer_id(session, peer)
