@@ -437,6 +437,19 @@ class TestExpiredCodexFallback:
             adapter = client.chat.completions
             assert adapter._is_oauth is True
 
+    def test_non_prefixed_oauth_like_token_sets_flag(self, monkeypatch):
+        """Legacy/setup tokens without sk-ant-/JWT prefixes still need bearer auth."""
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="hermes-oauth-jwt-token"), \
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            mock_build.return_value = MagicMock()
+            from agent.auxiliary_client import _try_anthropic
+            client, model = _try_anthropic()
+            assert client is not None
+            assert client.chat.completions._is_oauth is True
+
 
 class TestExplicitProviderRouting:
     """Test explicit provider selection bypasses auto chain correctly."""
@@ -816,8 +829,9 @@ class TestAuxiliaryPoolAwareness:
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
             patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="***"),
         ):
-            client, model = get_vision_auxiliary_client()
+            provider, client, model = resolve_vision_provider_client()
 
+        assert provider == "anthropic"
         assert client is not None
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
 
@@ -1057,6 +1071,29 @@ model:
             client, model = get_text_auxiliary_client("compression")
         assert model == "glm-4.7"
         assert mock_openai.call_args.kwargs["base_url"] == "https://api.z.ai/api/coding/paas/v4"
+
+    def test_resolve_task_provider_model_preserves_named_provider_with_base_url(self, monkeypatch, tmp_path):
+        """Named providers like zeabur should not be downgraded to custom when base_url is configured."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            """compression:
+  summary_provider: zeabur
+  summary_model: gpt-5.4
+  summary_base_url: https://claude-codex.zeabur.app/v1
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model("compression")
+
+        assert provider == "zeabur"
+        assert model == "gpt-5.4"
+        assert base_url == "https://claude-codex.zeabur.app/v1"
+        assert api_key is None
+        assert api_mode is None
 
 
 class TestAuxiliaryMaxTokensParam:
@@ -1307,6 +1344,56 @@ class TestCallLlmPaymentFallback:
                     messages=[{"role": "user", "content": "hello"}],
                 )
 
+    def test_401_triggers_fallback_for_explicit_custom_provider(self, monkeypatch):
+        """Explicit custom endpoints should degrade to auto fallback on auth failures."""
+        primary_client = MagicMock()
+        auth_err = Exception("Unauthorized: invalid api key")
+        auth_err.status_code = 401
+        primary_client.chat.completions.create.side_effect = auth_err
+
+        fallback_client = MagicMock()
+        fallback_response = MagicMock()
+        fallback_client.chat.completions.create.return_value = fallback_response
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "broken-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("custom", "broken-model", "https://broken.example/v1", "bad-key", None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(fallback_client, "glm-5", "zai")) as mock_fb:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is fallback_response
+        mock_fb.assert_called_once_with("custom", "compression", reason="auth error")
+
+    def test_unsupported_model_triggers_fallback_for_explicit_custom_provider(self, monkeypatch):
+        """Explicit custom endpoints should degrade to auto fallback on unsupported model."""
+        primary_client = MagicMock()
+        model_err = Exception("Bad Request: unsupported model")
+        model_err.status_code = 400
+        primary_client.chat.completions.create.side_effect = model_err
+
+        fallback_client = MagicMock()
+        fallback_response = MagicMock()
+        fallback_client.chat.completions.create.return_value = fallback_response
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "broken-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("custom", "broken-model", "https://broken.example/v1", "bad-key", None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(fallback_client, "glm-5", "zai")) as mock_fb:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is fallback_response
+        mock_fb.assert_called_once_with("custom", "compression", reason="unsupported model")
+
 
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured
@@ -1457,6 +1544,16 @@ class TestAsyncCallLlmFallback:
         exc.status_code = 402
         return exc
 
+    def _make_401_error(self, msg="Unauthorized: invalid api key"):
+        exc = Exception(msg)
+        exc.status_code = 401
+        return exc
+
+    def _make_400_model_error(self, msg="Bad Request: unsupported model"):
+        exc = Exception(msg)
+        exc.status_code = 400
+        return exc
+
     @pytest.mark.asyncio
     async def test_402_triggers_async_fallback_when_auto(self, monkeypatch):
         """When provider is auto and returns 402, async_call_llm tries fallback."""
@@ -1541,6 +1638,62 @@ class TestAsyncCallLlmFallback:
 
         assert result is fb_response
         mock_fb.assert_called_once_with("auto", "compression", reason="connection error")
+
+    @pytest.mark.asyncio
+    async def test_401_triggers_async_fallback_for_explicit_custom_provider(self, monkeypatch):
+        """Explicit custom endpoints should async-fallback on auth failures."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create = AsyncMock(
+            side_effect=self._make_401_error())
+
+        fb_sync_client = MagicMock()
+        fb_async_client = MagicMock()
+        fb_response = MagicMock()
+        fb_async_client.chat.completions.create = AsyncMock(return_value=fb_response)
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "broken-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("custom", "broken-model", "https://broken.example/v1", "bad-key", None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(fb_sync_client, "glm-5", "zai")) as mock_fb, \
+             patch("agent.auxiliary_client._to_async_client",
+                    return_value=(fb_async_client, "glm-5")):
+            result = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is fb_response
+        mock_fb.assert_called_once_with("custom", "compression", reason="auth error")
+
+    @pytest.mark.asyncio
+    async def test_unsupported_model_triggers_async_fallback_for_explicit_custom_provider(self, monkeypatch):
+        """Explicit custom endpoints should async-fallback on unsupported model."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create = AsyncMock(
+            side_effect=self._make_400_model_error())
+
+        fb_sync_client = MagicMock()
+        fb_async_client = MagicMock()
+        fb_response = MagicMock()
+        fb_async_client.chat.completions.create = AsyncMock(return_value=fb_response)
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "broken-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("custom", "broken-model", "https://broken.example/v1", "bad-key", None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(fb_sync_client, "glm-5", "zai")) as mock_fb, \
+             patch("agent.auxiliary_client._to_async_client",
+                    return_value=(fb_async_client, "glm-5")):
+            result = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is fb_response
+        mock_fb.assert_called_once_with("custom", "compression", reason="unsupported model")
 class TestStaleBaseUrlWarning:
     """_resolve_auto() warns when OPENAI_BASE_URL conflicts with config provider (#5161)."""
 

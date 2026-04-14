@@ -161,6 +161,30 @@ class TestResolveProviderClientNamedCustom:
         client, model = resolve_provider_client("coffee", "test")
         assert client is None
 
+    def test_named_custom_provider_prefers_provider_credentials_over_entry_api_key(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "gpt-5.4", "provider": "zeabur"},
+            "custom_providers": [
+                {"name": "zeabur", "base_url": "https://claude-codex.zeabur.app/v1"},
+            ],
+        })
+        with (
+            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
+                "api_key": "zeabur-live-key",
+                "base_url": "https://claude-codex.zeabur.app/v1",
+            }),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client("zeabur", "gpt-5.4")
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert mock_openai.call_args.kwargs["api_key"] == "zeabur-live-key"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://claude-codex.zeabur.app/v1"
+
 
 class TestResolveProviderClientModelNormalization:
     """Direct-provider auxiliary routing should normalize models like main runtime."""

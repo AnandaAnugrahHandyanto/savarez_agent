@@ -96,7 +96,7 @@ def _normalize_aux_provider(provider: Optional[str], *, for_vision: bool = False
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "gemini": "gemini-3-flash-preview",
-    "zai": "glm-4.5-flash",
+    "zai": "glm-5",
     "kimi-coding": "kimi-k2-turbo-preview",
     "minimax": "MiniMax-M2.7",
     "minimax-cn": "MiniMax-M2.7",
@@ -1463,10 +1463,28 @@ def resolve_provider_client(
     # ── Named custom providers (config.yaml custom_providers list) ───
     try:
         from hermes_cli.runtime_provider import _get_named_custom_provider
+        from hermes_cli.auth import resolve_api_key_provider_credentials
         custom_entry = _get_named_custom_provider(provider)
         if custom_entry:
             custom_base = custom_entry.get("base_url", "").strip()
-            custom_key = custom_entry.get("api_key", "").strip() or "no-key-required"
+            custom_key = custom_entry.get("api_key", "").strip()
+
+            # If this named custom provider also resolves via the standard
+            # provider credential path (e.g. zeabur), prefer that live auth.
+            # Pure custom providers like beans/local will raise or return no key,
+            # in which case we preserve the original custom_provider behavior.
+            try:
+                creds = resolve_api_key_provider_credentials(provider)
+            except Exception:
+                creds = {}
+            provider_api_key = str(creds.get("api_key", "") or "").strip()
+            provider_base_url = str(creds.get("base_url", "") or "").strip()
+            if provider_api_key:
+                custom_key = provider_api_key
+            if provider_base_url:
+                custom_base = provider_base_url.rstrip("/")
+
+            custom_key = custom_key or "no-key-required"
             if custom_base:
                 final_model = _normalize_resolved_model(
                     model or _read_main_model() or "gpt-4o-mini",
@@ -1708,16 +1726,18 @@ def resolve_vision_provider_client(
         return resolved_provider, sync_client, final_model
 
     if resolved_base_url:
+        endpoint_provider = requested if requested and requested != "auto" else "custom"
         client, final_model = resolve_provider_client(
-            "custom",
+            endpoint_provider,
             model=resolved_model,
             async_mode=async_mode,
             explicit_base_url=resolved_base_url,
             explicit_api_key=resolved_api_key,
+            api_mode=resolved_api_mode,
         )
         if client is None:
-            return "custom", None, None
-        return "custom", client, final_model
+            return endpoint_provider, None, None
+        return endpoint_provider, client, final_model
 
     if requested == "auto":
         # Vision auto-detection order:
@@ -1918,6 +1938,34 @@ def _is_openrouter_client(client: Any) -> bool:
     return False
 
 
+def _should_try_auxiliary_fallback(error: Exception, *, explicit_provider: str) -> tuple[bool, Optional[str]]:
+    """Return whether auxiliary call_llm should try provider fallback for this error.
+
+    Auto provider always gets best-effort fallback for payment/auth/model/connection
+    failures. Explicit providers remain hard constraints except for direct custom
+    endpoints (explicit base_url / custom), where invalid auth or unsupported model
+    should degrade to the auto chain instead of breaking compression/search flows.
+    """
+    is_auto = explicit_provider in ("auto", "", None)
+    if _is_payment_error(error):
+        return is_auto, "payment error"
+    if _is_connection_error(error):
+        return is_auto, "connection error"
+
+    try:
+        from agent.error_classifier import FailoverReason, classify_api_error
+
+        classified = classify_api_error(error)
+        if classified.reason == FailoverReason.auth and explicit_provider in ("custom",):
+            return True, "auth error"
+        if classified.reason == FailoverReason.model_not_found and explicit_provider in ("custom",):
+            return True, "unsupported model"
+    except Exception:
+        pass
+
+    return False, None
+
+
 def _compat_model(client: Any, model: Optional[str], cached_default: Optional[str]) -> Optional[str]:
     """Drop OpenRouter-format model slugs (with '/') for non-OpenRouter clients.
 
@@ -2016,9 +2064,10 @@ def _resolve_task_provider_model(
       4. "auto" (full auto-detection chain)
 
     Returns (provider, model, base_url, api_key, api_mode) where model may
-    be None (use provider default). When base_url is set, provider is forced
-    to "custom" and the task uses that direct endpoint. api_mode is one of
-    "chat_completions", "codex_responses", or None (auto-detect).
+    be None (use provider default). When a base_url is set without an explicit
+    non-auto provider, provider is forced to "custom" and the task uses that
+    direct endpoint. api_mode is one of "chat_completions", "codex_responses",
+    or None (auto-detect).
     """
     config = {}
     cfg_provider = None
@@ -2062,14 +2111,20 @@ def _resolve_task_provider_model(
     resolved_api_mode = cfg_api_mode or env_api_mode
 
     if base_url:
-        return "custom", resolved_model, base_url, api_key, resolved_api_mode
+        chosen_provider = provider if provider and provider != "auto" else "custom"
+        return chosen_provider, resolved_model, base_url, api_key, resolved_api_mode
     if provider:
         return provider, resolved_model, base_url, api_key, resolved_api_mode
 
     if task:
         # Config.yaml is the primary source for per-task overrides.
         if cfg_base_url:
-            return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
+            # Preserve an explicitly configured named provider (e.g. zeabur)
+            # when a task also pins a base_url. Downgrading named providers to
+            # "custom" breaks provider-specific auth resolution and can make
+            # compression summarization fail even though the main provider works.
+            chosen_provider = cfg_provider if cfg_provider and cfg_provider != "auto" else "custom"
+            return chosen_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
         if cfg_provider and cfg_provider != "auto":
             return cfg_provider, resolved_model, None, None, resolved_api_mode
 
@@ -2403,23 +2458,18 @@ def call_llm(
         # common case where a user runs out of OpenRouter credits but has
         # Codex OAuth or another provider available.
         #
-        # ── Connection error fallback ────────────────────────────────
-        # When a provider endpoint is unreachable (DNS failure, connection
-        # refused, timeout), try alternative providers.  This handles stale
-        # Codex/OAuth tokens that authenticate but whose endpoint is down,
-        # and providers the user never configured that got picked up by
-        # the auto-detection chain.
-        should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
-        # Only try alternative providers when the user didn't explicitly
-        # configure this task's provider.  Explicit provider = hard constraint;
-        # auto (the default) = best-effort fallback chain.  (#7559)
-        is_auto = resolved_provider in ("auto", "", None)
-        if should_fallback and is_auto:
-            reason = "payment error" if _is_payment_error(first_err) else "connection error"
+        # ── Connection / auth / model fallback ───────────────────────
+        # Auto mode is always best-effort. For explicit custom endpoints,
+        # auth / invalid-model failures should also degrade to the auto chain
+        # so auxiliary tasks like compression don't hard-fail on a broken
+        # sidecar endpoint.
+        should_fallback, reason = _should_try_auxiliary_fallback(
+            first_err, explicit_provider=resolved_provider)
+        if should_fallback:
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
             fb_client, fb_model, fb_label = _try_payment_fallback(
-                resolved_provider, task, reason=reason)
+                resolved_provider, task, reason=reason or "error")
             if fb_client is not None:
                 fb_kwargs = _build_call_kwargs(
                     fb_label, fb_model, messages,
@@ -2589,15 +2639,14 @@ async def async_call_llm(
                     raise
                 first_err = retry_err
 
-        # ── Payment / connection fallback (mirrors sync call_llm) ─────
-        should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
-        is_auto = resolved_provider in ("auto", "", None)
-        if should_fallback and is_auto:
-            reason = "payment error" if _is_payment_error(first_err) else "connection error"
+        # ── Payment / connection / auth / model fallback (mirrors sync call_llm) ─────
+        should_fallback, reason = _should_try_auxiliary_fallback(
+            first_err, explicit_provider=resolved_provider)
+        if should_fallback:
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
             fb_client, fb_model, fb_label = _try_payment_fallback(
-                resolved_provider, task, reason=reason)
+                resolved_provider, task, reason=reason or "error")
             if fb_client is not None:
                 fb_kwargs = _build_call_kwargs(
                     fb_label, fb_model, messages,
