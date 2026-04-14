@@ -1141,6 +1141,88 @@ class TestMatrixEncryptedSendFallback:
         assert fake_client.send_message_event.await_count == 2
 
 
+class TestMatrixUploadAndSend:
+    @pytest.mark.asyncio
+    async def test_upload_and_send_unencrypted_room_uses_plain_url(self):
+        adapter = _make_adapter()
+        adapter._encryption = True
+
+        fake_client = MagicMock()
+        fake_client.crypto = object()
+        fake_client.state_store = MagicMock()
+        fake_client.state_store.is_encrypted = AsyncMock(return_value=False)
+        fake_client.upload_media = AsyncMock(return_value="mxc://matrix.example.org/plain")
+        fake_client.send_message_event = AsyncMock(return_value="$plain_event")
+        adapter._client = fake_client
+
+        result = await adapter._upload_and_send(
+            "!room:example.org",
+            b"plain bytes",
+            "plain.txt",
+            "text/plain",
+            "m.file",
+        )
+
+        assert result.success is True
+        fake_client.upload_media.assert_awaited_once_with(
+            b"plain bytes",
+            mime_type="text/plain",
+            filename="plain.txt",
+            size=len(b"plain bytes"),
+        )
+        sent_content = fake_client.send_message_event.await_args.args[2]
+        assert sent_content["url"] == "mxc://matrix.example.org/plain"
+        assert "file" not in sent_content
+
+    @pytest.mark.asyncio
+    async def test_upload_and_send_encrypted_room_uses_file_payload(self):
+        adapter = _make_adapter()
+        adapter._encryption = True
+
+        fake_client = MagicMock()
+        fake_client.crypto = object()
+        fake_client.state_store = MagicMock()
+        fake_client.state_store.is_encrypted = AsyncMock(return_value=True)
+        fake_client.upload_media = AsyncMock(return_value="mxc://matrix.example.org/encrypted")
+        fake_client.send_message_event = AsyncMock(return_value="$encrypted_event")
+        adapter._client = fake_client
+
+        encrypted_file = MagicMock()
+        encrypted_file.serialize.return_value = {
+            "key": {"k": "secret"},
+            "iv": "iv",
+            "hashes": {"sha256": "hash"},
+            "v": "v2",
+        }
+
+        fake_attachments = types.ModuleType("mautrix.crypto.attachments")
+        fake_attachments.encrypt_attachment = MagicMock(
+            return_value=(b"ciphertext", encrypted_file)
+        )
+
+        with patch.dict(sys.modules, {"mautrix.crypto.attachments": fake_attachments}):
+            result = await adapter._upload_and_send(
+                "!room:example.org",
+                b"plaintext",
+                "secret.txt",
+                "text/plain",
+                "m.file",
+            )
+
+        assert result.success is True
+        fake_attachments.encrypt_attachment.assert_called_once_with(b"plaintext")
+        fake_client.upload_media.assert_awaited_once_with(
+            b"ciphertext",
+            mime_type="text/plain",
+            filename="secret.txt",
+            size=len(b"ciphertext"),
+        )
+        sent_content = fake_client.send_message_event.await_args.args[2]
+        assert "url" not in sent_content
+        assert sent_content["file"]["url"] == "mxc://matrix.example.org/encrypted"
+        assert sent_content["file"]["key"] == {"k": "secret"}
+
+
 # ---------------------------------------------------------------------------
 # E2EE: MegolmEvent key request + buffering via _on_encrypted_event
 # ---------------------------------------------------------------------------
@@ -1829,6 +1911,4 @@ class TestMatrixPresence:
         self.adapter._client = None
         result = await self.adapter.set_presence("online")
         assert result is False
-
-
 

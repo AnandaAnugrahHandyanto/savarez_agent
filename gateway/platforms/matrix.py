@@ -873,12 +873,35 @@ class MatrixAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Upload bytes to Matrix and send as a media message."""
 
+        upload_data = data
+        encrypted_file = None
+        state_store = getattr(self._client, "state_store", None)
+        room_is_encrypted = False
+        if self._encryption and getattr(self._client, "crypto", None) and state_store:
+            try:
+                room_is_encrypted = bool(await state_store.is_encrypted(RoomID(room_id)))
+            except Exception as exc:
+                logger.debug(
+                    "Matrix: failed to inspect room encryption state for media upload: %s",
+                    exc,
+                )
+
+        if room_is_encrypted:
+            try:
+                from mautrix.crypto.attachments import encrypt_attachment
+
+                upload_data, encrypted_file = encrypt_attachment(data)
+            except Exception as exc:
+                logger.error("Matrix: attachment encryption failed: %s", exc)
+                return SendResult(success=False, error=str(exc))
+
         # Upload to homeserver.
         try:
             mxc_url = await self._client.upload_media(
-                data,
+                upload_data,
                 mime_type=content_type,
                 filename=filename,
+                size=len(upload_data),
             )
         except Exception as exc:
             logger.error("Matrix: upload failed: %s", exc)
@@ -888,12 +911,17 @@ class MatrixAdapter(BasePlatformAdapter):
         msg_content: Dict[str, Any] = {
             "msgtype": msgtype,
             "body": caption or filename,
-            "url": str(mxc_url),
             "info": {
                 "mimetype": content_type,
                 "size": len(data),
             },
         }
+        if encrypted_file is not None:
+            encrypted_file_payload = encrypted_file.serialize()
+            encrypted_file_payload["url"] = str(mxc_url)
+            msg_content["file"] = encrypted_file_payload
+        else:
+            msg_content["url"] = str(mxc_url)
 
         # Add MSC3245 voice flag for native voice messages.
         if is_voice:
