@@ -48,6 +48,9 @@ _EXTRA_ENV_KEYS = frozenset({
     "QQ_APP_ID", "QQ_CLIENT_SECRET", "QQ_HOME_CHANNEL", "QQ_HOME_CHANNEL_NAME",
     "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS", "QQ_ALLOW_ALL_USERS", "QQ_MARKDOWN_SUPPORT",
     "QQ_STT_API_KEY", "QQ_STT_BASE_URL", "QQ_STT_MODEL",
+    "NEXTCLOUD_TALK_SECRET", "NEXTCLOUD_TALK_BASE_URL",
+    "NEXTCLOUD_TALK_WEBHOOK_HOST", "NEXTCLOUD_TALK_WEBHOOK_PORT", "NEXTCLOUD_TALK_WEBHOOK_PATH",
+    "NEXTCLOUD_TALK_CHAT_TYPE", "NEXTCLOUD_TALK_HOME_CHANNEL", "NEXTCLOUD_TALK_HOME_CHANNEL_NAME",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
@@ -1337,6 +1340,27 @@ OPTIONAL_ENV_VARS = {
     "BLUEBUBBLES_ALLOW_ALL_USERS": {
         "description": "Allow all BlueBubbles users without allowlist",
         "prompt": "Allow All BlueBubbles Users",
+        "category": "messaging",
+    },
+    "NEXTCLOUD_TALK_SECRET": {
+        "description": "Nextcloud Talk bot shared secret. Configure with `occ talk:bot:install` on the Nextcloud server.",
+        "prompt": "Nextcloud Talk bot shared secret",
+        "url": "https://nextcloud-talk.readthedocs.io/en/latest/bots/",
+        "password": True,
+        "category": "messaging",
+    },
+    "NEXTCLOUD_TALK_BASE_URL": {
+        "description": "Public base URL of the Nextcloud server (e.g. https://cloud.example.com). Used for outbound replies and cron delivery.",
+        "prompt": "Nextcloud base URL",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "NEXTCLOUD_TALK_ALLOWED_USERS": {
+        "description": "Comma-separated Talk actor IDs (e.g. 'users/alice') allowed to use the bot",
+        "prompt": "Allowed Talk actor IDs (comma-separated)",
+        "url": None,
+        "password": False,
         "category": "messaging",
     },
     "QQ_APP_ID": {
