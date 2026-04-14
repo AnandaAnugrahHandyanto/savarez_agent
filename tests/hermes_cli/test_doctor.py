@@ -292,3 +292,57 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
     assert "system dependency not met" in out
     assert "agent-browser is not installed (expected in the tested Termux path)" in out
     assert "npm install -g agent-browser && agent-browser install" in out
+
+
+def test_run_doctor_image_gen_reports_credential_hint_not_system_dependency(monkeypatch, tmp_path):
+    """image_gen has multiple auth paths (FAL_KEY or managed Nous), so its
+    registry entry exposes no ``env_vars``. Without a hint, doctor used to
+    mislead users with "(system dependency not met)". It should now surface
+    a credential-focused setup hint and count the toolset toward the
+    'hermes setup' nudge. See issue NousResearch/hermes-agent#9516.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: (
+            ["terminal"],
+            [{"name": "image_gen", "env_vars": [], "tools": ["image_generate"]}],
+        ),
+        TOOLSET_REQUIREMENTS={
+            "terminal": {"name": "terminal"},
+            "image_gen": {"name": "image_gen"},
+        },
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "image_gen" in out
+    # Misleading label must be gone: image_gen is the only unavailable
+    # toolset in this test, and it now has a curated hint.
+    assert "system dependency not met" not in out
+    # Actionable hint should be present.
+    assert "FAL_KEY" in out
+    assert "Nous Portal" in out
+    # The hint should nudge the user toward `hermes setup`, same as any
+    # other credential-gated toolset.
+    assert "hermes setup" in out
