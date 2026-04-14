@@ -190,6 +190,16 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.anthropic.com",
         api_key_env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
     ),
+    "bedrock": ProviderConfig(
+        id="bedrock",
+        name="AWS Bedrock",
+        auth_type="api_key",
+        inference_base_url="",  # Region-specific, resolved at runtime
+        # Only bearer token listed for auto-detection/status. SigV4 credentials
+        # (ACCESS_KEY + SECRET_KEY) are validated as a pair at runtime — listing
+        # ACCESS_KEY alone would falsely report Bedrock as "configured".
+        api_key_env_vars=("AWS_BEARER_TOKEN_BEDROCK",),
+    ),
     "alibaba": ProviderConfig(
         id="alibaba",
         name="Alibaba Cloud (DashScope)",
@@ -923,6 +933,7 @@ def resolve_provider(
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
+        "bedrock": "bedrock", "aws-bedrock": "bedrock", "aws": "bedrock", "amazon-bedrock": "bedrock",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
@@ -2391,13 +2402,40 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     else:
         base_url = pconfig.inference_base_url
 
+    configured = bool(api_key)
+    # Bedrock: also check SigV4 credentials and boto3 default credential chain.
+    # api_key_env_vars only lists AWS_BEARER_TOKEN_BEDROCK to avoid false
+    # positives from ACCESS_KEY alone. Check additional sources here.
+    if not configured and provider_id == "bedrock":
+        access_key = os.getenv("AWS_ACCESS_KEY_ID", "").strip()
+        secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "").strip()
+        if access_key and secret_key:
+            configured = True
+            key_source = "AWS_ACCESS_KEY_ID+AWS_SECRET_ACCESS_KEY"
+        else:
+            # Check boto3 credential chain: AWS_PROFILE, SSO, instance roles, etc.
+            # Validate that credentials are actually resolvable — a stale or
+            # nonexistent AWS_PROFILE should NOT report configured.
+            try:
+                import botocore.session
+                session = botocore.session.get_session()
+                profile = os.getenv("AWS_PROFILE", "").strip()
+                if profile:
+                    session.set_config_variable("profile", profile)
+                creds = session.get_credentials()
+                if creds is not None:
+                    configured = True
+                    key_source = f"AWS_PROFILE={profile}" if profile else "boto3-default-chain"
+            except Exception:
+                pass
+
     return {
-        "configured": bool(api_key),
+        "configured": configured,
         "provider": provider_id,
         "name": pconfig.name,
         "key_source": key_source,
         "base_url": base_url,
-        "logged_in": bool(api_key),  # compat with OAuth status shape
+        "logged_in": configured,  # compat with OAuth status shape
     }
 
 

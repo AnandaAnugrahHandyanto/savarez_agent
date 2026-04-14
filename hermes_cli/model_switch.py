@@ -816,6 +816,26 @@ def list_authenticated_providers(
 
         # Check if any env var is set
         has_creds = any(os.environ.get(ev) for ev in env_vars)
+        # Bedrock: also check SigV4 key pair, AWS_PROFILE, and boto3 default
+        # credential chain (instance roles, SSO, shared credentials, IRSA).
+        if not has_creds and hermes_id == "bedrock":
+            has_creds = bool(
+                os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY")
+            )
+            if not has_creds:
+                # Validate boto3 credential chain (AWS_PROFILE, SSO, instance roles).
+                # Actually resolve credentials to avoid false positives from
+                # nonexistent profiles or stale SSO sessions.
+                try:
+                    import botocore.session
+                    session = botocore.session.get_session()
+                    profile = os.environ.get("AWS_PROFILE", "").strip()
+                    if profile:
+                        session.set_config_variable("profile", profile)
+                    creds = session.get_credentials()
+                    has_creds = creds is not None
+                except Exception:
+                    pass
         if not has_creds:
             continue
 
@@ -838,6 +858,37 @@ def list_authenticated_providers(
             "source": "built-in",
         })
         seen_slugs.add(slug)
+
+    # --- 1b. Bedrock fallback — models.dev may not have an "amazon-bedrock" entry,
+    # so check Bedrock credentials independently if it wasn't already picked up.
+    if "bedrock" not in seen_slugs:
+        _bedrock_has_creds = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK"))
+        if not _bedrock_has_creds:
+            _bedrock_has_creds = bool(
+                os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY")
+            )
+        if not _bedrock_has_creds:
+            try:
+                import botocore.session
+                _bsession = botocore.session.get_session()
+                _bprofile = os.environ.get("AWS_PROFILE", "").strip()
+                if _bprofile:
+                    _bsession.set_config_variable("profile", _bprofile)
+                _bedrock_has_creds = _bsession.get_credentials() is not None
+            except Exception:
+                pass
+        if _bedrock_has_creds:
+            _bedrock_models = curated.get("bedrock", [])
+            results.append({
+                "slug": "bedrock",
+                "name": "AWS Bedrock",
+                "is_current": "bedrock" == current_provider,
+                "is_user_defined": False,
+                "models": _bedrock_models[:max_models],
+                "total_models": len(_bedrock_models),
+                "source": "built-in",
+            })
+            seen_slugs.add("bedrock")
 
     # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---
     from hermes_cli.providers import HERMES_OVERLAYS

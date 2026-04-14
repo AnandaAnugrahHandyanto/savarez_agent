@@ -240,6 +240,62 @@ def _common_betas_for_base_url(base_url: str | None) -> list[str]:
     return _COMMON_BETAS
 
 
+def build_bedrock_client(
+    region: str,
+    auth_mode: str = "sigv4",
+    bearer_token: str = "",
+):
+    """Create an AnthropicBedrock client for AWS Bedrock.
+
+    Args:
+        region:       AWS region (e.g. ``us-east-1``).
+        auth_mode:    ``"sigv4"`` for IAM credentials or ``"bearer"`` for bearer token.
+        bearer_token: Bearer token value (only used when auth_mode is ``"bearer"``).
+
+    Returns an anthropic.AnthropicBedrock instance.
+    """
+    if _anthropic_sdk is None:
+        raise ImportError(
+            "The 'anthropic' package is required for AWS Bedrock. "
+            "Install it with: pip install 'anthropic>=0.39.0'"
+        )
+    if not hasattr(_anthropic_sdk, "AnthropicBedrock"):
+        raise ImportError(
+            "AnthropicBedrock requires anthropic>=0.39.0. "
+            "Upgrade with: pip install 'anthropic>=0.39.0'"
+        )
+    from httpx import Timeout
+
+    timeout = Timeout(timeout=900.0, connect=10.0)
+
+    # AnthropicBedrock handles both auth modes:
+    #   - api_key: Bearer token passed directly (Bedrock API keys)
+    #   - aws_access_key/aws_secret_key: SigV4 signing via boto3
+    kwargs: dict = {
+        "aws_region": region,
+        "timeout": timeout,
+    }
+
+    if auth_mode == "bearer" and bearer_token:
+        # Bearer token auth — AnthropicBedrock's api_key parameter sends
+        # the token as Authorization: Bearer in the request headers.
+        kwargs["api_key"] = bearer_token
+    else:
+        # SigV4 auth — reads from explicit env vars or falls back to the
+        # boto3 default credential chain (instance roles, ~/.aws/credentials).
+        access_key = os.getenv("AWS_ACCESS_KEY_ID", "").strip()
+        secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "").strip()
+        session_token = os.getenv("AWS_SESSION_TOKEN", "").strip()
+        if access_key and secret_key:
+            kwargs["aws_access_key"] = access_key
+            kwargs["aws_secret_key"] = secret_key
+            if session_token:
+                kwargs["aws_session_token"] = session_token
+        # If neither is set, AnthropicBedrock falls back to boto3 credential chain
+
+    return _anthropic_sdk.AnthropicBedrock(**kwargs)
+
+
 def build_anthropic_client(api_key: str, base_url: str = None):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -745,14 +801,40 @@ def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def is_bedrock_model_id(model: str) -> bool:
+    """Return True for Bedrock ARNs or regional/vendor-prefixed model IDs.
+
+    Examples that return True:
+      - arn:aws:bedrock:us-east-1:123456:inference-profile/...
+      - us.anthropic.claude-sonnet-4-6
+      - global.anthropic.claude-opus-4-6-v1
+      - anthropic.claude-opus-4-6-v1:0
+    """
+    m = model.strip().lower()
+    if m.startswith("arn:aws:bedrock:"):
+        return True
+    # Bedrock short IDs use vendor-dot prefixes (anthropic.*, amazon.*, meta.*, etc.)
+    # or geography-based inference profile prefixes (us., eu., apac., global.).
+    # See: https://docs.aws.amazon.com/bedrock/latest/userguide/inference-how.html
+    _BEDROCK_PREFIXES = (
+        "anthropic.", "us.anthropic.", "eu.anthropic.", "global.anthropic.",
+        "apac.anthropic.",
+        "amazon.", "meta.", "cohere.", "mistral.", "ai21.", "deepseek.",
+    )
+    return any(m.startswith(p) for p in _BEDROCK_PREFIXES)
+
+
 def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
     """Normalize a model name for the Anthropic API.
 
+    - Preserves Bedrock ARNs and vendor-prefixed model IDs unchanged
     - Strips 'anthropic/' prefix (OpenRouter format, case-insensitive)
     - Converts dots to hyphens in version numbers (OpenRouter uses dots,
       Anthropic uses hyphens: claude-opus-4.6 → claude-opus-4-6), unless
       preserve_dots is True (e.g. for Alibaba/DashScope: qwen3.5-plus).
     """
+    if is_bedrock_model_id(model):
+        return model
     lower = model.lower()
     if lower.startswith("anthropic/"):
         model = model[len("anthropic/"):]

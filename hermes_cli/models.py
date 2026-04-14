@@ -303,6 +303,16 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "XiaomiMiMo/MiMo-V2-Flash",
         "moonshotai/Kimi-K2-Thinking",
     ],
+    # AWS Bedrock — Claude models via AnthropicBedrock SDK.
+    # Uses inference profile IDs (us./eu./global. prefixes) and bare model IDs.
+    "bedrock": [
+        "us.anthropic.claude-opus-4-6-v1",
+        "us.anthropic.claude-sonnet-4-6",
+        "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "anthropic.claude-opus-4-6-v1",
+        "anthropic.claude-sonnet-4-6",
+        "anthropic.claude-haiku-4-5-20251001-v1:0",
+    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -536,6 +546,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (200+ models, pay-per-use)"),
+    ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude via Anthropic SDK — bearer token or IAM)"),
 ]
 
 # Derived dicts — used throughout the codebase
@@ -1251,6 +1262,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = _fetch_anthropic_models()
         if live:
             return live
+    if normalized == "bedrock":
+        live = _fetch_bedrock_models()
+        if live:
+            return live
     if normalized == "ai-gateway":
         live = _fetch_ai_gateway_models()
         if live:
@@ -1312,6 +1327,120 @@ def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
         import logging
         logging.getLogger(__name__).debug("Failed to fetch Anthropic models: %s", e)
         return None
+
+
+def _fetch_bedrock_models() -> Optional[list[str]]:
+    """Fetch available Anthropic models from Amazon Bedrock.
+
+    Queries ListInferenceProfiles and ListFoundationModels, then filters to
+    Anthropic/Claude models only — the AnthropicBedrock SDK transport only
+    supports Claude.  Non-Anthropic models (Nova, Llama, DeepSeek) would need
+    the Converse API which is not implemented in this provider.
+
+    Returns sorted model IDs with inference profiles first, or None on failure.
+    Requires boto3 (installed via the ``[bedrock]`` extra).
+    """
+    try:
+        import boto3
+    except ImportError:
+        return None
+
+    region = (
+        os.getenv("AWS_REGION", "").strip()
+        or os.getenv("AWS_BEDROCK_REGION", "").strip()
+        or os.getenv("AWS_DEFAULT_REGION", "").strip()
+    )
+    if not region:
+        try:
+            from hermes_cli.config import get_env_value
+            region = (get_env_value("AWS_BEDROCK_REGION") or "").strip()
+        except Exception:
+            pass
+    if not region:
+        region = "us-east-1"
+
+    try:
+        client = boto3.client("bedrock", region_name=region)
+    except Exception:
+        return None
+
+    _EXCLUDED_PREFIXES = (
+        "amazon.titan-embed", "amazon.titan-image", "amazon.nova-canvas",
+        "amazon.nova-reel", "amazon.nova-sonic", "cohere.embed",
+        "cohere.rerank", "stability.", "twelvelabs.",
+    )
+
+    def _is_anthropic_chat_model(model_id: str) -> bool:
+        """Return True only for Anthropic/Claude models (text-generating, not excluded)."""
+        lower = model_id.lower()
+        # Strip geography-based inference profile prefix to get vendor.model.
+        # AWS docs list: us, eu, apac, global as valid geographies.
+        # https://docs.aws.amazon.com/bedrock/latest/userguide/inference-how.html
+        for prefix in ("global.", "eu.", "us.", "apac.", "ap.", "al."):
+            if lower.startswith(prefix):
+                lower = lower[len(prefix):]
+                break
+        # Must be Anthropic vendor
+        if not lower.startswith("anthropic."):
+            return False
+        return not any(lower.startswith(ex) for ex in _EXCLUDED_PREFIXES)
+
+    # 1. Inference profiles (cross-region: eu.*, us.*, global.*)
+    profiles: list[str] = []
+    try:
+        kwargs: dict[str, Any] = {"maxResults": 100}
+        while True:
+            resp = client.list_inference_profiles(**kwargs)
+            for p in resp.get("inferenceProfileSummaries", []):
+                if p.get("status") == "ACTIVE":
+                    pid = p.get("inferenceProfileId", "")
+                    if pid:
+                        profiles.append(pid)
+            token = resp.get("nextToken")
+            if not token:
+                break
+            kwargs["nextToken"] = token
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug("Bedrock ListInferenceProfiles failed: %s", e)
+
+    # 2. Foundation models (bare IDs)
+    bare_models: list[str] = []
+    try:
+        resp = client.list_foundation_models()
+        for m in resp.get("modelSummaries", []):
+            output = m.get("outputModalities", [])
+            if "TEXT" in output and m.get("inferenceTypesSupported"):
+                mid = m.get("modelId", "")
+                if mid:
+                    bare_models.append(mid)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug("Bedrock ListFoundationModels failed: %s", e)
+
+    if not profiles and not bare_models:
+        return None
+
+    # Deduplicate: profiles take priority over bare models they cover
+    covered_bare = set()
+    for pid in profiles:
+        for prefix in ("global.", "eu.", "us.", "apac.", "ap.", "al."):
+            if pid.startswith(prefix):
+                covered_bare.add(pid[len(prefix):])
+                break
+
+    combined: list[str] = []
+    seen: set[str] = set()
+    for pid in profiles:
+        if _is_anthropic_chat_model(pid) and pid not in seen:
+            combined.append(pid)
+            seen.add(pid)
+    for mid in bare_models:
+        if _is_anthropic_chat_model(mid) and mid not in seen and mid not in covered_bare:
+            combined.append(mid)
+            seen.add(mid)
+
+    return combined if combined else None
 
 
 def _payload_items(payload: Any) -> list[dict[str, Any]]:

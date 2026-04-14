@@ -159,6 +159,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "kilocode": "kilo",
     "fireworks": "fireworks-ai",
     "huggingface": "huggingface",
+    "bedrock": "amazon-bedrock",
     "gemini": "google",
     "google": "google",
     "xai": "xai",

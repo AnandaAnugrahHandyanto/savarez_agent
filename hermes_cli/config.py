@@ -975,6 +975,38 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
 
+    "AWS_BEARER_TOKEN_BEDROCK": {
+        "description": "Amazon Bedrock API key (Bearer token) for Claude models via Bedrock",
+        "prompt": "Amazon Bedrock API Key",
+        "url": "https://console.aws.amazon.com/bedrock/",
+        "password": True,
+        "category": "provider",
+    },
+    "AWS_ACCESS_KEY_ID": {
+        "description": "AWS access key ID for Bedrock SigV4 authentication (alternative to bearer token)",
+        "prompt": "AWS Access Key ID (leave empty to use bearer token instead)",
+        "url": "https://console.aws.amazon.com/iam/",
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "AWS_SECRET_ACCESS_KEY": {
+        "description": "AWS secret access key for Bedrock SigV4 authentication (required with AWS_ACCESS_KEY_ID)",
+        "prompt": "AWS Secret Access Key",
+        "url": "https://console.aws.amazon.com/iam/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "AWS_BEDROCK_REGION": {
+        "description": "AWS region for Bedrock (default: us-east-1). Also accepts AWS_REGION.",
+        "prompt": "AWS Bedrock Region (leave empty for us-east-1)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+
     # ── Tool API keys ──
     "EXA_API_KEY": {
         "description": "Exa API key for AI-native web search and contents",

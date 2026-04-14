@@ -396,6 +396,55 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     if provider in _AUTHORITATIVE_NATIVE_PROVIDERS:
         return name
 
+    # --- Bedrock: translate OpenRouter/Anthropic slugs to Bedrock-native IDs ---
+    # Bedrock requires vendor-prefixed IDs (us.anthropic.claude-opus-4-6-v1),
+    # NOT bare model names (claude-opus-4-6) or OpenRouter slugs (anthropic/claude-opus-4.6).
+    # See: https://docs.anthropic.com/en/api/claude-on-amazon-bedrock
+    if provider == "bedrock":
+        if name.startswith("arn:"):
+            return name
+        # Already a native Bedrock ID — pass through
+        from agent.anthropic_adapter import is_bedrock_model_id
+        if is_bedrock_model_id(name):
+            return name
+        # Strip vendor/ prefix if present
+        bare = name
+        if "/" in name:
+            _prefix, _remainder = name.split("/", 1)
+            if _prefix.strip() and _remainder.strip():
+                bare = _remainder.strip()
+        # Normalize to match Bedrock convention: dots→hyphens in version numbers
+        bare = bare.replace(".", "-")
+        # Map Anthropic model names (coarse and dated) to Bedrock inference
+        # profile IDs.  Uses longest-prefix matching so dated variants like
+        # claude-opus-4-5-20251101 resolve via the claude-opus-4-5 prefix
+        # without needing an entry for every date stamp.
+        # Ordered longest-prefix-first so claude-3-5-sonnet matches before
+        # claude-3-5 (if one existed).
+        # IMPORTANT: sorted longest-prefix-first to prevent shorter prefixes
+        # from over-matching. e.g. claude-opus-4-1 must match before claude-opus-4.
+        _ANTHROPIC_TO_BEDROCK_PREFIXES = sorted([
+            ("claude-opus-4-6", "us.anthropic.claude-opus-4-6-v1"),
+            ("claude-sonnet-4-6", "us.anthropic.claude-sonnet-4-6"),
+            ("claude-opus-4-5", "us.anthropic.claude-opus-4-5-20251101-v1:0"),
+            ("claude-sonnet-4-5", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"),
+            ("claude-haiku-4-5", "us.anthropic.claude-haiku-4-5-20251001-v1:0"),
+            ("claude-opus-4-1", "us.anthropic.claude-opus-4-1-20250805-v1:0"),
+            ("claude-opus-4", "us.anthropic.claude-opus-4-20250514-v1:0"),
+            ("claude-sonnet-4", "us.anthropic.claude-sonnet-4-20250514-v1:0"),
+            ("claude-3-7-sonnet", "us.anthropic.claude-3-7-sonnet-20250219-v1:0"),
+            ("claude-3-5-sonnet", "us.anthropic.claude-3-5-sonnet-20241022-v2:0"),
+            ("claude-3-5-haiku", "us.anthropic.claude-3-5-haiku-20241022-v1:0"),
+            ("claude-3-opus", "us.anthropic.claude-3-opus-20240229-v1:0"),
+            ("claude-3-sonnet", "us.anthropic.claude-3-sonnet-20240229-v1:0"),
+            ("claude-3-haiku", "us.anthropic.claude-3-haiku-20240307-v1:0"),
+        ], key=lambda x: -len(x[0]))
+        for prefix, bedrock_id in _ANTHROPIC_TO_BEDROCK_PREFIXES:
+            if bare == prefix or bare.startswith(prefix + "-"):
+                return bedrock_id
+        # Unknown model — return bare name and let the API reject if invalid
+        return bare
+
     # --- Custom & all others: pass through as-is ---
     return name
 

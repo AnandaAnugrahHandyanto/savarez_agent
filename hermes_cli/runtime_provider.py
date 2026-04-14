@@ -222,6 +222,13 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
     if env_provider:
         return env_provider
 
+    # CLAUDE_CODE_USE_BEDROCK=1 is a temporary env var override that
+    # activates Bedrock without persisting to config.yaml. Checked after
+    # config.yaml and HERMES_INFERENCE_PROVIDER to avoid hijacking
+    # explicit provider selections.
+    if os.getenv("CLAUDE_CODE_USE_BEDROCK", "").strip() == "1":
+        return "bedrock"
+
     return "auto"
 
 
@@ -680,7 +687,7 @@ def resolve_runtime_provider(
     if explicit_runtime:
         return explicit_runtime
 
-    should_use_pool = provider != "openrouter"
+    should_use_pool = provider not in ("openrouter", "bedrock")
     if provider == "openrouter":
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = str(model_cfg.get("base_url") or "").strip()
@@ -809,6 +816,51 @@ def resolve_runtime_provider(
             "source": creds.get("source", "process"),
             "requested_provider": requested_provider,
         }
+
+    # AWS Bedrock (Anthropic Messages API via AnthropicBedrock SDK)
+    if provider == "bedrock":
+        region = (
+            os.getenv("AWS_REGION", "").strip()
+            or os.getenv("AWS_BEDROCK_REGION", "").strip()
+            or os.getenv("AWS_DEFAULT_REGION", "").strip()
+            or "us-east-1"
+        )
+        # Detect auth mode: bearer token > explicit SigV4 keys > boto3 default chain.
+        # The SDK's default chain covers AWS_PROFILE, SSO credentials,
+        # ~/.aws/credentials, EC2/ECS/Lambda instance roles, and IRSA.
+        bearer_token = os.getenv("AWS_BEARER_TOKEN_BEDROCK", "").strip()
+        access_key = os.getenv("AWS_ACCESS_KEY_ID", "").strip()
+        secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "").strip()
+        # Read model override from ANTHROPIC_MODEL env var (Claude Code convention)
+        # Determine auth mode: bearer > explicit SigV4 > boto3 default chain
+        if bearer_token:
+            auth_mode = "bearer"
+            source = "bedrock-bearer"
+            api_key = bearer_token
+        elif access_key and secret_key:
+            auth_mode = "sigv4"
+            source = "bedrock-sigv4"
+            api_key = "bedrock-sigv4"
+        else:
+            # Fall through to boto3 default credential chain (AWS_PROFILE,
+            # SSO, instance roles, IRSA, ~/.aws/credentials, etc.)
+            auth_mode = "sigv4"
+            source = "bedrock-default-chain"
+            api_key = "bedrock-default-chain"
+        env_model = os.getenv("ANTHROPIC_MODEL", "").strip()
+        result: Dict[str, Any] = {
+            "provider": "bedrock",
+            "api_mode": "anthropic_messages",
+            "base_url": "",  # Not used — AnthropicBedrock handles endpoint construction
+            "api_key": api_key,
+            "source": source,
+            "requested_provider": requested_provider,
+            "bedrock_region": region,
+            "bedrock_auth_mode": auth_mode,
+        }
+        if env_model:
+            result["model"] = env_model
+        return result
 
     # Anthropic (native Messages API)
     if provider == "anthropic":

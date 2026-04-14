@@ -100,6 +100,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "minimax": "MiniMax-M2.7",
     "minimax-cn": "MiniMax-M2.7",
     "anthropic": "claude-haiku-4-5-20251001",
+    "bedrock": os.getenv("ANTHROPIC_SMALL_FAST_MODEL", "anthropic.claude-haiku-4-5-20251001-v1:0"),
     "ai-gateway": "google/gemini-3-flash",
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
@@ -1174,6 +1175,11 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
+        elif main_provider == "bedrock":
+            # Bedrock: pass the runtime api_key (bearer token) so the
+            # auxiliary client uses the same auth as the main agent instead
+            # of re-deriving from env vars.
+            explicit_api_key = runtime_api_key or None
         client, resolved = resolve_provider_client(
             resolved_provider,
             main_model,
@@ -1496,6 +1502,34 @@ def resolve_provider_client(
                 return None, None
             final_model = _normalize_resolved_model(model or default_model, provider)
             return (_to_async_client(client, final_model) if async_mode else (client, final_model))
+
+        if provider == "bedrock":
+            # Bedrock uses AnthropicBedrock — wrap it in AnthropicAuxiliaryClient
+            # so callers get the expected .chat.completions.create() interface.
+            # Prefer explicit_api_key (bearer token from runtime resolver) over
+            # env vars to stay consistent with the main agent's auth state.
+            try:
+                from agent.anthropic_adapter import build_bedrock_client
+                region = (
+                    os.getenv("AWS_REGION", "").strip()
+                    or os.getenv("AWS_BEDROCK_REGION", "").strip()
+                    or os.getenv("AWS_DEFAULT_REGION", "").strip()
+                    or "us-east-1"
+                )
+                bearer = ""
+                if explicit_api_key and explicit_api_key not in ("bedrock-sigv4", "bedrock-default-chain"):
+                    bearer = explicit_api_key
+                elif not explicit_api_key:
+                    bearer = os.getenv("AWS_BEARER_TOKEN_BEDROCK", "").strip()
+                auth_mode = "bearer" if bearer else "sigv4"
+                real_client = build_bedrock_client(region=region, auth_mode=auth_mode, bearer_token=bearer)
+                default_model = _API_KEY_PROVIDER_AUX_MODELS.get("bedrock", "")
+                final_model = model or default_model
+                wrapped = AnthropicAuxiliaryClient(real_client, final_model, bearer or "bedrock-sigv4", "", is_oauth=False)
+                return (_to_async_client(wrapped, final_model) if async_mode else (wrapped, final_model))
+            except Exception as exc:
+                logger.warning("resolve_provider_client: bedrock auxiliary client failed: %s", exc)
+                return None, None
 
         creds = resolve_api_key_provider_credentials(provider)
         api_key = str(creds.get("api_key", "")).strip()

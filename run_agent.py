@@ -683,6 +683,8 @@ class AIAgent:
         elif (provider_name is None) and "chatgpt.com/backend-api/codex" in self._base_url_lower:
             self.api_mode = "codex_responses"
             self.provider = "openai-codex"
+        elif self.provider == "bedrock":
+            self.api_mode = "anthropic_messages"
         elif self.provider == "anthropic" or (provider_name is None and "api.anthropic.com" in self._base_url_lower):
             self.api_mode = "anthropic_messages"
             self.provider = "anthropic"
@@ -787,7 +789,11 @@ class AIAgent:
         is_openrouter = self._is_openrouter_url()
         is_claude = "claude" in self.model.lower()
         is_native_anthropic = self.api_mode == "anthropic_messages" and self.provider == "anthropic"
-        self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic
+        is_bedrock = self.provider == "bedrock"
+        self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic or is_bedrock
+        # DISABLE_PROMPT_CACHING=1 overrides — allows users to turn off caching
+        if os.getenv("DISABLE_PROMPT_CACHING", "").strip() == "1":
+            self._use_prompt_caching = False
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
         
         # Iteration budget: the LLM is only notified when it actually exhausts
@@ -873,7 +879,41 @@ class AIAgent:
         self._anthropic_client = None
         self._is_anthropic_oauth = False
 
-        if self.api_mode == "anthropic_messages":
+        if self.api_mode == "anthropic_messages" and self.provider == "bedrock":
+            # AWS Bedrock — use AnthropicBedrock client instead of Anthropic.
+            # Derive auth mode from the api_key passed by the runtime resolver:
+            # a real token string means bearer auth, placeholder means SigV4/default chain.
+            from agent.anthropic_adapter import build_bedrock_client
+            bedrock_region = getattr(self, '_bedrock_region', None) or os.getenv("AWS_REGION", "") or os.getenv("AWS_BEDROCK_REGION", "") or os.getenv("AWS_DEFAULT_REGION", "") or "us-east-1"
+            # Resolve bearer token: explicit api_key > env var > SigV4 fallback.
+            # This supports both resolve_runtime_provider() callers (api_key set)
+            # and direct AIAgent(provider="bedrock") callers (env var only).
+            _effective_token = api_key if (api_key and api_key not in ("bedrock-sigv4", "bedrock-default-chain", "")) else ""
+            if not _effective_token:
+                _effective_token = os.getenv("AWS_BEARER_TOKEN_BEDROCK", "").strip()
+            _is_bearer = bool(_effective_token)
+            bedrock_auth_mode = "bearer" if _is_bearer else "sigv4"
+            bearer_token = _effective_token if _is_bearer else ""
+            self._bedrock_region = bedrock_region
+            self._bedrock_auth_mode = bedrock_auth_mode
+            self._bedrock_bearer_token = bearer_token
+            self._anthropic_client = build_bedrock_client(
+                region=bedrock_region,
+                auth_mode=bedrock_auth_mode,
+                bearer_token=bearer_token,
+            )
+            # Store the actual bearer token (or a sigv4 sentinel) so that
+            # _current_main_runtime() exports a value the auxiliary router
+            # can use without re-reading env vars.
+            self.api_key = api_key or bearer_token or "bedrock-sigv4"
+            self._anthropic_api_key = self.api_key
+            self._anthropic_base_url = None
+            self._is_anthropic_oauth = False
+            self.client = None
+            self._client_kwargs = {}
+            if not self.quiet_mode:
+                print(f"🤖 AI Agent initialized with model: {self.model} (AWS Bedrock, {bedrock_region})")
+        elif self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
             # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
             # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
@@ -1571,7 +1611,27 @@ class AIAgent:
             self.api_key = api_key
 
         # ── Build new client ──
-        if api_mode == "anthropic_messages":
+        if api_mode == "anthropic_messages" and new_provider == "bedrock":
+            from agent.anthropic_adapter import build_bedrock_client
+            # Prefer stored Bedrock state from init, fall back to env vars
+            bedrock_region = getattr(self, '_bedrock_region', None) or os.getenv("AWS_REGION", "") or os.getenv("AWS_BEDROCK_REGION", "") or os.getenv("AWS_DEFAULT_REGION", "") or "us-east-1"
+            # Use api_key from switch call or stored bearer token
+            effective_key = api_key or getattr(self, '_bedrock_bearer_token', "") or ""
+            _is_bearer = effective_key and effective_key not in ("bedrock-sigv4", "bedrock-default-chain", "")
+            bedrock_auth_mode = "bearer" if _is_bearer else (getattr(self, '_bedrock_auth_mode', None) or "sigv4")
+            bearer_token = effective_key if _is_bearer else ""
+            self._bedrock_region = bedrock_region
+            self._bedrock_auth_mode = bedrock_auth_mode
+            self._bedrock_bearer_token = bearer_token
+            self._anthropic_client = build_bedrock_client(
+                region=bedrock_region,
+                auth_mode=bedrock_auth_mode,
+                bearer_token=bearer_token,
+            )
+            self._is_anthropic_oauth = False
+            self.client = None
+            self._client_kwargs = {}
+        elif api_mode == "anthropic_messages":
             from agent.anthropic_adapter import (
                 build_anthropic_client,
                 resolve_anthropic_token,
@@ -1606,10 +1666,14 @@ class AIAgent:
 
         # ── Re-evaluate prompt caching ──
         is_native_anthropic = api_mode == "anthropic_messages" and new_provider == "anthropic"
+        is_bedrock = new_provider == "bedrock"
         self._use_prompt_caching = (
             ("openrouter" in (self.base_url or "").lower() and "claude" in new_model.lower())
             or is_native_anthropic
+            or is_bedrock
         )
+        if os.getenv("DISABLE_PROMPT_CACHING", "").strip() == "1":
+            self._use_prompt_caching = False
 
         # ── Update context compressor ──
         if hasattr(self, "context_compressor") and self.context_compressor:
@@ -4651,6 +4715,12 @@ class AIAgent:
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
 
         if self.api_mode == "anthropic_messages":
+            # Bedrock uses env-var credentials (SigV4 or bearer token), not
+            # rotatable pool entries.  Skip client rebuild — the existing
+            # AnthropicBedrock client is already configured correctly.
+            if self.provider == "bedrock":
+                return
+
             from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
 
             try:
@@ -5645,7 +5715,19 @@ class AIAgent:
             self.api_mode = fb_api_mode
             self._fallback_activated = True
 
-            if fb_api_mode == "anthropic_messages":
+            if fb_api_mode == "anthropic_messages" and fb_provider == "bedrock":
+                # Bedrock fallback — rebuild AnthropicBedrock client using stored state
+                from agent.anthropic_adapter import build_bedrock_client
+                bedrock_region = getattr(self, '_bedrock_region', None) or os.getenv("AWS_REGION", "") or os.getenv("AWS_BEDROCK_REGION", "") or os.getenv("AWS_DEFAULT_REGION", "") or "us-east-1"
+                bearer_token = getattr(self, '_bedrock_bearer_token', "") or ""
+                bedrock_auth_mode = "bearer" if bearer_token else (getattr(self, '_bedrock_auth_mode', None) or "sigv4")
+                self._anthropic_client = build_bedrock_client(
+                    region=bedrock_region, auth_mode=bedrock_auth_mode, bearer_token=bearer_token,
+                )
+                self._is_anthropic_oauth = False
+                self.client = None
+                self._client_kwargs = {}
+            elif fb_api_mode == "anthropic_messages":
                 # Build native Anthropic client instead of using OpenAI client
                 from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
                 effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
@@ -5679,10 +5761,14 @@ class AIAgent:
 
             # Re-evaluate prompt caching for the new provider/model
             is_native_anthropic = fb_api_mode == "anthropic_messages" and fb_provider == "anthropic"
+            is_fb_bedrock = fb_provider == "bedrock"
             self._use_prompt_caching = (
                 ("openrouter" in fb_base_url.lower() and "claude" in fb_model.lower())
                 or is_native_anthropic
+                or is_fb_bedrock
             )
+            if os.getenv("DISABLE_PROMPT_CACHING", "").strip() == "1":
+                self._use_prompt_caching = False
 
             # Update context compressor limits for the fallback model.
             # Without this, compression decisions use the primary model's

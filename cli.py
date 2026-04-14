@@ -1652,7 +1652,18 @@ class HermesCLI:
         _model_config = CLI_CONFIG.get("model", {})
         _config_model = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
         _DEFAULT_CONFIG_MODEL = ""
-        self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
+        # ANTHROPIC_MODEL is a Claude Code/Bedrock convention — only consult it
+        # when the active provider is bedrock to avoid leaking a Bedrock
+        # model string into unrelated providers (OpenRouter, custom, etc.).
+        # An explicit --provider arg that is NOT bedrock must block the env var.
+        _cfg_provider = (_model_config.get("provider") or "") if isinstance(_model_config, dict) else ""
+        _explicit_non_bedrock = provider and provider.strip().lower() != "bedrock"
+        _bedrock_active = (not _explicit_non_bedrock) and (
+            _cfg_provider.strip().lower() == "bedrock"
+            or os.getenv("CLAUDE_CODE_USE_BEDROCK", "").strip() == "1"
+        )
+        _bedrock_model_env = os.getenv("ANTHROPIC_MODEL", "").strip() if _bedrock_active else ""
+        self.model = model or _config_model or _bedrock_model_env or _DEFAULT_CONFIG_MODEL
         # Auto-detect model from local server if still on default
         if self.model == _DEFAULT_CONFIG_MODEL:
             _base_url = (_model_config.get("base_url") or "") if isinstance(_model_config, dict) else ""
@@ -2709,9 +2720,14 @@ class HermesCLI:
                       "Set OPENROUTER_API_KEY or run: hermes setup")
                 return False
         if not isinstance(base_url, str) or not base_url:
-            print("\n⚠️  Provider resolver returned an empty base URL. "
-                  "Check your provider config or run: hermes setup")
-            return False
+            # Bedrock doesn't use base_url — AnthropicBedrock constructs
+            # the endpoint from the region internally.
+            if resolved_provider == "bedrock":
+                base_url = ""
+            else:
+                print("\n⚠️  Provider resolver returned an empty base URL. "
+                      "Check your provider config or run: hermes setup")
+                return False
 
         credentials_changed = api_key != self.api_key or base_url != self.base_url
         routing_changed = (
