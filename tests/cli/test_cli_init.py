@@ -96,6 +96,20 @@ class TestVerboseAndToolProgress:
         assert cli.tool_progress_mode in ("off", "new", "all", "verbose")
 
 
+class TestCtrlWWordBoundary:
+    def test_default_ctrlw_word_boundary_is_whitespace(self):
+        cli = _make_cli()
+        assert cli.ctrlw_word_boundary == "whitespace"
+
+    def test_ctrlw_word_boundary_config_is_honored(self):
+        cli = _make_cli(config_overrides={"display": {"ctrlw_word_boundary": "alphanumeric"}})
+        assert cli.ctrlw_word_boundary == "alphanumeric"
+
+    def test_unknown_ctrlw_word_boundary_falls_back_to_whitespace(self):
+        cli = _make_cli(config_overrides={"display": {"ctrlw_word_boundary": "bogus"}})
+        assert cli.ctrlw_word_boundary == "whitespace"
+
+
 class TestBusyInputMode:
     def test_default_busy_input_mode_is_interrupt(self):
         cli = _make_cli()

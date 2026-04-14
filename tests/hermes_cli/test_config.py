@@ -70,6 +70,7 @@ class TestLoadConfigDefaults:
             assert "terminal" in config
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
+            assert config["display"]["ctrlw_word_boundary"] == "whitespace"
 
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -459,7 +460,7 @@ class TestCustomProviderCompatibility:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-        assert raw["_config_version"] == 17
+        assert raw["_config_version"] == 18
         assert raw["providers"]["openai-direct"] == {
             "api": "https://api.openai.com/v1",
             "api_key": "test-key",
@@ -606,6 +607,26 @@ class TestInterimAssistantMessageConfig:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-        assert raw["_config_version"] == 17
+        assert raw["_config_version"] == 18
         assert raw["display"]["tool_progress"] == "off"
         assert raw["display"]["interim_assistant_messages"] is True
+
+
+class TestCtrlWWordBoundaryConfig:
+    def test_default_config_sets_ctrlw_word_boundary(self):
+        assert DEFAULT_CONFIG["display"]["ctrlw_word_boundary"] == "whitespace"
+
+    def test_migrate_to_v18_adds_ctrlw_word_boundary(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({"_config_version": 17, "display": {"tool_progress": "off"}}),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["_config_version"] == 18
+        assert raw["display"]["tool_progress"] == "off"
+        assert raw["display"]["ctrlw_word_boundary"] == "whitespace"
