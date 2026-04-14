@@ -644,6 +644,8 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["WHATSAPP_FREE_RESPONSE_CHATS"] = str(frc)
+                if "send_read_receipts" in whatsapp_cfg and not os.getenv("WHATSAPP_SEND_READ_RECEIPTS"):
+                    os.environ["WHATSAPP_SEND_READ_RECEIPTS"] = str(whatsapp_cfg["send_read_receipts"]).lower()
 
             # Matrix settings → env vars (env vars take precedence)
             matrix_cfg = yaml_cfg.get("matrix", {})
