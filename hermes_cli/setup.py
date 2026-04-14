@@ -1444,7 +1444,7 @@ def setup_terminal_backend(config: dict):
         # Gateway/cron working directory
         print()
         print_info("Gateway working directory:")
-        print_info("  Used by Telegram/Discord/cron sessions.")
+        print_info("  Used by messaging gateway and cron sessions.")
         print_info("  CLI/TUI always uses your launch directory instead.")
         current_cwd = cfg_get(config, "terminal", "cwd", default="")
         cwd = prompt("  Gateway working directory", current_cwd or str(Path.home()))
@@ -1864,7 +1864,7 @@ def setup_agent_settings(config: dict):
     # ── Session Reset Policy ──
     print_header("Session Reset Policy")
     print_info(
-        "Messaging sessions (Telegram, Discord, etc.) accumulate context over time."
+        "Messaging sessions (Telegram, Discord, Webex, etc.) accumulate context over time."
     )
     print_info(
         "Each message adds to the conversation history, which means growing API costs."
@@ -2024,11 +2024,11 @@ def _setup_telegram():
             save_env_value("TELEGRAM_HOME_CHANNEL", first_user_id)
             print_success(f"Telegram home channel set to {first_user_id}")
         else:
-            home_channel = prompt("Home channel ID (or leave empty to set later with /set-home in Telegram)")
+            home_channel = prompt("Home channel ID (or leave empty to set later with /sethome)")
             if home_channel:
                 save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
     else:
-        print_info("   You can also set this later by typing /set-home in your Telegram chat.")
+        print_info("   You can also set this later by typing /sethome in your chat.")
         home_channel = prompt("Home channel ID (leave empty to set later)")
         if home_channel:
             save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
@@ -3368,7 +3368,7 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     # Step 4: Offer messaging gateway setup
     print()
     gateway_choice = prompt_choice(
-        "Connect a messaging platform? (Telegram, Discord, etc.)",
+        "Connect a messaging platform? (Telegram, Discord, Webex, etc.)",
         [
             "Set up messaging now (recommended)",
             "Skip — set up later with 'hermes setup gateway'",
@@ -3385,7 +3385,7 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     print()
     print_info("  Configure all settings:    hermes setup")
     if gateway_choice != 0:
-        print_info("  Connect Telegram/Discord:  hermes setup gateway")
+        print_info("  Connect Telegram/Discord/Webex:  hermes setup gateway")
     print()
 
     _print_setup_summary(config, hermes_home)

@@ -151,6 +151,7 @@ gateway/platforms/
 ├── telegram.py          # Telegram Bot API (long polling or webhook)
 ├── discord.py           # Discord bot via discord.py
 ├── slack.py             # Slack Socket Mode
+├── webex.py             # Webex REST API + websocket/webhook listener bridge
 ├── whatsapp.py          # WhatsApp Business Cloud API
 ├── signal.py            # Signal via signal-cli REST API
 ├── matrix.py            # Matrix via mautrix (optional E2EE)
@@ -166,6 +167,7 @@ gateway/platforms/
 ├── yuanbao.py           # Yuanbao (Tencent) DM/group adapter
 ├── feishu_comment.py    # Feishu document/drive comment-reply handler
 ├── msgraph_webhook.py   # Microsoft Graph change-notification webhook (Teams, Outlook, etc.)
+├── webex_listener.js    # Webex Mercury websocket listener helper
 ├── webhook.py           # Inbound/outbound webhook adapter
 ├── api_server.py        # REST API server adapter
 └── homeassistant.py     # Home Assistant conversation integration

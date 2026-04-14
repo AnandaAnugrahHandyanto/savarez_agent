@@ -299,7 +299,7 @@ Command-type providers run whatever shell command you configure, with your user'
 
 ## Voice Message Transcription (STT)
 
-Voice messages sent on Telegram, Discord, WhatsApp, Slack, or Signal are automatically transcribed and injected as text into the conversation. The agent sees the transcript as normal text.
+Voice messages sent on Telegram, Discord, Slack, Webex, WhatsApp, or Signal are automatically transcribed and injected as text into the conversation. The agent sees the transcript as normal text.
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------| 
