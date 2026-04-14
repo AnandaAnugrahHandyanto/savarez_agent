@@ -517,6 +517,7 @@ def handle_function_call(
     """
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
+    function_args = function_args or {}
     resolved_session_id = function_args.get("session_id") or session_id
 
     # Notify the read-loop tracker when a non-read/search tool runs,
