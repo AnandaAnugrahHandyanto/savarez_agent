@@ -770,7 +770,8 @@ def list_authenticated_providers(
       - is_user_defined: bool
       - models: list[str] — curated model IDs (up to max_models)
       - total_models: int — total curated count
-      - source: str — "built-in", "models.dev", "user-config"
+      - source: str — "built-in", "models.dev", "user-config" (custom_providers
+        entries also use "user-config" to stay consistent with the existing taxonomy)
 
     Only includes providers that have API keys set or are user-defined endpoints.
     """
@@ -979,7 +980,7 @@ def list_authenticated_providers(
     if custom_providers and isinstance(custom_providers, list):
         from collections import OrderedDict
         groups: dict = OrderedDict()
-        for i, entry in enumerate(custom_providers):
+        for entry in custom_providers:
             if not isinstance(entry, dict):
                 continue
             b_url = (
@@ -1006,7 +1007,7 @@ def list_authenticated_providers(
                     "is_current": slug == current_provider,
                     "is_user_defined": True,
                     "models": [],
-                    "source": "custom_providers",
+                    "source": "user-config",
                     "api_url": b_url,
                 }
             if model_id and model_id not in groups[group_key]["models"]:
@@ -1018,13 +1019,16 @@ def list_authenticated_providers(
                 results.append(g)
                 seen_slugs.add(g["slug"])
             else:
-                # Merge models into existing entry (user-config + custom_providers overlap)
+                # Merge models into existing entry (user-config + custom_providers overlap).
+                # total_models tracks the full deduplicated count; models is capped at
+                # max_models so the picker list stays within bounds.
                 for existing in results:
                     if existing["slug"] == g["slug"]:
-                        for m in g["models"]:
-                            if m not in existing["models"]:
-                                existing["models"].append(m)
-                        existing["total_models"] = len(existing["models"])
+                        merged = existing["models"] + [
+                            m for m in g["models"] if m not in existing["models"]
+                        ]
+                        existing["total_models"] = len(merged)
+                        existing["models"] = merged[:max_models]
                         break
 
     # Sort: current provider first, then by model count descending
