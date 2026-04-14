@@ -1635,6 +1635,8 @@ class BasePlatformAdapter(ABC):
                 # Strip any remaining internal directives from message body (fixes #1561)
                 text_content = text_content.replace("[[audio_as_voice]]", "").strip()
                 text_content = re.sub(r"MEDIA:\s*\S+", "", text_content).strip()
+                # Strip reasoning blocks (<think>...</think>) leaked by modern models
+                text_content = re.sub(r"<think>.*?</think>\n*", "", text_content, flags=re.DOTALL).strip()
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
 
