@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -329,6 +329,13 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
+            if current_version < 7:
+                # v7: add undo_stack column for persistent file undo
+                try:
+                    cursor.execute("ALTER TABLE sessions ADD COLUMN undo_stack TEXT")
+                except sqlite3.OperationalError:
+                    pass
+                cursor.execute("UPDATE schema_version SET version = 7")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -408,6 +415,26 @@ class SessionDB:
                 (system_prompt, session_id),
             )
         self._execute_write(_do)
+
+    def save_undo_stack(self, session_id: str, undo_stack_json: str) -> None:
+        """Persist an undo stack (JSON string) for a session."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE sessions SET undo_stack = ? WHERE id = ?",
+                (undo_stack_json, session_id),
+            )
+            self._conn.commit()
+
+    def load_undo_stack(self, session_id: str) -> str | None:
+        """Load the persisted undo stack JSON for a session. Returns None if none."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT undo_stack FROM sessions WHERE id = ?", (session_id,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return row[0] if isinstance(row, tuple) else row["undo_stack"]
+            return None
 
     def update_token_counts(
         self,

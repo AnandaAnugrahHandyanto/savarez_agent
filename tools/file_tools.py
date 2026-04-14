@@ -6,13 +6,199 @@ import json
 import logging
 import os
 import threading
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import ShellFileOperations
 from agent.redact import redact_sensitive_text
 from agent.project_context import get_project_tracker
+from hermes_state import SessionDB
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Undo snapshot for file write operations
+# ---------------------------------------------------------------------------
+
+@dataclass
+class UndoSnapshot:
+    """A snapshot of a file's content before a write operation."""
+    path: str
+    content: str | None  # None means file did not exist
+    timestamp: float = field(default_factory=time.time)
+    task_id: str = "default"
+
+    def to_dict(self) -> dict:
+        return {
+            "path": self.path,
+            "content": self.content,
+            "timestamp": self.timestamp,
+            "task_id": self.task_id,
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> "UndoSnapshot":
+        return UndoSnapshot(
+            path=d["path"],
+            content=d.get("content"),
+            timestamp=d.get("timestamp", time.time()),
+            task_id=d.get("task_id", "default"),
+        )
+
+
+class UndoStack:
+    """Per-task stack of UndoSnapshots for file undo operations.
+
+    Supports optional persistence to SessionDB: when a task_id is provided,
+    the stack is saved to the sessions table after every mutating operation
+    and restored on first access.
+    """
+
+    MAX_STACK_SIZE = 50  # Prevent unbounded memory growth
+
+    def __init__(self, task_id: str = "default"):
+        self._stack: list[UndoSnapshot] = []
+        self._redo_stack: list[UndoSnapshot] = []  # redo stack: stores snapshots restored by undo
+        self._lock = threading.Lock()
+        self._task_id = task_id
+        self._session_db: SessionDB | None = None
+        self._dirty = False  # Track whether we need to persist
+
+    def _get_session_db(self) -> SessionDB | None:
+        """Lazily get SessionDB instance for persistence."""
+        if self._session_db is None:
+            try:
+                self._session_db = SessionDB()
+            except Exception:
+                return None
+        return self._session_db
+
+    def _persist(self) -> None:
+        """Save current stacks to SessionDB if dirty."""
+        if not self._dirty or not self._task_id or self._task_id == "default":
+            return
+        db = self._get_session_db()
+        if db is None:
+            return
+        try:
+            import json as _json
+            data = _json.dumps({
+                "stack": [s.to_dict() for s in self._stack],
+                "redo": [s.to_dict() for s in self._redo_stack],
+            })
+            db.save_undo_stack(self._task_id, data)
+            self._dirty = False
+        except Exception:
+            pass
+
+    @classmethod
+    def from_json(cls, task_id: str, json_str: str | None) -> "UndoStack":
+        """Reconstruct an UndoStack from persisted JSON."""
+        stack = cls(task_id=task_id)
+        if not json_str:
+            return stack
+        try:
+            import json as _json
+            data = _json.loads(json_str)
+            stack._stack = [UndoSnapshot.from_dict(d) for d in data.get("stack", [])]
+            stack._redo_stack = [UndoSnapshot.from_dict(d) for d in data.get("redo", [])]
+        except Exception:
+            pass
+        return stack
+
+    def push(self, snapshot: UndoSnapshot) -> None:
+        with self._lock:
+            self._stack.append(snapshot)
+            # Trim to max size
+            if len(self._stack) > self.MAX_STACK_SIZE:
+                self._stack = self._stack[-self.MAX_STACK_SIZE:]
+            self._dirty = True
+            self._persist()
+
+    def pop(self) -> UndoSnapshot | None:
+        with self._lock:
+            if not self._stack:
+                return None
+            snap = self._stack.pop()
+            self._dirty = True
+            self._persist()
+            return snap
+
+    def peek(self) -> UndoSnapshot | None:
+        with self._lock:
+            if not self._stack:
+                return None
+            return self._stack[-1]
+
+    def clear(self) -> None:
+        with self._lock:
+            self._stack.clear()
+            self._dirty = True
+            self._persist()
+
+    def push_to_redo(self, snapshot: UndoSnapshot) -> None:
+        """Push a snapshot onto the redo stack (called when undo restores a file)."""
+        with self._lock:
+            self._redo_stack.append(snapshot)
+            if len(self._redo_stack) > self.MAX_STACK_SIZE:
+                self._redo_stack = self._redo_stack[-self.MAX_STACK_SIZE:]
+            self._dirty = True
+            self._persist()
+
+    def pop_redo(self) -> UndoSnapshot | None:
+        """Pop the most recent redo snapshot. Returns None if redo stack is empty."""
+        with self._lock:
+            if not self._redo_stack:
+                return None
+            snap = self._redo_stack.pop()
+            self._dirty = True
+            self._persist()
+            return snap
+
+    def clear_redo(self) -> None:
+        """Clear the redo stack. Called when a new write operation succeeds."""
+        with self._lock:
+            self._redo_stack.clear()
+            self._dirty = True
+            self._persist()
+
+    def size(self) -> int:
+        with self._lock:
+            return len(self._stack)
+
+
+# Global undo stacks per task
+_undo_stacks: dict[str, UndoStack] = {}
+_undo_stacks_lock = threading.Lock()
+
+
+def _get_undo_stack(task_id: str) -> UndoStack:
+    """Get or create the undo stack for a task.
+
+    When a session_id (task_id) is provided and SessionDB has a persisted
+    undo stack, restores it automatically so file undo works across restarts.
+    """
+    with _undo_stacks_lock:
+        if task_id not in _undo_stacks:
+            # Try to restore from SessionDB
+            db = None
+            try:
+                from hermes_state import SessionDB
+                db = SessionDB()
+            except Exception:
+                pass
+            if db and task_id != "default":
+                persisted = db.load_undo_stack(task_id)
+                if persisted:
+                    _undo_stacks[task_id] = UndoStack.from_json(task_id, persisted)
+                else:
+                    _undo_stacks[task_id] = UndoStack(task_id=task_id)
+            else:
+                _undo_stacks[task_id] = UndoStack(task_id=task_id)
+        return _undo_stacks[task_id]
 
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
@@ -578,12 +764,47 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     return None
 
 
+def _snapshot_file_for_undo(path: str, task_id: str) -> UndoSnapshot | None:
+    """Take a snapshot of the current file content for undo.
+
+    Returns an UndoSnapshot with the current file content (or None if the
+    file does not exist). Returns None if the file cannot be read (e.g.,
+    binary files, blocked devices) — we skip snapshotting in that case.
+    """
+    try:
+        # Skip blocked device paths
+        if _is_blocked_device(path):
+            return None
+        # Check binary extension
+        _resolved = Path(path).expanduser().resolve()
+        if has_binary_extension(str(_resolved)):
+            return None
+        # Read current content (if file exists)
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                original_content = f.read()
+        else:
+            original_content = None
+        return UndoSnapshot(path=path, content=original_content, task_id=task_id)
+    except Exception:
+        # If anything goes wrong during snapshotting, skip it gracefully
+        # We don't want to fail the write just because snapshotting failed
+        return None
+
+
 def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     """Write content to a file."""
     sensitive_err = _check_sensitive_path(path)
     if sensitive_err:
         return tool_error(sensitive_err)
     try:
+        # Take a snapshot of the current file state before writing
+        snapshot = _snapshot_file_for_undo(path, task_id)
+        if snapshot is not None:
+            undo_stack = _get_undo_stack(task_id)
+            undo_stack.push(snapshot)
+            undo_stack.clear_redo()  # new write kills redo history
+
         stale_warning = _check_file_staleness(path, task_id)
         file_ops = _get_file_ops(task_id)
         result = file_ops.write_file(path, content)
@@ -743,6 +964,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         if not result_dict.get("error"):
             for _p in _paths_to_check:
                 _update_read_timestamp(_p, task_id)
+            undo_stack = _get_undo_stack(task_id)
+            undo_stack.clear_redo()  # new patch kills redo history
             # Update project change tracker for successful patches
             try:
                 tracker = get_project_tracker()
@@ -880,6 +1103,20 @@ WRITE_FILE_SCHEMA = {
     }
 }
 
+DIFF_FILE_SCHEMA = {
+    "name": "diff_file",
+    "description": "Show the diff between the current file and its last undo snapshot. If path is not provided, uses the most recently modified file. Returns a unified diff showing what changed since the last write.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "File path to diff (default: last modified file from undo stack)", "default": None},
+            "task_id": {"type": "string", "description": "Task ID (default: 'default')", "default": "default"}
+        },
+        "required": []
+    }
+}
+
+
 DIFF_PREVIEW_SCHEMA = {
     "name": "diff_preview",
     "description": "Preview a diff without applying it. Shows what changes WOULD be made by a patch operation. Useful for reviewing changes before committing them via the patch tool.",
@@ -984,6 +1221,188 @@ def _handle_diff_preview(args, **kw):
     )
 
 
+REDO_FILE_SCHEMA = {
+    "name": "redo_file",
+    "description": "Redo the last undone file operation. Pops the most recent snapshot from the redo stack and restores the file to the state it had before the undo was applied. If the file did not exist before undo (content=None), the file will be deleted on redo.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string", "description": "Task ID to redo (default: 'default')", "default": "default"}
+        },
+        "required": []
+    }
+}
+
+
+def _handle_redo_file(args, **kw):
+    tid = kw.get("task_id") or "default"
+    return redo_file_tool(task_id=tid)
+
+
+UNDO_FILE_SCHEMA = {
+    "name": "undo_file",
+    "description": "Undo the last file write operation by restoring the file to its previous state from the undo stack. Pops the most recent snapshot for the given task and writes it back to the original file. If the file did not exist before the write (content=None), the file will be deleted.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string", "description": "Task ID to undo (default: 'default')", "default": "default"}
+        },
+        "required": []
+    }
+}
+
+
+def undo_file_tool(task_id: str = "default") -> str:
+    """Undo the last file write by popping the most recent snapshot and restoring it.
+
+    Retrieves the most recent UndoSnapshot from the task's UndoStack and restores
+    the file to its previous state. If the snapshot's content is None, the file
+    did not exist before the write and will be deleted.
+    """
+    stack = _get_undo_stack(task_id)
+    snapshot = stack.pop()
+
+    if snapshot is None:
+        return tool_error(f"No snapshots to undo for task '{task_id}'")
+
+    # Push to redo stack so redo can restore it later
+    stack.push_to_redo(snapshot)
+
+    if snapshot.content is None:
+        # File did not exist before the write - remove it if it exists now
+        try:
+            if os.path.exists(snapshot.path):
+                os.remove(snapshot.path)
+            return json.dumps({
+                "success": True,
+                "action": "deleted",
+                "path": snapshot.path,
+                "message": f"File '{snapshot.path}' did not exist before write and has been removed."
+            }, ensure_ascii=False)
+        except Exception as e:
+            return tool_error(f"Failed to delete file: {e}")
+    else:
+        # Restore the previous content
+        try:
+            # Ensure parent directory exists
+            parent = os.path.dirname(snapshot.path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(snapshot.path, "w", encoding="utf-8") as f:
+                f.write(snapshot.content)
+            return json.dumps({
+                "success": True,
+                "action": "restored",
+                "path": snapshot.path,
+                "message": f"File '{snapshot.path}' has been restored to its previous state."
+            }, ensure_ascii=False)
+        except Exception as e:
+            return tool_error(f"Failed to restore file: {e}")
+
+
+def diff_file_tool(path: str | None = None, task_id: str = "default") -> str:
+    """Show the diff between the current file and its last undo snapshot.
+
+    If path is not provided, uses the most recently modified file from the undo stack.
+    """
+    stack = _get_undo_stack(task_id)
+    snapshot = stack.peek()
+
+    if snapshot is None:
+        return tool_error("No undo snapshots available.")
+
+    target_path = path or snapshot.path
+
+    if not os.path.exists(target_path):
+        return tool_error(f"File does not exist: {target_path}")
+
+    try:
+        with open(target_path, encoding="utf-8") as f:
+            current_content = f.read()
+    except Exception as e:
+        return tool_error(f"Cannot read file: {e}")
+
+    snapshot_content = snapshot.content
+
+    if snapshot_content == current_content:
+        return json.dumps({
+            "success": True,
+            "path": target_path,
+            "changed": False,
+            "message": f"File '{target_path}' has no changes since last write."
+        }, ensure_ascii=False)
+
+    from difflib import unified_diff
+
+    before_lines = [] if snapshot_content is None else snapshot_content.splitlines(keepends=True)
+    after_lines = current_content.splitlines(keepends=True)
+
+    diff_lines = list(unified_diff(
+        before_lines,
+        after_lines,
+        fromfile=f"a/{os.path.basename(target_path)}",
+        tofile=f"b/{os.path.basename(target_path)}",
+    ))
+
+    diff_text = "".join(diff_lines)
+
+    return json.dumps({
+        "success": True,
+        "path": target_path,
+        "changed": True,
+        "diff": diff_text,
+        "message": f"Diff for '{target_path}' (current vs snapshot)"
+    }, ensure_ascii=False)
+
+
+def redo_file_tool(task_id: str = "default") -> str:
+    """Redo the last undone file operation by popping from the redo stack.
+
+    Retrieves the most recent UndoSnapshot from the task's redo stack and restores
+    the file to the state it had before the undo was applied.
+    """
+    stack = _get_undo_stack(task_id)
+    snapshot = stack.pop_redo()
+
+    if snapshot is None:
+        return tool_error(f"No operations to redo for task '{task_id}'")
+
+    if snapshot.content is None:
+        # File was deleted by undo (original state: did not exist)
+        try:
+            if os.path.exists(snapshot.path):
+                os.remove(snapshot.path)
+            return json.dumps({
+                "success": True,
+                "action": "deleted",
+                "path": snapshot.path,
+                "message": f"Redo: file '{snapshot.path}' has been removed."
+            }, ensure_ascii=False)
+        except Exception as e:
+            return tool_error(f"Failed to delete file on redo: {e}")
+    else:
+        # Restore the content that existed before the undo
+        try:
+            parent = os.path.dirname(snapshot.path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(snapshot.path, "w", encoding="utf-8") as f:
+                f.write(snapshot.content)
+            return json.dumps({
+                "success": True,
+                "action": "restored",
+                "path": snapshot.path,
+                "message": f"Redo: file '{snapshot.path}' has been restored."
+            }, ensure_ascii=False)
+        except Exception as e:
+            return tool_error(f"Failed to restore file on redo: {e}")
+
+
+def _handle_undo_file(args, **kw):
+    tid = kw.get("task_id") or "default"
+    return undo_file_tool(task_id=tid)
+
+
 def _handle_patch(args, **kw):
     tid = kw.get("task_id") or "default"
     return patch_tool(
@@ -1008,3 +1427,6 @@ registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, h
 registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000, is_read_only=False, is_concurrency_safe=False)
 registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000, is_read_only=True, is_concurrency_safe=True)
 registry.register(name="diff_preview", toolset="hermes-core", schema=DIFF_PREVIEW_SCHEMA, handler=_handle_diff_preview, check_fn=_check_file_reqs, emoji="🔍", max_result_size_chars=100_000, is_read_only=True, is_concurrency_safe=True)
+registry.register(name="undo_file", toolset="file", schema=UNDO_FILE_SCHEMA, handler=_handle_undo_file, check_fn=_check_file_reqs, emoji="↩️", max_result_size_chars=100_000, is_read_only=False, is_concurrency_safe=False)
+registry.register(name="redo_file", toolset="file", schema=REDO_FILE_SCHEMA, handler=_handle_redo_file, check_fn=_check_file_reqs, emoji="↪️", max_result_size_chars=100_000, is_read_only=False, is_concurrency_safe=False)
+registry.register(name="diff_file", toolset="file", schema=DIFF_FILE_SCHEMA, handler=lambda args, **kw: diff_file_tool(path=args.get("path"), task_id=kw.get("task_id", "default")), check_fn=_check_file_reqs, emoji="📄", max_result_size_chars=100_000, is_read_only=True, is_concurrency_safe=True)
