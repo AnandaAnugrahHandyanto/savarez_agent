@@ -220,9 +220,9 @@ def _episode_store(speaker: str, role: str, content: str,
     speaker_s = speaker.replace("'", "\\'")
     role_s = role.replace("'", "\\'")
     content_s = content[:10000].replace("'", "\\'")  # cap at 10k chars
-    topic_s = topic.replace("'", "\\'")
-    ts_s = timestamp.replace("'", "\\'")
-    sid_s = session_id.replace("'", "\\'")
+    topic_s = (topic or "").replace("'", "\\'")
+    ts_s = (timestamp or "").replace("'", "\\'")
+    sid_s = (session_id or "global").replace("'", "\\'")
 
     script = (
         "import chromadb\n"
