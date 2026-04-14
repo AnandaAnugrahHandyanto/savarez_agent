@@ -83,6 +83,7 @@ async def test_compress_command_reports_noop_without_success_banner():
     assert "No changes from compression" in result
     assert "Compressed:" not in result
     assert "Rough transcript estimate: ~100 tokens (unchanged)" in result
+    agent_instance.close.assert_called_once()
 
 
 @pytest.mark.asyncio

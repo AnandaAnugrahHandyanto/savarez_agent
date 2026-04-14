@@ -26,6 +26,7 @@ import threading
 import time
 from pathlib import Path
 from datetime import datetime
+from contextlib import suppress
 from typing import Dict, Optional, Any, List
 
 # ---------------------------------------------------------------------------
@@ -308,6 +309,19 @@ def _expand_whatsapp_auth_aliases(identifier: str) -> set:
     return resolved
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_close_agent(agent: Any) -> None:
+    """Best-effort close for short-lived agent instances.
+
+    Gateway code creates several transient AIAgent instances for one-off tasks
+    such as memory flushes, compression, and helper flows. Centralizing the
+    cleanup avoids copy-paste drift and makes future close-path changes easier.
+    """
+    if agent is None or not hasattr(agent, "close"):
+        return
+    with suppress(Exception):
+        agent.close()
 
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
@@ -793,11 +807,14 @@ class GatewayRunner:
                 "tools if needed, then stop.]"
             )
 
-            tmp_agent.run_conversation(
-                user_message=flush_prompt,
-                conversation_history=msgs,
-            )
-            logger.info("Pre-reset memory flush completed for session %s", old_session_id)
+            try:
+                tmp_agent.run_conversation(
+                    user_message=flush_prompt,
+                    conversation_history=msgs,
+                )
+                logger.info("Pre-reset memory flush completed for session %s", old_session_id)
+            finally:
+                _safe_close_agent(tmp_agent)
         except Exception as e:
             logger.debug("Pre-reset memory flush failed for session %s: %s", old_session_id, e)
 
@@ -1410,11 +1427,7 @@ class GatewayRunner:
             # Close tool resources (terminal sandboxes, browser daemons,
             # background processes, httpx clients) to prevent zombie
             # process accumulation.
-            try:
-                if hasattr(agent, 'close'):
-                    agent.close()
-            except Exception:
-                pass
+            _safe_close_agent(agent)
 
     async def _launch_detached_restart_command(self) -> None:
         import shutil
@@ -1811,11 +1824,7 @@ class GatewayRunner:
                                     _cached_agent.shutdown_memory_provider()
                             except Exception:
                                 pass
-                            try:
-                                if hasattr(_cached_agent, 'close'):
-                                    _cached_agent.close()
-                            except Exception:
-                                pass
+                            _safe_close_agent(_cached_agent)
                         # Mark as flushed and persist to disk so the flag
                         # survives gateway restarts.
                         with self.session_store._lock:
@@ -3448,13 +3457,16 @@ class GatewayRunner:
                                 _hyg_agent._print_fn = lambda *a, **kw: None
 
                                 loop = asyncio.get_event_loop()
-                                _compressed, _ = await loop.run_in_executor(
-                                    None,
-                                    lambda: _hyg_agent._compress_context(
-                                        _hyg_msgs, "",
-                                        approx_tokens=_approx_tokens,
-                                    ),
-                                )
+                                try:
+                                    _compressed, _ = await loop.run_in_executor(
+                                        None,
+                                        lambda: _hyg_agent._compress_context(
+                                            _hyg_msgs, "",
+                                            approx_tokens=_approx_tokens,
+                                        ),
+                                    )
+                                finally:
+                                    _safe_close_agent(_hyg_agent)
 
                                 # _compress_context ends the old session and creates
                                 # a new session_id.  Write compressed messages into
@@ -3971,11 +3983,7 @@ class GatewayRunner:
                 _cached = self._agent_cache.get(session_key)
                 _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
             if _old_agent is not None:
-                try:
-                    if hasattr(_old_agent, "close"):
-                        _old_agent.close()
-                except Exception:
-                    pass
+                _safe_close_agent(_old_agent)
         self._evict_cached_agent(session_key)
 
         try:
@@ -5384,10 +5392,13 @@ class GatewayRunner:
                     fallback_model=self._fallback_model,
                 )
 
-                return agent.run_conversation(
-                    user_message=prompt,
-                    task_id=task_id,
-                )
+                try:
+                    return agent.run_conversation(
+                        user_message=prompt,
+                        task_id=task_id,
+                    )
+                finally:
+                    _safe_close_agent(agent)
 
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, run_sync)
@@ -5566,11 +5577,14 @@ class GatewayRunner:
                     skip_context_files=True,
                     persist_session=False,
                 )
-                return agent.run_conversation(
-                    user_message=btw_prompt,
-                    conversation_history=history_snapshot,
-                    task_id=task_id,
-                )
+                try:
+                    return agent.run_conversation(
+                        user_message=btw_prompt,
+                        conversation_history=history_snapshot,
+                        task_id=task_id,
+                    )
+                finally:
+                    _safe_close_agent(agent)
 
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, run_sync)
@@ -5909,10 +5923,13 @@ class GatewayRunner:
                 return "Nothing to compress yet (the transcript is still all protected context)."
 
             loop = asyncio.get_event_loop()
-            compressed, _ = await loop.run_in_executor(
-                None,
-                lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic)
-            )
+            try:
+                compressed, _ = await loop.run_in_executor(
+                    None,
+                    lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic)
+                )
+            finally:
+                _safe_close_agent(tmp_agent)
 
             # _compress_context already calls end_session() on the old session
             # (preserving its full transcript in SQLite) and creates a new

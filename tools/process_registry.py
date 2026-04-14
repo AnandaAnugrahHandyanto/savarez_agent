@@ -501,9 +501,38 @@ class ProcessRegistry:
                 session.process.wait(timeout=5)
             except Exception as e:
                 logger.debug("Process wait timed out or failed: %s", e)
+            self._close_process_pipes(session)
             session.exited = True
             session.exit_code = session.process.returncode
             self._move_to_finished(session)
+
+    def _close_process_pipes(self, session: ProcessSession) -> None:
+        """Close parent-side pipe handles for a local Popen session."""
+        proc = getattr(session, "process", None)
+        if not proc:
+            return
+
+        handles = []
+        seen_fds = set()
+        for attr in ("stdin", "stdout", "stderr"):
+            handle = getattr(proc, attr, None)
+            if handle is None:
+                continue
+            try:
+                fileno = handle.fileno()
+            except Exception:
+                fileno = None
+            if fileno is not None and fileno in seen_fds:
+                continue
+            if fileno is not None:
+                seen_fds.add(fileno)
+            handles.append(handle)
+
+        for handle in handles:
+            try:
+                handle.close()
+            except Exception:
+                pass
 
     def _env_poller_loop(
         self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str
