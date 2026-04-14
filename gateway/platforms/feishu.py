@@ -1940,6 +1940,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         context = getattr(event, "context", None)
         chat_id = str(getattr(context, "open_chat_id", "") or "")
+        card_message_id = str(getattr(context, "open_message_id", "") or "")
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
         if not chat_id or not open_id:
@@ -1995,7 +1996,7 @@ class FeishuAdapter(BasePlatformAdapter):
             await self._update_approval_card(state.get("message_id", ""), label, user_name, choice)
             return
 
-        synthetic_text = f"/card {action_tag}"
+        synthetic_text = f"[card:{action_tag}]"
         if action_value:
             try:
                 synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
@@ -2016,10 +2017,10 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         synthetic_event = MessageEvent(
             text=synthetic_text,
-            message_type=MessageType.COMMAND,
+            message_type=MessageType.TEXT,
             source=source,
             raw_message=data,
-            message_id=token or str(uuid.uuid4()),
+            message_id=card_message_id or token or str(uuid.uuid4()),
             timestamp=datetime.now(),
         )
         logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
