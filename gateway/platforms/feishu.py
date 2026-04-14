@@ -167,7 +167,16 @@ _FEISHU_WEBHOOK_RATE_LIMIT_MAX = 120               # max requests per window per
 _FEISHU_WEBHOOK_RATE_MAX_KEYS = 4096               # max tracked keys (prevents unbounded growth)
 _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS = 30          # max seconds to read request body
 _FEISHU_WEBHOOK_ANOMALY_THRESHOLD = 25             # consecutive error responses before WARNING log
-_FEISHU_WEBHOOK_ANOMALY_TTL_SECONDS = 6 * 60 * 60  # anomaly tracker TTL (6 hours) — matches openclaw
+_Feishu_WEBHOOK_ANOMALY_TTL_SECONDS = 6 * 60 * 60  # anomaly tracker TTL (6 hours) — matches openclaw
+
+# Keywords that trigger bot response in group chats (no @mention required)
+_FEISHU_GROUP_TRIGGER_KEYWORDS = [
+    "老师", "学习", "分析", "评估", "作业", "题目", "数学", "英语", "语文",
+    "功课", "辅导", "检查", "复习", "预习", "提问", "问一问", "怎么做",
+    "不会", "不懂", "解题", "答题", "计算", "练习", "课本", "教材",
+    "批改", "讲解", "教我", "帮我", "这个题", "那道题",
+]
+_Feishu_GROUP_RECENT_CHATS_TTL_SECONDS = 5 * 60    # 5-minute conversation window
 _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup window (15 min)
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
@@ -1080,6 +1089,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # Exec approval button state (approval_id → {session_key, message_id, chat_id})
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
+        self._recent_group_chats: Dict[str, float] = {}  # chat_id → last_msg_time (sliding 5-min window)
         self._load_seen_message_ids()
 
     @staticmethod
@@ -3039,7 +3049,9 @@ class FeishuAdapter(BasePlatformAdapter):
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
 
     def _should_accept_group_message(self, message: Any, sender_id: Any, chat_id: str = "") -> bool:
-        """Require an explicit @mention before group messages enter the agent."""
+        """Accept group messages if: @mention, trigger keywords, or recent conversation window."""
+        import time as _time
+
         if not self._allow_group_message(sender_id, chat_id):
             return False
         # @_all is Feishu's @everyone placeholder — always route to the bot.
@@ -3055,6 +3067,28 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         if normalized.mentioned_ids:
             return self._post_mentions_bot(normalized.mentioned_ids)
+
+        # Keyword-based trigger: no @ needed for learning-related keywords
+        content_lower = raw_content.lower()
+        for kw in _FEISHU_GROUP_TRIGGER_KEYWORDS:
+            if kw in content_lower:
+                # Mark this chat as recently active and update last_msg_time
+                if chat_id:
+                    self._recent_group_chats[chat_id] = _time.time()
+                return True
+
+        # 5-minute recent conversation window: if bot was addressed in this chat recently, keep responding
+        if chat_id:
+            last = self._recent_group_chats.get(chat_id, 0)
+            now = _time.time()
+            if now - last < _FEISHU_GROUP_RECENT_CHATS_TTL_SECONDS:
+                # Refresh the window
+                self._recent_group_chats[chat_id] = now
+                return True
+            else:
+                # Expired — clean up
+                self._recent_group_chats.pop(chat_id, None)
+
         return False
 
     def _message_mentions_bot(self, mentions: List[Any]) -> bool:
