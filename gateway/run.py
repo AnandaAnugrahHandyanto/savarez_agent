@@ -4035,6 +4035,7 @@ class GatewayRunner:
             persist_model_switch_result,
             runtime_model_selection_state,
             switch_model as _switch_model, parse_model_flags,
+            list_authenticated_picker_providers,
             list_authenticated_providers,
         )
         from hermes_cli.config import load_runtime_config
@@ -4080,8 +4081,9 @@ class GatewayRunner:
 
             if has_picker:
                 try:
-                    providers = list_authenticated_providers(
+                    providers = list_authenticated_picker_providers(
                         current_provider=current_provider,
+                        current_model=current_model,
                         user_providers=user_provs,
                         custom_providers=custom_provs,
                         max_models=50,
@@ -4090,6 +4092,7 @@ class GatewayRunner:
                     providers = []
 
                 if providers:
+                    provider_by_slug = {str(p.get("slug") or ""): p for p in providers}
                     # Build a callback closure for when the user picks a model.
                     # Captures self + locals needed for the switch logic.
                     _self = self
@@ -4103,6 +4106,8 @@ class GatewayRunner:
                         _chat_id: str, model_id: str, provider_slug: str
                     ) -> str:
                         """Perform the model switch and return confirmation text."""
+                        provider_entry = provider_by_slug.get(provider_slug, {})
+                        actual_provider = provider_entry.get("switch_provider", provider_slug)
                         result = _switch_model(
                             raw_input=model_id,
                             current_provider=_cur_provider,
@@ -4110,7 +4115,7 @@ class GatewayRunner:
                             current_base_url=_cur_base_url,
                             current_api_key=_cur_api_key,
                             is_global=False,
-                            explicit_provider=provider_slug,
+                            explicit_provider=actual_provider,
                             user_providers=user_provs,
                             custom_providers=custom_provs,
                             runtime_config=runtime_config,

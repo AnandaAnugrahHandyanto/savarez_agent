@@ -881,9 +881,8 @@ def list_authenticated_providers(
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
-    Uses the curated model lists from hermes_cli/models.py (OPENROUTER_MODELS,
-    _PROVIDER_MODELS) — NOT the full models.dev catalog.  These are hand-picked
-    agentic models that work well as agent backends.
+    Uses Hermes' picker catalogs from hermes_cli/models.py — dynamic OpenRouter
+    discovery plus the per-provider curated lists in ``_PROVIDER_MODELS``.
 
     Returns a list of dicts, each with:
       - slug: str — the --provider value to use
@@ -903,7 +902,7 @@ def list_authenticated_providers(
         get_provider_info as _mdev_pinfo,
     )
     from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
+    from hermes_cli.models import _PROVIDER_MODELS, openrouter_picker_model_ids
 
     results: List[dict] = []
     seen_slugs: set = set()
@@ -912,7 +911,7 @@ def list_authenticated_providers(
 
     # Build curated model lists keyed by hermes provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
-    curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
+    curated["openrouter"] = openrouter_picker_model_ids()
     # "nous" shares OpenRouter's curated list if not separately defined
     if "nous" not in curated:
         curated["nous"] = curated["openrouter"]
@@ -1090,3 +1089,60 @@ def list_authenticated_providers(
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
+
+
+def list_authenticated_picker_providers(
+    current_provider: str = "",
+    current_model: str = "",
+    user_providers: dict = None,
+    custom_providers: list | None = None,
+    max_models: int = 8,
+) -> List[dict]:
+    """Return interactive picker entries for `/model` surfaces.
+
+    This keeps the existing provider -> model contract for most providers, but
+    expands OpenRouter into vendor-grouped entries so interactive pickers avoid
+    dumping a flat catalog of every OpenRouter model.
+    """
+    from hermes_cli.models import openrouter_picker_groups, openrouter_vendor_label
+
+    providers = list_authenticated_providers(
+        current_provider=current_provider,
+        user_providers=user_providers,
+        custom_providers=custom_providers,
+        max_models=max_models,
+    )
+    if not providers:
+        return []
+
+    expanded: List[dict] = []
+    normalized_current_model = normalize_model_for_provider(current_model, "openrouter") if current_provider == "openrouter" else ""
+
+    for provider in providers:
+        if provider.get("slug") != "openrouter":
+            expanded.append(provider)
+            continue
+
+        groups = openrouter_picker_groups()
+        if not groups:
+            expanded.append(provider)
+            continue
+
+        for vendor, models in groups:
+            models_list = list(models)
+            expanded.append({
+                "slug": f"openrouter:{vendor}",
+                "switch_provider": "openrouter",
+                "name": f"OpenRouter / {openrouter_vendor_label(vendor)}",
+                "is_current": bool(
+                    current_provider == "openrouter"
+                    and normalized_current_model.startswith(f"{vendor}/")
+                ),
+                "is_user_defined": False,
+                "models": models_list[:max_models],
+                "total_models": len(models_list),
+                "source": provider.get("source", "built-in"),
+            })
+
+    expanded.sort(key=lambda r: (not r["is_current"], -r["total_models"], r["name"]))
+    return expanded

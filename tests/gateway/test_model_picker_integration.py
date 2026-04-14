@@ -62,11 +62,12 @@ async def test_handle_model_command_uses_platform_native_picker(tmp_path, monkey
 
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
     monkeypatch.setattr(
-        "hermes_cli.model_switch.list_authenticated_providers",
+        "hermes_cli.model_switch.list_authenticated_picker_providers",
         lambda **_kwargs: [
             {
-                "slug": "openrouter",
-                "name": "OpenRouter",
+                "slug": "openrouter:anthropic",
+                "switch_provider": "openrouter",
+                "name": "OpenRouter / Anthropic",
                 "models": ["anthropic/claude-sonnet-4.6"],
                 "total_models": 1,
                 "is_current": False,
@@ -81,7 +82,7 @@ async def test_handle_model_command_uses_platform_native_picker(tmp_path, monkey
 
     assert result is None
     adapter._send_model_picker.assert_awaited_once()
-    assert adapter.calls[0]["providers"][0]["slug"] == "openrouter"
+    assert adapter.calls[0]["providers"][0]["slug"] == "openrouter:anthropic"
     assert adapter.calls[0]["current_model"] == "gpt-5.4"
     assert adapter.calls[0]["current_provider"] == "openai-codex"
 
@@ -101,11 +102,12 @@ async def test_model_picker_callback_uses_shared_switch_pipeline(tmp_path, monke
 
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
     monkeypatch.setattr(
-        "hermes_cli.model_switch.list_authenticated_providers",
+        "hermes_cli.model_switch.list_authenticated_picker_providers",
         lambda **_kwargs: [
             {
-                "slug": "openrouter",
-                "name": "OpenRouter",
+                "slug": "openrouter:anthropic",
+                "switch_provider": "openrouter",
+                "name": "OpenRouter / Anthropic",
                 "models": ["anthropic/claude-sonnet-4.6"],
                 "total_models": 1,
                 "is_current": False,
@@ -136,7 +138,7 @@ async def test_model_picker_callback_uses_shared_switch_pipeline(tmp_path, monke
 
     await runner._handle_model_command(_make_event(Platform.TELEGRAM))
     confirmation = await adapter.on_model_selected(
-        "12345", "anthropic/claude-sonnet-4.6", "openrouter"
+        "12345", "anthropic/claude-sonnet-4.6", "openrouter:anthropic"
     )
 
     assert captured["raw_input"] == "anthropic/claude-sonnet-4.6"
