@@ -584,6 +584,7 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
                 # changed — avoids overwriting an explicit provider when the
                 # user saves unrelated config fields.
                 disk_default = disk_model.get("default", "") or ""
+                resolved_model = model_val  # default: keep raw input
                 if model_val != disk_default:
                     current_provider = disk_model.get("provider", "") or ""
                     try:
@@ -591,13 +592,15 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
 
                         detected = detect_provider_for_model(model_val, current_provider)
                         if detected is not None:
-                            new_provider, _ = detected
+                            new_provider, resolved_model = detected
                             disk_model["provider"] = new_provider
+                        # else: resolved_model stays as raw model_val
                     except Exception:
                         pass  # auto-detection failed — keep existing provider
 
-                # Always update default (even if provider was not re-detected)
-                disk_model["default"] = model_val
+                # Update default to the resolved model name (may differ from
+                # the raw input if detect_provider_for_model rewrote it).
+                disk_model["default"] = resolved_model
                 # Write context_length into the model dict (0 = remove/auto)
                 if ctx_override > 0:
                     disk_model["context_length"] = ctx_override
