@@ -1235,8 +1235,9 @@ class BasePlatformAdapter(ABC):
         """
         Detect bare local file paths in response text for native media delivery.
 
-        Matches absolute paths (/...) and tilde paths (~/) ending in common
-        image or video extensions.  Validates each candidate with
+        Matches Unix absolute paths (/...), tilde paths (~/), and Windows
+        drive-absolute paths (C:\...) ending in common image or video
+        extensions.  Validates each candidate with
         ``os.path.isfile()`` to avoid false positives from URLs or
         non-existent paths.
 
@@ -1256,8 +1257,16 @@ class BasePlatformAdapter(ABC):
         # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png)
         #             and relative paths (./foo.png)
         # (?:~/|/)    anchors to absolute or home-relative paths
+        # Match Unix absolute, home-relative, and Windows drive-absolute
+        # paths without firing on URLs or relative-path examples.
         path_re = re.compile(
-            r'(?<![/:\w.])(?:~/|/)(?:[\w.\-]+/)*[\w.\-]+\.(?:' + ext_part + r')\b',
+            r'(?<![/:\w.\\])'
+            r'(?:'
+            r'(?:~/|/)(?:[\w.\-]+/)*[\w.\-]+'
+            r'|'
+            r'[A-Za-z]:\\(?:[\w.\-]+\\)*[\w.\-]+'
+            r')'
+            r'\.(?:' + ext_part + r')\b',
             re.IGNORECASE,
         )
 
