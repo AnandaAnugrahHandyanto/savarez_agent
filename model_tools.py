@@ -334,14 +334,16 @@ _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """Coerce tool call arguments to match their JSON Schema types.
 
-    LLMs frequently return numbers as strings (``"42"`` instead of ``42``)
-    and booleans as strings (``"true"`` instead of ``true``).  This compares
-    each argument value against the tool's registered JSON Schema and attempts
-    safe coercion when the value is a string but the schema expects a different
-    type.  Original values are preserved when coercion fails.
+    LLMs frequently serialize tool arguments incorrectly:
+    - numbers as strings (``"42"`` instead of ``42``)
+    - booleans as strings (``"true"`` instead of ``true``)
+    - arrays/objects as JSON strings (``"[\"a\"]"`` / ``"{...}"``)
 
-    Handles ``"type": "integer"``, ``"type": "number"``, ``"type": "boolean"``,
-    and union types (``"type": ["integer", "string"]``).
+    This compares each argument value against the tool's registered JSON Schema
+    and attempts safe coercion before dispatch. Nested arrays/objects are
+    recursively normalized using the schema's ``items`` / ``properties``
+    definitions when available. Original values are preserved when coercion
+    fails or is not applicable.
     """
     if not args or not isinstance(args, dict):
         return args
@@ -360,14 +362,43 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         prop_schema = properties.get(key)
         if not prop_schema:
             continue
-        expected = prop_schema.get("type")
-        if not expected:
-            continue
-        coerced = _coerce_value(value, expected)
+        coerced = _coerce_by_schema(value, prop_schema)
         if coerced is not value:
             args[key] = coerced
 
     return args
+
+
+def _coerce_by_schema(value: Any, schema: Dict[str, Any] | None):
+    """Coerce *value* according to a JSON Schema fragment.
+
+    Handles top-level scalar coercion plus recursive normalization for arrays
+    and objects when nested schemas are present.
+    """
+    if not schema:
+        return value
+
+    expected_type = schema.get("type")
+    coerced = _coerce_value(value, expected_type)
+
+    if isinstance(coerced, list):
+        item_schema = schema.get("items")
+        if item_schema:
+            return [_coerce_by_schema(item, item_schema) for item in coerced]
+        return coerced
+
+    if isinstance(coerced, dict):
+        properties = schema.get("properties") or {}
+        additional = schema.get("additionalProperties")
+        normalized = {}
+        for key, item in coerced.items():
+            child_schema = properties.get(key)
+            if child_schema is None and isinstance(additional, dict):
+                child_schema = additional
+            normalized[key] = _coerce_by_schema(item, child_schema) if child_schema else item
+        return normalized
+
+    return coerced
 
 
 def _coerce_value(value: str, expected_type):
@@ -387,6 +418,10 @@ def _coerce_value(value: str, expected_type):
         return _coerce_number(value, integer_only=(expected_type == "integer"))
     if expected_type == "boolean":
         return _coerce_boolean(value)
+    if expected_type == "array":
+        return _coerce_json_container(value, list)
+    if expected_type == "object":
+        return _coerce_json_container(value, dict)
     return value
 
 
@@ -416,6 +451,25 @@ def _coerce_boolean(value: str):
     if low == "false":
         return False
     return value
+
+
+def _coerce_json_container(value: Any, container_type):
+    """Parse a JSON string into ``container_type`` (list or dict) when possible."""
+    if isinstance(value, container_type):
+        return value
+    if not isinstance(value, str):
+        return value
+
+    stripped = value.strip()
+    if not stripped:
+        return value
+
+    try:
+        parsed = json.loads(stripped)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return value
+
+    return parsed if isinstance(parsed, container_type) else value
 
 
 def handle_function_call(

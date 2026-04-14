@@ -14,6 +14,7 @@ from model_tools import (
     _coerce_value,
     _coerce_number,
     _coerce_boolean,
+    _coerce_json_container,
 )
 
 
@@ -122,6 +123,12 @@ class TestCoerceValue:
     def test_unknown_type_passthrough(self):
         assert _coerce_value("stuff", "object") == "stuff"
 
+    def test_array_json_string(self):
+        assert _coerce_value('["a", "b"]', "array") == ["a", "b"]
+
+    def test_object_json_string(self):
+        assert _coerce_value('{"enabled": true}', "object") == {"enabled": True}
+
     def test_union_type_prefers_first_match(self):
         """Union types try each in order."""
         assert _coerce_value("42", ["integer", "string"]) == 42
@@ -212,6 +219,57 @@ class TestCoerceToolArgs:
             assert result["items"] == [1, 2, 3]
             assert result["config"] == {"key": "val"}
 
+    def test_coerces_stringified_array_arg(self):
+        schema = self._mock_schema({
+            "messageIds": {"type": "array", "items": {"type": "string"}},
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"messageIds": '["a", "b"]'}
+            result = coerce_tool_args("test_tool", args)
+            assert result["messageIds"] == ["a", "b"]
+
+    def test_coerces_stringified_object_arg_and_nested_values(self):
+        schema = self._mock_schema({
+            "criteria": {
+                "type": "object",
+                "properties": {
+                    "hasAttachment": {"type": "boolean"},
+                    "size": {"type": "number"},
+                    "query": {"type": "string"},
+                },
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {
+                "criteria": '{"hasAttachment": "true", "size": "1024", "query": "has:attachment"}',
+            }
+            result = coerce_tool_args("test_tool", args)
+            assert result["criteria"] == {
+                "hasAttachment": True,
+                "size": 1024,
+                "query": "has:attachment",
+            }
+
+    def test_recursively_coerces_nested_array_objects(self):
+        schema = self._mock_schema({
+            "filters": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {"type": "boolean"},
+                        "threshold": {"type": "integer"},
+                    },
+                },
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {
+                "filters": '[{"enabled": "false", "threshold": "3"}]',
+            }
+            result = coerce_tool_args("test_tool", args)
+            assert result["filters"] == [{"enabled": False, "threshold": 3}]
+
     def test_extra_args_without_schema_left_alone(self):
         """Args not in the schema properties are not touched."""
         schema = self._mock_schema({"limit": {"type": "integer"}})
@@ -260,3 +318,11 @@ class TestCoerceToolArgs:
         assert isinstance(result["offset"], int)
         assert result["limit"] == 100
         assert isinstance(result["limit"], int)
+
+
+class TestCoerceJsonContainer:
+    def test_invalid_json_passthrough(self):
+        assert _coerce_json_container("not-json", list) == "not-json"
+
+    def test_wrong_container_type_passthrough(self):
+        assert _coerce_json_container('{"a": 1}', list) == '{"a": 1}'
