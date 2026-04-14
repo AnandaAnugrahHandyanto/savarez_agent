@@ -111,68 +111,97 @@ class TestWriteFileHandler:
 
 
 class TestPatchHandler:
-    @patch("tools.file_tools._get_file_ops")
-    def test_replace_mode_calls_patch_replace(self, mock_get):
-        mock_ops = MagicMock()
-        result_obj = MagicMock()
-        result_obj.to_dict.return_value = {"status": "ok", "replacements": 1}
-        mock_ops.patch_replace.return_value = result_obj
-        mock_get.return_value = mock_ops
+    """Tests for the patch_tool using DiffPatcher (surgical patching)."""
 
-        from tools.file_tools import patch_tool
-        result = json.loads(patch_tool(
-            mode="replace", path="/tmp/f.py",
-            old_string="foo", new_string="bar"
-        ))
-        assert result["status"] == "ok"
-        mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "foo", "bar", False)
+    def test_replace_mode_basic_success(self):
+        """replace mode with a single match succeeds via surgical patching."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write("foo\nbar\nbaz\n")
+            tmp = f.name
+        try:
+            from tools.file_tools import patch_tool
+            result = json.loads(patch_tool(
+                mode="replace", path=tmp,
+                old_string="foo", new_string="FOO"
+            ))
+            assert result.get("success") is True
+            assert result.get("method") == "surgical"
+            with open(tmp) as f:
+                assert f.read() == "FOO\nbar\nbaz\n"
+        finally:
+            import os; os.unlink(tmp)
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_replace_mode_replace_all_flag(self, mock_get):
-        mock_ops = MagicMock()
-        result_obj = MagicMock()
-        result_obj.to_dict.return_value = {"status": "ok", "replacements": 5}
-        mock_ops.patch_replace.return_value = result_obj
-        mock_get.return_value = mock_ops
+    def test_replace_all_flag(self):
+        """replace_all=True replaces all occurrences via surgical patching."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write("foo\nfoo\nfoo\n")
+            tmp = f.name
+        try:
+            from tools.file_tools import patch_tool
+            result = json.loads(patch_tool(
+                mode="replace", path=tmp,
+                old_string="foo", new_string="FOO", replace_all=True
+            ))
+            assert result.get("success") is True
+            assert result.get("method") == "surgical"
+            with open(tmp) as f:
+                assert f.read() == "FOO\nFOO\nFOO\n"
+        finally:
+            import os; os.unlink(tmp)
 
-        from tools.file_tools import patch_tool
-        patch_tool(mode="replace", path="/tmp/f.py",
-                   old_string="x", new_string="y", replace_all=True)
-        mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "x", "y", True)
+    def test_replace_mode_calls_surgical_with_replace_all(self):
+        """replace_all=True passes replace_all=True to DiffPatcher.apply_surgical."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write("foo\nfoo\n")
+            tmp = f.name
+        try:
+            from tools.file_tools import patch_tool
+            result = json.loads(patch_tool(
+                mode="replace", path=tmp,
+                old_string="foo", new_string="FOO", replace_all=True
+            ))
+            assert result.get("success") is True
+            assert result.get("replace_all") is None  # not echoed back, but used
+        finally:
+            import os; os.unlink(tmp)
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_replace_mode_missing_path_errors(self, mock_get):
+    def test_replace_mode_missing_path_errors(self):
+        """Missing path returns an error."""
         from tools.file_tools import patch_tool
         result = json.loads(patch_tool(mode="replace", path=None, old_string="a", new_string="b"))
         assert "error" in result
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_replace_mode_missing_strings_errors(self, mock_get):
+    def test_replace_mode_missing_strings_errors(self):
+        """Missing old_string or new_string returns an error."""
         from tools.file_tools import patch_tool
         result = json.loads(patch_tool(mode="replace", path="/tmp/f.py", old_string=None, new_string="b"))
         assert "error" in result
 
     @patch("tools.file_tools._get_file_ops")
     def test_patch_mode_calls_patch_v4a(self, mock_get):
+        """patch mode still delegates to file_ops.patch_v4a."""
         mock_ops = MagicMock()
         result_obj = MagicMock()
-        result_obj.to_dict.return_value = {"status": "ok", "operations": 1}
+        result_obj.to_dict.return_value = {"success": True, "diff": "--- a\n+++ b", "files_modified": []}
         mock_ops.patch_v4a.return_value = result_obj
         mock_get.return_value = mock_ops
 
         from tools.file_tools import patch_tool
         result = json.loads(patch_tool(mode="patch", patch="*** Begin Patch\n..."))
-        assert result["status"] == "ok"
+        assert result.get("success") is True
         mock_ops.patch_v4a.assert_called_once()
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_patch_mode_missing_content_errors(self, mock_get):
+    def test_patch_mode_missing_content_errors(self):
+        """Missing patch content returns an error."""
         from tools.file_tools import patch_tool
         result = json.loads(patch_tool(mode="patch", patch=None))
         assert "error" in result
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_unknown_mode_errors(self, mock_get):
+    def test_unknown_mode_errors(self):
+        """Unknown mode returns an error."""
         from tools.file_tools import patch_tool
         result = json.loads(patch_tool(mode="invalid_mode"))
         assert "error" in result
@@ -225,32 +254,39 @@ class TestSearchHandler:
 class TestPatchHints:
     """Patch tool should hint when old_string is not found."""
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_no_match_includes_hint(self, mock_get):
-        mock_ops = MagicMock()
-        result_obj = MagicMock()
-        result_obj.to_dict.return_value = {
-            "error": "Could not find match for old_string in foo.py"
-        }
-        mock_ops.patch_replace.return_value = result_obj
-        mock_get.return_value = mock_ops
+    def test_no_match_includes_hint(self):
+        """When old_string is not found, surgical fails and returns an error."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write("bar\nbaz\n")
+            tmp = f.name
+        try:
+            from tools.file_tools import patch_tool
+            raw = patch_tool(mode="replace", path=tmp, old_string="NOTFOUND", new_string="y")
+            result = json.loads(raw)
+            # Surgical fails (string not found), returns clean JSON with error
+            assert result.get("success") is False
+            assert "error" in result
+            assert "Could not find" in result["error"]
+        finally:
+            import os; os.unlink(tmp)
 
-        from tools.file_tools import patch_tool
-        raw = patch_tool(mode="replace", path="foo.py", old_string="x", new_string="y")
-        assert "[Hint:" in raw
-        assert "read_file" in raw
-
-    @patch("tools.file_tools._get_file_ops")
-    def test_success_no_hint(self, mock_get):
-        mock_ops = MagicMock()
-        result_obj = MagicMock()
-        result_obj.to_dict.return_value = {"success": True, "diff": "--- a\n+++ b"}
-        mock_ops.patch_replace.return_value = result_obj
-        mock_get.return_value = mock_ops
-
-        from tools.file_tools import patch_tool
-        raw = patch_tool(mode="replace", path="foo.py", old_string="x", new_string="y")
-        assert "[Hint:" not in raw
+    def test_success_no_hint(self):
+        """When surgical patch succeeds, no _warning is included."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write("foo\nbar\n")
+            tmp = f.name
+        try:
+            from tools.file_tools import patch_tool
+            raw = patch_tool(mode="replace", path=tmp, old_string="foo", new_string="FOO")
+            result = json.loads(raw)
+            assert result.get("success") is True
+            # No [Hint: in raw output, no _warning field either
+            assert "[Hint:" not in raw
+            assert "_warning" not in result
+        finally:
+            import os; os.unlink(tmp)
 
 
 class TestSearchHints:

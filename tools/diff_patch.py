@@ -37,7 +37,8 @@ class DiffPatcher:
         return ''.join(diff)
 
     def apply_surgical(self, file_path: str, old_string: str,
-                       new_string: str, strict: bool = True) -> dict:
+                       new_string: str, strict: bool = True,
+                       replace_all: bool = False) -> dict:
         """
         Apply a surgical patch to a file.
 
@@ -78,9 +79,10 @@ class DiffPatcher:
             result['error'] = f"Could not find old_string in {file_path}"
             return result
 
-        # Detect ambiguity - check for multiple occurrences
-        matches = self.detect_ambiguous(old_string, content, max_matches=1)
-        if len(matches) > 1:
+        # Detect ambiguity - multiple matches only conflict when not replace_all
+        max_matches = 999 if replace_all else 1
+        matches = self.detect_ambiguous(old_string, content, max_matches=max_matches)
+        if not replace_all and len(matches) > 1:
             result['conflict'] = True
             result['error'] = f"Ambiguous edit: old_string appears {len(matches)} times"
             result['method'] = 'error'
@@ -93,13 +95,16 @@ class DiffPatcher:
         if changed_line_nums and not strict:
             # In non-strict mode, fall back to simple replacement
             result['method'] = 'fallback'
-            new_content = content.replace(old_string, new_string, 1)
+            new_content = content.replace(old_string, new_string, -1 if replace_all else 1)
         elif changed_line_nums:
             # Surgical mode: replace only the specific lines that changed
             result['method'] = 'surgical'
-            new_content = self._surgical_replace(
-                content, old_string, new_string, changed_line_nums
-            )
+            if replace_all:
+                new_content = self._surgical_replace_all(content, old_string, new_string)
+            else:
+                new_content = self._surgical_replace(
+                    content, old_string, new_string, changed_line_nums
+                )
         else:
             # No lines changed (identical)
             result['method'] = 'surgical'
@@ -118,6 +123,7 @@ class DiffPatcher:
         result['new_content'] = new_content
         result['changed_lines'] = changed_line_nums
 
+        print(f"DEBUG: apply_surgical returning: {result}", flush=True)
         return result
 
     def detect_ambiguous(self, old_string: str, content: str,
@@ -214,6 +220,44 @@ class DiffPatcher:
         """Fallback: find line numbers of all changed lines."""
         old_lines = old_string.splitlines()
         return list(range(1, len(old_lines) + 1))
+
+
+    def _surgical_replace_all(self, content: str, old_string: str,
+                               new_string: str) -> str:
+        """
+        Apply surgical replacement to all occurrences of old_string in content.
+        Processes from end to beginning to preserve line offsets.
+        """
+        result = content
+        # Find all occurrences in reverse order
+        occurrences = []
+        search_from = 0
+        while True:
+            pos = result.find(old_string, search_from)
+            if pos == -1:
+                break
+            line_start = result.rfind('\n', 0, pos) + 1
+            occurrences.append((line_start, pos))
+            search_from = pos + 1
+
+        for line_start, str_pos in reversed(occurrences):
+            # Build old and new chunks
+            line_end = result.find('\n', str_pos)
+            if line_end == -1:
+                line_end = len(result)
+            before = result[:line_start]
+            old_chunk = result[line_start:line_end]
+            after = result[line_end:]
+            # Compute diff for this chunk
+            diff = self.compute_diff(old_chunk, new_string)
+            changed = self._get_changed_line_numbers(diff, old_chunk)
+            if changed:
+                # Pass old_chunk (not old_string) as content to _surgical_replace,
+                # since _surgical_replace.find uses content.find(old_string)
+                new_chunk = self._surgical_replace(old_chunk, old_chunk, new_string, changed)
+                result = before + new_chunk + after
+
+        return result
 
     def _surgical_replace(self, content: str, old_string: str,
                           new_string: str, changed_line_nums: list[int]) -> str:

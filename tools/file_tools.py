@@ -642,7 +642,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 stale_warnings.append(_sw)
 
         file_ops = _get_file_ops(task_id)
-        
+        skip_generic_result_processing = False
+
         if mode == "replace":
             if not path:
                 return tool_error("path required")
@@ -652,7 +653,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             # Use DiffPatcher for surgical diff-based patching
             from tools.diff_patch import DiffPatcher
             patcher = DiffPatcher()
-            
+
             # If auto_read_context is True, read file to get exact content
             actual_old_string = old_string
             if auto_read_context:
@@ -666,12 +667,13 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 except Exception:
                     pass  # Use provided old_string as-is
             
-            patch_result = patcher.apply_surgical(path, actual_old_string, new_string)
+            # Generate preview BEFORE applying the patch (preview_diff reads the current file)
+            diff_preview = patcher.preview_diff(actual_old_string, new_string, path)
             
+            patch_result = patcher.apply_surgical(path, actual_old_string, new_string, replace_all=replace_all)
             if patch_result['success']:
                 # Create PatchResult-compatible dict with surgical patch info
                 from tools.file_operations import PatchResult
-                diff_preview = patcher.preview_diff(actual_old_string, new_string, path)
                 result = PatchResult(
                     success=True,
                     diff=diff_preview,
@@ -682,6 +684,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 result_dict['changed_lines'] = patch_result.get('changed_lines', [])
                 result_dict['method'] = patch_result.get('method', 'surgical')
                 result_dict['diff_preview'] = diff_preview
+                skip_generic_result_processing = True
             else:
                 # Fallback to naive string replace when surgical patch fails
                 # This handles cases where the exact string wasn't found but might
@@ -696,30 +699,32 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                         with open(path, 'w', encoding='utf-8') as f:
                             f.write(new_content)
                         from tools.file_operations import PatchResult
-                        diff_preview = patcher.preview_diff(actual_old_string, new_string, path)
+                        fallback_diff = patcher.compute_diff(actual_old_string, new_string)
                         result = PatchResult(
                             success=True,
-                            diff=diff_preview,
+                            diff=fallback_diff,
                             files_modified=[path],
                             lint=None
                         )
                         result_dict = result.to_dict()
                         result_dict['changed_lines'] = []
                         result_dict['method'] = 'fallback'
-                        result_dict['diff_preview'] = diff_preview
+                        result_dict['diff_preview'] = fallback_diff
                         result_dict['_warning'] = "Used naive replace fallback: surgical patch failed ({})".format(
                             patch_result.get('error', 'unknown'))
+                        skip_generic_result_processing = True
                     else:
                         from tools.file_operations import PatchResult
                         result = PatchResult(error=patch_result.get('error', 'Patch failed'))
                         result_dict = result.to_dict()
+                        skip_generic_result_processing = True
                 except Exception as e:
                     from tools.file_operations import PatchResult
                     result = PatchResult(error="Fallback replace also failed: {}".format(str(e)))
                     result_dict = result.to_dict()
+                    skip_generic_result_processing = True
             
             # Skip the generic result.to_dict() call below since we built result_dict above
-            skip_generic_result_processing = True
         elif mode == "patch":
             if not patch:
                 return tool_error("patch content required")
@@ -751,9 +756,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             except Exception:
                 pass  # Don't fail the tool if tracker fails
         result_json = json.dumps(result_dict, ensure_ascii=False)
-        # Hint when old_string not found — saves iterations where the agent
-        # retries with stale content instead of re-reading the file.
-        if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
+        # Hint when old_string not found — only append hint text for modes that
+        # don't already set their own _warning via result_dict (i.e. replace mode).
+        # skip_generic_result_processing=True means we built result_dict in replace mode.
+        if not skip_generic_result_processing and result_dict.get("error") and "Could not find" in str(result_dict["error"]):
             result_json += "\n\n[Hint: old_string not found. Use read_file to verify the current content, or search_files to locate the text.]"
         return result_json
     except Exception as e:
