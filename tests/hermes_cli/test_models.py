@@ -155,6 +155,21 @@ class TestDetectProviderForModel:
         # Should find it on OpenRouter with full slug
         assert result[1] == "anthropic/claude-opus-4.6"
 
+    def test_codex_curated_openrouter_model_keeps_codex_provider(self):
+        with patch(
+            "hermes_cli.models.fetch_openrouter_models",
+            return_value=[("openai/gpt-5.4-mini", "recommended")],
+        ):
+            assert detect_provider_for_model("openai/gpt-5.4-mini", "openai-codex") is None
+
+    def test_non_codex_openrouter_model_can_switch_from_codex(self):
+        with patch(
+            "hermes_cli.models.fetch_openrouter_models",
+            return_value=[("deepseek/deepseek-chat", "")],
+        ):
+            result = detect_provider_for_model("deepseek/deepseek-chat", "openai-codex")
+        assert result == ("openrouter", "deepseek/deepseek-chat")
+
     def test_unknown_model_returns_none(self):
         """Completely unknown model names should return None."""
         with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):

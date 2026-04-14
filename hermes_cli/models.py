@@ -1069,6 +1069,15 @@ def detect_provider_for_model(
     # First try exact match (handles provider/model format)
     or_slug = _find_openrouter_slug(name)
     if or_slug:
+        # Keep the active Codex OAuth session for models Codex can already
+        # serve, but still allow switching to non-Codex OpenRouter models.
+        if current_provider == "openai-codex":
+            from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, _add_forward_compat_models
+            codex_models = _add_forward_compat_models(list(DEFAULT_CODEX_MODELS))
+            codex_bare = {m.split("/")[-1] for m in codex_models}
+            bare = or_slug.split("/")[-1]
+            if bare in codex_bare:
+                return None
         if current_provider != "openrouter":
             return ("openrouter", or_slug)
         # Already on openrouter, just return the resolved slug
