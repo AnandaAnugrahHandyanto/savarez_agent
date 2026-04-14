@@ -3658,21 +3658,7 @@ class GatewayRunner:
             # already handled by the per-process watcher task above, so we only
             # inject watch-type events here.
             try:
-                from tools.process_registry import process_registry as _pr
-                _watch_events = []
-                while not _pr.completion_queue.empty():
-                    evt = _pr.completion_queue.get_nowait()
-                    evt_type = evt.get("type", "completion")
-                    if evt_type in ("watch_match", "watch_disabled"):
-                        _watch_events.append(evt)
-                    # else: completion events are handled by the watcher task
-                for evt in _watch_events:
-                    synth_text = _format_gateway_process_notification(evt)
-                    if synth_text:
-                        try:
-                            await self._inject_watch_notification(synth_text, event)
-                        except Exception as e2:
-                            logger.error("Watch notification injection error: %s", e2)
+                await self._drain_watch_notifications(event)
             except Exception as e:
                 logger.debug("Watch queue drain error: %s", e)
 
@@ -7171,6 +7157,32 @@ class GatewayRunner:
             await adapter.handle_message(synth_event)
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)
+
+    async def _drain_watch_notifications(self, original_event, notify_mode: Optional[str] = None) -> None:
+        """Drain watch-related events and optionally reinject them into chat.
+
+        When notifications are disabled, we still empty the queue so watch
+        events do not accumulate, but we skip synthetic message reinjection.
+        """
+        if notify_mode is None:
+            notify_mode = self._load_background_notifications_mode()
+        try:
+            from tools.process_registry import process_registry as _pr
+            while not _pr.completion_queue.empty():
+                evt = _pr.completion_queue.get_nowait()
+                evt_type = evt.get("type", "completion")
+                if evt_type not in ("watch_match", "watch_disabled"):
+                    continue
+                if notify_mode == "off":
+                    continue
+                synth_text = _format_gateway_process_notification(evt)
+                if synth_text:
+                    try:
+                        await self._inject_watch_notification(synth_text, original_event)
+                    except Exception as e:
+                        logger.error("Watch notification injection error: %s", e)
+        except Exception as e:
+            logger.debug("Watch queue drain error: %s", e)
 
     async def _run_process_watcher(self, watcher: dict) -> None:
         """
