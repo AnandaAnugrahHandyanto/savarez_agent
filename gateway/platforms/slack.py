@@ -96,6 +96,11 @@ class SlackAdapter(BasePlatformAdapter):
         # Track pending approval message_ts → resolved flag to prevent
         # double-clicks on approval buttons.
         self._approval_resolved: Dict[str, bool] = {}
+        # Track pending update-prompt message_ts → resolved flag to prevent
+        # double-clicks on Yes/No update buttons.
+        self._update_resolved: Dict[str, bool] = {}
+        # Track pending generic choice prompt message_ts → resolved flag.
+        self._choice_resolved: Dict[str, bool] = {}
         # Track timestamps of messages sent by the bot so we can respond
         # to thread replies even without an explicit @mention.
         self._bot_message_ts: set = set()
@@ -214,6 +219,19 @@ class SlackAdapter(BasePlatformAdapter):
             ):
                 self._app.action(_action_id)(self._handle_approval_action)
 
+            # Register Block Kit action handlers for update-prompt Yes/No buttons
+            for _action_id in ("hermes_update_yes", "hermes_update_no"):
+                self._app.action(_action_id)(self._handle_update_action)
+
+            # Register a wildcard handler for generic choice prompts.
+            # action_id is "hermes_choice_N" where N is the option index.
+            import re as _re
+            self._app.action(_re.compile(r"^hermes_choice_\d+$"))(self._handle_choice_action)
+
+            # Register a wildcard handler for cron/report action buttons.
+            # action_id is "hermes_action_*" — button value is injected as a new message.
+            self._app.action(_re.compile(r"^hermes_action_.+$"))(self._handle_cron_action_button)
+
             # Start Socket Mode handler in background
             self._handler = AsyncSocketModeHandler(self._app, app_token)
             self._socket_mode_task = asyncio.create_task(self._handler.start_async())
@@ -261,11 +279,28 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            # Convert standard markdown → Slack mrkdwn
-            formatted = self.format_message(content)
+            # Check for sentinel pattern: report text followed by Block Kit JSON blocks.
+            # Format: "[report content]\n---SLACK_BLOCKS---\n[JSON array of blocks]"
+            # The sentinel lets cron jobs append interactive buttons to plain-text reports.
+            _SENTINEL = "---SLACK_BLOCKS---"
+            extra_blocks: list = []
+            if _SENTINEL in content:
+                sentinel_parts = content.split(_SENTINEL, 1)
+                content = sentinel_parts[0].rstrip()
+                try:
+                    parsed = json.loads(sentinel_parts[1].strip())
+                    if isinstance(parsed, list):
+                        extra_blocks = parsed
+                except Exception as _exc:
+                    logger.warning("[Slack] Failed to parse SLACK_BLOCKS sentinel JSON: %s", _exc)
 
-            # Split long messages, preserving code block boundaries
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            # text fallback: mrkdwn-converted (notifications/search)
+            # blocks: raw markdown in a markdown block for rich rendering
+            text_fallback = self.format_message(content)
+
+            # Split long messages against raw content (not mrkdwn), preserving code block boundaries
+            chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH)
+            fallback_chunks = self.truncate_message(text_fallback, self.MAX_MESSAGE_LENGTH)
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_result = None
@@ -275,10 +310,15 @@ class SlackAdapter(BasePlatformAdapter):
             broadcast = self.config.extra.get("reply_broadcast", False)
 
             for i, chunk in enumerate(chunks):
+                fallback = fallback_chunks[i] if i < len(fallback_chunks) else chunk
+                block_list = [{"type": "markdown", "text": chunk}]
+                # Append extra blocks (e.g. action buttons) only on the last chunk
+                if extra_blocks and i == len(chunks) - 1:
+                    block_list.extend(extra_blocks)
                 kwargs = {
                     "channel": chat_id,
-                    "text": chunk,
-                    "mrkdwn": True,
+                    "text": fallback,
+                    "blocks": block_list,
                 }
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
@@ -321,11 +361,12 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
         try:
-            formatted = self.format_message(content)
+            text_fallback = self.format_message(content)
             await self._get_client(chat_id).chat_update(
                 channel=chat_id,
                 ts=message_id,
-                text=formatted,
+                text=text_fallback,
+                blocks=[{"type": "markdown", "text": content}],
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging
@@ -1194,6 +1235,30 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ----- Approval button support (Block Kit) -----
 
+    # Separator used to encode thread_ts inside button values.
+    # Session keys use ":" internally (e.g. "agent:main:slack:C1:…"),
+    # so we use "||" as an unambiguous delimiter.
+    _BUTTON_VALUE_SEP = "||"
+
+    @staticmethod
+    def _encode_button_value(session_key: str, thread_ts: Optional[str]) -> str:
+        """Encode session_key + optional thread_ts into a single button value string."""
+        if thread_ts:
+            return f"{session_key}||{thread_ts}"
+        return session_key
+
+    @staticmethod
+    def _decode_button_value(value: str) -> tuple[str, Optional[str]]:
+        """Decode a button value into (session_key, thread_ts).
+
+        Returns (session_key, None) for values without an encoded thread_ts,
+        maintaining backward compatibility with existing button messages.
+        """
+        if "||" in value:
+            session_key, thread_ts = value.split("||", 1)
+            return session_key, thread_ts or None
+        return value, None
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -1203,6 +1268,10 @@ class SlackAdapter(BasePlatformAdapter):
 
         The buttons call ``resolve_gateway_approval()`` to unblock the waiting
         agent thread — same mechanism as the text ``/approve`` flow.
+
+        The current thread_ts (if any) is encoded inside each button's value
+        field so that ``_handle_approval_action`` can post any follow-up
+        messages into the same thread.
         """
         if not self._app:
             return SendResult(success=False, error="Not connected")
@@ -1210,6 +1279,10 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             cmd_preview = command[:2900] + "..." if len(command) > 2900 else command
             thread_ts = self._resolve_thread_ts(None, metadata)
+
+            # Encode thread_ts into each button's value so the action handler
+            # can route follow-up messages back into the same thread.
+            btn_value = self._encode_button_value(session_key, thread_ts)
 
             blocks = [
                 {
@@ -1231,26 +1304,26 @@ class SlackAdapter(BasePlatformAdapter):
                             "text": {"type": "plain_text", "text": "Allow Once"},
                             "style": "primary",
                             "action_id": "hermes_approve_once",
-                            "value": session_key,
+                            "value": btn_value,
                         },
                         {
                             "type": "button",
                             "text": {"type": "plain_text", "text": "Allow Session"},
                             "action_id": "hermes_approve_session",
-                            "value": session_key,
+                            "value": btn_value,
                         },
                         {
                             "type": "button",
                             "text": {"type": "plain_text", "text": "Always Allow"},
                             "action_id": "hermes_approve_always",
-                            "value": session_key,
+                            "value": btn_value,
                         },
                         {
                             "type": "button",
                             "text": {"type": "plain_text", "text": "Deny"},
                             "style": "danger",
                             "action_id": "hermes_deny",
-                            "value": session_key,
+                            "value": btn_value,
                         },
                     ],
                 },
@@ -1279,12 +1352,18 @@ class SlackAdapter(BasePlatformAdapter):
         await ack()
 
         action_id = action.get("action_id", "")
-        session_key = action.get("value", "")
+        raw_value = action.get("value", "")
+        session_key, btn_thread_ts = self._decode_button_value(raw_value)
         message = body.get("message", {})
         msg_ts = message.get("ts", "")
         channel_id = body.get("channel", {}).get("id", "")
         user_name = body.get("user", {}).get("name", "unknown")
         user_id = body.get("user", {}).get("id", "")
+
+        # Prefer the thread_ts embedded in the message itself (from body["message"])
+        # over the encoded one in the button value — they should match, but the
+        # message payload is the authoritative source.
+        msg_thread_ts = message.get("thread_ts") or btn_thread_ts
 
         # Only authorized users may click approval buttons.  Button clicks
         # bypass the normal message auth flow in gateway/run.py, so we must
@@ -1354,6 +1433,11 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("[Slack] Failed to update approval message: %s", e)
 
+        logger.debug(
+            "[Slack] Approval action: action_id=%s session_key=%s thread_ts=%s channel=%s",
+            action_id, session_key, msg_thread_ts, channel_id,
+        )
+
         # Resolve the approval — this unblocks the agent thread
         try:
             from tools.approval import resolve_gateway_approval
@@ -1366,6 +1450,350 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("Failed to resolve gateway approval from Slack button: %s", exc)
 
         # (approval state already consumed by atomic pop above)
+
+    # ----- Update prompt button support (Block Kit) -----
+
+    async def send_update_prompt(
+        self,
+        chat_id: str,
+        prompt: str,
+        default: str = "",
+        session_key: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "SendResult":
+        """Send a Block Kit Yes / No prompt for ``hermes update --gateway`` interactions.
+
+        When the update process needs user input (e.g. stash restore, config
+        migration), this sends an interactive Block Kit message with Yes and No
+        buttons.  The button handler writes the response to ``.update_response``
+        so the update watcher can continue.
+
+        Thread_ts is encoded in the button value (same pattern as approval
+        buttons) so replies stay in the originating thread.
+        """
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            thread_ts = self._resolve_thread_ts(None, metadata)
+            btn_value = self._encode_button_value(session_key, thread_ts)
+            default_hint = f" *(default: {default})*" if default else ""
+
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f":medical_symbol: *Update needs your input*\n{prompt}{default_hint}",
+                    },
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "✅ Yes"},
+                            "style": "primary",
+                            "action_id": "hermes_update_yes",
+                            "value": btn_value,
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "❌ No"},
+                            "style": "danger",
+                            "action_id": "hermes_update_no",
+                            "value": btn_value,
+                        },
+                    ],
+                },
+            ]
+
+            kwargs: Dict[str, Any] = {
+                "channel": chat_id,
+                "text": f"⚕ Update needs your input: {prompt[:100]}",
+                "blocks": blocks,
+            }
+            if thread_ts:
+                kwargs["thread_ts"] = thread_ts
+
+            result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+            msg_ts = result.get("ts", "")
+            if msg_ts:
+                self._update_resolved[msg_ts] = False
+
+            return SendResult(success=True, message_id=msg_ts, raw_response=result)
+        except Exception as e:
+            logger.error("[Slack] send_update_prompt failed: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+
+    async def _handle_update_action(self, ack, body, action) -> None:
+        """Handle a Yes/No button click from a Block Kit update prompt."""
+        await ack()
+
+        action_id = action.get("action_id", "")
+        raw_value = action.get("value", "")
+        session_key, btn_thread_ts = self._decode_button_value(raw_value)
+        message = body.get("message", {})
+        msg_ts = message.get("ts", "")
+        channel_id = body.get("channel", {}).get("id", "")
+        user_name = body.get("user", {}).get("name", "unknown")
+        user_id = body.get("user", {}).get("id", "")
+
+        # Prefer thread_ts from the message payload over encoded value
+        msg_thread_ts = message.get("thread_ts") or btn_thread_ts
+
+        # Auth check — same as approval buttons
+        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        if allowed_csv:
+            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+            if "*" not in allowed_ids and user_id not in allowed_ids:
+                logger.warning(
+                    "[Slack] Unauthorized update click by %s (%s) — ignoring",
+                    user_name, user_id,
+                )
+                return
+
+        # Prevent double-clicks
+        if self._update_resolved.pop(msg_ts, True):
+            return
+
+        choice = "y" if action_id == "hermes_update_yes" else "n"
+        label = "✅ Yes" if choice == "y" else "❌ No"
+        decision_text = f"{label} — responded by {user_name}"
+
+        # Get original prompt text
+        original_text = ""
+        for block in message.get("blocks", []):
+            if block.get("type") == "section":
+                original_text = block.get("text", {}).get("text", "")
+                break
+
+        updated_blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": original_text or "Update prompt",
+                },
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": decision_text},
+                ],
+            },
+        ]
+
+        try:
+            await self._get_client(channel_id).chat_update(
+                channel=channel_id,
+                ts=msg_ts,
+                text=decision_text,
+                blocks=updated_blocks,
+            )
+        except Exception as e:
+            logger.warning("[Slack] Failed to update prompt message: %s", e)
+
+        # Write the response to .update_response so the update watcher continues
+        try:
+            from hermes_constants import get_hermes_home
+            response_path = get_hermes_home() / ".update_response"
+            tmp = response_path.with_suffix(".tmp")
+            tmp.write_text(choice)
+            tmp.replace(response_path)
+            logger.info(
+                "[Slack] Update prompt resolved: choice=%s session=%s thread_ts=%s",
+                choice, session_key, msg_thread_ts,
+            )
+        except Exception as exc:
+            logger.error("[Slack] Failed to write update response: %s", exc)
+
+        # Clear the pending flag for this session
+        update_prompts = getattr(self, "_gateway_update_pending", None)
+        if update_prompts and session_key:
+            update_prompts.pop(session_key, None)
+
+    # ----- Generic choice prompt (Block Kit) -----
+
+    @staticmethod
+    def _choice_response_path(session_key: str):
+        """Return the path to the temp file used to deliver a choice response."""
+        import hashlib
+        from hermes_constants import get_hermes_home
+        key_hash = hashlib.sha1(session_key.encode()).hexdigest()[:12]
+        return get_hermes_home() / f".choice_response_{key_hash}"
+
+    async def send_choice_prompt(
+        self,
+        chat_id: str,
+        prompt: str,
+        choices: list,
+        session_key: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "SendResult":
+        """Send a Block Kit prompt with arbitrary choice buttons.
+
+        ``choices`` is a list of ``(label, value)`` tuples — up to 25 options
+        (Slack actions block limit).  When the user clicks a button the chosen
+        ``value`` is written to a temp file keyed by ``session_key`` so the
+        caller can read it.
+
+        Thread_ts is encoded in each button value using the same
+        ``session_key||thread_ts||choice_value`` pattern so replies stay
+        in the originating thread.
+
+        Example::
+
+            await adapter.send_choice_prompt(
+                chat_id="C1",
+                prompt="Which environment should I deploy to?",
+                choices=[("Staging", "staging"), ("Production", "prod"), ("Cancel", "cancel")],
+                session_key="deploy-session-123",
+                metadata={"thread_id": "1234567890.123456"},
+            )
+        """
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+        if not choices:
+            return SendResult(success=False, error="choices list is empty")
+
+        try:
+            thread_ts = self._resolve_thread_ts(None, metadata)
+
+            # Build elements — one button per choice, max 25 (Slack limit)
+            elements = []
+            for idx, choice in enumerate(choices[:25]):
+                label, value = (choice if len(choice) == 2 else (str(choice), str(choice)))
+                # Encode: session_key || thread_ts || choice_value
+                # Use _encode_button_value for session_key+thread_ts, then append choice_value
+                base = self._encode_button_value(session_key, thread_ts)
+                btn_value = f"{base}||{value}"
+                elements.append({
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": str(label), "emoji": True},
+                    "action_id": f"hermes_choice_{idx}",
+                    "value": btn_value,
+                })
+
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f":question: *{prompt}*"},
+                },
+                {"type": "actions", "elements": elements},
+            ]
+
+            kwargs: Dict[str, Any] = {
+                "channel": chat_id,
+                "text": prompt[:100],
+                "blocks": blocks,
+            }
+            if thread_ts:
+                kwargs["thread_ts"] = thread_ts
+
+            result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+            msg_ts = result.get("ts", "")
+            if msg_ts:
+                self._choice_resolved[msg_ts] = False
+
+            return SendResult(success=True, message_id=msg_ts, raw_response=result)
+        except Exception as e:
+            logger.error("[Slack] send_choice_prompt failed: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+
+    async def _handle_choice_action(self, ack, body, action) -> None:
+        """Handle a generic choice button click from Block Kit.
+
+        Button value format: ``session_key||thread_ts||choice_value``
+        (thread_ts segment may be absent for backward compat).
+        """
+        await ack()
+
+        raw_value = action.get("value", "")
+        message = body.get("message", {})
+        msg_ts = message.get("ts", "")
+        channel_id = body.get("channel", {}).get("id", "")
+        user_name = body.get("user", {}).get("name", "unknown")
+        user_id = body.get("user", {}).get("id", "")
+
+        # Auth check
+        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        if allowed_csv:
+            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+            if "*" not in allowed_ids and user_id not in allowed_ids:
+                logger.warning(
+                    "[Slack] Unauthorized choice click by %s (%s) — ignoring",
+                    user_name, user_id,
+                )
+                return
+
+        # Prevent double-clicks
+        if self._choice_resolved.pop(msg_ts, True):
+            return
+
+        # Decode value: "session_key||thread_ts||choice_value"
+        # or legacy "session_key||choice_value" / "session_key"
+        parts = raw_value.split("||")
+        if len(parts) >= 3:
+            session_key = parts[0]
+            # thread_ts = parts[1]  (available if needed)
+            choice_value = "||".join(parts[2:])  # rejoin in case value contained ||
+        elif len(parts) == 2:
+            session_key = parts[0]
+            choice_value = parts[1]
+        else:
+            session_key = raw_value
+            choice_value = raw_value
+
+        logger.info(
+            "[Slack] Choice selected: session=%s value=%r user=%s",
+            session_key, choice_value, user_name,
+        )
+
+        # Update the message — replace buttons with chosen label
+        chosen_label = ""
+        for block in message.get("blocks", []):
+            if block.get("type") == "actions":
+                for elem in block.get("elements", []):
+                    if elem.get("value", "").endswith(f"||{choice_value}") or elem.get("value", "") == raw_value:
+                        chosen_label = elem.get("text", {}).get("text", choice_value)
+                        break
+
+        original_text = ""
+        for block in message.get("blocks", []):
+            if block.get("type") == "section":
+                original_text = block.get("text", {}).get("text", "")
+                break
+
+        updated_blocks = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": original_text or "Choice prompt"},
+            },
+            {
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f"*{chosen_label or choice_value}* — chosen by {user_name}"}],
+            },
+        ]
+
+        try:
+            await self._get_client(channel_id).chat_update(
+                channel=channel_id,
+                ts=msg_ts,
+                text=f"{chosen_label or choice_value} — chosen by {user_name}",
+                blocks=updated_blocks,
+            )
+        except Exception as e:
+            logger.warning("[Slack] Failed to update choice message: %s", e)
+
+        # Write the chosen value to a temp file for the caller to read
+        try:
+            response_path = self._choice_response_path(session_key)
+            tmp = response_path.with_suffix(".tmp")
+            tmp.write_text(choice_value)
+            tmp.replace(response_path)
+        except Exception as exc:
+            logger.error("[Slack] Failed to write choice response: %s", exc)
 
     # ----- Thread context fetching -----
 
@@ -1478,6 +1906,59 @@ class SlackAdapter(BasePlatformAdapter):
             logger.warning("[Slack] Failed to fetch thread context: %s", e)
             return ""
 
+
+    async def _handle_cron_action_button(self, ack, body, action) -> None:
+        """Handle cron/action button clicks (hermes_action_* pattern).
+
+        Injects the button value as a new user message into the agent session,
+        allowing cron jobs to present interactive options that trigger agent actions."""
+        await ack()
+
+        action_id = action.get("action_id", "")
+        button_value = action.get("value", "")
+        channel_id = body.get("channel", {}).get("id", "")
+        user_name = body.get("user", {}).get("name", "unknown")
+        user_id = body.get("user", {}).get("id", "")
+        message = body.get("message", {})
+        msg_ts = message.get("ts", "")
+        thread_ts = message.get("thread_ts", msg_ts)
+
+        logger.info(
+            "[Slack] Cron action button: action=%s user=%s channel=%s",
+            action_id, user_name, channel_id,
+        )
+
+        # Update the button message to show which option was chosen
+        original_text = ""
+        for block in message.get("blocks", []):
+            if block.get("type") in ("section", "markdown"):
+                original_text = block.get("text", {}).get("text", "") if isinstance(block.get("text"), dict) else block.get("text", "")
+                break
+
+        updated_blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": original_text or "Action prompt"}},
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": f"*{action_id}* — chosen by {user_name}"}]},
+        ]
+
+        try:
+            await self._get_client(channel_id).chat_update(
+                channel=channel_id, ts=msg_ts, blocks=updated_blocks, text=original_text,
+            )
+        except Exception as e:
+            logger.warning("[Slack] Failed to update cron action message: %s", e)
+
+        # Inject the button value as a new message into the agent
+        from gateway.platforms.base import MessageEvent
+        msg_event = MessageEvent(
+            platform="slack",
+            chat_id=channel_id,
+            user_id=user_id,
+            user_name=user_name,
+            text=button_value,
+            raw={},
+            metadata={"thread_id": thread_ts},
+        )
+        await self.handle_message(msg_event)
     async def _handle_slash_command(self, command: dict) -> None:
         """Handle /hermes slash command."""
         text = command.get("text", "").strip()

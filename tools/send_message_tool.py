@@ -336,12 +336,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     media_files = media_files or []
 
-    if platform == Platform.SLACK and message:
-        try:
-            slack_adapter = SlackAdapter.__new__(SlackAdapter)
-            message = slack_adapter.format_message(message)
-        except Exception:
-            logger.debug("Failed to apply Slack mrkdwn formatting in _send_to_platform", exc_info=True)
+    # NOTE: Do NOT pre-format Slack messages here. The SlackAdapter.send() method
+    # handles formatting internally — raw markdown goes into blocks[], mrkdwn-converted
+    # goes into text fallback. Pre-converting here would corrupt the markdown block.
 
     # Platform message length limits (from adapter class attributes)
     _MAX_LENGTHS = {
@@ -401,7 +398,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         if platform == Platform.DISCORD:
             result = await _send_discord(pconfig.token, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.SLACK:
-            result = await _send_slack(pconfig.token, chat_id, chunk)
+            result = await _send_slack(pconfig.token, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
@@ -596,8 +593,12 @@ async def _send_discord(token, chat_id, message, thread_id=None):
         return _error(f"Discord send failed: {e}")
 
 
-async def _send_slack(token, chat_id, message):
-    """Send via Slack Web API."""
+async def _send_slack(token, chat_id, message, thread_id=None):
+    """Send via Slack Web API.
+
+    When ``thread_id`` is provided, the message is posted as a reply in that
+    thread (``thread_ts`` parameter on ``chat.postMessage``).
+    """
     try:
         import aiohttp
     except ImportError:
@@ -609,7 +610,9 @@ async def _send_slack(token, chat_id, message):
         url = "https://slack.com/api/chat.postMessage"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
-            payload = {"channel": chat_id, "text": message, "mrkdwn": True}
+            payload: dict = {"channel": chat_id, "text": message, "mrkdwn": True}
+            if thread_id:
+                payload["thread_ts"] = thread_id
             async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):

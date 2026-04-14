@@ -6691,6 +6691,7 @@ class GatewayRunner:
                                     prompt=prompt_text,
                                     default=default,
                                     session_key=session_key,
+                                    metadata=_progress_metadata,
                                 )
                                 sent_buttons = True
                             except Exception as btn_err:
