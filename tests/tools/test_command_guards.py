@@ -270,6 +270,43 @@ class TestAlwaysVisibility:
         assert cb.call_args[1]["allow_permanent"] is True
 
 
+class TestGatewayManualRunHardBlock:
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_gateway_nohup_is_hard_blocked_in_cli(self, mock_tirith):
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        cb = MagicMock(return_value="once")
+        result = check_all_command_guards(
+            "nohup python -m hermes_cli.main gateway run --replace > ~/.hermes/gateway.log 2>&1 &",
+            "local",
+            approval_callback=cb,
+        )
+        assert result["approved"] is False
+        assert "hermes gateway restart" in result["message"]
+        cb.assert_not_called()
+        mock_tirith.assert_not_called()
+
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_gateway_nohup_is_hard_blocked_in_gateway_mode(self, mock_tirith):
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        result = check_all_command_guards(
+            "nohup python -m hermes_cli.main gateway run --replace > ~/.hermes/gateway.log 2>&1 &",
+            "local",
+        )
+        assert result["approved"] is False
+        assert result.get("status") != "approval_required"
+        assert "hermes gateway restart" in result["message"]
+        mock_tirith.assert_not_called()
+
+    def test_gateway_nohup_is_hard_blocked_even_in_yolo(self):
+        os.environ["HERMES_YOLO_MODE"] = "1"
+        result = check_all_command_guards(
+            "nohup python -m hermes_cli.main gateway run --replace > ~/.hermes/gateway.log 2>&1 &",
+            "local",
+        )
+        assert result["approved"] is False
+        assert "launchd/systemd" in result["message"]
+
+
 # ---------------------------------------------------------------------------
 # tirith ImportError → treated as allow
 # ---------------------------------------------------------------------------

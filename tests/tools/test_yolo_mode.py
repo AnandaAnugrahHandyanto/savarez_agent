@@ -100,6 +100,21 @@ class TestYoloMode:
         assert result["message"] is None
         assert called["value"] is False
 
+    def test_gateway_manual_background_run_still_blocked_in_yolo_mode(self, monkeypatch):
+        """Service-manager bypasses stay blocked even when YOLO is enabled."""
+        monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+
+        cmd = "nohup python -m hermes_cli.main gateway run --replace > ~/.hermes/gateway.log 2>&1 &"
+
+        result = check_dangerous_command(cmd, "local")
+        assert result["approved"] is False
+        assert "hermes gateway restart" in result["message"]
+
+        combined = check_all_command_guards(cmd, "local")
+        assert combined["approved"] is False
+        assert "launchd/systemd" in combined["message"]
+
     def test_yolo_mode_not_set_by_default(self):
         """HERMES_YOLO_MODE should not be set by default."""
         # Clean env check — if it happens to be set in test env, that's fine,
