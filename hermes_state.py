@@ -784,6 +784,95 @@ class SessionDB:
 
         return sessions
 
+    def get_latest_resume_candidate(
+        self,
+        *,
+        exclude_sources: List[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the most recent root session suitable for startup recovery."""
+        where_clauses = [
+            "s.parent_session_id IS NULL",
+            """EXISTS (
+                SELECT 1
+                FROM messages m
+                WHERE m.session_id = s.id
+                  AND m.role IN ('user', 'assistant')
+                  AND m.content IS NOT NULL
+                  AND TRIM(m.content) != ''
+            )""",
+        ]
+        params: list[Any] = []
+
+        if exclude_sources:
+            placeholders = ",".join("?" for _ in exclude_sources)
+            where_clauses.append(f"s.source NOT IN ({placeholders})")
+            params.extend(exclude_sources)
+
+        query = f"""
+            SELECT s.*
+            FROM sessions s
+            WHERE {' AND '.join(where_clauses)}
+            ORDER BY COALESCE(
+                (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id),
+                s.started_at
+            ) DESC
+            LIMIT 1
+        """
+        with self._lock:
+            row = self._conn.execute(query, params).fetchone()
+        return dict(row) if row else None
+
+    def get_recent_conversation_tail(
+        self,
+        session_id: str,
+        limit: int = 40,
+    ) -> List[Dict[str, Any]]:
+        """Return the last N user/assistant text messages in chronological order."""
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 40
+        limit = max(1, min(limit, 100))
+
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT role, content, reasoning, reasoning_details, codex_reasoning_items
+                FROM messages
+                WHERE session_id = ?
+                  AND role IN ('user', 'assistant')
+                  AND content IS NOT NULL
+                  AND TRIM(content) != ''
+                ORDER BY timestamp DESC, id DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+
+        messages: List[Dict[str, Any]] = []
+        for row in reversed(rows):
+            msg: Dict[str, Any] = {"role": row["role"], "content": row["content"]}
+            if row["role"] == "assistant":
+                if row["reasoning"]:
+                    msg["reasoning"] = row["reasoning"]
+                if row["reasoning_details"]:
+                    try:
+                        msg["reasoning_details"] = json.loads(row["reasoning_details"])
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(
+                            "Failed to deserialize reasoning_details in get_recent_conversation_tail"
+                        )
+                if row["codex_reasoning_items"]:
+                    try:
+                        msg["codex_reasoning_items"] = json.loads(row["codex_reasoning_items"])
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(
+                            "Failed to deserialize codex_reasoning_items in get_recent_conversation_tail"
+                        )
+            messages.append(msg)
+
+        return messages
+
     # =========================================================================
     # Message storage
     # =========================================================================

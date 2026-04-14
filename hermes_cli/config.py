@@ -342,6 +342,10 @@ DEFAULT_CONFIG = {
         # agent hasn't died during long tasks.  0 = disable notifications.
         "gateway_notify_interval": 600,
     },
+    "gateway": {
+        "auto_resume_last_session": False,
+        "auto_resume_message_limit": 40,
+    },
     
     "terminal": {
         "backend": "local",
@@ -700,7 +704,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 17,
+    "_config_version": 18,
 }
 
 # =============================================================================
