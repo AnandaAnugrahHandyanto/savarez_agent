@@ -45,6 +45,7 @@ AUTHOR_MAP = {
     "127238744+teknium1@users.noreply.github.com": "teknium1",
     # contributors (from noreply pattern)
     "35742124+0xbyt4@users.noreply.github.com": "0xbyt4",
+    "MestreY0d4-Uninter@users.noreply.github.com": "MestreY0d4-Uninter",
     "82637225+kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
     "16443023+stablegenius49@users.noreply.github.com": "stablegenius49",
     "185121704+stablegenius49@users.noreply.github.com": "stablegenius49",
