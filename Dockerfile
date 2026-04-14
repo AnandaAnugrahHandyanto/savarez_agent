@@ -11,10 +11,15 @@ ENV PYTHONUNBUFFERED=1
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 
 # Install system dependencies in one layer, clear APT cache
-RUN apt-get update && \
+RUN apt-get update &&\
     apt-get install -y --no-install-recommends \
-        git curl ripgrep ffmpeg procps systemctl &&\
-    rm -rf /var/lib/apt/lists/*
+        git curl ripgrep ffmpeg procps \
+        # Libraries required by Playwright’s headless Chromium
+        libnss3 libatk-bridge2.0-0 libcups2 libdrm2 \
+        libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 \
+        libgbm1 libasound2 &&\
+    apt-get clean &&\
+    rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man /usr/share/locale
 
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
 RUN useradd -u 10000 -m -d /opt/data -s /bin/bash hermes
@@ -24,44 +29,49 @@ COPY --from=node_runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node_runtime /usr/local/bin/npm /usr/local/bin/npm
 COPY --from=node_runtime /usr/local/bin/npx /usr/local/bin/npx
 COPY --from=node_runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
-RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm &&\
-ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 COPY --from=uv_runtime /uv /usr/local/bin/uv
 COPY --from=uv_runtime /uvx /usr/local/bin/uvx
 COPY --from=gosu_runtime /gosu /usr/local/bin/
 
+# Link npm and npx CLI scripts to /usr/local/bin
+RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm &&\
+    ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
+# Set working directory
 WORKDIR /opt/hermes
 
 # Install top-level Node.js dependencies.
 COPY package*.json ./
 RUN npm ci --no-audit &&\
     npm cache clean --force &&\
-    rm -rf /tmp/*
+    rm -rf /tmp/* ~/.npm
 
 # Install the Playwright Chromium shell browser.
 RUN npx playwright install chromium --with-deps --only-shell &&\
-    rm -rf /var/lib/apt/lists/* &&\
+    rm -rf /tmp/* ~/.npm /var/lib/apt/lists/* /usr/share/doc /usr/share/man /usr/share/locale &&\
     npm cache clean --force
 
 # Install WhatsApp bridge dependencies.
-RUN mkdir -p /opt/hermes/scripts/whatsapp-bridge 
-COPY ./scripts/whatsapp-bridge/package*.json ./scripts/whatsapp-bridge
+RUN mkdir -p /opt/hermes/scripts/whatsapp-bridge
+COPY ./scripts/whatsapp-bridge/package*.json ./scripts/whatsapp-bridge/
 RUN cd /opt/hermes/scripts/whatsapp-bridge &&\
     npm ci --no-audit &&\
-    npm cache clean --force
+    npm cache clean --force &&\
+    rm -rf /tmp/* ~/.npm
 
 # Hand ownership to hermes user, then install Python deps in a virtualenv
 RUN chown -R hermes:hermes /opt/hermes
 USER hermes
 
-# Configure the optional Python extras to install.
+# Create Python virtual environment
+ARG EXTRAS="messaging,cron,cli,modal,tts-premium,voice,pty,honcho,mcp,homeassistant,acp,slack"
 ENV VIRTUAL_ENV=/opt/hermes/.venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Copy the application source as `hermes` and install Hermes into the virtual environment.
 COPY . .
-RUN uv venv $VIRTUAL_ENV && \
-    uv pip install --no-cache -e ".[all]"
+RUN uv venv "$VIRTUAL_ENV" &&\
+    uv pip install --no-cache -e ".[$EXTRAS]"
 
 USER root
 RUN chmod +x /opt/hermes/docker/entrypoint.sh
