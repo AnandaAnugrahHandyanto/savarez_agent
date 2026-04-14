@@ -2093,16 +2093,48 @@ class TelegramAdapter(BasePlatformAdapter):
         """Apply Telegram group trigger rules.
 
         DMs remain unrestricted. Group/supergroup messages are accepted when:
+        - the message thread belongs to this profile (when ``group_topics`` is configured)
         - the chat is explicitly allowlisted in ``free_response_chats``
         - ``require_mention`` is disabled
         - the message is a command
         - the message replies to the bot
         - the bot is @mentioned
         - the text/caption matches a configured regex wake-word pattern
+
+        When multiple gateway instances share the same Telegram group but own
+        different forum topics (via ``group_topics`` in config), each instance
+        silently drops messages from threads it does not own.  This prevents
+        cross-talk between profiles.
         """
         if not self._is_group_chat(message):
             return True
-        if str(getattr(getattr(message, "chat", None), "id", "")) in self._telegram_free_response_chats():
+
+        # --- Forum topic thread ownership filter ---
+        # When group_topics is configured for a chat, only accept messages
+        # from threads explicitly listed in the config.  This allows multiple
+        # gateway profiles to coexist in the same Telegram group, each
+        # handling only its own forum topics.
+        chat = getattr(message, "chat", None)
+        chat_id_str = str(getattr(chat, "id", ""))
+        thread_id_raw = getattr(message, "message_thread_id", None)
+        group_topics_config: list = self.config.extra.get("group_topics", [])
+
+        if group_topics_config and chat_id_str:
+            for chat_entry in group_topics_config:
+                if str(chat_entry.get("chat_id", "")) == chat_id_str:
+                    # This chat is configured — enforce thread ownership.
+                    owned_threads = {
+                        str(t["thread_id"])
+                        for t in chat_entry.get("topics", [])
+                        if t.get("thread_id") is not None
+                    }
+                    if owned_threads:
+                        msg_thread = str(thread_id_raw) if thread_id_raw is not None else None
+                        if msg_thread not in owned_threads:
+                            return False
+                    break
+
+        if chat_id_str in self._telegram_free_response_chats():
             return True
         if not self._telegram_require_mention():
             return True

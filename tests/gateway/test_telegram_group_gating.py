@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 
-def _make_adapter(require_mention=None, free_response_chats=None, mention_patterns=None):
+def _make_adapter(require_mention=None, free_response_chats=None, mention_patterns=None, group_topics=None):
     from gateway.platforms.telegram import TelegramAdapter
 
     extra = {}
@@ -15,6 +15,8 @@ def _make_adapter(require_mention=None, free_response_chats=None, mention_patter
         extra["free_response_chats"] = free_response_chats
     if mention_patterns is not None:
         extra["mention_patterns"] = mention_patterns
+    if group_topics is not None:
+        extra["group_topics"] = group_topics
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -28,7 +30,7 @@ def _make_adapter(require_mention=None, free_response_chats=None, mention_patter
     return adapter
 
 
-def _group_message(text="hello", *, chat_id=-100, reply_to_bot=False, entities=None, caption=None, caption_entities=None):
+def _group_message(text="hello", *, chat_id=-100, reply_to_bot=False, entities=None, caption=None, caption_entities=None, message_thread_id=None):
     reply_to_message = None
     if reply_to_bot:
         reply_to_message = SimpleNamespace(from_user=SimpleNamespace(id=999))
@@ -39,6 +41,7 @@ def _group_message(text="hello", *, chat_id=-100, reply_to_bot=False, entities=N
         caption_entities=caption_entities or [],
         chat=SimpleNamespace(id=chat_id, type="group"),
         reply_to_message=reply_to_message,
+        message_thread_id=message_thread_id,
     )
 
 
@@ -108,3 +111,114 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     assert __import__("os").environ["TELEGRAM_REQUIRE_MENTION"] == "true"
     assert json.loads(__import__("os").environ["TELEGRAM_MENTION_PATTERNS"]) == [r"^\s*chompy\b"]
     assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_CHATS"] == "-123"
+
+
+# ── group_topics thread ownership filtering ──────────────────────────
+
+
+def test_group_topics_accepts_owned_thread():
+    """Messages in a thread listed in group_topics should be accepted."""
+    adapter = _make_adapter(
+        require_mention=False,
+        group_topics=[{"chat_id": -100, "topics": [{"name": "My Topic", "thread_id": 39}]}],
+    )
+    msg = _group_message("hello", chat_id=-100, message_thread_id=39)
+    assert adapter._should_process_message(msg) is True
+
+
+def test_group_topics_rejects_unowned_thread():
+    """Messages in a thread NOT listed in group_topics should be rejected."""
+    adapter = _make_adapter(
+        require_mention=False,
+        group_topics=[{"chat_id": -100, "topics": [{"name": "My Topic", "thread_id": 39}]}],
+    )
+    msg = _group_message("hello", chat_id=-100, message_thread_id=4)
+    assert adapter._should_process_message(msg) is False
+
+
+def test_group_topics_rejects_no_thread_when_topics_configured():
+    """Messages with no thread_id should be rejected when group_topics is configured."""
+    adapter = _make_adapter(
+        require_mention=False,
+        group_topics=[{"chat_id": -100, "topics": [{"name": "My Topic", "thread_id": 39}]}],
+    )
+    msg = _group_message("hello", chat_id=-100, message_thread_id=None)
+    assert adapter._should_process_message(msg) is False
+
+
+def test_group_topics_accepts_all_when_not_configured():
+    """Without group_topics, all threads should be accepted (backwards compat)."""
+    adapter = _make_adapter(require_mention=False)
+    msg = _group_message("hello", chat_id=-100, message_thread_id=4)
+    assert adapter._should_process_message(msg) is True
+
+
+def test_group_topics_accepts_all_for_unlisted_chat():
+    """Messages from a chat not listed in group_topics should be accepted."""
+    adapter = _make_adapter(
+        require_mention=False,
+        group_topics=[{"chat_id": -200, "topics": [{"name": "Other", "thread_id": 10}]}],
+    )
+    msg = _group_message("hello", chat_id=-100, message_thread_id=4)
+    assert adapter._should_process_message(msg) is True
+
+
+def test_group_topics_rejects_even_commands_in_wrong_thread():
+    """Commands in unowned threads should still be rejected."""
+    adapter = _make_adapter(
+        require_mention=True,
+        group_topics=[{"chat_id": -100, "topics": [{"name": "My Topic", "thread_id": 39}]}],
+    )
+    msg = _group_message("/status", chat_id=-100, message_thread_id=4)
+    assert adapter._should_process_message(msg, is_command=True) is False
+
+
+def test_group_topics_rejects_mention_in_wrong_thread():
+    """@mentions in unowned threads should still be rejected."""
+    text = "hi @hermes_bot"
+    adapter = _make_adapter(
+        require_mention=True,
+        group_topics=[{"chat_id": -100, "topics": [{"name": "My Topic", "thread_id": 39}]}],
+    )
+    msg = _group_message(text, chat_id=-100, message_thread_id=4, entities=[_mention_entity(text)])
+    assert adapter._should_process_message(msg) is False
+
+
+def test_group_topics_multiple_threads():
+    """A profile can own multiple threads in the same chat."""
+    adapter = _make_adapter(
+        require_mention=False,
+        group_topics=[{
+            "chat_id": -100,
+            "topics": [
+                {"name": "Topic A", "thread_id": 10},
+                {"name": "Topic B", "thread_id": 20},
+            ],
+        }],
+    )
+    assert adapter._should_process_message(_group_message("hi", chat_id=-100, message_thread_id=10)) is True
+    assert adapter._should_process_message(_group_message("hi", chat_id=-100, message_thread_id=20)) is True
+    assert adapter._should_process_message(_group_message("hi", chat_id=-100, message_thread_id=30)) is False
+
+
+def test_group_topics_empty_topics_list_accepts_all():
+    """A chat entry with an empty topics list should accept all threads."""
+    adapter = _make_adapter(
+        require_mention=False,
+        group_topics=[{"chat_id": -100, "topics": []}],
+    )
+    msg = _group_message("hello", chat_id=-100, message_thread_id=4)
+    assert adapter._should_process_message(msg) is True
+
+
+def test_group_topics_thread_id_type_coercion():
+    """thread_id comparison should handle int vs string coercion."""
+    adapter = _make_adapter(
+        require_mention=False,
+        group_topics=[{"chat_id": "-100", "topics": [{"name": "Topic", "thread_id": "39"}]}],
+    )
+    msg = _group_message("hello", chat_id=-100, message_thread_id=39)
+    assert adapter._should_process_message(msg) is True
+
+
+
