@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import List, NamedTuple, Optional
+from typing import Any, Callable, List, NamedTuple, Optional
 
 from hermes_cli.providers import (
     custom_provider_slug,
@@ -380,6 +380,74 @@ def get_authenticated_provider_slugs(
         return [p["slug"] for p in providers]
     except Exception:
         return []
+
+
+def picker_provider_by_slug(providers: list[dict], provider_slug: str) -> Optional[dict]:
+    """Return the provider entry for a picker slug, if present."""
+    return next((p for p in providers if p.get("slug") == provider_slug), None)
+
+
+def picker_group_by_id(groups: list[dict], group_id: str) -> Optional[dict]:
+    """Return the group entry for a picker group id, if present."""
+    return next((g for g in groups if g.get("id") == group_id), None)
+
+
+def picker_transition_from_provider_selection(
+    provider_data: dict,
+    *,
+    current_model: str = "",
+    provider_model_loader: Optional[Callable[[dict], list[str]]] = None,
+) -> dict[str, Any]:
+    """Return picker-state updates after selecting a provider row."""
+    groups = provider_data.get("groups") or []
+    if provider_data.get("slug") == "openrouter" and not groups:
+        try:
+            from hermes_cli.models import openrouter_picker_group_entries
+
+            groups = openrouter_picker_group_entries()
+        except Exception:
+            groups = []
+    if provider_data.get("slug") == "openrouter" and groups:
+        current_vendor = current_model.split("/", 1)[0] if "/" in current_model else ""
+        return {
+            "stage": "openrouter_group",
+            "provider_data": provider_data,
+            "group_list": groups,
+            "group_data": None,
+            "selected": next(
+                (i for i, group in enumerate(groups) if group.get("id") == current_vendor),
+                0,
+            ),
+        }
+
+    model_list: list[str] = []
+    if provider_model_loader is not None:
+        try:
+            loaded = provider_model_loader(provider_data)
+            if loaded:
+                model_list = list(loaded)
+        except Exception:
+            model_list = []
+    if not model_list:
+        model_list = list(provider_data.get("models", []))
+
+    return {
+        "stage": "model",
+        "provider_data": provider_data,
+        "group_data": None,
+        "model_list": model_list,
+        "selected": 0,
+    }
+
+
+def picker_transition_from_group_selection(group_data: dict) -> dict[str, Any]:
+    """Return picker-state updates after selecting an OpenRouter group row."""
+    return {
+        "stage": "model",
+        "group_data": group_data,
+        "model_list": list(group_data.get("models") or []),
+        "selected": 0,
+    }
 
 
 def _resolve_alias_fallback(
@@ -782,7 +850,7 @@ def list_authenticated_providers(
         get_provider_info as _mdev_pinfo,
     )
     from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.models import _PROVIDER_MODELS, openrouter_picker_group_entries, openrouter_picker_model_ids
+    from hermes_cli.models import _PROVIDER_MODELS, openrouter_picker_model_ids
 
     results: List[dict] = []
     seen_slugs: set = set()
@@ -836,8 +904,6 @@ def list_authenticated_providers(
             "total_models": total,
             "source": "built-in",
         }
-        if slug == "openrouter":
-            provider_entry["groups"] = openrouter_picker_group_entries()
         results.append(provider_entry)
         seen_slugs.add(slug)
 

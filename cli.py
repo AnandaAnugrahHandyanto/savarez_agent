@@ -4584,34 +4584,15 @@ class HermesCLI:
                 self._close_model_picker()
                 return
             provider_data = providers[selected]
-            groups = provider_data.get("groups") or []
-            if provider_data.get("slug") == "openrouter" and groups:
-                current_model = state.get("current_model") or ""
-                current_vendor = current_model.split("/", 1)[0] if "/" in current_model else ""
-                state["stage"] = "openrouter_group"
-                state["provider_data"] = provider_data
-                state["group_list"] = groups
-                state["group_data"] = None
-                state["selected"] = next(
-                    (i for i, group in enumerate(groups) if group.get("id") == current_vendor),
-                    0,
+            from hermes_cli.model_switch import picker_transition_from_provider_selection
+            from hermes_cli.models import provider_model_ids
+            state.update(
+                picker_transition_from_provider_selection(
+                    provider_data,
+                    current_model=state.get("current_model") or "",
+                    provider_model_loader=lambda provider: provider_model_ids(provider["slug"]),
                 )
-                self._invalidate(min_interval=0.0)
-                return
-            model_list = []
-            try:
-                from hermes_cli.models import provider_model_ids
-                live = provider_model_ids(provider_data["slug"])
-                if live:
-                    model_list = live
-            except Exception:
-                pass
-            if not model_list:
-                model_list = provider_data.get("models", [])
-            state["stage"] = "model"
-            state["provider_data"] = provider_data
-            state["model_list"] = model_list
-            state["selected"] = 0
+            )
             self._invalidate(min_interval=0.0)
             return
         if stage == "openrouter_group":
@@ -4635,11 +4616,8 @@ class HermesCLI:
                 self._close_model_picker()
                 return
             if selected < len(group_list):
-                group_data = group_list[selected]
-                state["stage"] = "model"
-                state["group_data"] = group_data
-                state["model_list"] = list(group_data.get("models") or [])
-                state["selected"] = 0
+                from hermes_cli.model_switch import picker_transition_from_group_selection
+                state.update(picker_transition_from_group_selection(group_list[selected]))
                 self._invalidate(min_interval=0.0)
                 return
             self._close_model_picker()

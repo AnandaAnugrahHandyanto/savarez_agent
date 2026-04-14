@@ -2774,6 +2774,7 @@ if DISCORD_AVAILABLE:
             self.resolved = False
             self._selected_provider: str = ""
             self._selected_group: str = ""
+            self._group_list: list = []
 
             self._build_provider_select()
 
@@ -2814,22 +2815,6 @@ if DISCORD_AVAILABLE:
             cancel_btn.callback = self._on_cancel
             self.add_item(cancel_btn)
 
-        def _provider_by_slug(self, provider_slug: str | None = None):
-            slug = provider_slug or self._selected_provider
-            return next((p for p in self.providers if p["slug"] == slug), None)
-
-        def _current_group(self, provider=None):
-            provider = provider or self._provider_by_slug()
-            if not provider:
-                return None
-            return next(
-                (
-                    g for g in provider.get("groups", [])
-                    if g.get("id") == self._selected_group
-                ),
-                None,
-            )
-
         def _model_selection_description(self, provider, *, group=None) -> str:
             pname = provider.get("name", self._selected_provider) if provider else self._selected_provider
             if group:
@@ -2847,14 +2832,26 @@ if DISCORD_AVAILABLE:
             extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
             return f"Provider: **{pname}**\nSelect a model:{extra}"
 
+        async def _edit_picker(self, interaction: discord.Interaction, description: str):
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚙ Model Configuration",
+                    description=description,
+                    color=discord.Color.blue(),
+                ),
+                view=self,
+            )
+
         def _build_model_select(self, provider_slug: str):
             """Build the model dropdown for a specific provider."""
+            from hermes_cli.model_switch import picker_group_by_id, picker_provider_by_slug
+
             self.clear_items()
-            provider = self._provider_by_slug(provider_slug)
+            provider = picker_provider_by_slug(self.providers, provider_slug)
             if not provider:
                 return
 
-            group = self._current_group(provider)
+            group = picker_group_by_id(self._group_list, self._selected_group)
             if group:
                 models = group.get("models", [])
                 group_name = group.get("name", self._selected_group)
@@ -2899,14 +2896,15 @@ if DISCORD_AVAILABLE:
 
         def _build_group_select(self, provider_slug: str):
             """Build the vendor-group dropdown for OpenRouter."""
+            from hermes_cli.model_switch import picker_provider_by_slug
+
             self.clear_items()
-            provider = self._provider_by_slug(provider_slug)
+            provider = picker_provider_by_slug(self.providers, provider_slug)
             if not provider:
                 return
 
-            groups = provider.get("groups", [])
             options = []
-            for group in groups[:25]:
+            for group in self._group_list[:25]:
                 count = group.get("total_models", len(group.get("models", [])))
                 label = f"{group['name']} ({count} models)"
                 options.append(
@@ -2945,34 +2943,32 @@ if DISCORD_AVAILABLE:
                 )
                 return
 
+            from hermes_cli.model_switch import (
+                picker_provider_by_slug,
+                picker_transition_from_provider_selection,
+            )
+
             provider_slug = interaction.data["values"][0]
             self._selected_provider = provider_slug
-            provider = self._provider_by_slug(provider_slug)
+            provider = picker_provider_by_slug(self.providers, provider_slug)
             pname = provider.get("name", provider_slug) if provider else provider_slug
-            groups = provider.get("groups", []) if provider else []
             self._selected_group = ""
+            transition = picker_transition_from_provider_selection(
+                provider or {},
+                current_model=self.current_model,
+            ) if provider else {}
+            self._group_list = transition.get("group_list", [])
 
-            if groups:
+            if self._group_list:
                 self._build_group_select(provider_slug)
-                await interaction.response.edit_message(
-                    embed=discord.Embed(
-                        title="⚙ Model Configuration",
-                        description=f"Provider: **{pname}**\nSelect a vendor group ({len(groups)} available):",
-                        color=discord.Color.blue(),
-                    ),
-                    view=self,
+                await self._edit_picker(
+                    interaction,
+                    f"Provider: **{pname}**\nSelect a vendor group ({len(self._group_list)} available):",
                 )
                 return
 
             self._build_model_select(provider_slug)
-            await interaction.response.edit_message(
-                embed=discord.Embed(
-                    title="⚙ Model Configuration",
-                    description=self._model_selection_description(provider),
-                    color=discord.Color.blue(),
-                ),
-                view=self,
-            )
+            await self._edit_picker(interaction, self._model_selection_description(provider))
 
         async def _on_group_selected(self, interaction: discord.Interaction):
             if not self._check_auth(interaction):
@@ -2981,21 +2977,17 @@ if DISCORD_AVAILABLE:
                 )
                 return
 
+            from hermes_cli.model_switch import picker_group_by_id
+
             group_id = interaction.data["values"][0]
             self._selected_group = group_id
-            provider = self._provider_by_slug()
-            group = self._current_group(provider)
+            from hermes_cli.model_switch import picker_provider_by_slug
+            provider = picker_provider_by_slug(self.providers, self._selected_provider)
+            group = picker_group_by_id(self._group_list, group_id)
 
             self._build_model_select(self._selected_provider)
 
-            await interaction.response.edit_message(
-                embed=discord.Embed(
-                    title="⚙ Model Configuration",
-                    description=self._model_selection_description(provider, group=group),
-                    color=discord.Color.blue(),
-                ),
-                view=self,
-            )
+            await self._edit_picker(interaction, self._model_selection_description(provider, group=group))
 
         async def _on_model_selected(self, interaction: discord.Interaction):
             if self.resolved:
@@ -3039,22 +3031,20 @@ if DISCORD_AVAILABLE:
                 return
 
             if self._selected_group:
-                provider = self._provider_by_slug()
+                from hermes_cli.model_switch import picker_provider_by_slug
+                provider = picker_provider_by_slug(self.providers, self._selected_provider)
                 pname = provider.get("name", self._selected_provider) if provider else self._selected_provider
                 self._selected_group = ""
                 self._build_group_select(self._selected_provider)
-                await interaction.response.edit_message(
-                    embed=discord.Embed(
-                        title="⚙ Model Configuration",
-                        description=f"Provider: **{pname}**\nSelect a vendor group ({len(provider.get('groups', []) if provider else [])} available):",
-                        color=discord.Color.blue(),
-                    ),
-                    view=self,
+                await self._edit_picker(
+                    interaction,
+                    f"Provider: **{pname}**\nSelect a vendor group ({len(self._group_list)} available):",
                 )
                 return
 
             self._build_provider_select()
             self._selected_provider = ""
+            self._group_list = []
 
             try:
                 from hermes_cli.providers import get_label
@@ -3062,17 +3052,13 @@ if DISCORD_AVAILABLE:
             except Exception:
                 provider_label = self.current_provider
 
-            await interaction.response.edit_message(
-                embed=discord.Embed(
-                    title="⚙ Model Configuration",
-                    description=(
-                        f"Current model: `{self.current_model or 'unknown'}`\n"
-                        f"Provider: {provider_label}\n\n"
-                        f"Select a provider:"
-                    ),
-                    color=discord.Color.blue(),
+            await self._edit_picker(
+                interaction,
+                (
+                    f"Current model: `{self.current_model or 'unknown'}`\n"
+                    f"Provider: {provider_label}\n\n"
+                    f"Select a provider:"
                 ),
-                view=self,
             )
 
         async def _on_cancel(self, interaction: discord.Interaction):

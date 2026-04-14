@@ -1210,20 +1210,6 @@ class TelegramAdapter(BasePlatformAdapter):
         ])
         return InlineKeyboardMarkup(rows)
 
-    def _picker_provider(self, state: dict):
-        provider_slug = state.get("selected_provider", "")
-        return next(
-            (p for p in state["providers"] if p["slug"] == provider_slug),
-            None,
-        )
-
-    def _picker_group(self, state: dict):
-        group_id = state.get("selected_group", "")
-        return next(
-            (g for g in state.get("group_list", []) if g.get("id") == group_id),
-            None,
-        )
-
     async def _show_provider_picker(self, query, state: dict, get_label) -> None:
         keyboard = self._build_provider_keyboard(state["providers"])
         try:
@@ -1257,6 +1243,8 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
     async def _show_model_picker(self, query, state: dict, page: int) -> None:
+        from hermes_cli.model_switch import picker_group_by_id, picker_provider_by_slug
+
         models = state.get("model_list", [])
         state["model_page"] = page
         keyboard, page_info = self._build_model_keyboard(models, page)
@@ -1264,14 +1252,14 @@ class TelegramAdapter(BasePlatformAdapter):
         pname = state.get("selected_provider_name", "")
         gname = state.get("selected_group_name", "")
         if gname:
-            group = self._picker_group(state)
+            group = picker_group_by_id(state.get("group_list", []), state.get("selected_group", ""))
             total = group.get("total_models", len(models)) if group else len(models)
             header = (
                 f"Provider: *{pname}*\n"
                 f"Vendor: *{gname}*{page_info}\n"
             )
         else:
-            provider = self._picker_provider(state)
+            provider = picker_provider_by_slug(state["providers"], state.get("selected_provider", ""))
             total = provider.get("total_models", len(models)) if provider else len(models)
             header = f"Provider: *{pname}*{page_info}\n"
         shown = len(models)
@@ -1346,47 +1334,51 @@ class TelegramAdapter(BasePlatformAdapter):
         if data.startswith("mp:"):
             # --- Provider selected: show vendor groups or model buttons ---
             provider_slug = data[3:]
-            provider = next(
-                (p for p in state["providers"] if p["slug"] == provider_slug),
-                None,
+            from hermes_cli.model_switch import (
+                picker_provider_by_slug,
+                picker_transition_from_provider_selection,
             )
+
+            provider = picker_provider_by_slug(state["providers"], provider_slug)
             if not provider:
                 await query.answer(text="Provider not found.")
                 return
 
             state["selected_provider"] = provider_slug
             state["selected_provider_name"] = provider.get("name", provider_slug)
-            pname = provider.get("name", provider_slug)
-            groups = provider.get("groups") or []
-            state["group_list"] = groups
             state["selected_group"] = ""
             state["selected_group_name"] = ""
+            state.update(
+                picker_transition_from_provider_selection(
+                    provider,
+                    current_model=state.get("current_model") or "",
+                )
+            )
 
-            if groups:
+            if state.get("stage") == "openrouter_group":
                 await self._show_group_picker(query, state)
                 await query.answer()
                 return
 
-            models = provider.get("models", [])
-            state["model_list"] = models
             await self._show_model_picker(query, state, 0)
             await query.answer()
 
         elif data.startswith("mv:"):
             # --- Vendor group selected: show model buttons (page 0) ---
             group_id = data[3:]
-            group = next(
-                (g for g in state.get("group_list", []) if g.get("id") == group_id),
-                None,
+            from hermes_cli.model_switch import (
+                picker_group_by_id,
+                picker_transition_from_group_selection,
             )
+
+            group = picker_group_by_id(state.get("group_list", []), group_id)
             if not group:
                 await query.answer(text="Group not found.")
                 return
 
-            models = list(group.get("models", []))
             state["selected_group"] = group_id
             state["selected_group_name"] = group.get("name", group_id)
-            state["model_list"] = models
+            state.update(picker_transition_from_group_selection(group))
             await self._show_model_picker(query, state, 0)
             await query.answer()
 
