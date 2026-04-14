@@ -15,6 +15,7 @@ Usage:
 
 import logging
 import os
+import re
 import shutil
 import sys
 import json
@@ -568,6 +569,8 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.markup import escape as _escape
 from rich.panel import Panel
+from rich.segment import Segment
+from rich.style import Style
 from rich.text import Text as _RichText
 
 import fire
@@ -1062,17 +1065,106 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     return _RichText.from_ansi(text or "")
 
 
+_NUMERIC_HIGHLIGHT_RE = re.compile(
+    r"""
+    (?P<date>
+        (?<![\w./-])
+        \d{4}[-/]\d{1,2}[-/]\d{1,2}
+        (?![\w/-])
+    )
+    |
+    (?P<currency>
+        (?<![\w./-])
+        (?:[$€£¥￥])\d[\d,]*(?:\.\d+)?
+        (?!\.\d)(?![\w/-])
+    )
+    |
+    (?P<percent>
+        (?<![\w./-])
+        \d[\d,]*(?:\.\d+)?%
+        (?!\.\d)(?![\w/-])
+    )
+    |
+    (?P<cjk_quantity>
+        (?<![\w./-])
+        \d[\d,]*(?:\.\d+)?(?:万元|亿元|美元|人民币|万|亿|元|年|月|日|号|天|小时|分钟|秒|个|次|条|名|位|项|页|章|节|集|票|W|w)
+        (?!\.\d)(?![\w/-])
+    )
+    |
+    (?P<number>
+        (?<![\w./-])
+        (?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?
+        (?!\.\d)(?![\w/-])
+    )
+    """,
+    re.VERBOSE,
+)
+
+
+def _numeric_highlight_style() -> Style:
+    """Return the CLI style used for high-value numeric tokens."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+
+        color = get_active_skin().get_color("ui_label", "#4dd0e1")
+    except Exception:
+        color = "#4dd0e1"
+    return Style.parse(f"bold {color}")
+
+
+def _highlight_numeric_segment(segment: Segment, numeric_style: Style):
+    """Apply conservative numeric emphasis to plain markdown text segments."""
+    if segment.control is not None or not segment.text or not any(ch.isdigit() for ch in segment.text):
+        yield segment
+        return
+
+    style = segment.style or Style.null()
+    if style != Style.null():
+        yield segment
+        return
+
+    last = 0
+    matched = False
+    for match in _NUMERIC_HIGHLIGHT_RE.finditer(segment.text):
+        start, end = match.span()
+        if start > last:
+            yield Segment(segment.text[last:start], segment.style)
+        yield Segment(segment.text[start:end], numeric_style)
+        last = end
+        matched = True
+
+    if not matched:
+        yield segment
+        return
+
+    if last < len(segment.text):
+        yield Segment(segment.text[last:], segment.style)
+
+
+class _AssistantMarkdown(Markdown):
+    """Markdown renderable with conservative emphasis for important numbers."""
+
+    def __rich_console__(self, console, options):
+        numeric_style = _numeric_highlight_style()
+        for part in super().__rich_console__(console, options):
+            if isinstance(part, Segment):
+                yield from _highlight_numeric_segment(part, numeric_style)
+            else:
+                yield part
+
+
 def _assistant_response_renderable(text: str):
     """Render final assistant replies as markdown when safe for the CLI.
 
     This upgrades the final assistant panel from plain ANSI text to semantic
     markdown rendering for headings, strong text, lists, blockquotes, and
-    fenced code blocks while keeping ANSI passthrough for escape-coded output.
+    fenced code blocks, then adds conservative emphasis for high-value numbers
+    in plain prose while keeping ANSI passthrough for escape-coded output.
     """
     text = text or ""
     if "\x1b" in text:
         return _rich_text_from_ansi(text)
-    return Markdown(
+    return _AssistantMarkdown(
         text,
         code_theme="monokai",
         inline_code_theme="monokai",

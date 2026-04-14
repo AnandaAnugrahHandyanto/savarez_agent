@@ -5,6 +5,7 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
+from rich.console import Console
 from rich.markdown import Markdown
 from rich.text import Text
 
@@ -253,6 +254,60 @@ class TestAssistantResponseRenderable:
             )
 
         assert isinstance(renderable, Markdown)
+
+    def test_plain_assistant_reply_highlights_important_numbers_only(self):
+        import importlib
+
+        prompt_toolkit_stubs = {
+            "prompt_toolkit": MagicMock(),
+            "prompt_toolkit.history": MagicMock(),
+            "prompt_toolkit.styles": MagicMock(),
+            "prompt_toolkit.patch_stdout": MagicMock(),
+            "prompt_toolkit.application": MagicMock(),
+            "prompt_toolkit.layout": MagicMock(),
+            "prompt_toolkit.layout.processors": MagicMock(),
+            "prompt_toolkit.filters": MagicMock(),
+            "prompt_toolkit.layout.dimension": MagicMock(),
+            "prompt_toolkit.layout.menus": MagicMock(),
+            "prompt_toolkit.widgets": MagicMock(),
+            "prompt_toolkit.key_binding": MagicMock(),
+            "prompt_toolkit.completion": MagicMock(),
+            "prompt_toolkit.formatted_text": MagicMock(),
+            "prompt_toolkit.auto_suggest": MagicMock(),
+        }
+        with patch.dict(sys.modules, prompt_toolkit_stubs):
+            import cli as _cli_mod
+
+            _cli_mod = importlib.reload(_cli_mod)
+            renderable = _cli_mod._assistant_response_renderable(
+                "Top 10 trends hit 78% on 2026-04-14 with $99 revenue and 7800万元.\n\n"
+                "`v1.2.3` stays inline code.\n\n"
+                "/path/123 and gpt-4.1 stay plain."
+            )
+
+        console = Console(force_terminal=True, color_system="truecolor", width=100)
+        segments = [segment for segment in console.render(renderable) if segment.text.strip()]
+
+        highlighted = {
+            segment.text.strip(): segment.style
+            for segment in segments
+            if segment.style is not None and getattr(segment.style.color, "triplet", None) is not None
+        }
+        assert highlighted["10"].bold is True
+        assert highlighted["78%"].color.triplet.hex == "#4dd0e1"
+        assert highlighted["2026-04-14"].color.triplet.hex == "#4dd0e1"
+        assert highlighted["$99"].color.triplet.hex == "#4dd0e1"
+        assert highlighted["7800万元"].color.triplet.hex == "#4dd0e1"
+
+        assert "/path/123" not in highlighted
+        assert "gpt-4.1" not in highlighted
+        assert any(
+            segment.text.strip() == "/path/123 and gpt-4.1 stay plain." and segment.style is None
+            for segment in segments
+        )
+        inline_code_segment = next(segment for segment in segments if segment.text.strip() == "v1.2.3")
+        assert "v1.2.3" not in highlighted
+        assert inline_code_segment.style.bgcolor is not None
 
     def test_ansi_assistant_reply_keeps_ansi_fallback(self):
         import importlib
