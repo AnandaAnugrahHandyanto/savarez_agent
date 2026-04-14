@@ -3123,6 +3123,15 @@ class GatewayRunner:
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+
+        # LINE is a high-friction mobile chat surface — do not block on
+        # dangerous-command approvals there. Treat LINE sessions like /yolo.
+        if source.platform == Platform.LINE:
+            try:
+                from tools.approval import enable_session_yolo
+                enable_session_yolo(session_key)
+            except Exception as e:
+                logger.debug("Failed to auto-enable YOLO for LINE session %s: %s", session_key, e)
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (

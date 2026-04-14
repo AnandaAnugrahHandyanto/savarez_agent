@@ -650,15 +650,23 @@ class LineAdapter(BasePlatformAdapter):
         if not path.exists() or not path.is_file():
             raise web.HTTPNotFound()
 
-        # Defence-in-depth: verify the resolved path is within an allowed root
-        # (system temp dir or HERMES_HOME) to guard against any accidental
-        # escalation — all paths reach here only via _register_media which is
-        # called from internal code, so this is a belt-and-suspenders check.
+        # Defence-in-depth: verify the resolved path is within an allowed root.
+        # All paths reach here only via _register_media (called from trusted
+        # internal code), so this is a belt-and-suspenders check.
+        #
+        # Allowed roots:
+        #   1. tempfile.gettempdir() — /var/folders/…/T on macOS, /tmp on Linux
+        #   2. Path("/tmp").resolve() — /private/tmp on macOS, /tmp on Linux
+        #      (covers files saved directly under /tmp by the AI or tools)
+        #   3. HERMES_HOME — image/audio/document cache lives here
         resolved = path.resolve()
-        tmp_root = Path(tempfile.gettempdir()).resolve()
         from hermes_constants import get_hermes_home
-        hermes_root = Path(get_hermes_home()).resolve()
-        if not (resolved.is_relative_to(tmp_root) or resolved.is_relative_to(hermes_root)):
+        _allowed_roots = {
+            Path(tempfile.gettempdir()).resolve(),
+            Path("/tmp").resolve(),          # /private/tmp on macOS
+            Path(get_hermes_home()).resolve(),
+        }
+        if not any(resolved.is_relative_to(r) for r in _allowed_roots):
             logger.warning("[LINE] Refusing to serve file outside allowed roots: %s", resolved)
             raise web.HTTPForbidden()
 
