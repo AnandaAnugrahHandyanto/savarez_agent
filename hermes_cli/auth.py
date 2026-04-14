@@ -274,6 +274,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("XIAOMI_API_KEY",),
         base_url_env_var="XIAOMI_BASE_URL",
     ),
+    "crof": ProviderConfig(
+        id="crof",
+        name="CrofAI",
+        auth_type="api_key",
+        inference_base_url="https://crof.ai/v1",
+        api_key_env_vars=("CROFAI_API_KEY",),
+        base_url_env_var="CROFAI_BASE_URL",
+    ),
 }
 
 
@@ -919,6 +927,7 @@ def resolve_provider(
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
+        "crofai": "crof", "crof-ai": "crof",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         # Local server aliases — route through the generic custom provider

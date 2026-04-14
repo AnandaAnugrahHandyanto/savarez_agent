@@ -974,6 +974,21 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "CROFAI_API_KEY": {
+        "description": "CrofAI API key (GLM, Kimi, DeepSeek, Qwen models via crof.ai)",
+        "prompt": "CrofAI API Key",
+        "url": "https://crof.ai/pricing",
+        "password": True,
+        "category": "provider",
+    },
+    "CROFAI_BASE_URL": {
+        "description": "CrofAI base URL override (default: https://crof.ai/v1)",
+        "prompt": "CrofAI base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
 
     # ── Tool API keys ──
     "EXA_API_KEY": {
