@@ -269,6 +269,14 @@ async def get_status():
     current_ver, latest_ver = check_config_version()
 
     gateway_pid = get_running_pid()
+    # Managed mode (systemd): gateway.pid may not be written, fall back to gateway_state.json
+    if gateway_pid is None:
+        import os as _os
+        _rt = read_runtime_status()
+        if _rt and _rt.get("gateway_state") == "running":
+            _rpid = _rt.get("pid")
+            if _rpid and _os.path.exists(f"/proc/{_rpid}"):
+                gateway_pid = _rpid
     gateway_running = gateway_pid is not None
 
     gateway_state = None
