@@ -357,29 +357,39 @@ class ContextCompressor(ContextEngine):
         )
 
         # Shared structured template (used by both paths).
-        # Key changes vs v1:
-        #   - "Pending User Asks" section (from Claude Code) explicitly tracks
-        #     unanswered questions so the model knows what's resolved vs open
-        #   - "Remaining Work" replaces "Next Steps" to avoid reading as active
-        #     instructions
-        #   - "Resolved Questions" makes it clear which questions were already
-        #     answered (prevents model from re-answering them)
         _template_sections = f"""## Goal
 [What the user is trying to accomplish]
 
 ## Constraints & Preferences
 [User preferences, coding style, constraints, important decisions]
 
-## Progress
-### Done
-[Completed work — include specific file paths, commands run, results obtained]
-### In Progress
-[Work currently underway]
-### Blocked
-[Any blockers or issues encountered]
+## Completed Actions
+[Numbered list of concrete actions taken — include tool used, target, and outcome.
+Format each as: N. ACTION target — outcome [tool: name]
+Example:
+1. READ config.py:45 — found `==` should be `!=` [tool: read_file]
+2. PATCH config.py:45 — changed `==` to `!=` [tool: patch]
+3. TEST `pytest tests/` — 3/50 failed: test_parse, test_validate, test_edge [tool: terminal]
+4. PATCH test_config.py — updated 3 test expectations [tool: patch]
+5. TEST `pytest tests/` — 50/50 passed [tool: terminal]
+Be specific with file paths, commands, line numbers, and results.]
+
+## Active State
+[Current working state — include:
+- Working directory and branch (if applicable)
+- Modified/created files with brief note on each
+- Test status (X/Y passing)
+- Any running processes or servers
+- Environment details that matter]
+
+## In Progress
+[Work currently underway — what was being done when compaction fired]
+
+## Blocked
+[Any blockers, errors, or issues not yet resolved. Include exact error messages.]
 
 ## Key Decisions
-[Important technical decisions and why they were made]
+[Important technical decisions and WHY they were made]
 
 ## Resolved Questions
 [Questions the user asked that were ALREADY answered — include the answer so the next assistant does not re-answer them]
@@ -387,19 +397,13 @@ class ContextCompressor(ContextEngine):
 ## Pending User Asks
 [Questions or requests from the user that have NOT yet been answered or fulfilled. If none, write "None."]
 
-## Relevant Files
-[Files read, modified, or created — with brief note on each]
-
 ## Remaining Work
 [What remains to be done — framed as context, not instructions]
 
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation]
 
-## Tools & Patterns
-[Which tools were used, how they were used effectively, and any tool-specific discoveries]
-
-Target ~{summary_budget} tokens. Be specific — include file paths, command outputs, error messages, and concrete values rather than vague descriptions.
+Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
 
 Write only the summary body. Do not include any preamble or prefix."""
 
@@ -415,7 +419,7 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new progress. Move items from "In Progress" to "Done" when completed. Move answered questions to "Resolved Questions". Remove information only if it is clearly obsolete.
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete.
 
 {_template_sections}"""
         else:
