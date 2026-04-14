@@ -25,7 +25,7 @@ class TestToolsetAwareRouting(unittest.TestCase):
         self.assertEqual(result, "research")
 
     def test_web_only_default_research(self):
-        result = _infer_delegate_tier("search for information about this topic", "", ["web"], {})
+        result = _infer_delegate_tier("get the current deployment status", "", ["web"], {})
         self.assertEqual(result, "research")
 
     def test_file_only_with_review_keyword(self):
@@ -51,7 +51,7 @@ class TestToolsetAwareRouting(unittest.TestCase):
         result = _infer_delegate_tier("some complex task that needs work", "", [], {})
         self.assertIsNone(result)  # no signal -> None (LLM fallback)
 
-    def test_web_only_default_research(self):
+    def test_web_only_default_research_generic(self):
         """Web-only toolset with non-keyword query defaults to research."""
         result = _infer_delegate_tier("get the current status of deployment", "", ["web"], {})
         self.assertEqual(result, "research")
