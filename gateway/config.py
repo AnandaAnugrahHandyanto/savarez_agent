@@ -258,6 +258,9 @@ class GatewayConfig:
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
+    # Prepend a compact timestamp to each inbound user message
+    message_timestamp_prefix: bool = False
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -357,6 +360,7 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
+            "message_timestamp_prefix": self.message_timestamp_prefix,
         }
     
     @classmethod
@@ -403,6 +407,11 @@ class GatewayConfig:
             data.get("unauthorized_dm_behavior"),
             "pair",
         )
+        message_timestamp_prefix = data.get("message_timestamp_prefix")
+        if message_timestamp_prefix is None:
+            gateway_cfg = data.get("gateway")
+            if isinstance(gateway_cfg, dict):
+                message_timestamp_prefix = gateway_cfg.get("message_timestamp_prefix")
 
         return cls(
             platforms=platforms,
@@ -418,6 +427,7 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+            message_timestamp_prefix=_coerce_bool(message_timestamp_prefix, False),
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -509,6 +519,10 @@ def load_gateway_config() -> GatewayConfig:
                     yaml_cfg.get("unauthorized_dm_behavior"),
                     "pair",
                 )
+
+            gateway_cfg = yaml_cfg.get("gateway")
+            if isinstance(gateway_cfg, dict) and "message_timestamp_prefix" in gateway_cfg:
+                gw_data["message_timestamp_prefix"] = gateway_cfg["message_timestamp_prefix"]
 
             # Merge platforms section from config.yaml into gw_data so that
             # nested keys like platforms.webhook.extra.routes are loaded.
