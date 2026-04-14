@@ -599,6 +599,10 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
                             if detected is not None:
                                 new_provider, resolved_model = detected
                                 disk_model["provider"] = new_provider
+                                # Clear stale base_url when provider changes, matching
+                                # _update_config_for_provider behaviour.
+                                if new_provider != current_provider:
+                                    disk_model.pop("base_url", None)
                             # else: resolved_model stays as raw model_val
                         except Exception:
                             pass  # auto-detection failed — keep existing provider
