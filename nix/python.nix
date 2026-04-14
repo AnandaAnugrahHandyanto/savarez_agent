@@ -80,4 +80,5 @@ let
 in
 pythonSet.mkVirtualEnv "hermes-agent-env" {
   hermes-agent = [ "all" ];
+  fastapi = [ ];  # Explicitly include — uv2nix silently drops it from [web] extra
 }
