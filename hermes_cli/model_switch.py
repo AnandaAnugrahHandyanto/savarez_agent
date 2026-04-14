@@ -151,6 +151,9 @@ MODEL_ALIASES: dict[str, ModelIdentity] = {
 
     # Arcee
     "trinity":   ModelIdentity("arcee-ai", "trinity"),
+
+    # CrofAI
+    "glm-5.1":  ModelIdentity("z-ai", "glm-5.1"),
 }
 
 

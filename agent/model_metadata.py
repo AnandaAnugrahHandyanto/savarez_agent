@@ -28,6 +28,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "qwen-oauth",
     "xiaomi",
     "arcee",
+    "crof",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
@@ -36,6 +37,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
     "arcee-ai", "arceeai",
+    "crofai", "crof-ai",
     "qwen-portal",
 })
 
@@ -169,6 +171,16 @@ DEFAULT_CONTEXT_LENGTHS = {
     "mimo-v2-pro": 1000000,
     "mimo-v2-omni": 256000,
     "mimo-v2-flash": 256000,
+    "glm-5.1": 202752,
+    "glm-5.1-precision": 202752,
+    "glm-5": 202752,
+    "glm-4.7": 202752,
+    "glm-4.7-flash": 202752,
+    "kimi-k2.5": 262144,
+    "deepseek-v3.2": 163840,
+    "qwen3.5-397b-a17b": 262144,
+    "gemma-4-31b-it": 262144,
+    "minimax-m2.5": 204800,
     "zai-org/GLM-5": 202752,
 }
 
@@ -238,6 +250,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.x.ai": "xai",
     "api.xiaomimimo.com": "xiaomi",
     "xiaomimimo.com": "xiaomi",
+    "crof.ai": "crof",
 }
 
 
