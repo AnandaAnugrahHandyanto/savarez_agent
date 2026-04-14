@@ -107,11 +107,6 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
 
 
 def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
-    configured_provider = str(model_cfg.get("provider") or "").strip().lower()
-    configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-    if configured_mode and _provider_supports_explicit_api_mode("copilot", configured_provider):
-        return configured_mode
-
     model_name = str(model_cfg.get("default") or "").strip()
     if not model_name:
         return "chat_completions"
@@ -136,6 +131,49 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
     return None
 
 
+def _resolve_api_mode(
+    model_cfg: Dict[str, Any],
+    provider: str,
+    base_url: str,
+    api_key: Optional[str] = None,
+) -> str:
+    """
+    Centralized resolution of the API mode based on config, provider defaults,
+    and URL conventions.
+    """
+    # 1. Priority: Explicit config (only if permitted for this provider)
+    cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+    configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+    if configured_mode and _provider_supports_explicit_api_mode(provider, cfg_provider):
+        return configured_mode
+
+    # 2. Priority: Provider-specific logic
+    if provider == "anthropic":
+        return "anthropic_messages"
+    if provider == "openai-codex":
+        return "codex_responses"
+    if provider == "copilot":
+        try:
+            from hermes_cli.models import copilot_model_api_mode
+            model_name = str(model_cfg.get("default") or "").strip()
+            if not model_name:
+                return "chat_completions"
+            return copilot_model_api_mode(model_name, api_key=api_key or "")
+        except Exception:
+            return "chat_completions"
+
+    if provider in ("opencode-zen", "opencode-go"):
+        from hermes_cli.models import opencode_model_api_mode
+        return opencode_model_api_mode(provider, model_cfg.get("default", ""))
+
+    # 3. Priority: URL-based detection
+    if base_url.rstrip("/").endswith("/anthropic"):
+        return "anthropic_messages"
+
+    # 4. Priority: Default fallback
+    return "chat_completions"
+
+
 def _resolve_runtime_from_pool_entry(
     *,
     provider: str,
@@ -147,15 +185,12 @@ def _resolve_runtime_from_pool_entry(
     model_cfg = model_cfg or _get_model_config()
     base_url = (getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or "").rstrip("/")
     api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
-    api_mode = "chat_completions"
+
     if provider == "openai-codex":
-        api_mode = "codex_responses"
         base_url = base_url or DEFAULT_CODEX_BASE_URL
     elif provider == "qwen-oauth":
-        api_mode = "chat_completions"
         base_url = base_url or DEFAULT_QWEN_BASE_URL
     elif provider == "anthropic":
-        api_mode = "anthropic_messages"
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = ""
         if cfg_provider == "anthropic":
@@ -164,9 +199,9 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "openrouter":
         base_url = base_url or OPENROUTER_BASE_URL
     elif provider == "nous":
-        api_mode = "chat_completions"
+        pass
     elif provider == "copilot":
-        api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
+        pass
     else:
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
         # Honour model.base_url from config.yaml when the configured provider
@@ -179,14 +214,8 @@ def _resolve_runtime_from_pool_entry(
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
             if cfg_base_url:
                 base_url = cfg_base_url
-        configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-        if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
-            api_mode = configured_mode
-        elif provider in ("opencode-zen", "opencode-go"):
-            from hermes_cli.models import opencode_model_api_mode
-            api_mode = opencode_model_api_mode(provider, model_cfg.get("default", ""))
-        elif base_url.rstrip("/").endswith("/anthropic"):
-            api_mode = "anthropic_messages"
+
+    api_mode = _resolve_api_mode(model_cfg, provider, base_url, api_key)
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
@@ -495,7 +524,7 @@ def _resolve_openrouter_runtime(
     # For custom endpoints, check if a credential pool exists
     if effective_provider == "custom" and base_url:
         pool_result = _try_resolve_from_custom_pool(
-            base_url, effective_provider, _parse_api_mode(model_cfg.get("api_mode")),
+            base_url, effective_provider, _resolve_api_mode(model_cfg, effective_provider, base_url, api_key),
         )
         if pool_result:
             return pool_result
@@ -505,9 +534,7 @@ def _resolve_openrouter_runtime(
 
     return {
         "provider": effective_provider,
-        "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
-        or _detect_api_mode_for_url(base_url)
-        or "chat_completions",
+        "api_mode": _resolve_api_mode(model_cfg, effective_provider, base_url, api_key),
         "base_url": base_url,
         "api_key": api_key,
         "source": source,
@@ -543,9 +570,12 @@ def _resolve_explicit_runtime(
                     "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
                     "run 'claude setup-token', or authenticate with 'claude /login'."
                 )
+
+        api_mode = _resolve_api_mode(model_cfg, provider, base_url, api_key)
+
         return {
             "provider": "anthropic",
-            "api_mode": "anthropic_messages",
+            "api_mode": api_mode,
             "base_url": base_url,
             "api_key": api_key,
             "source": "explicit",
@@ -562,9 +592,12 @@ def _resolve_explicit_runtime(
             last_refresh = creds.get("last_refresh")
             if not explicit_base_url:
                 base_url = creds.get("base_url", "").rstrip("/") or base_url
+
+        api_mode = _resolve_api_mode(model_cfg, provider, base_url, api_key)
+
         return {
             "provider": "openai-codex",
-            "api_mode": "codex_responses",
+            "api_mode": api_mode,
             "base_url": base_url,
             "api_key": api_key,
             "source": "explicit",
@@ -593,9 +626,12 @@ def _resolve_explicit_runtime(
             expires_at = creds.get("expires_at")
             if not explicit_base_url:
                 base_url = creds.get("base_url", "").rstrip("/") or base_url
+
+        api_mode = _resolve_api_mode(model_cfg, provider, base_url, api_key)
+
         return {
             "provider": "nous",
-            "api_mode": "chat_completions",
+            "api_mode": api_mode,
             "base_url": base_url,
             "api_key": api_key,
             "source": "explicit",
@@ -624,15 +660,7 @@ def _resolve_explicit_runtime(
             if not base_url:
                 base_url = creds.get("base_url", "").rstrip("/")
 
-        api_mode = "chat_completions"
-        if provider == "copilot":
-            api_mode = _copilot_runtime_api_mode(model_cfg, api_key)
-        else:
-            configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            if configured_mode:
-                api_mode = configured_mode
-            elif base_url.rstrip("/").endswith("/anthropic"):
-                api_mode = "anthropic_messages"
+        api_mode = _resolve_api_mode(model_cfg, provider, base_url, api_key)
 
         return {
             "provider": provider,
@@ -827,9 +855,12 @@ def resolve_runtime_provider(
         if cfg_provider == "anthropic":
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
         base_url = cfg_base_url or "https://api.anthropic.com"
+
+        api_mode = _resolve_api_mode(model_cfg, provider, base_url, token)
+
         return {
             "provider": "anthropic",
-            "api_mode": "anthropic_messages",
+            "api_mode": api_mode,
             "base_url": base_url,
             "api_key": token,
             "source": "env",
@@ -849,22 +880,9 @@ def resolve_runtime_provider(
         if cfg_provider == provider:
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
-        api_mode = "chat_completions"
-        if provider == "copilot":
-            api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
-        else:
-            configured_provider = str(model_cfg.get("provider") or "").strip().lower()
-            # Only honor persisted api_mode when it belongs to the same provider family.
-            configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
-                api_mode = configured_mode
-            elif provider in ("opencode-zen", "opencode-go"):
-                from hermes_cli.models import opencode_model_api_mode
-                api_mode = opencode_model_api_mode(provider, model_cfg.get("default", ""))
-            # Auto-detect Anthropic-compatible endpoints by URL convention
-            # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
-            elif base_url.rstrip("/").endswith("/anthropic"):
-                api_mode = "anthropic_messages"
+
+        api_mode = _resolve_api_mode(model_cfg, provider, base_url, creds.get("api_key", ""))
+
         # Strip trailing /v1 for OpenCode Anthropic models (see comment above).
         if api_mode == "anthropic_messages" and provider in ("opencode-zen", "opencode-go"):
             base_url = re.sub(r"/v1/?$", "", base_url)
