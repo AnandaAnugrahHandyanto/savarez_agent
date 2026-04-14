@@ -78,6 +78,8 @@ class ContextCompressor(ContextEngine):
         self._context_probed = False
         self._context_probe_persistable = False
         self._previous_summary = None
+        self._last_compression_savings_pct = 100.0
+        self._ineffective_compression_count = 0
 
     def update_model(
         self,
@@ -167,6 +169,9 @@ class ContextCompressor(ContextEngine):
 
         # Stores the previous compaction summary for iterative updates
         self._previous_summary: Optional[str] = None
+        # Anti-thrashing: track whether last compression was effective
+        self._last_compression_savings_pct: float = 100.0
+        self._ineffective_compression_count: int = 0
         self._summary_failure_cooldown_until: float = 0.0
 
     def update_from_response(self, usage: Dict[str, Any]):
@@ -175,9 +180,25 @@ class ContextCompressor(ContextEngine):
         self.last_completion_tokens = usage.get("completion_tokens", 0)
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
-        """Check if context exceeds the compression threshold."""
+        """Check if context exceeds the compression threshold.
+
+        Includes anti-thrashing protection: if the last two compressions
+        each saved less than 10%, skip compression to avoid infinite loops
+        where each pass removes only 1-2 messages.
+        """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
-        return tokens >= self.threshold_tokens
+        if tokens < self.threshold_tokens:
+            return False
+        # Anti-thrashing: back off if recent compressions were ineffective
+        if self._ineffective_compression_count >= 2:
+            if not self.quiet_mode:
+                logger.warning(
+                    "Compression skipped — last %d compressions saved <10%% each. "
+                    "Consider /new to start a fresh session.",
+                    self._ineffective_compression_count,
+                )
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)
@@ -806,14 +827,24 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         compressed = self._sanitize_tool_pairs(compressed)
 
+        new_estimate = estimate_messages_tokens_rough(compressed)
+        saved_estimate = display_tokens - new_estimate
+
+        # Anti-thrashing: track compression effectiveness
+        savings_pct = (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0
+        self._last_compression_savings_pct = savings_pct
+        if savings_pct < 10:
+            self._ineffective_compression_count += 1
+        else:
+            self._ineffective_compression_count = 0
+
         if not self.quiet_mode:
-            new_estimate = estimate_messages_tokens_rough(compressed)
-            saved_estimate = display_tokens - new_estimate
             logger.info(
-                "Compressed: %d -> %d messages (~%d tokens saved)",
+                "Compressed: %d -> %d messages (~%d tokens saved, %.0f%%)",
                 n_messages,
                 len(compressed),
                 saved_estimate,
+                savings_pct,
             )
             logger.info("Compression #%d complete", self.compression_count)
 
