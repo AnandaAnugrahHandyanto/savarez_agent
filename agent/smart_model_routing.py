@@ -77,6 +77,23 @@ def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[st
     if not provider or not model:
         return None
 
+    try:
+        from agent.routing_governance import (
+            route_matches_qualified,
+            validate_smart_model_routing_config,
+        )
+    except Exception:
+        route_matches_qualified = None
+        validate_smart_model_routing_config = None
+
+    if validate_smart_model_routing_config:
+        if validate_smart_model_routing_config(cfg):
+            return None
+
+    if _coerce_bool(cfg.get("require_qualified"), False):
+        if route_matches_qualified is None or not route_matches_qualified(provider, model):
+            return None
+
     text = (user_message or "").strip()
     if not text:
         return None

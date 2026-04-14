@@ -24,9 +24,13 @@ from typing import Any, Optional
 
 _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
+_RUNTIME_EVIDENCE_FILE = "gateway_runtime_events.jsonl"
+_RUNTIME_SCHEMA_VERSION = 1
 _LOCKS_DIRNAME = "gateway-locks"
 _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
+_ALLOWED_GATEWAY_STATES = {"starting", "running", "draining", "stopped", "startup_failed"}
+_ALLOWED_PLATFORM_STATES = {"connecting", "connected", "retrying", "fatal", "disconnected"}
 
 
 def _get_pid_path() -> Path:
@@ -38,6 +42,11 @@ def _get_pid_path() -> Path:
 def _get_runtime_status_path() -> Path:
     """Return the persisted runtime health/status file path."""
     return _get_pid_path().with_name(_RUNTIME_STATUS_FILE)
+
+
+def _get_runtime_evidence_path() -> Path:
+    """Return the append-only gateway runtime evidence log path."""
+    return _get_pid_path().with_name(_RUNTIME_EVIDENCE_FILE)
 
 
 def _get_lock_dir() -> Path:
@@ -147,6 +156,7 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
 
 def _build_pid_record() -> dict:
     return {
+        "schema_version": _RUNTIME_SCHEMA_VERSION,
         "pid": os.getpid(),
         "kind": _GATEWAY_KIND,
         "argv": list(sys.argv),
@@ -165,6 +175,135 @@ def _build_runtime_status_record() -> dict[str, Any]:
         "updated_at": _utc_now_iso(),
     })
     return payload
+
+
+def _validate_pid_record(payload: Any) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(payload, dict):
+        return ["pid artifact must be a JSON object"]
+
+    if payload.get("schema_version", _RUNTIME_SCHEMA_VERSION) != _RUNTIME_SCHEMA_VERSION:
+        errors.append(f"schema_version must be {_RUNTIME_SCHEMA_VERSION}")
+
+    try:
+        int(payload.get("pid"))
+    except (TypeError, ValueError):
+        errors.append("pid must be an integer")
+
+    if payload.get("kind") != _GATEWAY_KIND:
+        errors.append(f"kind must be '{_GATEWAY_KIND}'")
+
+    argv = payload.get("argv")
+    if argv is not None and not isinstance(argv, list):
+        errors.append("argv must be a list when present")
+
+    start_time = payload.get("start_time")
+    if start_time is not None and not isinstance(start_time, int):
+        errors.append("start_time must be an integer when present")
+
+    return errors
+
+
+def _validate_runtime_status_record(payload: Any) -> list[str]:
+    errors = _validate_pid_record(payload)
+    if not isinstance(payload, dict):
+        return errors
+
+    gateway_state = payload.get("gateway_state")
+    if gateway_state not in _ALLOWED_GATEWAY_STATES:
+        errors.append(f"gateway_state must be one of {sorted(_ALLOWED_GATEWAY_STATES)}")
+
+    restart_requested = payload.get("restart_requested")
+    if restart_requested is not None and not isinstance(restart_requested, bool):
+        errors.append("restart_requested must be a boolean")
+
+    active_agents = payload.get("active_agents")
+    if active_agents is not None and not isinstance(active_agents, int):
+        errors.append("active_agents must be an integer")
+
+    platforms = payload.get("platforms")
+    if platforms is None:
+        errors.append("platforms is required")
+    elif not isinstance(platforms, dict):
+        errors.append("platforms must be an object")
+    else:
+        for platform_name, platform_payload in platforms.items():
+            if not isinstance(platform_payload, dict):
+                errors.append(f"platforms.{platform_name} must be an object")
+                continue
+            platform_state = platform_payload.get("state")
+            if platform_state is not None and platform_state not in _ALLOWED_PLATFORM_STATES:
+                errors.append(
+                    f"platforms.{platform_name}.state must be one of {sorted(_ALLOWED_PLATFORM_STATES)}"
+                )
+
+    updated_at = payload.get("updated_at")
+    if not isinstance(updated_at, str) or not updated_at.strip():
+        errors.append("updated_at must be a non-empty string")
+
+    return errors
+
+
+def append_runtime_evidence(event: str, *, details: Optional[dict[str, Any]] = None) -> None:
+    """Append a machine-readable runtime evidence record for startup/restart triage."""
+    payload = {
+        "schema_version": _RUNTIME_SCHEMA_VERSION,
+        "ts": _utc_now_iso(),
+        "event": event,
+        "details": details or {},
+        **_build_pid_record(),
+    }
+    path = _get_runtime_evidence_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload) + "\n")
+
+
+def validate_runtime_artifacts() -> dict[str, Any]:
+    """Validate persisted gateway runtime artifacts and summarize evidence state."""
+    pid_payload = _read_pid_record()
+    pid_errors = [] if pid_payload is None else _validate_pid_record(pid_payload)
+
+    status_payload = read_runtime_status()
+    status_errors = [] if status_payload is None else _validate_runtime_status_record(status_payload)
+
+    evidence_path = _get_runtime_evidence_path()
+    evidence_exists = evidence_path.exists()
+    line_count = 0
+    last_event = None
+    if evidence_exists:
+        try:
+            for raw_line in evidence_path.read_text(encoding="utf-8").splitlines():
+                if not raw_line.strip():
+                    continue
+                line_count += 1
+                try:
+                    payload = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    last_event = "invalid_json"
+                    continue
+                if isinstance(payload, dict):
+                    last_event = payload.get("event") or last_event
+        except OSError:
+            last_event = "unreadable"
+
+    return {
+        "pid": {
+            "exists": pid_payload is not None,
+            "valid": pid_payload is None or not pid_errors,
+            "errors": pid_errors,
+        },
+        "runtime_status": {
+            "exists": status_payload is not None,
+            "valid": status_payload is None or not status_errors,
+            "errors": status_errors,
+        },
+        "evidence": {
+            "exists": evidence_exists,
+            "line_count": line_count,
+            "last_event": last_event,
+        },
+    }
 
 
 def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
@@ -230,12 +369,17 @@ def write_runtime_status(
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
-    payload = _read_json_file(path) or _build_runtime_status_record()
+    previous = _read_json_file(path) or {}
+    payload = previous or _build_runtime_status_record()
     payload.setdefault("platforms", {})
     payload.setdefault("kind", _GATEWAY_KIND)
+    payload["schema_version"] = _RUNTIME_SCHEMA_VERSION
     payload["pid"] = os.getpid()
     payload["start_time"] = _get_process_start_time(os.getpid())
     payload["updated_at"] = _utc_now_iso()
+
+    previous_gateway_state = previous.get("gateway_state")
+    previous_restart_requested = bool(previous.get("restart_requested"))
 
     if gateway_state is not _UNSET:
         payload["gateway_state"] = gateway_state
@@ -258,6 +402,27 @@ def write_runtime_status(
         payload["platforms"][platform] = platform_payload
 
     _write_json_file(path, payload)
+
+    current_gateway_state = payload.get("gateway_state")
+    current_restart_requested = bool(payload.get("restart_requested"))
+    if current_gateway_state != previous_gateway_state:
+        append_runtime_evidence(
+            "gateway_state_changed",
+            details={
+                "from": previous_gateway_state,
+                "to": current_gateway_state,
+                "exit_reason": payload.get("exit_reason"),
+                "active_agents": payload.get("active_agents"),
+            },
+        )
+    if current_restart_requested and not previous_restart_requested:
+        append_runtime_evidence(
+            "gateway_restart_requested",
+            details={
+                "gateway_state": current_gateway_state,
+                "active_agents": payload.get("active_agents"),
+            },
+        )
 
 
 def read_runtime_status() -> Optional[dict[str, Any]]:

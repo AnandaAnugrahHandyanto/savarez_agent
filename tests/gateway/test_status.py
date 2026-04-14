@@ -132,6 +132,48 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
 
+    def test_runtime_status_includes_schema_version_and_validation(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(gateway_state="running")
+
+        payload = status.read_runtime_status()
+        assert payload["schema_version"] == 1
+
+        report = status.validate_runtime_artifacts()
+        assert report["runtime_status"]["valid"] is True
+        assert report["runtime_status"]["errors"] == []
+
+    def test_validate_runtime_artifacts_reports_invalid_runtime_status(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": "oops",
+            "gateway_state": "mystery",
+            "platforms": [],
+        }))
+
+        report = status.validate_runtime_artifacts()
+
+        assert report["runtime_status"]["valid"] is False
+        assert any("pid" in err for err in report["runtime_status"]["errors"])
+        assert any("gateway_state" in err for err in report["runtime_status"]["errors"])
+
+    def test_append_runtime_evidence_writes_jsonl_record(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.append_runtime_evidence(
+            "gateway_restart_requested",
+            details={"reason": "test"},
+        )
+
+        evidence_path = tmp_path / "gateway_runtime_events.jsonl"
+        lines = evidence_path.read_text().strip().splitlines()
+        payload = json.loads(lines[-1])
+        assert payload["event"] == "gateway_restart_requested"
+        assert payload["schema_version"] == 1
+        assert payload["details"]["reason"] == "test"
+
 
 class TestTerminatePid:
     def test_force_uses_taskkill_on_windows(self, monkeypatch):

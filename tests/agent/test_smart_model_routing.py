@@ -1,4 +1,5 @@
 from agent.smart_model_routing import choose_cheap_model_route
+from agent.routing_governance import promote_route
 
 
 _BASE_CONFIG = {
@@ -53,9 +54,39 @@ def test_resolve_turn_route_falls_back_to_primary_when_route_runtime_cannot_be_r
             "provider": "openrouter",
             "base_url": "https://openrouter.ai/api/v1",
             "api_mode": "chat_completions",
-            "api_key": "sk-primary",
+            "api_key": "***",
         },
     )
     assert result["model"] == "anthropic/claude-sonnet-4"
     assert result["runtime"]["provider"] == "openrouter"
     assert result["label"] is None
+
+
+def test_choose_cheap_model_route_requires_qualified_rollout(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cfg = {
+        **_BASE_CONFIG,
+        "require_qualified": True,
+    }
+
+    result = choose_cheap_model_route("what time is it in tokyo?", cfg)
+
+    assert result is None
+
+
+def test_choose_cheap_model_route_uses_promoted_route_when_qualified(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    promote_route(
+        provider="openrouter",
+        model="google/gemini-2.5-flash",
+        reason="qualified",
+    )
+    cfg = {
+        **_BASE_CONFIG,
+        "require_qualified": True,
+    }
+
+    result = choose_cheap_model_route("what time is it in tokyo?", cfg)
+
+    assert result is not None
+    assert result["routing_reason"] == "simple_turn"

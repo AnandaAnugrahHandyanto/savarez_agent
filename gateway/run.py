@@ -1269,11 +1269,17 @@ class GatewayRunner:
         """Load OpenRouter provider routing preferences from config.yaml."""
         try:
             import yaml as _y
+            from agent.routing_governance import validate_provider_routing_config
             cfg_path = _hermes_home / "config.yaml"
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
-                return cfg.get("provider_routing", {}) or {}
+                routing = cfg.get("provider_routing", {}) or {}
+                errors = validate_provider_routing_config(routing)
+                if errors:
+                    logger.warning("Invalid provider_routing config — ignoring: %s", "; ".join(errors))
+                    return {}
+                return routing
         except Exception:
             pass
         return {}
@@ -1304,11 +1310,17 @@ class GatewayRunner:
         """Load optional smart cheap-vs-strong model routing config."""
         try:
             import yaml as _y
+            from agent.routing_governance import validate_smart_model_routing_config
             cfg_path = _hermes_home / "config.yaml"
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
-                return cfg.get("smart_model_routing", {}) or {}
+                routing = cfg.get("smart_model_routing", {}) or {}
+                errors = validate_smart_model_routing_config(routing)
+                if errors:
+                    logger.warning("Invalid smart_model_routing config — ignoring: %s", "; ".join(errors))
+                    return {}
+                return routing
         except Exception:
             pass
         return {}

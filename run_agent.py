@@ -6752,6 +6752,31 @@ class AIAgent:
                     )
                 except Exception:
                     pass
+            if function_args.get("action") in ("add", "replace") and target in ("memory", "user"):
+                try:
+                    payload = json.loads(result) if isinstance(result, str) else result
+                except Exception:
+                    payload = None
+                if isinstance(payload, dict) and payload.get("success"):
+                    try:
+                        from agent.knowledge_lanes import KnowledgeLaneStore
+
+                        content = (function_args.get("content") or "").strip()
+                        if content:
+                            KnowledgeLaneStore().add_draft(
+                                title=f"Memory write: {target}",
+                                body=content,
+                                source=f"memory_tool:{target}:{function_args.get('action')}",
+                                provenance={
+                                    "action": function_args.get("action"),
+                                    "target": target,
+                                    "session_id": self.session_id,
+                                },
+                                tags=["memory-write", target],
+                                confidence="medium",
+                            )
+                    except Exception:
+                        pass
             return result
         elif self._memory_manager and self._memory_manager.has_tool(function_name):
             return self._memory_manager.handle_tool_call(function_name, function_args)

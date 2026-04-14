@@ -1945,7 +1945,8 @@ def _platform_status(platform: dict) -> str:
 def _runtime_health_lines() -> list[str]:
     """Summarize the latest persisted gateway runtime health state."""
     try:
-        from gateway.status import read_runtime_status
+        from gateway.status import read_runtime_status, validate_runtime_artifacts
+        from agent.routing_governance import read_rollout_state
     except Exception:
         return []
 
@@ -1973,6 +1974,43 @@ def _runtime_health_lines() -> list[str]:
         lines.append(f"⏳ Gateway draining for {action} ({count} active agent(s))")
     elif gateway_state == "stopped" and exit_reason:
         lines.append(f"⚠ Last shutdown reason: {exit_reason}")
+
+    try:
+        validation = validate_runtime_artifacts()
+    except Exception:
+        validation = None
+
+    if validation:
+        runtime_errors = validation.get("runtime_status", {}).get("errors", [])
+        if runtime_errors:
+            lines.append(f"⚠ Runtime state validation: {runtime_errors[0]}")
+        pid_errors = validation.get("pid", {}).get("errors", [])
+        if pid_errors:
+            lines.append(f"⚠ PID artifact validation: {pid_errors[0]}")
+        evidence = validation.get("evidence", {})
+        if evidence.get("exists"):
+            last_event = evidence.get("last_event") or "unknown"
+            lines.append(
+                f"ℹ Runtime evidence: {int(evidence.get('line_count') or 0)} event(s), last={last_event}"
+            )
+
+    try:
+        rollout = read_rollout_state()
+    except Exception:
+        rollout = None
+    if rollout:
+        current_route = rollout.get("current_route") or {}
+        if current_route.get("provider") and current_route.get("model"):
+            lines.append(
+                f"ℹ Routing rollout: {current_route.get('model')} via {current_route.get('provider')}"
+            )
+        rollback = rollout.get("rollback") or {}
+        if rollback.get("available") and rollback.get("from_route"):
+            from_route = rollback.get("from_route") or {}
+            if from_route.get("model") and from_route.get("provider"):
+                lines.append(
+                    f"ℹ Rollback ready: {from_route.get('model')} via {from_route.get('provider')}"
+                )
 
     return lines
 
