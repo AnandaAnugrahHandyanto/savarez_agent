@@ -51,6 +51,23 @@ def test_list_authenticated_providers_prefers_custom_provider_model_mapping(monk
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: [])
+    monkeypatch.setattr(
+        "hermes_cli.model_switch._load_direct_aliases",
+        lambda: {
+            "my-router-codex": type("Alias", (), {
+                "model": "model-beta",
+                "provider": "custom:my-router",
+                "base_url": "https://router.example.com/v1",
+            })(),
+            "unrelated": type("Alias", (), {
+                "model": "other",
+                "provider": "custom:other-router",
+                "base_url": "https://other.example.com/v1",
+            })(),
+        },
+    )
+    from hermes_cli import model_switch as model_switch_mod
+    model_switch_mod.DIRECT_ALIASES = {}
 
     providers = list_authenticated_providers(
         current_provider="openai-codex",
@@ -70,8 +87,8 @@ def test_list_authenticated_providers_prefers_custom_provider_model_mapping(monk
     )
 
     provider = next(p for p in providers if p["slug"] == "custom:my-router")
-    assert provider["models"] == ["model-alpha", "model-beta"]
-    assert provider["total_models"] == 2
+    assert provider["models"] == ["model-alpha", "model-beta", "my-router-codex"]
+    assert provider["total_models"] == 3
 
 
 def test_list_authenticated_providers_probes_named_custom_provider_and_dedupes(monkeypatch):

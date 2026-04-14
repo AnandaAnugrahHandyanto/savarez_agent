@@ -193,6 +193,26 @@ def _ensure_direct_aliases() -> None:
         DIRECT_ALIASES = _load_direct_aliases()
 
 
+def _provider_alias_names(provider_slug: str) -> list[str]:
+    """Return direct alias names whose provider targets ``provider_slug``.
+
+    This keeps the interactive /model picker aligned with manual alias
+    resolution for named custom providers. We intentionally return alias names
+    (not underlying raw model IDs) because the picker presents user-facing
+    switch targets.
+    """
+    normalized = str(provider_slug or "").strip().lower()
+    if not normalized:
+        return []
+    _ensure_direct_aliases()
+    names: list[str] = []
+    for alias_name, alias in DIRECT_ALIASES.items():
+        target_provider = str(getattr(alias, "provider", "") or "").strip().lower()
+        if target_provider == normalized:
+            names.append(alias_name)
+    return names
+
+
 # ---------------------------------------------------------------------------
 # Result dataclasses
 # ---------------------------------------------------------------------------
@@ -961,14 +981,26 @@ def list_authenticated_providers(
                     slug,
                     custom_providers=custom_providers,
                 )
+            alias_ids = _provider_alias_names(slug)
+            merged_ids: list[str] = []
+            seen_ids: set[str] = set()
+            for candidate in list(model_ids) + list(alias_ids):
+                cid = str(candidate or "").strip()
+                if not cid:
+                    continue
+                key = cid.lower()
+                if key in seen_ids:
+                    continue
+                seen_ids.add(key)
+                merged_ids.append(cid)
 
             results.append({
                 "slug": slug,
                 "name": display_name,
                 "is_current": slug == current_provider,
                 "is_user_defined": True,
-                "models": model_ids[:max_models],
-                "total_models": len(model_ids),
+                "models": merged_ids[:max_models],
+                "total_models": len(merged_ids),
                 "source": "user-config",
                 "api_url": api_url,
             })
