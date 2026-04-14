@@ -430,3 +430,142 @@ class TestAdvisorBetaHeaders:
         assert "fast-mode-2026-02-01" in beta
         assert "advisor-tool-2026-03-01" in beta
         assert kwargs.get("speed") == "fast"
+
+
+# ---------------------------------------------------------------------------
+# Thinking + advisor block ordering
+# ---------------------------------------------------------------------------
+
+class TestThinkingAdvisorOrdering:
+    """Regression tests for HTTP 400 'thinking blocks cannot be modified'.
+
+    When an assistant turn has thinking blocks AND advisor blocks, the Anthropic
+    API requires:
+        thinking → (text) → server_tool_use → advisor_tool_result → tool_use
+
+    A duplicate server_tool_use (from merging a pause_turn partial with the
+    resumed response) shifts block indices and triggers the misleading HTTP 400.
+    """
+
+    def test_thinking_before_advisor_blocks_no_tool_use(self):
+        """thinking must come before server_tool_use in a simple advisor turn."""
+        messages = [
+            {"role": "system", "content": "Test."},
+            {"role": "user", "content": "Plan this."},
+            {
+                "role": "assistant",
+                "content": "Let me consult the advisor.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Deep thought.", "signature": "sig123"},
+                ],
+                "advisor_blocks": [
+                    {"type": "server_tool_use", "id": "srv1", "name": "advisor", "input": {}},
+                    {
+                        "type": "advisor_tool_result",
+                        "tool_use_id": "srv1",
+                        "content": {"type": "advisor_result", "text": "Use approach X."},
+                    },
+                ],
+            },
+        ]
+        _, ant_messages = convert_messages_to_anthropic(messages, include_advisor_blocks=True)
+        assistant_content = ant_messages[1]["content"]
+        types = [b["type"] for b in assistant_content if isinstance(b, dict)]
+        assert "thinking" in types
+        thinking_idx = types.index("thinking")
+        srv_idx = types.index("server_tool_use")
+        assert thinking_idx < srv_idx, "thinking must come before server_tool_use"
+
+    def test_thinking_before_advisor_blocks_with_tool_use(self):
+        """thinking → server_tool_use → advisor_tool_result → tool_use (client)."""
+        messages = [
+            {"role": "system", "content": "Test."},
+            {"role": "user", "content": "Build it."},
+            {
+                "role": "assistant",
+                "content": "Consulting advisor then running terminal.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Complex reasoning.", "signature": "sigabc"},
+                ],
+                "advisor_blocks": [
+                    {"type": "server_tool_use", "id": "srvX", "name": "advisor", "input": {}},
+                    {
+                        "type": "advisor_tool_result",
+                        "tool_use_id": "srvX",
+                        "content": {"type": "advisor_result", "text": "Use approach A."},
+                    },
+                ],
+                "tool_calls": [
+                    {
+                        "id": "toolu_1",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": '{"command": "ls"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "toolu_1", "content": "file1.py"},
+        ]
+        _, ant_messages = convert_messages_to_anthropic(messages, include_advisor_blocks=True)
+        assistant_content = ant_messages[1]["content"]
+        types = [b["type"] for b in assistant_content if isinstance(b, dict)]
+        assert "thinking" in types
+        assert "server_tool_use" in types
+        assert "advisor_tool_result" in types
+        assert "tool_use" in types
+        thinking_idx = types.index("thinking")
+        srv_idx = types.index("server_tool_use")
+        adv_idx = types.index("advisor_tool_result")
+        use_idx = types.index("tool_use")
+        assert thinking_idx < srv_idx, "thinking must precede server_tool_use"
+        assert srv_idx < adv_idx, "server_tool_use must precede advisor_tool_result"
+        assert adv_idx < use_idx, "advisor_tool_result must precede client tool_use"
+
+    def test_no_duplicate_server_tool_use_after_pause_turn_merge(self):
+        """Merging pause_turn partial + resumed response must NOT duplicate server_tool_use.
+
+        This is the regression for HTTP 400 'thinking blocks cannot be modified'.
+        The pause_turn partial has [thinking, server_tool_use].
+        The resumed response has [server_tool_use, advisor_tool_result, tool_use].
+        If both are stored as consecutive assistant messages and merged, the result
+        would be [thinking, server_tool_use, server_tool_use, ...] — two server_tool_use
+        blocks confuse the API.  The fix: mark pause_turn partials and pop them when
+        the full resumed response arrives, so only ONE assistant message is stored.
+        This test verifies the correct single-message case after that fix.
+        """
+        # This simulates what the messages array looks like AFTER the fix:
+        # only one assistant message with the full advisor pair + thinking.
+        messages = [
+            {"role": "system", "content": "Test."},
+            {"role": "user", "content": "Use advisor then terminal."},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Thinking.", "signature": "sig999"},
+                ],
+                "advisor_blocks": [
+                    {"type": "server_tool_use", "id": "srvY", "name": "advisor", "input": {}},
+                    {
+                        "type": "advisor_tool_result",
+                        "tool_use_id": "srvY",
+                        "content": {"type": "advisor_result", "text": "Do this."},
+                    },
+                ],
+                "tool_calls": [
+                    {
+                        "id": "toolu_2",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": '{"command": "echo hi"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "toolu_2", "content": "hi"},
+        ]
+        _, ant_messages = convert_messages_to_anthropic(messages, include_advisor_blocks=True)
+        assistant_content = ant_messages[1]["content"]
+        types = [b["type"] for b in assistant_content if isinstance(b, dict)]
+        # Must have exactly one server_tool_use — no duplicates
+        assert types.count("server_tool_use") == 1, (
+            f"Expected exactly 1 server_tool_use, got {types.count('server_tool_use')}. "
+            f"Full types: {types}"
+        )

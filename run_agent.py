@@ -9987,6 +9987,13 @@ class AIAgent:
                 # it left off and runs the advisor sub-inference.
                 if finish_reason == "pause_turn":
                     assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
+                    # Mark as a pause_turn partial so the resumed response can pop
+                    # and replace it instead of appending a second consecutive assistant
+                    # message.  The merge in convert_messages_to_anthropic would
+                    # otherwise produce duplicate server_tool_use blocks (one from the
+                    # partial, one from the full resumed response), which causes HTTP 400
+                    # "thinking blocks cannot be modified" on the *next* API call.
+                    assistant_msg["_pause_turn_partial"] = True
                     messages.append(assistant_msg)
                     self._vprint(f"{self.log_prefix}⏳ Advisor sub-inference pending, resuming...")
                     continue
@@ -10189,6 +10196,20 @@ class AIAgent:
                     ):
                         messages.pop()
                         _had_prefill = True
+
+                    # Pop pause_turn partial (advisor resume) — the full resumed
+                    # response replaces the partial to avoid a duplicate server_tool_use
+                    # in the merged assistant content block.  Carry over reasoning_details
+                    # from the partial if the resumed response omits them (Anthropic does
+                    # not repeat thinking blocks in the resumed response).
+                    if (
+                        messages
+                        and isinstance(messages[-1], dict)
+                        and messages[-1].get("_pause_turn_partial")
+                    ):
+                        _pause_partial = messages.pop()
+                        if not assistant_msg.get("reasoning_details") and _pause_partial.get("reasoning_details"):
+                            assistant_msg["reasoning_details"] = _pause_partial["reasoning_details"]
 
                     # Reset prefill counter when tool calls follow a prefill
                     # recovery.  Without this, the counter accumulates across
@@ -10595,6 +10616,17 @@ class AIAgent:
                         and messages[-1].get("_thinking_prefill")
                     ):
                         messages.pop()
+
+                    # Pop pause_turn partial (advisor resume) — the full resumed
+                    # response (text only, no tool calls) replaces the partial.
+                    if (
+                        messages
+                        and isinstance(messages[-1], dict)
+                        and messages[-1].get("_pause_turn_partial")
+                    ):
+                        _pause_partial = messages.pop()
+                        if not final_msg.get("reasoning_details") and _pause_partial.get("reasoning_details"):
+                            final_msg["reasoning_details"] = _pause_partial["reasoning_details"]
 
                     messages.append(final_msg)
                     
