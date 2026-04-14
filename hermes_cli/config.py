@@ -512,7 +512,19 @@ DEFAULT_CONFIG = {
         "min_ms": 800,
         "max_ms": 2500,
     },
-    
+
+    # Telegram messaging platform settings
+    "telegram": {
+        "require_mention": False,   # If True, only respond to @mentions in groups
+        "reactions": True,          # If True, add emoji reactions to messages during processing
+        # mention_patterns: optional list of custom text patterns that trigger a response
+        # (e.g., ["hermes", "bot"]). Defaults to the bot username if not set.
+        "mention_patterns": [],
+        # free_response_chats: list of chat IDs where the bot responds to all messages
+        # (ignoring require_mention). Useful for DMs or dedicated AI channels.
+        "free_response_chats": [],
+    },
+
     # Context engine -- controls how the context window is managed when
     # approaching the model's token limit.
     # "compressor" = built-in lossy summarization (default).
@@ -596,6 +608,9 @@ DEFAULT_CONFIG = {
     "approvals": {
         "mode": "manual",
         "timeout": 60,
+        # List of user IDs who can approve denied commands. If empty, any allowed user can approve.
+        # Format: ["5137755622", "123456789"]
+        "approvers": [],
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
@@ -636,7 +651,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 14,
+    "_config_version": 15,
 }
 
 # =============================================================================
