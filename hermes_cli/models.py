@@ -1033,50 +1033,6 @@ _KNOWN_PROVIDER_NAMES: set[str] = (
 )
 
 
-def list_available_providers() -> list[dict[str, str]]:
-    """Return info about all providers the user could use with ``provider:model``.
-
-    Each dict has ``id``, ``label``, and ``aliases``.
-    Checks which providers have valid credentials configured.
-
-    Derives the provider list from :data:`CANONICAL_PROVIDERS` (single
-    source of truth shared with ``hermes model``, ``/model``, etc.).
-    """
-    # Derive display order from canonical list + custom
-    provider_order = [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]
-
-    # Build reverse alias map
-    aliases_for: dict[str, list[str]] = {}
-    for alias, canonical in _PROVIDER_ALIASES.items():
-        aliases_for.setdefault(canonical, []).append(alias)
-
-    result = []
-    for pid in provider_order:
-        label = _PROVIDER_LABELS.get(pid, pid)
-        alias_list = aliases_for.get(pid, [])
-        # Check if this provider has credentials available
-        has_creds = False
-        try:
-            from hermes_cli.auth import get_auth_status, has_usable_secret
-            if pid == "custom":
-                custom_base_url = _get_custom_base_url() or ""
-                has_creds = bool(custom_base_url.strip())
-            elif pid == "openrouter":
-                has_creds = has_usable_secret(os.getenv("OPENROUTER_API_KEY", ""))
-            else:
-                status = get_auth_status(pid)
-                has_creds = bool(status.get("logged_in") or status.get("configured"))
-        except Exception:
-            pass
-        result.append({
-            "id": pid,
-            "label": label,
-            "aliases": alias_list,
-            "authenticated": has_creds,
-        })
-    return result
-
-
 def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
     """Parse ``/model`` input into ``(provider, model)``.
 
@@ -1124,31 +1080,6 @@ def _get_custom_base_url() -> str:
     except Exception:
         pass
     return ""
-
-
-def curated_models_for_provider(
-    provider: Optional[str],
-    *,
-    force_refresh: bool = False,
-) -> list[tuple[str, str]]:
-    """Return ``(model_id, description)`` tuples for a provider's model list.
-
-    Tries to fetch the live model list from the provider's API first,
-    falling back to the static ``_PROVIDER_MODELS`` catalog if the API
-    is unreachable.
-    """
-    normalized = normalize_provider(provider)
-    if normalized == "openrouter":
-        return fetch_openrouter_models(force_refresh=force_refresh)
-
-    # Try live API first (Codex, Nous, etc. all support /models)
-    live = provider_model_ids(normalized)
-    if live:
-        return [(m, "") for m in live]
-
-    # Fallback to static catalog
-    models = _PROVIDER_MODELS.get(normalized, [])
-    return [(m, "") for m in models]
 
 
 def detect_provider_for_model(
