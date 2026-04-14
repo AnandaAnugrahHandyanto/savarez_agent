@@ -2,7 +2,12 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from hermes_cli.ops_dashboard import list_run_records, normalize_session_file
+from hermes_cli.ops_dashboard import (
+    list_project_records,
+    list_run_records,
+    normalize_linear_project,
+    normalize_session_file,
+)
 
 
 NOW = datetime(2026, 4, 14, 10, 0, tzinfo=timezone.utc)
@@ -196,3 +201,136 @@ def test_list_run_records_orders_newest_first_and_skips_bad_json(tmp_path):
         "20260414_094500_newer",
         "20260414_083000_older",
     ]
+
+
+def test_normalize_linear_project_parses_full_description_and_links_context():
+    project = {
+        "id": "proj-123",
+        "name": "Open Source Lab",
+        "description": """## Context
+- **Obsidian:** /lab/obsidian_vault/Projects/Open_Source_Lab/
+- **Repo:** https://github.com/pablots99/hermes-agent
+- **Discord:** #open-source-lab (ID: 1493001000000000000)
+- **Overview:** 01_Overview/README.md
+- **Current state:** docs/current-state.md
+- **Stack:** 03_Architecture/Stack.md
+
+## Goal
+Ship a live read-only dashboard for Jax ops visibility.
+""",
+        "updatedAt": "2026-04-14T09:58:00+00:00",
+        "url": "https://linear.app/pablot/project/open-source-lab",
+    }
+    linked_issues = [
+        {
+            "identifier": "PAB-125",
+            "project": {"id": "proj-123", "name": "Open Source Lab"},
+            "state": {"type": "started"},
+            "updatedAt": "2026-04-14T09:57:00+00:00",
+        }
+    ]
+    observed_runs = [
+        {
+            "run_id": "run-1",
+            "status": "running",
+            "updated_at": "2026-04-14T09:59:00+00:00",
+            "project_hints": ["Open_Source_Lab"],
+            "issue_identifiers": ["PAB-125"],
+        }
+    ]
+
+    record = normalize_linear_project(project, linked_issues=linked_issues, observed_runs=observed_runs)
+
+    assert record.project_key == "Open_Source_Lab"
+    assert record.obsidian_path == "/lab/obsidian_vault/Projects/Open_Source_Lab/"
+    assert record.repo_url == "https://github.com/pablots99/hermes-agent"
+    assert record.discord_channel_name == "open-source-lab"
+    assert record.discord_channel_id == "1493001000000000000"
+    assert record.overview_path == "01_Overview/README.md"
+    assert record.current_state_path == "docs/current-state.md"
+    assert record.stack_path == "03_Architecture/Stack.md"
+    assert record.goal == "Ship a live read-only dashboard for Jax ops visibility."
+    assert record.status == "active"
+    assert record.metadata_status == "complete"
+    assert record.issue_identifiers == ["PAB-125"]
+    assert record.last_activity_at == "2026-04-14T09:59:00+00:00"
+
+
+def test_normalize_linear_project_handles_partial_metadata_and_local_repo_path():
+    project = {
+        "id": "proj-456",
+        "name": "Private Inference",
+        "description": """## Context
+- **Repo:** /srv/projects/private-inference
+- **Discord:** #private-inference
+
+## Goal
+Replace hosted inference with a self-managed stack.
+""",
+    }
+
+    record = normalize_linear_project(project)
+
+    assert record.project_key == "Private_Inference"
+    assert record.obsidian_path == "/lab/obsidian_vault/Projects/Private_Inference/"
+    assert record.repo_url is None
+    assert record.repo_path == "/srv/projects/private-inference"
+    assert record.discord_channel_name == "private-inference"
+    assert record.discord_channel_id is None
+    assert record.metadata_status == "complete"
+    assert record.status == "unknown"
+
+
+def test_normalize_linear_project_falls_back_to_issue_and_run_hints_when_description_is_sparse():
+    project = {
+        "id": "proj-789",
+        "name": "Open Source Lab",
+        "description": "## Context\n- **Repo:** https://github.com/pablots99/hermes-agent\n",
+    }
+    linked_issues = [
+        {
+            "identifier": "PAB-127",
+            "project": {"name": "Open Source Lab"},
+            "project_hints": ["Open_Source_Lab"],
+            "state": {"type": "unstarted"},
+        }
+    ]
+    observed_runs = [
+        {
+            "run_id": "run-2",
+            "status": "completed",
+            "project_hints": ["Open_Source_Lab"],
+            "issue_identifiers": ["PAB-126"],
+            "updated_at": "2026-04-14T09:40:00+00:00",
+        }
+    ]
+
+    record = normalize_linear_project(project, linked_issues=linked_issues, observed_runs=observed_runs)
+
+    assert record.project_key == "Open_Source_Lab"
+    assert record.obsidian_path == "/lab/obsidian_vault/Projects/Open_Source_Lab/"
+    assert record.issue_identifiers == ["PAB-127", "PAB-126"]
+    assert record.project_hints == ["Open_Source_Lab"]
+    assert record.status == "planned"
+    assert record.metadata_status == "partial"
+
+
+def test_list_project_records_orders_latest_activity_first():
+    projects = [
+        {
+            "id": "proj-old",
+            "name": "Older Project",
+            "description": "- **Obsidian:** /lab/obsidian_vault/Projects/Older_Project/",
+            "updatedAt": "2026-04-14T08:00:00+00:00",
+        },
+        {
+            "id": "proj-new",
+            "name": "Newer Project",
+            "description": "- **Obsidian:** /lab/obsidian_vault/Projects/Newer_Project/",
+            "updatedAt": "2026-04-14T09:00:00+00:00",
+        },
+    ]
+
+    records = list_project_records(projects)
+
+    assert [record["project_key"] for record in records] == ["Newer_Project", "Older_Project"]

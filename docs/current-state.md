@@ -9,10 +9,13 @@ _Last updated: 2026-04-14_
 - The module normalizes each session into:
   - a lightweight `SessionRecord`
   - a lightweight `RunRecord`
+  - a lightweight `ProjectRecord` synthesized from Linear project descriptions plus linked issue/run hints
 - Supported inputs currently include:
   - regular `session_*.json` files
   - cron-style `session_cron_<jobid>_*.json` files
+  - Linear project descriptions that carry Obsidian / repo / Discord pointers
 - Best-effort run status heuristics are implemented for `running`, `completed`, and `failed`.
+- Project matching rules now prefer explicit Linear project IDs, then project-name normalization, then run/issue-derived project hints to tolerate partial metadata.
 
 ## Validation
 
@@ -21,6 +24,6 @@ _Last updated: 2026-04-14_
 
 ## Next logical steps
 
-- PAB-127: expose the normalized run/session read model through dedicated read-only ops endpoints.
+- PAB-127: expose the normalized run/session/project read model through dedicated read-only ops endpoints.
 - PAB-128: build overview + active-work UI surfaces on top of the read model.
 - PAB-129/PAB-130: extend the same read model with process/alert ingestion and drilldown views.
