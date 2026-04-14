@@ -42,3 +42,41 @@ def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys,
     assert "Manager:      Termux / manual process" in output
     assert "Start with:   hermes gateway" in output
     assert "systemd (user)" not in output
+
+
+def test_show_status_uses_launchctl_print_on_macos(monkeypatch, capsys, tmp_path):
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.gateway as gateway_mod
+    from hermes_cli import status as status_mod
+
+    expected_cmd = [
+        "launchctl",
+        "print",
+        f"{gateway_mod._launchd_domain()}/{gateway_mod.get_launchd_label()}",
+    ]
+    calls = []
+
+    monkeypatch.setattr(status_mod.sys, "platform", "darwin", raising=False)
+    monkeypatch.setattr(status_mod, "get_env_path", lambda: tmp_path / ".env", raising=False)
+    monkeypatch.setattr(status_mod, "get_hermes_home", lambda: tmp_path, raising=False)
+    monkeypatch.setattr(status_mod, "load_config", lambda: {"model": "gpt-5.4"}, raising=False)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "OpenAI Codex", raising=False)
+    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append(cmd)
+        if cmd == expected_cmd:
+            return SimpleNamespace(returncode=0, stdout="state = running\npid = 123\n", stderr="")
+        return SimpleNamespace(returncode=3, stdout="", stderr="")
+
+    monkeypatch.setattr(status_mod.subprocess, "run", fake_run)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Status:       " in output
+    assert "loaded" in output
+    assert expected_cmd in calls
