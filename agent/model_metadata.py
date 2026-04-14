@@ -472,6 +472,87 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
         return _model_metadata_cache or {}
 
 
+def _backfill_from_litellm_model_info(
+    candidate_url: str,
+    headers: Dict[str, str],
+    cache: Dict[str, Dict[str, Any]],
+) -> None:
+    """Backfill context_length and max_completion_tokens from LiteLLM's /model/info.
+
+    LiteLLM proxy's standard /v1/models returns only {id, object, created, owned_by}
+    without token limits.  The /v1/model/info (or /model/info) endpoint returns richer
+    metadata including max_tokens, max_input_tokens, max_output_tokens in model_info.
+
+    This function queries that endpoint and merges token limit data into *cache*
+    entries that are still missing context_length.
+    """
+    base = candidate_url.rstrip("/")
+    # Try both /v1/model/info and /model/info (LiteLLM accepts both)
+    urls_to_try = []
+    if base.endswith("/v1"):
+        urls_to_try.append(base + "/model/info")
+        urls_to_try.append(base[:-3].rstrip("/") + "/model/info")
+    else:
+        urls_to_try.append(base + "/v1/model/info")
+        urls_to_try.append(base + "/model/info")
+
+    for info_url in urls_to_try:
+        try:
+            resp = requests.get(info_url, headers=headers, timeout=10)
+            if not resp.ok:
+                continue
+            payload = resp.json()
+            info_models = payload.get("data", [])
+            if not isinstance(info_models, list):
+                continue
+
+            # Build a lookup: model_name -> model_info dict
+            info_lookup: Dict[str, Dict[str, Any]] = {}
+            for item in info_models:
+                if not isinstance(item, dict):
+                    continue
+                model_name = item.get("model_name", "")
+                model_info = item.get("model_info", {})
+                if model_name and isinstance(model_info, dict):
+                    info_lookup[model_name] = model_info
+
+            if not info_lookup:
+                continue
+
+            # Merge into cache entries that lack context_length
+            for model_id, entry in cache.items():
+                if "context_length" in entry:
+                    continue  # already resolved
+                # Try exact match, then substring match in both directions
+                mi = info_lookup.get(model_id)
+                if not mi:
+                    for info_name, info_data in info_lookup.items():
+                        if model_id in info_name or info_name in model_id:
+                            mi = info_data
+                            break
+                if not mi:
+                    continue
+
+                # Prefer max_input_tokens (total context window),
+                # fall back to max_tokens
+                ctx = mi.get("max_input_tokens") or mi.get("max_tokens")
+                if isinstance(ctx, int) and ctx > 0:
+                    entry["context_length"] = ctx
+
+                max_out = mi.get("max_output_tokens") or mi.get("max_tokens")
+                if isinstance(max_out, int) and max_out > 0 and "max_completion_tokens" not in entry:
+                    entry["max_completion_tokens"] = max_out
+
+            logger.debug(
+                "Backfilled model metadata from LiteLLM /model/info at %s (%d models)",
+                info_url, len(info_lookup),
+            )
+            return  # success — no need to try the other URL
+
+        except Exception as exc:
+            logger.debug("LiteLLM /model/info query failed at %s: %s", info_url, exc)
+
+
 def fetch_endpoint_model_metadata(
     base_url: str,
     api_key: str = "",
@@ -549,6 +630,17 @@ def fetch_endpoint_model_metadata(
                             cache[model_alias]["context_length"] = n_ctx
                 except Exception:
                     pass
+
+            # LiteLLM proxy: /v1/models returns only {id, object, created, owned_by}
+            # without token limits.  The /v1/model/info (or /model/info) endpoint
+            # exposes max_tokens, max_input_tokens, max_output_tokens via model_info.
+            # Backfill any models in cache that are still missing context_length.
+            models_missing_ctx = [
+                mid for mid, entry in cache.items()
+                if "context_length" not in entry
+            ]
+            if models_missing_ctx:
+                _backfill_from_litellm_model_info(candidate, headers, cache)
 
             _endpoint_model_metadata_cache[normalized] = cache
             _endpoint_model_metadata_cache_time[normalized] = time.time()

@@ -709,3 +709,172 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+
+# =========================================================================
+# LiteLLM /model/info backfill
+# =========================================================================
+
+class TestLiteLLMModelInfoBackfill:
+    """Tests for _backfill_from_litellm_model_info — enriches endpoint metadata
+    cache with token limits from LiteLLM proxy's /v1/model/info endpoint."""
+
+    def _make_litellm_response(self, models):
+        """Build a mock LiteLLM /model/info JSON payload."""
+        return {"data": models}
+
+    def _mock_ok_response(self, payload):
+        resp = MagicMock()
+        resp.ok = True
+        resp.json.return_value = payload
+        return resp
+
+    def _mock_404(self):
+        resp = MagicMock()
+        resp.ok = False
+        resp.status_code = 404
+        return resp
+
+    def test_backfills_missing_context_length(self):
+        from agent.model_metadata import _backfill_from_litellm_model_info
+
+        cache = {
+            "my-model": {"name": "my-model"},
+        }
+        payload = self._make_litellm_response([{
+            "model_name": "my-model",
+            "model_info": {
+                "max_input_tokens": 200000,
+                "max_output_tokens": 8192,
+                "max_tokens": 8192,
+            },
+        }])
+
+        with patch("agent.model_metadata.requests.get", return_value=self._mock_ok_response(payload)):
+            _backfill_from_litellm_model_info("https://example.com/v1", {}, cache)
+
+        assert cache["my-model"]["context_length"] == 200000
+        assert cache["my-model"]["max_completion_tokens"] == 8192
+
+    def test_prefers_max_input_tokens_over_max_tokens(self):
+        from agent.model_metadata import _backfill_from_litellm_model_info
+
+        cache = {"m": {"name": "m"}}
+        payload = self._make_litellm_response([{
+            "model_name": "m",
+            "model_info": {
+                "max_input_tokens": 1000000,
+                "max_tokens": 128000,
+                "max_output_tokens": 128000,
+            },
+        }])
+
+        with patch("agent.model_metadata.requests.get", return_value=self._mock_ok_response(payload)):
+            _backfill_from_litellm_model_info("https://example.com/v1", {}, cache)
+
+        assert cache["m"]["context_length"] == 1000000
+
+    def test_does_not_overwrite_existing_context_length(self):
+        from agent.model_metadata import _backfill_from_litellm_model_info
+
+        cache = {"m": {"name": "m", "context_length": 8192}}
+        payload = self._make_litellm_response([{
+            "model_name": "m",
+            "model_info": {"max_input_tokens": 1000000},
+        }])
+
+        with patch("agent.model_metadata.requests.get", return_value=self._mock_ok_response(payload)):
+            _backfill_from_litellm_model_info("https://example.com/v1", {}, cache)
+
+        assert cache["m"]["context_length"] == 8192  # unchanged
+
+    def test_substring_matching(self):
+        """LiteLLM model_name may differ from /v1/models id — substring match."""
+        from agent.model_metadata import _backfill_from_litellm_model_info
+
+        cache = {
+            "provider/vendor/my-large-model-v2": {"name": "my-model"},
+        }
+        payload = self._make_litellm_response([{
+            "model_name": "provider/vendor/my-large-model-v2",
+            "model_info": {"max_input_tokens": 1000000, "max_output_tokens": 128000},
+        }])
+
+        with patch("agent.model_metadata.requests.get", return_value=self._mock_ok_response(payload)):
+            _backfill_from_litellm_model_info("https://example.com/v1", {}, cache)
+
+        assert cache["provider/vendor/my-large-model-v2"]["context_length"] == 1000000
+
+    def test_handles_404_gracefully(self):
+        """Non-LiteLLM endpoints return 404 — should not crash."""
+        from agent.model_metadata import _backfill_from_litellm_model_info
+
+        cache = {"m": {"name": "m"}}
+
+        with patch("agent.model_metadata.requests.get", return_value=self._mock_404()):
+            _backfill_from_litellm_model_info("https://example.com/v1", {}, cache)
+
+        assert "context_length" not in cache["m"]
+
+    def test_handles_network_error_gracefully(self):
+        from agent.model_metadata import _backfill_from_litellm_model_info
+
+        cache = {"m": {"name": "m"}}
+
+        with patch("agent.model_metadata.requests.get", side_effect=Exception("timeout")):
+            _backfill_from_litellm_model_info("https://example.com/v1", {}, cache)
+
+        assert "context_length" not in cache["m"]
+
+    def test_null_values_ignored(self):
+        """Models with null max_input_tokens should not get a context_length."""
+        from agent.model_metadata import _backfill_from_litellm_model_info
+
+        cache = {"m": {"name": "m"}}
+        payload = self._make_litellm_response([{
+            "model_name": "m",
+            "model_info": {
+                "max_input_tokens": None,
+                "max_output_tokens": None,
+                "max_tokens": None,
+            },
+        }])
+
+        with patch("agent.model_metadata.requests.get", return_value=self._mock_ok_response(payload)):
+            _backfill_from_litellm_model_info("https://example.com/v1", {}, cache)
+
+        assert "context_length" not in cache["m"]
+
+    def test_url_construction_with_v1_suffix(self):
+        """When candidate URL ends with /v1, tries /v1/model/info first."""
+        from agent.model_metadata import _backfill_from_litellm_model_info
+
+        cache = {"m": {"name": "m"}}
+        call_urls = []
+
+        def track_calls(url, **kwargs):
+            call_urls.append(url)
+            return self._mock_404()
+
+        with patch("agent.model_metadata.requests.get", side_effect=track_calls):
+            _backfill_from_litellm_model_info("https://example.com/v1", {}, cache)
+
+        assert "https://example.com/v1/model/info" in call_urls
+        assert "https://example.com/model/info" in call_urls
+
+    def test_url_construction_without_v1_suffix(self):
+        """When candidate URL has no /v1, tries /v1/model/info first."""
+        from agent.model_metadata import _backfill_from_litellm_model_info
+
+        cache = {"m": {"name": "m"}}
+        call_urls = []
+
+        def track_calls(url, **kwargs):
+            call_urls.append(url)
+            return self._mock_404()
+
+        with patch("agent.model_metadata.requests.get", side_effect=track_calls):
+            _backfill_from_litellm_model_info("https://example.com", {}, cache)
+
+        assert "https://example.com/v1/model/info" in call_urls
+        assert "https://example.com/model/info" in call_urls
