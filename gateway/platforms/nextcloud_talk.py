@@ -1,19 +1,39 @@
-"""Nextcloud Talk bot adapter.
+"""Nextcloud Talk gateway adapter.
 
-Implements Hermes as a webhook-based Nextcloud Talk bot using the official
-Talk bot API:
+Connects Hermes to a self-hosted Nextcloud Talk server as a webhook-based
+bot using the official Talk Bot API.  The bot is registered on the
+Nextcloud side with ``occ talk:bot:install`` and receives HMAC-signed
+webhook callbacks for new chat messages; Hermes replies through the Talk
+Bot message endpoint with the same signing scheme.
 
-- Receives signed webhook callbacks for inbound chat messages
-- Sends signed replies back to the originating conversation
-- Preserves reply context when Talk includes ``object.inReplyTo``
+Because Talk conversation tokens identify rooms across every Nextcloud
+instance that installs the bot, the adapter also caches the originating
+backend URL per conversation so a single Hermes instance can serve Talk
+rooms on multiple Nextcloud servers without per-server configuration.
+
+Environment variables:
+    NEXTCLOUD_TALK_SECRET          Bot shared secret (required)
+    NEXTCLOUD_TALK_BASE_URL        Fallback Nextcloud base URL for
+                                   outbound sends when no inbound webhook
+                                   has established one yet
+    NEXTCLOUD_TALK_WEBHOOK_HOST    Bind host for the webhook listener
+                                   (default: 0.0.0.0)
+    NEXTCLOUD_TALK_WEBHOOK_PORT    Bind port (default: 8645)
+    NEXTCLOUD_TALK_WEBHOOK_PATH    Webhook path (default: /nextcloud-talk)
+    NEXTCLOUD_TALK_CHAT_TYPE       Default chat type ("group" or "dm",
+                                   default: group)
+    NEXTCLOUD_TALK_HOME_CHANNEL    Talk conversation token for scheduled
+                                   cron deliveries
+    NEXTCLOUD_TALK_ALLOWED_USERS   Comma-separated Talk actor IDs allowed
+                                   to interact (e.g. "users/alice")
 """
 
 from __future__ import annotations
 
 import asyncio
 import collections
-import hmac
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -170,7 +190,7 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
     async def connect(self) -> bool:
         """Start the webhook HTTP server for Nextcloud Talk callbacks."""
         if not self._secret:
-            logger.error("Nextcloud Talk: NEXTCLOUD_TALK_SECRET is required")
+            logger.error("[nextcloud_talk] NEXTCLOUD_TALK_SECRET is required")
             return False
 
         app = web.Application()
@@ -184,7 +204,7 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
                 sock.settimeout(1)
                 sock.connect(("127.0.0.1", self._port))
             logger.error(
-                "Nextcloud Talk: port %d already in use. Set NEXTCLOUD_TALK_WEBHOOK_PORT or platforms.nextcloud_talk.extra.port",
+                "[nextcloud_talk] port %d already in use. Set NEXTCLOUD_TALK_WEBHOOK_PORT or platforms.nextcloud_talk.extra.port",
                 self._port,
             )
             return False
@@ -199,7 +219,7 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
         await site.start()
         self._mark_connected()
         logger.info(
-            "Nextcloud Talk: listening on %s:%d%s",
+            "[nextcloud_talk] listening on %s:%d%s",
             self._host,
             self._port,
             self._path,
@@ -214,7 +234,7 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._mark_disconnected()
-        logger.info("Nextcloud Talk: disconnected")
+        logger.info("[nextcloud_talk] disconnected")
 
     # ------------------------------------------------------------------
     # Cache helpers
@@ -284,7 +304,7 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
                     try:
                         payload["replyTo"] = int(reply_to)
                     except (TypeError, ValueError):
-                        logger.debug("Nextcloud Talk: ignoring non-numeric reply_to=%r", reply_to)
+                        logger.debug("[nextcloud_talk] ignoring non-numeric reply_to=%r", reply_to)
 
                 body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
                 random_header = secrets.token_hex(32)
@@ -348,32 +368,33 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
 
         # Rate limiting
         if not self._rate_limiter.allow(remote_ip):
-            logger.warning("Nextcloud Talk: rate limit exceeded for %s", remote_ip)
+            logger.warning("[nextcloud_talk] rate limit exceeded for %s", remote_ip)
             return web.Response(status=429, text="Too Many Requests")
 
         # Content-Type guard — Talk always sends application/json
         content_type = (request.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if content_type and content_type != "application/json":
-            logger.warning("Nextcloud Talk: rejected Content-Type %r from %s", content_type, remote_ip)
+            logger.warning("[nextcloud_talk] rejected Content-Type %r from %s", content_type, remote_ip)
             return web.Response(status=415, text="Unsupported Media Type")
 
         # Body size guard — reject early via Content-Length when available
         content_length = request.content_length
         if content_length is not None and content_length > _MAX_WEBHOOK_BODY_BYTES:
-            logger.warning("Nextcloud Talk: body too large (%d bytes) from %s", content_length, remote_ip)
+            logger.warning("[nextcloud_talk] body too large (%d bytes) from %s", content_length, remote_ip)
             return web.Response(status=413, text="Request body too large")
 
         # Read body with timeout to prevent slow-loris
         try:
             body = await asyncio.wait_for(request.read(), timeout=_WEBHOOK_BODY_READ_TIMEOUT)
         except asyncio.TimeoutError:
-            logger.warning("Nextcloud Talk: body read timed out from %s", remote_ip)
+            logger.warning("[nextcloud_talk] body read timed out from %s", remote_ip)
             return web.Response(status=408, text="Request Timeout")
-        except Exception:
+        except Exception as exc:
+            logger.warning("[nextcloud_talk] body read failed from %s: %s", remote_ip, exc)
             return web.json_response({"error": "failed to read body"}, status=400)
 
         if len(body) > _MAX_WEBHOOK_BODY_BYTES:
-            logger.warning("Nextcloud Talk: body exceeds limit (%d bytes) from %s", len(body), remote_ip)
+            logger.warning("[nextcloud_talk] body exceeds limit (%d bytes) from %s", len(body), remote_ip)
             return web.Response(status=413, text="Request body too large")
 
         # Signature verification (timing-safe)
@@ -386,7 +407,7 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
 
         expected = _sign_payload(self._secret, random_header, body)
         if not hmac.compare_digest(expected, signature):
-            logger.warning("Nextcloud Talk: invalid signature from %s", remote_ip)
+            logger.warning("[nextcloud_talk] invalid signature from %s", remote_ip)
             return web.json_response({"error": "invalid signature"}, status=401)
 
         try:
@@ -396,7 +417,7 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
 
         hook_type = str(payload.get("type") or "")
         if hook_type != "Create":
-            logger.debug("Nextcloud Talk: ignoring unsupported hook type %s", hook_type)
+            logger.debug("[nextcloud_talk] ignoring unsupported hook type %s", hook_type)
             return web.json_response({"status": "ignored", "type": hook_type}, status=202)
 
         actor = payload.get("actor") or {}
@@ -410,7 +431,7 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
         raw_chat_id = str(target.get("id") or "")
         chat_id = _sanitize_chat_id(raw_chat_id)
         if not chat_id:
-            logger.warning("Nextcloud Talk: invalid conversation token %r from %s", raw_chat_id, remote_ip)
+            logger.warning("[nextcloud_talk] invalid conversation token %r from %s", raw_chat_id, remote_ip)
             return web.json_response({"error": "invalid target.id"}, status=400)
 
         text = _decode_talk_message(obj.get("content"))
