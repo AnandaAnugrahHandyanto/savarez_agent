@@ -594,6 +594,49 @@ class TestSendToPlatformChunking:
         assert all(call == [] for call in sent_calls[:-1])
         assert sent_calls[-1] == media
 
+    def test_feishu_media_attaches_to_last_chunk(self):
+        """Feishu: media files are sent only with the last chunk (like Telegram)."""
+        sent_calls = []
+
+        async def fake_send(pconfig, chat_id, message, media_files=None, thread_id=None):
+            sent_calls.append(media_files or [])
+            return {"success": True, "platform": "feishu", "chat_id": chat_id, "message_id": str(len(sent_calls))}
+
+        long_msg = "word " * 2000  # ~10000 chars, will be chunked
+        media = [("/tmp/photo.png", False)]
+        with patch("tools.send_message_tool._send_feishu", fake_send):
+            asyncio.run(
+                _send_to_platform(
+                    Platform.FEISHU,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "oc_xxx", long_msg, media_files=media,
+                )
+            )
+        # Message is chunked, media should only be on last chunk
+        assert len(sent_calls) >= 2
+        assert all(call == [] for call in sent_calls[:-1])
+        assert sent_calls[-1] == media
+
+    def test_feishu_media_only_send(self):
+        """Feishu: sending media-only (no message text) should work."""
+        sent_calls = []
+
+        async def fake_send(pconfig, chat_id, message, media_files=None, thread_id=None):
+            sent_calls.append(media_files or [])
+            return {"success": True, "platform": "feishu", "chat_id": chat_id, "message_id": str(len(sent_calls))}
+
+        media = [("/tmp/photo.png", False)]
+        with patch("tools.send_message_tool._send_feishu", fake_send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.FEISHU,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "oc_xxx", "", media_files=media,
+                )
+            )
+        assert result["success"] is True
+        assert sent_calls[0] == media
+
 
 # ---------------------------------------------------------------------------
 # HTML auto-detection in Telegram send

@@ -103,6 +103,7 @@ def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
+    media_files_from_args = args.get("media_files", [])
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
@@ -175,7 +176,21 @@ def _handle_send(args):
 
     from gateway.platforms.base import BasePlatformAdapter
 
-    media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+    # Extract MEDIA: tags from message AND use media_files from args
+    media_files_from_message, cleaned_message = BasePlatformAdapter.extract_media(message)
+    
+    # Combine media files from both args and message tags
+    # args media_files may be simple strings, convert to (path, is_voice) format
+    args_media_formatted = []
+    for f in media_files_from_args:
+        if isinstance(f, str):
+            args_media_formatted.append((f, False))
+        elif isinstance(f, tuple):
+            args_media_formatted.append(f)
+    
+    all_media_files = args_media_formatted + media_files_from_message
+    media_files = all_media_files
+    
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
@@ -385,22 +400,31 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
 
     # --- Non-Telegram platforms ---
+    # Platforms that support media: Telegram, Feishu
+    _media_supported_platforms = {Platform.TELEGRAM, Platform.FEISHU}
+
+    # Derive supported platform names from the set for dynamic, accurate error messages
+    _supported_platform_names = ", ".join(p.value.capitalize() for p in sorted(_media_supported_platforms, key=lambda p: p.value))
+
     if media_files and not message.strip():
-        return {
-            "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram; "
-                f"target {platform.value} had only media attachments"
-            )
-        }
+        if platform not in _media_supported_platforms:
+            return {
+                "error": (
+                    f"send_message MEDIA delivery is currently only supported for {_supported_platform_names.lower()}; "
+                    f"target {platform.value} had only media attachments"
+                )
+            }
     warning = None
-    if media_files:
+    if media_files and platform not in _media_supported_platforms:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram"
+            f"native send_message media delivery is currently only supported for {_supported_platform_names.lower()}"
         )
 
     last_result = None
-    for chunk in chunks:
+    for i, chunk in enumerate(chunks):
+        is_last_chunk = (i == len(chunks) - 1)
+        
         if platform == Platform.DISCORD:
             result = await _send_discord(pconfig.token, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.SLACK:
@@ -422,7 +446,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.DINGTALK:
             result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
         elif platform == Platform.FEISHU:
-            result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
+            # Only send media with the last chunk (matching Telegram behavior)
+            result = await _send_feishu(pconfig, chat_id, chunk, media_files=media_files if is_last_chunk else [], thread_id=thread_id)
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
