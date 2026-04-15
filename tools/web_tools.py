@@ -46,6 +46,7 @@ import os
 import re
 import asyncio
 from typing import List, Dict, Any, Optional
+from urllib.parse import urlparse
 import httpx
 from firecrawl import Firecrawl
 from agent.auxiliary_client import (
@@ -439,6 +440,45 @@ def _extract_scrape_payload(scrape_result: Any) -> Dict[str, Any]:
         return nested
 
     return result_plain
+
+
+def _is_pdf_like_url(url: str) -> bool:
+    """Return True when the URL path strongly suggests a PDF document."""
+    try:
+        return urlparse(url).path.lower().endswith(".pdf")
+    except Exception:
+        return url.lower().endswith(".pdf")
+
+
+def _build_firecrawl_parsers(
+    url: str,
+    pdf_mode: Optional[str] = None,
+    pdf_max_pages: Optional[int] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Build Firecrawl parser options for document scraping.
+
+    Firecrawl document parsing works automatically for supported document URLs.
+    The only parser options we currently expose are PDF-specific controls from:
+    https://docs.firecrawl.dev/features/document-parsing
+    """
+    if pdf_mode is None and pdf_max_pages is None:
+        return None
+
+    if pdf_mode not in (None, "auto", "fast", "ocr"):
+        raise ValueError("pdf_mode must be one of: auto, fast, ocr")
+
+    if pdf_max_pages is not None and pdf_max_pages <= 0:
+        raise ValueError("pdf_max_pages must be a positive integer")
+
+    if not _is_pdf_like_url(url):
+        return None
+
+    parser: Dict[str, Any] = {"type": "pdf"}
+    if pdf_mode is not None:
+        parser["mode"] = pdf_mode
+    if pdf_max_pages is not None:
+        parser["max_pages"] = pdf_max_pages
+    return [parser]
 
 
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
@@ -1166,7 +1206,9 @@ async def web_extract_tool(
     format: str = None,
     use_llm_processing: bool = True,
     model: Optional[str] = None,
-    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION
+    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION,
+    pdf_mode: Optional[str] = None,
+    pdf_max_pages: Optional[int] = None,
 ) -> str:
     """
     Extract content from specific web pages using available extraction API backend.
@@ -1180,6 +1222,8 @@ async def web_extract_tool(
         use_llm_processing (bool): Whether to process content with LLM for summarization (default: True)
         model (Optional[str]): The model to use for LLM processing (defaults to current auxiliary backend model)
         min_length (int): Minimum content length to trigger LLM processing (default: 5000)
+        pdf_mode (Optional[str]): Firecrawl PDF parser mode for PDF URLs only ("auto", "fast", or "ocr")
+        pdf_max_pages (Optional[int]): Optional page cap for Firecrawl PDF parsing
 
     Security: URLs are checked for embedded secrets before fetching.
     
@@ -1208,7 +1252,9 @@ async def web_extract_tool(
             "format": format,
             "use_llm_processing": use_llm_processing,
             "model": model,
-            "min_length": min_length
+            "min_length": min_length,
+            "pdf_mode": pdf_mode,
+            "pdf_max_pages": pdf_max_pages,
         },
         "error": None,
         "pages_extracted": 0,
@@ -1286,14 +1332,25 @@ async def web_extract_tool(
 
                     try:
                         logger.info("Scraping: %s", url)
+                        parsers = _build_firecrawl_parsers(
+                            url,
+                            pdf_mode=pdf_mode,
+                            pdf_max_pages=pdf_max_pages,
+                        )
+                        scrape_kwargs: Dict[str, Any] = {
+                            "url": url,
+                            "formats": formats,
+                        }
+                        if parsers is not None:
+                            scrape_kwargs["parsers"] = parsers
+
                         # Run synchronous Firecrawl scrape in a thread with a
                         # 60s timeout so a hung fetch doesn't block the session.
                         try:
                             scrape_result = await asyncio.wait_for(
                                 asyncio.to_thread(
                                     _get_firecrawl_client().scrape,
-                                    url=url,
-                                    formats=formats,
+                                    **scrape_kwargs,
                                 ),
                                 timeout=60,
                             )
@@ -2061,7 +2118,7 @@ WEB_SEARCH_SCHEMA = {
 
 WEB_EXTRACT_SCHEMA = {
     "name": "web_extract",
-    "description": "Extract content from web page URLs. Returns page content in markdown format. Also works with PDF URLs (arxiv papers, documents, etc.) — pass the PDF link directly and it converts to markdown text. Pages under 5000 chars return full markdown; larger pages are LLM-summarized and capped at ~5000 chars per page. Pages over 2M chars are refused. If a URL fails or times out, use the browser tool to access it instead.",
+    "description": "Extract content from web page or document URLs. Returns markdown optimized for LLM use. Firecrawl document parsing also works with PDF, DOC/DOCX/ODT/RTF, and XLS/XLSX links — pass the document URL directly and it converts the file to structured markdown text. For PDF URLs, use pdf_mode='fast' for embedded text only, pdf_mode='auto' for text with OCR fallback, or pdf_mode='ocr' to force OCR; pdf_max_pages limits how many PDF pages Firecrawl parses. Pages under 5000 chars return full markdown; larger pages are LLM-summarized and capped at ~5000 chars per page. Pages over 2M chars are refused. If a URL fails or times out, use the browser tool instead.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -2070,6 +2127,16 @@ WEB_EXTRACT_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "List of URLs to extract content from (max 5 URLs per call)",
                 "maxItems": 5
+            },
+            "pdf_mode": {
+                "type": "string",
+                "enum": ["auto", "fast", "ocr"],
+                "description": "Optional Firecrawl PDF parsing mode for PDF URLs only: auto (text with OCR fallback), fast (text-only), or ocr (force OCR on every page)."
+            },
+            "pdf_max_pages": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Optional maximum number of PDF pages to parse when scraping a PDF URL with Firecrawl."
             }
         },
         "required": ["urls"]
@@ -2091,7 +2158,11 @@ registry.register(
     toolset="web",
     schema=WEB_EXTRACT_SCHEMA,
     handler=lambda args, **kw: web_extract_tool(
-        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
+        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [],
+        "markdown",
+        pdf_mode=args.get("pdf_mode"),
+        pdf_max_pages=args.get("pdf_max_pages"),
+    ),
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),
     is_async=True,
