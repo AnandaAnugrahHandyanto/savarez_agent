@@ -1746,82 +1746,105 @@ class DiscordAdapter(BasePlatformAdapter):
         self._register_skill_group(tree)
 
     def _register_skill_group(self, tree) -> None:
-        """Register a ``/skill`` command group with category subcommand groups.
+        """Register a parameterized ``/skill`` command with run/info/search subcommands.
 
-        Skills are organized by their directory category under ``SKILLS_DIR``.
-        Each category becomes a subcommand group; root-level skills become
-        direct subcommands.  Discord supports 25 subcommand groups × 25
-        subcommands each = 625 skills — well beyond the old 100-command cap.
+        Instead of registering each skill as a separate subcommand (which causes
+        the 8000-byte payload limit), skills are stored locally and accessed
+        via ``/skill run <name>``, ``/skill info <name>``, and ``/skill search <query>``.
         """
         try:
-            from hermes_cli.commands import discord_skill_commands_by_category
-
-            existing_names = set()
-            try:
-                existing_names = {cmd.name for cmd in tree.get_commands()}
-            except Exception:
-                pass
-
-            categories, uncategorized, hidden = discord_skill_commands_by_category(
-                reserved_names=existing_names,
-            )
-
-            if not categories and not uncategorized:
-                return
+            from tools.skills_tool import SKILLS_DIR
 
             skill_group = discord.app_commands.Group(
                 name="skill",
-                description="Run a Hermes skill",
+                description="Run or search Hermes skills",
             )
 
-            # ── Helper: build a callback for a skill command key ──
-            def _make_handler(_key: str):
-                @discord.app_commands.describe(args="Optional arguments for the skill")
-                async def _handler(interaction: discord.Interaction, args: str = ""):
-                    await self._run_simple_slash(interaction, f"{_key} {args}".strip())
-                _handler.__name__ = f"skill_{_key.lstrip('/').replace('-', '_')}"
-                return _handler
+            # ── Helper: build skill name list for autocomplete ──
+            def _build_skill_choices() -> list[discord.app_commands.Choice[str]]:
+                from hermes_cli.commands import discord_skill_commands
+                entries = discord_skill_commands(reserved_names=set())
+                choices = []
+                for name, info in sorted(entries.items()):
+                    n = name.lstrip("/")
+                    desc = info.get("description", "")[:60]
+                    choices.append(discord.app_commands.Choice(name=f"{n} — {desc}", value=n))
+                return choices
 
-            # ── Uncategorized (root-level) skills → direct subcommands ──
-            for discord_name, description, cmd_key in uncategorized:
-                cmd = discord.app_commands.Command(
-                    name=discord_name,
-                    description=description or f"Run the {discord_name} skill",
-                    callback=_make_handler(cmd_key),
-                )
-                skill_group.add_command(cmd)
+            # ── Autocomplete callback ──
+            async def _skill_autocomplete(interaction: discord.Interaction, current: str):
+                choices = _build_skill_choices()
+                return [c for c in choices if current.lower() in c.name.lower()][:25]
 
-            # ── Category subcommand groups ──
-            for cat_name in sorted(categories):
-                cat_desc = f"{cat_name.replace('-', ' ').title()} skills"
-                if len(cat_desc) > 100:
-                    cat_desc = cat_desc[:97] + "..."
-                cat_group = discord.app_commands.Group(
-                    name=cat_name,
-                    description=cat_desc,
-                    parent=skill_group,
-                )
-                for discord_name, description, cmd_key in categories[cat_name]:
-                    cmd = discord.app_commands.Command(
-                        name=discord_name,
-                        description=description or f"Run the {discord_name} skill",
-                        callback=_make_handler(cmd_key),
-                    )
-                    cat_group.add_command(cmd)
+            # ── /skill run handler ──
+            @discord.app_commands.describe(skill_name="Skill to run", args="Optional arguments")
+            @discord.app_commands.autocomplete(skill_name=_skill_autocomplete)
+            async def _run_handler(interaction: discord.Interaction, skill_name: str, args: str = ""):
+                cmd_key = f"/{skill_name}"
+                from hermes_cli.commands import discord_skill_commands
+                entries = discord_skill_commands(reserved_names=set())
+                if cmd_key not in entries:
+                    await interaction.response.send_message(f"❌ Skill not found: `{skill_name}`", ephemeral=True)
+                    return
+                await self._run_simple_slash(interaction, f"{cmd_key} {args}".strip())
 
+            # ── /skill info handler ──
+            @discord.app_commands.describe(skill_name="Skill to get info for")
+            @discord.app_commands.autocomplete(skill_name=_skill_autocomplete)
+            async def _info_handler(interaction: discord.Interaction, skill_name: str):
+                cmd_key = f"/{skill_name}"
+                from hermes_cli.commands import discord_skill_commands
+                entries = discord_skill_commands(reserved_names=set())
+                if cmd_key not in entries:
+                    await interaction.response.send_message(f"❌ Skill not found: `{skill_name}`", ephemeral=True)
+                    return
+                info = entries[cmd_key]
+                desc = info.get("description", "No description")
+                path = info.get("skill_md_path", "")
+                lines = [f"**Skill:** `{skill_name}`", f"**Description:** {desc}"]
+                if path:
+                    lines.append(f"**Location:** `{path}`")
+                await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+            # ── /skill search handler ──
+            @discord.app_commands.describe(query="Search skills by name or description")
+            async def _search_handler(interaction: discord.Interaction, query: str):
+                from hermes_cli.commands import discord_skill_commands
+                entries = discord_skill_commands(reserved_names=set())
+                q = query.lower()
+                matches = []
+                for name, info in entries.items():
+                    n = name.lstrip("/").lower()
+                    d = info.get("description", "").lower()
+                    if q in n or q in d:
+                        matches.append((name.lstrip("/"), info.get("description", "")))
+                if not matches:
+                    await interaction.response.send_message(f"No skills matching `{query}`", ephemeral=True)
+                    return
+                lines = [f"Found {len(matches)} skill(s) matching `{query}`:"]
+                for n, d in matches[:20]:
+                    lines.append(f"• **`{n}`** — {d[:80]}")
+                if len(matches) > 20:
+                    lines.append(f"... and {len(matches) - 20} more")
+                await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+            # Create Command objects
+            cmd_run = discord.app_commands.Command(
+                name="run", description="Run a skill by name", callback=_run_handler
+            )
+            cmd_info = discord.app_commands.Command(
+                name="info", description="Get skill information", callback=_info_handler
+            )
+            cmd_search = discord.app_commands.Command(
+                name="search", description="Search skills", callback=_search_handler
+            )
+
+            skill_group.add_command(cmd_run)
+            skill_group.add_command(cmd_info)
+            skill_group.add_command(cmd_search)
             tree.add_command(skill_group)
 
-            total = sum(len(v) for v in categories.values()) + len(uncategorized)
-            logger.info(
-                "[%s] Registered /skill group: %d skill(s) across %d categories"
-                " + %d uncategorized",
-                self.name, total, len(categories), len(uncategorized),
-            )
-            if hidden:
-                logger.warning(
-                    "[%s] %d skill(s) not registered (Discord subcommand limits)",
-                    self.name, hidden,
-                )
+            logger.info("[%s] Registered /skill group (run/info/search) — parameterized", self.name)
         except Exception as exc:
             logger.warning("[%s] Failed to register /skill group: %s", self.name, exc)
 

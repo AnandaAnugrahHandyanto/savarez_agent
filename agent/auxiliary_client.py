@@ -104,6 +104,8 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
+    "alibaba": "qwen3.5-flash",
+    "alibaba-intl": "qwen3.5-flash",
 }
 
 # Vision-specific model overrides for direct providers.
@@ -1132,77 +1134,87 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
          Alibaba, DeepSeek, ZAI, etc. get auxiliary tasks handled by the same
          provider they already have credentials for — no OpenRouter key needed.
       2. OpenRouter → Nous → custom → Codex → API-key providers (original chain).
+
+    All exceptions are caught and logged — auxiliary failures must NEVER
+    crash the gateway or the main agent loop.
     """
     global auxiliary_is_nous, _stale_base_url_warned
-    auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
-    runtime = _normalize_main_runtime(main_runtime)
-    runtime_provider = runtime.get("provider", "")
-    runtime_model = runtime.get("model", "")
-    runtime_base_url = runtime.get("base_url", "")
-    runtime_api_key = runtime.get("api_key", "")
-    runtime_api_mode = runtime.get("api_mode", "")
+    try:
+        auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
+        runtime = _normalize_main_runtime(main_runtime)
+        runtime_provider = runtime.get("provider", "")
+        runtime_model = runtime.get("model", "")
+        runtime_base_url = runtime.get("base_url", "")
+        runtime_api_key = runtime.get("api_key", "")
+        runtime_api_mode = runtime.get("api_mode", "")
 
-    # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
-    #    provider (not 'custom').  This catches the common "env poisoning"
-    #    scenario where a user switches providers via `hermes model` but the
-    #    old OPENAI_BASE_URL lingers in ~/.hermes/.env. ──
-    if not _stale_base_url_warned:
-        _env_base = os.getenv("OPENAI_BASE_URL", "").strip()
-        _cfg_provider = runtime_provider or _read_main_provider()
-        if (_env_base and _cfg_provider
-                and _cfg_provider != "custom"
-                and not _cfg_provider.startswith("custom:")):
-            logger.warning(
-                "OPENAI_BASE_URL is set (%s) but model.provider is '%s'. "
-                "Auxiliary clients may route to the wrong endpoint. "
-                "Run: hermes model to reconfigure, or remove "
-                "OPENAI_BASE_URL from ~/.hermes/.env",
-                _env_base, _cfg_provider,
+        # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
+        #    provider (not 'custom').  This catches the common "env poisoning"
+        #    scenario where a user switches providers via `hermes model` but the
+        #    old OPENAI_BASE_URL lingers in ~/.hermes/.env. ──
+        if not _stale_base_url_warned:
+            _env_base = os.getenv("OPENAI_BASE_URL", "").strip()
+            _cfg_provider = runtime_provider or _read_main_provider()
+            if (_env_base and _cfg_provider
+                    and _cfg_provider != "custom"
+                    and not _cfg_provider.startswith("custom:")):
+                logger.warning(
+                    "OPENAI_BASE_URL is set (%s) but model.provider is '%s'. "
+                    "Auxiliary clients may route to the wrong endpoint. "
+                    "Run: hermes model to reconfigure, or remove "
+                    "OPENAI_BASE_URL from ~/.hermes/.env",
+                    _env_base, _cfg_provider,
+                )
+                _stale_base_url_warned = True
+
+        # ── Step 1: non-aggregator main provider → use main model directly ──
+        main_provider = runtime_provider or _read_main_provider()
+        main_model = runtime_model or _read_main_model()
+        if (main_provider and main_model
+                and main_provider not in _AGGREGATOR_PROVIDERS
+                and main_provider not in ("auto", "")):
+            resolved_provider = main_provider
+            explicit_base_url = None
+            explicit_api_key = None
+            if runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
+                resolved_provider = "custom"
+                explicit_base_url = runtime_base_url
+                explicit_api_key = runtime_api_key or None
+            client, resolved = resolve_provider_client(
+                resolved_provider,
+                main_model,
+                explicit_base_url=explicit_base_url,
+                explicit_api_key=explicit_api_key,
+                api_mode=runtime_api_mode or None,
             )
-            _stale_base_url_warned = True
+            if client is not None:
+                logger.info("Auxiliary auto-detect: using main provider %s (%s)",
+                            main_provider, resolved or main_model)
+                return client, resolved or main_model
 
-    # ── Step 1: non-aggregator main provider → use main model directly ──
-    main_provider = runtime_provider or _read_main_provider()
-    main_model = runtime_model or _read_main_model()
-    if (main_provider and main_model
-            and main_provider not in _AGGREGATOR_PROVIDERS
-            and main_provider not in ("auto", "")):
-        resolved_provider = main_provider
-        explicit_base_url = None
-        explicit_api_key = None
-        if runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
-            resolved_provider = "custom"
-            explicit_base_url = runtime_base_url
-            explicit_api_key = runtime_api_key or None
-        client, resolved = resolve_provider_client(
-            resolved_provider,
-            main_model,
-            explicit_base_url=explicit_base_url,
-            explicit_api_key=explicit_api_key,
-            api_mode=runtime_api_mode or None,
+        # ── Step 2: aggregator / fallback chain ──────────────────────────────
+        tried = []
+        for label, try_fn in _get_provider_chain():
+            client, model = try_fn()
+            if client is not None:
+                if tried:
+                    logger.info("Auxiliary auto-detect: using %s (%s) — skipped: %s",
+                                label, model or "default", ", ".join(tried))
+                else:
+                    logger.info("Auxiliary auto-detect: using %s (%s)", label, model or "default")
+                return client, model
+            tried.append(label)
+        logger.warning("Auxiliary auto-detect: no provider available (tried: %s). "
+                       "Compression, summarization, and memory flush will not work. "
+                       "Set OPENROUTER_API_KEY or configure a local model in config.yaml.",
+                       ", ".join(tried))
+        return None, None
+
+    except Exception as exc:
+        logger.warning(
+            "Auxiliary auto-detect failed (graceful degradation): %s", exc,
         )
-        if client is not None:
-            logger.info("Auxiliary auto-detect: using main provider %s (%s)",
-                        main_provider, resolved or main_model)
-            return client, resolved or main_model
-
-    # ── Step 2: aggregator / fallback chain ──────────────────────────────
-    tried = []
-    for label, try_fn in _get_provider_chain():
-        client, model = try_fn()
-        if client is not None:
-            if tried:
-                logger.info("Auxiliary auto-detect: using %s (%s) — skipped: %s",
-                            label, model or "default", ", ".join(tried))
-            else:
-                logger.info("Auxiliary auto-detect: using %s (%s)", label, model or "default")
-            return client, model
-        tried.append(label)
-    logger.warning("Auxiliary auto-detect: no provider available (tried: %s). "
-                   "Compression, summarization, and memory flush will not work. "
-                   "Set OPENROUTER_API_KEY or configure a local model in config.yaml.",
-                   ", ".join(tried))
-    return None, None
+        return None, None
 
 
 # ── Centralized Provider Router ─────────────────────────────────────────────

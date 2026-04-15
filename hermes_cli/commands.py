@@ -650,8 +650,8 @@ def discord_skill_commands_by_category(
             _names_used.add(discord_name)
 
             desc = info.get("description", "")
-            if len(desc) > 100:
-                desc = desc[:97] + "..."
+            if len(desc) > 60:
+                desc = desc[:57] + "..."
 
             # Determine category from the relative path within SKILLS_DIR.
             # e.g. creative/ascii-art/SKILL.md → parts = ("creative", "ascii-art")
