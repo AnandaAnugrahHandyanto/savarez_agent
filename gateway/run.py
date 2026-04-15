@@ -242,6 +242,8 @@ from gateway.config import (
     Platform,
     GatewayConfig,
     load_gateway_config,
+    PlatformConfig,
+    _normalize_account_id,
 )
 from gateway.session import (
     SessionStore,
@@ -1733,16 +1735,56 @@ class GatewayRunner:
         enabled_platform_count = 0
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
+
+        def _iter_platform_instances():
+            for platform, platform_config in self.config.platforms.items():
+                if platform != Platform.TELEGRAM:
+                    yield platform, platform_config, platform.value
+                    continue
+
+                yield platform, platform_config, platform.value
+
+                extra_accounts = {}
+                if hasattr(platform_config, "extra") and isinstance(platform_config.extra, dict):
+                    extra_accounts = platform_config.extra.get("telegram_accounts", {})
+                if not isinstance(extra_accounts, dict):
+                    continue
+
+                for raw_account_id, account_data in sorted(extra_accounts.items()):
+                    account_id = _normalize_account_id(raw_account_id)
+                    if not account_id or not isinstance(account_data, dict):
+                        continue
+                    merged_extra = dict(platform_config.extra)
+                    merged_extra.pop("telegram_accounts", None)
+                    account_extra = account_data.get("extra", {})
+                    if isinstance(account_extra, dict):
+                        merged_extra.update(account_extra)
+                    account_config = PlatformConfig(
+                        enabled=bool(account_data.get("enabled", True)),
+                        token=account_data.get("token"),
+                        api_key=account_data.get("api_key", platform_config.api_key),
+                        home_channel=platform_config.home_channel,
+                        reply_to_mode=account_data.get("reply_to_mode", platform_config.reply_to_mode),
+                        extra=merged_extra,
+                        account_id=account_id,
+                    )
+                    if "home_channel" in account_data and isinstance(account_data["home_channel"], dict):
+                        try:
+                            from gateway.config import HomeChannel
+                            account_config.home_channel = HomeChannel.from_dict(account_data["home_channel"])
+                        except Exception:
+                            pass
+                    yield platform, account_config, f"telegram[{account_id}]"
         
         # Initialize and connect each configured platform
-        for platform, platform_config in self.config.platforms.items():
+        for platform, platform_config, platform_label in _iter_platform_instances():
             if not platform_config.enabled:
                 continue
             enabled_platform_count += 1
             
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
-                logger.warning("No adapter available for %s", platform.value)
+                logger.warning("No adapter available for %s", platform_label)
                 continue
             
             # Set up message + fatal error handlers
@@ -1752,9 +1794,9 @@ class GatewayRunner:
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             
             # Try to connect
-            logger.info("Connecting to %s...", platform.value)
+            logger.info("Connecting to %s...", platform_label)
             self._update_platform_runtime_status(
-                platform.value,
+                platform_label,
                 platform_state="connecting",
                 error_code=None,
                 error_message=None,
@@ -1762,21 +1804,21 @@ class GatewayRunner:
             try:
                 success = await adapter.connect()
                 if success:
-                    self.adapters[platform] = adapter
+                    self.adapters[platform_label] = adapter
                     self._sync_voice_mode_state_to_adapter(adapter)
                     connected_count += 1
                     self._update_platform_runtime_status(
-                        platform.value,
+                        platform_label,
                         platform_state="connected",
                         error_code=None,
                         error_message=None,
                     )
-                    logger.info("✓ %s connected", platform.value)
+                    logger.info("✓ %s connected", platform_label)
                 else:
-                    logger.warning("✗ %s failed to connect", platform.value)
+                    logger.warning("✗ %s failed to connect", platform_label)
                     if adapter.has_fatal_error:
                         self._update_platform_runtime_status(
-                            platform.value,
+                            platform_label,
                             platform_state="retrying" if adapter.fatal_error_retryable else "fatal",
                             error_code=adapter.fatal_error_code,
                             error_message=adapter.fatal_error_message,
@@ -1787,42 +1829,45 @@ class GatewayRunner:
                             else startup_nonretryable_errors
                         )
                         target.append(
-                            f"{platform.value}: {adapter.fatal_error_message}"
+                            f"{platform_label}: {adapter.fatal_error_message}"
                         )
                         # Queue for reconnection if the error is retryable
                         if adapter.fatal_error_retryable:
-                            self._failed_platforms[platform] = {
+                            self._failed_platforms[platform_label] = {
+                                "platform": platform,
                                 "config": platform_config,
                                 "attempts": 1,
                                 "next_retry": time.monotonic() + 30,
                             }
                     else:
                         self._update_platform_runtime_status(
-                            platform.value,
+                            platform_label,
                             platform_state="retrying",
                             error_code=None,
                             error_message="failed to connect",
                         )
                         startup_retryable_errors.append(
-                            f"{platform.value}: failed to connect"
+                            f"{platform_label}: failed to connect"
                         )
                         # No fatal error info means likely a transient issue — queue for retry
-                        self._failed_platforms[platform] = {
+                        self._failed_platforms[platform_label] = {
+                            "platform": platform,
                             "config": platform_config,
                             "attempts": 1,
                             "next_retry": time.monotonic() + 30,
                         }
             except Exception as e:
-                logger.error("✗ %s error: %s", platform.value, e)
+                logger.error("✗ %s error: %s", platform_label, e)
                 self._update_platform_runtime_status(
-                    platform.value,
+                    platform_label,
                     platform_state="retrying",
                     error_code=None,
                     error_message=str(e),
                 )
-                startup_retryable_errors.append(f"{platform.value}: {e}")
+                startup_retryable_errors.append(f"{platform_label}: {e}")
                 # Unexpected exceptions are typically transient — queue for retry
-                self._failed_platforms[platform] = {
+                self._failed_platforms[platform_label] = {
+                    "platform": platform,
                     "config": platform_config,
                     "attempts": 1,
                     "next_retry": time.monotonic() + 30,
@@ -1862,7 +1907,10 @@ class GatewayRunner:
         if hook_count:
             logger.info("%s hook(s) loaded", hook_count)
         await self.hooks.emit("gateway:startup", {
-            "platforms": [p.value for p in self.adapters.keys()],
+            "platforms": [
+                p.value if hasattr(p, "value") else str(p)
+                for p in self.adapters.keys()
+            ],
         })
         
         if connected_count > 0:
@@ -2055,29 +2103,30 @@ class GatewayRunner:
                     if not self._running:
                         return
                     await asyncio.sleep(1)
-                continue
-
-            now = time.monotonic()
-            for platform in list(self._failed_platforms.keys()):
-                if not self._running:
-                    return
-                info = self._failed_platforms[platform]
-                if now < info["next_retry"]:
-                    continue  # not time yet
-
-                if info["attempts"] >= _MAX_ATTEMPTS:
-                    logger.warning(
-                        "Giving up reconnecting %s after %d attempts",
-                        platform.value, info["attempts"],
-                    )
-                    del self._failed_platforms[platform]
+            for platform_label, info in list(self._failed_platforms.items()):
+                if time.monotonic() < info.get("next_retry", 0):
                     continue
 
+                attempt = info.get("attempts", 0) + 1
+                platform = info.get("platform") or platform_label
                 platform_config = info["config"]
-                attempt = info["attempts"] + 1
+                if attempt > _MAX_ATTEMPTS:
+                    self._update_platform_runtime_status(
+                        platform_label,
+                        platform_state="fatal",
+                        error_code="reconnect_exhausted",
+                        error_message=f"failed after {_MAX_ATTEMPTS} retry attempts",
+                    )
+                    logger.error(
+                        "Reconnect %s: exceeded max retries (%d), giving up",
+                        platform_label, _MAX_ATTEMPTS,
+                    )
+                    del self._failed_platforms[platform_label]
+                    continue
+
                 logger.info(
-                    "Reconnecting %s (attempt %d/%d)...",
-                    platform.value, attempt, _MAX_ATTEMPTS,
+                    "Reconnect %s: attempt %d/%d",
+                    platform_label, attempt, _MAX_ATTEMPTS,
                 )
 
                 try:
@@ -2085,9 +2134,9 @@ class GatewayRunner:
                     if not adapter:
                         logger.warning(
                             "Reconnect %s: adapter creation returned None, removing from retry queue",
-                            platform.value,
+                            platform_label,
                         )
-                        del self._failed_platforms[platform]
+                        del self._failed_platforms[platform_label]
                         continue
 
                     adapter.set_message_handler(self._handle_message)
@@ -2097,17 +2146,17 @@ class GatewayRunner:
 
                     success = await adapter.connect()
                     if success:
-                        self.adapters[platform] = adapter
+                        self.adapters[platform_label] = adapter
                         self._sync_voice_mode_state_to_adapter(adapter)
                         self.delivery_router.adapters = self.adapters
-                        del self._failed_platforms[platform]
+                        del self._failed_platforms[platform_label]
                         self._update_platform_runtime_status(
-                            platform.value,
+                            platform_label,
                             platform_state="connected",
                             error_code=None,
                             error_message=None,
                         )
-                        logger.info("✓ %s reconnected successfully", platform.value)
+                        logger.info("✓ %s reconnected successfully", platform_label)
 
                         # Rebuild channel directory with the new adapter
                         try:
@@ -2119,19 +2168,19 @@ class GatewayRunner:
                         # Check if the failure is non-retryable
                         if adapter.has_fatal_error and not adapter.fatal_error_retryable:
                             self._update_platform_runtime_status(
-                                platform.value,
+                                platform_label,
                                 platform_state="fatal",
                                 error_code=adapter.fatal_error_code,
                                 error_message=adapter.fatal_error_message,
                             )
                             logger.warning(
                                 "Reconnect %s: non-retryable error (%s), removing from retry queue",
-                                platform.value, adapter.fatal_error_message,
+                                platform_label, adapter.fatal_error_message,
                             )
-                            del self._failed_platforms[platform]
+                            del self._failed_platforms[platform_label]
                         else:
                             self._update_platform_runtime_status(
-                                platform.value,
+                                platform_label,
                                 platform_state="retrying",
                                 error_code=adapter.fatal_error_code,
                                 error_message=adapter.fatal_error_message or "failed to reconnect",
@@ -2141,11 +2190,11 @@ class GatewayRunner:
                             info["next_retry"] = time.monotonic() + backoff
                             logger.info(
                                 "Reconnect %s failed, next retry in %ds",
-                                platform.value, backoff,
+                                platform_label, backoff,
                             )
                 except Exception as e:
                     self._update_platform_runtime_status(
-                        platform.value,
+                        platform_label,
                         platform_state="retrying",
                         error_code=None,
                         error_message=str(e),
@@ -2155,7 +2204,7 @@ class GatewayRunner:
                     info["next_retry"] = time.monotonic() + backoff
                     logger.warning(
                         "Reconnect %s error: %s, next retry in %ds",
-                        platform.value, e, backoff,
+                        platform_label, e, backoff,
                     )
 
             # Check every 10 seconds for platforms that need reconnection
@@ -2324,7 +2373,12 @@ class GatewayRunner:
             if not check_telegram_requirements():
                 logger.warning("Telegram: python-telegram-bot not installed")
                 return None
-            return TelegramAdapter(config)
+            adapter = TelegramAdapter(config)
+            account_id = _normalize_account_id(getattr(config, "account_id", None))
+            if account_id:
+                setattr(adapter, "account_id", account_id)
+                adapter.name = f"telegram[{account_id}]"
+            return adapter
         
         elif platform == Platform.DISCORD:
             from gateway.platforms.discord import DiscordAdapter, check_discord_requirements

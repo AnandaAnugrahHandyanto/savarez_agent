@@ -233,6 +233,79 @@ class TestSendMessageTool:
             media_files=[],
         )
 
+    def test_account_qualified_telegram_numeric_target_uses_account_config(self):
+        config, telegram_cfg = _make_config()
+        telegram_cfg.extra = {
+            "telegram_accounts": {
+                "devteam": {"enabled": True, "token": "dev-token"}
+            }
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:devteam:-1001:17585",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        sent_config = send_mock.await_args.args[1]
+        assert sent_config.token == "dev-token"
+        assert sent_config.account_id == "devteam"
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            sent_config,
+            "-1001",
+            "hello",
+            thread_id="17585",
+            media_files=[],
+        )
+
+    def test_account_qualified_telegram_label_resolves_via_account_directory(self):
+        config, telegram_cfg = _make_config()
+        telegram_cfg.extra = {
+            "telegram_accounts": {
+                "devteam": {"enabled": True, "token": "dev-token"}
+            }
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.channel_directory.resolve_channel_name", side_effect=["-1009:88"]), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:devteam:Alerts Room",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        sent_config = send_mock.await_args.args[1]
+        assert sent_config.account_id == "devteam"
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            sent_config,
+            "-1009",
+            "hello",
+            thread_id="88",
+            media_files=[],
+        )
+        mirror_mock.assert_called_once_with("telegram", "-1009", "hello", source_label="cli", thread_id="88")
+
     def test_display_label_target_resolves_via_channel_directory(self, tmp_path):
         config, telegram_cfg = _make_config()
         cache_file = tmp_path / "channel_directory.json"
