@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import httpx
+from fastapi.testclient import TestClient
 
+from brokerage.app import create_app
+from brokerage.brokers.base import BrokerAdapter
+from brokerage.config import BrokerageSettings
+from brokerage.models import BrokerSubmissionResult, TradeIntent
+from brokerage.policy import BrokeragePolicy
+from brokerage.service import BrokerageService
+from brokerage.storage import SQLiteBrokerageStore
 from model_tools import get_tool_definitions
 
 import tools.brokerage_tool as brokerage_tool
@@ -45,6 +54,69 @@ class _FakeClient:
             "headers": headers,
         })
         return self._response
+
+
+class _IntegrationFakeBroker(BrokerAdapter):
+    def __init__(self, result: BrokerSubmissionResult):
+        self.result = result
+        self.submitted: list[TradeIntent] = []
+
+    def submit_order(self, intent: TradeIntent) -> BrokerSubmissionResult:
+        self.submitted.append(intent)
+        return self.result
+
+    def get_order_status(self, order_id: str):
+        return None
+
+    def cancel_order(self, order_id: str):
+        return None
+
+
+def _make_integration_client(tmp_path: Path) -> tuple[TestClient, _IntegrationFakeBroker]:
+    settings = BrokerageSettings(enabled=True, service_token="test-token")
+    store = SQLiteBrokerageStore(tmp_path / "brokerage.db")
+    policy = BrokeragePolicy(settings)
+    broker = _IntegrationFakeBroker(
+        BrokerSubmissionResult(
+            accepted=True,
+            broker_order_id="ib-int-123",
+            broker_status="Submitted",
+        )
+    )
+    service = BrokerageService(settings, store, policy, broker)
+    app = create_app(service=service, auth_token="test-token")
+    return TestClient(app), broker
+
+
+def _patch_integration_transport(monkeypatch, client: TestClient) -> None:
+    class _BridgeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def request(self, method, url, *, json=None, headers=None):
+            response = client.request(method, url, json=json, headers=headers)
+            return httpx.Response(
+                status_code=response.status_code,
+                json=response.json(),
+                request=httpx.Request(method, url),
+            )
+
+    monkeypatch.setattr(brokerage_tool.httpx, "Client", _BridgeClient)
+    monkeypatch.setattr(
+        brokerage_tool,
+        "_load_brokerage_config",
+        lambda: {
+            "enabled": True,
+            "service_url": "http://testserver",
+            "service_token": "test-token",
+        },
+    )
 
 
 def test_brokerage_tools_register_under_brokerage_toolset(monkeypatch):
@@ -208,3 +280,38 @@ def test_brokerage_toolset_is_unavailable_when_disabled(monkeypatch):
     tools = get_tool_definitions(enabled_toolsets=["brokerage"], quiet_mode=True)
 
     assert tools == []
+
+
+def test_tool_flow_can_reach_real_service_and_submit_trade(tmp_path, monkeypatch):
+    client, broker = _make_integration_client(tmp_path)
+    _patch_integration_transport(monkeypatch, client)
+
+    created = json.loads(
+        brokerage_tool.create_trade_intent_tool(
+            {
+                "account_mode": "paper",
+                "symbol": "AAPL",
+                "side": "BUY",
+                "quantity": 10,
+                "order_type": "MARKET",
+                "asset_class": "stock",
+            }
+        )
+    )
+    confirmed = json.loads(
+        brokerage_tool.confirm_trade_intent_tool(
+            {
+                "intent_id": created["intent_id"],
+                "confirmation_text": f"CONFIRM {created['confirmation_code']}",
+            }
+        )
+    )
+    status = json.loads(
+        brokerage_tool.get_trade_intent_status_tool({"intent_id": created["intent_id"]})
+    )
+
+    assert created["status"] == "pending_confirmation"
+    assert confirmed["status"] == "submitted"
+    assert confirmed["broker_order_id"] == "ib-int-123"
+    assert status["status"] == "submitted"
+    assert [intent.symbol for intent in broker.submitted] == ["AAPL"]
