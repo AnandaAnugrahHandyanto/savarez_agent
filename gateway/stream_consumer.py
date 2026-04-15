@@ -367,13 +367,23 @@ class GatewayStreamConsumer:
                     # full response again.
                     if self._accumulated:
                         if self._fallback_final_send:
-                            await self._send_fallback_final(self._accumulated)
+                            fallback_ok = await self._send_fallback_final(self._accumulated)
+                            # If fallback delivered content (or had nothing new to send),
+                            # we're done. If it failed, fall through to the normal path
+                            # so the gateway can attempt a direct send as safety net.
+                            if fallback_ok:
+                                return
+                            # else: fallback failed, _already_sent was reset to False
+                            # by _send_fallback_final — fall through to normal send
                         elif current_update_visible:
                             self._final_response_sent = True
+                            return
                         elif self._message_id:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
+                            return
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
+                            return
                     return
 
                 if commentary_text is not None:
@@ -503,19 +513,23 @@ class GatewayStreamConsumer:
             chunks.append(remaining)
         return chunks
 
-    async def _send_fallback_final(self, text: str) -> None:
+    async def _send_fallback_final(self, text: str) -> bool:
         """Send the final continuation after streaming edits stop working.
 
         Retries each chunk once on flood-control failures with a short delay.
+
+        Returns True if content was successfully delivered (sent or nothing new to send),
+        False if the fallback failed entirely and the gateway should attempt a normal send.
         """
         final_text = self._clean_for_display(text)
         continuation = self._continuation_text(final_text)
         self._fallback_final_send = False
         if not continuation.strip():
             # Nothing new to send — the visible partial already matches final text.
+            # This is a successful "delivery" (nothing to deliver), not a failure.
             self._already_sent = True
             self._final_response_sent = True
-            return
+            return True
 
         raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
         safe_limit = max(500, raw_limit - 100)
@@ -553,14 +567,19 @@ class GatewayStreamConsumer:
                     self._message_id = last_message_id
                     self._last_sent_text = last_successful_chunk
                     self._fallback_prefix = ""
-                    return
+                    return True
                 # No fallback chunk reached the user — allow the normal gateway
                 # final-send path to try one more time.
                 self._already_sent = False
                 self._message_id = None
                 self._last_sent_text = ""
                 self._fallback_prefix = ""
-                return
+                logger.warning(
+                    "Stream consumer fallback send failed for all %d chunk(s) — "
+                    "gateway will attempt normal send as a safety net.",
+                    len(chunks),
+                )
+                return False
             sent_any_chunk = True
             last_successful_chunk = chunk
             last_message_id = result.message_id or last_message_id
@@ -570,6 +589,7 @@ class GatewayStreamConsumer:
         self._final_response_sent = True
         self._last_sent_text = chunks[-1]
         self._fallback_prefix = ""
+        return True
 
     def _is_flood_error(self, result) -> bool:
         """Check if a SendResult failure is due to flood control / rate limiting."""

@@ -963,3 +963,121 @@ class TestFilterAndAccumulateIntegration:
             await task
         except asyncio.CancelledError:
             pass
+
+
+# ── _send_fallback_final tests ────────────────────────────────────────────
+
+
+class TestSendFallbackFinal:
+    """Verify _send_fallback_final correctly handles success and failure paths."""
+
+    def _make_consumer(self, adapter):
+        """Create a consumer in fallback mode with text ready to send."""
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+        consumer._fallback_final_send = True
+        consumer._accumulated = "hello world"
+        consumer._last_sent_text = "hello"
+        consumer._fallback_prefix = "hello"
+        return consumer
+
+    @pytest.mark.asyncio
+    async def test_all_chunks_succeed(self):
+        """When every chunk sends successfully, returns True and already_sent is True."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = self._make_consumer(adapter)
+        ok = await consumer._send_fallback_final("hello world")
+
+        assert ok is True
+        assert consumer._already_sent is True
+        assert consumer._final_response_sent is True
+        assert adapter.send.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_all_chunks_fail(self):
+        """When ALL chunks fail, returns False and already_sent is reset to False.
+
+        This is the critical safety-net path: when fallback fails completely,
+        already_sent must be False so the gateway's normal send path fires
+        instead of silently dropping the response.
+        """
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=False, error="Chat not found")
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = self._make_consumer(adapter)
+        ok = await consumer._send_fallback_final("hello world")
+
+        assert ok is False
+        assert consumer._already_sent is False
+        assert consumer._message_id is None
+        assert consumer._last_sent_text == ""
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_returns_true(self):
+        """When some chunks succeed but later ones fail, returns True (partial OK).
+
+        Once at least one chunk reaches the user, we suppress the gateway's
+        normal send to prevent duplicate messages — even if subsequent chunks fail.
+        """
+        adapter = MagicMock()
+        long_text = ("a" * 400 + "\n") * 2  # ~800 chars, forces 2 chunks at 4096 limit
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=False, error="Flood control exceeded"),
+        ])
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = self._make_consumer(adapter)
+        consumer._fallback_prefix = ""  # Full text is "new" (no prior partial)
+
+        ok = await consumer._send_fallback_final(long_text)
+
+        assert ok is True
+        assert consumer._already_sent is True
+        assert consumer._final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_nothing_new_to_send_returns_true(self):
+        """When continuation is empty/whitespace, returns True without calling send.
+
+        This happens when the streaming message already showed the complete text
+        and there's nothing new to deliver in fallback.
+        """
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = self._make_consumer(adapter)
+        consumer._last_sent_text = "hello world"
+        consumer._fallback_prefix = "hello world"
+
+        ok = await consumer._send_fallback_final("hello world")
+
+        assert ok is True
+        assert consumer._already_sent is True
+        assert consumer._final_response_sent is True
+        adapter.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_flood_control_retry_then_succeed(self):
+        """Fallback retries once on flood control before succeeding."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=False, error="Too many messages. Retry after 5"),
+            SimpleNamespace(success=True, message_id="msg_1"),
+        ])
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = self._make_consumer(adapter)
+        ok = await consumer._send_fallback_final("hello world")
+
+        assert ok is True
+        assert adapter.send.call_count == 2
