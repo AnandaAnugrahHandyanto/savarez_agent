@@ -52,6 +52,23 @@ class TestPlatformConfigRoundtrip:
         assert restored.enabled is False
         assert restored.token is None
 
+    def test_from_dict_promotes_unknown_top_level_keys_to_extra(self):
+        restored = PlatformConfig.from_dict(
+            {
+                "enabled": True,
+                "port": 9100,
+                "host": "0.0.0.0",
+                "extra": {"secret": "top-secret"},
+            }
+        )
+
+        assert restored.enabled is True
+        assert restored.extra == {
+            "port": 9100,
+            "host": "0.0.0.0",
+            "secret": "top-secret",
+        }
+
 
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):
@@ -139,6 +156,28 @@ class TestGatewayConfigRoundtrip:
 
 
 class TestLoadGatewayConfig:
+    def test_bridges_top_level_platform_keys_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n"
+            "    host: 0.0.0.0\n"
+            "    port: 9100\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        webhook_config = config.platforms[Platform.WEBHOOK]
+        assert webhook_config.enabled is True
+        assert webhook_config.extra["host"] == "0.0.0.0"
+        assert webhook_config.extra["port"] == 9100
+
     def test_bridges_quick_commands_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
