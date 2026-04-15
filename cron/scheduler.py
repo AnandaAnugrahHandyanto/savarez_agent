@@ -749,10 +749,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_ignored=pr.get("ignore"),
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
-            disabled_toolsets=["cronjob", "messaging", "clarify"],
+            disabled_toolsets=["cronjob", "messaging", "clarify", "memory"],
             quiet_mode=True,
             skip_context_files=True,  # Don't inject SOUL.md/AGENTS.md from scheduler cwd
             skip_memory=True,  # Cron system prompts would corrupt user representations
+            skip_builtin_memory=True,  # Keep built-in MEMORY.md/USER.md disabled in cron
+            skip_memory_provider=False,  # Allow read-only provider tools like Honcho
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,

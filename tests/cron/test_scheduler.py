@@ -664,6 +664,9 @@ class TestRunJobSessionPersistence:
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["session_db"] is fake_db
         assert kwargs["platform"] == "cron"
+        assert kwargs["skip_builtin_memory"] is True
+        assert kwargs["skip_memory_provider"] is False
+        assert "memory" in (kwargs["disabled_toolsets"] or [])
         assert kwargs["session_id"].startswith("cron_test-job_")
         fake_db.end_session.assert_called_once()
         call_args = fake_db.end_session.call_args
@@ -914,6 +917,9 @@ class TestRunJobSkillBacked:
 
         kwargs = mock_agent_cls.call_args.kwargs
         assert "cronjob" in (kwargs["disabled_toolsets"] or [])
+        assert "memory" in (kwargs["disabled_toolsets"] or [])
+        assert kwargs["skip_builtin_memory"] is True
+        assert kwargs["skip_memory_provider"] is False
 
         prompt_arg = mock_agent.run_conversation.call_args.args[0]
         assert "blogwatcher" in prompt_arg

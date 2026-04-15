@@ -110,6 +110,7 @@ CONCLUDE_SCHEMA = {
 
 
 ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, CONTEXT_SCHEMA, CONCLUDE_SCHEMA]
+READ_ONLY_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, CONTEXT_SCHEMA]
 
 
 # ---------------------------------------------------------------------------
@@ -149,8 +150,9 @@ class HonchoMemoryProvider(MemoryProvider):
         self._lazy_init_kwargs: Optional[dict] = None
         self._lazy_init_session_id: Optional[str] = None
 
-        # Port #4053: cron guard — when True, plugin is fully inactive
+        # Port #4053: cron guard / read-only cron mode
         self._cron_skipped = False
+        self._cron_read_only = False
 
     @property
     def name(self) -> str:
@@ -203,11 +205,15 @@ class HonchoMemoryProvider(MemoryProvider):
             # ----- Port #4053: cron guard -----
             agent_context = kwargs.get("agent_context", "")
             platform = kwargs.get("platform", "cli")
-            if agent_context in ("cron", "flush") or platform == "cron":
-                logger.debug("Honcho skipped: cron/flush context (agent_context=%s, platform=%s)",
+            if agent_context == "flush":
+                logger.debug("Honcho skipped: flush context (agent_context=%s, platform=%s)",
                              agent_context, platform)
                 self._cron_skipped = True
                 return
+            if agent_context == "cron" or platform == "cron":
+                logger.debug("Honcho read-only mode: cron context (agent_context=%s, platform=%s)",
+                             agent_context, platform)
+                self._cron_read_only = True
 
             from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
             from plugins.memory.honcho.session import HonchoSessionManager
@@ -229,6 +235,8 @@ class HonchoMemoryProvider(MemoryProvider):
 
             # ----- B1: recall_mode from config -----
             self._recall_mode = cfg.recall_mode  # "context", "tools", or "hybrid"
+            if self._cron_read_only:
+                self._recall_mode = "tools"
             logger.debug("Honcho recall_mode: %s", self._recall_mode)
 
             # ----- B5: cost-awareness config -----
@@ -479,7 +487,7 @@ class HonchoMemoryProvider(MemoryProvider):
 
         B5: Checks cadence before firing background threads.
         """
-        if self._cron_skipped:
+        if self._cron_skipped or self._cron_read_only:
             return
         if not self._manager or not self._session_key or not query:
             return
@@ -576,7 +584,7 @@ class HonchoMemoryProvider(MemoryProvider):
         Messages exceeding the Honcho API limit (default 25k chars) are
         split into multiple messages with continuation markers.
         """
-        if self._cron_skipped:
+        if self._cron_skipped or self._cron_read_only:
             return
         if not self._manager or not self._session_key:
             return
@@ -605,7 +613,7 @@ class HonchoMemoryProvider(MemoryProvider):
         """Mirror built-in user profile writes as Honcho conclusions."""
         if action != "add" or target != "user" or not content:
             return
-        if self._cron_skipped:
+        if self._cron_skipped or self._cron_read_only:
             return
         if not self._manager or not self._session_key:
             return
@@ -621,7 +629,7 @@ class HonchoMemoryProvider(MemoryProvider):
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Flush all pending messages to Honcho on session end."""
-        if self._cron_skipped:
+        if self._cron_skipped or self._cron_read_only:
             return
         if not self._manager:
             return
@@ -640,6 +648,8 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return []
+        if self._cron_read_only:
+            return list(READ_ONLY_TOOL_SCHEMAS)
         if self._recall_mode == "context":
             return []
         return list(ALL_TOOL_SCHEMAS)
@@ -687,6 +697,8 @@ class HonchoMemoryProvider(MemoryProvider):
                 return json.dumps({"result": result or "No result from Honcho."})
 
             elif tool_name == "honcho_conclude":
+                if self._cron_read_only:
+                    return tool_error("Honcho conclude is disabled in cron read-only mode.")
                 conclusion = args.get("conclusion", "")
                 if not conclusion:
                     return tool_error("Missing required parameter: conclusion")

@@ -595,6 +595,8 @@ class AIAgent:
         user_id: str = None,
         skip_context_files: bool = False,
         skip_memory: bool = False,
+        skip_builtin_memory: bool | None = None,
+        skip_memory_provider: bool | None = None,
         session_db=None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
@@ -1137,9 +1139,13 @@ class AIAgent:
         self._memory_flush_min_turns = 6
         self._turns_since_memory = 0
         self._iters_since_skill = 0
-        if not skip_memory:
+        if skip_builtin_memory is None:
+            skip_builtin_memory = skip_memory
+        if skip_memory_provider is None:
+            skip_memory_provider = skip_memory
+        mem_config = _agent_cfg.get("memory", {})
+        if not skip_builtin_memory:
             try:
-                mem_config = _agent_cfg.get("memory", {})
                 self._memory_enabled = mem_config.get("memory_enabled", False)
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
@@ -1159,7 +1165,7 @@ class AIAgent:
         # Memory provider plugin (external — one at a time, alongside built-in)
         # Reads memory.provider from config to select which plugin to activate.
         self._memory_manager = None
-        if not skip_memory:
+        if not skip_memory_provider:
             try:
                 _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
 
