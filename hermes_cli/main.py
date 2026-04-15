@@ -665,8 +665,8 @@ def cmd_chat(args):
             if resolved:
                 args.resume = resolved
             else:
-                print(f"No session found matching '{continue_val}'.")
-                print("Use 'hermes sessions list' to see available sessions.")
+                print(f"'{continue_val}'와 일치하는 세션을 찾지 못했어요.")
+                print("사용 가능한 세션은 'hermes sessions list'로 확인할 수 있어요.")
                 sys.exit(1)
         else:
             # -c with no argument — continue the most recent session
@@ -674,7 +674,7 @@ def cmd_chat(args):
             if last_id:
                 args.resume = last_id
             else:
-                print("No previous CLI session found to continue.")
+                print("이어서 열 수 있는 이전 CLI 세션이 없어요.")
                 sys.exit(1)
 
     # Resolve --resume by title if it's not a direct session ID
@@ -689,28 +689,28 @@ def cmd_chat(args):
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
         print()
-        print("It looks like Hermes isn't configured yet -- no API keys or providers found.")
+        print("Hermes가 아직 설정되지 않은 것 같아요. API 키나 provider 설정을 찾지 못했어요.")
         print()
-        print("  Run:  hermes setup")
+        print("  실행: hermes setup")
         print()
 
         from hermes_cli.setup import is_interactive_stdin, print_noninteractive_setup_guidance
 
         if not is_interactive_stdin():
             print_noninteractive_setup_guidance(
-                "No interactive TTY detected for the first-run setup prompt."
+                "첫 실행 설정 프롬프트에 필요한 대화형 TTY를 찾지 못했어요."
             )
             sys.exit(1)
 
         try:
-            reply = input("Run setup now? [Y/n] ").strip().lower()
+            reply = input("지금 setup을 실행할까요? [Y/n] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             reply = "n"
         if reply in ("", "y", "yes"):
             cmd_setup(args)
             return
         print()
-        print("You can run 'hermes setup' at any time to configure.")
+        print("설정이 필요하면 언제든 'hermes setup'을 실행하면 돼요.")
         sys.exit(1)
 
     # Start update check in background (runs while other init happens)
@@ -1169,7 +1169,7 @@ def _prompt_provider_choice(choices, *, default=0):
     """
     try:
         from hermes_cli.setup import _curses_prompt_choice
-        idx = _curses_prompt_choice("Select provider:", choices, default)
+        idx = _curses_prompt_choice("provider 선택:", choices, default)
         if idx >= 0:
             print()
             return idx
@@ -1177,22 +1177,22 @@ def _prompt_provider_choice(choices, *, default=0):
         pass
 
     # Fallback: numbered list
-    print("Select provider:")
+    print("provider 선택:")
     for i, c in enumerate(choices, 1):
         marker = "→" if i - 1 == default else " "
         print(f"  {marker} {i}. {c}")
     print()
     while True:
         try:
-            val = input(f"Choice [1-{len(choices)}] ({default + 1}): ").strip()
+            val = input(f"선택 [1-{len(choices)}] ({default + 1}): ").strip()
             if not val:
                 return default
             idx = int(val) - 1
             if 0 <= idx < len(choices):
                 return idx
-            print(f"Please enter 1-{len(choices)}")
+            print(f"1-{len(choices)} 사이의 번호를 입력해 주세요")
         except ValueError:
-            print("Please enter a number")
+            print("숫자를 입력해 주세요")
         except (KeyboardInterrupt, EOFError):
             print()
             return None
@@ -1205,20 +1205,20 @@ def _model_flow_openrouter(config, current_model=""):
 
     api_key = get_env_value("OPENROUTER_API_KEY")
     if not api_key:
-        print("No OpenRouter API key configured.")
-        print("Get one at: https://openrouter.ai/keys")
+        print("OpenRouter API key가 설정되어 있지 않아요.")
+        print("발급 링크: https://openrouter.ai/keys")
         print()
         try:
             import getpass
-            key = getpass.getpass("OpenRouter API key (or Enter to cancel): ").strip()
+            key = getpass.getpass("OpenRouter API key 입력(취소하려면 Enter): ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return
         if not key:
-            print("Cancelled.")
+            print("취소했어요.")
             return
         save_env_value("OPENROUTER_API_KEY", key)
-        print("API key saved.")
+        print("API key를 저장했어요.")
         print()
 
     from hermes_cli.models import model_ids, get_pricing_for_provider
@@ -1243,9 +1243,9 @@ def _model_flow_openrouter(config, current_model=""):
         model["api_mode"] = "chat_completions"
         save_config(cfg)
         deactivate_provider()
-        print(f"Default model set to: {selected} (via OpenRouter)")
+        print(f"기본 모델을 설정했어요: {selected} (OpenRouter 사용)")
     else:
-        print("No change.")
+        print("변경 사항이 없어요.")
 
 
 def _model_flow_nous(config, current_model="", args=None):
@@ -1265,7 +1265,7 @@ def _model_flow_nous(config, current_model="", args=None):
 
     state = get_provider_auth_state("nous")
     if not state or not state.get("access_token"):
-        print("Not logged into Nous Portal. Starting login...")
+        print("Nous Portal에 로그인되어 있지 않아요. 로그인을 시작할게요...")
         print()
         try:
             mock_args = argparse.Namespace(
@@ -1283,10 +1283,10 @@ def _model_flow_nous(config, current_model="", args=None):
             for line in get_nous_subscription_explainer_lines():
                 print(line)
         except SystemExit:
-            print("Login cancelled or failed.")
+            print("로그인을 취소했거나 로그인에 실패했어요.")
             return
         except Exception as exc:
-            print(f"Login failed: {exc}")
+            print(f"로그인에 실패했어요: {exc}")
             return
         # login_nous already handles model selection + config update
         return
@@ -1300,7 +1300,7 @@ def _model_flow_nous(config, current_model="", args=None):
     )
     model_ids = _PROVIDER_MODELS.get("nous", [])
     if not model_ids:
-        print("No curated models available for Nous Portal.")
+        print("Nous Portal에서 사용할 큐레이션 모델이 없어요.")
         return
 
     # Verify credentials are still valid (catches expired sessions early)
@@ -1310,8 +1310,8 @@ def _model_flow_nous(config, current_model="", args=None):
         relogin = isinstance(exc, AuthError) and exc.relogin_required
         msg = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
         if relogin:
-            print(f"Session expired: {msg}")
-            print("Re-authenticating with Nous Portal...\n")
+            print(f"세션이 만료되었어요: {msg}")
+            print("Nous Portal에 다시 로그인하는 중...\n")
             try:
                 mock_args = argparse.Namespace(
                     portal_url=None, inference_url=None, client_id=None,
@@ -1320,9 +1320,9 @@ def _model_flow_nous(config, current_model="", args=None):
                 )
                 _login_nous(mock_args, PROVIDER_REGISTRY["nous"])
             except Exception as login_exc:
-                print(f"Re-login failed: {login_exc}")
+                print(f"재로그인에 실패했어요: {login_exc}")
             return
-        print(f"Could not verify credentials: {msg}")
+        print(f"자격 증명을 확인하지 못했어요: {msg}")
         return
 
     # Fetch live pricing (non-blocking — returns empty dict on failure)
@@ -1340,7 +1340,7 @@ def _model_flow_nous(config, current_model="", args=None):
         model_ids, unavailable_models = partition_nous_models_by_tier(model_ids, pricing, free_tier=True)
 
     if not model_ids and not unavailable_models:
-        print("No models available for Nous Portal after filtering.")
+        print("필터링 후 Nous Portal에서 사용할 수 있는 모델이 없어요.")
         return
 
     # Resolve portal URL for upgrade links (may differ on staging)
@@ -1353,14 +1353,14 @@ def _model_flow_nous(config, current_model="", args=None):
         pass
 
     if free_tier and not model_ids:
-        print("No free models currently available.")
+        print("현재 사용할 수 있는 무료 모델이 없어요.")
         if unavailable_models:
             from hermes_cli.auth import DEFAULT_NOUS_PORTAL_URL
             _url = (_nous_portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
-            print(f"Upgrade at {_url} to access paid models.")
+            print(f"유료 모델을 사용하려면 {_url} 에서 업그레이드해 주세요.")
         return
 
-    print(f"Showing {len(model_ids)} curated models — use \"Enter custom model name\" for others.")
+    print(f"큐레이션 모델 {len(model_ids)}개를 표시합니다. 다른 모델은 \"사용자 지정 모델 이름 입력\"을 이용하세요.")
 
     selected = _prompt_model_selection(
         model_ids, current_model=current_model, pricing=pricing,
@@ -1391,18 +1391,18 @@ def _model_flow_nous(config, current_model="", args=None):
             save_env_value("OPENAI_API_KEY", "")
         changed_defaults = apply_nous_provider_defaults(config)
         save_config(config)
-        print(f"Default model set to: {selected} (via Nous Portal)")
+        print(f"기본 모델을 설정했어요: {selected} (Nous Portal 사용)")
         if "tts" in changed_defaults:
-            print("TTS provider set to: OpenAI TTS via your Nous subscription")
+            print("TTS provider를 설정했어요: Nous 구독의 OpenAI TTS 사용")
         else:
             current_tts = str(config.get("tts", {}).get("provider") or "edge")
             if current_tts.lower() not in {"", "edge"}:
-                print(f"Keeping your existing TTS provider: {current_tts}")
+                print(f"기존 TTS provider 설정을 유지할게요: {current_tts}")
         print()
         for line in get_nous_subscription_explainer_lines():
             print(line)
     else:
-        print("No change.")
+        print("변경 사항이 없어요.")
 
 
 def _model_flow_openai_codex(config, current_model=""):
@@ -1417,16 +1417,16 @@ def _model_flow_openai_codex(config, current_model=""):
 
     status = get_codex_auth_status()
     if not status.get("logged_in"):
-        print("Not logged into OpenAI Codex. Starting login...")
+        print("OpenAI Codex에 로그인되어 있지 않아요. 로그인을 시작할게요...")
         print()
         try:
             mock_args = argparse.Namespace()
             _login_openai_codex(mock_args, PROVIDER_REGISTRY["openai-codex"])
         except SystemExit:
-            print("Login cancelled or failed.")
+            print("로그인을 취소했거나 로그인에 실패했어요.")
             return
         except Exception as exc:
-            print(f"Login failed: {exc}")
+            print(f"로그인에 실패했어요: {exc}")
             return
 
     _codex_token = None
@@ -1452,9 +1452,9 @@ def _model_flow_openai_codex(config, current_model=""):
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
-        print(f"Default model set to: {selected} (via OpenAI Codex)")
+        print(f"기본 모델을 설정했어요: {selected} (OpenAI Codex 사용)")
     else:
-        print("No change.")
+        print("변경 사항이 없어요.")
 
 
 
@@ -1478,13 +1478,13 @@ def _model_flow_qwen_oauth(_config, current_model=""):
 
     status = get_qwen_auth_status()
     if not status.get("logged_in"):
-        print("Not logged into Qwen CLI OAuth.")
-        print("Run: qwen auth qwen-oauth")
+        print("Qwen CLI OAuth에 로그인되어 있지 않아요.")
+        print("실행: qwen auth qwen-oauth")
         auth_file = status.get("auth_file")
         if auth_file:
-            print(f"Expected credentials file: {auth_file}")
+            print(f"예상 자격 증명 파일 위치: {auth_file}")
         if status.get("error"):
-            print(f"Error: {status.get('error')}")
+            print(f"오류: {status.get('error')}")
         return
 
     # Try live model discovery, fall back to curated list.
@@ -1502,9 +1502,9 @@ def _model_flow_qwen_oauth(_config, current_model=""):
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("qwen-oauth", DEFAULT_QWEN_BASE_URL)
-        print(f"Default model set to: {selected} (via Qwen OAuth)")
+        print(f"기본 모델을 설정했어요: {selected} (Qwen OAuth 사용)")
     else:
-        print("No change.")
+        print("변경 사항이 없어요.")
 
 
 
