@@ -169,6 +169,40 @@ class TestBuildOAuthAuth:
         assert provider is not None
         assert provider.context.client_metadata.scope == "read write admin"
 
+    def test_server_url_preserves_path(self, tmp_path, monkeypatch):
+        """OAuthClientProvider must receive the full URL including path.
+
+        Passing only the base URL (scheme+host) causes RFC 8707 resource
+        validation to fail when the server's protected resource metadata
+        reports the full path URL as its resource identifier.
+        See: https://github.com/modelcontextprotocol/python-sdk/pull/2069
+        """
+        try:
+            from mcp.client.auth import OAuthClientProvider
+        except ImportError:
+            pytest.skip("MCP SDK auth not available")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        provider = build_oauth_auth("granola", "https://mcp.granola.ai/mcp")
+        assert provider is not None
+        assert provider.context.server_url == "https://mcp.granola.ai/mcp"
+
+    def test_server_url_no_trailing_slash(self, tmp_path, monkeypatch):
+        """Trailing slash in config URL must be stripped before passing to the SDK.
+
+        The server's protected resource metadata reports the resource without a
+        trailing slash; a mismatch triggers the same RFC 8707 validation failure.
+        """
+        try:
+            from mcp.client.auth import OAuthClientProvider
+        except ImportError:
+            pytest.skip("MCP SDK auth not available")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        provider = build_oauth_auth("example", "https://mcp.example.com/mcp/")
+        assert provider is not None
+        assert provider.context.server_url == "https://mcp.example.com/mcp"
+
 
 # ---------------------------------------------------------------------------
 # Utility functions
