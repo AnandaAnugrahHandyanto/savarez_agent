@@ -74,9 +74,27 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
     skill_dir = None
     if skill_path:
         try:
-            skill_dir = SKILLS_DIR / Path(skill_path).parent
+            skill_path_obj = Path(skill_path)
+            skills_dir_resolved = SKILLS_DIR.resolve()
+            identifier_path = Path(raw_identifier).expanduser()
+            identifier_is_external = False
+            if identifier_path.is_absolute():
+                try:
+                    identifier_path.resolve().relative_to(skills_dir_resolved)
+                except Exception:
+                    identifier_is_external = True
+
+            if identifier_is_external:
+                skill_dir = identifier_path.parent.resolve()
+            else:
+                skill_path_resolved = skill_path_obj.resolve() if skill_path_obj.is_absolute() else (SKILLS_DIR / skill_path_obj).resolve()
+                skill_path_resolved.relative_to(skills_dir_resolved)
+                skill_dir = SKILLS_DIR / skill_path_obj.parent
         except Exception:
-            skill_dir = None
+            try:
+                skill_dir = Path(skill_path).parent.resolve()
+            except Exception:
+                skill_dir = None
 
     return loaded_skill, skill_dir, skill_name
 
