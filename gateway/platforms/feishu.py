@@ -1263,7 +1263,8 @@ class FeishuAdapter(BasePlatformAdapter):
         now = time.time()
         if self._card_api_token and now - self._card_api_token_time < _CARD_TOKEN_TTL_SECONDS:
             return self._card_api_token
-        base = self._card_api_base()
+        # _sync_get_token expects base without /open-apis (it appends that itself)
+        base = self._card_api_base().removesuffix("/open-apis")
         try:
             data = await asyncio.to_thread(
                 self._sync_get_token, base, self._app_id, self._app_secret,
@@ -1329,6 +1330,14 @@ class FeishuAdapter(BasePlatformAdapter):
                 method="POST",
             )
             resp_data = json.loads((await asyncio.to_thread(urlopen, req, None, 15)).read())
+        except HTTPError as exc:
+            body = ""
+            try:
+                body = exc.read().decode()[:500]
+            except Exception:
+                pass
+            logger.warning("[Feishu] Card Kit create failed: %s — %s", exc, body)
+            return None
         except Exception as exc:
             logger.warning("[Feishu] Card Kit create failed: %s", exc)
             return None
