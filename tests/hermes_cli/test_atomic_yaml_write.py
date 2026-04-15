@@ -1,5 +1,8 @@
 """Tests for utils.atomic_yaml_write — crash-safe YAML file writes."""
 
+import os
+import stat
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -42,3 +45,16 @@ class TestAtomicYamlWrite:
         text = target.read_text(encoding="utf-8")
         assert "key: value" in text
         assert "# comment" in text
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions")
+    def test_file_permissions_honor_umask(self, tmp_path):
+        """Resulting file should have umask-respecting permissions, not 0600."""
+        current_umask = os.umask(0)
+        os.umask(current_umask)
+
+        target = tmp_path / "perms.yaml"
+        atomic_yaml_write(target, {"ok": True})
+
+        mode = stat.S_IMODE(target.stat().st_mode)
+        expected = 0o666 & ~current_umask
+        assert mode == expected, f"expected {oct(expected)}, got {oct(mode)}"
