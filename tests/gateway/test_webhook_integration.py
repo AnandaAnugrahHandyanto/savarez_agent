@@ -140,6 +140,10 @@ class TestGitHubPRWebhook:
         assert "Add webhook adapter" in event.text
         assert event.source.chat_type == "webhook"
         assert event.source.platform == Platform.WEBHOOK
+        assert event.source.metadata == {
+            "session_family": "webhook",
+            "webhook_route": "github-pr",
+        }
         assert "github-pr" in event.source.chat_id
         assert event.message_id == "gh-delivery-001"
 

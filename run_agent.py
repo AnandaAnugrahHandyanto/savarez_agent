@@ -597,6 +597,7 @@ class AIAgent:
         skip_memory: bool = False,
         session_db=None,
         parent_session_id: str = None,
+        source_metadata: Optional[Dict[str, Any]] = None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
         credential_pool=None,
@@ -658,6 +659,7 @@ class AIAgent:
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
         self._user_id = user_id  # Platform user identifier (gateway sessions)
+        self.source_metadata = copy.deepcopy(source_metadata) if source_metadata is not None else None
         # Pluggable print function — CLI replaces this with _cprint so that
         # raw ANSI status lines are routed through prompt_toolkit's renderer
         # instead of going directly to stdout where patch_stdout's StdoutProxy
@@ -1106,6 +1108,7 @@ class AIAgent:
                     },
                     user_id=None,
                     parent_session_id=self._parent_session_id,
+                    source_metadata=self.source_metadata,
                 )
             except Exception as e:
                 # Transient SQLite lock contention (e.g. CLI and gateway writing
@@ -2342,6 +2345,7 @@ class AIAgent:
                 self.session_id,
                 source=self.platform or "cli",
                 model=self.model,
+                source_metadata=self.source_metadata,
             )
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
@@ -6836,6 +6840,7 @@ class AIAgent:
                     source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                     model=self.model,
                     parent_session_id=old_session_id,
+                    source_metadata=self.source_metadata,
                 )
                 # Auto-number the title for the continuation session
                 if old_title:

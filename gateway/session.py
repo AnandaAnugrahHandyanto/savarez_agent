@@ -82,6 +82,7 @@ class SessionSource:
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
     user_id_alt: Optional[str] = None  # Signal UUID (alternative to phone number)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
+    metadata: Optional[Dict[str, Any]] = None  # Stable source labels for persistence/observability
     
     @property
     def description(self) -> str:
@@ -119,10 +120,15 @@ class SessionSource:
             d["user_id_alt"] = self.user_id_alt
         if self.chat_id_alt:
             d["chat_id_alt"] = self.chat_id_alt
+        if self.metadata is not None:
+            d["metadata"] = self.metadata
         return d
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionSource":
+        metadata = data.get("metadata")
+        if metadata is not None and not isinstance(metadata, dict):
+            metadata = None
         return cls(
             platform=Platform(data["platform"]),
             chat_id=str(data["chat_id"]),
@@ -134,6 +140,7 @@ class SessionSource:
             chat_topic=data.get("chat_topic"),
             user_id_alt=data.get("user_id_alt"),
             chat_id_alt=data.get("chat_id_alt"),
+            metadata=metadata,
         )
     
 
@@ -749,6 +756,7 @@ class SessionStore:
                 "session_id": session_id,
                 "source": source.platform.value,
                 "user_id": source.user_id,
+                "source_metadata": source.metadata,
             }
 
         # SQLite operations outside the lock
@@ -855,6 +863,7 @@ class SessionStore:
                 "session_id": session_id,
                 "source": old_entry.platform.value if old_entry.platform else "unknown",
                 "user_id": old_entry.origin.user_id if old_entry.origin else None,
+                "source_metadata": old_entry.origin.metadata if old_entry.origin else None,
             }
 
         if self._db and db_end_session_id:

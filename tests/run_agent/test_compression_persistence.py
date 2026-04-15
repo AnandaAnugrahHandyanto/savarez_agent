@@ -16,6 +16,7 @@ Bug scenario (pre-fix):
   8. Fallback wrote only user/assistant pair — summary lost
 """
 
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -33,7 +34,7 @@ class TestFlushAfterCompression:
     even when conversation_history (from the original session) is longer than
     the compressed messages list."""
 
-    def _make_agent(self, session_db):
+    def _make_agent(self, session_db, **kwargs):
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             from run_agent import AIAgent
             agent = AIAgent(
@@ -43,6 +44,7 @@ class TestFlushAfterCompression:
                 session_id="original-session",
                 skip_context_files=True,
                 skip_memory=True,
+                **kwargs,
             )
         return agent
 
@@ -130,6 +132,41 @@ class TestFlushAfterCompression:
                 "Expected 0 messages with stale conversation_history "
                 "(this test verifies the bug condition exists)"
             )
+
+    def test_compression_continuation_preserves_source_metadata(self):
+        """Compression-created continuation sessions should keep source metadata."""
+        from hermes_state import SessionDB
+
+        source_metadata = {
+            "session_family": "cron",
+            "cron_job_id": "job-123",
+            "cron_job_name": "Nightly Report",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = SessionDB(db_path=db_path)
+
+            agent = self._make_agent(db, source_metadata=source_metadata)
+            old_session_id = agent.session_id
+
+            with patch.object(agent, "flush_memories"), patch.object(
+                agent, "_build_system_prompt", return_value="compressed system prompt"
+            ), patch.object(
+                agent.context_compressor,
+                "compress",
+                return_value=[{"role": "assistant", "content": "summary"}],
+            ):
+                agent._compress_context(
+                    [{"role": "user", "content": "hello"}],
+                    "system prompt",
+                )
+
+            assert agent.session_id != old_session_id
+            new_session = db.get_session(agent.session_id)
+            assert new_session is not None
+            assert new_session["parent_session_id"] == old_session_id
+            assert json.loads(new_session["source_metadata"]) == source_metadata
 
 
 # ---------------------------------------------------------------------------

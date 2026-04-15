@@ -444,6 +444,10 @@ class WebhookAdapter(BasePlatformAdapter):
             chat_type="webhook",
             user_id=f"webhook:{route_name}",
             user_name=route_name,
+            metadata={
+                "session_family": "webhook",
+                "webhook_route": route_name,
+            },
         )
         event = MessageEvent(
             text=prompt,

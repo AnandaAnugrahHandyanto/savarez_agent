@@ -62,6 +62,23 @@ class TestSessionSourceRoundtrip:
         assert restored.chat_id == "cli"
         assert restored.chat_type == "dm"  # default value preserved
 
+    def test_roundtrip_with_metadata(self):
+        source = SessionSource(
+            platform=Platform.WEBHOOK,
+            chat_id="webhook:alerts:abc123",
+            chat_type="webhook",
+            metadata={
+                "session_family": "webhook",
+                "webhook_route": "alerts",
+            },
+        )
+        d = source.to_dict()
+        restored = SessionSource.from_dict(d)
+        assert restored.metadata == {
+            "session_family": "webhook",
+            "webhook_route": "alerts",
+        }
+
     def test_chat_id_coerced_to_string(self):
         """from_dict should handle numeric chat_id (common from Telegram)."""
         restored = SessionSource.from_dict({
@@ -829,6 +846,81 @@ class TestWhatsAppDMSessionKeyConsistency:
         key = build_session_key(source)
         # DM logic: chat_id + thread_id, user_id never included
         assert key == "agent:main:telegram:dm:99:topic-1"
+
+
+class TestSessionStoreSourceMetadata:
+    @pytest.fixture()
+    def store_with_db(self, tmp_path):
+        from hermes_state import SessionDB
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        if s._db:
+            s._db.close()
+        s._db = SessionDB(db_path=tmp_path / "state.db")
+        s._loaded = True
+        yield s
+        s._db.close()
+
+    def test_get_or_create_session_persists_source_metadata(self, store_with_db):
+        source = SessionSource(
+            platform=Platform.WEBHOOK,
+            chat_id="webhook:alerts:abc123",
+            chat_type="webhook",
+            user_id="webhook:alerts",
+            metadata={
+                "session_family": "webhook",
+                "webhook_route": "alerts",
+            },
+        )
+
+        entry = store_with_db.get_or_create_session(source)
+        session = store_with_db._db.get_session(entry.session_id)
+
+        assert session is not None
+        assert json.loads(session["source_metadata"]) == source.metadata
+
+    def test_force_new_preserves_source_metadata(self, store_with_db):
+        source = SessionSource(
+            platform=Platform.WEBHOOK,
+            chat_id="webhook:alerts:abc123",
+            chat_type="webhook",
+            user_id="webhook:alerts",
+            metadata={
+                "session_family": "webhook",
+                "webhook_route": "alerts",
+            },
+        )
+
+        first = store_with_db.get_or_create_session(source)
+        second = store_with_db.get_or_create_session(source, force_new=True)
+
+        assert second.session_id != first.session_id
+        session = store_with_db._db.get_session(second.session_id)
+        assert session is not None
+        assert json.loads(session["source_metadata"]) == source.metadata
+
+    def test_reset_session_preserves_source_metadata(self, store_with_db):
+        source = SessionSource(
+            platform=Platform.WEBHOOK,
+            chat_id="webhook:alerts:abc123",
+            chat_type="webhook",
+            user_id="webhook:alerts",
+            metadata={
+                "session_family": "webhook",
+                "webhook_route": "alerts",
+            },
+        )
+
+        entry = store_with_db.get_or_create_session(source)
+        reset_entry = store_with_db.reset_session(entry.session_key)
+
+        assert reset_entry is not None
+        assert reset_entry.session_id != entry.session_id
+        session = store_with_db._db.get_session(reset_entry.session_id)
+        assert session is not None
+        assert json.loads(session["source_metadata"]) == source.metadata
 
 
 class TestSessionStoreEntriesAttribute:
