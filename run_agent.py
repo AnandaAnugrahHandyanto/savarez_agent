@@ -1748,10 +1748,22 @@ class AIAgent:
 
             aux_base_url = str(getattr(client, "base_url", ""))
             aux_api_key = str(getattr(client, "api_key", ""))
+            aux_config_context_length = None
+            try:
+                from hermes_cli.config import load_config
+                _cfg = load_config()
+                _aux_cfg = (_cfg.get("auxiliary", {}) or {}).get("compression", {})
+                if isinstance(_aux_cfg, dict):
+                    _raw_aux_ctx = _aux_cfg.get("context_length")
+                    if _raw_aux_ctx is not None:
+                        aux_config_context_length = int(_raw_aux_ctx)
+            except Exception:
+                aux_config_context_length = None
             aux_context = get_model_context_length(
                 aux_model,
                 base_url=aux_base_url,
                 api_key=aux_api_key,
+                config_context_length=aux_config_context_length,
             )
 
             threshold = self.context_compressor.threshold_tokens

@@ -308,3 +308,35 @@ def test_run_conversation_clears_warning_after_replay(mock_get_client, mock_ctx_
         agent._compression_warning = None
 
     assert len(callback_events) == 0
+
+
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_explicit_auxiliary_compression_context_length_override_is_forwarded(mock_get_client):
+    """auxiliary.compression.context_length should override metadata probing for feasibility checks."""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    mock_client = MagicMock()
+    mock_client.base_url = "https://example-proxy/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "gpt-5.4")
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    captured = {}
+
+    def _capture(model, **kwargs):
+        captured["model"] = model
+        captured.update(kwargs)
+        return 80_000
+
+    with patch("hermes_cli.config.load_config", return_value={"auxiliary": {"compression": {"context_length": 80_000}}}), \
+         patch("agent.model_metadata.get_model_context_length", side_effect=_capture):
+        agent._check_compression_model_feasibility()
+
+    assert captured["model"] == "gpt-5.4"
+    assert captured["base_url"] == "https://example-proxy/v1"
+    assert captured["api_key"] == "sk-aux"
+    assert captured["config_context_length"] == 80_000
+    assert len(messages) == 1
+    assert "80,000" in messages[0]
+    assert "100,000" in messages[0]

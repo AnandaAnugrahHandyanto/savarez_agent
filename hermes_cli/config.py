@@ -466,6 +466,7 @@ DEFAULT_CONFIG = {
             "model": "",
             "base_url": "",
             "api_key": "",
+            "context_length": None,  # optional explicit override for the compression auxiliary runtime
             "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
         },
         "session_search": {

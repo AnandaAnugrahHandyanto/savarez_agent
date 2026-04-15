@@ -366,6 +366,15 @@ compression:
 #   web_extract:
 #     provider: "auto"
 #     model: ""
+#
+#   # Context compression summarization model
+#   compression:
+#     provider: "auto"
+#     model: ""
+#     base_url: ""          # optional custom OpenAI-compatible endpoint
+#     api_key: ""           # optional API key for base_url
+#     context_length: null   # optional explicit context window override (tokens)
+#                            # useful when custom endpoints don't expose /models metadata
 
 # =============================================================================
 # Persistent Memory
