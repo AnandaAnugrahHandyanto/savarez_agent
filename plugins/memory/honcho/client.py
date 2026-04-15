@@ -553,6 +553,10 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     }
     if resolved_base_url:
         kwargs["base_url"] = resolved_base_url
+        if _is_local:
+            # Local workstation models can take well over 60s for dialectic calls.
+            # Use a longer SDK timeout so Hermes doesn't give up before Honcho responds.
+            kwargs["timeout"] = 300.0
 
     _honcho_client = Honcho(**kwargs)
 

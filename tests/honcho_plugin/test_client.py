@@ -542,6 +542,31 @@ class TestInitOnSessionStart:
         assert cfg.init_on_session_start is False
 
 
+class TestGetHonchoClient:
+    def test_local_base_url_uses_longer_timeout(self):
+        import plugins.memory.honcho.client as mod
+
+        reset_honcho_client()
+        config = HonchoClientConfig(
+            workspace_id="local-ws",
+            base_url="http://127.0.0.1:8000",
+            enabled=True,
+            raw={},
+        )
+
+        with patch("honcho.Honcho") as mock_honcho:
+            mock_client = MagicMock()
+            mock_honcho.return_value = mock_client
+
+            result = get_honcho_client(config)
+
+        assert result is mock_client
+        _, kwargs = mock_honcho.call_args
+        assert kwargs["base_url"] == "http://127.0.0.1:8000"
+        assert kwargs["api_key"] == "local"
+        assert kwargs["timeout"] == 300.0
+
+
 class TestResetHonchoClient:
     def test_reset_clears_singleton(self):
         import plugins.memory.honcho.client as mod
