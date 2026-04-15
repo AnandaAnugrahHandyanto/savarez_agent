@@ -650,11 +650,26 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        # F-M4: bind a request id for the whole handler so every log line
+        # and every downstream module has a correlation token. Echoes back
+        # to the caller via X-Hermes-Request-Id header.
+        from hermes_logging import bind_request_id
+        client_request_id = request.headers.get("X-Hermes-Request-Id", "").strip()
+        with bind_request_id(client_request_id or None) as request_id:
+            return await self._handle_chat_completions_inner(request, request_id)
+
+    async def _handle_chat_completions_inner(
+        self, request: Request, request_id: str,
+    ) -> Response:
+        """Inner handler — runs with request_id already bound in context."""
         # Parse request body
         try:
             body = await request.json()
         except (json.JSONDecodeError, Exception):
-            return json_response(_openai_error("Invalid JSON in request body"), status=400)
+            return json_response(
+                _openai_error("Invalid JSON in request body"), status=400,
+                headers={"X-Hermes-Request-Id": request_id},
+            )
 
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
@@ -861,7 +876,10 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         }
 
-        return json_response(response_data, headers={"X-Hermes-Session-Id": session_id})
+        return json_response(response_data, headers={
+            "X-Hermes-Session-Id": session_id,
+            "X-Hermes-Request-Id": request_id,
+        })
 
     async def _write_sse_chat_completion(
         self, request: Request, completion_id: str, model: str,
@@ -877,6 +895,15 @@ class APIServerAdapter(BasePlatformAdapter):
             sse_headers.update(cors)
         if session_id:
             sse_headers["X-Hermes-Session-Id"] = session_id
+        # F-M4: echo request id on SSE responses so companion/webui can log
+        # the correlation token alongside any errors the user reports.
+        try:
+            from hermes_logging import get_request_id as _get_rid
+            _rid = _get_rid()
+            if _rid:
+                sse_headers["X-Hermes-Request-Id"] = _rid
+        except ImportError:  # pragma: no cover — logging module always present
+            pass
 
         async def event_generator():
             try:
@@ -1391,6 +1418,41 @@ class APIServerAdapter(BasePlatformAdapter):
                 return json_response({"error": "Job not found"}, status=404)
             return json_response({"job": job})
         except Exception as e:
+            return json_response({"error": str(e)}, status=500)
+
+    async def _handle_media_synthesize(self, request: Request) -> Response:
+        """POST /v1/media/synthesize — start a media synthesis background task."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        
+        try:
+            body = await request.json()
+            topic = body.get("topic")
+            source_refs = body.get("source_refs", [])
+            
+            # For POC we return synchronous response, in production this should be a background task
+            # We construct orchestrator
+            import sys, os
+            sys.path.append(os.path.join(os.path.dirname(__file__), "../.."))
+            from skills.media_synthesis.orchestrator import MediaSynthesisOrchestrator
+            
+            async def run_agent_coro(sys_prompt, user_prompt):
+                result, _ = await self._run_agent(
+                    user_message=user_prompt,
+                    conversation_history=[],
+                    ephemeral_system_prompt=sys_prompt,
+                    session_id=str(uuid.uuid4())
+                )
+                return result.get("final_response", "{}")
+            
+            orchestrator = MediaSynthesisOrchestrator(run_agent_coro)
+            output_dir = os.path.join(os.path.dirname(__file__), "../../../mission-control/public/media_output")
+            result = await orchestrator.execute_pipeline(topic, source_refs, output_dir)
+            
+            return json_response(result)
+        except Exception as e:
+            logger.error(f"Media synthesize error: {e}", exc_info=True)
             return json_response({"error": str(e)}, status=500)
 
     async def _handle_delete_job(self, request: Request) -> Response:
@@ -2129,6 +2191,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.add_api_route("/v1/runs", self._handle_runs, methods=["POST"])
             self._app.add_api_route("/v1/runs/{run_id}/events", self._handle_run_events, methods=["GET"])
             self._app.add_api_route("/api/memory/search", self._handle_memory_search, methods=["GET"])
+            self._app.add_api_route("/v1/media/synthesize", self._handle_media_synthesize, methods=["POST"])
 
             # Start background sweep to clean up orphaned runs
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
