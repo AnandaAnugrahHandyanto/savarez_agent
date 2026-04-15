@@ -800,8 +800,6 @@ agent:
 
 When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
 
-If `model.provider` is `openai-codex` and `agent.reasoning_effort` is empty, Hermes falls back to Codex CLI's `~/.codex/config.toml` `model_reasoning_effort` value when present.
-
 You can also change the reasoning effort at runtime with the `/reasoning` command:
 
 ```
@@ -810,27 +808,6 @@ You can also change the reasoning effort at runtime with the `/reasoning` comman
 /reasoning none      # Disable reasoning
 /reasoning show      # Show model thinking above each response
 /reasoning hide      # Hide model thinking
-```
-
-## Fast Mode
-
-Control OpenAI Priority Processing / Anthropic Fast Mode:
-
-```yaml
-agent:
-  service_tier: ""   # empty = normal. Options: fast, priority, on, normal, off
-```
-
-For OpenAI-compatible Responses models, `fast` maps to `service_tier: "priority"`. For Anthropic fast-mode models, Hermes sends the corresponding `speed: "fast"` request override.
-
-If `model.provider` is `openai-codex` and `agent.service_tier` is empty, Hermes falls back to Codex CLI's `~/.codex/config.toml` `service_tier` value when present.
-
-You can also change it at runtime with `/fast`:
-
-```
-/fast            # Show current fast-mode state
-/fast fast       # Enable Priority Processing / Fast Mode
-/fast normal     # Disable it
 ```
 
 ## Tool-Use Enforcement
