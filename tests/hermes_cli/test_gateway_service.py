@@ -157,11 +157,84 @@ class TestGatewayStopCleanup:
 
 
 class TestLaunchdServiceRecovery:
+    def setup_method(self):
+        gateway_cli._LAUNCHD_DOMAIN_CACHE = None
+
+    def test_launchd_domain_prefers_gui_when_available(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_LAUNCHD_DOMAIN_CACHE", None)
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:2] == ["launchctl", "print"] and cmd[2].startswith("gui/"):
+                return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._launchd_domain(force_refresh=True).startswith("gui/")
+        assert calls == [["launchctl", "print", gateway_cli._launchd_domain_candidates()[0]]]
+
+    def test_launchd_domain_falls_back_to_user_when_gui_unavailable(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_LAUNCHD_DOMAIN_CACHE", None)
+
+        calls = []
+        domains = gateway_cli._launchd_domain_candidates()
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd == ["launchctl", "print", domains[0]]:
+                return SimpleNamespace(returncode=125, stdout="", stderr="Domain does not support specified action")
+            if cmd == ["launchctl", "print", domains[1]]:
+                return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._launchd_domain(force_refresh=True) == domains[1]
+        assert calls == [
+            ["launchctl", "print", domains[0]],
+            ["launchctl", "print", domains[1]],
+        ]
+
+    def test_launchctl_domain_wrapper_retries_alternate_domain_on_125(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_LAUNCHD_DOMAIN_CACHE", "gui/501")
+        monkeypatch.setattr(gateway_cli, "_launchd_alt_domain", lambda domain: "user/501")
+
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            if cmd == ["launchctl", "bootstrap", "gui/501", "/tmp/test.plist"]:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    125,
+                    cmd,
+                    stderr="Bootstrap failed: 125: Domain does not support specified action",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli._run_launchctl_with_domain_fallback(
+            ["launchctl", "bootstrap", "{domain}", "/tmp/test.plist"],
+            domain_index=2,
+            check=True,
+            timeout=30,
+        )
+
+        assert calls == [
+            ["launchctl", "bootstrap", "gui/501", "/tmp/test.plist"],
+            ["launchctl", "bootstrap", "user/501", "/tmp/test.plist"],
+        ]
+        assert gateway_cli._LAUNCHD_DOMAIN_CACHE == "user/501"
+
     def test_launchd_install_repairs_outdated_plist_without_force(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        gateway_cli._LAUNCHD_DOMAIN_CACHE = gateway_cli._launchd_domain_candidates()[0]
 
         calls = []
 

@@ -14,6 +14,8 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
+_LAUNCHD_DOMAIN_CACHE: str | None = None
+
 from gateway.status import terminate_pid
 from hermes_cli.config import get_env_value, get_hermes_home, save_env_value, is_managed, managed_error
 # display_hermes_home is imported lazily at call sites to avoid ImportError
@@ -1007,9 +1009,80 @@ def get_launchd_label() -> str:
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
 
-def _launchd_domain() -> str:
-    import os
-    return f"gui/{os.getuid()}"
+def _launchd_domain_candidates() -> list[str]:
+    uid = os.getuid()
+    return [f"gui/{uid}", f"user/{uid}"]
+
+
+def _probe_launchd_domain(domain: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", domain],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _launchd_domain(force_refresh: bool = False) -> str:
+    global _LAUNCHD_DOMAIN_CACHE
+
+    if _LAUNCHD_DOMAIN_CACHE and not force_refresh:
+        return _LAUNCHD_DOMAIN_CACHE
+
+    for domain in _launchd_domain_candidates():
+        if _probe_launchd_domain(domain):
+            _LAUNCHD_DOMAIN_CACHE = domain
+            return domain
+
+    _LAUNCHD_DOMAIN_CACHE = _launchd_domain_candidates()[0]
+    return _LAUNCHD_DOMAIN_CACHE
+
+
+def _launchd_alt_domain(domain: str) -> str | None:
+    for candidate in _launchd_domain_candidates():
+        if candidate != domain:
+            return candidate
+    return None
+
+
+def _is_launchd_domain_error(exc: subprocess.CalledProcessError) -> bool:
+    stderr = (exc.stderr or "").lower()
+    stdout = (exc.stdout or "").lower()
+    combined = f"{stdout}\n{stderr}"
+    return exc.returncode == 125 or "domain does not support specified action" in combined
+
+
+def _run_launchctl_with_domain_fallback(
+    command: list[str],
+    *,
+    domain_index: int,
+    check: bool,
+    timeout: int,
+    **kwargs,
+):
+    domain = _launchd_domain()
+    resolved = list(command)
+    resolved[domain_index] = resolved[domain_index].replace("{domain}", domain)
+    try:
+        result = subprocess.run(resolved, check=check, timeout=timeout, **kwargs)
+        global _LAUNCHD_DOMAIN_CACHE
+        _LAUNCHD_DOMAIN_CACHE = domain
+        return result
+    except subprocess.CalledProcessError as exc:
+        if not _is_launchd_domain_error(exc):
+            raise
+        alt_domain = _launchd_alt_domain(domain)
+        if not alt_domain:
+            raise
+        retry = list(command)
+        retry[domain_index] = retry[domain_index].replace("{domain}", alt_domain)
+        result = subprocess.run(retry, check=check, timeout=timeout, **kwargs)
+        _LAUNCHD_DOMAIN_CACHE = alt_domain
+        return result
 
 
 def generate_launchd_plist() -> str:
@@ -1125,8 +1198,18 @@ def refresh_launchd_plist_if_needed() -> bool:
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     label = get_launchd_label()
     # Bootout/bootstrap so launchd picks up the new definition
-    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
-    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=False, timeout=30)
+    _run_launchctl_with_domain_fallback(
+        ["launchctl", "bootout", "{domain}/" + label],
+        domain_index=2,
+        check=False,
+        timeout=90,
+    )
+    _run_launchctl_with_domain_fallback(
+        ["launchctl", "bootstrap", "{domain}", str(plist_path)],
+        domain_index=2,
+        check=False,
+        timeout=30,
+    )
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
     return True
 
@@ -1148,7 +1231,12 @@ def launchd_install(force: bool = False):
     print(f"Installing launchd service to: {plist_path}")
     plist_path.write_text(generate_launchd_plist())
     
-    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+    _run_launchctl_with_domain_fallback(
+        ["launchctl", "bootstrap", "{domain}", str(plist_path)],
+        domain_index=2,
+        check=True,
+        timeout=30,
+    )
     
     print()
     print("✓ Service installed and loaded!")
@@ -1161,8 +1249,13 @@ def launchd_install(force: bool = False):
 def launchd_uninstall():
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
-    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
-    
+    _run_launchctl_with_domain_fallback(
+        ["launchctl", "bootout", "{domain}/" + label],
+        domain_index=2,
+        check=False,
+        timeout=90,
+    )
+
     if plist_path.exists():
         plist_path.unlink()
         print(f"✓ Removed {plist_path}")
@@ -1178,31 +1271,60 @@ def launchd_start():
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        _run_launchctl_with_domain_fallback(
+            ["launchctl", "bootstrap", "{domain}", str(plist_path)],
+            domain_index=2,
+            check=True,
+            timeout=30,
+        )
+        _run_launchctl_with_domain_fallback(
+            ["launchctl", "kickstart", "{domain}/" + label],
+            domain_index=2,
+            check=True,
+            timeout=30,
+        )
         print("✓ Service started")
         return
 
     refresh_launchd_plist_if_needed()
     try:
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        _run_launchctl_with_domain_fallback(
+            ["launchctl", "kickstart", "{domain}/" + label],
+            domain_index=2,
+            check=True,
+            timeout=30,
+        )
     except subprocess.CalledProcessError as e:
         if e.returncode not in (3, 113):
             raise
         print("↻ launchd job was unloaded; reloading service definition")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        _run_launchctl_with_domain_fallback(
+            ["launchctl", "bootstrap", "{domain}", str(plist_path)],
+            domain_index=2,
+            check=True,
+            timeout=30,
+        )
+        _run_launchctl_with_domain_fallback(
+            ["launchctl", "kickstart", "{domain}/" + label],
+            domain_index=2,
+            check=True,
+            timeout=30,
+        )
     print("✓ Service started")
 
 def launchd_stop():
     label = get_launchd_label()
-    target = f"{_launchd_domain()}/{label}"
     # bootout unloads the service definition so KeepAlive doesn't respawn
     # the process.  A plain `kill SIGTERM` only signals the process — launchd
     # immediately restarts it because KeepAlive.SuccessfulExit = false.
     # `hermes gateway start` re-bootstraps when it detects the job is unloaded.
     try:
-        subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
+        _run_launchctl_with_domain_fallback(
+            ["launchctl", "bootout", "{domain}/" + label],
+            domain_index=2,
+            check=True,
+            timeout=90,
+        )
     except subprocess.CalledProcessError as e:
         if e.returncode in (3, 113):
             pass  # Already unloaded — nothing to stop.
@@ -1253,12 +1375,16 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
 
 def launchd_restart():
     label = get_launchd_label()
-    target = f"{_launchd_domain()}/{label}"
     # Use kickstart -k so launchd performs an atomic kill+restart.
     # A two-step stop/start from inside the gateway's own process tree
     # would kill the shell before the start command is reached.
     try:
-        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+        _run_launchctl_with_domain_fallback(
+            ["launchctl", "kickstart", "-k", "{domain}/" + label],
+            domain_index=3,
+            check=True,
+            timeout=90,
+        )
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
         if e.returncode not in (3, 113):
@@ -1266,8 +1392,18 @@ def launchd_restart():
         # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+        _run_launchctl_with_domain_fallback(
+            ["launchctl", "bootstrap", "{domain}", str(plist_path)],
+            domain_index=2,
+            check=True,
+            timeout=30,
+        )
+        _run_launchctl_with_domain_fallback(
+            ["launchctl", "kickstart", "{domain}/" + label],
+            domain_index=2,
+            check=True,
+            timeout=30,
+        )
         print("✓ Service restarted")
 
 def launchd_status(deep: bool = False):
