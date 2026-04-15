@@ -2510,7 +2510,7 @@ def load_config() -> Dict[str, Any]:
 
             config = _deep_merge(config, user_config)
         except Exception as e:
-            print(f"Warning: Failed to load config: {e}")
+            print(f"경고: config를 불러오지 못했어요: {e}")
     
     return _expand_env_vars(_normalize_root_model_keys(_normalize_max_turns_config(config)))
 
@@ -3136,11 +3136,11 @@ def edit_config():
                 break
     
     if not editor:
-        print("No editor found. Config file is at:")
+        print("에디터를 찾지 못했어요. config 파일 위치:")
         print(f"  {config_path}")
         return
     
-    print(f"Opening {config_path} in {editor}...")
+    print(f"{editor}로 {config_path} 파일을 여는 중...")
     subprocess.run([editor, str(config_path)])
 
 
@@ -3249,9 +3249,9 @@ def config_command(args):
         key = getattr(args, 'key', None)
         value = getattr(args, 'value', None)
         if not key or value is None:
-            print("Usage: hermes config set <key> <value>")
+            print("사용법: hermes config set <key> <value>")
             print()
-            print("Examples:")
+            print("예시:")
             print("  hermes config set model anthropic/claude-sonnet-4")
             print("  hermes config set terminal.backend docker")
             print("  hermes config set OPENROUTER_API_KEY sk-or-...")
@@ -3361,8 +3361,8 @@ def config_command(args):
     else:
         print(f"Unknown config command: {subcmd}")
         print()
-        print("Available commands:")
-        print("  hermes config           Show current configuration")
+        print("사용 가능한 명령어:")
+        print("  hermes config           현재 설정 표시")
         print("  hermes config edit      Open config in editor")
         print("  hermes config set <key> <value>   Set a config value")
         print("  hermes config check     Check for missing/outdated config")

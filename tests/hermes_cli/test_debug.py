@@ -297,8 +297,8 @@ class TestRunDebugShare:
 
         out = capsys.readouterr().out
         assert "--- agent.log" in out
-        assert "FULL agent.log" in out
-        assert "FULL gateway.log" in out
+        assert "전체 agent.log" in out
+        assert "전체 gateway.log" in out
 
     def test_share_uploads_three_pastes(self, hermes_home, capsys):
         """Successful share uploads report + agent.log + gateway.log."""

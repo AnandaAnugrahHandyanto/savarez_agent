@@ -116,7 +116,7 @@ def run_backup(args) -> None:
     hermes_root = get_default_hermes_root()
 
     if not hermes_root.is_dir():
-        print(f"Error: Hermes home directory not found at {hermes_root}")
+        print(f"오류: Hermes 홈 디렉터리를 찾지 못했어요: {hermes_root}")
         sys.exit(1)
 
     # Determine output path
@@ -138,7 +138,7 @@ def run_backup(args) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Collect files
-    print(f"Scanning {display_hermes_home()} ...")
+    print(f"{display_hermes_home()} 을(를) 스캔하는 중...")
     files_to_add: list[tuple[Path, Path]] = []  # (absolute, relative)
     skipped_dirs = set()
 
@@ -172,12 +172,12 @@ def run_backup(args) -> None:
             files_to_add.append((fpath, rel))
 
     if not files_to_add:
-        print("No files to back up.")
+        print("백업할 파일이 없어요.")
         return
 
     # Create the zip
     file_count = len(files_to_add)
-    print(f"Backing up {file_count} files ...")
+    print(f"파일 {file_count}개를 백업하는 중...")
 
     total_bytes = 0
     errors = []
@@ -214,25 +214,25 @@ def run_backup(args) -> None:
 
     # Summary
     print()
-    print(f"Backup complete: {out_path}")
-    print(f"  Files:       {file_count}")
-    print(f"  Original:    {_format_size(total_bytes)}")
-    print(f"  Compressed:  {_format_size(zip_size)}")
-    print(f"  Time:        {elapsed:.1f}s")
+    print(f"백업 완료: {out_path}")
+    print(f"  파일 수:     {file_count}")
+    print(f"  원본 크기:   {_format_size(total_bytes)}")
+    print(f"  압축 크기:   {_format_size(zip_size)}")
+    print(f"  소요 시간:   {elapsed:.1f}s")
 
     if skipped_dirs:
-        print(f"\n  Excluded directories:")
+        print(f"\n  제외된 디렉터리:")
         for d in sorted(skipped_dirs):
             print(f"    {d}/")
 
     if errors:
-        print(f"\n  Warnings ({len(errors)} files skipped):")
+        print(f"\n  경고 ({len(errors)}개 파일 건너뜀):")
         for e in errors[:10]:
             print(e)
         if len(errors) > 10:
-            print(f"  ... and {len(errors) - 10} more")
+            print(f"  ... 그리고 {len(errors) - 10}개 더")
 
-    print(f"\nRestore with: hermes import {out_path.name}")
+    print(f"\n복원 명령: hermes import {out_path.name}")
 
 
 # ---------------------------------------------------------------------------
@@ -295,11 +295,11 @@ def run_import(args) -> None:
     zip_path = Path(args.zipfile).expanduser().resolve()
 
     if not zip_path.is_file():
-        print(f"Error: File not found: {zip_path}")
+        print(f"오류: 파일을 찾지 못했어요: {zip_path}")
         sys.exit(1)
 
     if not zipfile.is_zipfile(zip_path):
-        print(f"Error: Not a valid zip file: {zip_path}")
+        print(f"오류: 올바른 zip 파일이 아니에요: {zip_path}")
         sys.exit(1)
 
     hermes_root = get_default_hermes_root()
@@ -308,18 +308,18 @@ def run_import(args) -> None:
         # Validate
         ok, reason = _validate_backup_zip(zf)
         if not ok:
-            print(f"Error: {reason}")
+            print(f"오류: {reason}")
             sys.exit(1)
 
         prefix = _detect_prefix(zf)
         members = [n for n in zf.namelist() if not n.endswith("/")]
         file_count = len(members)
 
-        print(f"Backup contains {file_count} files")
-        print(f"Target: {display_hermes_home()}")
+        print(f"백업 안에 파일 {file_count}개가 들어 있어요")
+        print(f"대상 경로: {display_hermes_home()}")
 
         if prefix:
-            print(f"Detected archive prefix: {prefix!r} (will be stripped)")
+            print(f"아카이브 prefix를 감지했어요: {prefix!r} (제거 후 복원)")
 
         # Check for existing installation
         has_config = (hermes_root / "config.yaml").exists()
@@ -327,20 +327,20 @@ def run_import(args) -> None:
 
         if (has_config or has_env) and not args.force:
             print()
-            print("Warning: Target directory already has Hermes configuration.")
-            print("Importing will overwrite existing files with backup contents.")
+            print("경고: 대상 디렉터리에 이미 Hermes 설정이 있어요.")
+            print("가져오기를 진행하면 기존 파일을 백업 내용으로 덮어써요.")
             print()
             try:
-                answer = input("Continue? [y/N] ").strip().lower()
+                answer = input("계속할까요? [y/N] ").strip().lower()
             except (EOFError, KeyboardInterrupt):
-                print("\nAborted.")
+                print("\n중단했어요.")
                 sys.exit(1)
             if answer not in ("y", "yes"):
-                print("Aborted.")
+                print("중단했어요.")
                 return
 
         # Extract
-        print(f"\nImporting {file_count} files ...")
+        print(f"\n파일 {file_count}개를 가져오는 중...")
         hermes_root.mkdir(parents=True, exist_ok=True)
 
         errors = []
@@ -381,11 +381,11 @@ def run_import(args) -> None:
 
         # Summary
         print()
-        print(f"Import complete: {restored} files restored in {elapsed:.1f}s")
-        print(f"  Target: {display_hermes_home()}")
+        print(f"가져오기 완료: {restored}개 파일을 {elapsed:.1f}초 동안 복원했어요")
+        print(f"  대상 경로: {display_hermes_home()}")
 
         if errors:
-            print(f"\n  Warnings ({len(errors)} files skipped):")
+            print(f"\n  경고 ({len(errors)}개 파일 건너뜀):")
             for e in errors[:10]:
                 print(e)
             if len(errors) > 10:
@@ -419,32 +419,32 @@ def run_import(args) -> None:
                     created = [n for n, ok in restored_profiles if ok]
                     skipped = [n for n, ok in restored_profiles if not ok]
                     if created:
-                        print(f"\n  Profile aliases restored: {', '.join(created)}")
+                        print(f"\n  복원한 프로필 alias: {', '.join(created)}")
                     if skipped:
-                        print(f"  Profile aliases skipped:  {', '.join(skipped)}")
+                        print(f"  건너뛴 프로필 alias:  {', '.join(skipped)}")
                     if not _is_wrapper_dir_in_path():
-                        print(f"\n  Note: {_get_wrapper_dir()} is not in your PATH.")
-                        print('  Add to your shell config (~/.bashrc or ~/.zshrc):')
+                        print(f"\n  참고: {_get_wrapper_dir()} 가 PATH에 없어요.")
+                        print('  셸 설정(~/.bashrc 또는 ~/.zshrc)에 추가하세요:')
                         print('    export PATH="$HOME/.local/bin:$PATH"')
             except ImportError:
                 # hermes_cli.profiles might not be available (fresh install)
                 if any(profiles_dir.iterdir()):
-                    print(f"\n  Profiles detected but aliases could not be created.")
-                    print(f"  Run: hermes profile list  (after installing hermes)")
+                    print(f"\n  프로필은 감지했지만 alias를 만들지 못했어요.")
+                    print(f"  실행: hermes profile list  (hermes 설치 후)")
 
         # Guidance
         print()
         if not (hermes_root / "hermes-agent").is_dir():
-            print("Note: The hermes-agent codebase was not included in the backup.")
-            print("  If this is a fresh install, run: hermes update")
+            print("참고: 백업에는 hermes-agent 코드베이스가 포함되지 않았어요.")
+            print("  새로 설치한 환경이라면 실행: hermes update")
 
         if restored_profiles:
             gw_profiles = [n for n, _ in restored_profiles]
-            print("\nTo re-enable gateway services for profiles:")
+            print("\n프로필별 gateway 서비스를 다시 활성화하려면:")
             for pname in gw_profiles:
                 print(f"  hermes -p {pname} gateway install")
 
-        print("Done. Your Hermes configuration has been restored.")
+        print("완료됐어요. Hermes 설정을 복원했어요.")
 
 
 # ---------------------------------------------------------------------------
@@ -652,4 +652,4 @@ def run_quick_backup(args) -> None:
         print(f"  {len(snaps)} snapshot(s) stored in {display_hermes_home()}/state-snapshots/")
         print(f"  Restore with: /snapshot restore {snap_id}")
     else:
-        print("No state files found to snapshot.")
+        print("스냅샷할 상태 파일을 찾지 못했어요.")

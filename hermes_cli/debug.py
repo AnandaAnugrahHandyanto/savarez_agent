@@ -250,7 +250,7 @@ def run_debug_share(args):
     expiry = getattr(args, "expire", 7)
     local_only = getattr(args, "local", False)
 
-    print("Collecting debug report...")
+    print("디버그 리포트를 수집하는 중...")
 
     # Capture dump once — prepended to every paste for context.
     dump_text = _capture_dump()
@@ -269,17 +269,17 @@ def run_debug_share(args):
         print(report)
         if agent_log:
             print(f"\n\n{'=' * 60}")
-            print("FULL agent.log")
+            print("전체 agent.log")
             print(f"{'=' * 60}\n")
             print(agent_log)
         if gateway_log:
             print(f"\n\n{'=' * 60}")
-            print("FULL gateway.log")
+            print("전체 gateway.log")
             print(f"{'=' * 60}\n")
             print(gateway_log)
         return
 
-    print("Uploading...")
+    print("업로드하는 중...")
     urls: dict[str, str] = {}
     failures: list[str] = []
 
@@ -325,12 +325,12 @@ def run_debug(args):
         run_debug_share(args)
     else:
         # Default: show help
-        print("Usage: hermes debug share [--lines N] [--expire N] [--local]")
+        print("사용법: hermes debug share [--lines N] [--expire N] [--local]")
         print()
-        print("Commands:")
-        print("  share    Upload debug report to a paste service and print URL")
+        print("명령어:")
+        print("  share    디버그 리포트를 paste 서비스에 업로드하고 URL 출력")
         print()
-        print("Options:")
-        print("  --lines N    Number of log lines to include (default: 200)")
-        print("  --expire N   Paste expiry in days (default: 7)")
-        print("  --local      Print report locally instead of uploading")
+        print("옵션:")
+        print("  --lines N    포함할 로그 줄 수(기본값: 200)")
+        print("  --expire N   paste 만료 기간(일, 기본값: 7)")
+        print("  --local      업로드 대신 로컬에 리포트 출력")
