@@ -176,19 +176,19 @@ def is_interactive_stdin() -> bool:
 def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
     """Print guidance for headless/non-interactive setup flows."""
     print()
-    print(color("⚕ Hermes Setup — Non-interactive mode", Colors.CYAN, Colors.BOLD))
+    print(color("⚕ Hermes 설정 — 비대화형 모드", Colors.CYAN, Colors.BOLD))
     print()
     if reason:
         print_info(reason)
-    print_info("The interactive wizard cannot be used here.")
+    print_info("대화형 마법사는 여기서 사용할 수 없습니다.")
     print()
-    print_info("Configure Hermes using environment variables or config commands:")
+    print_info("환경 변수 또는 config 명령으로 Hermes를 설정하세요:")
     print_info("  hermes config set model.provider custom")
     print_info("  hermes config set model.base_url http://localhost:8080/v1")
     print_info("  hermes config set model.default your-model-name")
     print()
-    print_info("Or set OPENROUTER_API_KEY / OPENAI_API_KEY in your environment.")
-    print_info("Run 'hermes setup' in an interactive terminal to use the full wizard.")
+    print_info("또는 환경 변수에 OPENROUTER_API_KEY / OPENAI_API_KEY를 설정하세요.")
+    print_info("전체 마법사를 사용하려면 대화형 터미널에서 'hermes setup'을 실행하세요.")
     print()
 
 
@@ -243,21 +243,21 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
         else:
             print(f"  {marker} {choice}")
 
-    print_info(f"  Enter for default ({default + 1})  Ctrl+C to exit")
+    print_info(f"  기본값은 Enter ({default + 1})  종료는 Ctrl+C")
 
     while True:
         try:
             value = input(
-                color(f"  Select [1-{len(choices)}] ({default + 1}): ", Colors.DIM)
+                color(f"  선택 [1-{len(choices)}] ({default + 1}): ", Colors.DIM)
             )
             if not value:
                 return default
             idx = int(value) - 1
             if 0 <= idx < len(choices):
                 return idx
-            print_error(f"Please enter a number between 1 and {len(choices)}")
+            print_error(f"1부터 {len(choices)} 사이의 숫자를 입력하세요")
         except ValueError:
-            print_error("Please enter a number")
+            print_error("숫자를 입력하세요")
         except (KeyboardInterrupt, EOFError):
             print()
             sys.exit(1)
@@ -284,7 +284,7 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
             return True
         if value in ("n", "no"):
             return False
-        print_error("Please enter 'y' or 'n'")
+        print_error("'y' 또는 'n'을 입력하세요")
 
 
 def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list:
@@ -636,8 +636,8 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     """
     from hermes_cli.config import load_config, save_config
 
-    print_header("Inference Provider")
-    print_info("Choose how to connect to your main chat model.")
+    print_header("모델 및 Provider")
+    print_info("주요 채팅 모델에 연결하는 방법을 선택하세요.")
     print_info(f"   Guide: {_DOCS_BASE}/integrations/providers")
     print()
 
@@ -1059,9 +1059,9 @@ def setup_terminal_backend(config: dict):
     import platform as _platform
     import shutil
 
-    print_header("Terminal Backend")
-    print_info("Choose where Hermes runs shell commands and code.")
-    print_info("This affects tool execution, file access, and isolation.")
+    print_header("터미널 백엔드")
+    print_info("Hermes가 셸 명령과 코드를 어디서 실행할지 선택하세요.")
+    print_info("이 설정은 도구 실행, 파일 접근, 격리에 영향을 줍니다.")
     print_info(f"   Guide: {_DOCS_BASE}/developer-guide/environments")
     print()
 
@@ -1425,7 +1425,7 @@ def _apply_default_agent_settings(config: dict):
 def setup_agent_settings(config: dict):
     """Configure agent behavior: iterations, progress display, compression, session reset."""
 
-    print_header("Agent Settings")
+    print_header("에이전트 설정")
     print_info(f"   Guide: {_DOCS_BASE}/user-guide/configuration")
     print()
 
@@ -3042,7 +3042,7 @@ def _run_quick_setup(config: dict, hermes_home):
     )
 
     print()
-    print_header("Quick Setup — Missing Items Only")
+    print_header("빠른 설정 — 누락된 항목만")
 
     # Check what's missing
     missing_required = [

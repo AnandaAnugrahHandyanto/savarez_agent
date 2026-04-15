@@ -1,6 +1,7 @@
 """Tests for non-interactive setup and first-run headless behavior."""
 
 from argparse import Namespace
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -34,6 +35,54 @@ def _make_chat_args(**overrides):
 
 class TestNonInteractiveSetup:
     """Verify setup paths exit cleanly in headless/non-interactive environments."""
+
+    def test_noninteractive_guidance_is_localized_to_korean(self, capsys):
+        from hermes_cli.setup import print_noninteractive_setup_guidance
+
+        print_noninteractive_setup_guidance("TTY를 사용할 수 없습니다.")
+        out = capsys.readouterr().out
+
+        assert "⚕ Hermes 설정 — 비대화형 모드" in out
+        assert "대화형 마법사는 여기서 사용할 수 없습니다." in out
+        assert "환경 변수 또는 config 명령으로 Hermes를 설정하세요:" in out
+
+    def test_prompt_choice_fallback_is_localized_to_korean(self, capsys):
+        from hermes_cli.setup import prompt_choice
+
+        with (
+            patch("hermes_cli.setup._curses_prompt_choice", return_value=-1),
+            patch("builtins.input", side_effect=["2"]),
+        ):
+            idx = prompt_choice("Provider를 선택하세요", ["첫 번째", "두 번째"], 0)
+
+        out = capsys.readouterr().out
+        assert idx == 1
+        assert "Provider를 선택하세요" in out
+        assert "기본값은 Enter" in out
+
+    def test_prompt_yes_no_error_message_is_localized_to_korean(self, capsys):
+        from hermes_cli.setup import prompt_yes_no
+
+        with patch("builtins.input", side_effect=["maybe", "y"]):
+            value = prompt_yes_no("계속할까요?", default=True)
+
+        out = capsys.readouterr().out
+        assert value is True
+        assert "'y' 또는 'n'을 입력하세요" in out
+
+    def test_setup_source_contains_korean_section_headers(self):
+        source = Path("hermes_cli/setup.py").read_text(encoding="utf-8")
+
+        assert 'print_header("모델 및 Provider")' in source
+        assert 'print_header("터미널 백엔드")' in source
+        assert 'print_header("에이전트 설정")' in source
+        assert 'print_header("빠른 설정 — 누락된 항목만")' in source
+
+    def test_setup_source_contains_korean_intro_copy(self):
+        source = Path("hermes_cli/setup.py").read_text(encoding="utf-8")
+
+        assert '주요 채팅 모델에 연결하는 방법을 선택하세요.' in source
+        assert 'Hermes가 셸 명령과 코드를 어디서 실행할지 선택하세요.' in source
 
     def test_cmd_setup_allows_noninteractive_flag_without_tty(self):
         """The CLI entrypoint should not block --non-interactive before setup.py handles it."""
