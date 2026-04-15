@@ -6006,7 +6006,21 @@ class GatewayRunner:
                     # response before processing the queued follow-up.
                     # Skip if streaming already delivered it.
                     _sc = stream_consumer_holder[0]
-                    _already_streamed = _sc and getattr(_sc, "already_sent", False)
+                    if _sc and stream_task:
+                        try:
+                            await asyncio.wait_for(stream_task, timeout=5.0)
+                        except (asyncio.TimeoutError, asyncio.CancelledError):
+                            stream_task.cancel()
+                            try:
+                                await stream_task
+                            except asyncio.CancelledError:
+                                pass
+                        except Exception as e:
+                            logger.debug("Stream consumer wait before queued message failed: %s", e)
+                    _already_streamed = bool(
+                        _sc
+                        and getattr(_sc, "final_response_sent", False)
+                    )
                     first_response = result.get("final_response", "")
                     if first_response and not _already_streamed:
                         try:
@@ -6061,9 +6075,18 @@ class GatewayRunner:
 
         # If streaming already delivered the response, mark it so the
         # caller's send() is skipped (avoiding duplicate messages).
+        # BUT: never suppress delivery when the agent failed — the error
+        # message is new content the user hasn't seen, and it must reach
+        # them even if streaming had sent earlier partial output.
+        # BUGFIX: only check final_response_sent here, NOT already_sent.
+        # already_sent is True when interim messages (tool progress) were
+        # delivered via the stream consumer, but that doesn't mean the
+        # final response was also streamed. Only final_response_sent
+        # indicates the actual final text was delivered.
         _sc = stream_consumer_holder[0]
-        if _sc and _sc.already_sent and isinstance(response, dict):
-            response["already_sent"] = True
+        if _sc and isinstance(response, dict) and not response.get("failed"):
+            if getattr(_sc, "final_response_sent", False):
+                response["already_sent"] = True
         
         return response
 
