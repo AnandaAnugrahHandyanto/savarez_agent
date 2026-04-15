@@ -1098,21 +1098,21 @@ def setup_terminal_backend(config: dict):
     selected_backend = idx_to_backend.get(terminal_idx)
 
     if terminal_idx == keep_current_idx:
-        print_info(f"Keeping current backend: {current_backend}")
+        print_info(f"현재 백엔드 유지: {current_backend}")
         return
 
     config.setdefault("terminal", {})["backend"] = selected_backend
 
     if selected_backend == "local":
-        print_success("Terminal backend: Local")
-        print_info("Commands run directly on this machine.")
+        print_success("터미널 백엔드: Local")
+        print_info("명령어를 현재 머신에서 직접 실행합니다.")
 
         # CWD for messaging
         print()
-        print_info("Working directory for messaging sessions:")
-        print_info("  When using Hermes via Telegram/Discord, this is where")
+        print_info("메시징 세션의 작업 디렉터리:")
+        print_info("  Telegram/Discord에서 Hermes를 사용할 때")
         print_info(
-            "  the agent starts. CLI mode always starts in the current directory."
+            "  에이전트가 여기서 시작합니다. CLI 모드는 항상 현재 디렉터리에서 시작합니다."
         )
         current_cwd = config.get("terminal", {}).get("cwd", "")
         cwd = prompt("  Messaging working directory", current_cwd or str(Path.home()))
@@ -1123,26 +1123,26 @@ def setup_terminal_backend(config: dict):
         print()
         existing_sudo = get_env_value("SUDO_PASSWORD")
         if existing_sudo:
-            print_info("Sudo password: configured")
+            print_info("Sudo 비밀번호: 설정되어 있음")
         else:
             if prompt_yes_no(
-                "Enable sudo support? (stores password for apt install, etc.)", False
+                "sudo 지원을 활성화할까요? (apt install 등에 사용할 비밀번호 저장)", False
             ):
-                sudo_pass = prompt("  Sudo password", password=True)
+                sudo_pass = prompt("  Sudo 비밀번호", password=True)
                 if sudo_pass:
                     save_env_value("SUDO_PASSWORD", sudo_pass)
-                    print_success("Sudo password saved")
+                    print_success("Sudo 비밀번호 저장 완료")
 
     elif selected_backend == "docker":
-        print_success("Terminal backend: Docker")
+        print_success("터미널 백엔드: Docker")
 
         # Check if Docker is available
         docker_bin = shutil.which("docker")
         if not docker_bin:
-            print_warning("Docker not found in PATH!")
-            print_info("Install Docker: https://docs.docker.com/get-docker/")
+            print_warning("PATH에서 Docker를 찾을 수 없습니다!")
+            print_info("Docker 설치: https://docs.docker.com/get-docker/")
         else:
-            print_info(f"Docker found: {docker_bin}")
+            print_info(f"Docker 찾음: {docker_bin}")
 
         # Docker image
         current_image = config.get("terminal", {}).get(
@@ -1155,30 +1155,30 @@ def setup_terminal_backend(config: dict):
         _prompt_container_resources(config)
 
     elif selected_backend == "singularity":
-        print_success("Terminal backend: Singularity/Apptainer")
+        print_success("터미널 백엔드: Singularity/Apptainer")
 
         # Check if singularity/apptainer is available
         sing_bin = shutil.which("apptainer") or shutil.which("singularity")
         if not sing_bin:
-            print_warning("Singularity/Apptainer not found in PATH!")
+            print_warning("PATH에서 Singularity/Apptainer를 찾을 수 없습니다!")
             print_info(
-                "Install: https://apptainer.org/docs/admin/main/installation.html"
+                "설치: https://apptainer.org/docs/admin/main/installation.html"
             )
         else:
-            print_info(f"Found: {sing_bin}")
+            print_info(f"찾음: {sing_bin}")
 
         current_image = config.get("terminal", {}).get(
             "singularity_image", "docker://nikolaik/python-nodejs:python3.11-nodejs20"
         )
-        image = prompt("  Container image", current_image)
+        image = prompt("  컨테이너 이미지", current_image)
         config["terminal"]["singularity_image"] = image
         save_env_value("TERMINAL_SINGULARITY_IMAGE", image)
 
         _prompt_container_resources(config)
 
     elif selected_backend == "modal":
-        print_success("Terminal backend: Modal")
-        print_info("Serverless cloud sandboxes. Each session gets its own container.")
+        print_success("터미널 백엔드: Modal")
+        print_info("서버리스 클라우드 샌드박스입니다. 세션마다 전용 컨테이너가 생성됩니다.")
         from tools.managed_tool_gateway import is_managed_tool_gateway_ready
         from tools.tool_backend_helpers import normalize_modal_mode
 
@@ -1192,8 +1192,8 @@ def setup_terminal_backend(config: dict):
         use_managed_modal = False
         if managed_modal_available:
             modal_choices = [
-                "Use my Nous subscription",
-                "Use my own Modal account",
+                "내 Nous 구독 사용",
+                "내 Modal 계정 사용",
             ]
             if modal_mode == "managed":
                 default_modal_idx = 0
@@ -1210,20 +1210,20 @@ def setup_terminal_backend(config: dict):
 
         if use_managed_modal:
             config["terminal"]["modal_mode"] = "managed"
-            print_info("Modal execution will use the managed Nous gateway and bill to your subscription.")
+            print_info("Modal 실행은 관리형 Nous gateway를 사용하며 비용은 구독에 청구됩니다.")
             if get_env_value("MODAL_TOKEN_ID") or get_env_value("MODAL_TOKEN_SECRET"):
                 print_info(
-                    "Direct Modal credentials are still configured, but this backend is pinned to managed mode."
+                    "직접 Modal 자격 증명도 설정되어 있지만, 이 백엔드는 현재 managed 모드로 고정됩니다."
                 )
         else:
             config["terminal"]["modal_mode"] = "direct"
-            print_info("Requires a Modal account: https://modal.com")
+            print_info("Modal 계정이 필요합니다: https://modal.com")
 
             # Check if modal SDK is installed
             try:
                 __import__("modal")
             except ImportError:
-                print_info("Installing modal SDK...")
+                print_info("modal SDK 설치 중...")
                 import subprocess
 
                 uv_bin = shutil.which("uv")
@@ -1247,18 +1247,18 @@ def setup_terminal_backend(config: dict):
                         text=True,
                     )
                 if result.returncode == 0:
-                    print_success("modal SDK installed")
+                    print_success("modal SDK 설치 완료")
                 else:
-                    print_warning("Install failed — run manually: pip install modal")
+                    print_warning("설치 실패 — 직접 실행하세요: pip install modal")
 
             # Modal token
             print()
-            print_info("Modal authentication:")
-            print_info("  Get your token at: https://modal.com/settings")
+            print_info("Modal 인증:")
+            print_info("  토큰 발급 위치: https://modal.com/settings")
             existing_token = get_env_value("MODAL_TOKEN_ID")
             if existing_token:
-                print_info("  Modal token: already configured")
-                if prompt_yes_no("  Update Modal credentials?", False):
+                print_info("  Modal 토큰: 이미 설정되어 있음")
+                if prompt_yes_no("  Modal 자격 증명을 업데이트할까요?", False):
                     token_id = prompt("    Modal Token ID", password=True)
                     token_secret = prompt("    Modal Token Secret", password=True)
                     if token_id:

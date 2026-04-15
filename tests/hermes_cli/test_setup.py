@@ -401,7 +401,7 @@ def test_modal_setup_can_use_nous_subscription_without_modal_creds(tmp_path, mon
     out = capsys.readouterr().out
     assert config["terminal"]["backend"] == "modal"
     assert config["terminal"]["modal_mode"] == "managed"
-    assert "bill to your subscription" in out
+    assert "비용은 구독에 청구됩니다" in out
 
 
 def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tmp_path, monkeypatch):
