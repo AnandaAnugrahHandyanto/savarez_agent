@@ -1950,6 +1950,8 @@ class GatewayRunner:
             logger.info("%s hook(s) loaded", hook_count)
         await self.hooks.emit("gateway:startup", {
             "platforms": [p.value for p in self.adapters.keys()],
+            "session_store": self.session_store,
+            "adapters": self.adapters,
         })
         
         if connected_count > 0:
@@ -2001,7 +2003,8 @@ class GatewayRunner:
         logger.info("Press Ctrl+C to stop")
 
         # Send startup notification to Feishu home channel if configured
-        asyncio.create_task(self._send_startup_notification())
+        # DISABLED: replaced by session-recovery hook in ~/.hermes/hooks/
+        # asyncio.create_task(self._send_startup_notification())
 
         return True
 
@@ -3429,6 +3432,7 @@ class GatewayRunner:
                 "user_id": source.user_id,
                 "session_id": session_entry.session_id,
                 "session_key": session_key,
+                "session_store": self.session_store,
             })
         
         # Build session context
@@ -8063,6 +8067,13 @@ class GatewayRunner:
             can_edit = True          # False once an edit fails (platform doesn't support it)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+
+            # Feishu message updates are materially less reliable than fresh
+            # sends, especially once markdown/card heuristics kick in. Keep
+            # progress updates append-only on Feishu and reserve card rendering
+            # for the final answer.
+            if source.platform == Platform.FEISHU:
+                can_edit = False
 
             while True:
                 try:

@@ -26,6 +26,7 @@ from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 from .store import MemoryStore
 from .retrieval import FactRetriever
+from .hypergraph import HyperGraph
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,70 @@ FACT_STORE_SCHEMA = {
             "trust_delta": {"type": "number", "description": "Trust adjustment for 'update'."},
             "min_trust": {"type": "number", "description": "Minimum trust filter (default: 0.3)."},
             "limit": {"type": "integer", "description": "Max results (default: 10)."},
+        },
+        "required": ["action"],
+    },
+}
+
+HYPERGRAPH_SCHEMA = {
+    "name": "hypergraph",
+    "description": (
+        "Hypergraph memory for N-ary relationships and multi-hop traversal.\n\n"
+        "Unlike regular graph edges (A--B), hyperedges connect MULTIPLE entities "
+        "(A, B, C) → D with a typed relation.\n\n"
+        "ACTIONS:\n"
+        "• add_edge — Add a typed hyperedge between entities.\n"
+        "• traverse — Multi-hop traversal: find paths through hyperedges.\n"
+        "• query_n_ary — Find hyperedges connecting multiple entities.\n"
+        "• suggest — Get hyperedge suggestions from entity co-occurrence.\n"
+        "• stats — Get hypergraph statistics.\n\n"
+        "Example: Add 'Python depends_on pip and venv' → hyperedge {pip, venv} --depends_on--> Python"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["add_edge", "traverse", "query_n_ary", "suggest", "stats"],
+            },
+            "relation_type": {
+                "type": "string",
+                "description": "Relation type: 'depends_on', 'part_of', 'uses', 'related_to' (required for 'add_edge').",
+            },
+            "head_entity": {
+                "type": "string",
+                "description": "Primary entity (subject) for the hyperedge.",
+            },
+            "tail_entities": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Related entities (objects) — multiple allowed.",
+            },
+            "entity": {
+                "type": "string",
+                "description": "Entity to start traversal from (for 'traverse').",
+            },
+            "hops": {
+                "type": "integer",
+                "description": "Number of hyperedge hops (default: 2, max: 4).",
+                "default": 2,
+            },
+            "entities": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Entities to query (for 'query_n_ary').",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["connected_by_all", "connected_by_any"],
+                "description": "Query mode (default: 'connected_by_all').",
+                "default": "connected_by_all",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max results (default: 20).",
+                "default": 20,
+            },
         },
         "required": ["action"],
     },
@@ -177,6 +242,8 @@ class HolographicMemoryProvider(MemoryProvider):
             hrr_weight=hrr_weight,
             hrr_dim=hrr_dim,
         )
+        # Initialize hypergraph extension
+        self._hypergraph = HyperGraph(self._store._conn, self._store._lock)
         self._session_id = session_id
 
     def system_prompt_block(self) -> str:
@@ -224,13 +291,15 @@ class HolographicMemoryProvider(MemoryProvider):
         pass
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [FACT_STORE_SCHEMA, FACT_FEEDBACK_SCHEMA]
+        return [FACT_STORE_SCHEMA, FACT_FEEDBACK_SCHEMA, HYPERGRAPH_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         if tool_name == "fact_store":
             return self._handle_fact_store(args)
         elif tool_name == "fact_feedback":
             return self._handle_fact_feedback(args)
+        elif tool_name == "hypergraph":
+            return self._handle_hypergraph(args)
         return tool_error(f"Unknown tool: {tool_name}")
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
@@ -252,6 +321,7 @@ class HolographicMemoryProvider(MemoryProvider):
     def shutdown(self) -> None:
         self._store = None
         self._retriever = None
+        self._hypergraph = None
 
     # -- Tool handlers -------------------------------------------------------
 
@@ -350,6 +420,105 @@ class HolographicMemoryProvider(MemoryProvider):
             return json.dumps(result)
         except KeyError as exc:
             return tool_error(f"Missing required argument: {exc}")
+        except Exception as exc:
+            return tool_error(str(exc))
+
+    def _handle_hypergraph(self, args: dict) -> str:
+        """Handle hypergraph tool actions."""
+        if not self._hypergraph:
+            return tool_error("Hypergraph not initialized")
+
+        try:
+            action = args.get("action")
+
+            if action == "add_edge":
+                # Add a typed hyperedge
+                relation_type = args.get("relation_type")
+                head_entity = args.get("head_entity")
+                tail_entities = args.get("tail_entities", [])
+
+                if not relation_type or not head_entity:
+                    return tool_error("add_edge requires 'relation_type' and 'head_entity'")
+
+                edge_id = self._hypergraph.add_hyperedge(
+                    relation_type=relation_type,
+                    head_entity=head_entity,
+                    tail_entities=tail_entities,
+                )
+                return json.dumps({
+                    "edge_id": edge_id,
+                    "status": "added",
+                    "head": head_entity,
+                    "tails": tail_entities,
+                    "relation": relation_type,
+                })
+
+            elif action == "traverse":
+                # Multi-hop traversal
+                entity = args.get("entity")
+                hops = min(int(args.get("hops", 2)), 4)
+                rel_filter = args.get("relation_filter")
+                limit = int(args.get("limit", 20))
+
+                if not entity:
+                    return tool_error("traverse requires 'entity'")
+
+                paths = self._hypergraph.traverse(
+                    start_entity=entity,
+                    hops=hops,
+                    relation_filter=rel_filter,
+                    limit=limit,
+                )
+                return json.dumps({
+                    "entity": entity,
+                    "hops": hops,
+                    "paths": paths,
+                    "count": len(paths),
+                })
+
+            elif action == "query_n_ary":
+                # Find hyperedges connecting multiple entities
+                entities = args.get("entities", [])
+                mode = args.get("mode", "connected_by_all")
+                limit = int(args.get("limit", 20))
+
+                if not entities:
+                    return tool_error("query_n_ary requires 'entities' list")
+
+                edges = self._hypergraph.query_n_ary(
+                    entities=entities,
+                    mode=mode,
+                    limit=limit,
+                )
+                return json.dumps({
+                    "entities": entities,
+                    "mode": mode,
+                    "edges": edges,
+                    "count": len(edges),
+                })
+
+            elif action == "suggest":
+                # Get hyperedge suggestions from co-occurrence
+                min_count = int(args.get("min_count", 5))
+                limit = int(args.get("limit", 20))
+
+                suggestions = self._hypergraph.suggest_hyperedges_from_cooccurrence(
+                    min_count=min_count,
+                    limit=limit,
+                )
+                return json.dumps({
+                    "suggestions": suggestions,
+                    "count": len(suggestions),
+                })
+
+            elif action == "stats":
+                # Get hypergraph statistics
+                stats = self._hypergraph.get_stats()
+                return json.dumps(stats)
+
+            else:
+                return tool_error(f"Unknown hypergraph action: {action}")
+
         except Exception as exc:
             return tool_error(str(exc))
 

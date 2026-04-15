@@ -26,6 +26,7 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -311,6 +312,7 @@ class FeishuAdapterSettings:
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
+    use_lark_cli: bool = False
 
 
 @dataclass
@@ -327,6 +329,41 @@ class FeishuBatchState:
     events: Dict[str, MessageEvent] = field(default_factory=dict)
     tasks: Dict[str, asyncio.Task] = field(default_factory=dict)
     counts: Dict[str, int] = field(default_factory=dict)
+
+
+class CLIResponse:
+    """
+    将 lark-cli JSON 输出封装为类 SDK response 接口。
+
+    lark-cli 输出格式：
+        {"ok": true, "identity": "bot", "data": {"message_id": "om_xxx", "create_time": "..."}}
+
+    SDK response 接口：
+        response.success()  → bool
+        response.code       → int
+        response.msg        → str
+        response.data.message_id → str
+    """
+
+    def __init__(self, cli_result: dict):
+        self._result = cli_result
+        self.code = 0 if cli_result.get("ok") else (cli_result.get("code") or 999)
+        self.msg = cli_result.get("msg", "success" if cli_result.get("ok") else "error")
+
+    def success(self) -> bool:
+        return bool(self._result.get("ok", False))
+
+    @property
+    def data(self) -> "CLIResponse._Data":
+        return self._Data(self._result.get("data"))
+
+    class _Data:
+        def __init__(self, raw: Optional[dict]):
+            self._raw = raw or {}
+            self.message_id: Optional[str] = self._raw.get("message_id")
+
+        def __getattr__(self, name: str) -> Any:
+            return self._raw.get(name)
 
 
 # ---------------------------------------------------------------------------
@@ -1575,6 +1612,7 @@ class FeishuAdapter(BasePlatformAdapter):
             admins=admins,
             default_group_policy=default_group_policy,
             group_rules=group_rules,
+            use_lark_cli=bool(extra.get("use_lark_cli", os.getenv("HERMES_FEISHU_USE_LARK_CLI", "")).strip().lower() in ("1", "true", "yes")),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1605,6 +1643,17 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_reconnect_interval = settings.ws_reconnect_interval
         self._ws_ping_interval = settings.ws_ping_interval
         self._ws_ping_timeout = settings.ws_ping_timeout
+        self._use_lark_cli = settings.use_lark_cli
+        logger.info(f"[Feishu] use_lark_cli={self._use_lark_cli}, lark-cli path={shutil.which('lark-cli')}")
+        if self._use_lark_cli:
+            import shutil as _shutil
+            if not _shutil.which("lark-cli"):
+                logger.warning(
+                    "[Feishu] use_lark_cli is enabled but lark-cli is not found in PATH. "
+                    "Falling back to SDK for message sending. "
+                    "Install with: npm install -g @larksuite/cli"
+                )
+                self._use_lark_cli = False
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -3809,6 +3858,77 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+    async def _send_via_cli(
+        self,
+        *,
+        chat_id: str,
+        msg_type: str,
+        payload: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> CLIResponse:
+        """
+        通过 lark-cli 发送消息，返回 CLIResponse 封装对象。
+
+        lark-cli 消息发送格式：
+            lark-cli im +messages-send --chat-id <id> --msg-type <type> --content '<json>'
+            lark-cli im +messages-send --chat-id <id> --text "plain text"
+        """
+        thread_id = (metadata or {}).get("thread_id")
+        cmd = ["lark-cli", "im", "+messages-send", "--chat-id", chat_id]
+
+        # 根据 msg_type 选择正确参数
+        if msg_type == "text":
+            # text: payload 是 {"text": "..."}，但 lark-cli --text 直接接收纯文本
+            try:
+                text_data = json.loads(payload)
+                text_content = text_data.get("text", payload)
+            except (json.JSONDecodeError, TypeError):
+                text_content = payload
+            cmd.extend(["--text", text_content])
+        else:
+            cmd.extend(["--msg-type", msg_type, "--content", payload])
+
+        # reply-to 和 thread 参数
+        if reply_to:
+            cmd.extend(["--reply-to", reply_to])
+        if thread_id:
+            cmd.extend(["--thread-id", thread_id])
+
+        cmd.extend(["--as", "bot"])
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            stderr_text = stderr.decode() if stderr else ""
+            logger.warning("[Feishu CLI] send failed (exit %d): %s", proc.returncode, stderr_text)
+            # 返回一个失败的响应对象，让上层统一处理
+            return CLIResponse({
+                "ok": False,
+                "code": proc.returncode,
+                "msg": stderr_text or f"lark-cli exited with {proc.returncode}",
+            })
+
+        try:
+            result = json.loads(stdout.decode())
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            logger.warning("[Feishu CLI] failed to parse stdout: %s\nraw: %s", exc, stdout[:500])
+            return CLIResponse({
+                "ok": False,
+                "code": 999,
+                "msg": f"failed to parse lark-cli output: {exc}",
+            })
+
+        if not result.get("ok"):
+            logger.warning("[Feishu CLI] send rejected by API: %s", result.get("msg", "unknown error"))
+
+        return CLIResponse(result)
+
     async def _send_raw_message(
         self,
         *,
@@ -3818,6 +3938,17 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
+        # lark-cli 路径（当开关打开时）
+        if self._use_lark_cli:
+            return await self._send_via_cli(
+                chat_id=chat_id,
+                msg_type=msg_type,
+                payload=payload,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+
+        # 原有 SDK 路径（默认）
         reply_in_thread = bool((metadata or {}).get("thread_id"))
         if reply_to:
             body = self._build_reply_message_body(
