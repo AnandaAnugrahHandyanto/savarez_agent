@@ -60,6 +60,12 @@ execute_code:
       description: spawn subprocesses from execute_code
     - pattern: '\bos\.system\s*\('
       description: spawn shell commands from execute_code
+    - pattern: '\b(eval|exec)\s*\('
+      description: execute dynamic Python code inside execute_code
+    - pattern: '__import__\s*\(\s*["''](?:os|subprocess)["'']\s*\)\s*\.\s*(system|run|Popen|call|check_call|check_output)\s*\('
+      description: invoke shell or subprocess calls through dynamic imports
+    - pattern: 'getattr\s*\(\s*(?:os|subprocess|__import__\s*\([^)]*\))\s*,\s*["''](?:system|run|Popen|call|check_call|check_output)["'']\s*\)\s*\('
+      description: invoke shell or subprocess calls through getattr
 
 bootstrap:
   required_commands:
@@ -74,9 +80,21 @@ proof_of_done:
   output_dir: proof_of_done
   max_command_preview_chars: 240
 
+delegate:
+  approval_required_for_mcp_toolsets: true
+  approval_required_if_acp_command: true
+
+mcp:
+  approval_required_tool_name_patterns:
+    - pattern: '(^|_)(add|create|update|delete|remove|destroy|merge|reply|label|enable|publish|deploy|release|push|tag|commit|write|patch|edit|set)(_|$)'
+      description: mutate remote state through an MCP tool
+
 readiness:
   script: scripts/run_readiness.py
   smoke_script: scripts/smoke_autonomy.py
   pytest_targets:
     - tests/tools/test_autonomy_guard.py
     - tests/run_agent/test_autonomy_runtime.py
+    - tests/tools/test_delegate.py::TestDelegateTask::test_explicit_mcp_toolset_requires_approval
+    - tests/tools/test_delegate.py::TestDelegateTask::test_acp_command_requires_approval
+    - tests/tools/test_mcp_tool.py::TestToolHandler::test_mutating_mcp_tool_requires_approval

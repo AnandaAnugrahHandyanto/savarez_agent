@@ -6,11 +6,15 @@ from __future__ import annotations
 import subprocess
 import sys
 import tempfile
+from unittest.mock import patch
 from pathlib import Path
 
 from tools.autonomy_guard import (
     command_mutates_filesystem,
     enforce_write_policy,
+    evaluate_delegate_request,
+    evaluate_execute_code,
+    evaluate_mcp_tool_call,
     evaluate_terminal_command,
     load_autonomy_policy,
     run_bootstrap_preflight,
@@ -46,6 +50,23 @@ def main() -> int:
 
         approval = evaluate_terminal_command("git push origin HEAD", workdir=str(repo))
         assert approval["status"] == "approval_required"
+        code_approval = evaluate_execute_code("eval(\"print(1)\")", workdir=str(repo))
+        assert code_approval["status"] == "approval_required"
+
+    with patch.dict(
+        "toolsets.TOOLSETS",
+        {"github": {"description": "MCP server 'github' tools", "tools": ["mcp_github_create_pull_request"]}},
+        clear=False,
+    ):
+        delegate_approval = evaluate_delegate_request(
+            toolsets=["github"],
+            tasks=None,
+            acp_command=None,
+        )
+        assert delegate_approval["status"] == "approval_required"
+
+    mcp_approval = evaluate_mcp_tool_call("github", "create_pull_request")
+    assert mcp_approval["status"] == "approval_required"
 
     preflight = run_bootstrap_preflight(
         explicit_api_key="smoke-key",

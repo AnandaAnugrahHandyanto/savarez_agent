@@ -205,6 +205,23 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][0]["status"], "error")
         self.assertIn("Something broke", result["results"][0]["error"])
 
+    @patch.dict("toolsets.TOOLSETS", {"github": {"description": "MCP server 'github' tools", "tools": ["mcp_github_create_pull_request"]}}, clear=False)
+    @patch("tools.delegate_tool._run_single_child")
+    def test_explicit_mcp_toolset_requires_approval(self, mock_run):
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(goal="Open a PR", toolsets=["github"], parent_agent=parent))
+        self.assertEqual(result["status"], "approval_required")
+        self.assertIn("MCP-backed toolset", result["error"])
+        mock_run.assert_not_called()
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_acp_command_requires_approval(self, mock_run):
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(goal="Run Claude child", acp_command="claude", parent_agent=parent))
+        self.assertEqual(result["status"], "approval_required")
+        self.assertIn("ACP command override", result["error"])
+        mock_run.assert_not_called()
+
     def test_depth_increments(self):
         """Verify child gets parent's depth + 1."""
         parent = _make_mock_parent(depth=0)

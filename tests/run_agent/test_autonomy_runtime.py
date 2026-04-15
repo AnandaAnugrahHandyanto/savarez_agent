@@ -89,6 +89,7 @@ def test_run_conversation_emits_proof_of_done_artifact(agent, tmp_path, monkeypa
     assert payload["preflight"]["ok"] is True
     assert payload["status"] == "passed"
     assert payload["stop_reason"]
+    assert payload["stop_reason_code"]
 
 
 def test_proof_of_done_artifact_records_commands_and_gate_outcomes(agent, tmp_path, monkeypatch):
@@ -121,3 +122,4 @@ def test_proof_of_done_artifact_records_commands_and_gate_outcomes(agent, tmp_pa
     assert payload["gates_run"][0]["name"] == "run_readiness"
     assert payload["gates_run"][0]["outcome"] == "passed"
     assert payload["next_required_human_action"] is None
+    assert payload["stop_reason_code"] == "text_response"

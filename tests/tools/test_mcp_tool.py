@@ -240,6 +240,23 @@ class TestToolHandler:
         assert "error" in result
         assert "not connected" in result["error"]
 
+    def test_mutating_mcp_tool_requires_approval(self):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(return_value=_make_call_result("should not run", is_error=False))
+        server = _make_mock_server("test_srv", session=mock_session)
+        _servers["test_srv"] = server
+
+        try:
+            handler = _make_tool_handler("test_srv", "create_pull_request", 120)
+            result = json.loads(handler({}))
+            assert result["status"] == "approval_required"
+            assert "autonomy policy" in result["error"].lower()
+            mock_session.call_tool.assert_not_called()
+        finally:
+            _servers.pop("test_srv", None)
+
     def test_exception_during_call(self):
         from tools.mcp_tool import _make_tool_handler, _servers
 
@@ -1179,7 +1196,11 @@ class TestConfigurableTimeouts:
         try:
             handler = _make_tool_handler("test_srv", "my_tool", 180)
             with patch("tools.mcp_tool._run_on_mcp_loop") as mock_run:
-                mock_run.return_value = json.dumps({"result": "ok"})
+                def _fake_run(coro, timeout=30):
+                    coro.close()
+                    return json.dumps({"result": "ok"})
+
+                mock_run.side_effect = _fake_run
                 handler({})
                 # Verify timeout=180 was passed
                 call_kwargs = mock_run.call_args

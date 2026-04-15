@@ -55,6 +55,15 @@ def _first_matching_description(text: str, entries: Iterable[Dict[str, Any]]) ->
     return None
 
 
+def _policy_unavailable(exc: AutonomyPolicyError) -> Dict[str, Any]:
+    return {
+        "allowed": False,
+        "status": "blocked",
+        "description": "autonomy policy unavailable",
+        "message": f"BLOCKED: {exc}",
+    }
+
+
 def _git(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args],
@@ -192,12 +201,7 @@ def evaluate_execute_code(code: str, *, workdir: Optional[str]) -> Dict[str, Any
     try:
         policy = load_autonomy_policy()
     except AutonomyPolicyError as exc:
-        return {
-            "allowed": False,
-            "status": "blocked",
-            "description": "autonomy policy unavailable",
-            "message": f"BLOCKED: {exc}",
-        }
+        return _policy_unavailable(exc)
 
     exec_cfg = policy.get("execute_code", {})
     approval_cfg = policy.get("approval", {})
@@ -247,6 +251,102 @@ def evaluate_execute_code(code: str, *, workdir: Optional[str]) -> Dict[str, Any
             ),
         }
 
+    return {"allowed": True, "status": "ok"}
+
+
+def _toolset_contains_mcp(toolset_name: str) -> bool:
+    try:
+        from toolsets import TOOLSETS
+    except Exception:
+        return toolset_name.startswith("mcp-")
+
+    definition = TOOLSETS.get(toolset_name) or {}
+    description = str(definition.get("description") or "")
+    tools = [str(tool) for tool in definition.get("tools", [])]
+    return (
+        toolset_name.startswith("mcp-")
+        or description.startswith("MCP server '")
+        or any(tool.startswith("mcp_") for tool in tools)
+    )
+
+
+def evaluate_delegate_request(
+    *,
+    toolsets: Optional[Iterable[str]],
+    tasks: Optional[Iterable[Dict[str, Any]]],
+    acp_command: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Apply autonomy policy to delegate_task requests."""
+    try:
+        policy = load_autonomy_policy()
+    except AutonomyPolicyError as exc:
+        return _policy_unavailable(exc)
+
+    delegate_cfg = policy.get("delegate", {})
+    if delegate_cfg.get("approval_required_if_acp_command", True):
+        explicit_acp = []
+        if str(acp_command or "").strip():
+            explicit_acp.append(str(acp_command).strip())
+        for task in tasks or []:
+            value = str((task or {}).get("acp_command") or "").strip()
+            if value:
+                explicit_acp.append(value)
+        if explicit_acp:
+            return {
+                "allowed": False,
+                "status": "approval_required",
+                "description": "spawn child agents through an ACP command override",
+                "message": (
+                    "Human approval required by autonomy policy: spawn child agents "
+                    "through an ACP command override."
+                ),
+            }
+
+    if delegate_cfg.get("approval_required_for_mcp_toolsets", True):
+        explicit_toolsets = [str(name) for name in toolsets or [] if str(name).strip()]
+        for task in tasks or []:
+            explicit_toolsets.extend(
+                str(name)
+                for name in ((task or {}).get("toolsets") or [])
+                if str(name).strip()
+            )
+        for toolset_name in explicit_toolsets:
+            if _toolset_contains_mcp(toolset_name):
+                return {
+                    "allowed": False,
+                    "status": "approval_required",
+                    "description": f"delegate work with MCP-backed toolset '{toolset_name}'",
+                    "message": (
+                        "Human approval required by autonomy policy: "
+                        f"delegate work with MCP-backed toolset '{toolset_name}'."
+                    ),
+                }
+
+    return {"allowed": True, "status": "ok"}
+
+
+def evaluate_mcp_tool_call(server_name: str, tool_name: str, *, workdir: Optional[str] = None) -> Dict[str, Any]:
+    """Apply autonomy policy to mutating MCP tool invocations."""
+    try:
+        policy = load_autonomy_policy()
+    except AutonomyPolicyError as exc:
+        return _policy_unavailable(exc)
+
+    mcp_cfg = policy.get("mcp", {})
+    description = _first_matching_description(
+        tool_name,
+        mcp_cfg.get("approval_required_tool_name_patterns", []),
+    )
+    if description:
+        return {
+            "allowed": False,
+            "status": "approval_required",
+            "description": description,
+            "message": (
+                f"Human approval required by autonomy policy: {description} "
+                f"({server_name}.{tool_name})."
+            ),
+        }
     return {"allowed": True, "status": "ok"}
 
 
@@ -482,6 +582,24 @@ def _next_required_human_action(status: str) -> Optional[str]:
     return None
 
 
+_STOP_REASON_CODE_PREFIXES = {
+    "text_response(": "text_response",
+    "error_near_max_iterations(": "error_near_max_iterations",
+    "max_iterations_reached(": "max_iterations_reached",
+}
+
+
+def normalize_stop_reason(stop_reason: Optional[str]) -> str:
+    """Return a stable stop-reason code alongside the raw reason text."""
+    raw = str(stop_reason or "").strip()
+    if not raw:
+        return "unknown"
+    for prefix, code in _STOP_REASON_CODE_PREFIXES.items():
+        if raw.startswith(prefix):
+            return code
+    return raw
+
+
 def write_proof_artifact(
     proof_state: Dict[str, Any],
     *,
@@ -512,6 +630,7 @@ def write_proof_artifact(
         "interrupted": interrupted,
         "api_calls": api_calls,
         "stop_reason": stop_reason,
+        "stop_reason_code": normalize_stop_reason(stop_reason),
         "final_response_present": bool(final_response),
         "final_response_length": len(final_response or ""),
         "files_touched": sorted(set(proof_state.get("files_touched", []))),

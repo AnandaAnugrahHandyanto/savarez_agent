@@ -26,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
+from tools.autonomy_guard import evaluate_delegate_request
 
 
 # Tools that children must never have access to
@@ -691,6 +692,22 @@ def delegate_task(
     for i, task in enumerate(task_list):
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+    delegate_policy = evaluate_delegate_request(
+        toolsets=None if tasks else toolsets,
+        tasks=task_list,
+        acp_command=acp_command,
+    )
+    if not delegate_policy.get("allowed"):
+        return json.dumps(
+            {
+                "status": delegate_policy.get("status", "blocked"),
+                "error": delegate_policy.get("message", "delegate_task blocked by autonomy policy."),
+                "description": delegate_policy.get("description"),
+                "approved": False,
+            },
+            ensure_ascii=False,
+        )
 
     overall_start = time.monotonic()
     results = []

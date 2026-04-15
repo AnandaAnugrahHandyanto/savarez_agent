@@ -84,6 +84,8 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+from tools.autonomy_guard import evaluate_mcp_tool_call
+
 # ---------------------------------------------------------------------------
 # Graceful import -- MCP SDK is an optional dependency
 # ---------------------------------------------------------------------------
@@ -1286,6 +1288,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """
 
     def _handler(args: dict, **kwargs) -> str:
+        policy = evaluate_mcp_tool_call(server_name, tool_name, workdir=os.getcwd())
+        if not policy.get("allowed"):
+            return json.dumps({
+                "status": policy.get("status", "blocked"),
+                "error": policy.get("message", "MCP tool blocked by autonomy policy."),
+                "description": policy.get("description"),
+                "approved": False,
+            })
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
@@ -1328,11 +1338,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 return json.dumps({"result": structured})
             return json.dumps({"result": text_result})
 
+        coro = _call()
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(coro, timeout=tool_timeout)
         except InterruptedError:
+            coro.close()
             return _interrupted_call_result()
         except Exception as exc:
+            coro.close()
             logger.error(
                 "MCP tool %s/%s call failed: %s",
                 server_name, tool_name, exc,
@@ -1373,11 +1386,14 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
                 resources.append(entry)
             return json.dumps({"resources": resources})
 
+        coro = _call()
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(coro, timeout=tool_timeout)
         except InterruptedError:
+            coro.close()
             return _interrupted_call_result()
         except Exception as exc:
+            coro.close()
             logger.error(
                 "MCP %s/list_resources failed: %s", server_name, exc,
             )
@@ -1419,11 +1435,14 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
                     parts.append(f"[binary data, {len(block.blob)} bytes]")
             return json.dumps({"result": "\n".join(parts) if parts else ""})
 
+        coro = _call()
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(coro, timeout=tool_timeout)
         except InterruptedError:
+            coro.close()
             return _interrupted_call_result()
         except Exception as exc:
+            coro.close()
             logger.error(
                 "MCP %s/read_resource failed: %s", server_name, exc,
             )
@@ -1468,11 +1487,14 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
                 prompts.append(entry)
             return json.dumps({"prompts": prompts})
 
+        coro = _call()
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(coro, timeout=tool_timeout)
         except InterruptedError:
+            coro.close()
             return _interrupted_call_result()
         except Exception as exc:
+            coro.close()
             logger.error(
                 "MCP %s/list_prompts failed: %s", server_name, exc,
             )
@@ -1525,11 +1547,14 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
                 resp["description"] = result.description
             return json.dumps(resp)
 
+        coro = _call()
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(coro, timeout=tool_timeout)
         except InterruptedError:
+            coro.close()
             return _interrupted_call_result()
         except Exception as exc:
+            coro.close()
             logger.error(
                 "MCP %s/get_prompt failed: %s", server_name, exc,
             )

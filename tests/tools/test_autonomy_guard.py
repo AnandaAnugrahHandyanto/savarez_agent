@@ -10,8 +10,11 @@ import pytest
 from tools import autonomy_guard
 from tools.autonomy_guard import (
     enforce_write_policy,
+    evaluate_delegate_request,
     evaluate_execute_code,
+    evaluate_mcp_tool_call,
     evaluate_terminal_command,
+    normalize_stop_reason,
     run_bootstrap_preflight,
 )
 
@@ -107,6 +110,45 @@ def test_execute_code_policy_requires_approval_for_subprocess(tmp_path):
     assert decision["allowed"] is False
     assert decision["status"] == "approval_required"
     assert "subprocesses" in decision["description"]
+
+
+def test_execute_code_policy_requires_approval_for_eval(tmp_path):
+    repo = _init_repo(tmp_path, branch="codex/safe")
+    decision = evaluate_execute_code("eval(\"open('tracked.txt', 'w').write('x')\")", workdir=str(repo))
+    assert decision["allowed"] is False
+    assert decision["status"] == "approval_required"
+    assert "dynamic python" in decision["description"].lower()
+
+
+def test_execute_code_policy_requires_approval_for_indirect_os_system(tmp_path):
+    repo = _init_repo(tmp_path, branch="codex/safe")
+    decision = evaluate_execute_code("__import__('os').system('git push origin HEAD')", workdir=str(repo))
+    assert decision["allowed"] is False
+    assert decision["status"] == "approval_required"
+    assert "dynamic imports" in decision["description"].lower()
+
+
+def test_delegate_policy_requires_approval_for_explicit_mcp_toolset(monkeypatch):
+    monkeypatch.setitem(
+        __import__("toolsets").TOOLSETS,
+        "github",
+        {"description": "MCP server 'github' tools", "tools": ["mcp_github_create_pull_request"]},
+    )
+    decision = evaluate_delegate_request(toolsets=["github"], tasks=None, acp_command=None)
+    assert decision["allowed"] is False
+    assert decision["status"] == "approval_required"
+
+
+def test_mcp_policy_requires_approval_for_mutating_tool():
+    decision = evaluate_mcp_tool_call("github", "create_pull_request")
+    assert decision["allowed"] is False
+    assert decision["status"] == "approval_required"
+
+
+def test_normalize_stop_reason_collapses_dynamic_variants():
+    assert normalize_stop_reason("text_response(finish_reason=stop)") == "text_response"
+    assert normalize_stop_reason("max_iterations_reached(3/3)") == "max_iterations_reached"
+    assert normalize_stop_reason(None) == "unknown"
 
 
 @patch("tools.file_tools._get_file_ops")
