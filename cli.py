@@ -396,14 +396,26 @@ def load_cli_config() -> Dict[str, Any]:
     if "backend" in terminal_config:
         terminal_config["env_type"] = terminal_config["backend"]
     
-    # Handle special cwd values: "." or "auto" means use current working directory.
-    # Only resolve to the host's CWD for the local backend where the host
-    # filesystem is directly accessible.  For ALL remote/container backends
-    # (ssh, docker, modal, singularity), the host path doesn't exist on the
-    # target -- remove the key so terminal_tool.py uses its per-backend default.
+    # Handle special cwd values: "." or "auto" means use a concrete working
+    # directory. For local backends, prefer an already-established TERMINAL_CWD
+    # (e.g. set by gateway/run.py from MESSAGING_CWD) so we do not clobber the
+    # gateway's workspace with os.getcwd(). For remote/container backends,
+    # remove the key so terminal_tool.py uses its per-backend default.
     if terminal_config.get("cwd") in (".", "auto", "cwd"):
         effective_backend = terminal_config.get("env_type", "local")
-        if effective_backend == "local":
+        existing_terminal_cwd = os.environ.get("TERMINAL_CWD", "").strip()
+        if effective_backend == "local" and existing_terminal_cwd:
+            try:
+                if Path(existing_terminal_cwd).expanduser().is_dir():
+                    terminal_config["cwd"] = existing_terminal_cwd
+                    defaults["terminal"]["cwd"] = existing_terminal_cwd
+                else:
+                    terminal_config["cwd"] = os.getcwd()
+                    defaults["terminal"]["cwd"] = terminal_config["cwd"]
+            except OSError:
+                terminal_config["cwd"] = os.getcwd()
+                defaults["terminal"]["cwd"] = terminal_config["cwd"]
+        elif effective_backend == "local":
             terminal_config["cwd"] = os.getcwd()
             defaults["terminal"]["cwd"] = terminal_config["cwd"]
         else:

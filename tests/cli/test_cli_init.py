@@ -331,6 +331,54 @@ class TestRootLevelProviderOverride:
         assert "provider" not in result  # root key still cleaned up
 
 
+class TestTerminalCwdPrecedence:
+    """load_cli_config() should respect an already-set TERMINAL_CWD."""
+
+    def test_existing_terminal_cwd_wins_over_dot_cwd(self, tmp_path, monkeypatch):
+        import yaml
+        import cli
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({"terminal": {"env_type": "local", "cwd": "."}}))
+
+        workspace = tmp_path / "messaging-workspace"
+        workspace.mkdir()
+        system_cwd = tmp_path / "systemd-working-dir"
+        system_cwd.mkdir()
+
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+        monkeypatch.chdir(system_cwd)
+
+        cfg = cli.load_cli_config()
+
+        assert cfg["terminal"]["cwd"] == str(workspace)
+        assert os.environ["TERMINAL_CWD"] == str(workspace)
+
+    def test_missing_terminal_cwd_falls_back_to_os_cwd(self, tmp_path, monkeypatch):
+        import yaml
+        import cli
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({"terminal": {"env_type": "local", "cwd": "."}}))
+
+        system_cwd = tmp_path / "systemd-working-dir"
+        system_cwd.mkdir()
+
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        monkeypatch.chdir(system_cwd)
+
+        cfg = cli.load_cli_config()
+
+        assert cfg["terminal"]["cwd"] == str(system_cwd)
+        assert os.environ["TERMINAL_CWD"] == str(system_cwd)
+
+
 class TestProviderResolution:
     def test_api_key_is_string_or_none(self):
         cli = _make_cli()
