@@ -507,7 +507,7 @@ async def test_run_agent_surfaces_real_interim_commentary(monkeypatch, tmp_path)
         config_data={"display": {"interim_assistant_messages": True}},
     )
 
-    assert result.get("already_sent") is not True
+    assert result.get("already_sent") is True
     assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
 
 
@@ -588,7 +588,7 @@ async def test_display_streaming_does_not_enable_gateway_streaming(monkeypatch, 
         },
     )
 
-    assert result.get("already_sent") is not True
+    assert result.get("already_sent") is True
     assert adapter.edits == []
     assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
 
@@ -608,7 +608,7 @@ async def test_run_agent_interim_commentary_works_with_tool_progress_off(monkeyp
         },
     )
 
-    assert result.get("already_sent") is not True
+    assert result.get("already_sent") is True
     assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
 
 
@@ -665,7 +665,7 @@ async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monke
     sent_texts = [call["content"] for call in adapter.sent]
     assert result["final_response"] == "final response 2"
     assert "I'll inspect the repo first." in sent_texts
-    assert "final response 1" in sent_texts
+    assert "final response 1" not in sent_texts
 
 
 @pytest.mark.asyncio

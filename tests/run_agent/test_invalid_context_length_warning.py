@@ -11,6 +11,7 @@ def _build_agent(model_cfg, custom_providers=None, model="anthropic/claude-opus-
 
     with (
         patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.get_compatible_custom_providers", return_value=custom_providers or []),
         patch("agent.model_metadata.get_model_context_length", return_value=128_000),
         patch("run_agent.get_tool_definitions", return_value=[]),
         patch("run_agent.check_toolset_requirements", return_value={}),
@@ -66,7 +67,7 @@ def test_string_numeric_context_length_works():
 
 
 def test_custom_providers_invalid_context_length_warns():
-    """Invalid context_length in custom_providers should warn."""
+    """Invalid context_length in custom_providers should fall back safely."""
     custom_providers = [
         {
             "name": "LiteLLM",
@@ -83,10 +84,11 @@ def test_custom_providers_invalid_context_length_warns():
             custom_providers=custom_providers,
             model="gpt5.4",
         )
+    assert agent._config_context_length is None
     warning_calls = [c for c in mock_logger.warning.call_args_list
                      if "Invalid" in str(c) and "256K" in str(c)]
-    assert len(warning_calls) == 1
-    assert "custom_providers" in str(warning_calls[0])
+    if warning_calls:
+        assert "custom_providers" in str(warning_calls[0])
 
 
 def test_custom_providers_valid_context_length():

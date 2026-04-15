@@ -10,20 +10,45 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 # ---------------------------------------------------------------------------
-# Minimal stubs so we can import gateway code without heavy deps
+# Minimal telegram stubs so gateway imports don't poison later Telegram tests.
+# Keep this compatible with gateway.platforms.telegram's import surface.
 # ---------------------------------------------------------------------------
 import sys, types
 
 _tg = types.ModuleType("telegram")
+_tg.Update = type("Update", (), {"ALL_TYPES": []})
+_tg.Bot = type("Bot", (), {})
+_tg.Message = type("Message", (), {})
+_tg.InlineKeyboardButton = type("InlineKeyboardButton", (), {})
+_tg.InlineKeyboardMarkup = type("InlineKeyboardMarkup", (), {})
+
 _tg.constants = types.ModuleType("telegram.constants")
+_tg.constants.ParseMode = types.SimpleNamespace(MARKDOWN_V2="MarkdownV2")
 _ct = MagicMock()
 _ct.SUPERGROUP = "supergroup"
 _ct.GROUP = "group"
 _ct.PRIVATE = "private"
 _tg.constants.ChatType = _ct
-sys.modules.setdefault("telegram", _tg)
-sys.modules.setdefault("telegram.constants", _tg.constants)
-sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
+
+_tg.ext = types.ModuleType("telegram.ext")
+_tg.ext.Application = type("Application", (), {})
+_tg.ext.CommandHandler = type("CommandHandler", (), {})
+_tg.ext.CallbackQueryHandler = type("CallbackQueryHandler", (), {})
+_tg.ext.MessageHandler = type("MessageHandler", (), {})
+_tg.ext.ContextTypes = types.SimpleNamespace(DEFAULT_TYPE=object)
+_tg.ext.filters = types.SimpleNamespace(ALL=object())
+
+_tg.request = types.ModuleType("telegram.request")
+_tg.request.HTTPXRequest = type("HTTPXRequest", (), {})
+
+
+@pytest.fixture(autouse=True)
+def _inject_telegram_stubs(monkeypatch):
+    monkeypatch.setitem(sys.modules, "telegram", _tg)
+    monkeypatch.setitem(sys.modules, "telegram.constants", _tg.constants)
+    monkeypatch.setitem(sys.modules, "telegram.ext", _tg.ext)
+    monkeypatch.setitem(sys.modules, "telegram.request", _tg.request)
+
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
