@@ -42,5 +42,9 @@ USER root
 RUN chmod +x /opt/hermes/docker/entrypoint.sh
 
 ENV HERMES_HOME=/opt/data
+
+# Prepend the virtualenv bin directory to PATH so that `hermes` and all other venv binaries are found in every execution context
+ENV PATH="/opt/hermes/.venv/bin:$PATH"
+
 VOLUME [ "/opt/data" ]
 ENTRYPOINT [ "/opt/hermes/docker/entrypoint.sh" ]
