@@ -1728,6 +1728,7 @@ class GatewayRunner:
                        "EMAIL_ALLOWED_USERS",
                        "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
                        "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS",
+                       "MSTEAMS_ALLOWED_USERS",
                        "FEISHU_ALLOWED_USERS",
                        "WECOM_ALLOWED_USERS",
                        "WECOM_CALLBACK_ALLOWED_USERS",
@@ -1743,6 +1744,7 @@ class GatewayRunner:
                        "SIGNAL_ALLOW_ALL_USERS", "EMAIL_ALLOW_ALL_USERS",
                        "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
                        "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS",
+                       "MSTEAMS_ALLOW_ALL_USERS",
                        "FEISHU_ALLOW_ALL_USERS",
                        "WECOM_ALLOW_ALL_USERS",
                        "WECOM_CALLBACK_ALLOW_ALL_USERS",
@@ -2459,6 +2461,13 @@ class GatewayRunner:
                 return None
             return DingTalkAdapter(config)
 
+        elif platform == Platform.MSTEAMS:
+            from gateway.platforms.msteams import MSTeamsAdapter, check_msteams_requirements
+            if not check_msteams_requirements():
+                logger.warning("MSTeams: aiohttp not installed or MSTEAMS_APP_ID/PASSWORD/TENANT_ID not set")
+                return None
+            return MSTeamsAdapter(config)
+
         elif platform == Platform.FEISHU:
             from gateway.platforms.feishu import FeishuAdapter, check_feishu_requirements
             if not check_feishu_requirements():
@@ -2559,6 +2568,36 @@ class GatewayRunner:
         if not user_id:
             return False
 
+        if source.platform == Platform.MSTEAMS:
+            config = getattr(self, "config", None)
+            platform_cfg = None
+            if config is not None and getattr(config, "platforms", None):
+                platform_cfg = config.platforms.get(Platform.MSTEAMS)
+            teams_extra = ((platform_cfg.extra if platform_cfg else None) or {})
+            teams_policy_configured = any(
+                key in teams_extra
+                for key in (
+                    "dm_policy",
+                    "group_policy",
+                    "allow_from",
+                    "group_allow_from",
+                    "teams",
+                    "dangerously_allow_name_matching",
+                    "require_mention",
+                    "reply_style",
+                )
+            )
+            legacy_platform_allowlist = os.getenv("MSTEAMS_ALLOWED_USERS", "").strip()
+            legacy_platform_allow_all = os.getenv("MSTEAMS_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
+            global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+            global_allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
+            if teams_policy_configured and not any((legacy_platform_allowlist, legacy_platform_allow_all, global_allowlist, global_allow_all)):
+                dm_policy = str(teams_extra.get("dm_policy") or "pairing").strip().lower()
+                if source.chat_type == "dm" and dm_policy == "pairing":
+                    platform_name = source.platform.value if source.platform else ""
+                    return self.pairing_store.is_approved(platform_name, user_id)
+                return True
+
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
@@ -2570,6 +2609,7 @@ class GatewayRunner:
             Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
             Platform.MATRIX: "MATRIX_ALLOWED_USERS",
             Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
+            Platform.MSTEAMS: "MSTEAMS_ALLOWED_USERS",
             Platform.FEISHU: "FEISHU_ALLOWED_USERS",
             Platform.WECOM: "WECOM_ALLOWED_USERS",
             Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
@@ -2588,6 +2628,7 @@ class GatewayRunner:
             Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
             Platform.MATRIX: "MATRIX_ALLOW_ALL_USERS",
             Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
+            Platform.MSTEAMS: "MSTEAMS_ALLOW_ALL_USERS",
             Platform.FEISHU: "FEISHU_ALLOW_ALL_USERS",
             Platform.WECOM: "WECOM_ALLOW_ALL_USERS",
             Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOW_ALL_USERS",
