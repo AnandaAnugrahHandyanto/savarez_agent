@@ -732,11 +732,23 @@ class IRCAdapter(BasePlatformAdapter):
             chat_id = target
 
             # For channels: only respond to messages that mention us at the beginning
-            # Must start with "<nickname>:" (colon immediately after nickname, no space)
-            # Check against original nick (what users will type) in case of collision
-            mention_pattern = re.compile(f"^{re.escape(self._nick)}:", re.IGNORECASE)
-            if not mention_pattern.match(text):
+            # Messages can have multiple mentions at the start, like "foo: bar: baz: Hi!"
+            mention_block_pattern = re.compile(r"^(([a-zA-Z_][a-zA-Z0-9_-]*:)+ )+", re.IGNORECASE)
+            match = mention_block_pattern.match(text)
+            if not match:
                 logger.debug("IRC: Filtered channel message (no mention): %s", text[:100])
+                return
+
+            # Split mention block on ": " to get individual nicks
+            nick_pattern = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
+            mentioned_nicks = [
+                nick_part.lower()
+                for nick_part in match.group(0).split(": ")
+                if nick_part and nick_pattern.match(nick_part)
+            ]
+
+            if self._nick.lower() not in mentioned_nicks:
+                logger.debug("IRC: Filtered channel message (we were not mentioned): %s", text[:100])
                 return
         else:
             # DM - use sender's nick as chat_id

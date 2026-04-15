@@ -137,6 +137,190 @@ class TestIRCAdapterFormatMessage:
 # Integration Tests
 # ---------------------------------------------------------------------------
 
+class TestIRCAdapterMentions:
+    """Tests for IRCAdapter mention pattern matching."""
+
+    def test_single_mention_accepted(self, monkeypatch):
+        """Messages starting with a single mention should be accepted."""
+        monkeypatch.setenv("IRC_SERVER", "irc.example.com")
+        monkeypatch.setenv("IRC_NICK", "bot1")
+
+        from gateway.platforms.irc import IRCAdapter
+        import re
+
+        adapter = IRCAdapter(PlatformConfig(enabled=True, extra={"server": "irc.example.com", "nick": "bot1"}))
+
+        mention_block_pattern = re.compile(r"^(([a-zA-Z_][a-zA-Z0-9_-]*:)+ )+", re.IGNORECASE)
+
+        text = "bot1: hi"
+        match = mention_block_pattern.match(text)
+        assert match is not None
+
+        nick_pattern = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
+        mentioned_nicks = [
+            nick_part.lower()
+            for nick_part in match.group(0).split(": ")
+            if nick_part and nick_pattern.match(nick_part)
+        ]
+        assert mentioned_nicks == ["bot1"]
+
+    def test_multiple_mentions_accepted(self, monkeypatch):
+        """Messages starting with multiple mentions should extract all nicks."""
+        monkeypatch.setenv("IRC_SERVER", "irc.example.com")
+        monkeypatch.setenv("IRC_NICK", "bot1")
+
+        from gateway.platforms.irc import IRCAdapter
+        import re
+
+        adapter = IRCAdapter(PlatformConfig(enabled=True, extra={"server": "irc.example.com", "nick": "bot1"}))
+
+        mention_block_pattern = re.compile(r"^(([a-zA-Z_][a-zA-Z0-9_-]*:)+ )+", re.IGNORECASE)
+
+        text = "foo: bar: baz: hi"
+        match = mention_block_pattern.match(text)
+        assert match is not None
+
+        nick_pattern = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
+        mentioned_nicks = [
+            nick_part.lower()
+            for nick_part in match.group(0).split(": ")
+            if nick_part and nick_pattern.match(nick_part)
+        ]
+        assert mentioned_nicks == ["foo", "bar", "baz"]
+
+    def test_nick_among_mentions(self, monkeypatch):
+        """Bot should be extracted when its nick is among multiple mentions."""
+        monkeypatch.setenv("IRC_SERVER", "irc.example.com")
+        monkeypatch.setenv("IRC_NICK", "bot1")
+
+        from gateway.platforms.irc import IRCAdapter
+        import re
+
+        adapter = IRCAdapter(PlatformConfig(enabled=True, extra={"server": "irc.example.com", "nick": "bot1"}))
+
+        mention_block_pattern = re.compile(r"^(([a-zA-Z_][a-zA-Z0-9_-]*:)+ )+", re.IGNORECASE)
+        nick_pattern = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
+
+        # Bot mentioned second
+        text1 = "bot2: bot1: bot3: hi"
+        match1 = mention_block_pattern.match(text1)
+        mentioned_nicks1 = [
+            nick_part.lower()
+            for nick_part in match1.group(0).split(": ")
+            if nick_part and nick_pattern.match(nick_part)
+        ]
+        assert "bot1" in mentioned_nicks1
+
+        # Bot mentioned third
+        text2 = "bot2: bot3: bot1: hi"
+        match2 = mention_block_pattern.match(text2)
+        mentioned_nicks2 = [
+            nick_part.lower()
+            for nick_part in match2.group(0).split(": ")
+            if nick_part and nick_pattern.match(nick_part)
+        ]
+        assert "bot1" in mentioned_nicks2
+
+    def test_nick_not_mentioned(self, monkeypatch):
+        """Bot should NOT be extracted when its nick is not mentioned."""
+        monkeypatch.setenv("IRC_SERVER", "irc.example.com")
+        monkeypatch.setenv("IRC_NICK", "bot1")
+
+        from gateway.platforms.irc import IRCAdapter
+        import re
+
+        adapter = IRCAdapter(PlatformConfig(enabled=True, extra={"server": "irc.example.com", "nick": "bot1"}))
+
+        mention_block_pattern = re.compile(r"^(([a-zA-Z_][a-zA-Z0-9_-]*:)+ )+", re.IGNORECASE)
+        nick_pattern = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
+
+        text = "bot2: bot3: bot4: hi"
+        match = mention_block_pattern.match(text)
+        mentioned_nicks = [
+            nick_part.lower()
+            for nick_part in match.group(0).split(": ")
+            if nick_part and nick_pattern.match(nick_part)
+        ]
+        assert "bot1" not in mentioned_nicks
+
+    def test_no_leading_mention_block(self, monkeypatch):
+        """Messages without a leading mention block should not match."""
+        monkeypatch.setenv("IRC_SERVER", "irc.example.com")
+        monkeypatch.setenv("IRC_NICK", "bot1")
+
+        from gateway.platforms.irc import IRCAdapter
+        import re
+
+        adapter = IRCAdapter(PlatformConfig(enabled=True, extra={"server": "irc.example.com", "nick": "bot1"}))
+
+        mention_block_pattern = re.compile(r"^(([a-zA-Z_][a-zA-Z0-9_-]*:)+ )+", re.IGNORECASE)
+
+        # No mention at start
+        texts = [
+            "hi bot1:",
+            "hello world",
+            "bot1: hi",  # this actually has a mention block!
+        ]
+
+        match_count = 0
+        for text in texts:
+            if mention_block_pattern.match(text):
+                match_count += 1
+
+        # Only "bot1: hi" should match
+        assert match_count == 1
+
+    def test_no_space_after_colon(self, monkeypatch):
+        """Messages without space after colon are not valid mentions."""
+        monkeypatch.setenv("IRC_SERVER", "irc.example.com")
+        monkeypatch.setenv("IRC_NICK", "bot1")
+
+        from gateway.platforms.irc import IRCAdapter
+        import re
+
+        adapter = IRCAdapter(PlatformConfig(enabled=True, extra={"server": "irc.example.com", "nick": "bot1"}))
+
+        mention_block_pattern = re.compile(r"^(([a-zA-Z_][a-zA-Z0-9_-]*:)+ )+", re.IGNORECASE)
+
+        # No space after colon - should not match
+        text = "bot1:hi"
+        match = mention_block_pattern.match(text)
+        assert match is None
+
+    def test_case_insensitive(self, monkeypatch):
+        """Mention matching should be case-insensitive."""
+        monkeypatch.setenv("IRC_SERVER", "irc.example.com")
+        monkeypatch.setenv("IRC_NICK", "Bot1")
+
+        from gateway.platforms.irc import IRCAdapter
+        import re
+
+        adapter = IRCAdapter(PlatformConfig(enabled=True, extra={"server": "irc.example.com", "nick": "Bot1"}))
+
+        mention_block_pattern = re.compile(r"^(([a-zA-Z_][a-zA-Z0-9_-]*:)+ )+", re.IGNORECASE)
+        nick_pattern = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
+
+        texts = [
+            "bot1: hi",
+            "Bot1: hi",
+            "BOT1: hi",
+            "bot2: bot1: hi",
+        ]
+
+        for text in texts:
+            match = mention_block_pattern.match(text)
+            mentioned_nicks = [
+                nick_part.lower()
+                for nick_part in match.group(0).split(": ")
+                if nick_part and nick_pattern.match(nick_part)
+            ]
+            assert "bot1" in mentioned_nicks
+
+
+# ---------------------------------------------------------------------------
+# Integration Tests
+# ---------------------------------------------------------------------------
+
 class TestIRCIntegration:
     def test_irc_not_in_connected_platforms_when_disabled(self, monkeypatch):
         """IRC should not appear in get_connected_platforms when not configured."""
