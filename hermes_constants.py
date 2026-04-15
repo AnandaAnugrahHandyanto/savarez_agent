@@ -56,6 +56,21 @@ def get_default_hermes_root() -> Path:
     return env_path
 
 
+def get_active_profile_name(hermes_home: Path | None = None) -> str | None:
+    """Return the active profile name for the given Hermes home, if any.
+
+    Supports both the standard ``~/.hermes/profiles/<name>`` layout and
+    custom-root deployments such as ``/opt/data/profiles/<name>``.
+    """
+    home = (hermes_home or get_hermes_home()).resolve()
+    profiles_root = (get_default_hermes_root() / "profiles").resolve()
+    try:
+        relative = home.relative_to(profiles_root)
+    except ValueError:
+        return None
+    return relative.parts[0] if relative.parts else None
+
+
 def get_optional_skills_dir(default: Path | None = None) -> Path:
     """Return the optional-skills directory, honoring package-manager wrappers.
 

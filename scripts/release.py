@@ -188,6 +188,7 @@ AUTHOR_MAP = {
     "vorvul.danylo@gmail.com": "WorldInnovationsDepartment",
     "win4r@outlook.com": "win4r",
     "xush@xush.org": "KUSH42",
+    "xowiekk@gmail.com": "Xowiek",
     "yangzhi.see@gmail.com": "SeeYangZhi",
     "yongtenglei@gmail.com": "yongtenglei",
     "young@YoungdeMacBook-Pro.local": "YoungYang963",
