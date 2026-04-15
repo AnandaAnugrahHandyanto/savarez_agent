@@ -7035,6 +7035,7 @@ class AIAgent:
                 messages,
                 system_prompt=active_system_prompt or "",
                 tools=self.tools or None,
+                model=self.model,
             )
 
             if _preflight_tokens >= self.context_compressor.threshold_tokens:
