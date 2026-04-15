@@ -1126,6 +1126,7 @@ class AIAgent:
         api_mode: str = None,
         acp_command: str = None,
         acp_args: list[str] | None = None,
+        acp_env: Dict[str, str] | None = None,
         command: str = None,
         args: list[str] | None = None,
         model: str = "",
@@ -1176,6 +1177,10 @@ class AIAgent:
         skip_memory: bool = False,
         session_db=None,
         parent_session_id: str = None,
+        home_id: str = None,
+        profile_name: str = None,
+        transport_kind: str = None,
+        launch_kind: str = None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
         credential_pool=None,
@@ -1271,6 +1276,14 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
+        self.acp_env = {str(k): str(v) for k, v in dict(acp_env or {}).items()}
+        self.home_id = str(home_id).strip() if isinstance(home_id, str) and str(home_id).strip() else None
+        inferred_profile = None if self.home_id in {None, "", "default", "custom"} else self.home_id
+        self.profile_name = (
+            str(profile_name).strip() if isinstance(profile_name, str) and str(profile_name).strip() else inferred_profile
+        )
+        self.transport_kind = transport_kind or ("acp" if self.acp_command else "direct")
+        self.launch_kind = launch_kind or "direct"
         if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
@@ -1660,6 +1673,8 @@ class AIAgent:
                 if self.provider == "copilot-acp":
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
+                    if self.acp_env:
+                        client_kwargs["acp_env"] = dict(self.acp_env)
                 effective_base = base_url
                 if base_url_host_matches(effective_base, "openrouter.ai"):
                     from agent.auxiliary_client import build_or_headers
@@ -2702,6 +2717,11 @@ class AIAgent:
             _sm_timeout = get_provider_request_timeout(self.provider, self.model)
             if _sm_timeout is not None:
                 self._client_kwargs["timeout"] = _sm_timeout
+            if self.provider == "copilot-acp":
+                self._client_kwargs["command"] = self.acp_command
+                self._client_kwargs["args"] = list(self.acp_args or [])
+                if self.acp_env:
+                    self._client_kwargs["acp_env"] = dict(self.acp_env)
             self.client = self._create_openai_client(
                 dict(self._client_kwargs),
                 reason="switch_model",
@@ -7969,7 +7989,17 @@ class AIAgent:
             # ``request_client_holder["diag"]`` for closure access.
             _diag = self._stream_diag_init()
             request_client_holder["diag"] = _diag
-            stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
+            stream_or_response = request_client_holder["client"].chat.completions.create(**stream_kwargs)
+
+            # Compatibility shim for lightweight ACP/OpenAI facades that ignore
+            # stream=True and return a completed chat-completions response object.
+            # Hermes can continue down the normal non-streaming response path in
+            # that case instead of trying to iterate the response like a stream.
+            if hasattr(stream_or_response, "choices"):
+                self._capture_rate_limits(getattr(stream_or_response, "response", None))
+                return stream_or_response
+
+            stream = stream_or_response
 
             # Capture rate limit headers from the initial HTTP response.
             # The OpenAI SDK Stream object exposes the underlying httpx
@@ -10600,6 +10630,7 @@ class AIAgent:
             toolsets=function_args.get("toolsets"),
             tasks=function_args.get("tasks"),
             max_iterations=function_args.get("max_iterations"),
+            profile=function_args.get("profile"),
             acp_command=function_args.get("acp_command"),
             acp_args=function_args.get("acp_args"),
             role=function_args.get("role"),
