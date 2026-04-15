@@ -7309,7 +7309,7 @@ class GatewayRunner:
         finally:
             notify_path.unlink(missing_ok=True)
 
-    def _set_session_env(self, context: SessionContext) -> list:
+    def _set_session_env(self, context: SessionContext) -> dict:
         """Set session context variables for the current async task.
 
         Uses ``contextvars`` instead of ``os.environ`` so that concurrent
@@ -7318,19 +7318,45 @@ class GatewayRunner:
         Returns a list of reset tokens; pass them to ``_clear_session_env``
         in a ``finally`` block.
         """
-        from gateway.session_context import set_session_vars
-        return set_session_vars(
+        from gateway.session_context import get_session_env, set_session_vars
+
+        baseline = {
+            "platform": get_session_env("HERMES_SESSION_PLATFORM"),
+            "chat_id": get_session_env("HERMES_SESSION_CHAT_ID"),
+            "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME"),
+            "thread_id": get_session_env("HERMES_SESSION_THREAD_ID"),
+            "user_id": get_session_env("HERMES_SESSION_USER_ID"),
+            "user_name": get_session_env("HERMES_SESSION_USER_NAME"),
+            "session_key": get_session_env("HERMES_SESSION_KEY"),
+        }
+        tokens = set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
             chat_name=context.source.chat_name or "",
             thread_id=str(context.source.thread_id) if context.source.thread_id else "",
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
-            session_key=context.session_key,
+            session_key=context.session_key or "",
         )
+        return {"tokens": tokens, "baseline": baseline}
 
-    def _clear_session_env(self, tokens: list) -> None:
+    def _clear_session_env(self, tokens: Any) -> None:
         """Restore session context variables to their pre-handler values."""
+        from gateway.session_context import set_session_vars
+
+        if isinstance(tokens, dict) and "baseline" in tokens:
+            baseline = tokens.get("baseline") or {}
+            set_session_vars(
+                platform=baseline.get("platform", ""),
+                chat_id=baseline.get("chat_id", ""),
+                chat_name=baseline.get("chat_name", ""),
+                thread_id=baseline.get("thread_id", ""),
+                user_id=baseline.get("user_id", ""),
+                user_name=baseline.get("user_name", ""),
+                session_key=baseline.get("session_key", ""),
+            )
+            return
+
         from gateway.session_context import clear_session_vars
         clear_session_vars(tokens)
     
@@ -8364,6 +8390,7 @@ class GatewayRunner:
         result_holder = [None]  # Mutable container for the result
         tools_holder = [None]   # Mutable container for the tool definitions
         stream_consumer_holder = [None]  # Mutable container for stream consumer
+        preview_callback_sent = [False]  # Tracks preview text delivered before final response
         
         # Bridge sync step_callback → async hooks.emit for agent:step events
         _loop_for_step = asyncio.get_event_loop()
@@ -8531,6 +8558,7 @@ class GatewayRunner:
 
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
                 if _stream_consumer is not None:
+                    preview_callback_sent[0] = True
                     if already_streamed:
                         _stream_consumer.on_segment_break()
                     else:
@@ -8547,6 +8575,7 @@ class GatewayRunner:
                         ),
                         _loop_for_step,
                     )
+                    preview_callback_sent[0] = True
                 except Exception as _e:
                     logger.debug("interim_assistant_callback error: %s", _e)
 
@@ -9464,9 +9493,14 @@ class GatewayRunner:
         if _sc and isinstance(response, dict) and not response.get("failed"):
             _final = response.get("final_response") or ""
             _is_empty_sentinel = not _final or _final == "(empty)"
+            _response_previewed = bool(response.get("response_previewed"))
             if not _is_empty_sentinel and (
                 getattr(_sc, "final_response_sent", False)
                 or getattr(_sc, "already_sent", False)
+                or (
+                    _response_previewed
+                    and preview_callback_sent[0]
+                )
             ):
                 response["already_sent"] = True
         
