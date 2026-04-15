@@ -48,7 +48,17 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "qqbot",
 })
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import (
+    get_due_jobs,
+    mark_job_run,
+    save_job_output,
+    advance_next_run,
+    load_jobs,
+    save_jobs,
+    gc_completed_jobs,
+    _is_stale_oneshot,
+    _jobs_write_lock,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -61,6 +71,46 @@ _hermes_home = get_hermes_home()
 # File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
 _LOCK_DIR = _hermes_home / "cron"
 _LOCK_FILE = _LOCK_DIR / ".tick.lock"
+
+# ---------------------------------------------------------------------------
+# Observability (cron-fixes patch, 2026-04-15)
+# ---------------------------------------------------------------------------
+# Append-only event log for cron activity. One JSON object per line so
+# operators can tail, grep, or pipe to jq without a parser. Events cover tick
+# start/end, job start/end, and delivery attempts.
+_EVENT_LOG = _hermes_home / "logs" / "cron-events.jsonl"
+_EVENT_LOG_MAX_BYTES = 10 * 1024 * 1024  # 10MB → rotate to .1 (single generation)
+
+# Rate-limiter state for stale-oneshot alerts so a stuck laptop doesn't spam
+# the user every 60 seconds.
+_STALE_ALERTED: set = set()
+
+
+def _log_event(event: str, **fields) -> None:
+    """Append one JSONL line to ~/.hermes/logs/cron-events.jsonl.
+
+    Rotates to .jsonl.1 when size exceeds _EVENT_LOG_MAX_BYTES. Failures to
+    rotate or write are swallowed — observability must never break the tick.
+    """
+    try:
+        _EVENT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if _EVENT_LOG.exists() and _EVENT_LOG.stat().st_size > _EVENT_LOG_MAX_BYTES:
+                rotated = _EVENT_LOG.with_suffix(".jsonl.1")
+                if rotated.exists():
+                    rotated.unlink()
+                _EVENT_LOG.rename(rotated)
+        except OSError:
+            pass
+        payload = {
+            "ts": _hermes_now().isoformat(),
+            "event": event,
+            **fields,
+        }
+        with open(_EVENT_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, default=str) + "\n")
+    except Exception:
+        logger.exception("Failed to write cron event; continuing")
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -762,11 +812,16 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # for hours if it's actively calling tools / receiving stream tokens,
         # but a hung API call or stuck tool with no activity for the configured
         # duration is caught and killed.  Default 600s (10 min inactivity);
-        # override via HERMES_CRON_TIMEOUT env var.  0 = unlimited.
+        # override order: job.idle_timeout_seconds > HERMES_CRON_TIMEOUT env >
+        # built-in default 600.  0 = unlimited.
         #
         # Uses the agent's built-in activity tracker (updated by
         # _touch_activity() on every tool call, API call, and stream delta).
-        _cron_timeout = float(os.getenv("HERMES_CRON_TIMEOUT", 600))
+        _per_job_timeout = job.get("idle_timeout_seconds")
+        if _per_job_timeout is not None:
+            _cron_timeout = float(_per_job_timeout)
+        else:
+            _cron_timeout = float(os.getenv("HERMES_CRON_TIMEOUT", 600))
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         _POLL_INTERVAL = 5.0
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -930,10 +985,65 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         return 0
 
     try:
+        _tick_started_at = _hermes_now()
+        _log_event("tick_start")
+
+        # --- Stale detector + GC --------------------------------------
+        # Runs under the same tick lock so we don't race with a writer that
+        # is mid-save. Narrow scope: only surfaces (a) one-shots past the
+        # grace window that would otherwise be silently dropped, and
+        # (b) reaps state="completed" rows older than the retention window.
+        try:
+            with _jobs_write_lock():
+                _all_jobs = load_jobs()
+                _now = _hermes_now()
+                _gc_removed = gc_completed_jobs(_all_jobs)
+                _stale = [j for j in _all_jobs if _is_stale_oneshot(j, _now)]
+                if _gc_removed:
+                    save_jobs(_all_jobs)
+                    _log_event("gc_completed", removed=_gc_removed)
+        except Exception:
+            logger.exception("Stale detector/GC failed; continuing tick")
+            _stale = []
+
+        for _job in _stale:
+            _jid = _job.get("id")
+            if _jid in _STALE_ALERTED:
+                continue  # dedupe: one alert per stuck job per gateway lifetime
+            _STALE_ALERTED.add(_jid)
+            logger.error(
+                "Stale one-shot '%s' (id=%s) past grace window "
+                "— scheduled for %s, now %s. Will be dropped silently by "
+                "get_due_jobs(). Trigger manually or re-create.",
+                _job.get("name", _jid),
+                _jid,
+                _job.get("next_run_at"),
+                _hermes_now().isoformat(),
+            )
+            _log_event(
+                "stale_oneshot_detected",
+                job_id=_jid,
+                name=_job.get("name"),
+                next_run_at=_job.get("next_run_at"),
+            )
+            # Best-effort Telegram alert; ignore failures.
+            try:
+                _deliver_result(
+                    _job,
+                    f"⚠️ Cron one-shot '{_job.get('name', _jid)}' missed its scheduled time "
+                    f"({_job.get('next_run_at')}) by more than the grace window. "
+                    f"It will not fire. Re-create it if still needed.",
+                    adapters=adapters,
+                    loop=loop,
+                )
+            except Exception as _de:
+                logger.debug("Stale-alert delivery failed for %s: %s", _jid, _de)
+
         due_jobs = get_due_jobs()
 
         if verbose and not due_jobs:
             logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
+            _log_event("tick_end", jobs_run=0, duration_s=(_hermes_now() - _tick_started_at).total_seconds())
             return 0
 
         if verbose:
@@ -941,6 +1051,8 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         executed = 0
         for job in due_jobs:
+            _job_started_at = _hermes_now()
+            _log_event("job_start", job_id=job["id"], name=job.get("name"))
             try:
                 # For recurring jobs (cron/interval), advance next_run_at to the
                 # next future occurrence BEFORE execution.  This way, if the
@@ -970,14 +1082,44 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
+                    _log_event(
+                        "delivery",
+                        job_id=job["id"],
+                        name=job.get("name"),
+                        success=(delivery_error is None),
+                        error=delivery_error,
+                    )
 
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                mark_job_run(
+                    job["id"],
+                    success,
+                    error,
+                    delivery_error=delivery_error,
+                    delivery_attempted=should_deliver,
+                )
+                _log_event(
+                    "job_end",
+                    job_id=job["id"],
+                    name=job.get("name"),
+                    success=success,
+                    error=error,
+                    duration_s=(_hermes_now() - _job_started_at).total_seconds(),
+                )
                 executed += 1
 
             except Exception as e:
                 logger.error("Error processing job %s: %s", job['id'], e)
                 mark_job_run(job["id"], False, str(e))
+                _log_event(
+                    "job_end",
+                    job_id=job["id"],
+                    name=job.get("name"),
+                    success=False,
+                    error=str(e),
+                    duration_s=(_hermes_now() - _job_started_at).total_seconds(),
+                )
 
+        _log_event("tick_end", jobs_run=executed, duration_s=(_hermes_now() - _tick_started_at).total_seconds())
         return executed
     finally:
         if fcntl:

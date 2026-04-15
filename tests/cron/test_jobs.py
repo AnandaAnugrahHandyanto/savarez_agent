@@ -308,11 +308,17 @@ class TestMarkJobRun:
         assert updated["repeat"]["completed"] == 1
         assert updated["last_status"] == "ok"
 
-    def test_repeat_limit_removes_job(self, tmp_cron_dir):
+    def test_repeat_limit_retains_completed_job(self, tmp_cron_dir):
         job = create_job(prompt="Once", schedule="30m", repeat=1)
         mark_job_run(job["id"], success=True)
-        # Job should be removed after hitting repeat limit
-        assert get_job(job["id"]) is None
+        # Job is retained for COMPLETED_RETENTION_DAYS (default 7) as an
+        # audit trail; state transitions to "completed" and enabled=False.
+        # A periodic GC (gc_completed_jobs) reaps rows past retention.
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated["state"] == "completed"
+        assert updated["enabled"] is False
+        assert updated["repeat"]["completed"] == 1
 
     def test_repeat_negative_one_is_infinite(self, tmp_cron_dir):
         # LLMs often pass repeat=-1 to mean "infinite/forever".
