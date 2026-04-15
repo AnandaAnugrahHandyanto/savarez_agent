@@ -782,31 +782,31 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         _prov_display = _prov_names.get(selected_provider, selected_provider or "your provider")
 
         print()
-        print_header("Vision & Image Analysis (optional)")
-        print_info(f"Vision uses a separate multimodal backend. {_prov_display}")
-        print_info("doesn't currently provide one Hermes can auto-use for vision,")
-        print_info("so choose a backend now or skip and configure later.")
+        print_header("비전 및 이미지 분석 (선택 사항)")
+        print_info(f"Vision은 별도의 멀티모달 백엔드를 사용합니다. {_prov_display}")
+        print_info("현재는 Hermes가 vision용으로 자동 활용할 수 있는 백엔드를 제공하지 않으므로,")
+        print_info("지금 백엔드를 선택하거나 건너뛰고 나중에 설정하세요.")
         print()
 
         _vision_choices = [
-            "OpenRouter — uses Gemini (free tier at openrouter.ai/keys)",
-            "OpenAI-compatible endpoint — base URL, API key, and vision model",
-            "Skip for now",
+            "OpenRouter — Gemini 사용 (openrouter.ai/keys의 무료 티어 가능)",
+            "OpenAI 호환 엔드포인트 — base URL, API key, vision 모델 지정",
+            "지금은 건너뛰기",
         ]
-        _vision_idx = prompt_choice("Configure vision:", _vision_choices, 2)
+        _vision_idx = prompt_choice("vision 설정:", _vision_choices, 2)
 
         if _vision_idx == 0:  # OpenRouter
-            _or_key = prompt("  OpenRouter API key", password=True).strip()
+            _or_key = prompt("  OpenRouter API 키", password=True).strip()
             if _or_key:
                 save_env_value("OPENROUTER_API_KEY", _or_key)
-                print_success("OpenRouter key saved — vision will use Gemini")
+                print_success("OpenRouter 키 저장 완료 — vision은 Gemini를 사용합니다")
             else:
-                print_info("Skipped — vision won't be available")
+                print_info("건너뜀 — vision을 사용할 수 없습니다")
         elif _vision_idx == 1:  # OpenAI-compatible endpoint
-            _base_url = prompt("  Base URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
-            _api_key_label = "  API key"
+            _base_url = prompt("  Base URL (비워두면 OpenAI)").strip() or "https://api.openai.com/v1"
+            _api_key_label = "  API 키"
             if "api.openai.com" in _base_url.lower():
-                _api_key_label = "  OpenAI API key"
+                _api_key_label = "  OpenAI API 키"
             _oai_key = prompt(_api_key_label, password=True).strip()
             if _oai_key:
                 save_env_value("OPENAI_API_KEY", _oai_key)
@@ -815,24 +815,24 @@ def setup_model_provider(config: dict, *, quick: bool = False):
                 _vaux["base_url"] = _base_url
                 if "api.openai.com" in _base_url.lower():
                     _oai_vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]
-                    _vm_choices = _oai_vision_models + ["Use default (gpt-4o-mini)"]
-                    _vm_idx = prompt_choice("Select vision model:", _vm_choices, 0)
+                    _vm_choices = _oai_vision_models + ["기본값 사용 (gpt-4o-mini)"]
+                    _vm_idx = prompt_choice("vision 모델 선택:", _vm_choices, 0)
                     _selected_vision_model = (
                         _oai_vision_models[_vm_idx]
                         if _vm_idx < len(_oai_vision_models)
                         else "gpt-4o-mini"
                     )
                 else:
-                    _selected_vision_model = prompt("  Vision model (blank = use main/custom default)").strip()
+                    _selected_vision_model = prompt("  Vision 모델 (비워두면 메인/커스텀 기본값 사용)").strip()
                 save_env_value("AUXILIARY_VISION_MODEL", _selected_vision_model)
                 print_success(
-                    f"Vision configured with {_base_url}"
+                    f"Vision 설정 완료: {_base_url}"
                     + (f" ({_selected_vision_model})" if _selected_vision_model else "")
                 )
             else:
-                print_info("Skipped — vision won't be available")
+                print_info("건너뜀 — vision을 사용할 수 없습니다")
         else:
-            print_info("Skipped — add later with 'hermes setup' or configure AUXILIARY_VISION_* settings")
+            print_info("건너뜀 — 나중에 'hermes setup'으로 추가하거나 AUXILIARY_VISION_* 설정을 구성하세요")
 
 
     if selected_provider == "nous" and nous_subscription_selected:

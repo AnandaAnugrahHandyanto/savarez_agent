@@ -322,7 +322,7 @@ def test_setup_copilot_acp_skips_same_provider_pool_step(tmp_path, monkeypatch):
             return 15  # GitHub Copilot ACP
         if question == "Select default model:":
             return 0
-        if question == "Configure vision:":
+        if question == "vision 설정:":
             return len(choices) - 1
         tts_idx = _maybe_keep_current_tts(question, choices)
         if tts_idx is not None:

@@ -146,6 +146,9 @@ class TestNonInteractiveSetup:
         assert '도구 진행 표시: all' in source
         assert '압축 임계값: 0.50' in source
         assert '자동 리셋 안 함' in source
+        assert '비전 및 이미지 분석 (선택 사항)' in source
+        assert 'vision 설정:' in source
+        assert 'OpenRouter 키 저장 완료 — vision은 Gemini를 사용합니다' in source
 
     def test_cmd_setup_allows_noninteractive_flag_without_tty(self):
         """The CLI entrypoint should not block --non-interactive before setup.py handles it."""
