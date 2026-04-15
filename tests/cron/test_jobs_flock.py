@@ -42,10 +42,13 @@ def hermes_tmp_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    # Reload cron.jobs so module-level CRON_DIR / JOBS_FILE pick up the new home.
-    for mod in ("cron.jobs",):
-        if mod in sys.modules:
-            del sys.modules[mod]
+    # Reload cron.jobs so module-level CRON_DIR / JOBS_FILE pick up the
+    # new HERMES_HOME. Under full-suite runs, another test may have
+    # already imported the module against the previous home; reload forces
+    # re-evaluation of the module-level constants.
+    import cron.jobs as _jobs
+    import importlib
+    importlib.reload(_jobs)
     return home
 
 

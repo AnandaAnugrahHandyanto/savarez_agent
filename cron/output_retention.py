@@ -22,7 +22,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +200,40 @@ def rotate_all(*, dry_run: bool = False) -> Tuple[int, int]:
         total_deleted += d
         total_reclaimed += r
     return (total_deleted, total_reclaimed)
+
+
+def nightly_cleanup(*, prune_older_than_days: int = 90, dry_run: bool = False) -> Dict[str, int]:
+    """F-M1: built-in nightly maintenance pass.
+
+    Intended to be invoked from a shipped cron job (e.g. ``0 3 * * *``) so
+    operators don't have to remember to run cleanup themselves. Rotates
+    every job's output dir (honoring MAX_AGE_DAYS + MAX_SIZE_BYTES_PER_JOB)
+    and prunes ended sessions older than ``prune_older_than_days`` from the
+    SessionDB.
+
+    Returns a summary dict ``{files_deleted, bytes_reclaimed, sessions_pruned}``
+    that the caller can surface in the cron job's output.
+    """
+    files_deleted, bytes_reclaimed = rotate_all(dry_run=dry_run)
+    sessions_pruned = 0
+    if not dry_run:
+        try:
+            # Lazy import to keep this module dependency-light when only
+            # rotate_job is used.
+            from hermes_state import SessionDB
+            db = SessionDB()
+            sessions_pruned = db.prune_sessions(older_than_days=prune_older_than_days)
+        except Exception as exc:  # pragma: no cover — best-effort
+            logger.warning("nightly_cleanup: prune_sessions failed: %s", exc)
+    logger.info(
+        "nightly_cleanup: files_deleted=%d bytes_reclaimed=%d sessions_pruned=%d dry_run=%s",
+        files_deleted, bytes_reclaimed, sessions_pruned, dry_run,
+    )
+    return {
+        "files_deleted": files_deleted,
+        "bytes_reclaimed": bytes_reclaimed,
+        "sessions_pruned": sessions_pruned,
+    }
 
 
 def maybe_rotate_after_run(job_id: str) -> None:
