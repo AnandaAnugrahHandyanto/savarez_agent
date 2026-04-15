@@ -167,6 +167,24 @@ def _install_safe_stdio() -> None:
             setattr(sys, stream_name, _SafeWriter(stream))
 
 
+def _provider_api_key_hint(provider_id: str) -> str:
+    """Return the primary API key env var hint for a configured provider."""
+    normalized = (provider_id or "").strip().lower()
+    if not normalized:
+        return ""
+
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+    except Exception:
+        PROVIDER_REGISTRY = {}
+
+    provider_config = PROVIDER_REGISTRY.get(normalized)
+    if provider_config and provider_config.api_key_env_vars:
+        return provider_config.api_key_env_vars[0]
+
+    return f"{normalized.upper()}_API_KEY"
+
+
 class IterationBudget:
     """Thread-safe iteration counter for an agent.
 
@@ -951,9 +969,10 @@ class AIAgent:
                     # message instead of silently routing through OpenRouter.
                     _explicit = (self.provider or "").strip().lower()
                     if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                        env_var_hint = _provider_api_key_hint(_explicit)
                         raise RuntimeError(
                             f"Provider '{_explicit}' is set in config.yaml but no API key "
-                            f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                            f"was found. Set the {env_var_hint} environment "
                             f"variable, or switch to a different provider with `hermes model`."
                         )
                     # Final fallback: try raw OpenRouter key
