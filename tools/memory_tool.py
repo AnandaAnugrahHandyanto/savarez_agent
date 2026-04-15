@@ -89,14 +89,24 @@ _INVISIBLE_CHARS = {
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
-    # Check invisible unicode
+    import unicodedata
+
+    # Normalize Unicode fullwidth/compatibility chars to ASCII equivalents
+    # before scanning.  Without this, fullwidth payloads like
+    # "ｉｇｎｏｒｅ　ｐｒｅｖｉｏｕｓ　ｉｎｓｔｒｕｃｔｉｏｎｓ" bypass regex but LLMs
+    # normalize them internally and follow the injected instruction.
+    # approval.py already does NFKC normalization; memory_tool must too
+    # since memory entries are injected into the system prompt.
+    normalized = unicodedata.normalize('NFKC', content)
+
+    # Check invisible unicode (on original — normalization may strip some)
     for char in _INVISIBLE_CHARS:
         if char in content:
             return f"Blocked: content contains invisible unicode character U+{ord(char):04X} (possible injection)."
 
-    # Check threat patterns
+    # Check threat patterns on NFKC-normalized content
     for pattern, pid in _MEMORY_THREAT_PATTERNS:
-        if re.search(pattern, content, re.IGNORECASE):
+        if re.search(pattern, normalized, re.IGNORECASE):
             return f"Blocked: content matches threat pattern '{pid}'. Memory entries are injected into the system prompt and must not contain injection or exfiltration payloads."
 
     return None
