@@ -19,6 +19,7 @@ SKILL_CONTENT = """\
 ---
 name: test-skill
 description: A test skill for unit testing.
+version: 1.0.0
 ---
 
 # Test Skill
@@ -56,6 +57,7 @@ class TestFuzzyPatchSkill:
 ---
 name: ws-skill
 description: Whitespace test
+version: 1.0.0
 ---
 
 # Commands
@@ -76,6 +78,7 @@ description: Whitespace test
 ---
 name: indent-skill
 description: Indentation test
+version: 1.0.0
 ---
 
 # Steps
@@ -101,6 +104,7 @@ description: Indentation test
 ---
 name: dup-skill
 description: Duplicate test
+version: 1.0.0
 ---
 
 # Steps
@@ -117,6 +121,7 @@ word word word
 ---
 name: dup-skill
 description: Duplicate test
+version: 1.0.0
 ---
 
 # Steps

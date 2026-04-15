@@ -40,6 +40,7 @@ VALID_SKILL_CONTENT = """\
 ---
 name: test-skill
 description: A test skill for unit testing.
+version: 1.0.0
 ---
 
 # Test Skill
@@ -51,6 +52,9 @@ VALID_SKILL_CONTENT_2 = """\
 ---
 name: test-skill
 description: Updated description.
+version: 1.0.1
+changelog:
+  - Clarified the main step ordering.
 ---
 
 # Test Skill v2
@@ -120,6 +124,14 @@ class TestValidateFrontmatter:
     def test_valid_content(self):
         assert _validate_frontmatter(VALID_SKILL_CONTENT) is None
 
+    def test_missing_version_field(self):
+        content = "---\nname: test\ndescription: desc\n---\n\nBody.\n"
+        assert _validate_frontmatter(content) == "Frontmatter must include 'version' field."
+
+    def test_invalid_version_format(self):
+        content = "---\nname: test\ndescription: desc\nversion: v1\n---\n\nBody.\n"
+        assert _validate_frontmatter(content) == "Frontmatter 'version' must look like semantic versioning (e.g. 1.0.0)."
+
     def test_empty_content(self):
         assert _validate_frontmatter("") == "Content cannot be empty."
         assert _validate_frontmatter("   ") == "Content cannot be empty."
@@ -141,7 +153,7 @@ class TestValidateFrontmatter:
         assert _validate_frontmatter(content) == "Frontmatter must include 'description' field."
 
     def test_no_body_after_frontmatter(self):
-        content = "---\nname: test\ndescription: desc\n---\n"
+        content = "---\nname: test\ndescription: desc\nversion: 1.0.0\n---\n"
         assert _validate_frontmatter(content) == "SKILL.md must have content after the frontmatter (instructions, procedures, etc.)."
 
     def test_invalid_yaml(self):
@@ -270,6 +282,14 @@ class TestEditSkill:
         content = (tmp_path / "my-skill" / "SKILL.md").read_text()
         assert "A test skill" in content
 
+    def test_edit_version_bump_requires_new_changelog_note(self, tmp_path):
+        updated = VALID_SKILL_CONTENT.replace("version: 1.0.0", "version: 1.0.1")
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _edit_skill("my-skill", updated)
+        assert result["success"] is False
+        assert "changelog" in result["error"].lower()
+
 
 class TestPatchSkill:
     def test_patch_unique_match(self, tmp_path):
@@ -292,6 +312,7 @@ class TestPatchSkill:
 ---
 name: test-skill
 description: A test skill.
+version: 1.0.0
 ---
 
 # Test
@@ -309,6 +330,7 @@ word word
 ---
 name: test-skill
 description: A test skill.
+version: 1.0.0
 ---
 
 # Test
@@ -326,6 +348,13 @@ word word
             _write_file("my-skill", "references/api.md", "old text here")
             result = _patch_skill("my-skill", "old text", "new text", file_path="references/api.md")
         assert result["success"] is True
+
+    def test_patch_version_bump_requires_new_changelog_note(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _patch_skill("my-skill", "version: 1.0.0", "version: 1.0.1")
+        assert result["success"] is False
+        assert "changelog" in result["error"].lower()
 
     def test_patch_skill_not_found(self, tmp_path):
         with _skill_dir(tmp_path):

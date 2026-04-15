@@ -34,6 +34,7 @@ def _make_skill(
 ---
 name: {name}
 description: Description for {name}.
+version: 1.0.0
 {frontmatter_extra}---
 
 # {name}
@@ -278,6 +279,18 @@ class TestSkillsList:
             raw = skills_list()
         result = json.loads(raw)
         assert result["count"] == 2
+        assert all(skill["version"] == "1.0.0" for skill in result["skills"])
+
+    def test_lists_recent_change_when_present(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "alpha",
+                frontmatter_extra="changelog:\n  - Tightened safety wording.\n",
+            )
+            raw = skills_list()
+        result = json.loads(raw)
+        assert result["skills"][0]["recent_change"] == "Tightened safety wording."
 
     def test_category_filter(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -302,7 +315,19 @@ class TestSkillView:
         result = json.loads(raw)
         assert result["success"] is True
         assert result["name"] == "my-skill"
+        assert result["version"] == "1.0.0"
         assert "Step 1" in result["content"]
+
+    def test_view_returns_changelog_when_present(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "my-skill",
+                frontmatter_extra="changelog:\n  - Tightened safety wording.\n",
+            )
+            raw = skill_view("my-skill")
+        result = json.loads(raw)
+        assert result["changelog"] == ["Tightened safety wording."]
 
     def test_view_nonexistent_skill(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

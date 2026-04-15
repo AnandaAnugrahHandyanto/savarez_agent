@@ -37,6 +37,7 @@ def _make_skill_content(body_chars: int) -> str:
         "---\n"
         "name: test-skill\n"
         "description: A test skill\n"
+        "version: 1.0.0\n"
         "---\n"
     )
     body = "# Test Skill\n\n" + ("x" * max(0, body_chars - 15))
@@ -79,7 +80,7 @@ class TestCreateSkillSizeLimit:
 
     def test_create_at_limit(self, isolate_skills):
         # Content at exactly the limit should succeed
-        frontmatter = "---\nname: edge-skill\ndescription: Edge case\n---\n# Edge\n\n"
+        frontmatter = "---\nname: edge-skill\ndescription: Edge case\nversion: 1.0.0\n---\n# Edge\n\n"
         body_budget = MAX_SKILL_CONTENT_CHARS - len(frontmatter)
         content = frontmatter + ("x" * body_budget)
         assert len(content) == MAX_SKILL_CONTENT_CHARS
@@ -109,8 +110,10 @@ class TestPatchSkillSizeLimit:
 
     def test_patch_that_would_exceed_limit(self, isolate_skills):
         # Create a skill near the limit
-        near_limit = _make_skill_content(MAX_SKILL_CONTENT_CHARS - 50)
-        json.loads(skill_manage(action="create", name="near-limit", content=near_limit))
+        near_limit = _make_skill_content(MAX_SKILL_CONTENT_CHARS - 250)
+        near_limit = near_limit.replace("name: test-skill", "name: near-limit")
+        create_result = json.loads(skill_manage(action="create", name="near-limit", content=near_limit))
+        assert create_result["success"] is True
 
         # Patch that adds enough to go over
         result = json.loads(skill_manage(

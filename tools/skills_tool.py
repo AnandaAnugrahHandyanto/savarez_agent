@@ -29,7 +29,9 @@ SKILL.md Format (YAML Frontmatter, agentskills.io compatible):
     ---
     name: skill-name              # Required, max 64 chars
     description: Brief description # Required, max 1024 chars
-    version: 1.0.0                # Optional
+    version: 1.0.0                # Required for managed/internal skills
+    changelog:                    # Optional lightweight notes for material rule changes
+      - Clarified setup order for remote backends
     license: MIT                  # Optional (agentskills.io)
     platforms: [macos]            # Optional — restrict to specific OS platforms
                                   #   Valid: macos, linux, windows
@@ -496,6 +498,17 @@ def _parse_tags(tags_value) -> List[str]:
     return [t.strip().strip("\"'") for t in tags_value.split(",") if t.strip()]
 
 
+def _parse_changelog(value: Any) -> List[str]:
+    """Normalize lightweight changelog notes from skill frontmatter."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
 
 def _get_disabled_skill_names() -> Set[str]:
     """Load disabled skill names from config.
@@ -533,7 +546,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
             filters out disabled skills.
 
     Returns:
-        List of skill metadata dicts (name, description, category).
+        List of skill metadata dicts (name, description, category, version, recent_change).
     """
     from agent.skill_utils import get_external_skills_dirs
 
@@ -581,13 +594,20 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
 
                 category = _get_category_from_path(skill_md)
+                version = str(frontmatter.get("version") or "").strip() or None
+                changelog = _parse_changelog(frontmatter.get("changelog"))
 
                 seen_names.add(name)
-                skills.append({
+                skill_entry = {
                     "name": name,
                     "description": description,
                     "category": category,
-                })
+                }
+                if version:
+                    skill_entry["version"] = version
+                if changelog:
+                    skill_entry["recent_change"] = changelog[-1]
+                skills.append(skill_entry)
 
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
@@ -648,15 +668,16 @@ def skills_list(category: str = None, task_id: str = None) -> str:
     """
     List all available skills (progressive disclosure tier 1 - minimal metadata).
 
-    Returns only name + description to minimize token usage. Use skill_view() to
-    load full content, tags, related files, etc.
+    Returns small metadata (name, description, category, version, recent_change)
+    to minimize token usage. Use skill_view() to load full content, tags,
+    changelog, related files, etc.
 
     Args:
         category: Optional category filter (e.g., "mlops")
         task_id: Optional task identifier used to probe the active backend
 
     Returns:
-        JSON string with minimal skill info: name, description, category
+        JSON string with minimal skill info: name, description, category, version, recent_change
     """
     try:
         if not SKILLS_DIR.exists():
@@ -1169,6 +1190,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         related_skills = _parse_tags(
             hermes_meta.get("related_skills") or frontmatter.get("related_skills", "")
         )
+        changelog = _parse_changelog(frontmatter.get("changelog"))
 
         # Build linked files structure for clear discovery
         linked_files = {}
@@ -1259,6 +1281,8 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             "success": True,
             "name": skill_name,
             "description": frontmatter.get("description", ""),
+            "version": frontmatter.get("version"),
+            "changelog": changelog or None,
             "tags": tags,
             "related_skills": related_skills,
             "content": content,
@@ -1314,6 +1338,19 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         return tool_error(str(e), success=False)
 
 
+# Tool description for model_tools.py
+SKILLS_TOOL_DESCRIPTION = """Access skill documents providing specialized instructions, guidelines, and executable knowledge.
+
+Progressive disclosure workflow:
+1. skills_list() - Returns metadata (name, description, category, version, recent_change) for all skills
+2. skill_view(name) - Loads full SKILL.md content + shows version, changelog, and available linked_files
+3. skill_view(name, file_path) - Loads specific linked file (e.g., 'references/api.md', 'scripts/train.py')
+
+Skills may include:
+- references/: Additional documentation, API specs, examples
+- templates/: Output formats, config files, boilerplate code
+- assets/: Supplementary files (agentskills.io standard)
+- scripts/: Executable helpers (Python, shell scripts)"""
 
 
 if __name__ == "__main__":

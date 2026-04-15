@@ -7,6 +7,11 @@ approaches into reusable procedural knowledge. New skills are created in
 ~/.hermes/skills/. Existing skills (bundled, hub-installed, or user-created)
 can be modified or deleted wherever they live.
 
+Managed SKILL.md files must include a semantic ``version`` field. When the
+version changes, append a short frontmatter ``changelog`` note describing the
+material behavior/rule change. This keeps prompt drift reviewable without
+introducing heavyweight release process overhead.
+
 Skills are the agent's procedural memory: they capture *how to do a specific
 type of task* based on proven experience. General memory (MEMORY.md, USER.md) is
 broad and declarative. Skills are narrow and actionable.
@@ -84,12 +89,83 @@ MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
+SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$")
 
 # Characters allowed in skill names (filesystem-safe, URL-friendly)
 VALID_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
 
 # Subdirectories allowed for write_file/remove_file
 ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}
+
+
+def _split_frontmatter(content: str) -> Tuple[Optional[Dict[str, Any]], Optional[str], Optional[str]]:
+    """Return parsed frontmatter, body, and an error string if parsing fails."""
+    if not content.startswith("---"):
+        return None, None, "SKILL.md must start with YAML frontmatter (---). See existing skills for format."
+
+    end_match = re.search(r'\n---\s*\n', content[3:])
+    if not end_match:
+        return None, None, "SKILL.md frontmatter is not closed. Ensure you have a closing '---' line."
+
+    yaml_content = content[3:end_match.start() + 3]
+    body = content[end_match.end() + 3:]
+
+    try:
+        parsed = yaml.safe_load(yaml_content)
+    except yaml.YAMLError as e:
+        return None, None, f"YAML frontmatter parse error: {e}"
+
+    if not isinstance(parsed, dict):
+        return None, None, "Frontmatter must be a YAML mapping (key: value pairs)."
+
+    return parsed, body, None
+
+
+def _normalize_changelog(value: Any) -> list[str]:
+    """Normalize changelog/frontmatter notes into a list of non-empty strings."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _validate_versioning_metadata(
+    parsed: Dict[str, Any],
+    previous_parsed: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Validate lightweight skill version/changelog discipline."""
+    version = str(parsed.get("version") or "").strip()
+    if not version:
+        return "Frontmatter must include 'version' field."
+    if not SEMVER_RE.match(version):
+        return "Frontmatter 'version' must look like semantic versioning (e.g. 1.0.0)."
+
+    changelog = parsed.get("changelog")
+    if changelog is not None:
+        notes = _normalize_changelog(changelog)
+        if not notes:
+            return "Frontmatter 'changelog' must be a non-empty string or list of short notes."
+        if len(notes) > 20:
+            return "Frontmatter 'changelog' must stay lightweight (20 notes max)."
+        too_long = [note for note in notes if len(note) > 240]
+        if too_long:
+            return "Each changelog note must stay short (240 characters max)."
+
+    if previous_parsed is not None:
+        prev_version = str(previous_parsed.get("version") or "").strip()
+        if version != prev_version:
+            previous_notes = _normalize_changelog(previous_parsed.get("changelog"))
+            current_notes = _normalize_changelog(parsed.get("changelog"))
+            if len(current_notes) <= len(previous_notes) or current_notes[: len(previous_notes)] != previous_notes:
+                return (
+                    "When changing a skill version, also append a short 'changelog' note "
+                    "describing the material behavior change."
+                )
+
+    return None
 
 
 # =============================================================================
@@ -135,7 +211,10 @@ def _validate_category(category: Optional[str]) -> Optional[str]:
     return None
 
 
-def _validate_frontmatter(content: str) -> Optional[str]:
+def _validate_frontmatter(
+    content: str,
+    previous_content: Optional[str] = None,
+) -> Optional[str]:
     """
     Validate that SKILL.md content has proper frontmatter with required fields.
     Returns error message or None if valid.
@@ -143,22 +222,12 @@ def _validate_frontmatter(content: str) -> Optional[str]:
     if not content.strip():
         return "Content cannot be empty."
 
-    if not content.startswith("---"):
-        return "SKILL.md must start with YAML frontmatter (---). See existing skills for format."
+    parsed, body, err = _split_frontmatter(content)
+    if err:
+        return err
 
-    end_match = re.search(r'\n---\s*\n', content[3:])
-    if not end_match:
-        return "SKILL.md frontmatter is not closed. Ensure you have a closing '---' line."
-
-    yaml_content = content[3:end_match.start() + 3]
-
-    try:
-        parsed = yaml.safe_load(yaml_content)
-    except yaml.YAMLError as e:
-        return f"YAML frontmatter parse error: {e}"
-
-    if not isinstance(parsed, dict):
-        return "Frontmatter must be a YAML mapping (key: value pairs)."
+    assert parsed is not None  # for type-checkers
+    assert body is not None
 
     if "name" not in parsed:
         return "Frontmatter must include 'name' field."
@@ -167,9 +236,19 @@ def _validate_frontmatter(content: str) -> Optional[str]:
     if len(str(parsed["description"])) > MAX_DESCRIPTION_LENGTH:
         return f"Description exceeds {MAX_DESCRIPTION_LENGTH} characters."
 
-    body = content[end_match.end() + 3:].strip()
-    if not body:
+    version_err = _validate_versioning_metadata(parsed)
+    if version_err:
+        return version_err
+
+    if not body.strip():
         return "SKILL.md must have content after the frontmatter (instructions, procedures, etc.)."
+
+    if previous_content is not None:
+        previous_parsed, _, prev_err = _split_frontmatter(previous_content)
+        if prev_err is None and previous_parsed is not None:
+            version_err = _validate_versioning_metadata(parsed, previous_parsed=previous_parsed)
+            if version_err:
+                return version_err
 
     return None
 
@@ -348,14 +427,6 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
 
 def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     """Replace the SKILL.md of any existing skill (full rewrite)."""
-    err = _validate_frontmatter(content)
-    if err:
-        return {"success": False, "error": err}
-
-    err = _validate_content_size(content)
-    if err:
-        return {"success": False, "error": err}
-
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
@@ -363,6 +434,15 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
+
+    err = _validate_frontmatter(content, previous_content=original_content)
+    if err:
+        return {"success": False, "error": err}
+
+    err = _validate_content_size(content)
+    if err:
+        return {"success": False, "error": err}
+
     _atomic_write_text(skill_md, content)
 
     # Security scan — roll back on block
@@ -445,7 +525,7 @@ def _patch_skill(
 
     # If patching SKILL.md, validate frontmatter is still intact
     if not file_path:
-        err = _validate_frontmatter(new_content)
+        err = _validate_frontmatter(new_content, previous_content=content)
         if err:
             return {
                 "success": False,
@@ -669,7 +749,9 @@ SKILL_MANAGE_SCHEMA = {
         "After difficult/iterative tasks, offer to save as a skill. "
         "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
         "Good skills: trigger conditions, numbered steps with exact commands, "
-        "pitfalls section, verification steps. Use skill_view() to see format examples."
+        "pitfalls section, verification steps. Include a semantic 'version' in "
+        "frontmatter, and when behavior rules materially change, append a short "
+        "frontmatter 'changelog' note. Use skill_view() to see format examples."
     ),
     "parameters": {
         "type": "object",
@@ -691,7 +773,9 @@ SKILL_MANAGE_SCHEMA = {
                 "description": (
                     "Full SKILL.md content (YAML frontmatter + markdown body). "
                     "Required for 'create' and 'edit'. For 'edit', read the skill "
-                    "first with skill_view() and provide the complete updated text."
+                    "first with skill_view() and provide the complete updated text. "
+                    "Managed skills must include a semantic 'version' field; if you "
+                    "change that version, also append a short frontmatter 'changelog' note."
                 )
             },
             "old_string": {
