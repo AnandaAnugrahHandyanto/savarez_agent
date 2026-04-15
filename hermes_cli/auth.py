@@ -274,6 +274,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("XIAOMI_API_KEY",),
         base_url_env_var="XIAOMI_BASE_URL",
     ),
+    "aihubmix": ProviderConfig(
+        id="aihubmix",
+        name="AIHubMix",
+        auth_type="api_key",
+        inference_base_url="https://aihubmix.com/v1",
+        api_key_env_vars=("AIHUBMIX_API_KEY",),
+        base_url_env_var="AIHUBMIX_BASE_URL",
+    ),
 }
 
 

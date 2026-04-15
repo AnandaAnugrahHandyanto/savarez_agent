@@ -141,6 +141,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.arcee.ai/api/v1",
         base_url_env_var="ARCEE_BASE_URL",
     ),
+    "aihubmix": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        extra_env_vars=("AIHUBMIX_API_KEY",),
+        base_url_override="https://aihubmix.com/v1",
+        base_url_env_var="AIHUBMIX_BASE_URL",
+    )
 }
 
 
@@ -239,6 +246,10 @@ ALIASES: Dict[str, str] = {
     # arcee
     "arcee-ai": "arcee",
     "arceeai": "arcee",
+
+    # aihubmix
+    "aihub": "aihubmix",
+    "ai-hub-mix": "aihubmix",
 
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
