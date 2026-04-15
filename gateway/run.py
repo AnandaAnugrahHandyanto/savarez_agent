@@ -4075,7 +4075,17 @@ class GatewayRunner:
                 if not new_messages:
                     self.session_store.append_to_transcript(
                         session_entry.session_id,
-                        {"role": "user", "content": message_text, "timestamp": ts}
+                        {
+                            "role": "user",
+                            "content": message_text,
+                            "timestamp": ts,
+                            "message_metadata": {
+                                "platform": source.platform.value if source.platform else None,
+                                "chat_id": source.chat_id,
+                                "thread_id": source.thread_id,
+                                "message_id": event.message_id,
+                            },
+                        }
                     )
                     if response:
                         self.session_store.append_to_transcript(
@@ -8795,7 +8805,17 @@ class GatewayRunner:
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
             try:
-                result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
+                result = agent.run_conversation(
+                    message,
+                    conversation_history=agent_history,
+                    task_id=session_id,
+                    user_message_metadata={
+                        "platform": source.platform.value if source.platform else None,
+                        "chat_id": source.chat_id,
+                        "thread_id": source.thread_id,
+                        "message_id": event.message_id,
+                    },
+                )
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)
