@@ -1,8 +1,9 @@
 """Tests for ${ENV_VAR} substitution in config.yaml values."""
 
 import os
+import re
 import pytest
-from hermes_cli.config import _expand_env_vars, load_config
+from hermes_cli.config import _expand_env_vars, _restore_env_refs, load_config, save_config
 from unittest.mock import patch as mock_patch
 
 
@@ -130,3 +131,159 @@ class TestLoadCliConfigExpansion:
         config = load_cli_config()
 
         assert config["auxiliary"]["vision"]["api_key"] == "${UNSET_CLI_VAR_ABC}"
+
+
+class TestRestoreEnvRefs:
+    """Tests for _restore_env_refs — inverse of _expand_env_vars."""
+
+    def test_restores_expanded_value_to_var_ref(self, tmp_path, monkeypatch):
+        """When raw file has ${VAR} and target has the expanded value, restore it."""
+        monkeypatch.setenv("TEST_API_KEY", "sk-secret-123")
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: tmp_path / "config.yaml")
+
+        # Write a raw config with ${VAR}
+        (tmp_path / "config.yaml").write_text("model:\n  api_key: ${TEST_API_KEY}\n")
+
+        # Simulate what load_config produces (expanded)
+        config = {"model": {"api_key": "sk-secret-123"}}
+        restored = _restore_env_refs(config)
+
+        assert restored["model"]["api_key"] == "${TEST_API_KEY}"
+
+    def test_no_restore_when_value_changed(self, tmp_path, monkeypatch):
+        """If target has a different value than what ${VAR} resolved to, keep target."""
+        monkeypatch.setenv("MY_KEY", "old-value")
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: tmp_path / "config.yaml")
+
+        (tmp_path / "config.yaml").write_text("model:\n  api_key: ${MY_KEY}\n")
+
+        config = {"model": {"api_key": "new-value"}}
+        restored = _restore_env_refs(config)
+
+        assert restored["model"]["api_key"] == "new-value"
+
+    def test_no_restore_when_raw_has_literal(self, tmp_path, monkeypatch):
+        """If raw file has a literal value (not ${VAR}), don't touch it."""
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: tmp_path / "config.yaml")
+
+        (tmp_path / "config.yaml").write_text("model:\n  api_key: literal-value\n")
+
+        config = {"model": {"api_key": "literal-value"}}
+        restored = _restore_env_refs(config)
+
+        assert restored["model"]["api_key"] == "literal-value"
+
+    def test_no_restore_when_config_file_missing(self, tmp_path, monkeypatch):
+        """If no config file exists, return config unchanged."""
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: tmp_path / "nonexistent.yaml")
+
+        config = {"model": {"api_key": "sk-expanded"}}
+        restored = _restore_env_refs(config)
+
+        assert restored["model"]["api_key"] == "sk-expanded"
+
+    def test_restores_multiple_vars(self, tmp_path, monkeypatch):
+        """Multiple ${VAR} refs across different sections are all restored."""
+        monkeypatch.setenv("VENICE_KEY", "vk-abc")
+        monkeypatch.setenv("TAVILY_KEY", "tk-xyz")
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: tmp_path / "config.yaml")
+
+        (tmp_path / "config.yaml").write_text(
+            "auxiliary:\n"
+            "  vision:\n"
+            "    api_key: ${VENICE_KEY}\n"
+            "  web_extract:\n"
+            "    api_key: ${TAVILY_KEY}\n"
+            "environment:\n"
+            "  TAVILY_API_KEY: ${TAVILY_KEY}\n"
+        )
+
+        config = {
+            "auxiliary": {
+                "vision": {"api_key": "vk-abc"},
+                "web_extract": {"api_key": "tk-xyz"},
+            },
+            "environment": {"TAVILY_API_KEY": "tk-xyz"},
+        }
+        restored = _restore_env_refs(config)
+
+        assert restored["auxiliary"]["vision"]["api_key"] == "${VENICE_KEY}"
+        assert restored["auxiliary"]["web_extract"]["api_key"] == "${TAVILY_KEY}"
+        assert restored["environment"]["TAVILY_API_KEY"] == "${TAVILY_KEY}"
+
+    def test_restores_refs_in_list_of_dicts(self, tmp_path, monkeypatch):
+        """${VAR} inside list items (e.g. providers list) is restored."""
+        monkeypatch.setenv("PROVIDER_KEY", "pk-123")
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: tmp_path / "config.yaml")
+
+        (tmp_path / "config.yaml").write_text(
+            "providers:\n"
+            "- name: venice\n"
+            "  api_key: ${PROVIDER_KEY}\n"
+            "- name: local\n"
+            "  api_key: local\n"
+        )
+
+        config = {
+            "providers": [
+                {"name": "venice", "api_key": "pk-123"},
+                {"name": "local", "api_key": "local"},
+            ]
+        }
+        restored = _restore_env_refs(config)
+
+        assert restored["providers"][0]["api_key"] == "${PROVIDER_KEY}"
+        assert restored["providers"][1]["api_key"] == "local"
+
+    def test_does_not_mutate_original_config(self, tmp_path, monkeypatch):
+        """_restore_env_refs returns a new dict, doesn't mutate the input."""
+        monkeypatch.setenv("KEY", "val")
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: tmp_path / "config.yaml")
+        (tmp_path / "config.yaml").write_text("x: ${KEY}\n")
+
+        original = {"x": "val"}
+        restored = _restore_env_refs(original)
+
+        assert original["x"] == "val"          # unchanged
+        assert restored["x"] == "${KEY}"       # restored
+
+
+class TestSaveConfigPreservesEnvRefs:
+    """Round-trip: load_config() → save_config() keeps ${VAR} refs in YAML."""
+
+    def test_roundtrip_preserves_env_refs(self, tmp_path, monkeypatch):
+        """After load_config + save_config, the YAML file still has ${VAR}."""
+        monkeypatch.setenv("ROUNDTRIP_KEY", "rt-secret-456")
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: tmp_path / "config.yaml")
+
+        (tmp_path / "config.yaml").write_text(
+            "model:\n"
+            "  api_key: ${ROUNDTRIP_KEY}\n"
+            "  default: test-model\n"
+        )
+
+        # Load (expands ${VAR}) then save
+        config = load_config()
+        config["model"]["default"] = "updated-model"
+        save_config(config)
+
+        # Read raw file back
+        raw = (tmp_path / "config.yaml").read_text()
+
+        assert "${ROUNDTRIP_KEY}" in raw
+        assert "rt-secret-456" not in raw
+        assert "updated-model" in raw
+
+    def test_new_literal_value_written_when_set(self, tmp_path, monkeypatch):
+        """Setting a new api_key value writes the literal (no ${VAR} invented)."""
+        monkeypatch.delenv("BRAND_NEW_KEY", raising=False)
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: tmp_path / "config.yaml")
+
+        (tmp_path / "config.yaml").write_text("model:\n  default: test\n")
+
+        config = load_config()
+        config["model"]["api_key"] = "brand-new-key"
+        save_config(config)
+
+        raw = (tmp_path / "config.yaml").read_text()
+        assert "brand-new-key" in raw

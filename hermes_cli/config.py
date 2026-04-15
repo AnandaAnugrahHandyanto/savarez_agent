@@ -2612,6 +2612,60 @@ _COMMENTED_SECTIONS = """
 """
 
 
+def _restore_env_refs(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Restore ${VAR} references that load_config() expanded.
+
+    When load_config() resolves ``${VAR}`` to the literal env value, any
+    subsequent ``save_config()`` call would bake that value into the file.
+    This function reads the *existing* raw config and, wherever the raw file
+    has a ``${VAR}`` that matches the expanded value, restores the reference
+    so the YAML stays portable across environments.
+    """
+    config_path = get_config_path()
+    if not config_path.exists():
+        return config
+
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+    except Exception:
+        return config
+
+    import copy
+    result = copy.deepcopy(config)
+    _do_restore(result, raw)
+    return result
+
+
+def _do_restore(target: dict, raw: dict):
+    """Recursively walk target, restoring ${VAR} from raw where values match."""
+    for key, raw_val in raw.items():
+        if key not in target:
+            continue
+        target_val = target[key]
+        if isinstance(raw_val, str) and re.fullmatch(r"\$\{[^}]+\}", raw_val):
+            # raw has a ${VAR} reference — only restore if the target still
+            # holds the value that the env var resolved to.  If the target
+            # was intentionally changed to something else, leave it alone.
+            var_name = raw_val[2:-1]  # strip ${ and }
+            expanded = os.environ.get(var_name)
+            if isinstance(target_val, str) and expanded is not None and target_val == expanded:
+                target[key] = raw_val
+        elif isinstance(raw_val, dict) and isinstance(target_val, dict):
+            _do_restore(target_val, raw_val)
+        elif isinstance(raw_val, list) and isinstance(target_val, list):
+            for i, rv in enumerate(raw_val):
+                if i < len(target_val):
+                    tv = target_val[i]
+                    if isinstance(rv, str) and re.fullmatch(r"\$\{[^}]+\}", rv):
+                        var_name = rv[2:-1]
+                        expanded = os.environ.get(var_name)
+                        if isinstance(tv, str) and expanded is not None and tv == expanded:
+                            target_val[i] = rv
+                    elif isinstance(rv, dict) and isinstance(tv, dict):
+                        _do_restore(tv, rv)
+
+
 def save_config(config: Dict[str, Any]):
     """Save configuration to ~/.hermes/config.yaml."""
     if is_managed():
@@ -2622,6 +2676,9 @@ def save_config(config: Dict[str, Any]):
     ensure_hermes_home()
     config_path = get_config_path()
     normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+    # Restore ${VAR} references that load_config() may have expanded, so we
+    # don't bake env values into the YAML file on every save.
+    normalized = _restore_env_refs(normalized)
 
     # Build optional commented-out sections for features that are off by
     # default or only relevant when explicitly configured.
