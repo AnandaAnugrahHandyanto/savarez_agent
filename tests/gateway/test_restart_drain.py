@@ -61,6 +61,28 @@ async def test_drain_queue_mode_queues_follow_up_without_interrupt():
 
 
 @pytest.mark.asyncio
+async def test_queue_mode_queues_follow_up_without_interrupt():
+    runner, adapter = make_restart_runner()
+    runner._busy_input_mode = "queue"
+
+    event = MessageEvent(
+        text="follow up",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(),
+        message_id="m2b",
+    )
+    session_key = build_session_key(event.source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    await adapter.handle_message(event)
+
+    assert session_key in adapter._pending_messages
+    assert adapter._pending_messages[session_key].text == "follow up"
+    assert not adapter._active_sessions[session_key].is_set()
+    assert len(adapter.sent) == 0
+
+
+@pytest.mark.asyncio
 async def test_draining_rejects_new_session_messages():
     runner, _adapter = make_restart_runner()
     runner._draining = True
@@ -82,7 +104,7 @@ def test_load_busy_input_mode_prefers_env_then_config_then_default(tmp_path, mon
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("HERMES_GATEWAY_BUSY_INPUT_MODE", raising=False)
 
-    assert gateway_run.GatewayRunner._load_busy_input_mode() == "interrupt"
+    assert gateway_run.GatewayRunner._load_busy_input_mode() == "queue"
 
     (tmp_path / "config.yaml").write_text(
         "display:\n  busy_input_mode: queue\n", encoding="utf-8"

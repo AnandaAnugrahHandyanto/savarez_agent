@@ -3,10 +3,13 @@
 When an agent is running, the base adapter's Level 1 guard in
 handle_message() intercepts all incoming messages and queues them as
 pending.  Certain commands (/stop, /new, /reset, /approve, /deny,
-/status) must bypass this guard and be dispatched directly to the gateway
-runner — otherwise they are queued as user text and either:
-  - leak into the conversation as agent input (/stop, /new), or
-  - deadlock (/approve, /deny — agent blocks on Event.wait)
+/status, /queue, /q, /now, /btw) must bypass this guard and be dispatched directly
+to the gateway runner — otherwise they are queued as user text and either:
+  - leak into the conversation as agent input (/stop, /new),
+  - deadlock (/approve, /deny — agent blocks on Event.wait),
+  - fail to queue the next prompt at all (/queue, /q), or
+  - block a parallel side flow (/btw spawns its own ephemeral agent and
+    must neither queue nor interrupt the main run).
 
 These tests verify that the bypass works at the adapter level and that
 the safety net in _run_agent discards leaked command text.
@@ -176,6 +179,61 @@ class TestCommandBypassActiveSession:
             "/background response was not sent back to the user"
         )
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("text", "expected_cmd"),
+        [
+            ("/queue finish the draft", "queue"),
+            ("/q finish the draft", "q"),
+        ],
+    )
+    async def test_queue_bypasses_guard(self, text, expected_cmd):
+        """/queue and /q must bypass so they queue the next prompt instead of interrupting."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event(text))
+
+        assert sk not in adapter._pending_messages, (
+            f"{text} was queued as a pending message instead of being dispatched"
+        )
+        assert any(f"handled:{expected_cmd}" in r for r in adapter.sent_responses), (
+            f"{text} response was not sent back to the user"
+        )
+
+    @pytest.mark.asyncio
+    async def test_now_bypasses_guard(self):
+        """/now must bypass the guard so it can interrupt the current run."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/now continue the draft"))
+
+        assert sk not in adapter._pending_messages, (
+            "/now was queued as a pending message instead of being dispatched"
+        )
+        assert any("handled:now" in r for r in adapter.sent_responses), (
+            "/now response was not sent back to the user"
+        )
+
+    @pytest.mark.asyncio
+    async def test_btw_bypasses_guard(self):
+        """/btw must bypass so it spawns a parallel side task, not queue as pending."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/btw what owns session titles?"))
+
+        assert sk not in adapter._pending_messages, (
+            "/btw was queued as a pending message instead of being dispatched"
+        )
+        assert any("handled:btw" in r for r in adapter.sent_responses), (
+            "/btw response was not sent back to the user"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Tests: non-bypass messages still get queued
@@ -279,6 +337,12 @@ class TestPendingCommandSafetyNet:
 
         assert resolve_command("reset") is not None
         assert resolve_command("reset").name == "new"  # alias
+
+    def test_now_command_detected(self):
+        from hermes_cli.commands import resolve_command
+
+        assert resolve_command("now") is not None
+        assert resolve_command("now").name == "now"
 
     def test_unknown_command_not_detected(self):
         from hermes_cli.commands import resolve_command

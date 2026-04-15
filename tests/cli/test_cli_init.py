@@ -97,17 +97,17 @@ class TestVerboseAndToolProgress:
 
 
 class TestBusyInputMode:
-    def test_default_busy_input_mode_is_interrupt(self):
+    def test_default_busy_input_mode_is_queue(self):
         cli = _make_cli()
-        assert cli.busy_input_mode == "interrupt"
+        assert cli.busy_input_mode == "queue"
 
     def test_busy_input_mode_queue_is_honored(self):
         cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
         assert cli.busy_input_mode == "queue"
 
-    def test_unknown_busy_input_mode_falls_back_to_interrupt(self):
+    def test_unknown_busy_input_mode_falls_back_to_queue(self):
         cli = _make_cli(config_overrides={"display": {"busy_input_mode": "bogus"}})
-        assert cli.busy_input_mode == "interrupt"
+        assert cli.busy_input_mode == "queue"
 
     def test_queue_command_works_while_busy(self):
         """When agent is running, /queue should still put the prompt in _pending_input."""
@@ -123,30 +123,84 @@ class TestBusyInputMode:
         cli.process_command("/queue follow up")
         assert cli._pending_input.get_nowait() == "follow up"
 
-    def test_queue_mode_routes_busy_enter_to_pending(self):
-        """In queue mode, Enter while busy should go to _pending_input, not _interrupt_queue."""
+    def test_queue_mode_routes_busy_enter_to_latest_wins_slot(self):
+        """In queue mode, Enter while busy should land in the latest-wins slot."""
         cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
         cli._agent_running = True
-        # Simulate what handle_enter does for non-command input while busy
-        text = "follow up"
-        if cli.busy_input_mode == "queue":
-            cli._pending_input.put(text)
-        else:
-            cli._interrupt_queue.put(text)
-        assert cli._pending_input.get_nowait() == "follow up"
+        cli._submit_tui_prompt("follow up")
+        assert cli._busy_pending_slot == "follow up"
+        assert cli._pending_input.empty()
         assert cli._interrupt_queue.empty()
 
     def test_interrupt_mode_routes_busy_enter_to_interrupt(self):
-        """In interrupt mode (default), Enter while busy goes to _interrupt_queue."""
-        cli = _make_cli()
+        """In interrupt mode, Enter while busy goes to _interrupt_queue."""
+        cli = _make_cli(config_overrides={"display": {"busy_input_mode": "interrupt"}})
         cli._agent_running = True
-        text = "redirect"
-        if cli.busy_input_mode == "queue":
-            cli._pending_input.put(text)
-        else:
-            cli._interrupt_queue.put(text)
+        cli._submit_tui_prompt("redirect")
         assert cli._interrupt_queue.get_nowait() == "redirect"
         assert cli._pending_input.empty()
+
+    def test_now_submission_interrupts_even_in_queue_mode(self):
+        """/now should interrupt the current run even when queue mode is the default."""
+        cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
+        cli._agent_running = True
+        cli._submit_tui_prompt("/now continue the draft")
+
+        assert cli._interrupt_queue.get_nowait() == "/now continue the draft"
+        assert cli._pending_input.empty()
+
+    def test_now_command_queues_follow_up_prompt(self):
+        """After the interrupt, /now should strip itself and queue the prompt body."""
+        cli = _make_cli()
+
+        assert cli.process_command("/now continue the draft") is True
+        assert cli._pending_input.get_nowait() == "continue the draft"
+        assert cli._interrupt_queue.empty()
+
+    def test_now_command_rejects_empty_prompt(self):
+        """/now with no body must print usage and not queue anything."""
+        cli = _make_cli()
+
+        assert cli.process_command("/now") is True
+        assert cli._pending_input.empty()
+        assert cli._interrupt_queue.empty()
+
+    def test_queue_mode_multiple_busy_plain_messages_keep_latest(self):
+        """Latest-wins: three plain submissions while busy collapse to one slot."""
+        cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
+        cli._agent_running = True
+
+        cli._submit_tui_prompt("first")
+        cli._submit_tui_prompt("second")
+        cli._submit_tui_prompt("third")
+
+        assert cli._busy_pending_slot == "third"
+        assert cli._pending_input.empty()
+        assert cli._interrupt_queue.empty()
+
+    def test_queue_mode_busy_slash_command_bypasses_latest_wins_slot(self):
+        """Slash commands typed while busy go to _pending_input (FIFO), not the slot."""
+        cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
+        cli._agent_running = True
+
+        cli._submit_tui_prompt("/queue do X")
+        cli._submit_tui_prompt("a plain follow-up")
+
+        assert cli._busy_pending_slot == "a plain follow-up"
+        # /queue stays in _pending_input, ready for process_loop to dispatch it first.
+        assert cli._pending_input.get_nowait() == "/queue do X"
+
+    def test_new_session_clears_busy_pending_slot(self):
+        """Stale plain text queued in the previous session must not leak into a new one."""
+        cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
+        cli._agent_running = True
+        cli._submit_tui_prompt("stale follow-up")
+        assert cli._busy_pending_slot == "stale follow-up"
+
+        cli._agent_running = False
+        cli.new_session(silent=True)
+
+        assert cli._busy_pending_slot is None
 
 
 class TestSingleQueryState:

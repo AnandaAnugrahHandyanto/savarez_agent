@@ -520,7 +520,7 @@ class GatewayRunner:
     # Class-level defaults so partial construction in tests doesn't
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
-    _busy_input_mode: str = "interrupt"
+    _busy_input_mode: str = "queue"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
@@ -1203,7 +1203,9 @@ class GatewayRunner:
                     mode = str(cfg.get("display", {}).get("busy_input_mode", "") or "").strip().lower()
             except Exception:
                 pass
-        return "queue" if mode == "queue" else "interrupt"
+        if mode == "interrupt":
+            return "interrupt"
+        return "queue"
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:
@@ -1329,27 +1331,31 @@ class GatewayRunner:
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
-        if not self._draining:
-            return False
+        if self._draining:
+            adapter = self.adapters.get(event.source.platform)
+            if not adapter:
+                return True
 
-        adapter = self.adapters.get(event.source.platform)
-        if not adapter:
+            thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            if self._queue_during_drain_enabled():
+                self._queue_or_replace_pending_event(session_key, event)
+                message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+            else:
+                message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+
+            await adapter._send_with_retry(
+                chat_id=event.source.chat_id,
+                content=message,
+                reply_to=event.message_id,
+                metadata=thread_meta,
+            )
             return True
 
-        thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
-        if self._queue_during_drain_enabled():
+        if self._busy_input_mode == "queue":
             self._queue_or_replace_pending_event(session_key, event)
-            message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
-        else:
-            message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+            return True
 
-        await adapter._send_with_retry(
-            chat_id=event.source.chat_id,
-            content=message,
-            reply_to=event.message_id,
-            metadata=thread_meta,
-        )
-        return True
+        return False
 
     async def _drain_active_agents(self, timeout: float) -> tuple[Dict[str, Any], bool]:
         snapshot = self._snapshot_running_agents()
@@ -2581,6 +2587,28 @@ class GatewayRunner:
                 if _quick_key in self._running_agents:
                     del self._running_agents[_quick_key]
                 return await self._handle_reset_command(event)
+
+            if _cmd_def_inner and _cmd_def_inner.name == "now":
+                follow_up_text = event.get_command_args().strip()
+                if not follow_up_text:
+                    return "Usage: /now <prompt>"
+                from gateway.platforms.base import MessageEvent as _ME, MessageType as _MT
+                queued_event = _ME(
+                    text=follow_up_text,
+                    message_type=_MT.TEXT,
+                    source=event.source,
+                    message_id=event.message_id,
+                )
+                preview = follow_up_text[:60] + ("…" if len(follow_up_text) > 60 else "")
+                running_agent = self._running_agents.get(_quick_key)
+                self._queue_or_replace_pending_event(_quick_key, queued_event)
+                if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+                    running_agent.interrupt(follow_up_text)
+                    return f"⚡ Interrupted. Queued: '{preview}' — will run on the next turn."
+                return f"⚡ Queued: '{preview}' — will run as soon as the starting turn is ready."
+
+            if _cmd_def_inner and _cmd_def_inner.name == "btw":
+                return await self._handle_btw_command(event)
 
             # /queue <prompt> — queue without interrupting
             if event.get_command() in ("queue", "q"):
@@ -5627,11 +5655,12 @@ class GatewayRunner:
 
         Usage:
             /reasoning              Show current effort level and display state
-            /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh)
+            /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh, auto)
             /reasoning show|on      Show model reasoning in responses
             /reasoning hide|off     Hide model reasoning from responses
         """
         import yaml
+        from hermes_constants import parse_reasoning_effort
 
         args = event.get_command_args().strip().lower()
         config_path = _hermes_home / "config.yaml"
@@ -5692,14 +5721,11 @@ class GatewayRunner:
 
         # Effort level change
         effort = args.strip()
-        if effort == "none":
-            parsed = {"enabled": False}
-        elif effort in ("minimal", "low", "medium", "high", "xhigh"):
-            parsed = {"enabled": True, "effort": effort}
-        else:
+        parsed = parse_reasoning_effort(effort)
+        if parsed is None:
             return (
                 f"⚠️ Unknown argument: `{effort}`\n\n"
-                "**Valid levels:** none, minimal, low, medium, high, xhigh\n"
+                "**Valid levels:** none, minimal, low, medium, high, xhigh, auto\n"
                 "**Display:** show, hide"
             )
 

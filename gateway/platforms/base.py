@@ -1501,15 +1501,18 @@ class BasePlatformAdapter(ABC):
             # Certain commands must bypass the active-session guard and be
             # dispatched directly to the gateway runner.  Without this, they
             # are queued as pending messages and either:
-            #   - leak into the conversation as user text (/stop, /new), or
-            #   - deadlock (/approve, /deny — agent is blocked on Event.wait)
-            #
+            #   - leak into the conversation as agent input (/stop, /new),
+            #   - deadlock (/approve, /deny — agent is blocked on Event.wait),
+            #   - prevent legitimate queueing (/queue, /now), or
+            #   - block a parallel side flow (/btw spawns its own ephemeral
+            #     agent and must neither queue nor interrupt the main run).
+
             # Dispatch inline: call the message handler directly and send the
             # response.  Do NOT use _process_message_background — it manages
             # session lifecycle and its cleanup races with the running task
             # (see PR #4926).
             cmd = event.get_command()
-            if cmd in ("approve", "deny", "status", "stop", "new", "reset", "background", "restart"):
+            if cmd in ("approve", "deny", "status", "stop", "new", "reset", "background", "queue", "q", "now", "btw", "restart"):
                 logger.debug(
                     "[%s] Command '/%s' bypassing active-session guard for %s",
                     self.name, cmd, session_key,

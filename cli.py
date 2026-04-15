@@ -274,7 +274,7 @@ def load_cli_config() -> Dict[str, Any]:
             "resume_display": "full",
             "show_reasoning": False,
             "streaming": True,
-            "busy_input_mode": "interrupt",
+            "busy_input_mode": "queue",
 
             "skin": "default",
         },
@@ -1624,9 +1624,9 @@ class HermesCLI:
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
-        # busy_input_mode: "interrupt" (Enter interrupts current run) or "queue" (Enter queues for next turn)
-        _bim = CLI_CONFIG["display"].get("busy_input_mode", "interrupt")
-        self.busy_input_mode = "queue" if str(_bim).strip().lower() == "queue" else "interrupt"
+        # busy_input_mode: "queue" (Enter queues for next turn, latest-wins) or "interrupt" (Enter interrupts current run)
+        _bim = CLI_CONFIG["display"].get("busy_input_mode", "queue")
+        self.busy_input_mode = "interrupt" if str(_bim).strip().lower() == "interrupt" else "queue"
 
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
@@ -1808,6 +1808,7 @@ class HermesCLI:
         self._agent_running = False
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
+        self._busy_pending_slot = None  # Latest-wins single slot for plain text typed while busy (queue mode)
         self._should_exit = False
         self._last_ctrl_c_time = 0
         self._clarify_state = None
@@ -4118,6 +4119,9 @@ class HermesCLI:
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
+        # Drop any plain text the user queued in the previous session so it
+        # doesn't leak into the fresh one as the first turn.
+        self._busy_pending_slot = None
 
         if self.agent:
             self.agent.session_id = self.session_id
@@ -4193,6 +4197,9 @@ class HermesCLI:
         self.session_id = target_id
         self._resumed = True
         self._pending_title = None
+        # Drop any plain text queued while the previous session was running —
+        # it belonged to that conversation, not the one we're resuming.
+        self._busy_pending_slot = None
 
         # Load conversation history (strip transcript-only metadata entries)
         restored = self._session_db.get_messages_as_conversation(target_id)
@@ -4317,6 +4324,9 @@ class HermesCLI:
         self.session_start = now
         self._pending_title = None
         self._resumed = True  # Prevents auto-title generation
+        # Drop any plain text queued while the parent session was running —
+        # the user branched mid-thought; it's ambiguous where it belongs.
+        self._busy_pending_slot = None
 
         # Sync the agent
         if self.agent:
@@ -4815,6 +4825,50 @@ class HermesCLI:
             return bool(cmd and cmd.name == "model")
         except Exception:
             return False
+
+    def _submit_tui_prompt(self, payload) -> None:
+        """Route a TUI submission to the right queue based on busy state and intent.
+
+        Rules when the agent is running:
+          - /now …   → _interrupt_queue (always interrupts, even in queue mode)
+          - /btw …   → dispatched inline so the side agent runs concurrently
+          - other /  → _pending_input (dispatched after the current turn)
+          - plain    → latest-wins _busy_pending_slot (queue mode)
+                       or _interrupt_queue (interrupt mode)
+        When idle, everything lands in _pending_input.
+        """
+        text = payload[0] if isinstance(payload, tuple) else payload
+        is_slash = bool(text) and _looks_like_slash_command(text)
+        stripped = text.strip().lower() if isinstance(text, str) else ""
+        is_now = is_slash and (stripped == "/now" or stripped.startswith("/now "))
+        is_btw = is_slash and (stripped == "/btw" or stripped.startswith("/btw "))
+
+        if not self._agent_running:
+            self._pending_input.put(payload)
+            return
+
+        if is_btw:
+            command_text = payload[0] if isinstance(payload, tuple) else payload
+            self.process_command(command_text)
+            return
+
+        if is_now:
+            self._interrupt_queue.put(payload)
+            return
+
+        if is_slash:
+            self._pending_input.put(payload)
+            return
+
+        if self.busy_input_mode == "queue":
+            self._busy_pending_slot = payload
+            if isinstance(payload, tuple):
+                preview = text if text else f"[{len(payload[1])} image(s) attached]"
+            else:
+                preview = text
+            _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
+        else:
+            self._interrupt_queue.put(payload)
 
     def _show_model_and_providers(self):
         """Show current model + provider and list all authenticated providers.
@@ -5515,6 +5569,18 @@ class HermesCLI:
                     _cprint(f"  Queued for the next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
                 else:
                     _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+        elif canonical == "now":
+            parts = cmd_original.split(None, 1)
+            payload = parts[1].strip() if len(parts) > 1 else ""
+            if not payload:
+                _cprint("  Usage: /now <prompt>")
+            else:
+                self._pending_input.put(payload)
+                preview = payload[:80] + ('...' if len(payload) > 80 else '')
+                if self._agent_running:
+                    _cprint(f"  Interrupted. Will run next: {preview}")
+                else:
+                    _cprint(f"  Queued: {preview}")
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
@@ -6212,7 +6278,7 @@ class HermesCLI:
 
         Usage:
             /reasoning              Show current effort level and display state
-            /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh)
+            /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh, auto)
             /reasoning show|on      Show model thinking/reasoning in output
             /reasoning hide|off     Hide model thinking/reasoning from output
         """
@@ -6230,7 +6296,7 @@ class HermesCLI:
             display_state = "on ✓" if self.show_reasoning else "off"
             _cprint(f"  {_ACCENT}Reasoning effort:  {level}{_RST}")
             _cprint(f"  {_ACCENT}Reasoning display: {display_state}{_RST}")
-            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|show|hide>{_RST}")
+            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|auto|show|hide>{_RST}")
             return
 
         arg = parts[1].strip().lower()
@@ -6256,7 +6322,7 @@ class HermesCLI:
         parsed = _parse_reasoning_config(arg)
         if parsed is None:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Valid levels: none, minimal, low, medium, high, xhigh{_RST}")
+            _cprint(f"  {_DIM}Valid levels: none, minimal, low, medium, high, xhigh, auto{_RST}")
             _cprint(f"  {_DIM}Display:      show, hide{_RST}")
             return
 
@@ -8234,6 +8300,7 @@ class HermesCLI:
         self._agent_running = False
         self._pending_input = queue.Queue()     # For normal input (commands + new queries)
         self._interrupt_queue = queue.Queue()   # For messages typed while agent is running
+        self._busy_pending_slot = None          # Latest-wins single slot for plain text typed while busy (queue mode)
         self._should_exit = False
         self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
 
@@ -8399,25 +8466,7 @@ class HermesCLI:
                 event.app.invalidate()
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
-                if self._agent_running and not (text and _looks_like_slash_command(text)):
-                    if self.busy_input_mode == "queue":
-                        # Queue for the next turn instead of interrupting
-                        self._pending_input.put(payload)
-                        preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
-                        _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
-                    else:
-                        self._interrupt_queue.put(payload)
-                        # Debug: log to file when message enters interrupt queue
-                        try:
-                            _dbg = _hermes_home / "interrupt_debug.log"
-                            with open(_dbg, "a") as _f:
-                                import time as _t
-                                _f.write(f"{_t.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
-                                         f"agent_running={self._agent_running}\n")
-                        except Exception:
-                            pass
-                else:
-                    self._pending_input.put(payload)
+                self._submit_tui_prompt(payload)
                 event.app.current_buffer.reset(append_to_history=True)
         
         @kb.add('escape', 'enter')
@@ -9491,26 +9540,35 @@ class HermesCLI:
                     try:
                         user_input = self._pending_input.get(timeout=0.1)
                     except queue.Empty:
-                        # Periodic config watcher — auto-reload MCP on mcp_servers change
-                        if not self._agent_running:
-                            self._check_config_mcp_changes()
-                            # Check for background process notifications (completions
-                            # and watch pattern matches) while agent is idle.
-                            try:
-                                from tools.process_registry import process_registry
-                                if not process_registry.completion_queue.empty():
-                                    evt = process_registry.completion_queue.get_nowait()
-                                    # Skip if the agent already consumed this via wait/poll/log
-                                    _evt_sid = evt.get("session_id", "")
-                                    if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
-                                        pass  # already delivered via tool result
-                                    else:
-                                        _synth = _format_process_notification(evt)
-                                        if _synth:
-                                            self._pending_input.put(_synth)
-                            except Exception:
-                                pass
-                        continue
+                        # Latest-wins plain text typed while the previous turn was
+                        # running lives in _busy_pending_slot. Explicit /queue and
+                        # /now items in _pending_input still run first (FIFO); the
+                        # slot is consumed only when the agent is idle and nothing
+                        # else is queued.
+                        if not self._agent_running and self._busy_pending_slot is not None:
+                            user_input = self._busy_pending_slot
+                            self._busy_pending_slot = None
+                        else:
+                            # Periodic config watcher — auto-reload MCP on mcp_servers change
+                            if not self._agent_running:
+                                self._check_config_mcp_changes()
+                                # Check for background process notifications (completions
+                                # and watch pattern matches) while agent is idle.
+                                try:
+                                    from tools.process_registry import process_registry
+                                    if not process_registry.completion_queue.empty():
+                                        evt = process_registry.completion_queue.get_nowait()
+                                        # Skip if the agent already consumed this via wait/poll/log
+                                        _evt_sid = evt.get("session_id", "")
+                                        if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+                                            pass  # already delivered via tool result
+                                        else:
+                                            _synth = _format_process_notification(evt)
+                                            if _synth:
+                                                self._pending_input.put(_synth)
+                                except Exception:
+                                    pass
+                            continue
                     
                     if not user_input:
                         continue

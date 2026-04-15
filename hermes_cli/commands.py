@@ -89,6 +89,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<question>"),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
                aliases=("q",), args_hint="<prompt>"),
+    CommandDef("now", "Interrupt the running agent and queue the follow-up prompt", "Session",
+               args_hint="<prompt>"),
     CommandDef("status", "Show session info", "Session"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
@@ -164,7 +166,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     # Exit
     CommandDef("quit", "Exit the CLI", "Exit",
-               cli_only=True, aliases=("exit", "q")),
+               cli_only=True, aliases=("exit",)),
 ]
 
 
