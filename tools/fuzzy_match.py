@@ -69,6 +69,20 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
     if old_string == new_string:
         return content, 0, None, "old_string and new_string are identical"
 
+    # Deletion operations require exact match to prevent accidental data loss.
+    # When new_string is empty, we're deleting - use exact match only.
+    if new_string == "":
+        matches = _strategy_exact(content, old_string)
+        if not matches:
+            return content, 0, None, "Could not find exact match for deletion. Deletion requires precise matching to prevent accidental data loss."
+        if len(matches) > 1 and not replace_all:
+            return content, 0, None, (
+                f"Found {len(matches)} exact matches for deletion. "
+                f"Provide more context to make it unique, or use replace_all=True."
+            )
+        new_content = _apply_replacements(content, matches, new_string)
+        return new_content, len(matches), "exact_for_deletion", None
+
     # Try each matching strategy in order
     strategies: List[Tuple[str, Callable]] = [
         ("exact", _strategy_exact),
