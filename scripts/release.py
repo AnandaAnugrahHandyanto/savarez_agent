@@ -199,6 +199,8 @@ AUTHOR_MAP = {
     "zzn+pa@zzn.im": "xinbenlv",
     "jeff@Jeffs-Mac-mini.local": "jescalan",
     "jeff@jeffs-mac-mini.lan": "jescalan",
+    "zaynjarvis@gmail.com": "ZaynJarvis",
+    "zhiheng.liu@bytedance.com": "ZaynJarvis",
 }
 
 
