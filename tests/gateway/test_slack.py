@@ -1435,11 +1435,16 @@ class TestMessageSplitting:
         assert "*_important_*" in kwargs["text"]
 
     @pytest.mark.asyncio
-    async def test_send_explicitly_enables_mrkdwn(self, adapter):
+    async def test_send_uses_markdown_block(self, adapter):
+        """send() must pass raw content in a markdown block for Block Kit rendering."""
         adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
         await adapter.send("C123", "**hello**")
         kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
-        assert kwargs.get("mrkdwn") is True
+        # blocks must contain a markdown block with raw markdown
+        assert "blocks" in kwargs
+        assert kwargs["blocks"] == [{"type": "markdown", "text": "**hello**"}]
+        # text fallback must exist (mrkdwn-converted)
+        assert "*hello*" in kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_send_does_not_double_escape_entities(self, adapter):

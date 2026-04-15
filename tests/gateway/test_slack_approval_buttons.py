@@ -99,7 +99,7 @@ class TestSlackExecApproval:
         assert "hermes_approve_session" in action_ids
         assert "hermes_approve_always" in action_ids
         assert "hermes_deny" in action_ids
-        # Each button carries the session key as value
+        # Without a thread_ts, each button carries the plain session key
         for e in elements:
             assert e["value"] == "agent:main:slack:group:C1:1111"
 
@@ -118,6 +118,10 @@ class TestSlackExecApproval:
 
         kwargs = mock_client.chat_postMessage.call_args[1]
         assert kwargs.get("thread_ts") == "9999.0000"
+        # Thread_ts should also be encoded in the button values
+        elements = kwargs["blocks"][1]["elements"]
+        for e in elements:
+            assert e["value"] == "test-session||9999.0000"
 
     @pytest.mark.asyncio
     async def test_not_connected(self):
@@ -146,11 +150,92 @@ class TestSlackExecApproval:
 
 
 # ===========================================================================
+# _encode_button_value / _decode_button_value — thread_ts embedding
+# ===========================================================================
+
+class TestButtonValueEncoding:
+    """Test round-trip encoding of session_key + thread_ts in button values."""
+
+    def test_encode_without_thread_ts(self):
+        result = SlackAdapter._encode_button_value("my-session", None)
+        assert result == "my-session"
+
+    def test_encode_with_thread_ts(self):
+        result = SlackAdapter._encode_button_value("my-session", "1234.5678")
+        assert result == "my-session||1234.5678"
+
+    def test_decode_plain_session_key(self):
+        session_key, thread_ts = SlackAdapter._decode_button_value("my-session")
+        assert session_key == "my-session"
+        assert thread_ts is None
+
+    def test_decode_encoded_value(self):
+        session_key, thread_ts = SlackAdapter._decode_button_value("my-session||1234.5678")
+        assert session_key == "my-session"
+        assert thread_ts == "1234.5678"
+
+    def test_decode_session_key_with_colons(self):
+        """Session keys that contain ':' are still decoded correctly."""
+        raw = "agent:main:slack:C1:1111||9999.0000"
+        session_key, thread_ts = SlackAdapter._decode_button_value(raw)
+        assert session_key == "agent:main:slack:C1:1111"
+        assert thread_ts == "9999.0000"
+
+    def test_decode_session_key_with_colons_no_thread(self):
+        raw = "agent:main:slack:C1:1111"
+        session_key, thread_ts = SlackAdapter._decode_button_value(raw)
+        assert session_key == "agent:main:slack:C1:1111"
+        assert thread_ts is None
+
+    def test_round_trip(self):
+        """encode then decode returns original values."""
+        sk = "agent:main:slack:group:D09NY2HPCBD:1776139936.798209"
+        ts = "1776139936.798209"
+        encoded = SlackAdapter._encode_button_value(sk, ts)
+        decoded_sk, decoded_ts = SlackAdapter._decode_button_value(encoded)
+        assert decoded_sk == sk
+        assert decoded_ts == ts
+
+
+# ===========================================================================
 # _handle_approval_action — button click handler
 # ===========================================================================
 
 class TestSlackApprovalAction:
     """Test the approval button click handler."""
+
+    @pytest.mark.asyncio
+    async def test_resolves_approval_with_encoded_thread_ts(self):
+        """Button value containing '||thread_ts' is decoded: session_key resolved, thread_ts logged."""
+        adapter = _make_adapter()
+        adapter._approval_resolved["1234.5678"] = False
+
+        ack = AsyncMock()
+        body = {
+            "message": {
+                "ts": "1234.5678",
+                "thread_ts": "1000.0",
+                "blocks": [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "cmd"}},
+                ],
+            },
+            "channel": {"id": "C1"},
+            "user": {"name": "alice", "id": "U1"},
+        }
+        action = {
+            "action_id": "hermes_approve_once",
+            # Encoded: session_key + thread_ts
+            "value": "agent:main:slack:C1:1111||1000.0",
+        }
+
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            await adapter._handle_approval_action(ack, body, action)
+
+        # session_key should be extracted correctly (no '||...' suffix)
+        mock_resolve.assert_called_once_with("agent:main:slack:C1:1111", "once")
 
     @pytest.mark.asyncio
     async def test_resolves_approval(self):
@@ -424,3 +509,262 @@ class TestThreadEngagement:
                 for t in to_remove:
                     adapter._mentioned_threads.discard(t)
         assert len(adapter._mentioned_threads) <= 10
+
+
+# ===========================================================================
+# send_update_prompt — Yes/No interactive Block Kit buttons
+# ===========================================================================
+
+class TestSlackUpdatePrompt:
+    """Test the send_update_prompt method sends Block Kit Yes/No buttons."""
+
+    @pytest.mark.asyncio
+    async def test_sends_blocks_with_yes_no_buttons(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "2222.3333"})
+
+        result = await adapter.send_update_prompt(
+            chat_id="C1",
+            prompt="Restore stashed changes?",
+            default="y",
+            session_key="update-session",
+        )
+
+        assert result.success is True
+        assert result.message_id == "2222.3333"
+        mock_client.chat_postMessage.assert_called_once()
+        kwargs = mock_client.chat_postMessage.call_args[1]
+        blocks = kwargs["blocks"]
+        assert len(blocks) == 2
+        assert blocks[0]["type"] == "section"
+        assert "Restore stashed changes?" in blocks[0]["text"]["text"]
+        assert "default: y" in blocks[0]["text"]["text"]
+        elements = blocks[1]["elements"]
+        action_ids = [e["action_id"] for e in elements]
+        assert "hermes_update_yes" in action_ids
+        assert "hermes_update_no" in action_ids
+        # No thread_ts when no metadata provided
+        assert "thread_ts" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_sends_in_thread_when_metadata_provided(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "2222.4444"})
+
+        await adapter.send_update_prompt(
+            chat_id="C1",
+            prompt="Continue?",
+            session_key="s",
+            metadata={"thread_id": "8888.0000"},
+        )
+
+        kwargs = mock_client.chat_postMessage.call_args[1]
+        assert kwargs.get("thread_ts") == "8888.0000"
+        # Thread_ts encoded in button values
+        elements = kwargs["blocks"][1]["elements"]
+        for e in elements:
+            assert e["value"] == "s||8888.0000"
+
+    @pytest.mark.asyncio
+    async def test_not_connected(self):
+        adapter = _make_adapter()
+        adapter._app = None
+        result = await adapter.send_update_prompt(chat_id="C1", prompt="?")
+        assert result.success is False
+
+    @pytest.mark.asyncio
+    async def test_handle_update_yes_writes_response(self, tmp_path):
+        adapter = _make_adapter()
+        adapter._update_resolved["9999.0"] = False
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+
+        ack = AsyncMock()
+        body = {
+            "message": {
+                "ts": "9999.0",
+                "blocks": [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "Continue?"}},
+                ],
+            },
+            "channel": {"id": "C1"},
+            "user": {"name": "shiv", "id": "U1"},
+        }
+        action = {"action_id": "hermes_update_yes", "value": "update-session"}
+
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            await adapter._handle_update_action(ack, body, action)
+
+        ack.assert_called_once()
+        response_file = tmp_path / ".update_response"
+        assert response_file.exists()
+        assert response_file.read_text() == "y"
+        update_kwargs = mock_client.chat_update.call_args[1]
+        assert "Yes" in update_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_handle_update_no_writes_response(self, tmp_path):
+        adapter = _make_adapter()
+        adapter._update_resolved["8888.0"] = False
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+
+        ack = AsyncMock()
+        body = {
+            "message": {
+                "ts": "8888.0",
+                "blocks": [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "Proceed?"}},
+                ],
+            },
+            "channel": {"id": "C1"},
+            "user": {"name": "shiv", "id": "U1"},
+        }
+        action = {"action_id": "hermes_update_no", "value": "update-session"}
+
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            await adapter._handle_update_action(ack, body, action)
+
+        response_file = tmp_path / ".update_response"
+        assert response_file.exists()
+        assert response_file.read_text() == "n"
+
+    @pytest.mark.asyncio
+    async def test_prevents_double_click(self):
+        adapter = _make_adapter()
+        adapter._update_resolved["7777.0"] = True  # Already resolved
+
+        ack = AsyncMock()
+        body = {"message": {"ts": "7777.0", "blocks": []}, "channel": {"id": "C1"}, "user": {"name": "x", "id": "U1"}}
+        action = {"action_id": "hermes_update_yes", "value": "s"}
+
+        with patch("hermes_constants.get_hermes_home") as mock_home:
+            await adapter._handle_update_action(ack, body, action)
+            mock_home.assert_not_called()  # Should bail before writing
+
+
+# ===========================================================================
+# send_choice_prompt — generic N-option Block Kit buttons
+# ===========================================================================
+
+class TestSlackChoicePrompt:
+    """Test send_choice_prompt and _handle_choice_action."""
+
+    @pytest.mark.asyncio
+    async def test_sends_choice_buttons_in_thread(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "5555.1111"})
+
+        result = await adapter.send_choice_prompt(
+            chat_id="C1",
+            prompt="Which environment?",
+            choices=[("Staging", "staging"), ("Production", "prod"), ("Cancel", "cancel")],
+            session_key="deploy-session",
+            metadata={"thread_id": "9000.0"},
+        )
+
+        assert result.success is True
+        assert result.message_id == "5555.1111"
+        kwargs = mock_client.chat_postMessage.call_args[1]
+        assert kwargs["thread_ts"] == "9000.0"
+        elements = kwargs["blocks"][1]["elements"]
+        assert len(elements) == 3
+        # Each button encodes session_key || thread_ts || choice_value
+        labels = [e["text"]["text"] for e in elements]
+        assert labels == ["Staging", "Production", "Cancel"]
+        for e in elements:
+            assert e["value"].startswith("deploy-session||9000.0||")
+        action_ids = [e["action_id"] for e in elements]
+        assert action_ids == ["hermes_choice_0", "hermes_choice_1", "hermes_choice_2"]
+
+    @pytest.mark.asyncio
+    async def test_no_thread_ts_when_no_metadata(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "5555.2222"})
+
+        await adapter.send_choice_prompt(
+            chat_id="C1",
+            prompt="Pick one",
+            choices=[("A", "a"), ("B", "b")],
+            session_key="s",
+        )
+        kwargs = mock_client.chat_postMessage.call_args[1]
+        assert "thread_ts" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_empty_choices_returns_error(self):
+        adapter = _make_adapter()
+        result = await adapter.send_choice_prompt(chat_id="C1", prompt="?", choices=[])
+        assert result.success is False
+        assert "empty" in result.error
+
+    @pytest.mark.asyncio
+    async def test_caps_at_25_buttons(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "5555.3333"})
+
+        big_choices = [(f"Option {i}", f"opt_{i}") for i in range(30)]
+        await adapter.send_choice_prompt(chat_id="C1", prompt="Too many", choices=big_choices, session_key="s")
+        kwargs = mock_client.chat_postMessage.call_args[1]
+        assert len(kwargs["blocks"][1]["elements"]) == 25
+
+    @pytest.mark.asyncio
+    async def test_handle_choice_writes_response(self, tmp_path):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+        adapter._choice_resolved["4444.0"] = False
+
+        ack = AsyncMock()
+        body = {
+            "message": {
+                "ts": "4444.0",
+                "blocks": [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "Which env?"}},
+                    {"type": "actions", "elements": [
+                        {"action_id": "hermes_choice_0", "value": "deploy-session||9000.0||staging",
+                         "text": {"text": "Staging"}},
+                        {"action_id": "hermes_choice_1", "value": "deploy-session||9000.0||prod",
+                         "text": {"text": "Production"}},
+                    ]},
+                ],
+            },
+            "channel": {"id": "C1"},
+            "user": {"name": "shiv", "id": "U1"},
+        }
+        action = {
+            "action_id": "hermes_choice_0",
+            "value": "deploy-session||9000.0||staging",
+        }
+
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            await adapter._handle_choice_action(ack, body, action)
+
+        ack.assert_called_once()
+        # File is keyed by session hash
+        import hashlib
+        key_hash = hashlib.sha1(b"deploy-session").hexdigest()[:12]
+        response_file = tmp_path / f".choice_response_{key_hash}"
+        assert response_file.exists()
+        assert response_file.read_text() == "staging"
+        # Message updated with chosen label
+        update_kwargs = mock_client.chat_update.call_args[1]
+        assert "Staging" in update_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_handle_choice_prevents_double_click(self):
+        adapter = _make_adapter()
+        adapter._choice_resolved["3333.0"] = True  # Already resolved
+
+        ack = AsyncMock()
+        body = {"message": {"ts": "3333.0", "blocks": []}, "channel": {"id": "C1"}, "user": {"name": "x", "id": "U1"}}
+        action = {"action_id": "hermes_choice_0", "value": "s||ts||val"}
+
+        with patch("hermes_constants.get_hermes_home") as mock_home:
+            await adapter._handle_choice_action(ack, body, action)
+            mock_home.assert_not_called()

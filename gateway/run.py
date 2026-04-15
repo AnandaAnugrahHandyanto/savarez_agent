@@ -7024,6 +7024,7 @@ class GatewayRunner:
                                     prompt=prompt_text,
                                     default=default,
                                     session_key=session_key,
+                                    metadata=None,  # thread context handled by send_update_prompt internally
                                 )
                                 sent_buttons = True
                             except Exception as btn_err:

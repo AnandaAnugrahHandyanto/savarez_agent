@@ -12,6 +12,7 @@ from gateway.config import Platform
 from tools.send_message_tool import (
     _parse_target_ref,
     _send_discord,
+    _send_slack,
     _send_telegram,
     _send_to_platform,
     send_message_tool,
@@ -487,7 +488,8 @@ class TestSendToPlatformChunking:
         send.assert_awaited_once_with(
             "***",
             "C123",
-            "*hello* from <https://example.com|Hermes>",
+            "**hello** from [Hermes](<https://example.com>)",
+            thread_id=None,
         )
 
     def test_slack_bold_italic_formatted_before_send(self, monkeypatch):
@@ -508,7 +510,7 @@ class TestSendToPlatformChunking:
             )
         assert result["success"] is True
         sent_text = send.await_args.args[2]
-        assert "*_important_*" in sent_text
+        assert "***important***" in sent_text
 
     def test_slack_blockquote_formatted_before_send(self, monkeypatch):
         """Blockquote '>' markers must survive formatting (not escaped to '&gt;')."""
@@ -529,7 +531,7 @@ class TestSendToPlatformChunking:
         assert result["success"] is True
         sent_text = send.await_args.args[2]
         assert sent_text.startswith("> important quote")
-        assert "&amp;" in sent_text  # & is escaped
+        assert "& stuff" in sent_text  # raw markdown passes through unescaped
         assert "&gt;" not in sent_text.split("\n")[0]  # > in blockquote is NOT escaped
 
     def test_slack_pre_escaped_entities_not_double_escaped(self, monkeypatch):
@@ -570,7 +572,7 @@ class TestSendToPlatformChunking:
             )
         assert result["success"] is True
         sent_text = send.await_args.args[2]
-        assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in sent_text
+        assert "See [Foo](https://en.wikipedia.org/wiki/Foo_(bar))" in sent_text
 
     def test_telegram_media_attaches_to_last_chunk(self):
 
@@ -854,3 +856,104 @@ class TestSendToPlatformDiscordThread:
         send_mock.assert_awaited_once()
         _, call_kwargs = send_mock.await_args
         assert call_kwargs["thread_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Tests for Slack thread_id support
+# ---------------------------------------------------------------------------
+
+
+class TestSendSlackThreadId:
+    """_send_slack passes thread_ts when thread_id is provided."""
+
+    def _run(self, token, chat_id, message, thread_id=None):
+        return asyncio.run(_send_slack(token, chat_id, message, thread_id=thread_id))
+
+    def test_without_thread_id_no_thread_ts(self):
+        """No thread_id → payload has no thread_ts."""
+        posted_payloads = []
+
+        mock_resp = AsyncMock()
+        mock_resp.json = AsyncMock(return_value={"ok": True, "ts": "1234.5"})
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        def fake_post(url, headers=None, json=None, **kwargs):
+            posted_payloads.append(json)
+            return mock_resp
+
+        mock_session = MagicMock()
+        mock_session.post = fake_post
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = self._run("tok", "C1", "hello")
+
+        assert result["success"] is True
+        assert len(posted_payloads) == 1
+        assert "thread_ts" not in posted_payloads[0]
+
+    def test_with_thread_id_includes_thread_ts(self):
+        """thread_id → payload includes thread_ts = thread_id value."""
+        posted_payloads = []
+
+        mock_resp = AsyncMock()
+        mock_resp.json = AsyncMock(return_value={"ok": True, "ts": "1234.6"})
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        def fake_post(url, headers=None, json=None, **kwargs):
+            posted_payloads.append(json)
+            return mock_resp
+
+        mock_session = MagicMock()
+        mock_session.post = fake_post
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = self._run("tok", "C1", "thread reply", thread_id="9999.0000")
+
+        assert result["success"] is True
+        assert len(posted_payloads) == 1
+        assert posted_payloads[0]["thread_ts"] == "9999.0000"
+
+
+class TestSendToPlatformSlackThreadId:
+    """_send_to_platform passes thread_id through to _send_slack."""
+
+    def test_slack_thread_id_passed_to_send_slack(self, monkeypatch):
+        """Slack platform with thread_id passes it to _send_slack."""
+        import gateway.platforms.slack as slack_mod
+        monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
+        send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
+        with patch("tools.send_message_tool._send_slack", send_mock):
+            asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    SimpleNamespace(enabled=True, token="***", extra={}),
+                    "C1",
+                    "hello thread",
+                    thread_id="9999.0000",
+                )
+            )
+        send_mock.assert_awaited_once()
+        assert send_mock.await_args.kwargs["thread_id"] == "9999.0000"
+
+    def test_slack_no_thread_id_when_not_provided(self, monkeypatch):
+        """Slack platform without thread_id passes None."""
+        import gateway.platforms.slack as slack_mod
+        monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
+        send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
+        with patch("tools.send_message_tool._send_slack", send_mock):
+            asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    SimpleNamespace(enabled=True, token="***", extra={}),
+                    "C1",
+                    "hello no thread",
+                )
+            )
+        send_mock.assert_awaited_once()
+        assert send_mock.await_args.kwargs["thread_id"] is None
