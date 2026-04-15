@@ -641,12 +641,17 @@ class SessionDB:
             row = cursor.fetchone()
         return row["title"] if row else None
 
-    def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
+    def get_session_by_title(self, title: str, source: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT * FROM sessions WHERE title = ?", (title,)
-            )
+            if source:
+                cursor = self._conn.execute(
+                    "SELECT * FROM sessions WHERE title = ? AND source = ?", (title, source)
+                )
+            else:
+                cursor = self._conn.execute(
+                    "SELECT * FROM sessions WHERE title = ?", (title,)
+                )
             row = cursor.fetchone()
         return dict(row) if row else None
 

@@ -238,9 +238,8 @@ class TestHistoryDisplay:
         }.get(sid)
         cli._session_db.get_messages_as_conversation.return_value = []
 
-        import hermes_cli.main as main_mod
-        with patch.object(main_mod, "_session_browse_picker", side_effect=["root", "child"]):
-            cli._handle_resume_command("/resume")
+        cli._run_session_browse_picker = MagicMock(side_effect=["root", "child"])
+        cli._handle_resume_command("/resume")
 
         output = capsys.readouterr().out
         assert "Recent sessions" not in output
@@ -254,9 +253,8 @@ class TestHistoryDisplay:
             {"id": "root", "title": "Checking Running Hermes Agent", "preview": "check running gateways", "last_active": 0, "parent_session_id": None},
         ]
 
-        import hermes_cli.main as main_mod
-        with patch.object(main_mod, "_session_browse_picker", return_value=None):
-            cli._handle_resume_command("/resume")
+        cli._run_session_browse_picker = MagicMock(return_value=None)
+        cli._handle_resume_command("/resume")
 
         output = capsys.readouterr().out
         assert "Recent sessions" not in output
@@ -268,11 +266,10 @@ class TestHistoryDisplay:
         cli._session_db = MagicMock()
         cli._session_db.list_sessions_rich.return_value = []
 
-        import hermes_cli.main as main_mod
-        with patch.object(main_mod, "_session_browse_picker") as picker_mock:
-            cli._handle_resume_command("/resume")
+        cli._run_session_browse_picker = MagicMock()
+        cli._handle_resume_command("/resume")
 
-        picker_mock.assert_not_called()
+        cli._run_session_browse_picker.assert_not_called()
         assert cli.session_id == "current"
 
     def test_resume_last_flag_before_target_resumes_latest_chain_leaf(self):
@@ -307,8 +304,8 @@ class TestHistoryDisplay:
         cli._session_db.get_messages_as_conversation.return_value = []
 
         import hermes_cli.main as main_mod
-        with patch.object(main_mod, "_resolve_session_by_name_or_id", side_effect=lambda target: "root" if target == "My Project" else None), \
-             patch.object(main_mod, "_session_browse_picker", return_value="child"):
+        cli._run_session_browse_picker = MagicMock(return_value="child")
+        with patch.object(main_mod, "_resolve_session_by_name_or_id", side_effect=lambda target: "root" if target == "My Project" else None):
             cli._handle_resume_command("/resume My Project --list")
 
         assert cli.session_id == "child"

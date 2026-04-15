@@ -4195,7 +4195,7 @@ class HermesCLI:
         if not silent:
             print("(^_^)v New session started!")
 
-    def _parse_resume_command_args(self, cmd_original: str) -> tuple[str, bool, bool] | None:
+    def _parse_resume_command_args(self, cmd_original: str, emit_errors: bool = True) -> tuple[str, bool, bool] | None:
         """Parse /resume [target] [--last|--list] arguments."""
         import shlex
 
@@ -4207,7 +4207,8 @@ class HermesCLI:
         try:
             tokens = shlex.split(raw_args)
         except ValueError as exc:
-            _cprint(f"  Invalid /resume arguments: {exc}")
+            if emit_errors:
+                _cprint(f"  Invalid /resume arguments: {exc}")
             return None
 
         resume_last = False
@@ -4221,20 +4222,23 @@ class HermesCLI:
                 resume_list = True
                 continue
             if token.startswith("-"):
-                _cprint(f"  Unknown /resume flag: {token}")
+                if emit_errors:
+                    _cprint(f"  Unknown /resume flag: {token}")
                 return None
             target_parts.append(token)
 
         if resume_last and resume_list:
-            _cprint("  /resume accepts at most one of --last or --list.")
+            if emit_errors:
+                _cprint("  /resume accepts at most one of --last or --list.")
             return None
         if (resume_last or resume_list) and not target_parts:
-            _cprint("  /resume --last and --list require a target.")
+            if emit_errors:
+                _cprint("  /resume --last and --list require a target.")
             return None
 
         return " ".join(target_parts).strip(), resume_last, resume_list
 
-    def _handle_resume_command(self, cmd_original: str) -> None:
+    def _handle_resume_command(self, cmd_original: str, use_terminal_handoff: bool = True) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
         parsed = self._parse_resume_command_args(cmd_original)
         if parsed is None:
@@ -4244,10 +4248,39 @@ class HermesCLI:
         if not self._session_db:
             _cprint("  Session database not available.")
             return
+        if self._agent_running:
+            _cprint("  Finish or interrupt the current turn before using /resume.")
+            return
+
+        if (
+            use_terminal_handoff
+            and not self._agent_running
+            and (not target or resume_list)
+        ):
+            import threading
+
+            app = self._app if self._app else None
+            app_running = bool(getattr(app, "is_running", False) or getattr(app, "_is_running", False))
+            if app and app_running and threading.current_thread() is threading.main_thread():
+                from prompt_toolkit.application import run_in_terminal
+
+                was_visible = self._status_bar_visible
+                self._status_bar_visible = False
+                app.invalidate()
+
+                def _resume_in_terminal():
+                    self._handle_resume_command(cmd_original, use_terminal_handoff=False)
+
+                task = run_in_terminal(_resume_in_terminal)
+
+                def _restore(_future):
+                    self._status_bar_visible = was_visible
+                    app.invalidate()
+
+                task.add_done_callback(_restore)
+                return
 
         if not target:
-            from hermes_cli.main import _session_browse_picker
-
             roots = self._list_resume_root_sessions(limit=50)
             if not roots:
                 _cprint("  No resumable sessions found.")
@@ -4256,7 +4289,7 @@ class HermesCLI:
 
             target_id = None
             while True:
-                root_id = _session_browse_picker(roots)
+                root_id = self._run_session_browse_picker(roots)
                 if not root_id:
                     return
 
@@ -4265,7 +4298,7 @@ class HermesCLI:
                     target_id = root_id
                     break
 
-                selected_id = _session_browse_picker(chain)
+                selected_id = self._run_session_browse_picker(chain)
                 if selected_id:
                     target_id = selected_id
                     break
@@ -4273,7 +4306,7 @@ class HermesCLI:
             target = target_id or ""
 
         # Resolve title or ID
-        from hermes_cli.main import _resolve_session_by_name_or_id, _session_browse_picker
+        from hermes_cli.main import _resolve_session_by_name_or_id
         resolved = _resolve_session_by_name_or_id(target)
         target_id = resolved or target
 
@@ -4284,7 +4317,7 @@ class HermesCLI:
         elif resume_list:
             chain = self._session_db.get_compression_continuation_chain(target_id) or []
             if len(chain) > 1:
-                selected_id = _session_browse_picker(chain)
+                selected_id = self._run_session_browse_picker(chain)
                 if not selected_id:
                     return
                 target_id = selected_id
@@ -4568,6 +4601,12 @@ class HermesCLI:
             _pick()
 
         return result[0]
+
+    def _run_session_browse_picker(self, sessions: list[dict]) -> str | None:
+        """Run the interactive session browser directly. Terminal handoff is handled by the caller."""
+        from hermes_cli.main import _session_browse_picker
+
+        return _session_browse_picker(sessions)
 
     def _prompt_text_input(self, prompt_text: str) -> str | None:
         """Prompt for free-text input safely inside or outside prompt_toolkit."""
@@ -4932,6 +4971,24 @@ class HermesCLI:
             base = text.split(None, 1)[0].lower().lstrip('/')
             cmd = resolve_command(base)
             return bool(cmd and cmd.name == "model")
+        except Exception:
+            return False
+
+    def _should_handle_resume_command_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when /resume needs a modal picker and should stay on the UI thread."""
+        if not text or has_images or not _looks_like_slash_command(text):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            base = text.split(None, 1)[0].lower().lstrip('/')
+            cmd = resolve_command(base)
+            if not (cmd and cmd.name == "resume"):
+                return False
+            parsed = self._parse_resume_command_args(text, emit_errors=False)
+            if parsed is None:
+                return False
+            target, _resume_last, resume_list = parsed
+            return bool(not target or resume_list)
         except Exception:
             return False
 
@@ -8537,13 +8594,21 @@ class HermesCLI:
             text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)
             if text or has_images:
-                # Handle /model directly on the UI thread so interactive pickers
-                # can safely use prompt_toolkit terminal handoff helpers.
-                if self._should_handle_model_command_inline(text, has_images=has_images):
+                # Handle modal local commands directly on the UI thread so their
+                # interactive pickers can safely take over the terminal.
+                resume_modal = self._should_handle_resume_command_inline(text, has_images=has_images)
+                if (
+                    self._should_handle_model_command_inline(text, has_images=has_images)
+                    or (resume_modal and not self._agent_running)
+                ):
                     if not self.process_command(text):
                         self._should_exit = True
                         if event.app.is_running:
                             event.app.exit()
+                    event.app.current_buffer.reset(append_to_history=True)
+                    return
+                if resume_modal and self._agent_running:
+                    _cprint("  Finish or interrupt the current turn before opening the /resume browser.")
                     event.app.current_buffer.reset(append_to_history=True)
                     return
 
