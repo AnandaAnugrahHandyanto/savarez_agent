@@ -473,13 +473,17 @@ async def update_config(body: ConfigUpdate):
 
 
 @app.get("/api/auth/session-token")
-async def get_session_token():
+async def get_session_token(request: Request):
     """Return the ephemeral session token for this server instance.
 
-    The token protects sensitive endpoints (reveal).  It's served to the SPA
-    which stores it in memory — it's never persisted and dies when the server
-    process exits.  CORS already restricts this to localhost origins.
+    Only served to requests originating from the local SPA (same host/port).
+    Referer check prevents other localhost origins from obtaining the token.
     """
+    referer = request.headers.get("referer", "")
+    origin = request.headers.get("origin", "")
+    server_base = f"http://{request.url.hostname}:{request.url.port}"
+    if not (referer.startswith(server_base) or origin == server_base):
+        raise HTTPException(status_code=403, detail="Forbidden")
     return {"token": _SESSION_TOKEN}
 
 
@@ -1818,10 +1822,10 @@ def start_server(host: str = "127.0.0.1", port: int = 9119, open_browser: bool =
     import uvicorn
 
     if host not in ("127.0.0.1", "localhost", "::1"):
-        import logging
-        logging.warning(
-            "Binding to %s — the web UI exposes config and API keys. "
-            "Only bind to non-localhost if you trust all users on the network.", host,
+        raise SystemExit(
+            f"Refusing to bind web dashboard to {host} — "
+            "the dashboard exposes API keys and config to the network.\n"
+            "Use 127.0.0.1 (default) to restrict access to localhost only."
         )
 
     if open_browser:
