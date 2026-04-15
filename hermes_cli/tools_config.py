@@ -1317,14 +1317,14 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                 for ts_key in to_configure:
                     label = next((l for k, l, _ in _get_effective_configurable_toolsets() if k == ts_key), ts_key)
                     print(color(f"    • {label}", Colors.DIM))
-                print(color("  You can skip any tool you don't need right now.", Colors.DIM))
+                print(color("  지금 필요 없는 도구는 건너뛰어도 괜찮아요.", Colors.DIM))
                 print()
                 for ts_key in to_configure:
                     _configure_toolset(ts_key, config)
 
             _save_platform_tools(config, pkey, new_enabled)
             save_config(config)
-            print(color(f"  ✓ Saved {pinfo['label']} tool configuration", Colors.GREEN))
+            print(color(f"  ✓ {pinfo['label']} 도구 구성을 저장했어요", Colors.GREEN))
             print()
 
         return
@@ -1342,15 +1342,15 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         platform_keys.append(pkey)
 
     if len(platform_keys) > 1:
-        platform_choices.append("Configure all platforms (global)")
-    platform_choices.append("Reconfigure an existing tool's provider or API key")
+        platform_choices.append("모든 플랫폼 구성(전역)")
+    platform_choices.append("기존 도구의 provider 또는 API key 다시 설정")
 
     # Show MCP option if any MCP servers are configured
     _has_mcp = bool(config.get("mcp_servers"))
     if _has_mcp:
-        platform_choices.append("Configure MCP server tools")
+        platform_choices.append("MCP 서버 도구 설정")
 
-    platform_choices.append("Done")
+    platform_choices.append("완료")
 
     # Index offsets for the extra options after per-platform entries
     _global_idx = len(platform_keys) if len(platform_keys) > 1 else -1
@@ -1359,7 +1359,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     _done_idx = _reconfig_idx + (2 if _has_mcp else 1)
 
     while True:
-        idx = _prompt_choice("Select an option:", platform_choices, default=0)
+        idx = _prompt_choice("옵션을 선택해 주세요:", platform_choices, default=0)
 
         # "Done" selected
         if idx == _done_idx:
@@ -1405,14 +1405,14 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                                 _configure_toolset(ts_key, config)
                     _save_platform_tools(config, pk, new_enabled)
                 save_config(config)
-                print(color("  ✓ Saved configuration for all platforms", Colors.GREEN))
+                print(color("  ✓ 모든 플랫폼 구성을 저장했어요", Colors.GREEN))
                 # Update choice labels
                 for ci, pk in enumerate(platform_keys):
                     new_count = len(_get_platform_tools(config, pk, include_default_mcp_servers=False))
                     total = len(_get_effective_configurable_toolsets())
                     platform_choices[ci] = f"Configure {PLATFORMS[pk]['label']}  ({new_count}/{total} enabled)"
             else:
-                print(color("  No changes", Colors.DIM))
+                print(color("  변경 사항이 없어요", Colors.DIM))
             print()
             continue
 
@@ -1446,9 +1446,9 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
 
             _save_platform_tools(config, pkey, new_enabled)
             save_config(config)
-            print(color(f"  ✓ Saved {pinfo['label']} configuration", Colors.GREEN))
+            print(color(f"  ✓ {pinfo['label']} 구성을 저장했어요", Colors.GREEN))
         else:
-            print(color(f"  No changes to {pinfo['label']}", Colors.DIM))
+            print(color(f"  {pinfo['label']}에는 변경 사항이 없어요", Colors.DIM))
 
         print()
 

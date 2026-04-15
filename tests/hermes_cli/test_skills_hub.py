@@ -5,7 +5,7 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import do_check, do_install, do_list, do_search, do_update, handle_skills_slash
 
 
 class _DummyLockFile:
@@ -169,6 +169,35 @@ def test_do_check_handles_no_installed_updates(monkeypatch):
     output = _capture_check(monkeypatch, [])
 
     assert "업데이트를 확인할 허브 설치 skill이 없어요" in output
+
+
+def test_do_search_and_resolve_messages_are_localized(monkeypatch):
+    import tools.skills_hub as hub
+    import hermes_cli.skills_hub as cli_hub
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    monkeypatch.setattr(hub, "unified_search", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(hub, "create_source_router", lambda _auth: {})
+    monkeypatch.setattr(hub, "GitHubAuth", lambda: object())
+
+    do_search("kubernetes", console=console)
+    output = sink.getvalue()
+    assert "검색어:" in output
+    assert "검색어와 일치하는 skill을 찾지 못했어요" in output
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    suggestions = [type("R", (), {"name": "kubernetes-cluster", "identifier": "skills-sh/example/kubernetes-cluster"})()]
+    monkeypatch.setattr(hub, "unified_search", lambda *_args, **_kwargs: suggestions)
+
+    resolved = cli_hub._resolve_short_name("kubernets", [object()], console)
+
+    assert resolved == ""
+    output = sink.getvalue()
+    assert "정확히 일치하는 항목이 없어요" in output
+    assert "kubernetes-cluster" in output
 
 
 def test_do_update_reinstalls_outdated_skills(monkeypatch):

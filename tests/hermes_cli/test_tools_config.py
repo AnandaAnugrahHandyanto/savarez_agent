@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from hermes_cli.tools_config import (
     _configure_provider,
+    _get_enabled_platforms,
     _get_platform_tools,
     _platform_toolset_summary,
     _save_platform_tools,
@@ -12,6 +13,49 @@ from hermes_cli.tools_config import (
     _visible_providers,
     tools_command,
 )
+
+
+def test_tools_command_menu_strings_are_localized(monkeypatch, capsys):
+    monkeypatch.setattr("hermes_cli.tools_config.load_config", lambda: {"platform_toolsets": {"cli": ["web"]}})
+    monkeypatch.setattr("hermes_cli.tools_config._get_enabled_platforms", lambda: ["cli"])
+
+    prompts = []
+
+    def fake_prompt_choice(prompt, choices, default=0):
+        prompts.append((prompt, choices, default))
+        return len(choices) - 1
+
+    monkeypatch.setattr("hermes_cli.tools_config._prompt_choice", fake_prompt_choice)
+
+    tools_command(None)
+
+    assert prompts
+    prompt, choices, default = prompts[0]
+    assert prompt == "옵션을 선택해 주세요:"
+    assert "기존 도구의 provider 또는 API key 다시 설정" in choices
+    assert "완료" in choices
+    assert default == 0
+
+
+def test_tools_command_no_changes_message_is_localized(monkeypatch, capsys):
+    monkeypatch.setattr("hermes_cli.tools_config.load_config", lambda: {"platform_toolsets": {"cli": ["web"]}})
+    monkeypatch.setattr("hermes_cli.tools_config._get_enabled_platforms", lambda: ["cli"])
+
+    call_count = {"n": 0}
+
+    def fake_prompt_choice(_prompt, _choices, default=0):
+        if call_count["n"] == 0:
+            call_count["n"] += 1
+            return 0
+        return len(_choices) - 1
+
+    monkeypatch.setattr("hermes_cli.tools_config._prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.tools_config._prompt_toolset_checklist", lambda _label, current: set(current))
+
+    tools_command(None)
+
+    out = capsys.readouterr().out
+    assert "변경 사항이 없어요" in out
 
 
 def test_get_platform_tools_uses_default_when_platform_not_configured():

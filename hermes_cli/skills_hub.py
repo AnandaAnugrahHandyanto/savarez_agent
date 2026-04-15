@@ -62,18 +62,18 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
             trust_label = "official" if r.source == "official" else r.trust_level
             table.add_row(r.source, f"[{trust_style}]{trust_label}[/]", r.identifier)
         c.print(table)
-        c.print("[bold]Use the full identifier to install a specific one.[/]\n")
+        c.print("[bold]특정 skill을 설치하려면 전체 identifier를 사용하세요.[/]\n")
         return ""
 
     # No exact match — check if there are partial matches to suggest
     if results:
-        c.print(f"[yellow]No exact match for '{name}'. Did you mean one of these?[/]")
+        c.print(f"[yellow]'{name}'과(와) 정확히 일치하는 항목이 없어요. 아래 skill 중 하나를 찾으셨나요?[/]")
         for r in results[:5]:
             c.print(f"  [cyan]{r.name}[/] — {r.identifier}")
         c.print()
         return ""
 
-    c.print(f"[bold red]Error:[/] No skill named '{name}' found in any source.\n")
+    c.print(f"[bold red]오류:[/] 어떤 source에서도 '{name}' skill을 찾지 못했어요.\n")
     return ""
 
 
@@ -147,18 +147,18 @@ def do_search(query: str, source: str = "all", limit: int = 10,
     from tools.skills_hub import GitHubAuth, create_source_router, unified_search
 
     c = console or _console
-    c.print(f"\n[bold]Searching for:[/] {query}")
+    c.print(f"\n[bold]검색어:[/] {query}")
 
     auth = GitHubAuth()
     sources = create_source_router(auth)
-    with c.status("[bold]Searching registries..."):
+    with c.status("[bold]레지스트리를 검색하는 중...[/]"):
         results = unified_search(query, sources, source_filter=source, limit=limit)
 
     if not results:
-        c.print("[dim]No skills found matching your query.[/]\n")
+        c.print("[dim]검색어와 일치하는 skill을 찾지 못했어요.[/]\n")
         return
 
-    table = Table(title=f"Skills Hub — {len(results)} result(s)")
+    table = Table(title=f"스킬 허브 — 검색 결과 {len(results)}개")
     table.add_column("Name", style="bold cyan")
     table.add_column("Description", max_width=60)
     table.add_column("Source", style="dim")
@@ -177,8 +177,8 @@ def do_search(query: str, source: str = "all", limit: int = 10,
         )
 
     c.print(table)
-    c.print("[dim]Use: hermes skills inspect <identifier> to preview, "
-            "hermes skills install <identifier> to install[/]\n")
+    c.print("[dim]미리보기: hermes skills inspect <identifier>, "
+            "설치: hermes skills install <identifier>[/]\n")
 
 
 def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
@@ -218,7 +218,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
         )
 
     if not all_results:
-        c.print("[dim]No skills found in the Skills Hub.[/]\n")
+        c.print("[dim]스킬 허브에서 skill을 찾지 못했어요.[/]\n")
         return
 
     # Deduplicate by name, preferring higher trust
@@ -251,7 +251,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     source_label = f"— {source}" if source != "all" else "— all sources"
     loaded_label = f"{total} skills loaded"
     if timed_out:
-        loaded_label += f", {len(timed_out)} source(s) still loading"
+        loaded_label += f", 아직 불러오는 중인 source {len(timed_out)}개"
     c.print(f"\n[bold]Skills Hub — Browse {source_label}[/]"
             f"  [dim]({loaded_label}, page {page}/{total_pages})[/]")
     if official_count > 0 and page == 1:
@@ -341,7 +341,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             or getattr(getattr(src, "github", None), "is_rate_limited", False)
             for src in sources
         )
-        c.print(f"[bold red]Error:[/] Could not fetch '{identifier}' from any source.")
+        c.print(f"[bold red]오류:[/] 어떤 source에서도 '{identifier}'을(를) 가져오지 못했어요.")
         if rate_limited:
             c.print(
                 "[yellow]Hint:[/] GitHub API rate limit exhausted "
@@ -364,9 +364,9 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     lock = HubLockFile()
     existing = lock.get_installed(bundle.name)
     if existing:
-        c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
+        c.print(f"[yellow]경고:[/] '{bundle.name}'은(는) 이미 {existing['install_path']}에 설치되어 있어요")
         if not force:
-            c.print("Use --force to reinstall.\n")
+            c.print("다시 설치하려면 --force를 사용하세요.\n")
             return
 
     extra_metadata = dict(getattr(meta, "extra", {}) or {})
@@ -376,7 +376,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     try:
         q_path = quarantine_bundle(bundle)
     except ValueError as exc:
-        c.print(f"[bold red]Installation blocked:[/] {exc}\n")
+        c.print(f"[bold red]설치를 차단했어요:[/] {exc}\n")
         from tools.skills_hub import append_audit_log
         append_audit_log("BLOCKED", bundle.name, bundle.source,
                          bundle.trust_level, "invalid_path", str(exc))
@@ -392,7 +392,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     # Check install policy
     allowed, reason = should_allow_install(result, force=force)
     if not allowed:
-        c.print(f"\n[bold red]Installation blocked:[/] {reason}")
+        c.print(f"\n[bold red]설치를 차단했어요:[/] {reason}")
         # Clean up quarantine
         shutil.rmtree(q_path, ignore_errors=True)
         from tools.skills_hub import append_audit_log
@@ -429,13 +429,13 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                 title="Disclaimer",
                 border_style="yellow",
             ))
-        c.print(f"[bold]Install '{bundle.name}'?[/]")
+        c.print(f"[bold]'{bundle.name}'을(를) 설치할까요?[/]")
         try:
-            answer = input("Confirm [y/N]: ").strip().lower()
+            answer = input("확인 [y/N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = "n"
         if answer not in ("y", "yes"):
-            c.print("[dim]Installation cancelled.[/]\n")
+            c.print("[dim]설치를 취소했어요.[/]\n")
             shutil.rmtree(q_path, ignore_errors=True)
             return
 
@@ -443,15 +443,15 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     try:
         install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
     except ValueError as exc:
-        c.print(f"[bold red]Installation blocked:[/] {exc}\n")
+        c.print(f"[bold red]설치를 차단했어요:[/] {exc}\n")
         shutil.rmtree(q_path, ignore_errors=True)
         from tools.skills_hub import append_audit_log
         append_audit_log("BLOCKED", bundle.name, bundle.source,
                          bundle.trust_level, "invalid_path", str(exc))
         return
     from tools.skills_hub import SKILLS_DIR
-    c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
-    c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
+    c.print(f"[bold green]설치했어요:[/] {install_dir.relative_to(SKILLS_DIR)}")
+    c.print(f"[dim]파일: {', '.join(bundle.files.keys())}[/]\n")
 
     if invalidate_cache:
         # Invalidate the skills prompt cache so the new skill appears immediately
@@ -481,7 +481,7 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
 
     if not meta:
-        c.print(f"[bold red]Error:[/] Could not find '{identifier}' in any source.\n")
+        c.print(f"[bold red]오류:[/] 어떤 source에서도 '{identifier}'을(를) 찾지 못했어요.\n")
         return
 
     c.print()
@@ -626,22 +626,22 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> N
     installed = lock.list_installed()
 
     if not installed:
-        c.print("[dim]No hub-installed skills to audit.[/]\n")
+        c.print("[dim]감사할 허브 설치 skill이 없어요.[/]\n")
         return
 
     targets = installed
     if name:
         targets = [e for e in installed if e["name"] == name]
         if not targets:
-            c.print(f"[bold red]Error:[/] '{name}' is not a hub-installed skill.\n")
+            c.print(f"[bold red]오류:[/] '{name}'은(는) 허브로 설치한 skill이 아니에요.\n")
             return
 
-    c.print(f"\n[bold]Auditing {len(targets)} skill(s)...[/]\n")
+    c.print(f"\n[bold]skill {len(targets)}개를 감사하는 중...[/]\n")
 
     for entry in targets:
         skill_path = SKILLS_DIR / entry["install_path"]
         if not skill_path.exists():
-            c.print(f"[yellow]Warning:[/] {entry['name']} — path missing: {entry['install_path']}")
+            c.print(f"[yellow]경고:[/] {entry['name']} — 경로가 없어요: {entry['install_path']}")
             continue
 
         result = scan_skill(skill_path, source=entry.get("identifier", entry["source"]))
@@ -661,7 +661,7 @@ def do_uninstall(name: str, console: Optional[Console] = None,
     if not skip_confirm:
         c.print(f"\n[bold]'{name}'을(를) 제거할까요?[/]")
         try:
-            answer = input("Confirm [y/N]: ").strip().lower()
+            answer = input("확인 [y/N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = "n"
         if answer not in ("y", "yes"):
@@ -681,7 +681,7 @@ def do_uninstall(name: str, console: Optional[Console] = None,
             c.print("[dim]변경 사항은 다음 세션부터 적용돼요.[/]")
             c.print("[dim]지금 새 세션을 시작하려면 /reset, 바로 적용하려면 --now를 사용하세요 (prompt cache 무효화).[/]\n")
     else:
-        c.print(f"[bold red]Error:[/] {msg}\n")
+        c.print(f"[bold red]오류:[/] {msg}\n")
 
 
 def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> None:
@@ -740,7 +740,7 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
     if not path.is_absolute():
         path = SKILLS_DIR / path
     if not path.exists() or not (path / "SKILL.md").exists():
-        c.print(f"[bold red]Error:[/] No SKILL.md found at {path}\n")
+        c.print(f"[bold red]오류:[/] {path}에서 SKILL.md를 찾지 못했어요\n")
         return
 
     # Validate the skill
