@@ -2680,12 +2680,16 @@ class TelegramAdapter(BasePlatformAdapter):
         thread_id_str = str(thread_id_raw) if thread_id_raw else None
         chat_topic = None
         topic_skill = None
+        topic_capture_command = None
+        topic_cwd = None
 
         if chat_type == "dm" and thread_id_str:
             topic_info = self._get_dm_topic_info(str(chat.id), thread_id_str)
             if topic_info:
                 chat_topic = topic_info.get("name")
                 topic_skill = topic_info.get("skill")
+                topic_capture_command = topic_info.get("capture_command")
+                topic_cwd = topic_info.get("cwd")
 
             # Also check forum_topic_created service message for topic discovery
             if hasattr(message, "forum_topic_created") and message.forum_topic_created:
@@ -2705,6 +2709,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         if tid is not None and str(tid) == thread_id_str:
                             chat_topic = topic.get("name")
                             topic_skill = topic.get("skill")
+                            topic_capture_command = topic.get("capture_command")
+                            topic_cwd = topic.get("cwd")
                             break
                     break
 
@@ -2735,6 +2741,8 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,
+            topic_capture_command=topic_capture_command,
+            topic_cwd=topic_cwd,
             timestamp=message.date,
         )
 

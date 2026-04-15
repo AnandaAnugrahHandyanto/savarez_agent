@@ -19,11 +19,13 @@ import logging
 import os
 import re
 import shlex
+import subprocess
 import sys
 import signal
 import tempfile
 import threading
 import time
+from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
@@ -3089,6 +3091,101 @@ class GatewayRunner:
 
         return message_text
 
+    async def _maybe_apply_topic_capture_command(self, event: MessageEvent, source: SessionSource) -> None:
+        command = getattr(event, "topic_capture_command", None)
+        if not command or not (event.text or "").strip() or event.is_command():
+            return
+
+        if isinstance(command, str):
+            command_argv = shlex.split(command)
+        elif isinstance(command, (list, tuple)):
+            command_argv = [str(part) for part in command]
+        else:
+            logger.warning("[Gateway] Topic capture command must be a list or string: %r", command)
+            return
+
+        cwd_raw = getattr(event, "topic_cwd", None) or os.getenv("MESSAGING_CWD") or str(Path.home())
+        cwd_path = Path(cwd_raw).expanduser().resolve()
+        if not cwd_path.exists():
+            logger.warning("[Gateway] Topic cwd does not exist: %s", cwd_path)
+            return
+
+        timestamp = getattr(event, "timestamp", None)
+        first_seen_at = None
+        if isinstance(timestamp, datetime):
+            try:
+                first_seen_at = timestamp.astimezone().isoformat(timespec="seconds")
+            except Exception:
+                first_seen_at = timestamp.isoformat()
+
+        message_ref = None
+        if source.platform and source.chat_id and event.message_id:
+            platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+            message_ref = f"{platform_name}:{source.chat_id}:{event.message_id}"
+
+        full_command = list(command_argv)
+        if "--json" not in full_command and "--plain" not in full_command:
+            full_command.append("--json")
+        if "--from-file" not in full_command:
+            full_command.extend(["--from-file", "-"])
+        if "--repo-root" not in full_command and getattr(event, "topic_cwd", None):
+            full_command.extend(["--repo-root", str(cwd_path)])
+        if first_seen_at and "--first-seen-at" not in full_command:
+            full_command.extend(["--first-seen-at", first_seen_at])
+        if source.thread_id and "--thread" not in full_command:
+            full_command.extend(["--thread", str(source.thread_id)])
+        if message_ref and "--message-ref" not in full_command:
+            full_command.extend(["--message-ref", message_ref])
+
+        try:
+            completed = await asyncio.to_thread(
+                subprocess.run,
+                full_command,
+                input=event.text,
+                capture_output=True,
+                text=True,
+                cwd=str(cwd_path),
+                timeout=30,
+            )
+        except Exception as exc:
+            logger.warning("[Gateway] Topic capture command failed to run: %s", exc)
+            return
+
+        if completed.returncode != 0:
+            logger.warning(
+                "[Gateway] Topic capture command exited non-zero (%s): %s",
+                completed.returncode,
+                (completed.stderr or completed.stdout or "").strip(),
+            )
+            return
+
+        raw_output = (completed.stdout or "").strip()
+        if not raw_output:
+            return
+
+        try:
+            result = json.loads(raw_output)
+        except Exception as exc:
+            logger.warning("[Gateway] Topic capture command emitted invalid JSON: %s", exc)
+            return
+
+        event.text = self._format_topic_capture_command_message(event.text, result)
+
+    @staticmethod
+    def _format_topic_capture_command_message(original_text: str, result: dict[str, Any]) -> str:
+        next_steps = result.get("agent_next_steps") or []
+        steps_block = "\n".join(f"- {step}" for step in next_steps) if next_steps else "- none"
+        return (
+            "[Topic capture command ran before this turn. Use its results as grounded context; do not redo the deterministic capture unless needed.]\n"
+            f"- Route: {result.get('route', 'unknown')}\n"
+            f"- Requires follow-up: {'yes' if result.get('requires_agent_followup') else 'no'}\n"
+            f"- Handoff: {result.get('agent_handoff', 'none')}\n"
+            "- Suggested next steps:\n"
+            f"{steps_block}\n\n"
+            "Original user message:\n"
+            f"{original_text}"
+        )
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -3099,6 +3196,8 @@ class GatewayRunner:
             _platform_name, source.user_name or source.user_id or "unknown",
             source.chat_id or "unknown", _msg_preview,
         )
+
+        await self._maybe_apply_topic_capture_command(event, source)
 
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
@@ -3121,7 +3220,10 @@ class GatewayRunner:
         context = build_session_context(source, self.config, session_entry)
         
         # Set session context variables for tools (task-local, concurrency-safe)
-        _session_env_tokens = self._set_session_env(context)
+        _session_env_tokens = self._set_session_env(
+            context,
+            terminal_cwd=getattr(event, "topic_cwd", None) or "",
+        )
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
@@ -3561,6 +3663,7 @@ class GatewayRunner:
                 session_id=session_entry.session_id,
                 session_key=session_key,
                 event_message_id=event.message_id,
+                terminal_cwd=getattr(event, "topic_cwd", None) or "",
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -5379,7 +5482,8 @@ class GatewayRunner:
                 )
 
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, run_sync)
+            _ctx = copy_context()
+            result = await loop.run_in_executor(None, _ctx.run, run_sync)
 
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
@@ -5562,7 +5666,8 @@ class GatewayRunner:
                 )
 
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, run_sync)
+            _ctx = copy_context()
+            result = await loop.run_in_executor(None, _ctx.run, run_sync)
 
             response = (result.get("final_response") or "") if result else ""
             if not response and result and result.get("error"):
@@ -6963,7 +7068,7 @@ class GatewayRunner:
         finally:
             notify_path.unlink(missing_ok=True)
 
-    def _set_session_env(self, context: SessionContext) -> list:
+    def _set_session_env(self, context: SessionContext, terminal_cwd: str = "") -> list:
         """Set session context variables for the current async task.
 
         Uses ``contextvars`` instead of ``os.environ`` so that concurrent
@@ -6981,6 +7086,7 @@ class GatewayRunner:
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
+            terminal_cwd=terminal_cwd or "",
         )
 
     def _clear_session_env(self, tokens: list) -> None:
@@ -7325,6 +7431,7 @@ class GatewayRunner:
         runtime: dict,
         enabled_toolsets: list,
         ephemeral_prompt: str,
+        terminal_cwd: str = "",
     ) -> str:
         """Compute a stable string key from agent config values.
 
@@ -7353,6 +7460,7 @@ class GatewayRunner:
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.
                 ephemeral_prompt or "",
+                terminal_cwd or "",
             ],
             sort_keys=True,
             default=str,
@@ -7402,6 +7510,7 @@ class GatewayRunner:
         session_key: str = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        terminal_cwd: str = "",
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -7736,6 +7845,7 @@ class GatewayRunner:
             # session_key is now set via contextvars in _set_session_env()
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
+            os.environ["HERMES_TERMINAL_CWD"] = terminal_cwd or ""
 
             # Read from env var or use default (same as CLI)
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
@@ -7869,6 +7979,7 @@ class GatewayRunner:
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
+                terminal_cwd or "",
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
@@ -8667,6 +8778,9 @@ class GatewayRunner:
                     if next_message is None:
                         return result
                     next_message_id = getattr(pending_event, "message_id", None)
+                    next_terminal_cwd = getattr(pending_event, "topic_cwd", None) or terminal_cwd
+                else:
+                    next_terminal_cwd = terminal_cwd
 
                 return await self._run_agent(
                     message=next_message,
@@ -8677,6 +8791,7 @@ class GatewayRunner:
                     session_key=session_key,
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
+                    terminal_cwd=next_terminal_cwd,
                 )
         finally:
             # Stop progress sender, interrupt monitor, and notification task

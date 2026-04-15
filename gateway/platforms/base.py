@@ -682,6 +682,13 @@ class MessageEvent:
     # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
     # Discord channel_skill_bindings).  A single name or ordered list.
     auto_skill: Optional[str | list[str]] = None
+
+    # Optional topic-bound deterministic capture command. This should be a direct
+    # CLI argv list (or a simple command string), not a script-path hook.
+    topic_capture_command: Optional[list[str] | str] = None
+
+    # Optional topic-bound workspace root for the full agent turn.
+    topic_cwd: Optional[str] = None
     
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.

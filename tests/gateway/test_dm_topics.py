@@ -544,6 +544,63 @@ def test_group_topic_skill_binding_second_topic():
     assert event.source.chat_topic == "Sales"
 
 
+def test_group_topic_cwd_binding_sets_topic_cwd():
+    """Group topic cwd config should be attached to the event."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1001234567890,
+            "topics": [
+                {
+                    "name": "dm.core",
+                    "thread_id": 1094,
+                    "cwd": "/Users/dongming/projects/dming.brain",
+                },
+            ],
+        }
+    ])
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=1094,
+        text="implement this",
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.topic_cwd == "/Users/dongming/projects/dming.brain"
+
+
+def test_group_topic_capture_command_binding_sets_command():
+    """Group topic capture_command should be attached to the event."""
+    from gateway.platforms.base import MessageType
+
+    command = ["uv", "run", "brain", "capture", "--topic", "knowledge"]
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1001234567890,
+            "topics": [
+                {
+                    "name": "Knowledge",
+                    "thread_id": 14,
+                    "capture_command": command,
+                },
+            ],
+        }
+    ])
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=14,
+        text="https://example.com/article",
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.topic_capture_command == command
+
+
 def test_group_topic_no_skill_binding():
     """Group topic without a skill key should have auto_skill=None but set chat_topic."""
     from gateway.platforms.base import MessageType

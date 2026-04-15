@@ -6,6 +6,7 @@ from gateway.run import GatewayRunner
 from gateway.session import SessionContext, SessionSource
 from gateway.session_context import (
     get_session_env,
+    get_terminal_cwd,
     set_session_vars,
     clear_session_vars,
 )
@@ -169,8 +170,9 @@ def test_session_key_falls_back_to_os_environ(monkeypatch):
     assert get_session_env("HERMES_SESSION_KEY") == "env-session-123"
 
 
-def test_set_session_env_includes_session_key():
+def test_set_session_env_includes_session_key(monkeypatch):
     """_set_session_env should propagate session_key from SessionContext."""
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
     runner = object.__new__(GatewayRunner)
     source = SessionSource(
         platform=Platform.TELEGRAM,
@@ -190,6 +192,33 @@ def test_set_session_env_includes_session_key():
     assert get_session_env("HERMES_SESSION_KEY") == "tg:-1001:17585"
     runner._clear_session_env(tokens)
     assert get_session_env("HERMES_SESSION_KEY") == ""
+
+
+def test_set_session_env_propagates_topic_terminal_cwd(monkeypatch):
+    """Topic-scoped cwd should flow into session context for this message."""
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_name="Group",
+        chat_type="group",
+        thread_id="1094",
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+
+    monkeypatch.setenv("TERMINAL_CWD", "/fallback/global")
+
+    tokens = runner._set_session_env(context, terminal_cwd="/repo/root")
+    try:
+        assert get_terminal_cwd() == "/repo/root"
+    finally:
+        runner._clear_session_env(tokens)
+
+
+def test_get_terminal_cwd_falls_back_to_terminal_env(monkeypatch):
+    """Without a session override, terminal cwd should fall back to TERMINAL_CWD."""
+    monkeypatch.setenv("TERMINAL_CWD", "/global/cwd")
+    assert get_terminal_cwd() == "/global/cwd"
 
 
 def test_session_key_no_race_condition_with_contextvars(monkeypatch):
