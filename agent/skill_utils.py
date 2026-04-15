@@ -201,6 +201,7 @@ def get_external_skills_dirs() -> List[Path]:
         return []
 
     local_skills = get_skills_dir().resolve()
+    config_dir = config_path.parent.resolve()
     seen: Set[Path] = set()
     result: List[Path] = []
 
@@ -208,9 +209,11 @@ def get_external_skills_dirs() -> List[Path]:
         entry = str(entry).strip()
         if not entry:
             continue
-        # Expand ~ and environment variables
-        expanded = os.path.expanduser(os.path.expandvars(entry))
-        p = Path(expanded).resolve()
+        # Expand ~ and environment variables, then resolve relative paths from config.yaml.
+        expanded = Path(os.path.expanduser(os.path.expandvars(entry)))
+        if not expanded.is_absolute():
+            expanded = config_dir / expanded
+        p = expanded.resolve()
         if p == local_skills:
             continue
         if p in seen:
