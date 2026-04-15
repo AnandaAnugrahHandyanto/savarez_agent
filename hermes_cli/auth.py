@@ -502,12 +502,12 @@ def format_auth_error(error: Exception) -> str:
         return str(error)
 
     if error.relogin_required:
-        return f"{error} Run `hermes model` to re-authenticate."
+        return f"{error} 다시 인증하려면 `hermes model` 을 실행하세요."
 
     if error.code == "subscription_required":
         return (
-            "No active paid subscription found on Nous Portal. "
-            "Please purchase/activate a subscription, then retry."
+            "Nous Portal에서 활성화된 유료 구독을 찾지 못했어요. "
+            "구독을 구매하거나 활성화한 뒤 다시 시도해 주세요."
         )
 
     if error.code == "insufficient_credits":
@@ -2738,7 +2738,7 @@ def _prompt_model_selection(
         if idx < len(ordered):
             return ordered[idx]
         elif idx == len(ordered):
-            custom = input("Enter model name: ").strip()
+            custom = input("모델 이름 입력: ").strip()
             return custom if custom else None
         return None
     except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
@@ -2750,33 +2750,33 @@ def _prompt_model_selection(
     for i, mid in enumerate(ordered, 1):
         print(f"  {i:>{num_width}}. {_label(mid)}")
     n = len(ordered)
-    print(f"  {n + 1:>{num_width}}. Enter custom model name")
-    print(f"  {n + 2:>{num_width}}. Skip (keep current)")
+    print(f"  {n + 1:>{num_width}}. 사용자 지정 모델 이름 입력")
+    print(f"  {n + 2:>{num_width}}. 건너뛰기(현재 설정 유지)")
 
     if _unavailable:
         _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
         print()
-        print(f"  {_DIM}── Unavailable models (requires paid tier — upgrade at {_upgrade_url}) ──{_RESET}")
+        print(f"  {_DIM}── 사용할 수 없는 모델(유료 플랜 필요 — 업그레이드: {_upgrade_url}) ──{_RESET}")
         for mid in _unavailable:
             print(f"  {'':>{num_width}}  {_DIM}{_label(mid)}{_RESET}")
     print()
 
     while True:
         try:
-            choice = input(f"Choice [1-{n + 2}] (default: skip): ").strip()
+            choice = input(f"선택 [1-{n + 2}] (기본값: 건너뛰기): ").strip()
             if not choice:
                 return None
             idx = int(choice)
             if 1 <= idx <= n:
                 return ordered[idx - 1]
             elif idx == n + 1:
-                custom = input("Enter model name: ").strip()
+                custom = input("모델 이름 입력: ").strip()
                 return custom if custom else None
             elif idx == n + 2:
                 return None
-            print(f"Please enter 1-{n + 2}")
+            print(f"1-{n + 2} 사이의 번호를 입력해 주세요")
         except ValueError:
-            print("Please enter a number")
+            print("숫자를 입력해 주세요")
         except (KeyboardInterrupt, EOFError):
             return None
 
@@ -2800,9 +2800,9 @@ def _save_model_choice(model_id: str) -> None:
 
 def login_command(args) -> None:
     """Deprecated: use 'hermes model' or 'hermes setup' instead."""
-    print("The 'hermes login' command has been removed.")
-    print("Use 'hermes auth' to manage credentials,")
-    print("'hermes model' to select a provider, or 'hermes setup' for full setup.")
+    print("'hermes login' 명령은 제거되었어요.")
+    print("자격 증명 관리는 'hermes auth'를 사용하고,")
+    print("provider 선택은 'hermes model', 전체 설정은 'hermes setup'을 사용하세요.")
     raise SystemExit(0)
 
 
@@ -2818,29 +2818,29 @@ def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
         # the user "Login successful!".
         _resolved_key = existing.get("api_key", "")
         if isinstance(_resolved_key, str) and _resolved_key and not _codex_access_token_is_expiring(_resolved_key, 60):
-            print("Existing Codex credentials found in Hermes auth store.")
+            print("Hermes auth store에서 기존 Codex 자격 증명을 찾았어요.")
             try:
-                reuse = input("Use existing credentials? [Y/n]: ").strip().lower()
+                reuse = input("기존 자격 증명을 사용할까요? [Y/n]: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 reuse = "y"
             if reuse in ("", "y", "yes"):
                 config_path = _update_config_for_provider("openai-codex", existing.get("base_url", DEFAULT_CODEX_BASE_URL))
                 print()
-                print("Login successful!")
-                print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+                print("로그인에 성공했어요!")
+                print(f"  설정 업데이트: {config_path} (model.provider=openai-codex)")
                 return
         else:
-            print("Existing Codex credentials are expired. Starting fresh login...")
+            print("기존 Codex 자격 증명이 만료되었어요. 새 로그인을 시작할게요...")
     except AuthError:
         pass
 
     # Check for existing Codex CLI tokens we can import
     cli_tokens = _import_codex_cli_tokens()
     if cli_tokens:
-        print("Found existing Codex CLI credentials at ~/.codex/auth.json")
-        print("Hermes will create its own session to avoid conflicts with Codex CLI / VS Code.")
+        print("~/.codex/auth.json 에서 기존 Codex CLI 자격 증명을 찾았어요")
+        print("Codex CLI / VS Code와 충돌하지 않도록 Hermes 전용 세션을 만들 거예요.")
         try:
-            do_import = input("Import these credentials? (a separate login is recommended) [y/N]: ").strip().lower()
+            do_import = input("이 자격 증명을 가져올까요? (별도 로그인 권장) [y/N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             do_import = "n"
         if do_import in ("y", "yes"):
@@ -2848,15 +2848,15 @@ def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
             base_url = os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
             config_path = _update_config_for_provider("openai-codex", base_url)
             print()
-            print("Credentials imported. Note: if Codex CLI refreshes its token,")
-            print("Hermes will keep working independently with its own session.")
-            print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+            print("자격 증명을 가져왔어요. 참고로 Codex CLI가 토큰을 갱신해도,")
+            print("Hermes는 자체 세션으로 계속 독립적으로 동작해요.")
+            print(f"  설정 업데이트: {config_path} (model.provider=openai-codex)")
             return
 
     # Run a fresh device code flow — Hermes gets its own OAuth session
     print()
-    print("Signing in to OpenAI Codex...")
-    print("(Hermes creates its own session — won't affect Codex CLI or VS Code)")
+    print("OpenAI Codex에 로그인하는 중...")
+    print("(Hermes 전용 세션을 만들며 Codex CLI나 VS Code에는 영향을 주지 않아요)")
     print()
 
     creds = _codex_device_code_login()
@@ -2865,10 +2865,10 @@ def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
     _save_codex_tokens(creds["tokens"], creds.get("last_refresh"))
     config_path = _update_config_for_provider("openai-codex", creds.get("base_url", DEFAULT_CODEX_BASE_URL))
     print()
-    print("Login successful!")
+    print("로그인에 성공했어요!")
     from hermes_constants import display_hermes_home as _dhh
-    print(f"  Auth state: {_dhh()}/auth.json")
-    print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+    print(f"  인증 상태: {_dhh()}/auth.json")
+    print(f"  설정 업데이트: {config_path} (model.provider=openai-codex)")
 
 
 def _codex_device_code_login() -> Dict[str, Any]:
@@ -2910,12 +2910,12 @@ def _codex_device_code_login() -> Dict[str, Any]:
         )
 
     # Step 2: Show user the code
-    print("To continue, follow these steps:\n")
-    print("  1. Open this URL in your browser:")
+    print("계속하려면 다음 단계를 따라 주세요:\n")
+    print("  1. 브라우저에서 다음 URL을 여세요:")
     print(f"     \033[94m{issuer}/codex/device\033[0m\n")
-    print("  2. Enter this code:")
+    print("  2. 아래 코드를 입력하세요:")
     print(f"     \033[94m{user_code}\033[0m\n")
-    print("Waiting for sign-in... (press Ctrl+C to cancel)")
+    print("로그인을 기다리는 중... (취소하려면 Ctrl+C)")
 
     # Step 3: Poll for authorization code
     max_wait = 15 * 60  # 15 minutes
@@ -3052,9 +3052,9 @@ def _nous_device_code_login(
     print(f"Starting Hermes login via {pconfig.name}...")
     print(f"Portal: {portal_base_url}")
     if insecure:
-        print("TLS verification: disabled (--insecure)")
+        print("TLS 검증: 비활성화됨 (--insecure)")
     elif ca_bundle:
-        print(f"TLS verification: custom CA bundle ({ca_bundle})")
+        print(f"TLS 검증: 사용자 지정 CA 번들 사용 ({ca_bundle})")
 
     with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
         device_data = _request_device_code(
@@ -3070,19 +3070,19 @@ def _nous_device_code_login(
         interval = int(device_data["interval"])
 
         print()
-        print("To continue:")
-        print(f"  1. Open: {verification_url}")
-        print(f"  2. If prompted, enter code: {user_code}")
+        print("계속하려면:")
+        print(f"  1. 열기: {verification_url}")
+        print(f"  2. 필요하면 코드 입력: {user_code}")
 
         if open_browser:
             opened = webbrowser.open(verification_url)
             if opened:
-                print("  (Opened browser for verification)")
+                print("  (인증용 브라우저를 열었어요)")
             else:
-                print("  Could not open browser automatically — use the URL above.")
+                print("  브라우저를 자동으로 열지 못했어요 — 위 URL을 직접 사용해 주세요.")
 
         effective_interval = max(1, min(interval, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS))
-        print(f"Waiting for approval (polling every {effective_interval}s)...")
+        print(f"승인을 기다리는 중... ({effective_interval}초마다 확인)")
 
         token_data = _poll_for_token(
             client=client,
@@ -3139,10 +3139,10 @@ def _nous_device_code_login(
                 "portal_base_url", DEFAULT_NOUS_PORTAL_URL
             ).rstrip("/")
             print()
-            print("Your Nous Portal account does not have an active subscription.")
-            print(f"  Subscribe here: {portal_url}/billing")
+            print("Nous Portal 계정에 활성 구독이 없어요.")
+            print(f"  구독 페이지: {portal_url}/billing")
             print()
-            print("After subscribing, run `hermes model` again to finish setup.")
+            print("구독 후 `hermes model` 을 다시 실행해 설정을 마무리하세요.")
             raise SystemExit(1)
         raise
 
@@ -3178,8 +3178,8 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             saved_to = _save_auth_store(auth_store)
 
         print()
-        print("Login successful!")
-        print(f"  Auth state: {saved_to}")
+        print("로그인에 성공했어요!")
+        print(f"  인증 상태: {saved_to}")
 
         # Resolve model BEFORE writing provider to config.yaml so we never
         # leave the config in a half-updated state (provider=nous but model
@@ -3213,7 +3213,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                     )
             _portal = auth_state.get("portal_base_url", "")
             if model_ids:
-                print(f"Showing {len(model_ids)} curated models — use \"Enter custom model name\" for others.")
+                print(f"큐레이션 모델 {len(model_ids)}개를 표시해요 — 다른 모델은 \"사용자 지정 모델 이름 입력\"을 사용하세요.")
                 selected_model = _prompt_model_selection(
                     model_ids, pricing=pricing,
                     unavailable_models=unavailable_models,
@@ -3221,14 +3221,14 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 )
             elif unavailable_models:
                 _url = (_portal or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
-                print("No free models currently available.")
-                print(f"Upgrade at {_url} to access paid models.")
+                print("현재 사용할 수 있는 무료 모델이 없어요.")
+                print(f"유료 모델을 사용하려면 업그레이드: {_url}")
             else:
-                print("No curated models available for Nous Portal.")
+                print("Nous Portal에서 사용할 수 있는 큐레이션 모델이 없어요.")
         except Exception as exc:
             message = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
             print()
-            print(f"Login succeeded, but could not fetch available models. Reason: {message}")
+            print(f"로그인에는 성공했지만 사용 가능한 모델을 가져오지 못했어요. 이유: {message}")
 
         # Write provider + model atomically so config is never mismatched.
         config_path = _update_config_for_provider(
@@ -3236,14 +3236,14 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
         )
         if selected_model:
             _save_model_choice(selected_model)
-            print(f"Default model set to: {selected_model}")
-        print(f"  Config updated: {config_path} (model.provider=nous)")
+            print(f"기본 모델을 설정했어요: {selected_model}")
+        print(f"  설정 업데이트: {config_path} (model.provider=nous)")
 
     except KeyboardInterrupt:
-        print("\nLogin cancelled.")
+        print("\n로그인을 취소했어요.")
         raise SystemExit(130)
     except Exception as exc:
-        print(f"Login failed: {exc}")
+        print(f"로그인에 실패했어요: {exc}")
         raise SystemExit(1)
 
 
@@ -3259,17 +3259,17 @@ def logout_command(args) -> None:
     target = provider_id or active
 
     if not target:
-        print("No provider is currently logged in.")
+        print("현재 로그인된 provider가 없어요.")
         return
 
     provider_name = PROVIDER_REGISTRY[target].name if target in PROVIDER_REGISTRY else target
 
     if clear_provider_auth(target):
         _reset_config_provider()
-        print(f"Logged out of {provider_name}.")
+        print(f"{provider_name} 에서 로그아웃했어요.")
         if os.getenv("OPENROUTER_API_KEY"):
-            print("Hermes will use OpenRouter for inference.")
+            print("Hermes는 추론에 OpenRouter를 사용할 거예요.")
         else:
-            print("Run `hermes model` or configure an API key to use Hermes.")
+            print("Hermes를 사용하려면 `hermes model` 을 실행하거나 API key를 설정하세요.")
     else:
-        print(f"No auth state found for {provider_name}.")
+        print(f"{provider_name} 의 인증 상태를 찾지 못했어요.")
