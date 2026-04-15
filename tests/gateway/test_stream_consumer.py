@@ -963,3 +963,212 @@ class TestFilterAndAccumulateIntegration:
             await task
         except asyncio.CancelledError:
             pass
+
+
+# ── Card Kit 2.0 streaming tests ─────────────────────────────────────
+
+
+def _make_card_adapter():
+    """Create a mock adapter with Card Kit 2.0 streaming support."""
+    adapter = MagicMock()
+    adapter.streaming_card_enabled = True
+    adapter.MAX_MESSAGE_LENGTH = 4096
+    adapter.create_streaming_card = AsyncMock(
+        return_value={"card_id": "card_001", "message_id": "msg_001"}
+    )
+    adapter.update_streaming_card = AsyncMock(return_value=True)
+    adapter.close_streaming_card = AsyncMock(return_value=True)
+    adapter.send = AsyncMock(
+        return_value=SimpleNamespace(success=True, message_id="msg_fallback")
+    )
+    adapter.edit_message = AsyncMock(
+        return_value=SimpleNamespace(success=True)
+    )
+    return adapter
+
+
+class TestCardModeInit:
+    """Verify card mode detection in GatewayStreamConsumer."""
+
+    def test_card_mode_enabled_when_adapter_supports(self):
+        adapter = _make_card_adapter()
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+        assert consumer._card_mode is True
+
+    def test_card_mode_disabled_when_adapter_lacks_property(self):
+        adapter = MagicMock(spec=[])
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+        assert consumer._card_mode is False
+
+    def test_card_mode_disabled_when_property_false(self):
+        adapter = MagicMock()
+        adapter.streaming_card_enabled = False
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+        assert consumer._card_mode is False
+
+
+class TestCardModeSendOrEdit:
+    """Verify _send_or_edit_card creates and updates streaming cards."""
+
+    def test_first_call_creates_card(self):
+        adapter = _make_card_adapter()
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(consumer._send_or_edit("Hello world"))
+        finally:
+            loop.close()
+
+        assert result is True
+        adapter.create_streaming_card.assert_called_once_with("chat_1", metadata=None)
+        assert consumer._card_id == "card_001"
+        assert consumer._message_id == "msg_001"
+
+    def test_subsequent_calls_update_card(self):
+        adapter = _make_card_adapter()
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(consumer._send_or_edit("Hello"))
+            loop.run_until_complete(consumer._send_or_edit("Hello world"))
+        finally:
+            loop.close()
+
+        adapter.create_streaming_card.assert_called_once()
+        assert adapter.update_streaming_card.call_count == 2
+        # First update from create (seq=2), second from update (seq=3)
+        last_call = adapter.update_streaming_card.call_args_list[-1]
+        assert last_call[0][0] == "card_001"  # card_id
+        assert last_call[0][1] == "Hello world"  # content
+
+    def test_skip_identical_text(self):
+        adapter = _make_card_adapter()
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(consumer._send_or_edit("Hello"))
+            loop.run_until_complete(consumer._send_or_edit("Hello"))
+        finally:
+            loop.close()
+
+        # Second call with same text should be skipped
+        adapter.update_streaming_card.assert_called_once()
+
+    def test_card_creation_failure_falls_back(self):
+        adapter = _make_card_adapter()
+        adapter.create_streaming_card = AsyncMock(return_value=None)
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(consumer._send_or_edit("Hello world"))
+        finally:
+            loop.close()
+
+        # Should fall back to normal send
+        assert consumer._card_mode is False
+        adapter.send.assert_called_once()
+        assert result is True
+
+    def test_card_update_failure_falls_back(self):
+        adapter = _make_card_adapter()
+        adapter.update_streaming_card = AsyncMock(return_value=False)
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+
+        loop = asyncio.new_event_loop()
+        try:
+            # First call creates card (update with initial content succeeds via create)
+            # Manually set up card state as if first call succeeded
+            consumer._card_id = "card_001"
+            consumer._card_sequence = 2
+            consumer._message_id = "msg_001"
+            consumer._already_sent = True
+            consumer._last_sent_text = "Hello"
+            # Now update fails
+            result = loop.run_until_complete(consumer._send_or_edit("Hello world"))
+        finally:
+            loop.close()
+
+        assert consumer._card_mode is False
+        assert result is False
+
+
+class TestCardModeCloseCard:
+    """Verify _close_current_card sends final update and closes streaming."""
+
+    def test_close_with_final_text(self):
+        adapter = _make_card_adapter()
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+        consumer._card_id = "card_001"
+        consumer._card_sequence = 5
+        consumer._last_sent_text = "partial"
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(consumer._close_current_card("Final answer"))
+        finally:
+            loop.close()
+
+        # Should update with final text then close
+        adapter.update_streaming_card.assert_called_once()
+        adapter.close_streaming_card.assert_called_once()
+        assert consumer._card_id is None
+
+    def test_close_noop_without_card(self):
+        adapter = _make_card_adapter()
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(consumer._close_current_card("text"))
+        finally:
+            loop.close()
+
+        adapter.close_streaming_card.assert_not_called()
+
+    def test_close_skips_update_when_text_matches(self):
+        adapter = _make_card_adapter()
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+        consumer._card_id = "card_001"
+        consumer._card_sequence = 3
+        consumer._last_sent_text = "Same text"
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(consumer._close_current_card("Same text"))
+        finally:
+            loop.close()
+
+        # No extra update needed, just close
+        adapter.update_streaming_card.assert_not_called()
+        adapter.close_streaming_card.assert_called_once()
+
+
+class TestCardModeCursorSuppression:
+    """Verify cursor is not appended when card streaming is active."""
+
+    def test_no_cursor_in_card_mode(self):
+        """In card mode with active card_id, cursor should not be added."""
+        adapter = _make_card_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_1",
+            StreamConsumerConfig(cursor=" ▉"),
+        )
+        # Simulate active card
+        consumer._card_id = "card_001"
+        consumer._card_sequence = 2
+
+        # Feed text and check what gets sent
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(consumer._send_or_edit("Hello"))
+        finally:
+            loop.close()
+
+        sent_text = adapter.update_streaming_card.call_args[0][1]
+        assert "▉" not in sent_text
