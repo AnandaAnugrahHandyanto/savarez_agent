@@ -443,15 +443,15 @@ def test_setup_switch_preserves_non_model_config(tmp_path, monkeypatch):
 def test_setup_summary_marks_anthropic_auth_as_vision_available(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _clear_provider_env(monkeypatch)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "***")
     monkeypatch.setattr("shutil.which", lambda _name: None)
     monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: ["anthropic"])
 
     _print_setup_summary(load_config(), tmp_path)
     output = capsys.readouterr().out
 
-    assert "Vision (image analysis)" in output
-    assert "missing run 'hermes setup' to configure" not in output
+    assert "비전 (이미지 분석)" in output
+    assert "누락 - 'hermes setup'을 실행해 설정" not in output
 
 
 def test_setup_summary_shows_camofox_when_browser_feature_is_camofox(tmp_path, monkeypatch, capsys):
@@ -477,7 +477,7 @@ def test_setup_summary_shows_camofox_when_browser_feature_is_camofox(tmp_path, m
     _print_setup_summary(load_config(), tmp_path)
     output = capsys.readouterr().out
 
-    assert "Browser Automation (Camofox)" in output
+    assert "브라우저 자동화 (Camofox)" in output
 
 
 def test_setup_summary_does_not_mark_incomplete_browserbase_as_available(tmp_path, monkeypatch, capsys):
@@ -504,6 +504,6 @@ def test_setup_summary_does_not_mark_incomplete_browserbase_as_available(tmp_pat
     _print_setup_summary(load_config(), tmp_path)
     output = capsys.readouterr().out
 
-    assert "Browser Automation (Browserbase)" not in output
-    assert "Browser Automation" in output
+    assert "브라우저 자동화 (Browserbase)" not in output
+    assert "브라우저 자동화" in output
     assert "BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID" in output

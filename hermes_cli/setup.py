@@ -362,77 +362,77 @@ def _print_setup_summary(config: dict, hermes_home):
         _vision_backends = []
 
     if _vision_backends:
-        tool_status.append(("Vision (image analysis)", True, None))
+        tool_status.append(("비전 (이미지 분석)", True, None))
     else:
-        tool_status.append(("Vision (image analysis)", False, "run 'hermes setup' to configure"))
+        tool_status.append(("비전 (이미지 분석)", False, "'hermes setup'을 실행해 설정"))
 
     # Mixture of Agents — requires OpenRouter specifically (calls multiple models)
     if get_env_value("OPENROUTER_API_KEY"):
-        tool_status.append(("Mixture of Agents", True, None))
+        tool_status.append(("에이전트 혼합", True, None))
     else:
-        tool_status.append(("Mixture of Agents", False, "OPENROUTER_API_KEY"))
+        tool_status.append(("에이전트 혼합", False, "OPENROUTER_API_KEY"))
 
     # Web tools (Exa, Parallel, Firecrawl, or Tavily)
     if subscription_features.web.managed_by_nous:
-        tool_status.append(("Web Search & Extract (Nous subscription)", True, None))
+        tool_status.append(("웹 검색 및 추출 (Nous 구독)", True, None))
     elif subscription_features.web.available:
-        label = "Web Search & Extract"
+        label = "웹 검색 및 추출"
         if subscription_features.web.current_provider:
-            label = f"Web Search & Extract ({subscription_features.web.current_provider})"
+            label = f"웹 검색 및 추출 ({subscription_features.web.current_provider})"
         tool_status.append((label, True, None))
     else:
-        tool_status.append(("Web Search & Extract", False, "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, or TAVILY_API_KEY"))
+        tool_status.append(("웹 검색 및 추출", False, "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL 또는 TAVILY_API_KEY"))
 
     # Browser tools (local Chromium, Camofox, Browserbase, Browser Use, or Firecrawl)
     browser_provider = subscription_features.browser.current_provider
     if subscription_features.browser.managed_by_nous:
-        tool_status.append(("Browser Automation (Nous Browser Use)", True, None))
+        tool_status.append(("브라우저 자동화 (Nous Browser Use)", True, None))
     elif subscription_features.browser.available:
-        label = "Browser Automation"
+        label = "브라우저 자동화"
         if browser_provider:
-            label = f"Browser Automation ({browser_provider})"
+            label = f"브라우저 자동화 ({browser_provider})"
         tool_status.append((label, True, None))
     else:
-        missing_browser_hint = "npm install -g agent-browser, set CAMOFOX_URL, or configure Browser Use or Browserbase"
+        missing_browser_hint = "npm install -g agent-browser 실행 후 CAMOFOX_URL을 설정하거나 Browser Use/Browserbase를 구성하세요"
         if browser_provider == "Browserbase":
             missing_browser_hint = (
-                "npm install -g agent-browser and set "
-                "BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID"
+                "npm install -g agent-browser 실행 후 "
+                "BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID를 설정하세요"
             )
         elif browser_provider == "Browser Use":
             missing_browser_hint = (
-                "npm install -g agent-browser and set BROWSER_USE_API_KEY"
+                "npm install -g agent-browser 실행 후 BROWSER_USE_API_KEY를 설정하세요"
             )
         elif browser_provider == "Camofox":
             missing_browser_hint = "CAMOFOX_URL"
         elif browser_provider == "Local browser":
             missing_browser_hint = "npm install -g agent-browser"
         tool_status.append(
-            ("Browser Automation", False, missing_browser_hint)
+            ("브라우저 자동화", False, missing_browser_hint)
         )
 
     # FAL (image generation)
     if subscription_features.image_gen.managed_by_nous:
-        tool_status.append(("Image Generation (Nous subscription)", True, None))
+        tool_status.append(("이미지 생성 (Nous 구독)", True, None))
     elif subscription_features.image_gen.available:
-        tool_status.append(("Image Generation", True, None))
+        tool_status.append(("이미지 생성", True, None))
     else:
-        tool_status.append(("Image Generation", False, "FAL_KEY"))
+        tool_status.append(("이미지 생성", False, "FAL_KEY"))
 
     # TTS — show configured provider
     tts_provider = config.get("tts", {}).get("provider", "edge")
     if subscription_features.tts.managed_by_nous:
-        tool_status.append(("Text-to-Speech (OpenAI via Nous subscription)", True, None))
+        tool_status.append(("텍스트 음성 변환 (Nous 구독의 OpenAI)", True, None))
     elif tts_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
-        tool_status.append(("Text-to-Speech (ElevenLabs)", True, None))
+        tool_status.append(("텍스트 음성 변환 (ElevenLabs)", True, None))
     elif tts_provider == "openai" and (
         get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
     ):
-        tool_status.append(("Text-to-Speech (OpenAI)", True, None))
+        tool_status.append(("텍스트 음성 변환 (OpenAI)", True, None))
     elif tts_provider == "minimax" and get_env_value("MINIMAX_API_KEY"):
-        tool_status.append(("Text-to-Speech (MiniMax)", True, None))
+        tool_status.append(("텍스트 음성 변환 (MiniMax)", True, None))
     elif tts_provider == "mistral" and get_env_value("MISTRAL_API_KEY"):
-        tool_status.append(("Text-to-Speech (Mistral Voxtral)", True, None))
+        tool_status.append(("텍스트 음성 변환 (Mistral Voxtral)", True, None))
     elif tts_provider == "neutts":
         try:
             import importlib.util
@@ -440,48 +440,48 @@ def _print_setup_summary(config: dict, hermes_home):
         except Exception:
             neutts_ok = False
         if neutts_ok:
-            tool_status.append(("Text-to-Speech (NeuTTS local)", True, None))
+            tool_status.append(("텍스트 음성 변환 (NeuTTS 로컬)", True, None))
         else:
-            tool_status.append(("Text-to-Speech (NeuTTS — not installed)", False, "run 'hermes setup tts'"))
+            tool_status.append(("텍스트 음성 변환 (NeuTTS — 설치되지 않음)", False, "'hermes setup tts' 실행"))
     else:
-        tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
+        tool_status.append(("텍스트 음성 변환 (Edge TTS)", True, None))
 
     if subscription_features.modal.managed_by_nous:
-        tool_status.append(("Modal Execution (Nous subscription)", True, None))
+        tool_status.append(("Modal 실행 (Nous 구독)", True, None))
     elif config.get("terminal", {}).get("backend") == "modal":
         if subscription_features.modal.direct_override:
-            tool_status.append(("Modal Execution (direct Modal)", True, None))
+            tool_status.append(("Modal 실행 (직접 Modal)", True, None))
         else:
-            tool_status.append(("Modal Execution", False, "run 'hermes setup terminal'"))
+            tool_status.append(("Modal 실행", False, "'hermes setup terminal' 실행"))
     elif managed_nous_tools_enabled() and subscription_features.nous_auth_present:
-        tool_status.append(("Modal Execution (optional via Nous subscription)", True, None))
+        tool_status.append(("Modal 실행 (Nous 구독으로 선택 사용 가능)", True, None))
 
     # Tinker + WandB (RL training)
     if get_env_value("TINKER_API_KEY") and get_env_value("WANDB_API_KEY"):
-        tool_status.append(("RL Training (Tinker)", True, None))
+        tool_status.append(("RL 학습 (Tinker)", True, None))
     elif get_env_value("TINKER_API_KEY"):
-        tool_status.append(("RL Training (Tinker)", False, "WANDB_API_KEY"))
+        tool_status.append(("RL 학습 (Tinker)", False, "WANDB_API_KEY"))
     else:
-        tool_status.append(("RL Training (Tinker)", False, "TINKER_API_KEY"))
+        tool_status.append(("RL 학습 (Tinker)", False, "TINKER_API_KEY"))
 
     # Home Assistant
     if get_env_value("HASS_TOKEN"):
-        tool_status.append(("Smart Home (Home Assistant)", True, None))
+        tool_status.append(("스마트 홈 (Home Assistant)", True, None))
 
     # Skills Hub
     if get_env_value("GITHUB_TOKEN"):
-        tool_status.append(("Skills Hub (GitHub)", True, None))
+        tool_status.append(("스킬 허브 (GitHub)", True, None))
     else:
-        tool_status.append(("Skills Hub (GitHub)", False, "GITHUB_TOKEN"))
+        tool_status.append(("스킬 허브 (GitHub)", False, "GITHUB_TOKEN"))
 
     # Terminal (always available if system deps met)
-    tool_status.append(("Terminal/Commands", True, None))
+    tool_status.append(("터미널/명령어", True, None))
 
     # Task planning (always available, in-memory)
-    tool_status.append(("Task Planning (todo)", True, None))
+    tool_status.append(("작업 계획(todo)", True, None))
 
     # Skills (always available -- bundled skills + user-created skills)
-    tool_status.append(("Skills (view, create, edit)", True, None))
+    tool_status.append(("스킬 (보기, 생성, 편집)", True, None))
 
     # Print status
     available_count = sum(1 for _, avail, _ in tool_status if avail)
@@ -495,7 +495,7 @@ def _print_setup_summary(config: dict, hermes_home):
             print(f"   {color('✓', Colors.GREEN)} {name}")
         else:
             print(
-                f"   {color('✗', Colors.RED)} {name} {color(f'(missing {missing_var})', Colors.DIM)}"
+                f"   {color('✗', Colors.RED)} {name} {color(f'(누락 - {missing_var})', Colors.DIM)}"
             )
 
     print()
@@ -518,7 +518,7 @@ def _print_setup_summary(config: dict, hermes_home):
     )
     print(
         color(
-            "│              ✓ Setup Complete!                          │", Colors.GREEN
+            "│            ✓ 설정이 완료되었습니다!                   │", Colors.GREEN
         )
     )
     print(
@@ -530,46 +530,46 @@ def _print_setup_summary(config: dict, hermes_home):
 
     # Show file locations prominently
     from hermes_constants import display_hermes_home as _dhh
-    print(color(f"📁 All your files are in {_dhh()}/:", Colors.CYAN, Colors.BOLD))
+    print(color(f"📁 모든 파일은 {_dhh()}/ 아래에 있습니다:", Colors.CYAN, Colors.BOLD))
     print()
-    print(f"   {color('Settings:', Colors.YELLOW)}  {get_config_path()}")
-    print(f"   {color('API Keys:', Colors.YELLOW)}  {get_env_path()}")
+    print(f"   {color('설정:', Colors.YELLOW)}     {get_config_path()}")
+    print(f"   {color('API 키:', Colors.YELLOW)}   {get_env_path()}")
     print(
-        f"   {color('Data:', Colors.YELLOW)}      {hermes_home}/cron/, sessions/, logs/"
+        f"   {color('데이터:', Colors.YELLOW)}   {hermes_home}/cron/, sessions/, logs/"
     )
     print()
 
     print(color("─" * 60, Colors.DIM))
     print()
-    print(color("📝 To edit your configuration:", Colors.CYAN, Colors.BOLD))
+    print(color("📝 설정을 수정하려면:", Colors.CYAN, Colors.BOLD))
     print()
-    print(f"   {color('hermes setup', Colors.GREEN)}          Re-run the full wizard")
-    print(f"   {color('hermes setup model', Colors.GREEN)}    Change model/provider")
-    print(f"   {color('hermes setup terminal', Colors.GREEN)} Change terminal backend")
-    print(f"   {color('hermes setup gateway', Colors.GREEN)}  Configure messaging")
-    print(f"   {color('hermes setup tools', Colors.GREEN)}    Configure tool providers")
+    print(f"   {color('hermes setup', Colors.GREEN)}             전체 마법사 다시 실행")
+    print(f"   {color('hermes setup model', Colors.GREEN)}       모델/provider 변경")
+    print(f"   {color('hermes setup terminal', Colors.GREEN)}    터미널 백엔드 변경")
+    print(f"   {color('hermes setup gateway', Colors.GREEN)}     메시징 설정")
+    print(f"   {color('hermes setup tools', Colors.GREEN)}       도구 provider 설정")
     print()
-    print(f"   {color('hermes config', Colors.GREEN)}         View current settings")
+
+    print(f"   {color('hermes config', Colors.GREEN)}            현재 설정 보기")
     print(
-        f"   {color('hermes config edit', Colors.GREEN)}    Open config in your editor"
+        f"   {color('hermes config edit', Colors.GREEN)}       편집기에서 config 열기"
     )
     print(f"   {color('hermes config set <key> <value>', Colors.GREEN)}")
-    print("                          Set a specific value")
+    print("                           특정 값을 직접 설정")
     print()
-    print("   Or edit the files directly:")
+    print("   또는 파일을 직접 수정하세요:")
     print(f"   {color(f'nano {get_config_path()}', Colors.DIM)}")
     print(f"   {color(f'nano {get_env_path()}', Colors.DIM)}")
     print()
 
     print(color("─" * 60, Colors.DIM))
     print()
-    print(color("🚀 Ready to go!", Colors.CYAN, Colors.BOLD))
+    print(color("🚀 이제 사용할 준비가 되었습니다!", Colors.CYAN, Colors.BOLD))
     print()
-    print(f"   {color('hermes', Colors.GREEN)}              Start chatting")
-    print(f"   {color('hermes gateway', Colors.GREEN)}      Start messaging gateway")
-    print(f"   {color('hermes doctor', Colors.GREEN)}       Check for issues")
+    print(f"   {color('hermes', Colors.GREEN)}              대화 시작")
+    print(f"   {color('hermes gateway', Colors.GREEN)}      메시징 gateway 시작")
+    print(f"   {color('hermes doctor', Colors.GREEN)}       문제 점검")
     print()
-
 
 def _prompt_container_resources(config: dict):
     """Prompt for container resource settings (Docker, Singularity, Modal, Daytona)."""

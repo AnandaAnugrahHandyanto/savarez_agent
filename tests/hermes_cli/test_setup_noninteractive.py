@@ -97,6 +97,12 @@ class TestNonInteractiveSetup:
         assert '메시징 플랫폼을 연결할까요? (Telegram, Discord 등)' in source
         assert '설정이 완료되었습니다! 바로 사용할 수 있어요.' in source
         assert '모든 설정 구성:' in source
+        assert '비전 (이미지 분석)' in source
+        assert '브라우저 자동화' in source
+        assert '텍스트 음성 변환' in source
+        assert '웹 검색 및 추출' in source
+        assert '이제 사용할 준비가 되었습니다!' in source
+        assert '설정을 수정하려면:' in source
 
     def test_cmd_setup_allows_noninteractive_flag_without_tty(self):
         """The CLI entrypoint should not block --non-interactive before setup.py handles it."""
