@@ -83,6 +83,9 @@ class TestNonInteractiveSetup:
 
         assert '주요 채팅 모델에 연결하는 방법을 선택하세요.' in source
         assert 'Hermes가 셸 명령과 코드를 어디서 실행할지 선택하세요.' in source
+        assert 'Hermes Agent 설치를 함께 설정해볼게요.' in source
+        assert '다시 오신 것을 환영합니다!' in source
+        assert '무엇을 하시겠어요?' in source
 
     def test_cmd_setup_allows_noninteractive_flag_without_tty(self):
         """The CLI entrypoint should not block --non-interactive before setup.py handles it."""
@@ -222,12 +225,12 @@ class TestNonInteractiveSetup:
                 setup_mod,
                 "SETUP_SECTIONS",
                 [
-                    ("model", "Model & Provider", model_section),
-                    ("tts", "Text-to-Speech", tts_section),
-                    ("terminal", "Terminal Backend", terminal_section),
-                    ("gateway", "Messaging Platforms (Gateway)", gateway_section),
-                    ("tools", "Tools", tools_section),
-                    ("agent", "Agent Settings", agent_section),
+                    ("model", "모델 및 Provider", model_section),
+                    ("tts", "텍스트 음성 변환", tts_section),
+                    ("terminal", "터미널 백엔드", terminal_section),
+                    ("gateway", "메시징 플랫폼 (Gateway)", gateway_section),
+                    ("tools", "도구", tools_section),
+                    ("agent", "에이전트 설정", agent_section),
                 ],
             ),
             patch.object(setup_mod, "save_config"),
@@ -265,17 +268,17 @@ class TestNonInteractiveSetup:
         ):
             setup_mod.run_setup_wizard(args)
 
-        assert captured["question"] == "What would you like to do?"
+        assert captured["question"] == "무엇을 하시겠어요?"
         assert "---" not in captured["choices"]
         assert captured["choices"] == [
-            "Quick Setup - configure missing items only",
-            "Full Setup - reconfigure everything",
-            "Model & Provider",
-            "Terminal Backend",
-            "Messaging Platforms (Gateway)",
-            "Tools",
-            "Agent Settings",
-            "Exit",
+            "빠른 설정 - 누락된 항목만 설정",
+            "전체 설정 - 모든 항목 다시 설정",
+            "모델 및 Provider",
+            "터미널 백엔드",
+            "메시징 플랫폼 (Gateway)",
+            "도구",
+            "에이전트 설정",
+            "종료",
         ]
 
     def test_main_accepts_tts_setup_section(self, monkeypatch):

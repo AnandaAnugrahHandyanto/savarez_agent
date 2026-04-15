@@ -2842,12 +2842,12 @@ def run_setup_wizard(args):
     )
     print(
         color(
-            "│  Let's configure your Hermes Agent installation.       │", Colors.MAGENTA
+            "│  Hermes Agent 설치를 함께 설정해볼게요.            │", Colors.MAGENTA
         )
     )
     print(
         color(
-            "│  Press Ctrl+C at any time to exit.                     │", Colors.MAGENTA
+            "│  언제든 Ctrl+C를 눌러 종료할 수 있습니다.         │", Colors.MAGENTA
         )
     )
     print(
@@ -2862,21 +2862,21 @@ def run_setup_wizard(args):
     if is_existing:
         # ── Returning User Menu ──
         print()
-        print_header("Welcome Back!")
-        print_success("You already have Hermes configured.")
+        print_header("다시 오신 것을 환영합니다!")
+        print_success("이미 Hermes가 설정되어 있습니다.")
         print()
 
         menu_choices = [
-            "Quick Setup - configure missing items only",
-            "Full Setup - reconfigure everything",
-            "Model & Provider",
-            "Terminal Backend",
-            "Messaging Platforms (Gateway)",
-            "Tools",
-            "Agent Settings",
-            "Exit",
+            "빠른 설정 - 누락된 항목만 설정",
+            "전체 설정 - 모든 항목 다시 설정",
+            "모델 및 Provider",
+            "터미널 백엔드",
+            "메시징 플랫폼 (Gateway)",
+            "도구",
+            "에이전트 설정",
+            "종료",
         ]
-        choice = prompt_choice("What would you like to do?", menu_choices, 0)
+        choice = prompt_choice("무엇을 하시겠어요?", menu_choices, 0)
 
         if choice == 0:
             # Quick setup
@@ -2886,7 +2886,7 @@ def run_setup_wizard(args):
             # Full setup — fall through to run all sections
             pass
         elif choice == 7:
-            print_info("Exiting. Run 'hermes setup' again when ready.")
+            print_info("종료합니다. 준비되면 다시 'hermes setup'을 실행하세요.")
             return
         elif 2 <= choice <= 6:
             # Individual section — map by key, not by position.
