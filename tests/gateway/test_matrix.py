@@ -115,6 +115,22 @@ def _make_fake_mautrix():
     mautrix_client.InternalEventType = InternalEventType
     mautrix.client = mautrix_client
 
+    # --- mautrix.client.dispatcher ---
+    mautrix_client_dispatcher = types.ModuleType("mautrix.client.dispatcher")
+
+    class MembershipEventDispatcher:
+        def __init__(self, client):
+            self.client = client
+
+        def register(self):
+            pass
+
+        def unregister(self):
+            pass
+
+    mautrix_client_dispatcher.MembershipEventDispatcher = MembershipEventDispatcher
+    mautrix.client.dispatcher = mautrix_client_dispatcher
+
     # --- mautrix.client.state_store ---
     mautrix_client_state_store = types.ModuleType("mautrix.client.state_store")
 
@@ -200,6 +216,7 @@ def _make_fake_mautrix():
         "mautrix.api": mautrix_api,
         "mautrix.types": mautrix_types,
         "mautrix.client": mautrix_client,
+        "mautrix.client.dispatcher": mautrix_client_dispatcher,
         "mautrix.client.state_store": mautrix_client_state_store,
         "mautrix.crypto": mautrix_crypto,
         "mautrix.crypto.store": mautrix_crypto_store,
@@ -1334,6 +1351,11 @@ class TestMatrixEncryptedEventHandler:
         # Should have registered handlers for ROOM_MESSAGE, REACTION, INVITE, and ROOM_ENCRYPTED
         assert len(handler_calls) >= 4  # At minimum these four
 
+        # MembershipEventDispatcher must be registered so INVITE internal events fire.
+        MembershipEventDispatcher = fake_mautrix_mods["mautrix.client.dispatcher"].MembershipEventDispatcher
+        dispatcher_calls = mock_client.add_dispatcher.call_args_list
+        assert any(call.args[0] is MembershipEventDispatcher for call in dispatcher_calls)
+
         await adapter.disconnect()
 
 
@@ -1791,6 +1813,39 @@ class TestMatrixRoomManagement:
 
         result = await self.adapter.invite_user("!room:ex", "@user:ex")
         assert result is True
+
+    @pytest.mark.asyncio
+    async def test_on_invite_auto_joins_room(self):
+        """_on_invite should join the room and update _joined_rooms."""
+        mock_client = MagicMock()
+        mock_client.join_room = AsyncMock(return_value=None)
+        self.adapter._client = mock_client
+        self.adapter._refresh_dm_cache = AsyncMock()
+
+        class FakeInviteEvent:
+            room_id = "!dm:example.org"
+
+        await self.adapter._on_invite(FakeInviteEvent())
+
+        mock_client.join_room.assert_awaited_once()
+        assert "!dm:example.org" in self.adapter._joined_rooms
+        self.adapter._refresh_dm_cache.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_on_invite_logs_error_on_failure(self):
+        """_on_invite should catch join errors gracefully."""
+        mock_client = MagicMock()
+        mock_client.join_room = AsyncMock(side_effect=Exception("join failed"))
+        self.adapter._client = mock_client
+
+        class FakeInviteEvent:
+            room_id = "!bad:example.org"
+
+        # Should not raise.
+        await self.adapter._on_invite(FakeInviteEvent())
+
+        mock_client.join_room.assert_awaited_once()
+        assert "!bad:example.org" not in self.adapter._joined_rooms
 
     @pytest.mark.asyncio
     async def test_create_room_no_client(self):

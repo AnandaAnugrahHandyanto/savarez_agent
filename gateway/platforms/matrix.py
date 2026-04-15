@@ -537,10 +537,12 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Register event handlers.
         from mautrix.client import InternalEventType as IntEvt
+        from mautrix.client.dispatcher import MembershipEventDispatcher
 
         client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message)
         client.add_event_handler(EventType.REACTION, self._on_reaction)
         client.add_event_handler(IntEvt.INVITE, self._on_invite)
+        client.add_dispatcher(MembershipEventDispatcher)
 
         if self._encryption and getattr(client, "crypto", None):
             client.add_event_handler(EventType.ROOM_ENCRYPTED, self._on_encrypted_event)
