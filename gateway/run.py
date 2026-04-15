@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
+from zoneinfo import ZoneInfo
 
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
@@ -3238,6 +3239,8 @@ class GatewayRunner:
         )
         if _is_shared_thread and source.user_name:
             message_text = f"[{source.user_name}] {message_text}"
+        if getattr(self.config, "message_timestamp_prefix", False):
+            message_text = f"{self._format_inbound_message_timestamp()} {message_text}".strip()
 
         if event.media_urls:
             image_paths = []
@@ -3370,6 +3373,17 @@ class GatewayRunner:
                 logger.debug("@ context reference expansion failed: %s", exc)
 
         return message_text
+
+    def _format_inbound_message_timestamp(self) -> str:
+        """Return a compact timestamp prefix for inbound user messages."""
+        tz_name = os.getenv("HERMES_TIMEZONE", "").strip()
+        tz = ZoneInfo("UTC")
+        if tz_name:
+            try:
+                tz = ZoneInfo(tz_name)
+            except Exception:
+                logger.warning("Invalid HERMES_TIMEZONE %r for inbound timestamp prefix; using UTC", tz_name)
+        return f"[{datetime.now(tz).strftime('%m-%d %H:%M')}]"
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str):
         """Inner handler that runs under the _running_agents sentinel guard."""
