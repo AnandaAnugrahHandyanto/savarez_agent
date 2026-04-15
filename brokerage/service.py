@@ -99,7 +99,21 @@ class BrokerageService:
         self.store.update_status(intent_id, "confirmed")
         self.store.append_event(TradeEvent(intent_id=intent_id, event_type="confirmed", detail=confirmation_text))
 
-        result = self.broker.submit_order(intent)
+        try:
+            result = self.broker.submit_order(intent)
+        except Exception as exc:
+            self.store.update_status(intent_id, "submission_error")
+            self.store.append_event(
+                TradeEvent(intent_id=intent_id, event_type="submission_error", detail=str(exc))
+            )
+            return {
+                "intent_id": intent_id,
+                "status": "submission_error",
+                "broker_order_id": None,
+                "broker_status": None,
+                "detail": f"broker submission failed: {exc}",
+            }
+
         if result.accepted:
             self.store.update_status(intent_id, "submitted", ibkr_order_id=result.broker_order_id)
             self.store.append_event(
@@ -128,7 +142,7 @@ class BrokerageService:
     def cancel_intent(self, intent_id: str) -> dict:
         row = self._require_intent(intent_id)
         if row["status"] != "pending_confirmation":
-            raise ValueError("Only pending_confirmation intents can be cancelled")
+            raise ValueError(f"Only pending_confirmation intents can be cancelled (current: {row['status']})")
 
         self.store.update_status(intent_id, "cancelled")
         self.store.append_event(TradeEvent(intent_id=intent_id, event_type="cancelled", detail="cancelled by user"))

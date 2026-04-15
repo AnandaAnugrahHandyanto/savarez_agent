@@ -52,7 +52,10 @@ def test_healthz_returns_ok(tmp_path):
     response = client.get("/healthz")
 
     assert response.status_code == 200
-    assert response.json() == {"ok": True}
+    data = response.json()
+    assert data["ok"] is True
+    assert "connected" in data
+    assert "mode" in data
 
 
 def test_create_trade_intent_requires_bearer_auth(tmp_path):

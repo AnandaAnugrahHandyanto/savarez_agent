@@ -21,3 +21,11 @@ class BrokerAdapter(ABC):
     @abstractmethod
     def cancel_order(self, order_id: str):
         raise NotImplementedError
+
+    def health_check(self) -> dict:
+        """Return broker connection health status. Override in subclasses."""
+        return {"connected": False, "mode": None}
+
+    def disconnect(self) -> None:
+        """Graceful disconnect. Override in subclasses."""
+        pass

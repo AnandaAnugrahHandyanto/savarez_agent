@@ -83,8 +83,10 @@ def create_app(
         return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
     @app.get("/healthz")
-    def healthz() -> dict[str, bool]:
-        return {"ok": True}
+    def healthz() -> dict:
+        """Service health + broker connection status."""
+        broker_health = deps.service.broker.health_check()
+        return {"ok": True, **broker_health}
 
     @app.post("/trade-intents", status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_auth)])
     def create_trade_intent(payload: CreateTradeIntentRequest) -> dict:

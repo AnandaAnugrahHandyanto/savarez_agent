@@ -59,7 +59,7 @@ def test_submit_order_returns_submission_result_from_mocked_ib():
     adapter = IBKRTwsBrokerAdapter(BrokerageSettings())
     trade = SimpleNamespace(orderStatus=SimpleNamespace(status="Submitted"), order=SimpleNamespace(orderId=1234))
 
-    with patch.object(adapter, "_connect") as mock_connect, patch.object(adapter, "_qualify_contract") as mock_contract:
+    with patch.object(adapter, "_ensure_connected") as mock_connect, patch.object(adapter, "_qualify_contract") as mock_contract:
         adapter._ib = MagicMock()
         mock_connect.return_value = None
         mock_contract.return_value = SimpleNamespace(conId=1)

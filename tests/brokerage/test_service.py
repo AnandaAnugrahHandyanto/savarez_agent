@@ -173,3 +173,121 @@ def test_confirmation_code_is_one_time_use(tmp_path):
 
     with pytest.raises(ValueError, match="pending_confirmation"):
         service.confirm_intent(created["intent_id"], confirmation)
+
+
+# --- Broker error handling ---
+
+
+class CrashingBroker(BrokerAdapter):
+    """A broker that always raises an exception on submit."""
+
+    def submit_order(self, intent: TradeIntent) -> BrokerSubmissionResult:
+        raise ConnectionError("TWS connection refused")
+
+    def get_order_status(self, order_id: str):
+        return None
+
+    def cancel_order(self, order_id: str):
+        return None
+
+
+def test_confirm_intent_handles_broker_exception_gracefully(tmp_path):
+    broker = CrashingBroker()
+    service = _make_service(tmp_path, broker=broker)
+    created = service.create_intent(
+        account_mode="paper",
+        symbol="AAPL",
+        side="BUY",
+        quantity=10,
+        order_type="MARKET",
+        asset_class="stock",
+    )
+
+    result = service.confirm_intent(created["intent_id"], f"CONFIRM {created['confirmation_code']}")
+
+    assert result["status"] == "submission_error"
+    assert "TWS connection refused" in result["detail"]
+    assert result["broker_order_id"] is None
+
+    # Verify persisted status
+    stored = service.get_intent(created["intent_id"])
+    assert stored["status"] == "submission_error"
+
+
+def test_confirm_intent_logs_submission_error_event(tmp_path):
+    broker = CrashingBroker()
+    service = _make_service(tmp_path, broker=broker)
+    created = service.create_intent(
+        account_mode="paper",
+        symbol="AAPL",
+        side="BUY",
+        quantity=10,
+        order_type="MARKET",
+        asset_class="stock",
+    )
+
+    service.confirm_intent(created["intent_id"], f"CONFIRM {created['confirmation_code']}")
+
+    events = service.store.list_events(created["intent_id"])
+    event_types = [e["event_type"] for e in events]
+    assert "submission_error" in event_types
+
+
+def test_cancel_rejected_intent_fails(tmp_path):
+    broker = FakeBroker(
+        BrokerSubmissionResult(
+            accepted=False,
+            broker_order_id=None,
+            broker_status="Rejected",
+            detail="insufficient buying power",
+        )
+    )
+    service = _make_service(tmp_path, broker=broker)
+    created = service.create_intent(
+        account_mode="paper",
+        symbol="AAPL",
+        side="BUY",
+        quantity=10,
+        order_type="MARKET",
+        asset_class="stock",
+    )
+
+    service.confirm_intent(created["intent_id"], f"CONFIRM {created['confirmation_code']}")
+
+    with pytest.raises(ValueError, match="pending_confirmation"):
+        service.cancel_intent(created["intent_id"])
+
+
+def test_cancel_submission_error_intent_fails(tmp_path):
+    broker = CrashingBroker()
+    service = _make_service(tmp_path, broker=broker)
+    created = service.create_intent(
+        account_mode="paper",
+        symbol="AAPL",
+        side="BUY",
+        quantity=10,
+        order_type="MARKET",
+        asset_class="stock",
+    )
+
+    service.confirm_intent(created["intent_id"], f"CONFIRM {created['confirmation_code']}")
+
+    with pytest.raises(ValueError, match="pending_confirmation"):
+        service.cancel_intent(created["intent_id"])
+
+
+def test_cancel_cancelled_intent_fails(tmp_path):
+    service = _make_service(tmp_path)
+    created = service.create_intent(
+        account_mode="paper",
+        symbol="AAPL",
+        side="BUY",
+        quantity=10,
+        order_type="MARKET",
+        asset_class="stock",
+    )
+
+    service.cancel_intent(created["intent_id"])
+
+    with pytest.raises(ValueError, match="pending_confirmation"):
+        service.cancel_intent(created["intent_id"])

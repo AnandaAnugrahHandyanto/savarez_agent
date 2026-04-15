@@ -14,6 +14,7 @@ TradeStatus = Literal[
     "pending_confirmation",
     "confirmed",
     "submitted",
+    "submission_error",
     "filled",
     "rejected",
     "cancelled",
