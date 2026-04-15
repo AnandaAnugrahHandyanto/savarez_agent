@@ -687,6 +687,9 @@ class MessageEvent:
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
+    # Topic role description — injected into session context for strong role adherence
+    topic_role: Optional[str] = None
+    
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
