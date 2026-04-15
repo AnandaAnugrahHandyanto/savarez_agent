@@ -287,8 +287,13 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # ----- B3: resolve_session_name -----
         session_title = kwargs.get("session_title")
+        gateway_session_key = kwargs.get("gateway_session_key")
         self._session_key = (
-            cfg.resolve_session_name(session_title=session_title, session_id=session_id)
+            cfg.resolve_session_name(
+                session_title=session_title,
+                session_id=session_id,
+                gateway_session_key=gateway_session_key,
+            )
             or session_id
             or "hermes-default"
         )
@@ -299,12 +304,21 @@ class HonchoMemoryProvider(MemoryProvider):
         self._session_initialized = True
 
         # ----- B6: Memory file migration (one-time, for new sessions) -----
+        # Skip under per-session strategy: every Hermes run creates a fresh
+        # Honcho session by design, so uploading MEMORY.md/USER.md/SOUL.md to
+        # each one would flood the backend with short-lived duplicates instead
+        # of performing a one-time migration.
         try:
-            if not session.messages:
+            if not session.messages and cfg.session_strategy != "per-session":
                 from hermes_constants import get_hermes_home
                 mem_dir = str(get_hermes_home() / "memories")
                 self._manager.migrate_memory_files(self._session_key, mem_dir)
                 logger.debug("Honcho memory file migration attempted for new session: %s", self._session_key)
+            elif cfg.session_strategy == "per-session":
+                logger.debug(
+                    "Honcho memory file migration skipped: per-session strategy creates a fresh session per run (%s)",
+                    self._session_key,
+                )
         except Exception as e:
             logger.debug("Honcho memory file migration skipped: %s", e)
 

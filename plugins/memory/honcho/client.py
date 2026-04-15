@@ -422,16 +422,18 @@ class HonchoClientConfig:
         cwd: str | None = None,
         session_title: str | None = None,
         session_id: str | None = None,
+        gateway_session_key: str | None = None,
     ) -> str | None:
         """Resolve Honcho session name.
 
         Resolution order:
           1. Manual directory override from sessions map
           2. Hermes session title (from /title command)
-          3. per-session strategy — Hermes session_id ({timestamp}_{hex})
-          4. per-repo strategy — git repo root directory name
-          5. per-directory strategy — directory basename
-          6. global strategy — workspace name
+          3. Gateway session key (stable per-chat identifier from gateway platforms)
+          4. per-session strategy — Hermes session_id ({timestamp}_{hex})
+          5. per-repo strategy — git repo root directory name
+          6. per-directory strategy — directory basename
+          7. global strategy — workspace name
         """
         import re
 
@@ -449,6 +451,16 @@ class HonchoClientConfig:
             if sanitized:
                 if self.session_peer_prefix and self.peer_name:
                     return f"{self.peer_name}-{sanitized}"
+                return sanitized
+
+        # Gateway session key: stable per-chat identifier passed by the gateway
+        # (e.g. "agent:main:telegram:dm:8439114563"). Sanitize colons to hyphens
+        # for Honcho session ID compatibility. This takes priority over strategy-
+        # based resolution because gateway platforms need per-chat isolation that
+        # cwd-based strategies cannot provide.
+        if gateway_session_key:
+            sanitized = re.sub(r'[^a-zA-Z0-9_-]', '-', gateway_session_key).strip('-')
+            if sanitized:
                 return sanitized
 
         # per-session: inherit Hermes session_id (new Honcho session each run)

@@ -542,6 +542,52 @@ class TestInitOnSessionStart:
         assert cfg.init_on_session_start is False
 
 
+class TestResolveSessionNameGatewayKey:
+    """Regression tests for gateway_session_key priority in resolve_session_name.
+
+    Ensures gateway platforms get stable per-chat Honcho sessions even when
+    sessionStrategy=per-session would otherwise create ephemeral sessions.
+    Regression: plugin refactor 924bc67e dropped gateway key plumbing.
+    """
+
+    def test_gateway_key_overrides_per_session_strategy(self):
+        """gateway_session_key must win over per-session session_id."""
+        config = HonchoClientConfig(session_strategy="per-session")
+        result = config.resolve_session_name(
+            session_id="20260412_171002_69bb38",
+            gateway_session_key="agent:main:telegram:dm:8439114563",
+        )
+        assert result == "agent-main-telegram-dm-8439114563"
+
+    def test_session_title_still_wins_over_gateway_key(self):
+        """Explicit /title remap takes priority over gateway_session_key."""
+        config = HonchoClientConfig(session_strategy="per-session")
+        result = config.resolve_session_name(
+            session_title="my-custom-title",
+            session_id="20260412_171002_69bb38",
+            gateway_session_key="agent:main:telegram:dm:8439114563",
+        )
+        assert result == "my-custom-title"
+
+    def test_per_session_fallback_without_gateway_key(self):
+        """Without gateway_session_key, per-session returns session_id (CLI path)."""
+        config = HonchoClientConfig(session_strategy="per-session")
+        result = config.resolve_session_name(
+            session_id="20260412_171002_69bb38",
+            gateway_session_key=None,
+        )
+        assert result == "20260412_171002_69bb38"
+
+    def test_gateway_key_sanitizes_special_chars(self):
+        """Colons and other non-alphanumeric chars are replaced with hyphens."""
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(
+            gateway_session_key="agent:main:telegram:dm:8439114563",
+        )
+        assert result == "agent-main-telegram-dm-8439114563"
+        assert ":" not in result
+
+
 class TestResetHonchoClient:
     def test_reset_clears_singleton(self):
         import plugins.memory.honcho.client as mod
