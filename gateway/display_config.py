@@ -155,6 +155,12 @@ def resolve_display_setting(
         if val is not None:
             return _normalise(setting, val)
 
+    # For streaming: no explicit per-platform override means we should follow
+    # the top-level streaming config, not fall through to platform defaults
+    # which may have False for low-tier platforms.
+    if setting == "streaming":
+        return None
+
     # 3. Built-in platform default
     plat_defaults = _PLATFORM_DEFAULTS.get(platform_key)
     if plat_defaults:

@@ -1228,10 +1228,16 @@ class WeComAdapter(BasePlatformAdapter):
         tick_count = 0
         accumulated_lines: list[str] = []
         self._thinking_accumulated_lines = accumulated_lines
+        _THINKING_MAX_SECONDS = int(os.getenv("HERMES_THINKING_MAX_SECONDS", "1800"))
         try:
             while not self._thinking_cancelled:
                 tick_count += 1
                 elapsed = tick_count - 1  # 0, 1, 2, 3... regardless of actual timing
+                if elapsed >= _THINKING_MAX_SECONDS:
+                    logger.warning(
+                        f"[{self.name}] Thinking loop hit max {elapsed}s limit, stopping updates"
+                    )
+                    break
                 accumulated_lines.append(f"等待模型响应 {elapsed}s")
                 content = "<think>" + "\n".join(accumulated_lines)
                 send_start = loop.time()

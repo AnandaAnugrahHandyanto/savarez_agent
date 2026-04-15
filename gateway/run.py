@@ -7831,21 +7831,38 @@ class GatewayRunner:
                 from gateway.config import Platform
                 _adapter = self.adapters.get(source.platform)
                 if _adapter:
-                    _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
-                    _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
-                    if source.platform == Platform.MATRIX:
-                        _effective_cursor = ""
-                    _consumer_cfg = StreamConsumerConfig(
-                        edit_interval=_scfg.edit_interval,
-                        buffer_threshold=_scfg.buffer_threshold,
-                        cursor=_effective_cursor,
-                    )
-                    _stream_consumer = GatewayStreamConsumer(
-                        adapter=_adapter,
-                        chat_id=source.chat_id,
-                        config=_consumer_cfg,
-                        metadata=_thread_metadata,
-                    )
+                    # WeCom uses native stream API instead of edit-based streaming.
+                    # Use WeComStreamConsumer which sends via replyStream and
+                    # properly cancels the thinking loop on first content.
+                    if source.platform == Platform.WECOM:
+                        _reply_req_id = getattr(_adapter, "_current_reply_req_id", None)
+                        _stream_id = getattr(_adapter, "_thinking_stream_id", None)
+                        if _reply_req_id and _stream_id:
+                            from gateway.wecom_stream_consumer import WeComStreamConsumer
+                            _stream_consumer = WeComStreamConsumer(
+                                adapter=_adapter,
+                                chat_id=source.chat_id,
+                                reply_req_id=_reply_req_id,
+                                stream_id=_stream_id,
+                                config=None,
+                                metadata=_thread_metadata,
+                            )
+                    if _stream_consumer is None:
+                        _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                        _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
+                        if source.platform == Platform.MATRIX:
+                            _effective_cursor = ""
+                        _consumer_cfg = StreamConsumerConfig(
+                            edit_interval=_scfg.edit_interval,
+                            buffer_threshold=_scfg.buffer_threshold,
+                            cursor=_effective_cursor,
+                        )
+                        _stream_consumer = GatewayStreamConsumer(
+                            adapter=_adapter,
+                            chat_id=source.chat_id,
+                            config=_consumer_cfg,
+                            metadata=_thread_metadata,
+                        )
             except Exception as _sc_err:
                 logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
 

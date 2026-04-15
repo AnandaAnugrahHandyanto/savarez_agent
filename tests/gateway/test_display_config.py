@@ -206,17 +206,20 @@ class TestPlatformDefaults:
         for plat in ("email", "sms", "webhook", "homeassistant"):
             assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
 
-    def test_low_tier_streaming_defaults_to_false(self):
-        """Low-tier platforms default streaming to False."""
+    def test_streaming_returns_none_without_explicit_override(self):
+        """Streaming returns None for ALL platforms when no explicit override.
+        
+        Platform defaults are ignored for streaming; only explicit
+        display.platforms.<plat>.streaming overrides take effect.
+        The caller falls back to the top-level streaming config.
+        """
         from gateway.display_config import resolve_display_setting
 
-        assert resolve_display_setting({}, "signal", "streaming") is False
-        assert resolve_display_setting({}, "email", "streaming") is False
-
-    def test_high_tier_streaming_defaults_to_none(self):
-        """High-tier platforms default streaming to None (follow global)."""
-        from gateway.display_config import resolve_display_setting
-
+        # Low-tier platforms
+        assert resolve_display_setting({}, "signal", "streaming") is None
+        assert resolve_display_setting({}, "email", "streaming") is None
+        assert resolve_display_setting({}, "wecom", "streaming") is None
+        # High-tier platforms
         assert resolve_display_setting({}, "telegram", "streaming") is None
 
 
