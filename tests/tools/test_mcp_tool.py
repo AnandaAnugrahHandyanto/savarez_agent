@@ -4,6 +4,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 """
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import threading
@@ -273,6 +274,101 @@ class TestToolHandler:
             assert result == {"error": "MCP call interrupted: user sent a new message"}
         finally:
             _servers.pop("test_srv", None)
+
+    def test_stale_transport_triggers_reclaim_and_retry(self):
+        """A ClosedResourceError on the first attempt should trigger a
+        reclaim and a silent retry. The agent must see the successful
+        result of the retry, not the transient error.
+        """
+        import tools.mcp_tool as mcp_mod
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        class FakeClosedResourceError(Exception):
+            pass
+
+        call_counter = {"n": 0}
+
+        async def failing_then_succeeding(*args, **kwargs):
+            call_counter["n"] += 1
+            if call_counter["n"] == 1:
+                raise FakeClosedResourceError("transport went away")
+            return _make_call_result("after reclaim", is_error=False)
+
+        first_session = MagicMock()
+        first_session.call_tool = AsyncMock(side_effect=failing_then_succeeding)
+        first_server = _make_mock_server("flappy", session=first_session)
+
+        second_session = MagicMock()
+        second_session.call_tool = AsyncMock(side_effect=failing_then_succeeding)
+        second_server = _make_mock_server("flappy", session=second_session)
+
+        _servers.pop("flappy", None)
+        _servers["flappy"] = first_server
+
+        reclaim_calls = {"n": 0}
+
+        def fake_mark_stale(server_name):
+            reclaim_calls["n"] += 1
+            # Simulate reclaim finishing synchronously by swapping in
+            # the second (live) server immediately.
+            with mcp_mod._lock:
+                _servers[server_name] = second_server
+            f = concurrent.futures.Future()
+            f.set_result(None)
+            return f
+
+        try:
+            handler = _make_tool_handler("flappy", "ping", 120)
+            with self._patch_mcp_loop(), \
+                 patch("tools.mcp_tool._mark_session_stale",
+                       side_effect=fake_mark_stale), \
+                 patch("tools.mcp_tool._wait_for_reclaim_future"), \
+                 patch("tools.mcp_tool._is_stale_transport_error",
+                       return_value=True):
+                result = json.loads(handler({"query": "hi"}))
+            assert result == {"result": "after reclaim"}, result
+            assert reclaim_calls["n"] == 1
+            assert call_counter["n"] == 2  # one failed, one succeeded
+        finally:
+            _servers.pop("flappy", None)
+
+    def test_stale_transport_gives_up_after_second_failure(self):
+        """If the transport stays stale after a reclaim retry, the
+        handler must return a clear reclaim-failure error rather than
+        raising or hanging.
+        """
+        import tools.mcp_tool as mcp_mod
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        class FakeClosed(Exception):
+            pass
+
+        async def always_stale(*args, **kwargs):
+            raise FakeClosed("still broken")
+
+        session = MagicMock()
+        session.call_tool = AsyncMock(side_effect=always_stale)
+        server = _make_mock_server("doomed", session=session)
+        _servers["doomed"] = server
+
+        def fake_mark_stale(server_name):
+            f = concurrent.futures.Future()
+            f.set_result(None)
+            return f
+
+        try:
+            handler = _make_tool_handler("doomed", "noop", 120)
+            with self._patch_mcp_loop(), \
+                 patch("tools.mcp_tool._mark_session_stale",
+                       side_effect=fake_mark_stale), \
+                 patch("tools.mcp_tool._wait_for_reclaim_future"), \
+                 patch("tools.mcp_tool._is_stale_transport_error",
+                       return_value=True):
+                result = json.loads(handler({}))
+            assert "error" in result
+            assert "reclaim did not restore" in result["error"]
+        finally:
+            _servers.pop("doomed", None)
 
 
 class TestRunOnMCPLoopInterrupts:
