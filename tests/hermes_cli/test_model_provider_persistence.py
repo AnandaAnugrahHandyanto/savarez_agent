@@ -286,7 +286,7 @@ class TestBaseUrlValidation:
         assert not saved or saved.startswith(("http://", "https://")), \
             f"Non-URL value was saved as GLM_BASE_URL: {saved}"
         captured = capsys.readouterr()
-        assert "Invalid URL" in captured.out
+        assert "잘못된 URL이에요" in captured.out
 
     def test_valid_base_url_accepted(self, config_home, monkeypatch):
         """A proper URL should be saved normally."""

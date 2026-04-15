@@ -1005,7 +1005,7 @@ def select_provider_and_model(args=None):
         active = resolve_provider(effective_provider)
     except AuthError as exc:
         warning = format_auth_error(exc)
-        print(f"Warning: {warning} Falling back to auto provider detection.")
+        print(f"경고: {warning} auto provider 감지로 되돌릴게요.")
         try:
             active = resolve_provider("auto")
         except AuthError:
@@ -1021,8 +1021,8 @@ def select_provider_and_model(args=None):
     active_label = provider_labels.get(active, active) if active else "none"
 
     print()
-    print(f"  Current model:    {current_model}")
-    print(f"  Active provider:  {active_label}")
+    print(f"  현재 모델:      {current_model}")
+    print(f"  활성 provider:  {active_label}")
     print()
 
     # Step 1: Provider selection — flat list from CANONICAL_PROVIDERS
@@ -1075,11 +1075,11 @@ def select_provider_and_model(args=None):
         else:
             ordered.append((key, label))
 
-    ordered.append(("custom", "Custom endpoint (enter URL manually)"))
+    ordered.append(("custom", "사용자 지정 endpoint (URL 직접 입력)"))
     _has_saved_custom_list = isinstance(config.get("custom_providers"), list) and bool(config.get("custom_providers"))
     if _has_saved_custom_list:
-        ordered.append(("remove-custom", "Remove a saved custom provider"))
-    ordered.append(("cancel", "Cancel"))
+        ordered.append(("remove-custom", "저장된 custom provider 제거"))
+    ordered.append(("cancel", "취소"))
 
     provider_idx = _prompt_provider_choice(
         [label for _, label in ordered], default=default_idx,
@@ -1829,7 +1829,7 @@ def _model_flow_named_custom(config, provider_info):
             menu_items = [
                 f"  {m} (current)" if m == saved_model else f"  {m}"
                 for m in models
-            ] + ["  Cancel"]
+            ] + ["  취소"]
             menu = TerminalMenu(
                 menu_items, cursor_index=default_idx,
                 menu_cursor="-> ", menu_cursor_style=("fg_green", "bold"),
@@ -2060,19 +2060,19 @@ def _model_flow_copilot(config, current_model=""):
     if not api_key:
         print("No GitHub token configured for GitHub Copilot.")
         print()
-        print("  Supported token types:")
-        print("    → OAuth token (gho_*)          via `copilot login` or device code flow")
-        print("    → Fine-grained PAT (github_pat_*)  with Copilot Requests permission")
-        print("    → GitHub App token (ghu_*)     via environment variable")
-        print("    ✗ Classic PAT (ghp_*)          NOT supported by Copilot API")
+        print("  지원하는 토큰 종류:")
+        print("    → OAuth 토큰 (gho_*)              `copilot login` 또는 device code 흐름으로 발급")
+        print("    → Fine-grained PAT (github_pat_*)  Copilot Requests 권한 필요")
+        print("    → GitHub App 토큰 (ghu_*)         환경 변수로 제공")
+        print("    ✗ Classic PAT (ghp_*)             Copilot API에서 지원하지 않음")
         print()
-        print("  Options:")
-        print("    1. Login with GitHub (OAuth device code flow)")
-        print("    2. Enter a token manually")
-        print("    3. Cancel")
+        print("  선택 사항:")
+        print("    1. GitHub로 로그인 (OAuth device code 흐름)")
+        print("    2. 토큰 직접 입력")
+        print("    3. 취소")
         print()
         try:
-            choice = input("  Choice [1-3]: ").strip()
+            choice = input("  선택 [1-3]: ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return
@@ -2083,13 +2083,13 @@ def _model_flow_copilot(config, current_model=""):
                 token = copilot_device_code_login()
                 if token:
                     save_env_value("COPILOT_GITHUB_TOKEN", token)
-                    print("  Copilot token saved.")
+                    print("  Copilot 토큰을 저장했어요.")
                     print()
                 else:
-                    print("  Login cancelled or failed.")
+                    print("  로그인을 취소했거나 로그인에 실패했어요.")
                     return
             except Exception as exc:
-                print(f"  Login failed: {exc}")
+                print(f"  로그인에 실패했어요: {exc}")
                 return
         elif choice == "2":
             try:
@@ -2099,7 +2099,7 @@ def _model_flow_copilot(config, current_model=""):
                 print()
                 return
             if not new_key:
-                print("  Cancelled.")
+                print("  취소했어요.")
                 return
             # Validate token type
             try:
@@ -2111,10 +2111,10 @@ def _model_flow_copilot(config, current_model=""):
             except ImportError:
                 pass
             save_env_value("COPILOT_GITHUB_TOKEN", new_key)
-            print("  Token saved.")
+            print("  토큰을 저장했어요.")
             print()
         else:
-            print("  Cancelled.")
+            print("  취소했어요.")
             return
 
         creds = resolve_api_key_provider_credentials(provider_id)
@@ -2122,11 +2122,11 @@ def _model_flow_copilot(config, current_model=""):
         source = creds.get("source", "")
     else:
         if source in ("GITHUB_TOKEN", "GH_TOKEN"):
-            print(f"  GitHub token: {api_key[:8]}... ✓ ({source})")
+            print(f"  GitHub 토큰: {api_key[:8]}... ✓ ({source})")
         elif source == "gh auth token":
-            print("  GitHub token: ✓ (from `gh auth token`)")
+            print("  GitHub 토큰: ✓ (`gh auth token`에서 가져옴)")
         else:
-            print("  GitHub token: ✓")
+            print("  GitHub 토큰: ✓")
         print()
 
     effective_base = pconfig.inference_base_url
@@ -2140,18 +2140,18 @@ def _model_flow_copilot(config, current_model=""):
     ) or current_model
     if live_models:
         model_list = [model_id for model_id in live_models if model_id]
-        print(f"  Found {len(model_list)} model(s) from GitHub Copilot")
+        print(f"  모델 {len(model_list)}개를 GitHub Copilot에서 찾았어요")
     else:
         model_list = _PROVIDER_MODELS.get(provider_id, [])
         if model_list:
-            print("  ⚠ Could not auto-detect models from GitHub Copilot — showing defaults.")
-            print('    Use "Enter custom model name" if you do not see your model.')
+            print("  ⚠ GitHub Copilot에서 모델을 자동 감지하지 못했어요 — 기본 목록을 보여줄게요.")
+            print('    원하는 모델이 없으면 "사용자 지정 모델 이름 입력"을 사용하세요.')
 
     if model_list:
         selected = _prompt_model_selection(model_list, current_model=normalized_current_model)
     else:
         try:
-            selected = input("Model name: ").strip()
+            selected = input("모델 이름: ").strip()
         except (KeyboardInterrupt, EOFError):
             selected = None
 
@@ -2170,7 +2170,7 @@ def _model_flow_copilot(config, current_model=""):
         )
         selected_effort = None
         if reasoning_efforts:
-            print(f"  {selected} supports reasoning controls.")
+            print(f"  {selected} 모델은 reasoning 제어를 지원해요.")
             selected_effort = _prompt_reasoning_effort_selection(
                 reasoning_efforts, current_effort=current_effort
             )
@@ -2194,14 +2194,14 @@ def _model_flow_copilot(config, current_model=""):
         save_config(cfg)
         deactivate_provider()
 
-        print(f"Default model set to: {selected} (via {pconfig.name})")
+        print(f"기본 모델을 설정했어요: {selected} ({pconfig.name} 사용)")
         if reasoning_efforts:
             if selected_effort == "none":
-                print("Reasoning disabled for this model.")
+                print("이 모델에서는 reasoning을 비활성화했어요.")
             elif selected_effort:
-                print(f"Reasoning effort set to: {selected_effort}")
+                print(f"reasoning 강도를 설정했어요: {selected_effort}")
     else:
-        print("No change.")
+        print("변경 사항이 없어요.")
 
 
 def _model_flow_copilot_acp(config, current_model=""):
@@ -2230,18 +2230,18 @@ def _model_flow_copilot_acp(config, current_model=""):
     resolved_command = status.get("resolved_command") or status.get("command") or "copilot"
     effective_base = status.get("base_url") or pconfig.inference_base_url
 
-    print("  GitHub Copilot ACP delegates Hermes turns to `copilot --acp`.")
-    print("  Hermes currently starts its own ACP subprocess for each request.")
-    print("  Hermes uses your selected model as a hint for the Copilot ACP session.")
-    print(f"  Command: {resolved_command}")
-    print(f"  Backend marker: {effective_base}")
+    print("  GitHub Copilot ACP는 Hermes의 각 요청을 `copilot --acp`로 위임해요.")
+    print("  현재 Hermes는 요청마다 자체 ACP 서브프로세스를 시작해요.")
+    print("  Hermes는 선택한 모델을 Copilot ACP 세션의 힌트로 전달해요.")
+    print(f"  명령어: {resolved_command}")
+    print(f"  백엔드 표시값: {effective_base}")
     print()
 
     try:
         creds = resolve_external_process_provider_credentials(provider_id)
     except Exception as exc:
         print(f"  ⚠ {exc}")
-        print("  Set HERMES_COPILOT_ACP_COMMAND or COPILOT_CLI_PATH if Copilot CLI is installed elsewhere.")
+        print("  Copilot CLI가 다른 위치에 설치되어 있다면 HERMES_COPILOT_ACP_COMMAND 또는 COPILOT_CLI_PATH를 설정하세요.")
         return
 
     effective_base = creds.get("base_url") or effective_base
@@ -2262,12 +2262,12 @@ def _model_flow_copilot_acp(config, current_model=""):
 
     if catalog:
         model_list = [item.get("id", "") for item in catalog if item.get("id")]
-        print(f"  Found {len(model_list)} model(s) from GitHub Copilot")
+        print(f"  모델 {len(model_list)}개를 GitHub Copilot에서 찾았어요")
     else:
         model_list = _PROVIDER_MODELS.get("copilot", [])
         if model_list:
-            print("  ⚠ Could not auto-detect models from GitHub Copilot — showing defaults.")
-            print('    Use "Enter custom model name" if you do not see your model.')
+            print("  ⚠ GitHub Copilot에서 모델을 자동 감지하지 못했어요 — 기본 목록을 보여줄게요.")
+            print('    원하는 모델이 없으면 "사용자 지정 모델 이름 입력"을 사용하세요.')
 
     if model_list:
         selected = _prompt_model_selection(
@@ -2276,12 +2276,12 @@ def _model_flow_copilot_acp(config, current_model=""):
         )
     else:
         try:
-            selected = input("Model name: ").strip()
+            selected = input("모델 이름: ").strip()
         except (KeyboardInterrupt, EOFError):
             selected = None
 
     if not selected:
-        print("No change.")
+        print("변경 사항이 없어요.")
         return
 
     selected = normalize_copilot_model_id(
@@ -2302,7 +2302,7 @@ def _model_flow_copilot_acp(config, current_model=""):
     save_config(cfg)
     deactivate_provider()
 
-    print(f"Default model set to: {selected} (via {pconfig.name})")
+    print(f"기본 모델을 설정했어요: {selected} ({pconfig.name} 사용)")
 
 
 def _model_flow_kimi(config, current_model=""):
@@ -2332,20 +2332,20 @@ def _model_flow_kimi(config, current_model=""):
             break
 
     if not existing_key:
-        print(f"No {pconfig.name} API key configured.")
+        print(f"{pconfig.name} API key가 설정되지 않았어요.")
         if key_env:
             try:
                 import getpass
-                new_key = getpass.getpass(f"{key_env} (or Enter to cancel): ").strip()
+                new_key = getpass.getpass(f"{key_env} 입력(취소하려면 Enter): ").strip()
             except (KeyboardInterrupt, EOFError):
                 print()
                 return
             if not new_key:
-                print("Cancelled.")
+                print("취소했어요.")
                 return
             save_env_value(key_env, new_key)
             existing_key = new_key
-            print("API key saved.")
+            print("API key를 저장했어요.")
             print()
     else:
         print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
@@ -2355,10 +2355,10 @@ def _model_flow_kimi(config, current_model=""):
     is_coding_plan = existing_key.startswith("sk-kimi-")
     if is_coding_plan:
         effective_base = KIMI_CODE_BASE_URL
-        print(f"  Detected Kimi Coding Plan key → {effective_base}")
+        print(f"  Kimi Coding Plan 키를 감지했어요 → {effective_base}")
     else:
         effective_base = pconfig.inference_base_url
-        print(f"  Using Moonshot endpoint → {effective_base}")
+        print(f"  Moonshot endpoint를 사용할게요 → {effective_base}")
     # Clear any manual base URL override so auto-detection works at runtime
     if base_url_env and get_env_value(base_url_env):
         save_env_value(base_url_env, "")
@@ -2381,7 +2381,7 @@ def _model_flow_kimi(config, current_model=""):
         selected = _prompt_model_selection(model_list, current_model=current_model)
     else:
         try:
-            selected = input("Enter model name: ").strip()
+            selected = input("모델 이름 직접 입력: ").strip()
         except (KeyboardInterrupt, EOFError):
             selected = None
 
@@ -2401,9 +2401,9 @@ def _model_flow_kimi(config, current_model=""):
         deactivate_provider()
 
         endpoint_label = "Kimi Coding" if is_coding_plan else "Moonshot"
-        print(f"Default model set to: {selected} (via {endpoint_label})")
+        print(f"기본 모델을 설정했어요: {selected} ({endpoint_label} 사용)")
     else:
-        print("No change.")
+        print("변경 사항이 없어요.")
 
 
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
@@ -2427,19 +2427,19 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             break
 
     if not existing_key:
-        print(f"No {pconfig.name} API key configured.")
+        print(f"{pconfig.name} API key가 설정되지 않았어요.")
         if key_env:
             try:
                 import getpass
-                new_key = getpass.getpass(f"{key_env} (or Enter to cancel): ").strip()
+                new_key = getpass.getpass(f"{key_env} 입력(취소하려면 Enter): ").strip()
             except (KeyboardInterrupt, EOFError):
                 print()
                 return
             if not new_key:
-                print("Cancelled.")
+                print("취소했어요.")
                 return
             save_env_value(key_env, new_key)
-            print("API key saved.")
+            print("API key를 저장했어요.")
             print()
     else:
         print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
@@ -2458,7 +2458,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         override = ""
     if override and base_url_env:
         if not override.startswith(("http://", "https://")):
-            print("  Invalid URL — must start with http:// or https://. Keeping current value.")
+            print("  잘못된 URL이에요 — http:// 또는 https:// 로 시작해야 해요. 현재 값을 유지할게요.")
         else:
             save_env_value(base_url_env, override)
             effective_base = override
@@ -2479,21 +2479,21 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
 
     if mdev_models:
         model_list = mdev_models
-        print(f"  Found {len(model_list)} model(s) from models.dev registry")
+        print(f"  models.dev 레지스트리에서 모델 {len(model_list)}개를 찾았어요")
     elif curated and len(curated) >= 8:
         # Curated list is substantial — use it directly, skip live probe
         model_list = curated
-        print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
+        print(f"  큐레이션 모델 {len(model_list)}개를 표시합니다 — 다른 모델은 \"사용자 지정 모델 이름 입력\"을 사용하세요.")
     else:
         api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
         live_models = fetch_api_models(api_key_for_probe, effective_base)
         if live_models and len(live_models) >= len(curated):
             model_list = live_models
-            print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
+            print(f"  {pconfig.name} API에서 모델 {len(model_list)}개를 찾았어요")
         else:
             model_list = curated
             if model_list:
-                print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
+                print(f"  큐레이션 모델 {len(model_list)}개를 표시합니다 — 다른 모델은 \"사용자 지정 모델 이름 입력\"을 사용하세요.")
         # else: no defaults either, will fall through to raw input
 
     if provider_id in {"opencode-zen", "opencode-go"}:
@@ -2505,7 +2505,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         selected = _prompt_model_selection(model_list, current_model=current_model)
     else:
         try:
-            selected = input("Model name: ").strip()
+            selected = input("모델 이름: ").strip()
         except (KeyboardInterrupt, EOFError):
             selected = None
 
@@ -2530,9 +2530,9 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         save_config(cfg)
         deactivate_provider()
 
-        print(f"Default model set to: {selected} (via {pconfig.name})")
+        print(f"기본 모델을 설정했어요: {selected} ({pconfig.name} 사용)")
     else:
-        print("No change.")
+        print("변경 사항이 없어요.")
 
 
 def _run_anthropic_oauth_flow(save_env_value):
@@ -2557,16 +2557,16 @@ def _run_anthropic_oauth_flow(save_env_value):
             or bool(creds.get("refreshToken"))
         ):
             use_anthropic_claude_code_credentials(save_fn=save_env_value)
-            print("  ✓ Claude Code credentials linked.")
+            print("  ✓ Claude Code 자격 증명을 연결했어요.")
             from hermes_constants import display_hermes_home as _dhh_fn
-            print(f"    Hermes will use Claude's credential store directly instead of copying a setup-token into {_dhh_fn()}/.env.")
+            print(f"    setup-token을 {_dhh_fn()}/.env에 복사하지 않고 Claude의 자격 증명 저장소를 직접 사용할게요.")
             return True
         return False
 
     try:
         print()
-        print("  Running 'claude setup-token' — follow the prompts below.")
-        print("  A browser window will open for you to authorize access.")
+        print("  'claude setup-token'을 실행할게요 — 아래 안내를 따라 진행해 주세요.")
+        print("  인증을 위해 브라우저 창이 열릴 거예요.")
         print()
         token = run_oauth_setup_token()
         if token:
@@ -2578,47 +2578,47 @@ def _run_anthropic_oauth_flow(save_env_value):
 
         # Subprocess completed but no token auto-detected — ask user to paste
         print()
-        print("  If the setup-token was displayed above, paste it here:")
+        print("  위에 setup-token이 표시되었다면 여기에 붙여 넣어 주세요:")
         print()
         try:
             import getpass
-            manual_token = getpass.getpass("  Paste setup-token (or Enter to cancel): ").strip()
+            manual_token = getpass.getpass("  setup-token 붙여넣기 (취소하려면 Enter): ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return False
         if manual_token:
             save_anthropic_oauth_token(manual_token, save_fn=save_env_value)
-            print("  ✓ Setup-token saved.")
+            print("  ✓ setup-token을 저장했어요.")
             return True
 
-        print("  ⚠ Could not detect saved credentials.")
+        print("  ⚠ 저장된 자격 증명을 감지하지 못했어요.")
         return False
 
     except FileNotFoundError:
         # Claude CLI not installed — guide user through manual setup
         print()
-        print("  The 'claude' CLI is required for OAuth login.")
+        print("  OAuth 로그인에는 'claude' CLI가 필요해요.")
         print()
-        print("  To install and authenticate:")
+        print("  설치 및 인증 방법:")
         print()
-        print("    1. Install Claude Code:  npm install -g @anthropic-ai/claude-code")
-        print("    2. Run:                  claude setup-token")
-        print("    3. Follow the browser prompts to authorize")
-        print("    4. Re-run:               hermes model")
+        print("    1. Claude Code 설치:  npm install -g @anthropic-ai/claude-code")
+        print("    2. 실행:              claude setup-token")
+        print("    3. 브라우저에서 인증 프롬프트 진행")
+        print("    4. 다시 실행:         hermes model")
         print()
-        print("  Or paste an existing setup-token now (sk-ant-oat-...):")
+        print("  또는 기존 setup-token을 지금 붙여 넣으세요 (sk-ant-oat-...):")
         print()
         try:
             import getpass
-            token = getpass.getpass("  Setup-token (or Enter to cancel): ").strip()
+            token = getpass.getpass("  setup-token 입력 (취소하려면 Enter): ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return False
         if token:
             save_anthropic_oauth_token(token, save_fn=save_env_value)
-            print("  ✓ Setup-token saved.")
+            print("  ✓ setup-token을 저장했어요.")
             return True
-        print("  Cancelled — install Claude Code and try again.")
+        print("  취소했어요 — Claude Code를 설치한 뒤 다시 시도해 주세요.")
         return False
 
 
@@ -2652,16 +2652,16 @@ def _model_flow_anthropic(config, current_model=""):
     if has_creds:
         # Show what we found
         if existing_key:
-            print(f"  Anthropic credentials: {existing_key[:12]}... ✓")
+            print(f"  Anthropic 자격 증명: {existing_key[:12]}... ✓")
         elif cc_available:
-            print("  Claude Code credentials: ✓ (auto-detected)")
+            print("  Claude Code 자격 증명: ✓ (자동 감지됨)")
         print()
-        print("    1. Use existing credentials")
-        print("    2. Reauthenticate (new OAuth login)")
-        print("    3. Cancel")
+        print("    1. 기존 자격 증명 사용")
+        print("    2. 다시 인증하기 (새 OAuth 로그인)")
+        print("    3. 취소")
         print()
         try:
-            choice = input("  Choice [1/2/3]: ").strip()
+            choice = input("  선택 [1/2/3]: ").strip()
         except (KeyboardInterrupt, EOFError):
             choice = "1"
 
@@ -2674,14 +2674,14 @@ def _model_flow_anthropic(config, current_model=""):
     if needs_auth:
         # Show auth method choice
         print()
-        print("  Choose authentication method:")
+        print("  인증 방식을 선택해 주세요:")
         print()
-        print("    1. Claude Pro/Max subscription (OAuth login)")
-        print("    2. Anthropic API key (pay-per-token)")
-        print("    3. Cancel")
+        print("    1. Claude Pro/Max 구독 (OAuth 로그인)")
+        print("    2. Anthropic API key (사용한 토큰만큼 과금)")
+        print("    3. 취소")
         print()
         try:
-            choice = input("  Choice [1/2/3]: ").strip()
+            choice = input("  선택 [1/2/3]: ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return
@@ -2692,22 +2692,22 @@ def _model_flow_anthropic(config, current_model=""):
 
         elif choice == "2":
             print()
-            print("  Get an API key at: https://console.anthropic.com/settings/keys")
+            print("  API key 발급 링크: https://console.anthropic.com/settings/keys")
             print()
             try:
                 import getpass
-                api_key = getpass.getpass("  API key (sk-ant-...): ").strip()
+                api_key = getpass.getpass("  API key 입력 (sk-ant-...): ").strip()
             except (KeyboardInterrupt, EOFError):
                 print()
                 return
             if not api_key:
-                print("  Cancelled.")
+                print("  취소했어요.")
                 return
             save_anthropic_api_key(api_key, save_fn=save_env_value)
-            print("  ✓ API key saved.")
+            print("  ✓ API key를 저장했어요.")
 
         else:
-            print("  No change.")
+            print("  변경 사항이 없어요.")
             return
     print()
 
@@ -2717,7 +2717,7 @@ def _model_flow_anthropic(config, current_model=""):
         selected = _prompt_model_selection(model_list, current_model=current_model)
     else:
         try:
-            selected = input("Model name (e.g., claude-sonnet-4-20250514): ").strip()
+            selected = input("모델 이름 입력 (예: claude-sonnet-4-20250514): ").strip()
         except (KeyboardInterrupt, EOFError):
             selected = None
 
@@ -2738,9 +2738,9 @@ def _model_flow_anthropic(config, current_model=""):
         save_config(cfg)
         deactivate_provider()
 
-        print(f"Default model set to: {selected} (via Anthropic)")
+        print(f"기본 모델을 설정했어요: {selected} (Anthropic 사용)")
     else:
-        print("No change.")
+        print("변경 사항이 없어요.")
 
 
 def cmd_login(args):
@@ -5611,7 +5611,7 @@ Examples:
                 return
             if not args.yes:
                 if not _confirm_prompt(f"Delete session '{resolved_session_id}' and all its messages? [y/N] "):
-                    print("Cancelled.")
+                    print("취소했어요.")
                     return
             if db.delete_session(resolved_session_id):
                 print(f"Deleted session '{resolved_session_id}'.")
@@ -5623,7 +5623,7 @@ Examples:
             source_msg = f" from '{args.source}'" if args.source else ""
             if not args.yes:
                 if not _confirm_prompt(f"Delete all ended sessions older than {days} days{source_msg}? [y/N] "):
-                    print("Cancelled.")
+                    print("취소했어요.")
                     return
             count = db.prune_sessions(older_than_days=days, source=args.source)
             print(f"Pruned {count} session(s).")
@@ -5654,7 +5654,7 @@ Examples:
 
             selected_id = _session_browse_picker(sessions)
             if not selected_id:
-                print("Cancelled.")
+                print("취소했어요.")
                 return
 
             # Launch hermes --resume <id> by replacing the current process
