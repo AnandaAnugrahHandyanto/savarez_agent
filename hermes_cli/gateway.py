@@ -1635,19 +1635,19 @@ _PLATFORMS = [
         "emoji": "📱",
         "token_var": "TELEGRAM_BOT_TOKEN",
         "setup_instructions": [
-            "1. Open Telegram and message @BotFather",
-            "2. Send /newbot and follow the prompts to create your bot",
-            "3. Copy the bot token BotFather gives you",
-            "4. To find your user ID: message @userinfobot — it replies with your numeric ID",
+            "1. Telegram에서 @BotFather에게 메시지를 보냅니다",
+            "2. /newbot 을 보내고 안내에 따라 봇을 만듭니다",
+            "3. BotFather가 알려주는 봇 토큰을 복사합니다",
+            "4. 사용자 ID를 확인하려면 @userinfobot 에 메시지를 보내세요 — 숫자 ID를 답장해 줍니다",
         ],
         "vars": [
-            {"name": "TELEGRAM_BOT_TOKEN", "prompt": "Bot token", "password": True,
-             "help": "Paste the token from @BotFather (step 3 above)."},
-            {"name": "TELEGRAM_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated)", "password": False,
+            {"name": "TELEGRAM_BOT_TOKEN", "prompt": "Telegram 봇 토큰", "password": True,
+             "help": "위 3단계에서 받은 @BotFather 토큰을 붙여 넣으세요."},
+            {"name": "TELEGRAM_ALLOWED_USERS", "prompt": "허용할 사용자 ID (쉼표로 구분)", "password": False,
              "is_allowlist": True,
-             "help": "Paste your user ID from step 4 above."},
-            {"name": "TELEGRAM_HOME_CHANNEL", "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
-             "help": "For DMs, this is your user ID. You can set it later by typing /set-home in chat."},
+             "help": "위 4단계에서 확인한 본인 사용자 ID를 붙여 넣으세요."},
+            {"name": "TELEGRAM_HOME_CHANNEL", "prompt": "홈 채널 ID (cron/알림 전달용, 비워 두면 나중에 /set-home으로 설정)", "password": False,
+             "help": "DM에서는 보통 본인 사용자 ID와 같습니다. 나중에 채팅에서 /set-home으로 설정할 수도 있습니다."},
         ],
     },
     {
@@ -1656,26 +1656,26 @@ _PLATFORMS = [
         "emoji": "💬",
         "token_var": "DISCORD_BOT_TOKEN",
         "setup_instructions": [
-            "1. Go to https://discord.com/developers/applications → New Application",
-            "2. Go to Bot → Reset Token → copy the bot token",
-            "3. Enable: Bot → Privileged Gateway Intents → Message Content Intent",
-            "4. Invite the bot to your server:",
-            "   OAuth2 → URL Generator → check BOTH scopes:",
+            "1. https://discord.com/developers/applications 로 이동 → New Application",
+            "2. Bot → Reset Token 으로 이동해 봇 토큰을 복사합니다",
+            "3. Bot → Privileged Gateway Intents → Message Content Intent 를 활성화합니다",
+            "4. 봇을 서버에 초대합니다:",
+            "   OAuth2 → URL Generator → 아래 두 scope를 모두 체크하세요:",
             "     - bot",
-            "     - applications.commands  (required for slash commands!)",
+            "     - applications.commands  (슬래시 명령어에 필수)",
             "   Bot Permissions: Send Messages, Read Message History, Attach Files",
-            "   Copy the URL and open it in your browser to invite.",
-            "5. Get your user ID: enable Developer Mode in Discord settings,",
-            "   then right-click your name → Copy ID",
+            "   생성된 URL을 복사해 브라우저에서 열고 초대하세요.",
+            "5. 사용자 ID 확인: Discord 설정에서 Developer Mode를 켠 뒤",
+            "   내 이름을 우클릭 → Copy ID",
         ],
         "vars": [
-            {"name": "DISCORD_BOT_TOKEN", "prompt": "Bot token", "password": True,
-             "help": "Paste the token from step 2 above."},
-            {"name": "DISCORD_ALLOWED_USERS", "prompt": "Allowed user IDs or usernames (comma-separated)", "password": False,
+            {"name": "DISCORD_BOT_TOKEN", "prompt": "Discord 봇 토큰", "password": True,
+             "help": "위 2단계에서 복사한 토큰을 붙여 넣으세요."},
+            {"name": "DISCORD_ALLOWED_USERS", "prompt": "허용할 사용자 ID 또는 사용자명 (쉼표로 구분)", "password": False,
              "is_allowlist": True,
-             "help": "Paste your user ID from step 5 above."},
-            {"name": "DISCORD_HOME_CHANNEL", "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
-             "help": "Right-click a channel → Copy Channel ID (requires Developer Mode)."},
+             "help": "위 5단계에서 확인한 본인 사용자 ID를 붙여 넣으세요."},
+            {"name": "DISCORD_HOME_CHANNEL", "prompt": "홈 채널 ID (cron/알림 전달용, 비워 두면 나중에 /set-home으로 설정)", "password": False,
+             "help": "채널을 우클릭 → Copy Channel ID (Developer Mode 필요)."},
         ],
     },
     {
@@ -1684,29 +1684,29 @@ _PLATFORMS = [
         "emoji": "💼",
         "token_var": "SLACK_BOT_TOKEN",
         "setup_instructions": [
-            "1. Go to https://api.slack.com/apps → Create New App → From Scratch",
-            "2. Enable Socket Mode: Settings → Socket Mode → Enable",
-            "   Create an App-Level Token with scope: connections:write → copy xapp-... token",
-            "3. Add Bot Token Scopes: Features → OAuth & Permissions → Scopes",
-            "   Required: chat:write, app_mentions:read, channels:history, channels:read,",
+            "1. https://api.slack.com/apps → Create New App → From Scratch 로 이동합니다",
+            "2. Socket Mode 활성화: Settings → Socket Mode → Enable",
+            "   scope가 connections:write 인 App-Level Token을 만든 뒤 xapp-... 토큰을 복사하세요",
+            "3. Bot Token Scope 추가: Features → OAuth & Permissions → Scopes",
+            "   필수: chat:write, app_mentions:read, channels:history, channels:read,",
             "   groups:history, im:history, im:read, im:write, users:read, files:read, files:write",
-            "4. Subscribe to Events: Features → Event Subscriptions → Enable",
-            "   Required events: message.im, message.channels, app_mention",
-            "   Optional: message.groups (for private channels)",
-            "   ⚠ Without message.channels the bot will ONLY work in DMs!",
-            "5. Install to Workspace: Settings → Install App → copy xoxb-... token",
-            "6. Reinstall the app after any scope or event changes",
-            "7. Find your user ID: click your profile → three dots → Copy member ID",
-            "8. Invite the bot to channels: /invite @YourBot",
+            "4. 이벤트 구독: Features → Event Subscriptions → Enable",
+            "   필수 이벤트: message.im, message.channels, app_mention",
+            "   선택: message.groups (비공개 채널용)",
+            "   ⚠ message.channels 가 없으면 봇은 DM에서만 동작합니다!",
+            "5. 워크스페이스에 설치: Settings → Install App → xoxb-... 토큰 복사",
+            "6. scope나 이벤트를 바꾼 뒤에는 앱을 다시 설치하세요",
+            "7. 사용자 ID 확인: 프로필 클릭 → 점 세 개 메뉴 → Copy member ID",
+            "8. 채널에 봇 초대: /invite @YourBot",
         ],
         "vars": [
-            {"name": "SLACK_BOT_TOKEN", "prompt": "Bot Token (xoxb-...)", "password": True,
-             "help": "Paste the bot token from step 3 above."},
-            {"name": "SLACK_APP_TOKEN", "prompt": "App Token (xapp-...)", "password": True,
-             "help": "Paste the app-level token from step 4 above."},
-            {"name": "SLACK_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated)", "password": False,
+            {"name": "SLACK_BOT_TOKEN", "prompt": "Slack Bot Token (xoxb-...)", "password": True,
+             "help": "위 5단계에서 복사한 봇 토큰을 붙여 넣으세요."},
+            {"name": "SLACK_APP_TOKEN", "prompt": "Slack App Token (xapp-...)", "password": True,
+             "help": "위 2단계에서 만든 app-level 토큰을 붙여 넣으세요."},
+            {"name": "SLACK_ALLOWED_USERS", "prompt": "허용할 사용자 ID (쉼표로 구분)", "password": False,
              "is_allowlist": True,
-             "help": "Paste your member ID from step 7 above."},
+             "help": "위 7단계에서 확인한 member ID를 붙여 넣으세요."},
         ],
     },
     {
@@ -1715,27 +1715,27 @@ _PLATFORMS = [
         "emoji": "🔐",
         "token_var": "MATRIX_ACCESS_TOKEN",
         "setup_instructions": [
-            "1. Works with any Matrix homeserver (self-hosted Synapse/Conduit/Dendrite or matrix.org)",
-            "2. Create a bot user on your homeserver, or use your own account",
-            "3. Get an access token: Element → Settings → Help & About → Access Token",
-            "   Or via API: curl -X POST https://your-server/_matrix/client/v3/login \\",
+            "1. 어떤 Matrix homeserver와도 사용할 수 있습니다 (자체 호스팅 Synapse/Conduit/Dendrite 또는 matrix.org)",
+            "2. homeserver에 봇 계정을 만들거나 본인 계정을 사용할 수 있습니다",
+            "3. access token 확인: Element → Settings → Help & About → Access Token",
+            "   또는 API 사용: curl -X POST https://your-server/_matrix/client/v3/login \\",
             "     -d '{\"type\":\"m.login.password\",\"user\":\"@bot:server\",\"password\":\"...\"}'",
-            "4. Alternatively, provide user ID + password and Hermes will log in directly",
-            "5. For E2EE: set MATRIX_ENCRYPTION=true (requires pip install 'mautrix[encryption]')",
-            "6. To find your user ID: it's @username:your-server (shown in Element profile)",
+            "4. 또는 사용자 ID + 비밀번호를 입력하면 Hermes가 직접 로그인합니다",
+            "5. E2EE를 쓰려면 MATRIX_ENCRYPTION=true 로 설정하세요 (pip install 'mautrix[encryption]' 필요)",
+            "6. 사용자 ID는 @username:your-server 형식이며 Element 프로필에서 확인할 수 있습니다",
         ],
         "vars": [
-            {"name": "MATRIX_HOMESERVER", "prompt": "Homeserver URL (e.g. https://matrix.example.org)", "password": False,
-             "help": "Your Matrix homeserver URL. Works with any self-hosted instance."},
-            {"name": "MATRIX_ACCESS_TOKEN", "prompt": "Access token (leave empty to use password login instead)", "password": True,
-             "help": "Paste your access token, or leave empty and provide user ID + password below."},
-            {"name": "MATRIX_USER_ID", "prompt": "User ID (@bot:server — required for password login)", "password": False,
-             "help": "Full Matrix user ID, e.g. @hermes:matrix.example.org"},
-            {"name": "MATRIX_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, e.g. @you:server)", "password": False,
+            {"name": "MATRIX_HOMESERVER", "prompt": "Matrix homeserver URL (예: https://matrix.example.org)", "password": False,
+             "help": "Matrix homeserver URL입니다. 어떤 자체 호스팅 인스턴스와도 사용할 수 있습니다."},
+            {"name": "MATRIX_ACCESS_TOKEN", "prompt": "Access token (비워 두면 대신 비밀번호 로그인 사용)", "password": True,
+             "help": "access token을 붙여 넣거나, 비워 두고 아래에 사용자 ID + 비밀번호를 입력하세요."},
+            {"name": "MATRIX_USER_ID", "prompt": "사용자 ID (@bot:server — 비밀번호 로그인 시 필수)", "password": False,
+             "help": "전체 Matrix 사용자 ID입니다. 예: @hermes:matrix.example.org"},
+            {"name": "MATRIX_ALLOWED_USERS", "prompt": "허용할 사용자 ID (쉼표로 구분, 예: @you:server)", "password": False,
              "is_allowlist": True,
-             "help": "Matrix user IDs who can interact with the bot."},
-            {"name": "MATRIX_HOME_ROOM", "prompt": "Home room ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
-             "help": "Room ID (e.g. !abc123:server) for delivering cron results and notifications."},
+             "help": "봇과 상호작용할 수 있는 Matrix 사용자 ID 목록입니다."},
+            {"name": "MATRIX_HOME_ROOM", "prompt": "홈 룸 ID (cron/알림 전달용, 비워 두면 나중에 /set-home으로 설정)", "password": False,
+             "help": "cron 결과와 알림을 전달할 룸 ID입니다. 예: !abc123:server"},
         ],
     },
     {
@@ -1744,27 +1744,27 @@ _PLATFORMS = [
         "emoji": "💬",
         "token_var": "MATTERMOST_TOKEN",
         "setup_instructions": [
-            "1. In Mattermost: Integrations → Bot Accounts → Add Bot Account",
-            "   (System Console → Integrations → Bot Accounts must be enabled)",
-            "2. Give it a username (e.g. hermes) and copy the bot token",
-            "3. Works with any self-hosted Mattermost instance — enter your server URL",
-            "4. To find your user ID: click your avatar (top-left) → Profile",
-            "   Your user ID is displayed there — click it to copy.",
-            "   ⚠ This is NOT your username — it's a 26-character alphanumeric ID.",
-            "5. To get a channel ID: click the channel name → View Info → copy the ID",
+            "1. Mattermost에서 Integrations → Bot Accounts → Add Bot Account 로 이동합니다",
+            "   (System Console → Integrations → Bot Accounts 가 활성화되어 있어야 합니다)",
+            "2. 사용자명(예: hermes)을 지정하고 봇 토큰을 복사합니다",
+            "3. 어떤 자체 호스팅 Mattermost 인스턴스와도 사용할 수 있습니다 — 서버 URL을 입력하세요",
+            "4. 사용자 ID 확인: 아바타(좌상단) 클릭 → Profile",
+            "   화면에 사용자 ID가 표시되며 클릭하면 복사됩니다.",
+            "   ⚠ 이것은 사용자명이 아니라 26자리 영숫자 ID입니다.",
+            "5. 채널 ID 확인: 채널 이름 클릭 → View Info → ID 복사",
         ],
         "vars": [
-            {"name": "MATTERMOST_URL", "prompt": "Server URL (e.g. https://mm.example.com)", "password": False,
-             "help": "Your Mattermost server URL. Works with any self-hosted instance."},
-            {"name": "MATTERMOST_TOKEN", "prompt": "Bot token", "password": True,
-             "help": "Paste the bot token from step 2 above."},
-            {"name": "MATTERMOST_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated)", "password": False,
+            {"name": "MATTERMOST_URL", "prompt": "Mattermost 서버 URL (예: https://mm.example.com)", "password": False,
+             "help": "Mattermost 서버 URL입니다. 어떤 자체 호스팅 인스턴스와도 사용할 수 있습니다."},
+            {"name": "MATTERMOST_TOKEN", "prompt": "Mattermost 봇 토큰", "password": True,
+             "help": "위 2단계에서 복사한 봇 토큰을 붙여 넣으세요."},
+            {"name": "MATTERMOST_ALLOWED_USERS", "prompt": "허용할 사용자 ID (쉼표로 구분)", "password": False,
              "is_allowlist": True,
-             "help": "Your Mattermost user ID from step 4 above."},
-            {"name": "MATTERMOST_HOME_CHANNEL", "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
-             "help": "Channel ID where Hermes delivers cron results and notifications."},
-            {"name": "MATTERMOST_REPLY_MODE", "prompt": "Reply mode — 'off' for flat messages, 'thread' for threaded replies (default: off)", "password": False,
-             "help": "off = flat channel messages, thread = replies nest under your message."},
+             "help": "위 4단계에서 확인한 Mattermost 사용자 ID를 입력하세요."},
+            {"name": "MATTERMOST_HOME_CHANNEL", "prompt": "홈 채널 ID (cron/알림 전달용, 비워 두면 나중에 /set-home으로 설정)", "password": False,
+             "help": "Hermes가 cron 결과와 알림을 전달할 채널 ID입니다."},
+            {"name": "MATTERMOST_REPLY_MODE", "prompt": "응답 모드 — 'off'는 일반 메시지, 'thread'는 스레드 응답 (기본값: off)", "password": False,
+             "help": "off = 채널에 일반 메시지로 응답, thread = 사용자의 메시지 아래 스레드로 응답합니다."},
         ],
     },
     {
@@ -1785,24 +1785,24 @@ _PLATFORMS = [
         "emoji": "📧",
         "token_var": "EMAIL_ADDRESS",
         "setup_instructions": [
-            "1. Use a dedicated email account for your Hermes agent",
-            "2. For Gmail: enable 2FA, then create an App Password at",
+            "1. Hermes 전용 이메일 계정을 사용하는 것을 권장합니다",
+            "2. Gmail은 2단계 인증을 켠 뒤 아래에서 앱 비밀번호를 만드세요",
             "   https://myaccount.google.com/apppasswords",
-            "3. For other providers: use your email password or app-specific password",
-            "4. IMAP must be enabled on your email account",
+            "3. 다른 제공자는 일반 비밀번호 또는 앱 전용 비밀번호를 사용하세요",
+            "4. 이메일 계정에서 IMAP가 활성화되어 있어야 합니다",
         ],
         "vars": [
-            {"name": "EMAIL_ADDRESS", "prompt": "Email address", "password": False,
-             "help": "The email address Hermes will use (e.g., hermes@gmail.com)."},
-            {"name": "EMAIL_PASSWORD", "prompt": "Email password (or app password)", "password": True,
-             "help": "For Gmail, use an App Password (not your regular password)."},
-            {"name": "EMAIL_IMAP_HOST", "prompt": "IMAP host", "password": False,
-             "help": "e.g., imap.gmail.com for Gmail, outlook.office365.com for Outlook."},
-            {"name": "EMAIL_SMTP_HOST", "prompt": "SMTP host", "password": False,
-             "help": "e.g., smtp.gmail.com for Gmail, smtp.office365.com for Outlook."},
-            {"name": "EMAIL_ALLOWED_USERS", "prompt": "Allowed sender emails (comma-separated)", "password": False,
+            {"name": "EMAIL_ADDRESS", "prompt": "이메일 주소", "password": False,
+             "help": "Hermes가 사용할 이메일 주소입니다. 예: hermes@gmail.com"},
+            {"name": "EMAIL_PASSWORD", "prompt": "이메일 비밀번호 (또는 앱 비밀번호)", "password": True,
+             "help": "Gmail은 일반 비밀번호 대신 앱 비밀번호를 사용하세요."},
+            {"name": "EMAIL_IMAP_HOST", "prompt": "IMAP 호스트", "password": False,
+             "help": "예: Gmail은 imap.gmail.com, Outlook은 outlook.office365.com"},
+            {"name": "EMAIL_SMTP_HOST", "prompt": "SMTP 호스트", "password": False,
+             "help": "예: Gmail은 smtp.gmail.com, Outlook은 smtp.office365.com"},
+            {"name": "EMAIL_ALLOWED_USERS", "prompt": "허용할 발신자 이메일 (쉼표로 구분)", "password": False,
              "is_allowlist": True,
-             "help": "Only emails from these addresses will be processed."},
+             "help": "이 주소들에서 온 이메일만 처리합니다."},
         ],
     },
     {
@@ -1811,25 +1811,25 @@ _PLATFORMS = [
         "emoji": "📱",
         "token_var": "TWILIO_ACCOUNT_SID",
         "setup_instructions": [
-            "1. Create a Twilio account at https://www.twilio.com/",
-            "2. Get your Account SID and Auth Token from the Twilio Console dashboard",
-            "3. Buy or configure a phone number capable of sending SMS",
-            "4. Set up your webhook URL for inbound SMS:",
-            "   Twilio Console → Phone Numbers → Active Numbers → your number",
+            "1. https://www.twilio.com/ 에서 Twilio 계정을 만듭니다",
+            "2. Twilio Console 대시보드에서 Account SID와 Auth Token을 확인합니다",
+            "3. SMS 발신이 가능한 전화번호를 구매하거나 설정합니다",
+            "4. 수신 SMS용 webhook URL을 설정합니다:",
+            "   Twilio Console → Phone Numbers → Active Numbers → 해당 번호",
             "   → Messaging → A MESSAGE COMES IN → Webhook → https://your-server:8080/webhooks/twilio",
         ],
         "vars": [
             {"name": "TWILIO_ACCOUNT_SID", "prompt": "Twilio Account SID", "password": False,
-             "help": "Found on the Twilio Console dashboard."},
+             "help": "Twilio Console 대시보드에서 확인할 수 있습니다."},
             {"name": "TWILIO_AUTH_TOKEN", "prompt": "Twilio Auth Token", "password": True,
-             "help": "Found on the Twilio Console dashboard (click to reveal)."},
-            {"name": "TWILIO_PHONE_NUMBER", "prompt": "Twilio phone number (E.164 format, e.g. +15551234567)", "password": False,
-             "help": "The Twilio phone number to send SMS from."},
-            {"name": "SMS_ALLOWED_USERS", "prompt": "Allowed phone numbers (comma-separated, E.164 format)", "password": False,
+             "help": "Twilio Console 대시보드에서 확인할 수 있습니다 (클릭하면 표시됨)."},
+            {"name": "TWILIO_PHONE_NUMBER", "prompt": "Twilio 전화번호 (E.164 형식, 예: +155****4567)", "password": False,
+             "help": "SMS를 발송할 Twilio 전화번호입니다."},
+            {"name": "SMS_ALLOWED_USERS", "prompt": "허용할 전화번호 (쉼표로 구분, E.164 형식)", "password": False,
              "is_allowlist": True,
-             "help": "Only messages from these phone numbers will be processed."},
-            {"name": "SMS_HOME_CHANNEL", "prompt": "Home channel phone number (for cron/notification delivery, or empty)", "password": False,
-             "help": "Phone number to deliver cron job results and notifications to."},
+             "help": "이 번호들에서 온 메시지만 처리합니다."},
+            {"name": "SMS_HOME_CHANNEL", "prompt": "홈 채널 전화번호 (cron/알림 전달용, 비워 둘 수 있음)", "password": False,
+             "help": "cron 결과와 알림을 전달할 전화번호입니다."},
         ],
     },
     {
@@ -1838,16 +1838,16 @@ _PLATFORMS = [
         "emoji": "💬",
         "token_var": "DINGTALK_CLIENT_ID",
         "setup_instructions": [
-            "1. Go to https://open-dev.dingtalk.com → Create Application",
-            "2. Under 'Credentials', copy the AppKey (Client ID) and AppSecret (Client Secret)",
-            "3. Enable 'Stream Mode' under the bot settings",
-            "4. Add the bot to a group chat or message it directly",
+            "1. https://open-dev.dingtalk.com 으로 이동 → Create Application",
+            "2. 'Credentials'에서 AppKey(Client ID)와 AppSecret(Client Secret)을 복사합니다",
+            "3. 봇 설정에서 'Stream Mode'를 활성화합니다",
+            "4. 봇을 그룹 채팅에 추가하거나 직접 메시지를 보냅니다",
         ],
         "vars": [
             {"name": "DINGTALK_CLIENT_ID", "prompt": "AppKey (Client ID)", "password": False,
-             "help": "The AppKey from your DingTalk application credentials."},
+             "help": "DingTalk 앱 자격 증명에 있는 AppKey입니다."},
             {"name": "DINGTALK_CLIENT_SECRET", "prompt": "AppSecret (Client Secret)", "password": True,
-             "help": "The AppSecret from your DingTalk application credentials."},
+             "help": "DingTalk 앱 자격 증명에 있는 AppSecret입니다."},
         ],
     },
     {
@@ -1856,27 +1856,27 @@ _PLATFORMS = [
         "emoji": "🪽",
         "token_var": "FEISHU_APP_ID",
         "setup_instructions": [
-            "1. Go to https://open.feishu.cn/ (or https://open.larksuite.com/ for Lark)",
-            "2. Create an app and copy the App ID and App Secret",
-            "3. Enable the Bot capability for the app",
-            "4. Choose WebSocket (recommended) or Webhook connection mode",
-            "5. Add the bot to a group chat or message it directly",
-            "6. Restrict access with FEISHU_ALLOWED_USERS for production use",
+            "1. https://open.feishu.cn/ (Lark는 https://open.larksuite.com/) 으로 이동합니다",
+            "2. 앱을 생성하고 App ID와 App Secret을 복사합니다",
+            "3. 앱에서 Bot 기능을 활성화합니다",
+            "4. WebSocket(권장) 또는 Webhook 연결 모드를 선택합니다",
+            "5. 봇을 그룹 채팅에 추가하거나 직접 메시지를 보냅니다",
+            "6. 운영 환경에서는 FEISHU_ALLOWED_USERS 로 접근을 제한하세요",
         ],
         "vars": [
             {"name": "FEISHU_APP_ID", "prompt": "App ID", "password": False,
-             "help": "The App ID from your Feishu/Lark application."},
+             "help": "Feishu/Lark 애플리케이션의 App ID입니다."},
             {"name": "FEISHU_APP_SECRET", "prompt": "App Secret", "password": True,
-             "help": "The App Secret from your Feishu/Lark application."},
-            {"name": "FEISHU_DOMAIN", "prompt": "Domain — feishu or lark (default: feishu)", "password": False,
-             "help": "Use 'feishu' for Feishu China, or 'lark' for Lark international."},
-            {"name": "FEISHU_CONNECTION_MODE", "prompt": "Connection mode — websocket or webhook (default: websocket)", "password": False,
-             "help": "websocket is recommended unless you specifically need webhook mode."},
-            {"name": "FEISHU_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
+             "help": "Feishu/Lark 애플리케이션의 App Secret입니다."},
+            {"name": "FEISHU_DOMAIN", "prompt": "도메인 — feishu 또는 lark (기본값: feishu)", "password": False,
+             "help": "중국 Feishu는 'feishu', 국제 Lark는 'lark'를 사용하세요."},
+            {"name": "FEISHU_CONNECTION_MODE", "prompt": "연결 모드 — websocket 또는 webhook (기본값: websocket)", "password": False,
+             "help": "특별한 이유가 없다면 websocket을 권장합니다."},
+            {"name": "FEISHU_ALLOWED_USERS", "prompt": "허용할 사용자 ID (쉼표로 구분, 비워 둘 수 있음)", "password": False,
              "is_allowlist": True,
-             "help": "Restrict which Feishu/Lark users can interact with the bot."},
-            {"name": "FEISHU_HOME_CHANNEL", "prompt": "Home chat ID (optional, for cron/notifications)", "password": False,
-             "help": "Chat ID for scheduled results and notifications."},
+             "help": "어떤 Feishu/Lark 사용자가 봇과 상호작용할 수 있는지 제한합니다."},
+            {"name": "FEISHU_HOME_CHANNEL", "prompt": "홈 채팅 ID (선택 사항, cron/알림용)", "password": False,
+             "help": "예약 실행 결과와 알림을 받을 채팅 ID입니다."},
         ],
     },
     {
@@ -1885,22 +1885,22 @@ _PLATFORMS = [
         "emoji": "💬",
         "token_var": "WECOM_BOT_ID",
         "setup_instructions": [
-            "1. Go to WeCom Admin Console → Applications → Create AI Bot",
-            "2. Copy the Bot ID and Secret from the bot's credentials page",
-            "3. The bot connects via WebSocket — no public endpoint needed",
-            "4. Add the bot to a group chat or message it directly in WeCom",
-            "5. Restrict access with WECOM_ALLOWED_USERS for production use",
+            "1. WeCom 관리자 콘솔 → Applications → Create AI Bot 으로 이동합니다",
+            "2. 봇 자격 증명 페이지에서 Bot ID와 Secret을 복사합니다",
+            "3. 봇은 WebSocket으로 연결되므로 공개 엔드포인트가 필요 없습니다",
+            "4. 봇을 그룹 채팅에 추가하거나 WeCom에서 직접 메시지를 보냅니다",
+            "5. 운영 환경에서는 WECOM_ALLOWED_USERS 로 접근을 제한하세요",
         ],
         "vars": [
             {"name": "WECOM_BOT_ID", "prompt": "Bot ID", "password": False,
-             "help": "The Bot ID from your WeCom AI Bot."},
+             "help": "WeCom AI Bot의 Bot ID입니다."},
             {"name": "WECOM_SECRET", "prompt": "Secret", "password": True,
-             "help": "The secret from your WeCom AI Bot."},
-            {"name": "WECOM_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
+             "help": "WeCom AI Bot의 secret입니다."},
+            {"name": "WECOM_ALLOWED_USERS", "prompt": "허용할 사용자 ID (쉼표로 구분, 비워 둘 수 있음)", "password": False,
              "is_allowlist": True,
-             "help": "Restrict which WeCom users can interact with the bot."},
-            {"name": "WECOM_HOME_CHANNEL", "prompt": "Home chat ID (optional, for cron/notifications)", "password": False,
-             "help": "Chat ID for scheduled results and notifications."},
+             "help": "어떤 WeCom 사용자가 봇과 상호작용할 수 있는지 제한합니다."},
+            {"name": "WECOM_HOME_CHANNEL", "prompt": "홈 채팅 ID (선택 사항, cron/알림용)", "password": False,
+             "help": "예약 실행 결과와 알림을 받을 채팅 ID입니다."},
         ],
     },
     {
@@ -1909,29 +1909,29 @@ _PLATFORMS = [
         "emoji": "💬",
         "token_var": "WECOM_CALLBACK_CORP_ID",
         "setup_instructions": [
-            "1. Go to WeCom Admin Console → Applications → Create Self-Built App",
-            "2. Note the Corp ID (top of admin console) and create a Corp Secret",
-            "3. Under Receive Messages, configure the callback URL to point to your server",
-            "4. Copy the Token and EncodingAESKey from the callback configuration",
-            "5. The adapter runs an HTTP server — ensure the port is reachable from WeCom",
-            "6. Restrict access with WECOM_CALLBACK_ALLOWED_USERS for production use",
+            "1. WeCom 관리자 콘솔 → Applications → Create Self-Built App 으로 이동합니다",
+            "2. Corp ID(관리자 콘솔 상단)를 확인하고 Corp Secret을 생성합니다",
+            "3. Receive Messages에서 callback URL을 서버 주소로 설정합니다",
+            "4. callback 설정에 있는 Token과 EncodingAESKey를 복사합니다",
+            "5. 이 어댑터는 HTTP 서버를 실행하므로 해당 포트가 WeCom에서 접근 가능해야 합니다",
+            "6. 운영 환경에서는 WECOM_CALLBACK_ALLOWED_USERS 로 접근을 제한하세요",
         ],
         "vars": [
             {"name": "WECOM_CALLBACK_CORP_ID", "prompt": "Corp ID", "password": False,
-             "help": "Your WeCom enterprise Corp ID."},
+             "help": "WeCom 엔터프라이즈 Corp ID입니다."},
             {"name": "WECOM_CALLBACK_CORP_SECRET", "prompt": "Corp Secret", "password": True,
-             "help": "The secret for your self-built application."},
+             "help": "Self-Built App용 secret입니다."},
             {"name": "WECOM_CALLBACK_AGENT_ID", "prompt": "Agent ID", "password": False,
-             "help": "The Agent ID of your self-built application."},
+             "help": "Self-Built App의 Agent ID입니다."},
             {"name": "WECOM_CALLBACK_TOKEN", "prompt": "Callback Token", "password": True,
-             "help": "The Token from your WeCom callback configuration."},
+             "help": "WeCom callback 설정에 있는 Token입니다."},
             {"name": "WECOM_CALLBACK_ENCODING_AES_KEY", "prompt": "Encoding AES Key", "password": True,
-             "help": "The EncodingAESKey from your WeCom callback configuration."},
-            {"name": "WECOM_CALLBACK_PORT", "prompt": "Callback server port (default: 8645)", "password": False,
-             "help": "Port for the HTTP callback server."},
-            {"name": "WECOM_CALLBACK_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
+             "help": "WeCom callback 설정에 있는 EncodingAESKey입니다."},
+            {"name": "WECOM_CALLBACK_PORT", "prompt": "Callback 서버 포트 (기본값: 8645)", "password": False,
+             "help": "HTTP callback 서버가 사용할 포트입니다."},
+            {"name": "WECOM_CALLBACK_ALLOWED_USERS", "prompt": "허용할 사용자 ID (쉼표로 구분, 비워 둘 수 있음)", "password": False,
              "is_allowlist": True,
-             "help": "Restrict which WeCom users can interact with the app."},
+             "help": "어떤 WeCom 사용자가 앱과 상호작용할 수 있는지 제한합니다."},
         ],
     },
     {
@@ -1946,26 +1946,26 @@ _PLATFORMS = [
         "emoji": "💬",
         "token_var": "BLUEBUBBLES_SERVER_URL",
         "setup_instructions": [
-            "1. Install BlueBubbles on a Mac that will act as your iMessage server:",
+            "1. iMessage 서버 역할을 할 Mac에 BlueBubbles를 설치합니다:",
             "   https://bluebubbles.app/",
-            "2. Complete the BlueBubbles setup wizard — sign in with your Apple ID",
-            "3. In BlueBubbles Settings → API, note the Server URL and password",
-            "4. The server URL is typically http://<your-mac-ip>:1234",
-            "5. Hermes connects via the BlueBubbles REST API and receives",
-            "   incoming messages via a local webhook",
-            "6. To authorize users, use DM pairing: hermes pairing generate bluebubbles",
-            "   Share the code — the user sends it via iMessage to get approved",
+            "2. BlueBubbles 설정 마법사를 완료하고 Apple ID로 로그인합니다",
+            "3. BlueBubbles Settings → API 에서 Server URL과 비밀번호를 확인합니다",
+            "4. 서버 URL은 보통 http://<your-mac-ip>:1234 형식입니다",
+            "5. Hermes는 BlueBubbles REST API로 연결하고",
+            "   로컬 webhook을 통해 수신 메시지를 받습니다",
+            "6. 사용자 승인에는 DM 페어링을 사용하세요: hermes pairing generate bluebubbles",
+            "   생성된 코드를 공유하면 사용자가 iMessage로 보내 승인 요청을 할 수 있습니다",
         ],
         "vars": [
-            {"name": "BLUEBUBBLES_SERVER_URL", "prompt": "BlueBubbles server URL (e.g. http://192.168.1.10:1234)", "password": False,
-             "help": "The URL shown in BlueBubbles Settings → API."},
-            {"name": "BLUEBUBBLES_PASSWORD", "prompt": "BlueBubbles server password", "password": True,
-             "help": "The password shown in BlueBubbles Settings → API."},
-            {"name": "BLUEBUBBLES_ALLOWED_USERS", "prompt": "Pre-authorized phone numbers or iMessage IDs (comma-separated, or leave empty for DM pairing)", "password": False,
+            {"name": "BLUEBUBBLES_SERVER_URL", "prompt": "BlueBubbles 서버 URL (예: http://192.168.1.10:1234)", "password": False,
+             "help": "BlueBubbles Settings → API 에 표시되는 URL입니다."},
+            {"name": "BLUEBUBBLES_PASSWORD", "prompt": "BlueBubbles 서버 비밀번호", "password": True,
+             "help": "BlueBubbles Settings → API 에 표시되는 비밀번호입니다."},
+            {"name": "BLUEBUBBLES_ALLOWED_USERS", "prompt": "미리 허용할 전화번호 또는 iMessage ID (쉼표로 구분, DM 페어링을 쓰려면 비워 두기)", "password": False,
              "is_allowlist": True,
-             "help": "Optional — pre-authorize specific users. Leave empty to use DM pairing instead (recommended)."},
-            {"name": "BLUEBUBBLES_HOME_CHANNEL", "prompt": "Home channel (phone number or iMessage ID for cron/notifications, or empty)", "password": False,
-             "help": "Phone number or Apple ID to deliver cron results and notifications to."},
+             "help": "선택 사항입니다 — 특정 사용자를 미리 허용할 수 있습니다. 권장 방식은 비워 두고 DM 페어링을 사용하는 것입니다."},
+            {"name": "BLUEBUBBLES_HOME_CHANNEL", "prompt": "홈 채널 (cron/알림용 전화번호 또는 iMessage ID, 비워 둘 수 있음)", "password": False,
+             "help": "cron 결과와 알림을 받을 전화번호 또는 Apple ID입니다."},
         ],
     },
     {
@@ -1974,21 +1974,21 @@ _PLATFORMS = [
         "emoji": "🐧",
         "token_var": "QQ_APP_ID",
         "setup_instructions": [
-            "1. Register a QQ Bot application at q.qq.com",
-            "2. Note your App ID and App Secret from the application page",
-            "3. Enable the required intents (C2C, Group, Guild messages)",
-            "4. Configure sandbox or publish the bot",
+            "1. q.qq.com 에서 QQ Bot 애플리케이션을 등록합니다",
+            "2. 애플리케이션 페이지에서 App ID와 App Secret을 확인합니다",
+            "3. 필요한 intent(C2C, Group, Guild messages)를 활성화합니다",
+            "4. sandbox를 설정하거나 봇을 배포합니다",
         ],
         "vars": [
             {"name": "QQ_APP_ID", "prompt": "QQ Bot App ID", "password": False,
-             "help": "Your QQ Bot App ID from q.qq.com."},
+             "help": "q.qq.com 에 있는 QQ Bot App ID입니다."},
             {"name": "QQ_CLIENT_SECRET", "prompt": "QQ Bot App Secret", "password": True,
-             "help": "Your QQ Bot App Secret from q.qq.com."},
-            {"name": "QQ_ALLOWED_USERS", "prompt": "Allowed user OpenIDs (comma-separated, leave empty for open access)", "password": False,
+             "help": "q.qq.com 에 있는 QQ Bot App Secret입니다."},
+            {"name": "QQ_ALLOWED_USERS", "prompt": "허용할 사용자 OpenID (쉼표로 구분, 오픈 액세스를 원하면 비워 두기)", "password": False,
              "is_allowlist": True,
-             "help": "Optional — restrict DM access to specific user OpenIDs."},
-            {"name": "QQ_HOME_CHANNEL", "prompt": "Home channel (user/group OpenID for cron delivery, or empty)", "password": False,
-             "help": "OpenID to deliver cron results and notifications to."},
+             "help": "선택 사항입니다 — 특정 사용자 OpenID만 DM 접근을 허용할 수 있습니다."},
+            {"name": "QQ_HOME_CHANNEL", "prompt": "홈 채널 (cron 전달용 user/group OpenID, 비워 둘 수 있음)", "password": False,
+             "help": "cron 결과와 알림을 받을 OpenID입니다."},
         ],
     },
 ]
@@ -2006,45 +2006,45 @@ def _platform_status(platform: dict) -> str:
         if val and val.lower() == "true":
             session_file = get_hermes_home() / "whatsapp" / "session" / "creds.json"
             if session_file.exists():
-                return "configured + paired"
-            return "enabled, not paired"
-        return "not configured"
+                return "설정됨 + 페어링됨"
+            return "활성화됨, 아직 페어링 안 됨"
+        return "설정 안 됨"
     if platform.get("key") == "signal":
         account = get_env_value("SIGNAL_ACCOUNT")
         if val and account:
-            return "configured"
+            return "설정됨"
         if val or account:
-            return "partially configured"
-        return "not configured"
+            return "부분 설정됨"
+        return "설정 안 됨"
     if platform.get("key") == "email":
         pwd = get_env_value("EMAIL_PASSWORD")
         imap = get_env_value("EMAIL_IMAP_HOST")
         smtp = get_env_value("EMAIL_SMTP_HOST")
         if all([val, pwd, imap, smtp]):
-            return "configured"
+            return "설정됨"
         if any([val, pwd, imap, smtp]):
-            return "partially configured"
-        return "not configured"
+            return "부분 설정됨"
+        return "설정 안 됨"
     if platform.get("key") == "matrix":
         homeserver = get_env_value("MATRIX_HOMESERVER")
         password = get_env_value("MATRIX_PASSWORD")
         if (val or password) and homeserver:
             e2ee = get_env_value("MATRIX_ENCRYPTION")
             suffix = " + E2EE" if e2ee and e2ee.lower() in ("true", "1", "yes") else ""
-            return f"configured{suffix}"
+            return f"설정됨{suffix}"
         if val or password or homeserver:
-            return "partially configured"
-        return "not configured"
+            return "부분 설정됨"
+        return "설정 안 됨"
     if platform.get("key") == "weixin":
         token = get_env_value("WEIXIN_TOKEN")
         if val and token:
-            return "configured"
+            return "설정됨"
         if val or token:
-            return "partially configured"
-        return "not configured"
+            return "부분 설정됨"
+        return "설정 안 됨"
     if val:
-        return "configured"
-    return "not configured"
+        return "설정됨"
+    return "설정 안 됨"
 
 
 def _runtime_health_lines() -> list[str]:
@@ -2089,7 +2089,7 @@ def _setup_standard_platform(platform: dict):
     token_var = platform["token_var"]
 
     print()
-    print(color(f"  ─── {emoji} {label} Setup ───", Colors.CYAN))
+    print(color(f"  ─── {emoji} {label} 설정 ───", Colors.CYAN))
 
     # Show step-by-step setup instructions if this platform has them
     instructions = platform.get("setup_instructions")
@@ -2101,8 +2101,8 @@ def _setup_standard_platform(platform: dict):
     existing_token = get_env_value(token_var)
     if existing_token:
         print()
-        print_success(f"{label} is already configured.")
-        if not prompt_yes_no(f"  Reconfigure {label}?", False):
+        print_success(f"{label}: 이미 설정되어 있음")
+        if not prompt_yes_no(f"  {label}를 다시 설정할까요?", False):
             return
 
     allowed_val_set = None  # Track if user set an allowlist (for home channel offer)
@@ -2116,9 +2116,9 @@ def _setup_standard_platform(platform: dict):
 
         # Allowlist fields get special handling for the deny-by-default security model
         if var.get("is_allowlist"):
-            print_info("  The gateway DENIES all users by default for security.")
-            print_info("  Enter user IDs to create an allowlist, or leave empty")
-            print_info("  and you'll be asked about open access next.")
+            print_info("  보안을 위해 gateway는 기본적으로 모든 사용자를 거부합니다.")
+            print_info("  허용 목록을 만들려면 사용자 ID를 입력하세요.")
+            print_info("  비워 두면 다음 단계에서 오픈 액세스 여부를 물어봅니다.")
             value = prompt(f"  {var['prompt']}", password=False)
             if value:
                 cleaned = value.replace(" ", "")
@@ -2135,36 +2135,36 @@ def _setup_standard_platform(platform: dict):
                             parts.append(uid)
                     cleaned = ",".join(parts)
                 save_env_value(var["name"], cleaned)
-                print_success("  Saved — only these users can interact with the bot.")
+                print_success("  저장 완료 — 이 사용자들만 봇과 상호작용할 수 있습니다.")
                 allowed_val_set = cleaned
             else:
                 # No allowlist — ask about open access vs DM pairing
                 print()
                 access_choices = [
-                    "Enable open access (anyone can message the bot)",
-                    "Use DM pairing (unknown users request access, you approve with 'hermes pairing approve')",
-                    "Skip for now (bot will deny all users until configured)",
+                    "오픈 액세스 사용 (누구나 봇에 메시지를 보낼 수 있음)",
+                    "DM 페어링 사용 (알 수 없는 사용자가 접근 요청을 보내고, 'hermes pairing approve'로 승인)",
+                    "지금은 건너뛰기 (설정 전까지 모든 사용자 거부)",
                 ]
-                access_idx = prompt_choice("  How should unauthorized users be handled?", access_choices, 1)
+                access_idx = prompt_choice("  미승인 사용자를 어떻게 처리할까요?", access_choices, 1)
                 if access_idx == 0:
                     save_env_value("GATEWAY_ALLOW_ALL_USERS", "true")
-                    print_warning("  Open access enabled — anyone can use your bot!")
+                    print_warning("  오픈 액세스 활성화 — 누구나 봇을 사용할 수 있습니다!")
                 elif access_idx == 1:
-                    print_success("  DM pairing mode — users will receive a code to request access.")
-                    print_info("  Approve with: hermes pairing approve <platform> <code>")
+                    print_success("  DM 페어링 모드 — 사용자는 코드를 받아 접근을 요청할 수 있습니다.")
+                    print_info("  승인 명령: hermes pairing approve <platform> <code>")
                 else:
-                    print_info("  Skipped — configure later with 'hermes gateway setup'")
+                    print_info("  건너뜀 — 나중에 'hermes gateway setup'으로 설정할 수 있습니다")
             continue
 
         value = prompt(f"  {var['prompt']}", password=var.get("password", False))
         if value:
             save_env_value(var["name"], value)
-            print_success(f"  Saved {var['name']}")
+            print_success(f"  저장 완료: {var['name']}")
         elif var["name"] == token_var:
-            print_warning(f"  Skipped — {label} won't work without this.")
+            print_warning(f"  건너뜀 — {label}은(는) 이 값이 없으면 동작하지 않습니다.")
             return
         else:
-            print_info("  Skipped (can configure later)")
+            print_info("  건너뜀 (나중에 설정 가능)")
 
     # If an allowlist was set and home channel wasn't, offer to reuse
     # the first user ID (common for Telegram DMs).
@@ -2172,12 +2172,12 @@ def _setup_standard_platform(platform: dict):
     home_val = get_env_value(home_var)
     if allowed_val_set and not home_val and label == "Telegram":
         first_id = allowed_val_set.split(",")[0].strip()
-        if first_id and prompt_yes_no(f"  Use your user ID ({first_id}) as the home channel?", True):
+        if first_id and prompt_yes_no(f"  사용자 ID({first_id})를 홈 채널로 사용할까요?", True):
             save_env_value(home_var, first_id)
-            print_success(f"  Home channel set to {first_id}")
+            print_success(f"  홈 채널을 {first_id}(으)로 설정했습니다")
 
     print()
-    print_success(f"{emoji} {label} configured!")
+    print_success(f"{emoji} {label} 설정 완료!")
 
 
 def _setup_whatsapp():
@@ -2276,8 +2276,8 @@ def _setup_weixin():
     existing_token = get_env_value("WEIXIN_TOKEN")
     if existing_account and existing_token:
         print()
-        print_success("Weixin is already configured.")
-        if not prompt_yes_no("  Reconfigure Weixin?", False):
+        print_success("Weixin: 이미 설정되어 있음")
+        if not prompt_yes_no("  Weixin을 다시 설정할까요?", False):
             return
 
     try:
@@ -2330,7 +2330,7 @@ def _setup_weixin():
         "Only allow listed user IDs",
         "Disable direct messages",
     ]
-    access_idx = prompt_choice("  How should direct messages be authorized?", access_choices, 0)
+    access_idx = prompt_choice("  다이렉트 메시지 접근을 어떻게 승인할까요?", access_choices, 0)
     if access_idx == 0:
         save_env_value("WEIXIN_DM_POLICY", "pairing")
         save_env_value("WEIXIN_ALLOW_ALL_USERS", "false")
@@ -2361,11 +2361,11 @@ def _setup_weixin():
         "Allow all group chats",
         "Only allow listed group chat IDs",
     ]
-    group_idx = prompt_choice("  How should group chats be handled?", group_choices, 0)
+    group_idx = prompt_choice("  그룹 채팅을 어떻게 처리할까요?", group_choices, 0)
     if group_idx == 0:
         save_env_value("WEIXIN_GROUP_POLICY", "disabled")
         save_env_value("WEIXIN_GROUP_ALLOWED_USERS", "")
-        print_info("  Group chats disabled.")
+        print_info("  그룹 채팅을 비활성화했습니다.")
     elif group_idx == 1:
         save_env_value("WEIXIN_GROUP_POLICY", "open")
         save_env_value("WEIXIN_GROUP_ALLOWED_USERS", "")
@@ -2380,10 +2380,10 @@ def _setup_weixin():
         print()
         if prompt_yes_no(f"  Use your Weixin user ID ({user_id}) as the home channel?", True):
             save_env_value("WEIXIN_HOME_CHANNEL", user_id)
-            print_success(f"  Home channel set to {user_id}")
+            print_success(f"  홈 채널을 {user_id}(으)로 설정했습니다")
 
     print()
-    print_success("Weixin configured!")
+    print_success("Weixin 설정 완료!")
     print_info(f"  Account ID: {account_id}")
     if user_id:
         print_info(f"  User ID: {user_id}")
@@ -2398,8 +2398,8 @@ def _setup_feishu():
     existing_secret = get_env_value("FEISHU_APP_SECRET")
     if existing_app_id and existing_secret:
         print()
-        print_success("Feishu / Lark is already configured.")
-        if not prompt_yes_no("  Reconfigure Feishu / Lark?", False):
+        print_success("Feishu / Lark: 이미 설정되어 있음")
+        if not prompt_yes_no("  Feishu / Lark를 다시 설정할까요?", False):
             return
 
     # ── Choose setup method ──
@@ -2438,16 +2438,16 @@ def _setup_feishu():
     # ── Manual credential input ──
     if not credentials:
         print()
-        print_info("  Go to https://open.feishu.cn/ (or https://open.larksuite.com/ for Lark)")
-        print_info("  Create an app, enable the Bot capability, and copy the credentials.")
+        print_info("  https://open.feishu.cn/ (Lark는 https://open.larksuite.com/) 으로 이동하세요")
+        print_info("  앱을 만들고 Bot 기능을 활성화한 뒤 자격 증명을 복사하세요.")
         print()
         app_id = prompt("  App ID", password=False)
         if not app_id:
-            print_warning("  Skipped — Feishu / Lark won't work without an App ID.")
+            print_warning("  건너뜀 — Feishu / Lark는 App ID가 없으면 동작하지 않습니다.")
             return
         app_secret = prompt("  App Secret", password=True)
         if not app_secret:
-            print_warning("  Skipped — Feishu / Lark won't work without an App Secret.")
+            print_warning("  건너뜀 — Feishu / Lark는 App Secret이 없으면 동작하지 않습니다.")
             return
 
         domain_choices = ["feishu (China)", "lark (International)"]
@@ -2515,46 +2515,46 @@ def _setup_feishu():
         "Allow all direct messages",
         "Only allow listed user IDs",
     ]
-    access_idx = prompt_choice("  How should direct messages be authorized?", access_choices, 0)
+    access_idx = prompt_choice("  다이렉트 메시지 접근을 어떻게 승인할까요?", access_choices, 0)
     if access_idx == 0:
         save_env_value("FEISHU_ALLOW_ALL_USERS", "false")
         save_env_value("FEISHU_ALLOWED_USERS", "")
-        print_success("  DM pairing enabled.")
-        print_info("  Unknown users can request access; approve with `hermes pairing approve`.")
+        print_success("  DM 페어링을 활성화했습니다.")
+        print_info("  알 수 없는 사용자가 접근을 요청할 수 있으며 `hermes pairing approve`로 승인할 수 있습니다.")
     elif access_idx == 1:
         save_env_value("FEISHU_ALLOW_ALL_USERS", "true")
         save_env_value("FEISHU_ALLOWED_USERS", "")
-        print_warning("  Open DM access enabled for Feishu / Lark.")
+        print_warning("  Feishu / Lark의 오픈 DM 접근을 활성화했습니다.")
     else:
         save_env_value("FEISHU_ALLOW_ALL_USERS", "false")
         default_allow = open_id or ""
-        allowlist = prompt("  Allowed user IDs (comma-separated)", default_allow, password=False).replace(" ", "")
+        allowlist = prompt("  허용할 사용자 ID (쉼표로 구분)", default_allow, password=False).replace(" ", "")
         save_env_value("FEISHU_ALLOWED_USERS", allowlist)
-        print_success("  Allowlist saved.")
+        print_success("  허용 목록을 저장했습니다.")
 
     # ── Group policy ──
     print()
     group_choices = [
-        "Respond only when @mentioned in groups (recommended)",
-        "Disable group chats",
+        "그룹에서는 @멘션될 때만 응답 (권장)",
+        "그룹 채팅 비활성화",
     ]
-    group_idx = prompt_choice("  How should group chats be handled?", group_choices, 0)
+    group_idx = prompt_choice("  그룹 채팅을 어떻게 처리할까요?", group_choices, 0)
     if group_idx == 0:
         save_env_value("FEISHU_GROUP_POLICY", "open")
-        print_info("  Group chats enabled (bot must be @mentioned).")
+        print_info("  그룹 채팅을 활성화했습니다 (봇을 @멘션해야 응답).")
     else:
         save_env_value("FEISHU_GROUP_POLICY", "disabled")
-        print_info("  Group chats disabled.")
+        print_info("  그룹 채팅을 비활성화했습니다.")
 
     # ── Home channel ──
     print()
-    home_channel = prompt("  Home chat ID (optional, for cron/notifications)", password=False)
+    home_channel = prompt("  홈 채팅 ID (선택 사항, cron/알림용)", password=False)
     if home_channel:
         save_env_value("FEISHU_HOME_CHANNEL", home_channel)
-        print_success(f"  Home channel set to {home_channel}")
+        print_success(f"  홈 채널을 {home_channel}(으)로 설정했습니다")
 
     print()
-    print_success("🪽 Feishu / Lark configured!")
+    print_success("🪽 Feishu / Lark 설정 완료!")
     print_info(f"  App ID: {app_id}")
     print_info(f"  Domain: {domain}")
     if bot_name:
@@ -2572,8 +2572,8 @@ def _setup_signal():
     existing_account = get_env_value("SIGNAL_ACCOUNT")
     if existing_url and existing_account:
         print()
-        print_success("Signal is already configured.")
-        if not prompt_yes_no("  Reconfigure Signal?", False):
+        print_success("Signal: 이미 설정되어 있음")
+        if not prompt_yes_no("  Signal을 다시 설정할까요?", False):
             return
 
     # Check if signal-cli is available
@@ -2668,7 +2668,7 @@ def _setup_signal():
         save_env_value("SIGNAL_GROUP_ALLOWED_USERS", groups)
 
     print()
-    print_success("Signal configured!")
+    print_success("Signal 설정 완료!")
     print_info(f"  URL: {url}")
     print_info(f"  Account: {account}")
     print_info("  DM auth: via SIGNAL_ALLOWED_USERS + DM pairing")

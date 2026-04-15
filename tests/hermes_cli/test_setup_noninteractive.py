@@ -79,7 +79,11 @@ class TestNonInteractiveSetup:
         assert 'print_header("빠른 설정 — 누락된 항목만")' in source
 
     def test_setup_source_contains_korean_intro_copy(self):
-        source = Path("hermes_cli/setup.py").read_text(encoding="utf-8")
+        source = (
+            Path("hermes_cli/setup.py").read_text(encoding="utf-8")
+            + "\n"
+            + Path("hermes_cli/gateway.py").read_text(encoding="utf-8")
+        )
 
         assert '주요 채팅 모델에 연결하는 방법을 선택하세요.' in source
         assert 'Hermes가 셸 명령과 코드를 어디서 실행할지 선택하세요.' in source
@@ -136,6 +140,13 @@ class TestNonInteractiveSetup:
         assert '허용할 사용자 ID' in source
         assert '어떤 Matrix homeserver와도 사용할 수 있습니다.' in source
         assert 'Mattermost 서버 URL' in source
+        assert 'Telegram 봇 토큰' in source
+        assert '홈 채널 ID (cron/알림 전달용, 비워 두면 나중에 /set-home으로 설정)' in source
+        assert '보안을 위해 gateway는 기본적으로 모든 사용자를 거부합니다.' in source
+        assert '미승인 사용자를 어떻게 처리할까요?' in source
+        assert 'Twilio Console 대시보드에서 Account SID와 Auth Token을 확인합니다' in source
+        assert 'BlueBubbles 서버 URL' in source
+        assert '허용할 사용자 OpenID' in source
         assert '고급 설정 (대부분 기본값이면 충분합니다):' in source
         assert 'Webhook listener settings를 설정할까요?' in source
         assert 'Webhooks 활성화 완료! 다음 단계:' in source
