@@ -750,6 +750,14 @@ class IRCAdapter(BasePlatformAdapter):
             if self._nick.lower() not in mentioned_nicks:
                 logger.debug("IRC: Filtered channel message (we were not mentioned): %s", text[:100])
                 return
+
+            # Check for command after mention block: /[a-zA-Z_][a-zA-Z0-9_-]+
+            mention_block = match.group(0)
+            remainder = text[len(mention_block):]
+            command_pattern = re.compile(r"^/[a-zA-Z_][a-zA-Z0-9_-]+")
+            if command_pattern.match(remainder.lstrip()):
+                # Command detected - strip mention block and ensure first char is /
+                text = remainder.lstrip()
         else:
             # DM - use sender's nick as chat_id
             # DMs always respond, no mention filtering

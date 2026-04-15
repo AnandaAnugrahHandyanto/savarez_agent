@@ -316,6 +316,112 @@ class TestIRCAdapterMentions:
             ]
             assert "bot1" in mentioned_nicks
 
+    def test_command_strips_mention_block(self, monkeypatch):
+        """Commands after mention block should have mention block stripped."""
+        monkeypatch.setenv("IRC_SERVER", "irc.example.com")
+        monkeypatch.setenv("IRC_NICK", "bot1")
+
+        from gateway.platforms.irc import IRCAdapter
+        import re
+
+        adapter = IRCAdapter(PlatformConfig(enabled=True, extra={"server": "irc.example.com", "nick": "bot1"}))
+
+        mention_block_pattern = re.compile(r"^(([a-zA-Z_][a-zA-Z0-9_-]*:)+ )+", re.IGNORECASE)
+        command_pattern = re.compile(r"^/[a-zA-Z_][a-zA-Z0-9_-]+")
+
+        # Command after mention block
+        text = "bot1: /help"
+        match = mention_block_pattern.match(text)
+        mention_block = match.group(0)
+        remainder = text[len(mention_block):]
+
+        assert command_pattern.match(remainder) is not None
+        assert remainder.lstrip() == "/help"
+
+        # Multiple mentions with command
+        text2 = "bot2: bot1: /status"
+        match2 = mention_block_pattern.match(text2)
+        mention_block2 = match2.group(0)
+        remainder2 = text2[len(mention_block2):]
+
+        assert command_pattern.match(remainder2) is not None
+        assert remainder2.lstrip() == "/status"
+
+    def test_command_with_extra_spaces(self, monkeypatch):
+        """Commands should be lstrip() to ensure first char is / even with extra spaces."""
+        monkeypatch.setenv("IRC_SERVER", "irc.example.com")
+        monkeypatch.setenv("IRC_NICK", "bot1")
+
+        from gateway.platforms.irc import IRCAdapter
+        import re
+
+        adapter = IRCAdapter(PlatformConfig(enabled=True, extra={"server": "irc.example.com", "nick": "bot1"}))
+
+        mention_block_pattern = re.compile(r"^(([a-zA-Z_][a-zA-Z0-9_-]*:)+ )+", re.IGNORECASE)
+        command_pattern = re.compile(r"^/[a-zA-Z_][a-zA-Z0-9_-]+")
+
+        # Command with extra spaces before slash
+        text = "bot1:   /test command"
+        match = mention_block_pattern.match(text)
+        mention_block = match.group(0)
+        remainder = text[len(mention_block):]
+
+        # After lstrip(), it should match command pattern
+        assert command_pattern.match(remainder.lstrip()) is not None
+        assert remainder.lstrip() == "/test command"
+
+    def test_non_command_keeps_mention_block(self, monkeypatch):
+        """Non-command messages should keep the full text including mention block."""
+        monkeypatch.setenv("IRC_SERVER", "irc.example.com")
+        monkeypatch.setenv("IRC_NICK", "bot1")
+
+        from gateway.platforms.irc import IRCAdapter
+        import re
+
+        adapter = IRCAdapter(PlatformConfig(enabled=True, extra={"server": "irc.example.com", "nick": "bot1"}))
+
+        mention_block_pattern = re.compile(r"^(([a-zA-Z_][a-zA-Z0-9_-]*:)+ )+", re.IGNORECASE)
+        command_pattern = re.compile(r"^/[a-zA-Z_][a-zA-Z0-9_-]+")
+
+        # Regular message - not a command
+        text = "bot1: hello world"
+        match = mention_block_pattern.match(text)
+        mention_block = match.group(0)
+        remainder = text[len(mention_block):]
+
+        assert command_pattern.match(remainder) is None
+        # Text should remain unchanged
+        assert text == "bot1: hello world"
+
+    def test_slash_without_command_word(self, monkeypatch):
+        """Just a slash is not a command."""
+        monkeypatch.setenv("IRC_SERVER", "irc.example.com")
+        monkeypatch.setenv("IRC_NICK", "bot1")
+
+        from gateway.platforms.irc import IRCAdapter
+        import re
+
+        adapter = IRCAdapter(PlatformConfig(enabled=True, extra={"server": "irc.example.com", "nick": "bot1"}))
+
+        mention_block_pattern = re.compile(r"^(([a-zA-Z_][a-zA-Z0-9_-]*:)+ )+", re.IGNORECASE)
+        command_pattern = re.compile(r"^/[a-zA-Z_][a-zA-Z0-9_-]+")
+
+        # Slash without command word
+        text = "bot1: /"
+        match = mention_block_pattern.match(text)
+        mention_block = match.group(0)
+        remainder = text[len(mention_block):]
+
+        assert command_pattern.match(remainder) is None
+
+        # Slash without valid command word (starts with number)
+        text2 = "bot1: /123test"
+        match2 = mention_block_pattern.match(text2)
+        mention_block2 = match2.group(0)
+        remainder2 = text2[len(mention_block2):]
+
+        assert command_pattern.match(remainder2) is None
+
 
 # ---------------------------------------------------------------------------
 # Integration Tests
