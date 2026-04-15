@@ -160,6 +160,26 @@ class TestCreateJob:
                 assert call_kwargs["prompt"] == "do something"
 
     @pytest.mark.asyncio
+    async def test_create_job_passes_into_history(self, adapter):
+        """POST /api/jobs forwards into_history to the cron create helper."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                APIServerAdapter, "_CRON_AVAILABLE", True
+            ), patch.object(
+                APIServerAdapter, "_cron_create", mock_create
+            ):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "test-job",
+                    "schedule": "*/5 * * * *",
+                    "into_history": True,
+                })
+                assert resp.status == 200
+                call_kwargs = mock_create.call_args[1]
+                assert call_kwargs["into_history"] is True
+
+    @pytest.mark.asyncio
     async def test_create_job_missing_name(self, adapter):
         """POST /api/jobs without name returns 400."""
         app = _create_app(adapter)

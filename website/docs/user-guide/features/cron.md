@@ -42,6 +42,10 @@ hermes cron create "every 1h" "Use both skills and combine the result" \
   --skill blogwatcher \
   --skill find-nearby \
   --name "Skill combo"
+
+hermes cron create "every 1h" "Post a status update and keep it in chat history" \
+  --deliver origin \
+  --into-history
 ```
 
 ### Through natural conversation
@@ -109,6 +113,8 @@ hermes cron edit <job_id> --skill blogwatcher --skill find-nearby
 hermes cron edit <job_id> --add-skill find-nearby
 hermes cron edit <job_id> --remove-skill blogwatcher
 hermes cron edit <job_id> --clear-skills
+hermes cron edit <job_id> --into-history
+hermes cron edit <job_id> --no-into-history
 ```
 
 Notes:
@@ -228,6 +234,19 @@ To deliver the raw agent output without the wrapper, set `cron.wrap_response` to
 cron:
   wrap_response: false
 ```
+
+### Optional session-history mirroring
+
+By default, cron deliveries stay isolated from the target chat's conversation history.
+
+If you want future turns in that chat to be able to see the delivered cron output, create or edit the job with `--into-history`:
+
+```bash
+hermes cron create "every 1h" "Post the hourly summary" --deliver origin --into-history
+hermes cron edit <job_id> --into-history
+```
+
+This mirrors the delivered message into the target gateway session after a successful send. It does **not** turn cron into a live heartbeat or trigger an immediate follow-up turn by itself — it just makes the delivered output visible to later replies in that conversation.
 
 ### Silent suppression
 

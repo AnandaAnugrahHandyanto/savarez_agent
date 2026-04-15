@@ -4970,6 +4970,7 @@ class HermesCLI:
             opts = {
                 "name": None,
                 "deliver": None,
+                "into_history": None,
                 "repeat": None,
                 "skills": [],
                 "add_skills": [],
@@ -4989,6 +4990,12 @@ class HermesCLI:
                 elif token == "--deliver" and i + 1 < len(tokens):
                     opts["deliver"] = tokens[i + 1]
                     i += 2
+                elif token == "--into-history":
+                    opts["into_history"] = True
+                    i += 1
+                elif token == "--no-into-history":
+                    opts["into_history"] = False
+                    i += 1
                 elif token == "--repeat" and i + 1 < len(tokens):
                     try:
                         opts["repeat"] = int(tokens[i + 1])
@@ -5032,7 +5039,7 @@ class HermesCLI:
             print()
             print("  Commands:")
             print("    /cron list")
-            print('    /cron add "every 2h" "Check server status" [--skill blogwatcher]')
+            print('    /cron add "every 2h" "Check server status" [--skill blogwatcher] [--into-history]')
             print('    /cron edit <job_id> --schedule "every 4h" --prompt "New task"')
             print("    /cron edit <job_id> --skill blogwatcher --skill find-nearby")
             print("    /cron edit <job_id> --remove-skill blogwatcher")
@@ -5082,6 +5089,7 @@ class HermesCLI:
                 print(f"  State: {job.get('state', '?')}")
                 print(f"  Schedule: {job['schedule']} ({job.get('repeat', '?')})")
                 print(f"  Next run: {job.get('next_run_at', 'N/A')}")
+                print(f"  History: {'session' if job.get('into_history') else 'isolated'}")
                 if job.get("skills"):
                     print(f"  Skills: {', '.join(job['skills'])}")
                 print(f"  Prompt: {job.get('prompt_preview', '')}")
@@ -5107,12 +5115,14 @@ class HermesCLI:
                 prompt=prompt or None,
                 name=opts["name"],
                 deliver=opts["deliver"],
+                into_history=opts["into_history"],
                 repeat=opts["repeat"],
                 skills=skills or None,
             )
             if result.get("success"):
                 print(f"(^_^)b Created job: {result['job_id']}")
                 print(f"  Schedule: {result['schedule']}")
+                print(f"  History: {'session' if result.get('into_history') else 'isolated'}")
                 if result.get("skills"):
                     print(f"  Skills: {', '.join(result['skills'])}")
                 print(f"  Next run: {result['next_run_at']}")
@@ -5153,6 +5163,7 @@ class HermesCLI:
                 prompt=opts["prompt"],
                 name=opts["name"],
                 deliver=opts["deliver"],
+                into_history=opts["into_history"],
                 repeat=opts["repeat"],
                 skills=final_skills,
             )
@@ -5160,6 +5171,7 @@ class HermesCLI:
                 job = result["job"]
                 print(f"(^_^)b Updated job: {job['job_id']}")
                 print(f"  Schedule: {job['schedule']}")
+                print(f"  History: {'session' if job.get('into_history') else 'isolated'}")
                 if job.get("skills"):
                     print(f"  Skills: {', '.join(job['skills'])}")
                 else:

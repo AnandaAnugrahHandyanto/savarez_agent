@@ -286,13 +286,20 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     except Exception:
         pass
 
+    into_history = bool(job.get("into_history", False))
+
     if wrap_response:
         task_name = job.get("name", job["id"])
+        footer = (
+            "Note: This scheduled update has been added to the conversation history for future replies."
+            if into_history
+            else "Note: The agent cannot see this message, and therefore cannot respond to it."
+        )
         delivery_content = (
             f"Cronjob Response: {task_name}\n"
             f"-------------\n\n"
             f"{content}\n\n"
-            f"Note: The agent cannot see this message, and therefore cannot respond to it."
+            f"{footer}"
         )
     else:
         delivery_content = content
@@ -329,6 +336,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 _send_media_via_adapter(runtime_adapter, chat_id, media_files, send_metadata, loop, job)
 
             if adapter_ok:
+                if into_history:
+                    try:
+                        from gateway.mirror import mirror_to_session
+                        mirror_to_session(
+                            platform_name,
+                            chat_id,
+                            cleaned_delivery_content,
+                            source_label=f"cron:{job.get('name', job.get('id', '?'))}",
+                            thread_id=thread_id,
+                        )
+                    except Exception:
+                        pass
                 logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                 return None
         except Exception as e:
@@ -360,6 +379,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         msg = f"delivery error: {result['error']}"
         logger.error("Job '%s': %s", job["id"], msg)
         return msg
+
+    if into_history:
+        try:
+            from gateway.mirror import mirror_to_session
+            mirror_to_session(
+                platform_name,
+                chat_id,
+                cleaned_delivery_content,
+                source_label=f"cron:{job.get('name', job.get('id', '?'))}",
+                thread_id=thread_id,
+            )
+        except Exception:
+            pass
 
     logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
     return None
@@ -839,6 +871,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
+**Deliver:** {job.get('deliver', 'local')}
+**History:** {"session" if job.get("into_history", False) else "isolated"}
 
 ## Prompt
 
@@ -861,6 +895,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
+**Deliver:** {job.get('deliver', 'local')}
+**History:** {"session" if job.get("into_history", False) else "isolated"}
 
 ## Prompt
 

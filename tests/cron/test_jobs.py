@@ -233,6 +233,14 @@ class TestJobCRUD:
         job = create_job(prompt="Test", schedule="30m")
         assert job["deliver"] == "local"
 
+    def test_into_history_defaults_false(self, tmp_cron_dir):
+        job = create_job(prompt="Test", schedule="30m")
+        assert job["into_history"] is False
+
+    def test_into_history_can_be_enabled(self, tmp_cron_dir):
+        job = create_job(prompt="Test", schedule="30m", into_history=True)
+        assert job["into_history"] is True
+
 
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):
@@ -274,6 +282,13 @@ class TestUpdateJob:
         assert updated["enabled"] is False
         fetched = get_job(job["id"])
         assert fetched["enabled"] is False
+
+    def test_update_into_history(self, tmp_cron_dir):
+        job = create_job(prompt="Toggle me", schedule="every 1h")
+        updated = update_job(job["id"], {"into_history": True})
+        assert updated["into_history"] is True
+        fetched = get_job(job["id"])
+        assert fetched["into_history"] is True
 
     def test_update_nonexistent_returns_none(self, tmp_cron_dir):
         result = update_job("nonexistent_id", {"name": "X"})

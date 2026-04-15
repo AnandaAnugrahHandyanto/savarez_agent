@@ -4956,6 +4956,11 @@ For more help on a command:
     cron_create.add_argument("prompt", nargs="?", help="Optional self-contained prompt or task instruction")
     cron_create.add_argument("--name", help="Optional human-friendly job name")
     cron_create.add_argument("--deliver", help="Delivery target: origin, local, telegram, discord, signal, or platform:chat_id")
+    cron_create.add_argument("--into-history", dest="into_history", action="store_true",
+                             help="Also mirror delivered output into the target chat's session history")
+    cron_create.add_argument("--no-into-history", dest="into_history", action="store_false",
+                             help="Do not mirror delivered output into the target chat's session history")
+    cron_create.set_defaults(into_history=None)
     cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
     cron_create.add_argument("--skill", dest="skills", action="append", help="Attach a skill. Repeat to add multiple skills.")
     cron_create.add_argument("--script", help="Path to a Python script whose stdout is injected into the prompt each run")
@@ -4967,6 +4972,11 @@ For more help on a command:
     cron_edit.add_argument("--prompt", help="New prompt/task instruction")
     cron_edit.add_argument("--name", help="New job name")
     cron_edit.add_argument("--deliver", help="New delivery target")
+    cron_edit.add_argument("--into-history", dest="into_history", action="store_true",
+                           help="Mirror delivered output into the target chat's session history")
+    cron_edit.add_argument("--no-into-history", dest="into_history", action="store_false",
+                           help="Stop mirroring delivered output into the target chat's session history")
+    cron_edit.set_defaults(into_history=None)
     cron_edit.add_argument("--repeat", type=int, help="New repeat count")
     cron_edit.add_argument("--skill", dest="skills", action="append", help="Replace the job's skills with this set. Repeat to attach multiple skills.")
     cron_edit.add_argument("--add-skill", dest="add_skills", action="append", help="Append a skill without replacing the existing list. Repeatable.")

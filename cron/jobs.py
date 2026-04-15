@@ -371,6 +371,7 @@ def create_job(
     name: Optional[str] = None,
     repeat: Optional[int] = None,
     deliver: Optional[str] = None,
+    into_history: bool = False,
     origin: Optional[Dict[str, Any]] = None,
     skill: Optional[str] = None,
     skills: Optional[List[str]] = None,
@@ -388,6 +389,8 @@ def create_job(
         name: Optional friendly name
         repeat: How many times to run (None = forever, 1 = once)
         deliver: Where to deliver output ("origin", "local", "telegram", etc.)
+        into_history: When true, mirror delivered output into the target gateway
+                      session history so future turns can see it
         origin: Source info where job was created (for "origin" delivery)
         skill: Optional legacy single skill name to load before running the prompt
         skills: Optional ordered list of skills to load before running the prompt
@@ -457,6 +460,7 @@ def create_job(
         "last_delivery_error": None,
         # Delivery configuration
         "deliver": deliver,
+        "into_history": bool(into_history),
         "origin": origin,  # Tracks where job was created for "origin" delivery
     }
 

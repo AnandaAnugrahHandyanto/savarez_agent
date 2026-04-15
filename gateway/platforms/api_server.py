@@ -1713,7 +1713,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     _JOB_ID_RE = __import__("re").compile(r"[a-f0-9]{12}")
     # Allowed fields for update — prevents clients injecting arbitrary keys
-    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled"}
+    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "into_history", "skills", "skill", "repeat", "enabled"}
     _MAX_NAME_LENGTH = 200
     _MAX_PROMPT_LENGTH = 5000
 
@@ -1763,6 +1763,7 @@ class APIServerAdapter(BasePlatformAdapter):
             schedule = (body.get("schedule") or "").strip()
             prompt = body.get("prompt", "")
             deliver = body.get("deliver", "local")
+            into_history = body.get("into_history", False)
             skills = body.get("skills")
             repeat = body.get("repeat")
 
@@ -1786,6 +1787,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "schedule": schedule,
                 "name": name,
                 "deliver": deliver,
+                "into_history": bool(into_history),
             }
             if skills:
                 kwargs["skills"] = skills

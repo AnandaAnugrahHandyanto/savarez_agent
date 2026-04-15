@@ -194,7 +194,9 @@ The `[SILENT]` prefix in a cron response suppresses delivery entirely — useful
 
 ### Session Isolation
 
-Cron deliveries are NOT mirrored into gateway session conversation history. They exist only in the cron job's own session. This prevents message alternation violations in the target chat's conversation.
+By default, cron deliveries are NOT mirrored into gateway session conversation history. They exist only in the cron job's own session. This prevents message alternation violations in the target chat's conversation.
+
+Jobs can opt into post-delivery mirroring with `into_history: true`. In that mode, Hermes still runs the cron turn in its own isolated session, but after a successful delivery it appends the delivered text into the target gateway session transcript as a delivery mirror. That makes the output visible to future turns in that chat without changing the default isolation model.
 
 ## Recursion Guard
 

@@ -4,6 +4,7 @@ from argparse import Namespace
 
 import pytest
 
+from cli import HermesCLI
 from cron.jobs import create_job, get_job, list_jobs
 from hermes_cli.cron import cron_command
 
@@ -105,3 +106,60 @@ class TestCronCommandLifecycle:
         assert len(jobs) == 1
         assert jobs[0]["skills"] == ["blogwatcher", "find-nearby"]
         assert jobs[0]["name"] == "Skill combo"
+
+    def test_create_rejects_swallowed_cli_flags_in_prompt(self, tmp_cron_dir, capsys):
+        result = cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="2m",
+                prompt="Reply with exactly: CRON HISTORY TEST 1 --into-history",
+                name="bad prompt",
+                deliver="origin",
+                into_history=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                script=None,
+            )
+        )
+
+        out = capsys.readouterr().out
+        assert result == 1
+        assert "accidentally placed inside the prompt" in out
+        assert len(list_jobs()) == 0
+
+    def test_create_allows_real_into_history_flag(self, tmp_cron_dir, capsys):
+        result = cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="2m",
+                prompt="Reply with exactly: CRON HISTORY TEST 1",
+                name="good prompt",
+                deliver="origin",
+                into_history=True,
+                repeat=None,
+                skill=None,
+                skills=None,
+                script=None,
+            )
+        )
+
+        out = capsys.readouterr().out
+        assert result == 0
+        assert "Created job" in out
+        jobs = list_jobs()
+        assert len(jobs) == 1
+        assert jobs[0]["into_history"] is True
+
+    def test_slash_cron_add_parses_into_history_flag(self, tmp_cron_dir, capsys):
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._handle_cron_command(
+            '/cron add 2m "Reply with exactly: TEST_HISTORY_201A" --deliver origin --into-history --name history-test-201a'
+        )
+
+        out = capsys.readouterr().out
+        assert "Created job" in out
+        jobs = list_jobs()
+        assert len(jobs) == 1
+        assert jobs[0]["into_history"] is True
+        assert jobs[0]["deliver"] == "origin"

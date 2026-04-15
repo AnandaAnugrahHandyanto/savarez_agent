@@ -16,6 +16,20 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from hermes_cli.colors import Colors, color
 
 
+_KNOWN_CRON_FLAGS = (
+    "--into-history",
+    "--no-into-history",
+    "--deliver",
+    "--name",
+    "--repeat",
+    "--skill",
+    "--add-skill",
+    "--remove-skill",
+    "--clear-skills",
+    "--script",
+)
+
+
 def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None) -> Optional[List[str]]:
     if skills is None:
         if single_skill is None:
@@ -36,6 +50,34 @@ def _cron_api(**kwargs):
     from tools.cronjob_tools import cronjob as cronjob_tool
 
     return json.loads(cronjob_tool(**kwargs))
+
+
+def _find_swallowed_cron_flags(prompt: Optional[str]) -> list[str]:
+    text = str(prompt or "")
+    return [flag for flag in _KNOWN_CRON_FLAGS if flag in text]
+
+
+def _reject_swallowed_flags(prompt: Optional[str]) -> bool:
+    swallowed = _find_swallowed_cron_flags(prompt)
+    if not swallowed:
+        return False
+
+    joined = ", ".join(swallowed)
+    print(
+        color(
+            "Cron prompt contains CLI flag text that looks like it was accidentally "
+            f"placed inside the prompt: {joined}",
+            Colors.RED,
+        )
+    )
+    print(
+        color(
+            "Move those flags outside the quoted prompt, for example:",
+            Colors.YELLOW,
+        )
+    )
+    print("  hermes cron create \"2m\" \"Reply with exactly: CRON HISTORY TEST 1\" --deliver origin --into-history")
+    return True
 
 
 def cron_list(show_all: bool = False):
@@ -71,6 +113,7 @@ def cron_list(show_all: bool = False):
         if isinstance(deliver, str):
             deliver = [deliver]
         deliver_str = ", ".join(deliver)
+        history_mode = "session" if job.get("into_history") else "isolated"
 
         skills = job.get("skills") or ([job["skill"]] if job.get("skill") else [])
         if state == "paused":
@@ -88,6 +131,7 @@ def cron_list(show_all: bool = False):
         print(f"    Repeat:    {repeat_str}")
         print(f"    Next run:  {next_run}")
         print(f"    Deliver:   {deliver_str}")
+        print(f"    History:   {history_mode}")
         if skills:
             print(f"    Skills:    {', '.join(skills)}")
         script = job.get("script")
@@ -158,12 +202,16 @@ def cron_status():
 
 
 def cron_create(args):
+    if _reject_swallowed_flags(getattr(args, "prompt", None)):
+        return 1
+
     result = _cron_api(
         action="create",
         schedule=args.schedule,
         prompt=args.prompt,
         name=getattr(args, "name", None),
         deliver=getattr(args, "deliver", None),
+        into_history=getattr(args, "into_history", None),
         repeat=getattr(args, "repeat", None),
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
@@ -177,6 +225,7 @@ def cron_create(args):
     print(f"  Schedule: {result['schedule']}")
     if result.get("skills"):
         print(f"  Skills: {', '.join(result['skills'])}")
+    print(f"  History: {'session' if result.get('into_history') else 'isolated'}")
     job_data = result.get("job", {})
     if job_data.get("script"):
         print(f"  Script: {job_data['script']}")
@@ -190,6 +239,9 @@ def cron_edit(args):
     job = get_job(args.job_id)
     if not job:
         print(color(f"Job not found: {args.job_id}", Colors.RED))
+        return 1
+
+    if _reject_swallowed_flags(getattr(args, "prompt", None)):
         return 1
 
     existing_skills = list(job.get("skills") or ([] if not job.get("skill") else [job.get("skill")]))
@@ -215,6 +267,7 @@ def cron_edit(args):
         prompt=getattr(args, "prompt", None),
         name=getattr(args, "name", None),
         deliver=getattr(args, "deliver", None),
+        into_history=getattr(args, "into_history", None),
         repeat=getattr(args, "repeat", None),
         skills=final_skills,
         script=getattr(args, "script", None),
@@ -231,6 +284,7 @@ def cron_edit(args):
         print(f"  Skills: {', '.join(updated['skills'])}")
     else:
         print("  Skills: none")
+    print(f"  History: {'session' if updated.get('into_history') else 'isolated'}")
     if updated.get("script"):
         print(f"  Script: {updated['script']}")
     return 0
