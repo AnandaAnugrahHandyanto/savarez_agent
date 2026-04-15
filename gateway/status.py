@@ -121,6 +121,7 @@ def _looks_like_gateway_process(pid: int) -> bool:
         "hermes_cli.main gateway",
         "hermes_cli/main.py gateway",
         "hermes gateway",
+        "hermes-gateway",
         "gateway/run.py",
     )
     return any(pattern in cmdline for pattern in patterns)
