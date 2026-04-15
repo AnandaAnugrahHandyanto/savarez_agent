@@ -57,6 +57,7 @@ pty = [
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
   "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
 ]
+vertex = ["anthropic[vertex]>=0.39.0,<1"]
 honcho = ["honcho-ai>=2.0.1,<3"]
 mcp = ["mcp>=1.2.0,<2"]
 homeassistant = ["aiohttp>=3.9.0,<4"]
@@ -100,6 +101,7 @@ all = [
   "hermes-agent[slack]",
   "hermes-agent[pty]",
   "hermes-agent[honcho]",
+  "hermes-agent[vertex]",
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",

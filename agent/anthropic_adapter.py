@@ -298,6 +298,58 @@ def build_anthropic_client(api_key: str, base_url: str = None):
     return _anthropic_sdk.Anthropic(**kwargs)
 
 
+def build_vertex_client(project: str, region: str = "us-east5"):
+    """Build an AnthropicVertex client using GCP Application Default Credentials.
+
+    Uses the same Messages API as Anthropic direct, but authenticated via
+    GCP IAM (attached service account, ADC, or explicit key file).
+
+    Args:
+        project: GCP project ID (required)
+        region: GCP region where Claude on Vertex AI is generally available
+            (default: us-east5)
+
+    Returns:
+        AnthropicVertex client instance (same interface as Anthropic)
+    """
+    try:
+        from anthropic import AnthropicVertex
+    except ImportError:
+        raise ImportError(
+            "anthropic[vertex] is required for Vertex AI provider. "
+            "Install with: pip install 'anthropic[vertex]'"
+        )
+
+    from httpx import Timeout
+
+    kwargs = {
+        "project_id": project,
+        "region": region,
+        "timeout": Timeout(timeout=900.0, connect=10.0),
+    }
+
+    return AnthropicVertex(**kwargs)
+
+
+def resolve_vertex_credentials():
+    """Resolve Vertex AI credentials from environment.
+
+    Returns:
+        Tuple of (project_id, region) or (None, None) if not configured.
+    """
+    project = (
+        os.environ.get("VERTEX_PROJECT")
+        or os.environ.get("GOOGLE_CLOUD_PROJECT")
+        or os.environ.get("GCP_PROJECT_ID")
+    )
+    region = os.environ.get("VERTEX_REGION", "us-east5")
+
+    if not project:
+        return None, None
+
+    return project, region
+
+
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials from ~/.claude/.credentials.json.
 

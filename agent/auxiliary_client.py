@@ -100,6 +100,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "minimax": "MiniMax-M2.7",
     "minimax-cn": "MiniMax-M2.7",
     "anthropic": "claude-haiku-4-5-20251001",
+    "vertex-ai": "claude-haiku-4-5",
     "ai-gateway": "google/gemini-3-flash",
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
@@ -704,6 +705,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             except ImportError:
                 pass
             return _try_anthropic()
+        if provider_id == "vertex-ai":
+            return _try_vertex()
 
         pool_present, entry = _select_pool_entry(provider_id)
         if pool_present:
@@ -985,6 +988,24 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
         # when _anthropic_sdk is None.  Treat as unavailable.
         return None, None
     return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
+
+
+def _try_vertex() -> Tuple[Optional[Any], Optional[str]]:
+    """Try to build a Vertex AI auxiliary client (Claude via GCP)."""
+    try:
+        from agent.anthropic_adapter import build_vertex_client, resolve_vertex_credentials
+    except ImportError:
+        return None, None
+
+    project, region = resolve_vertex_credentials()
+    if not project:
+        return None, None
+
+    model = _API_KEY_PROVIDER_AUX_MODELS.get("vertex-ai", "claude-haiku-4-5")
+    logger.debug("Auxiliary client: Vertex AI (%s) project=%s region=%s", model, project, region)
+    real_client = build_vertex_client(project, region)
+    return AnthropicAuxiliaryClient(real_client, model, "", ""), model
+
 
 
 _AUTO_PROVIDER_LABELS = {
@@ -1495,6 +1516,14 @@ def resolve_provider_client(
                 logger.warning("resolve_provider_client: anthropic requested but no Anthropic credentials found")
                 return None, None
             final_model = _normalize_resolved_model(model or default_model, provider)
+            return (_to_async_client(client, final_model) if async_mode else (client, final_model))
+
+        if provider == "vertex-ai":
+            client, default_model = _try_vertex()
+            if client is None:
+                logger.warning("resolve_provider_client: vertex-ai requested but no GCP credentials found (set VERTEX_PROJECT)")
+                return None, None
+            final_model = model or default_model
             return (_to_async_client(client, final_model) if async_mode else (client, final_model))
 
         creds = resolve_api_key_provider_credentials(provider)

@@ -683,6 +683,8 @@ class AIAgent:
         elif (provider_name is None) and "chatgpt.com/backend-api/codex" in self._base_url_lower:
             self.api_mode = "codex_responses"
             self.provider = "openai-codex"
+        elif self.provider == "vertex-ai":
+            self.api_mode = "anthropic_messages"
         elif self.provider == "anthropic" or (provider_name is None and "api.anthropic.com" in self._base_url_lower):
             self.api_mode = "anthropic_messages"
             self.provider = "anthropic"
@@ -873,7 +875,21 @@ class AIAgent:
         self._anthropic_client = None
         self._is_anthropic_oauth = False
 
-        if self.api_mode == "anthropic_messages":
+        if self.api_mode == "anthropic_messages" and self.provider == "vertex-ai":
+            from agent.anthropic_adapter import build_vertex_client, resolve_vertex_credentials
+            project, region = resolve_vertex_credentials()
+            if not project:
+                raise ValueError("VERTEX_PROJECT environment variable is required for vertex-ai provider")
+            self._anthropic_client = build_vertex_client(project, region)
+            self._anthropic_api_key = ""
+            self._anthropic_base_url = ""
+            self._is_anthropic_oauth = False
+            self.client = None
+            self._client_kwargs = {}
+            if not self.quiet_mode:
+                print(f"🤖 AI Agent initialized with model: {self.model} (Vertex AI)")
+                print(f"☁️  GCP project: {project}, region: {region}")
+        elif self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
             # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
             # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.

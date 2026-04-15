@@ -165,6 +165,8 @@ def _resolve_runtime_from_pool_entry(
         base_url = base_url or OPENROUTER_BASE_URL
     elif provider == "nous":
         api_mode = "chat_completions"
+    elif provider == "vertex-ai":
+        api_mode = "anthropic_messages"
     elif provider == "copilot":
         api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
     else:
@@ -807,6 +809,23 @@ def resolve_runtime_provider(
             "command": creds.get("command", ""),
             "args": list(creds.get("args") or []),
             "source": creds.get("source", "process"),
+            "requested_provider": requested_provider,
+        }
+
+    # Vertex AI (Claude via GCP)
+    if provider == "vertex-ai":
+        from agent.anthropic_adapter import resolve_vertex_credentials
+        project, region = resolve_vertex_credentials()
+        if not project:
+            raise AuthError(
+                "VERTEX_PROJECT env var required for vertex-ai provider"
+            )
+        return {
+            "provider": "vertex-ai",
+            "api_mode": "anthropic_messages",
+            "base_url": "",
+            "api_key": project,
+            "source": "VERTEX_PROJECT",
             "requested_provider": requested_provider,
         }
 
