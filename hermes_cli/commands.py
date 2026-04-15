@@ -218,6 +218,20 @@ for _cmd in COMMAND_REGISTRY:
             _cat[f"/{_alias}"] = COMMANDS[f"/{_alias}"]
 
 
+CATEGORY_LABELS: dict[str, str] = {
+    "Session": "세션",
+    "Configuration": "설정",
+    "Tools & Skills": "도구와 스킬",
+    "Info": "정보",
+    "Exit": "종료",
+}
+
+
+def get_category_label(category: str) -> str:
+    """Return the localized display label for a command category."""
+    return CATEGORY_LABELS.get(category, category)
+
+
 # Subcommands lookup: "/cmd" -> ["sub1", "sub2", ...]
 SUBCOMMANDS: dict[str, list[str]] = {}
 for _cmd in COMMAND_REGISTRY:

@@ -1,46 +1,27 @@
 #!/usr/bin/env python3
 """
-Hermes CLI - Main entry point.
+Hermes CLI - 메인 진입점.
 
-Usage:
-    hermes                     # Interactive chat (default)
-    hermes chat                # Interactive chat
-    hermes gateway             # Run gateway in foreground
-    hermes gateway start       # Start gateway as service
-    hermes gateway stop        # Stop gateway service
-    hermes gateway status      # Show gateway status
-    hermes gateway install     # Install gateway service
-    hermes gateway uninstall   # Uninstall gateway service
-    hermes setup               # Interactive setup wizard
-    hermes logout              # Clear stored authentication
-    hermes status              # Show status of all components
-    hermes cron                # Manage cron jobs
-    hermes cron list           # List cron jobs
-    hermes cron status         # Check if cron scheduler is running
-    hermes doctor              # Check configuration and dependencies
-    hermes honcho setup                    # Configure Honcho AI memory integration
-    hermes honcho status                   # Show Honcho config and connection status
-    hermes honcho sessions                 # List directory → session name mappings
-    hermes honcho map <name>               # Map current directory to a session name
-    hermes honcho peer                     # Show peer names and dialectic settings
-    hermes honcho peer --user NAME         # Set user peer name
-    hermes honcho peer --ai NAME           # Set AI peer name
-    hermes honcho peer --reasoning LEVEL   # Set dialectic reasoning level
-    hermes honcho mode                     # Show current memory mode
-    hermes honcho mode [hybrid|honcho|local]  # Set memory mode
-    hermes honcho tokens                   # Show token budget settings
-    hermes honcho tokens --context N       # Set session.context() token cap
-    hermes honcho tokens --dialectic N     # Set dialectic result char cap
-    hermes honcho identity                 # Show AI peer identity representation
-    hermes honcho identity <file>          # Seed AI peer identity from a file (SOUL.md etc.)
-    hermes honcho migrate                  # Step-by-step migration guide: OpenClaw native → Hermes + Honcho
-    hermes version             Show version
-    hermes update              Update to latest version
-    hermes uninstall           Uninstall Hermes Agent
-    hermes acp                 Run as an ACP server for editor integration
-    hermes sessions browse     Interactive session picker with search
+사용 예:
+    hermes                     # 대화형 채팅(기본값)
+    hermes chat                # 대화형 채팅
+    hermes gateway             # 게이트웨이를 포그라운드에서 실행
+    hermes gateway start       # 게이트웨이 서비스를 시작
+    hermes gateway stop        # 게이트웨이 서비스를 중지
+    hermes setup               # 설정 마법사 실행
+    hermes tools               # 활성화할 도구 설정
+    hermes model               # 기본 모델 설정
+    hermes status              # 시스템/provider 상태 표시
+    hermes config              # 현재 설정 표시
+    hermes cron                # 크론 작업 관리
+    hermes doctor              # 설정과 의존성 점검
+    hermes version             # 버전 표시
+    hermes update              # 최신 버전으로 업데이트
+    hermes uninstall           # Hermes Agent 제거
+    hermes acp                 # 에디터 연동용 ACP 서버로 실행
+    hermes sessions browse     # 검색 가능한 세션 선택기 실행
 
-    hermes claw migrate --dry-run  # Preview migration without changes
+    hermes claw migrate --dry-run  # 변경 없이 마이그레이션 미리보기
 """
 
 import argparse
@@ -59,9 +40,9 @@ def _require_tty(command_name: str) -> None:
     """
     if not sys.stdin.isatty():
         print(
-            f"Error: 'hermes {command_name}' requires an interactive terminal.\n"
-            f"It cannot be run through a pipe or non-interactive subprocess.\n"
-            f"Run it directly in your terminal instead.",
+            f"오류: 'hermes {command_name}' 명령은 대화형 터미널이 필요합니다.\n"
+            f"파이프나 비대화형 서브프로세스에서는 실행할 수 없습니다.\n"
+            f"터미널에서 직접 실행해 주세요.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -300,7 +281,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
     bug in tmux/iTerm when arrow keys are used.
     """
     if not sessions:
-        print("No sessions found.")
+        print("세션을 찾지 못했어요.")
         return None
 
     # Try curses-based picker first
@@ -362,7 +343,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 if max_y < 5 or max_x < 40:
                     # Terminal too small
                     try:
-                        stdscr.addstr(0, 0, "Terminal too small")
+                        stdscr.addstr(0, 0, "터미널 크기가 너무 작습니다")
                     except curses.error:
                         pass
                     stdscr.refresh()
@@ -371,12 +352,12 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
 
                 # Header line
                 if search_text:
-                    header = f"  Browse sessions — filter: {search_text}█"
+                    header = f"  세션 탐색 — 필터: {search_text}█"
                     header_attr = curses.A_BOLD
                     if curses.has_colors():
                         header_attr |= curses.color_pair(3)
                 else:
-                    header = "  Browse sessions — ↑↓ navigate  Enter select  Type to filter  Esc quit"
+                    header = "  세션 탐색 — ↑↓ 이동  Enter 선택  입력으로 필터  Esc 종료"
                     header_attr = curses.A_BOLD
                     if curses.has_colors():
                         header_attr |= curses.color_pair(2)
@@ -388,7 +369,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 # Column header line
                 fixed_cols = 3 + 12 + 6 + 18 + 6
                 name_width = max(20, max_x - fixed_cols)
-                col_header = f"   {'Title / Preview':<{name_width}}  {'Active':<10}  {'Src':<5} {'ID'}"
+                col_header = f"   {'제목 / 미리보기':<{name_width}}  {'최근 활동':<10}  {'출처':<5} {'ID'}"
                 try:
                     dim_attr = curses.color_pair(4) if curses.has_colors() else curses.A_DIM
                     stdscr.addnstr(1, 0, col_header, max_x - 1, dim_attr)
@@ -403,7 +384,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 # Clamp cursor and scroll
                 if not filtered:
                     try:
-                        msg = "  No sessions match the filter."
+                        msg = "  필터와 일치하는 세션이 없습니다."
                         stdscr.addnstr(3, 0, msg, max_x - 1, curses.A_DIM)
                     except curses.error:
                         pass
@@ -440,11 +421,11 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 # Footer
                 footer_y = max_y - 1
                 if filtered:
-                    footer = f"  {cursor + 1}/{len(filtered)} sessions"
+                    footer = f"  {cursor + 1}/{len(filtered)}개 세션"
                     if len(filtered) < len(sessions):
-                        footer += f" (filtered from {len(sessions)})"
+                        footer += f" (전체 {len(sessions)}개 중 필터됨)"
                 else:
-                    footer = f"  0/{len(sessions)} sessions"
+                    footer = f"  0/{len(sessions)}개 세션"
                 try:
                     stdscr.addnstr(footer_y, 0, footer, max_x - 1,
                                    curses.color_pair(4) if curses.has_colors() else curses.A_DIM)
@@ -499,7 +480,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
         pass
 
     # Fallback: numbered list (Windows without curses, etc.)
-    print("\n  Browse sessions  (enter number to resume, q to cancel)\n")
+    print("\n  세션 탐색  (번호를 입력하면 이어서 열고, q를 입력하면 취소)\n")
     for i, s in enumerate(sessions):
         title = (s.get("title") or "").strip()
         preview = (s.get("preview") or "").strip()
@@ -512,15 +493,15 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
 
     while True:
         try:
-            val = input(f"\n  Select [1-{len(sessions)}]: ").strip()
+            val = input(f"\n  선택 [1-{len(sessions)}]: ").strip()
             if not val or val.lower() in ("q", "quit", "exit"):
                 return None
             idx = int(val) - 1
             if 0 <= idx < len(sessions):
                 return sessions[idx]["id"]
-            print(f"  Invalid selection. Enter 1-{len(sessions)} or q to cancel.")
+            print(f"  잘못된 선택입니다. 1-{len(sessions)} 또는 q를 입력해 취소하세요.")
         except ValueError:
-            print("  Invalid input. Enter a number or q to cancel.")
+            print("  잘못된 입력입니다. 숫자 또는 q를 입력해 취소하세요.")
         except (KeyboardInterrupt, EOFError):
             print()
             return None
@@ -4495,40 +4476,40 @@ def main():
     """Main entry point for hermes CLI."""
     parser = argparse.ArgumentParser(
         prog="hermes",
-        description="Hermes Agent - AI assistant with tool-calling capabilities",
+        description="Hermes Agent - 도구 호출 기능을 갖춘 AI 어시스턴트",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-    hermes                        Start interactive chat
-    hermes chat -q "Hello"        Single query mode
-    hermes -c                     Resume the most recent session
-    hermes -c "my project"        Resume a session by name (latest in lineage)
-    hermes --resume <session_id>  Resume a specific session by ID
-    hermes setup                  Run setup wizard
-    hermes logout                 Clear stored authentication
-    hermes auth add <provider>    Add a pooled credential
-    hermes auth list              List pooled credentials
-    hermes auth remove <p> <t>    Remove pooled credential by index, id, or label
-    hermes auth reset <provider>  Clear exhaustion status for a provider
-    hermes model                  Select default model
-    hermes config                 View configuration
-    hermes config edit            Edit config in $EDITOR
-    hermes config set model gpt-4 Set a config value
-    hermes gateway                Run messaging gateway
+예시:
+    hermes                        대화형 채팅 시작
+    hermes chat -q \"안녕\"          단일 질의 모드
+    hermes -c                     가장 최근 세션 이어서 열기
+    hermes -c \"my project\"        이름으로 세션 이어서 열기(계보 기준 최신)
+    hermes --resume <session_id>  세션 ID로 특정 세션 이어서 열기
+    hermes setup                  설정 마법사 실행
+    hermes logout                 저장된 인증 정보 지우기
+    hermes auth add <provider>    풀 자격 증명 추가
+    hermes auth list              풀 자격 증명 목록 표시
+    hermes auth remove <p> <t>    인덱스, ID 또는 라벨로 풀 자격 증명 제거
+    hermes auth reset <provider>  provider의 소진 상태 초기화
+    hermes model                  기본 모델 선택
+    hermes config                 현재 설정 표시
+    hermes config edit            $EDITOR로 설정 파일 편집
+    hermes config set model gpt-4 설정값 저장
+    hermes gateway                메시징 게이트웨이 실행
     hermes -s hermes-agent-dev,github-auth
-    hermes -w                     Start in isolated git worktree
-    hermes gateway install        Install gateway background service
-    hermes sessions list          List past sessions
-    hermes sessions browse        Interactive session picker
-    hermes sessions rename ID T   Rename/title a session
-    hermes logs                   View agent.log (last 50 lines)
-    hermes logs -f                Follow agent.log in real time
-    hermes logs errors            View errors.log
-    hermes logs --since 1h        Lines from the last hour
-    hermes debug share             Upload debug report for support
-    hermes update                 Update to latest version
+    hermes -w                     격리된 git worktree에서 시작
+    hermes gateway install        게이트웨이 백그라운드 서비스 설치
+    hermes sessions list          지난 세션 목록 표시
+    hermes sessions browse        대화형 세션 선택기 실행
+    hermes sessions rename ID T   세션 이름/제목 변경
+    hermes logs                   agent.log 보기(최근 50줄)
+    hermes logs -f                agent.log 실시간 따라가기
+    hermes logs errors            errors.log 보기
+    hermes logs --since 1h        최근 1시간 로그만 표시
+    hermes debug share            지원용 디버그 리포트 업로드
+    hermes update                 최신 버전으로 업데이트
 
-For more help on a command:
+명령어별 자세한 도움말:
     hermes <command> --help
 """
     )
@@ -4536,13 +4517,13 @@ For more help on a command:
     parser.add_argument(
         "--version", "-V",
         action="store_true",
-        help="Show version and exit"
+        help="버전을 표시하고 종료"
     )
     parser.add_argument(
         "--resume", "-r",
         metavar="SESSION",
         default=None,
-        help="Resume a previous session by ID or title"
+        help="ID 또는 제목으로 이전 세션 이어서 열기"
     )
     parser.add_argument(
         "--continue", "-c",
@@ -4551,70 +4532,70 @@ For more help on a command:
         const=True,
         default=None,
         metavar="SESSION_NAME",
-        help="Resume a session by name, or the most recent if no name given"
+        help="이름으로 세션을 이어서 열거나, 이름이 없으면 가장 최근 세션 열기"
     )
     parser.add_argument(
         "--worktree", "-w",
         action="store_true",
         default=False,
-        help="Run in an isolated git worktree (for parallel agents)"
+        help="격리된 git worktree에서 실행(병렬 에이전트용)"
     )
     parser.add_argument(
         "--skills", "-s",
         action="append",
         default=None,
-        help="Preload one or more skills for the session (repeat flag or comma-separate)"
+        help="세션 시작 전에 스킬을 하나 이상 미리 로드(플래그 반복 또는 쉼표 구분)"
     )
     parser.add_argument(
         "--yolo",
         action="store_true",
         default=False,
-        help="Bypass all dangerous command approval prompts (use at your own risk)"
+        help="위험 명령 승인 프롬프트를 모두 건너뜀(주의해서 사용)"
     )
     parser.add_argument(
         "--pass-session-id",
         action="store_true",
         default=False,
-        help="Include the session ID in the agent's system prompt"
+        help="에이전트 시스템 프롬프트에 세션 ID 포함"
     )
     
-    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+    subparsers = parser.add_subparsers(dest="command", help="실행할 명령어")
     
     # =========================================================================
     # chat command
     # =========================================================================
     chat_parser = subparsers.add_parser(
         "chat",
-        help="Interactive chat with the agent",
-        description="Start an interactive chat session with Hermes Agent"
+        help="에이전트와 대화형 채팅 실행",
+        description="Hermes Agent와의 대화형 채팅 세션 시작"
     )
     chat_parser.add_argument(
         "-q", "--query",
-        help="Single query (non-interactive mode)"
+        help="단일 질의 실행(비대화형 모드)"
     )
     chat_parser.add_argument(
         "--image",
-        help="Optional local image path to attach to a single query"
+        help="단일 질의에 첨부할 로컬 이미지 경로(선택)"
     )
     chat_parser.add_argument(
         "-m", "--model",
-        help="Model to use (e.g., anthropic/claude-sonnet-4)"
+        help="사용할 모델(예: anthropic/claude-sonnet-4)"
     )
     chat_parser.add_argument(
         "-t", "--toolsets",
-        help="Comma-separated toolsets to enable"
+        help="활성화할 toolset 목록(쉼표 구분)"
     )
     chat_parser.add_argument(
         "-s", "--skills",
         action="append",
         default=argparse.SUPPRESS,
-        help="Preload one or more skills for the session (repeat flag or comma-separate)"
+        help="세션 시작 전에 스킬을 하나 이상 미리 로드(플래그 반복 또는 쉼표 구분)"
     )
     chat_parser.add_argument(
         "--provider",
         choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "xiaomi", "arcee"],
         default=None,
-        help="Inference provider (default: auto)"
+        help="추론 provider(기본값: auto)"
     )
     chat_parser.add_argument(
         "-v", "--verbose",

@@ -46,7 +46,7 @@ class TestSessionBrowsePicker:
     def test_empty_sessions_returns_none(self, capsys):
         result = _session_browse_picker([])
         assert result is None
-        assert "No sessions found" in capsys.readouterr().out
+        assert "세션을 찾지 못했어요" in capsys.readouterr().out
 
     def test_returns_none_when_no_sessions(self, capsys):
         result = _session_browse_picker([])
@@ -124,6 +124,9 @@ class TestSessionBrowsePicker:
                 result = _session_browse_picker(sessions)
 
         assert result == sessions[0]["id"]
+        # Localized invalid-selection guidance should be shown before retry succeeds
+        # (the fallback picker prints the warning immediately after the first bad input).
+
 
     def test_fallback_mode_keyboard_interrupt(self):
         """KeyboardInterrupt in fallback mode returns None."""
@@ -421,7 +424,7 @@ class TestCmdSessionsBrowse:
         result = _session_browse_picker([])
         assert result is None
         output = capsys.readouterr().out
-        assert "No sessions found" in output
+        assert "세션을 찾지 못했어요" in output
 
     def test_browse_with_source_filter(self):
         """The --source flag should be passed to list_sessions_rich."""
