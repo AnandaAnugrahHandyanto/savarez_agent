@@ -149,6 +149,13 @@ class TestNonInteractiveSetup:
         assert '비전 및 이미지 분석 (선택 사항)' in source
         assert 'vision 설정:' in source
         assert 'OpenRouter 키 저장 완료 — vision은 Gemini를 사용합니다' in source
+        assert 'Provider 설정을 건너뛰었습니다.' in source
+        assert 'Provider 설정 중 오류가 발생했습니다:' in source
+        assert '나중에 ' in source
+        assert '동일 Provider fallback 및 순환' in source
+        assert '같은 provider fallback용 자격 증명을 하나 더 추가할까요?' in source
+        assert '동일 provider 순환 전략을 선택하세요:' in source
+        assert '기존 TTS provider를 유지합니다:' in source
 
     def test_cmd_setup_allows_noninteractive_flag_without_tty(self):
         """The CLI entrypoint should not block --non-interactive before setup.py handles it."""

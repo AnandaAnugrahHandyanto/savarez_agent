@@ -648,11 +648,11 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         select_provider_and_model()
     except (SystemExit, KeyboardInterrupt):
         print()
-        print_info("Provider setup skipped.")
+        print_info("Provider 설정을 건너뛰었습니다.")
     except Exception as exc:
         logger.debug("select_provider_and_model error during setup: %s", exc)
-        print_warning(f"Provider setup encountered an error: {exc}")
-        print_info("You can try again later with: hermes model")
+        print_warning(f"Provider 설정 중 오류가 발생했습니다: {exc}")
+        print_info("나중에 'hermes model'로 다시 시도할 수 있습니다")
 
     # Re-sync the wizard's config dict from what cmd_model saved to disk.
     # This is critical: cmd_model writes to disk via its own load/save cycle,
@@ -686,26 +686,26 @@ def setup_model_provider(config: dict, *, quick: bool = False):
             manual_count = sum(1 for entry in entries if str(getattr(entry, "source", "")).startswith("manual"))
             auto_count = entry_count - manual_count
             print()
-            print_header("Same-Provider Fallback & Rotation")
+            print_header("동일 Provider fallback 및 순환")
             print_info(
-                "Hermes can keep multiple credentials for one provider and rotate between"
+                "Hermes는 하나의 provider에 여러 자격 증명을 보관하고, 자격 증명이 소진되거나"
             )
             print_info(
-                "them when a credential is exhausted or rate-limited. This preserves"
+                "속도 제한에 걸리면 다른 자격 증명으로 순환할 수 있습니다."
             )
             print_info(
-                "your primary provider while reducing interruptions from quota issues."
+                "이렇게 하면 기본 provider는 유지하면서 quota 문제로 인한 중단을 줄일 수 있습니다."
             )
             print()
             if auto_count > 0:
                 print_info(
-                    f"Current pooled credentials for {selected_provider}: {entry_count} "
-                    f"({manual_count} manual, {auto_count} auto-detected from env/shared auth)"
+                    f"현재 {selected_provider} 풀 자격 증명: {entry_count}개 "
+                    f"(수동 {manual_count}, env/공유 인증에서 자동 감지 {auto_count})"
                 )
             else:
-                print_info(f"Current pooled credentials for {selected_provider}: {entry_count}")
+                print_info(f"현재 {selected_provider} 풀 자격 증명: {entry_count}개")
 
-            while prompt_yes_no("Add another credential for same-provider fallback?", False):
+            while prompt_yes_no("같은 provider fallback용 자격 증명을 하나 더 추가할까요?", False):
                 auth_add_command(
                     SimpleNamespace(
                         provider=selected_provider,
@@ -725,13 +725,13 @@ def setup_model_provider(config: dict, *, quick: bool = False):
                 )
                 pool = load_pool(selected_provider)
                 entry_count = len(pool.entries())
-                print_info(f"Provider pool now has {entry_count} credential(s).")
+                print_info(f"Provider 풀에 자격 증명이 이제 {entry_count}개 있습니다.")
 
             if entry_count > 1:
                 strategy_labels = [
-                    "Fill-first / sticky — keep using the first healthy credential until it is exhausted",
-                    "Round robin — rotate to the next healthy credential after each selection",
-                    "Random — pick a random healthy credential each time",
+                    "fill-first / sticky — 첫 번째 건강한 자격 증명을 소진될 때까지 계속 사용",
+                    "round robin — 선택할 때마다 다음 건강한 자격 증명으로 순환",
+                    "random — 매번 건강한 자격 증명 중 하나를 무작위 선택",
                 ]
                 current_strategy = _get_credential_pool_strategies(config).get(selected_provider, "fill_first")
                 default_strategy_idx = {
@@ -740,13 +740,13 @@ def setup_model_provider(config: dict, *, quick: bool = False):
                     "random": 2,
                 }.get(current_strategy, 0)
                 strategy_idx = prompt_choice(
-                    "Select same-provider rotation strategy:",
+                    "동일 provider 순환 전략을 선택하세요:",
                     strategy_labels,
                     default_strategy_idx,
                 )
                 strategy_value = ["fill_first", "round_robin", "random"][strategy_idx]
                 _set_credential_pool_strategy(config, selected_provider, strategy_value)
-                print_success(f"Saved {selected_provider} rotation strategy: {strategy_value}")
+                print_success(f"{selected_provider} 순환 전략 저장 완료: {strategy_value}")
         except Exception as exc:
             logger.debug("Could not configure same-provider fallback in setup: %s", exc)
 
@@ -839,9 +839,9 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         changed_defaults = apply_nous_provider_defaults(config)
         current_tts = str(config.get("tts", {}).get("provider") or "edge")
         if "tts" in changed_defaults:
-            print_success("TTS provider set to: OpenAI TTS via your Nous subscription")
+            print_success("TTS provider를 OpenAI TTS (Nous 구독)로 설정했습니다")
         else:
-            print_info(f"Keeping your existing TTS provider: {current_tts}")
+            print_info(f"기존 TTS provider를 유지합니다: {current_tts}")
 
     save_config(config)
 

@@ -136,7 +136,7 @@ def test_setup_same_provider_rotation_strategy_saved_for_multi_credential_pool(t
         pass  # no-op — config already has provider set
 
     def fake_prompt_choice(question, choices, default=0):
-        if "rotation strategy" in question:
+        if "순환 전략" in question:
             return 1  # round robin
         tts_idx = _maybe_keep_current_tts(question, choices)
         if tts_idx is not None:
@@ -201,7 +201,7 @@ def test_setup_same_provider_fallback_can_add_another_credential(tmp_path, monke
         pass  # no-op — config already has provider set
 
     def fake_prompt_choice(question, choices, default=0):
-        if question == "Select same-provider rotation strategy:":
+        if question == "동일 provider 순환 전략을 선택하세요:":
             return 0
         tts_idx = _maybe_keep_current_tts(question, choices)
         if tts_idx is not None:
@@ -211,7 +211,7 @@ def test_setup_same_provider_fallback_can_add_another_credential(tmp_path, monke
     yes_no_answers = iter([True, False])
 
     def fake_prompt_yes_no(question, default=True):
-        if question == "Add another credential for same-provider fallback?":
+        if question == "같은 provider fallback용 자격 증명을 하나 더 추가할까요?":
             return next(yes_no_answers)
         return False
 
@@ -290,7 +290,7 @@ def test_setup_pool_step_shows_manual_vs_auto_detected_counts(tmp_path, monkeypa
         pass  # no-op — config already has provider set
 
     def fake_prompt_choice(question, choices, default=0):
-        if "rotation strategy" in question:
+        if "순환 전략" in question:
             return 0
         tts_idx = _maybe_keep_current_tts(question, choices)
         if tts_idx is not None:
@@ -308,7 +308,7 @@ def test_setup_pool_step_shows_manual_vs_auto_detected_counts(tmp_path, monkeypa
     setup_model_provider(config)
 
     out = capsys.readouterr().out
-    assert "Current pooled credentials for openrouter: 3 (2 manual, 1 auto-detected from env/shared auth)" in out
+    assert "현재 openrouter 풀 자격 증명: 3개 (수동 2, env/공유 인증에서 자동 감지 1)" in out
 
 
 def test_setup_copilot_acp_skips_same_provider_pool_step(tmp_path, monkeypatch):
@@ -330,7 +330,7 @@ def test_setup_copilot_acp_skips_same_provider_pool_step(tmp_path, monkeypatch):
         raise AssertionError(f"Unexpected prompt_choice call: {question}")
 
     def fake_prompt_yes_no(question, default=True):
-        if question == "Add another credential for same-provider fallback?":
+        if question == "같은 provider fallback용 자격 증명을 하나 더 추가할까요?":
             raise AssertionError("same-provider pool prompt should not appear for copilot-acp")
         return False
 
