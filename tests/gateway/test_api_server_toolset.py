@@ -39,7 +39,8 @@ class TestHermesApiServerToolset:
         tools = resolve_toolset("hermes-api-server")
         for tool in ["browser_navigate", "browser_snapshot", "browser_click",
                       "browser_type", "browser_scroll", "browser_back",
-                      "browser_press"]:
+                      "browser_press", "browser_get_images", "browser_vision",
+                      "browser_console", "browser_batch"]:
             assert tool in tools, f"Missing browser tool: {tool}"
 
     def test_toolset_includes_homeassistant_tools(self):

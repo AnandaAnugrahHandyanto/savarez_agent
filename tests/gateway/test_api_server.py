@@ -12,7 +12,9 @@ Tests cover:
 - Error handling (invalid JSON, missing fields)
 """
 
+import asyncio
 import json
+import threading
 import time
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -27,10 +29,12 @@ from gateway.platforms.api_server import (
     ResponseStore,
     _CORS_HEADERS,
     _derive_chat_session_id,
+    _parse_browser_authority_request_value,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
 )
+from tools.browser_authority import get_browser_authority
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +154,31 @@ class TestAdapterInit:
         )
 
 
+class TestBrowserAuthorityParsing:
+    def test_parse_browser_authority_request_value_accepts_json_string(self):
+        parsed = _parse_browser_authority_request_value('{"source":"remote","owner_id":"api-user","capabilities":["read"]}')
+        assert parsed["owner_id"] == "api-user"
+        assert parsed["capabilities"] == ["read"]
+
+    def test_adapter_resolves_browser_authority_from_header(self):
+        adapter = _make_adapter()
+        request = MagicMock()
+        request.headers = {
+            "X-Hermes-Browser-Authority": json.dumps({
+                "source": "remote",
+                "owner_id": "owner-1",
+                "capabilities": ["read", "interact"],
+            }),
+            "X-Request-Id": "req-1",
+            "X-Hermes-Session-Id": "sess-1",
+        }
+
+        authority = adapter._resolve_browser_authority(request, {})
+        assert authority.owner_id == "owner-1"
+        assert authority.request_id == "req-1"
+        assert authority.session_id == "sess-1"
+
+
 # ---------------------------------------------------------------------------
 # Auth checking
 # ---------------------------------------------------------------------------
@@ -227,6 +256,8 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
+    app.router.add_post("/v1/runs", adapter._handle_runs)
+    app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
     return app
 
 
@@ -418,6 +449,47 @@ class TestChatCompletionsEndpoint:
             assert resp.status == 400
             data = await resp.json()
             assert "Invalid JSON" in data["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_browser_authority_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                json={"model": "test", "messages": [{"role": "user", "content": "hi"}]},
+                headers={"X-Hermes-Browser-Authority": "{not-json}"},
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert "browser authority" in data["error"]["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_browser_authority_header_is_forwarded_to_run_agent(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            captured = {}
+
+            async def _mock_run_agent(**kwargs):
+                captured.update(kwargs)
+                return {"final_response": "ok", "messages": []}, {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "test", "messages": [{"role": "user", "content": "hi"}]},
+                    headers={
+                        "X-Hermes-Browser-Authority": json.dumps({
+                            "source": "remote",
+                            "owner_id": "owner-2",
+                            "capabilities": ["read"],
+                        })
+                    },
+                )
+
+            assert resp.status == 200
+            assert captured["browser_authority"].owner_id == "owner-2"
+            data = await resp.json()
+            assert data["choices"][0]["message"]["content"] == "ok"
 
     @pytest.mark.asyncio
     async def test_missing_messages_returns_400(self, adapter):
@@ -889,6 +961,39 @@ class TestResponsesEndpoint:
                 headers={"Content-Type": "application/json"},
             )
             assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_browser_authority_body_is_forwarded_to_run_agent(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            captured = {}
+
+            async def _mock_run_agent(**kwargs):
+                captured.update(kwargs)
+                return {"final_response": "ok", "messages": []}, {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "test",
+                        "input": "hi",
+                        "browser_authority": {
+                            "source": "remote",
+                            "owner_id": "owner-responses",
+                            "capabilities": ["read", "metadata"],
+                        },
+                    },
+                    headers={
+                        "X-Request-Id": "req-responses",
+                        "X-Hermes-Session-Id": "sess-responses",
+                    },
+                )
+
+            assert resp.status == 200
+            assert captured["browser_authority"].owner_id == "owner-responses"
+            assert captured["browser_authority"].request_id == "req-responses"
+            assert captured["browser_authority"].session_id == "sess-responses"
 
     @pytest.mark.asyncio
     async def test_successful_response_with_string_input(self, adapter):
@@ -1984,6 +2089,57 @@ class TestConversationParameter:
                 assert resp.status == 200
                 # Conversation mapping should NOT be set since store=false
                 assert adapter._response_store.get_conversation("ephemeral-chat") is None
+
+
+# ---------------------------------------------------------------------------
+# /v1/runs endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestRunsEndpoint:
+    @pytest.mark.asyncio
+    async def test_browser_authority_is_available_inside_run_execution(self, adapter):
+        app = _create_app(adapter)
+        observed = {}
+        observed_event = threading.Event()
+
+        class FakeAgent:
+            session_prompt_tokens = 0
+            session_completion_tokens = 0
+            session_total_tokens = 0
+
+            def run_conversation(self, user_message, conversation_history, task_id):
+                observed["authority"] = get_browser_authority()
+                observed["user_message"] = user_message
+                observed["conversation_history"] = conversation_history
+                observed_event.set()
+                return {"final_response": "run ok"}
+
+        with patch.object(adapter, "_create_agent", return_value=FakeAgent()):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "run with authority",
+                        "browser_authority": {
+                            "source": "remote",
+                            "owner_id": "owner-runs",
+                            "capabilities": ["read", "interact"],
+                        },
+                    },
+                    headers={
+                        "X-Request-Id": "req-runs",
+                        "X-Hermes-Session-Id": "sess-runs",
+                    },
+                )
+                assert resp.status == 202
+                assert await asyncio.get_running_loop().run_in_executor(None, observed_event.wait, 1.0)
+
+        assert observed["authority"].owner_id == "owner-runs"
+        assert observed["authority"].request_id == "req-runs"
+        assert observed["authority"].session_id == "sess-runs"
+        assert observed["user_message"] == "run with authority"
+        assert observed["conversation_history"] == []
 
 
 # ---------------------------------------------------------------------------

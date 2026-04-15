@@ -40,11 +40,18 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
+from detached_autonomy import build_runs_autonomy_prefix, filter_noninteractive_toolsets
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
     is_network_accessible,
+)
+from tools.browser_authority import (
+    clear_browser_authority,
+    get_browser_authority,
+    normalize_browser_authority,
+    set_browser_authority,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,6 +64,33 @@ MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+
+_RUNS_AUTONOMY_PREFIX = build_runs_autonomy_prefix()
+
+
+def _prepend_runs_autonomy_contract(instructions: Optional[str]) -> str:
+    """Add the detached-run autonomy contract ahead of caller instructions."""
+    base = (instructions or "").strip()
+    return _RUNS_AUTONOMY_PREFIX + base if base else _RUNS_AUTONOMY_PREFIX.rstrip()
+
+
+def _parse_browser_authority_request_value(value: Any) -> Optional[Dict[str, Any]]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid browser authority JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("browser authority must be a JSON object")
+        return parsed
+    raise ValueError("browser authority must be an object or JSON object string")
 
 
 def _normalize_chat_content(
@@ -534,7 +568,9 @@ class APIServerAdapter(BasePlatformAdapter):
         model = _resolve_gateway_model()
 
         user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        enabled_toolsets, disabled_toolsets = filter_noninteractive_toolsets(
+            sorted(_get_platform_tools(user_config, "api_server"))
+        )
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
 
@@ -551,6 +587,7 @@ class APIServerAdapter(BasePlatformAdapter):
             verbose_logging=False,
             ephemeral_system_prompt=ephemeral_system_prompt or None,
             enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
             session_id=session_id,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
@@ -559,8 +596,27 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_complete_callback=tool_complete_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
+            spawned_session=True,
         )
         return agent
+
+    def _resolve_browser_authority(self, request: "web.Request", body: Optional[Dict[str, Any]] = None):
+        header_value = request.headers.get("X-Hermes-Browser-Authority", "")
+        body_value = (body or {}).get("browser_authority")
+        try:
+            parsed = _parse_browser_authority_request_value(header_value)
+            if parsed is None:
+                parsed = _parse_browser_authority_request_value(body_value)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+
+        if parsed is None:
+            return None
+        if "session_id" not in parsed:
+            parsed["session_id"] = request.headers.get("X-Hermes-Session-Id", "").strip()
+        if "request_id" not in parsed:
+            parsed["request_id"] = request.headers.get("X-Request-Id", "").strip()
+        return normalize_browser_authority(parsed)
 
     # ------------------------------------------------------------------
     # HTTP Handlers
@@ -623,6 +679,11 @@ class APIServerAdapter(BasePlatformAdapter):
             body = await request.json()
         except (json.JSONDecodeError, Exception):
             return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+
+        try:
+            browser_authority = self._resolve_browser_authority(request, body)
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc)), status=400)
 
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
@@ -771,6 +832,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
                 tool_progress_callback=_on_tool_progress,
+                browser_authority=browser_authority,
                 agent_ref=agent_ref,
             ))
 
@@ -786,6 +848,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                browser_authority=browser_authority,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1405,6 +1468,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
+        try:
+            browser_authority = self._resolve_browser_authority(request, body)
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc)), status=400)
+
         raw_input = body.get("input")
         if raw_input is None:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
@@ -1539,6 +1607,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
+                browser_authority=browser_authority,
                 agent_ref=agent_ref,
             ))
 
@@ -1568,6 +1637,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
+                browser_authority=browser_authority,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1991,6 +2061,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        browser_authority=None,
         agent_ref: Optional[list] = None,
     ) -> tuple:
         """
@@ -2007,27 +2078,32 @@ class APIServerAdapter(BasePlatformAdapter):
         loop = asyncio.get_event_loop()
 
         def _run():
-            agent = self._create_agent(
-                ephemeral_system_prompt=ephemeral_system_prompt,
-                session_id=session_id,
-                stream_delta_callback=stream_delta_callback,
-                tool_progress_callback=tool_progress_callback,
-                tool_start_callback=tool_start_callback,
-                tool_complete_callback=tool_complete_callback,
-            )
-            if agent_ref is not None:
-                agent_ref[0] = agent
-            result = agent.run_conversation(
-                user_message=user_message,
-                conversation_history=conversation_history,
-                task_id="default",
-            )
-            usage = {
-                "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-            }
-            return result, usage
+            token = set_browser_authority(browser_authority) if browser_authority is not None else None
+            try:
+                agent = self._create_agent(
+                    ephemeral_system_prompt=ephemeral_system_prompt,
+                    session_id=session_id,
+                    stream_delta_callback=stream_delta_callback,
+                    tool_progress_callback=tool_progress_callback,
+                    tool_start_callback=tool_start_callback,
+                    tool_complete_callback=tool_complete_callback,
+                )
+                if agent_ref is not None:
+                    agent_ref[0] = agent
+                result = agent.run_conversation(
+                    user_message=user_message,
+                    conversation_history=conversation_history,
+                    task_id="default",
+                )
+                usage = {
+                    "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                    "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                    "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                }
+                return result, usage
+            finally:
+                if token is not None:
+                    clear_browser_authority(token)
 
         return await loop.run_in_executor(None, _run)
 
@@ -2096,6 +2172,11 @@ class APIServerAdapter(BasePlatformAdapter):
             body = await request.json()
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        try:
+            browser_authority = self._resolve_browser_authority(request, body)
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc)), status=400)
 
         raw_input = body.get("input")
         if not raw_input:
@@ -2175,7 +2256,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
         session_id = body.get("session_id") or stored_session_id or run_id
-        ephemeral_system_prompt = instructions
+        ephemeral_system_prompt = _prepend_runs_autonomy_contract(instructions)
 
         async def _run_and_close():
             try:
@@ -2186,17 +2267,22 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_progress_callback=event_cb,
                 )
                 def _run_sync():
-                    r = agent.run_conversation(
-                        user_message=user_message,
-                        conversation_history=conversation_history,
-                        task_id="default",
-                    )
-                    u = {
-                        "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                        "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                        "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-                    }
-                    return r, u
+                    token = set_browser_authority(browser_authority) if browser_authority is not None else None
+                    try:
+                        r = agent.run_conversation(
+                            user_message=user_message,
+                            conversation_history=conversation_history,
+                            task_id="default",
+                        )
+                        u = {
+                            "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                            "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                            "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                        }
+                        return r, u
+                    finally:
+                        if token is not None:
+                            clear_browser_authority(token)
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
                 final_response = result.get("final_response", "") if isinstance(result, dict) else ""

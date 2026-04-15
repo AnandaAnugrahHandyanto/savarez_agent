@@ -81,6 +81,17 @@ from tools.browser_providers.base import CloudBrowserProvider
 from tools.browser_providers.browserbase import BrowserbaseProvider
 from tools.browser_providers.browser_use import BrowserUseProvider
 from tools.browser_providers.firecrawl import FirecrawlProvider
+from tools.browser_authority import (
+    BrowserAuthorityError,
+    append_browser_audit_event,
+    build_browser_session_record,
+    ensure_browser_session_owner,
+    get_browser_authority,
+    persist_browser_session_record,
+    require_browser_capability,
+    update_browser_session_record,
+)
+from tools.browser_boundary import InProcessBrowserBoundaryShim
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
 
 # Camofox local anti-detection browser backend (optional).
@@ -92,6 +103,24 @@ except ImportError:
     _is_camofox_mode = lambda: False  # noqa: E731
 
 logger = logging.getLogger(__name__)
+
+_browser_boundary_shim = None
+
+
+def get_browser_boundary_shim():
+    global _browser_boundary_shim
+    if _browser_boundary_shim is None:
+        _browser_boundary_shim = InProcessBrowserBoundaryShim(
+            session_getter=_get_session_info_impl,
+            command_runner=_run_browser_command_impl,
+            cleanup_runner=_cleanup_browser_impl,
+        )
+    return _browser_boundary_shim
+
+
+def set_browser_boundary_shim(shim) -> None:
+    global _browser_boundary_shim
+    _browser_boundary_shim = shim
 
 # Standard PATH entries for environments with minimal PATH (e.g. systemd services).
 # Includes Android/Termux and macOS Homebrew locations needed for agent-browser,
@@ -801,7 +830,173 @@ BROWSER_TOOL_SCHEMAS = [
             "required": []
         }
     },
+    {
+        "name": "browser_batch",
+        "description": "Run multiple browser actions sequentially in one tool call on the same browser session. Uses the normal browser tools internally, so authority checks, session reuse rules, and per-step behavior remain unchanged. Actions must be a non-empty list, max 25 items. Use this when you already know the exact browser steps to perform.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "description": "Ordered browser actions to execute. Each item must include an 'action' field such as navigate, snapshot, click, type, scroll, back, press, get_images, vision, or console.",
+                    "items": {
+                        "type": "object"
+                    },
+                    "minItems": 1,
+                    "maxItems": 25
+                },
+                "stop_on_error": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "If true (default), stop after the first failed step. If false, continue executing remaining actions and return aggregated partial failures."
+                }
+            },
+            "required": ["actions"]
+        }
+    },
 ]
+
+
+_BROWSER_BATCH_ACTION_SPECS: Dict[str, Dict[str, Any]] = {
+    "navigate": {
+        "required": ["url"],
+        "call": lambda action, task_id, user_task=None: browser_navigate(url=action["url"], task_id=task_id),
+    },
+    "snapshot": {
+        "required": [],
+        "call": lambda action, task_id, user_task=None: browser_snapshot(
+            full=action.get("full", False),
+            task_id=task_id,
+            user_task=user_task,
+        ),
+    },
+    "click": {
+        "required": ["ref"],
+        "call": lambda action, task_id, user_task=None: browser_click(ref=action["ref"], task_id=task_id),
+    },
+    "type": {
+        "required": ["ref", "text"],
+        "call": lambda action, task_id, user_task=None: browser_type(ref=action["ref"], text=action["text"], task_id=task_id),
+    },
+    "scroll": {
+        "required": ["direction"],
+        "call": lambda action, task_id, user_task=None: browser_scroll(direction=action["direction"], task_id=task_id),
+    },
+    "back": {
+        "required": [],
+        "call": lambda action, task_id, user_task=None: browser_back(task_id=task_id),
+    },
+    "press": {
+        "required": ["key"],
+        "call": lambda action, task_id, user_task=None: browser_press(key=action["key"], task_id=task_id),
+    },
+    "get_images": {
+        "required": [],
+        "call": lambda action, task_id, user_task=None: browser_get_images(task_id=task_id),
+    },
+    "vision": {
+        "required": ["question"],
+        "call": lambda action, task_id, user_task=None: browser_vision(
+            question=action["question"],
+            annotate=action.get("annotate", False),
+            task_id=task_id,
+        ),
+    },
+    "console": {
+        "required": [],
+        "call": lambda action, task_id, user_task=None: browser_console(
+            clear=action.get("clear", False),
+            expression=action.get("expression"),
+            task_id=task_id,
+        ),
+    },
+}
+
+
+def _browser_batch_validation_error(message: str, stop_on_error: bool = True) -> str:
+    return json.dumps({
+        "success": False,
+        "error": message,
+        "results": [],
+        "total_actions": 0,
+        "completed_actions": 0,
+        "stop_on_error": stop_on_error,
+        "stopped_on_error": False,
+    }, ensure_ascii=False)
+
+
+def browser_batch(
+    actions: List[Dict[str, Any]],
+    stop_on_error: bool = True,
+    task_id: Optional[str] = None,
+    user_task: Optional[str] = None,
+) -> str:
+    """Run multiple browser actions sequentially through the normal browser wrappers."""
+    if not isinstance(actions, list) or not actions:
+        return _browser_batch_validation_error("browser_batch requires actions to be a non-empty list.", stop_on_error=stop_on_error)
+    if len(actions) > 25:
+        return _browser_batch_validation_error("browser_batch supports at most 25 actions per call.", stop_on_error=stop_on_error)
+
+    for index, action in enumerate(actions):
+        if not isinstance(action, dict):
+            return _browser_batch_validation_error(f"Action at index {index} must be an object.", stop_on_error=stop_on_error)
+        action_name = str(action.get("action") or "").strip()
+        if not action_name:
+            return _browser_batch_validation_error(f"Action at index {index} is missing required field 'action'.", stop_on_error=stop_on_error)
+        spec = _BROWSER_BATCH_ACTION_SPECS.get(action_name)
+        if spec is None:
+            return _browser_batch_validation_error(f"Unsupported browser_batch action '{action_name}' at index {index}.", stop_on_error=stop_on_error)
+        missing = [field for field in spec["required"] if action.get(field) in (None, "")]
+        if missing:
+            return _browser_batch_validation_error(
+                f"browser_batch action '{action_name}' at index {index} is missing required field(s): {', '.join(missing)}.",
+                stop_on_error=stop_on_error,
+            )
+
+    effective_task_id = task_id or "default"
+    results: List[Dict[str, Any]] = []
+    failed_action_index: Optional[int] = None
+    completed_actions = 0
+    stopped_on_error_flag = False
+
+    for index, action in enumerate(actions):
+        action_name = str(action.get("action"))
+        spec = _BROWSER_BATCH_ACTION_SPECS[action_name]
+        try:
+            raw_result = spec["call"](action, effective_task_id, user_task)
+            parsed_result = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+        except Exception as exc:
+            parsed_result = {"success": False, "error": str(exc)}
+
+        step_success = bool(isinstance(parsed_result, dict) and parsed_result.get("success"))
+        if step_success:
+            completed_actions += 1
+        else:
+            failed_action_index = index if failed_action_index is None else failed_action_index
+
+        results.append({
+            "index": index,
+            "action": action_name,
+            "success": step_success,
+            "result": parsed_result,
+        })
+
+        if not step_success and stop_on_error:
+            stopped_on_error_flag = True
+            break
+
+    response: Dict[str, Any] = {
+        "success": failed_action_index is None,
+        "results": results,
+        "total_actions": len(actions),
+        "completed_actions": completed_actions,
+        "stop_on_error": stop_on_error,
+        "stopped_on_error": stopped_on_error_flag,
+    }
+    if failed_action_index is not None:
+        response["failed_action_index"] = failed_action_index
+        response["error"] = f"browser_batch failed at action index {failed_action_index}."
+    return json.dumps(response, ensure_ascii=False)
 
 
 # ============================================================================
@@ -811,6 +1006,7 @@ BROWSER_TOOL_SCHEMAS = [
 def _create_local_session(task_id: str) -> Dict[str, str]:
     import uuid
     session_name = f"h_{uuid.uuid4().hex[:10]}"
+    authority = get_browser_authority()
     logger.info("Created local browser session %s for task %s",
                 session_name, task_id)
     return {
@@ -818,6 +1014,7 @@ def _create_local_session(task_id: str) -> Dict[str, str]:
         "bb_session_id": None,
         "cdp_url": None,
         "features": {"local": True},
+        "owner_key": authority.owner_key,
     }
 
 
@@ -825,6 +1022,7 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
     """Create a session that connects to a user-supplied CDP endpoint."""
     import uuid
     session_name = f"cdp_{uuid.uuid4().hex[:10]}"
+    authority = get_browser_authority()
     logger.info("Created CDP browser session %s → %s for task %s",
                 session_name, cdp_url, task_id)
     return {
@@ -832,10 +1030,11 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
         "bb_session_id": None,
         "cdp_url": cdp_url,
         "features": {"cdp_override": True},
+        "owner_key": authority.owner_key,
     }
 
 
-def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
+def _get_session_info_impl(task_id: Optional[str] = None, authority=None) -> Dict[str, str]:
     """
     Get or create session info for the given task.
     
@@ -852,6 +1051,8 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     """
     if task_id is None:
         task_id = "default"
+
+    authority = authority or get_browser_authority()
     
     # Start the cleanup thread if not running (handles inactivity timeouts)
     _start_browser_cleanup_thread()
@@ -862,7 +1063,9 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     with _cleanup_lock:
         # Check if we already have a session for this task
         if task_id in _active_sessions:
-            return _active_sessions[task_id]
+            session_info = _active_sessions[task_id]
+            ensure_browser_session_owner(session_info, authority)
+            return session_info
     
     # Create session outside the lock (network call in cloud mode)
     cdp_override = _get_cdp_override()
@@ -879,16 +1082,44 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
                 # CDP discovery URL instead of a raw websocket endpoint.
                 session_info = dict(session_info)
                 session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
+
+    session_info = dict(session_info)
+    session_info.setdefault("owner_key", authority.owner_key)
+    session_record = build_browser_session_record(task_id, session_info, authority)
+    session_paths = persist_browser_session_record(session_record)
+    session_info.update(session_paths)
     
     with _cleanup_lock:
         # Double-check: another thread may have created a session while we
         # were doing the network call. Use the existing one to avoid leaking
         # orphan cloud sessions.
         if task_id in _active_sessions:
-            return _active_sessions[task_id]
+            existing = _active_sessions[task_id]
+            ensure_browser_session_owner(existing, authority)
+            return existing
         _active_sessions[task_id] = session_info
+
+    append_browser_audit_event(
+        session_info,
+        action="session.created",
+        outcome="success",
+        task_id=task_id,
+        authority=authority,
+        details={
+            "bb_session_id": session_info.get("bb_session_id"),
+            "cdp_url": bool(session_info.get("cdp_url")),
+            "features": session_info.get("features") or {},
+        },
+    )
     
     return session_info
+
+
+def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
+    return get_browser_boundary_shim().get_session_info(
+        task_id=task_id,
+        authority=get_browser_authority(),
+    )
 
 
 
@@ -985,11 +1216,39 @@ def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
     return None
 
 
-def _run_browser_command(
+def _finalize_browser_command_result(
+    task_id: str,
+    command: str,
+    result: Dict[str, Any],
+    *,
+    session_info: Optional[Dict[str, Any]] = None,
+    authority=None,
+    details: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if session_info:
+        try:
+            append_browser_audit_event(
+                session_info,
+                action=command,
+                outcome="success" if result.get("success") else "error",
+                task_id=task_id,
+                authority=authority,
+                details={
+                    **(details or {}),
+                    "error": result.get("error", "")[:500] if result.get("error") else "",
+                },
+            )
+        except Exception:
+            logger.debug("Browser audit write failed for %s", command, exc_info=True)
+    return result
+
+
+def _run_browser_command_impl(
     task_id: str,
     command: str,
     args: List[str] = None,
     timeout: Optional[int] = None,
+    authority=None,
 ) -> Dict[str, Any]:
     """
     Run an agent-browser CLI command using our pre-created Browserbase session.
@@ -1004,9 +1263,13 @@ def _run_browser_command(
     Returns:
         Parsed JSON response from agent-browser
     """
+    authority = authority or get_browser_authority()
+    session_info: Dict[str, Any] | None = None
+    audit_details: Dict[str, Any] = {"command": command}
     if timeout is None:
         timeout = _get_command_timeout()
     args = args or []
+    audit_details["args_preview"] = [str(arg)[:120] for arg in args[:3]]
     
     # Build the command
     try:
@@ -1024,9 +1287,25 @@ def _run_browser_command(
     if is_interrupted():
         return {"success": False, "error": "Interrupted"}
 
+    try:
+        require_browser_capability(command, authority=authority)
+    except BrowserAuthorityError as e:
+        logger.warning("browser authority denied %s for task=%s owner=%s", command, task_id, authority.owner_key)
+        return {
+            "success": False,
+            "error": str(e),
+            "authority_error": {
+                "action": command,
+                "required_capability": e.required_capability,
+                "owner_key": authority.owner_key,
+                "capabilities": list(authority.capabilities),
+            },
+        }
+
     # Get session info (creates Browserbase session with proxies if needed)
     try:
         session_info = _get_session_info(task_id)
+        audit_details["session_name"] = session_info.get("session_name")
     except Exception as e:
         logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
@@ -1100,7 +1379,14 @@ def _run_browser_command(
             proc.wait()
             logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
                            command, timeout, task_id, task_socket_dir)
-            return {"success": False, "error": f"Command timed out after {timeout} seconds"}
+            return _finalize_browser_command_result(
+                task_id,
+                command,
+                {"success": False, "error": f"Command timed out after {timeout} seconds"},
+                session_info=session_info,
+                authority=authority,
+                details=audit_details,
+            )
 
         with open(stdout_path, "r") as f:
             stdout = f.read()
@@ -1127,7 +1413,14 @@ def _run_browser_command(
         # Some commands (close, record) legitimately return no output.
         if not stdout_text and returncode == 0 and command not in _EMPTY_OK_COMMANDS:
             logger.warning("browser '%s' returned empty output (rc=0)", command)
-            return {"success": False, "error": f"Browser command '{command}' returned no output"}
+            return _finalize_browser_command_result(
+                task_id,
+                command,
+                {"success": False, "error": f"Browser command '{command}' returned no output"},
+                session_info=session_info,
+                authority=authority,
+                details=audit_details,
+            )
 
         if stdout_text:
             try:
@@ -1139,7 +1432,14 @@ def _run_browser_command(
                         logger.warning("snapshot returned empty content. "
                                        "Possible stale daemon or CDP connection issue. "
                                        "returncode=%s", returncode)
-                return parsed
+                return _finalize_browser_command_result(
+                    task_id,
+                    command,
+                    parsed,
+                    session_info=session_info,
+                    authority=authority,
+                    details=audit_details,
+                )
             except json.JSONDecodeError:
                 raw = stdout_text[:2000]
                 logger.warning("browser '%s' returned non-JSON output (rc=%s): %s",
@@ -1157,30 +1457,80 @@ def _run_browser_command(
                             "browser 'screenshot' recovered file from non-JSON output: %s",
                             recovered_path,
                         )
-                        return {
-                            "success": True,
-                            "data": {
-                                "path": recovered_path,
-                                "raw": raw,
+                        return _finalize_browser_command_result(
+                            task_id,
+                            command,
+                            {
+                                "success": True,
+                                "data": {
+                                    "path": recovered_path,
+                                    "raw": raw,
+                                },
                             },
-                        }
+                            session_info=session_info,
+                            authority=authority,
+                            details=audit_details,
+                        )
 
-                return {
-                    "success": False,
-                    "error": f"Non-JSON output from agent-browser for '{command}': {raw}"
-                }
+                return _finalize_browser_command_result(
+                    task_id,
+                    command,
+                    {
+                        "success": False,
+                        "error": f"Non-JSON output from agent-browser for '{command}': {raw}"
+                    },
+                    session_info=session_info,
+                    authority=authority,
+                    details=audit_details,
+                )
         
         # Check for errors
         if returncode != 0:
             error_msg = stderr.strip() if stderr else f"Command failed with code {returncode}"
             logger.warning("browser '%s' failed (rc=%s): %s", command, returncode, error_msg[:300])
-            return {"success": False, "error": error_msg}
+            return _finalize_browser_command_result(
+                task_id,
+                command,
+                {"success": False, "error": error_msg},
+                session_info=session_info,
+                authority=authority,
+                details=audit_details,
+            )
         
-        return {"success": True, "data": {}}
+        return _finalize_browser_command_result(
+            task_id,
+            command,
+            {"success": True, "data": {}},
+            session_info=session_info,
+            authority=authority,
+            details=audit_details,
+        )
         
     except Exception as e:
         logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
-        return {"success": False, "error": str(e)}
+        return _finalize_browser_command_result(
+            task_id,
+            command,
+            {"success": False, "error": str(e)},
+            session_info=session_info,
+            authority=authority,
+            details=audit_details,
+        )
+
+
+def _run_browser_command(
+    task_id: str,
+    command: str,
+    args: List[str] = None,
+    timeout: Optional[int] = None,
+) -> Dict[str, Any]:
+    return get_browser_boundary_shim().run_command(
+        task_id=task_id,
+        command=command,
+        args=args,
+        timeout=timeout,
+        authority=get_browser_authority(),
+    )
 
 
 def _extract_relevant_content(
@@ -1268,6 +1618,18 @@ def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
     if remaining > 0:
         result.append(f'\n[... {remaining} more lines truncated, use browser_snapshot for full content]')
     return '\n'.join(result)
+
+
+def _maybe_attach_browser_session_metadata(response: Dict[str, Any], session_info: Dict[str, Any]) -> None:
+    authority = get_browser_authority()
+    if authority.remote and not authority.has("metadata"):
+        return
+    response["browser_session"] = {
+        "session_name": session_info.get("session_name"),
+        "owner_key": session_info.get("owner_key"),
+        "source": authority.source,
+        "capabilities": list(authority.capabilities),
+    }
 
 
 # ============================================================================
@@ -1404,6 +1766,8 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                 response["element_count"] = len(refs) if refs else 0
         except Exception as e:
             logger.debug("Auto-snapshot after navigate failed: %s", e)
+
+        _maybe_attach_browser_session_metadata(response, session_info)
 
         return json.dumps(response, ensure_ascii=False)
     else:
@@ -2115,7 +2479,7 @@ def _cleanup_old_recordings(max_age_hours=72):
 # Cleanup and Management Functions
 # ============================================================================
 
-def cleanup_browser(task_id: Optional[str] = None) -> None:
+def _cleanup_browser_impl(task_id: Optional[str] = None, authority=None) -> None:
     """
     Clean up browser session for a task.
     
@@ -2166,6 +2530,15 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         with _cleanup_lock:
             _active_sessions.pop(task_id, None)
             _session_last_activity.pop(task_id, None)
+
+        append_browser_audit_event(
+            session_info,
+            action="session.closed",
+            outcome="success",
+            task_id=task_id,
+            details={"bb_session_id": bb_session_id},
+        )
+        update_browser_session_record(session_info, closed_at=time.time(), closed_by="cleanup_browser")
         
         # Cloud mode: close the cloud browser session via provider API
         if bb_session_id:
@@ -2195,6 +2568,14 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         logger.debug("Removed task %s from active sessions", task_id)
     else:
         logger.debug("No active session found for task_id: %s", task_id)
+
+
+def cleanup_browser(task_id: Optional[str] = None) -> None:
+    get_browser_boundary_shim().cleanup_session(
+        task_id=task_id,
+        authority=get_browser_authority(),
+    )
+
 
 
 def cleanup_all_browsers() -> None:
@@ -2390,4 +2771,17 @@ registry.register(
     handler=lambda args, **kw: browser_console(clear=args.get("clear", False), expression=args.get("expression"), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="🖥️",
+)
+registry.register(
+    name="browser_batch",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_batch"],
+    handler=lambda args, **kw: browser_batch(
+        actions=args.get("actions", []),
+        stop_on_error=args.get("stop_on_error", True),
+        task_id=kw.get("task_id"),
+        user_task=kw.get("user_task"),
+    ),
+    check_fn=check_browser_requirements,
+    emoji="🧭",
 )

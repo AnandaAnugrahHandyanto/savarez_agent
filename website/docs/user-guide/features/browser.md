@@ -31,6 +31,38 @@ Key capabilities:
 - **Automatic cleanup** — inactive sessions are closed after a timeout
 - **Vision analysis** — screenshot + AI analysis for visual understanding
 
+## Scoped browser authority
+
+Remote callers can now attach a browser-authority contract so shared browser sessions are not just vibes and trust falls.
+
+Authority payloads define:
+- `source` — `local` or `remote`
+- `owner_id` / `owner_type` — who owns the session
+- `capabilities` — any of `read`, `interact`, `admin`, `metadata`
+- optional request/session metadata
+
+When a remote authority is active:
+- session reuse checks owner scope
+- actions are capability-gated
+- session metadata and audit logs are written under:
+  - `~/.hermes/browser_sessions/<session_name>/metadata.json`
+  - `~/.hermes/browser_sessions/<session_name>/audit.jsonl`
+
+API clients can pass authority via the `X-Hermes-Browser-Authority` header as JSON.
+
+Example:
+
+```json
+{
+  "source": "remote",
+  "owner_id": "review-bot-7",
+  "owner_type": "agent",
+  "capabilities": ["read", "interact", "metadata"]
+}
+```
+
+Local browser use remains permissive by default, so existing CLI/browser workflows continue to work unchanged.
+
 ## Setup
 
 ### Browserbase cloud mode
@@ -276,6 +308,57 @@ Check the browser console for any JavaScript errors
 ```
 
 Use `clear=True` to clear the console after reading, so subsequent calls only show new messages.
+
+### `browser_batch`
+
+Run multiple browser actions sequentially in one tool call on the same task/session.
+
+Input shape:
+
+```json
+{
+  "actions": [
+    {"action": "navigate", "url": "https://example.com"},
+    {"action": "click", "ref": "@e3"},
+    {"action": "snapshot", "full": true}
+  ],
+  "stop_on_error": true
+}
+```
+
+Supported `action` values:
+
+- `navigate`
+- `snapshot`
+- `click`
+- `type`
+- `scroll`
+- `back`
+- `press`
+- `get_images`
+- `vision`
+- `console`
+
+Guardrails:
+
+- `actions` must be a non-empty list
+- maximum 25 actions per call
+- each action must include its required fields
+- `stop_on_error` defaults to `true`
+
+`browser_batch` routes through the existing high-level browser tools internally, so browser authority, session ownership checks, and per-step behavior stay exactly the same as if you had called each tool separately.
+
+The result is a normal JSON object with per-step results, success/failure status, and partial failure info when a step fails.
+
+## Boundary shim architecture
+
+Browser execution now sits behind an internal boundary shim at the browser-tool layer.
+
+- The public browser tools and `browser_authority` contract stay the same.
+- The default reference implementation is an in-process shim that preserves current behavior.
+- The seam covers session lookup, command execution, and cleanup so alternate transports can be introduced without changing the agent-facing browser API.
+
+This is internal architecture rather than a new per-request API parameter.
 
 ## Practical Examples
 
