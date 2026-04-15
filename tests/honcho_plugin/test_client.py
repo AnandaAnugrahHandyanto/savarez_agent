@@ -650,3 +650,91 @@ class TestResetHonchoClient:
         assert mod._honcho_client is not None
         reset_honcho_client()
         assert mod._honcho_client is None
+
+
+class TestDialecticDepthParsing:
+    """Tests for _parse_dialectic_depth and _parse_dialectic_depth_levels."""
+
+    def test_default_depth_is_1(self, tmp_path):
+        """Default dialecticDepth should be 1."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "***"}))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth == 1
+
+    def test_depth_from_root(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "***", "dialecticDepth": 2}))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth == 2
+
+    def test_depth_host_block_wins(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "***",
+            "dialecticDepth": 1,
+            "hosts": {"hermes": {"dialecticDepth": 3}},
+        }))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth == 3
+
+    def test_depth_clamped_high(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "***", "dialecticDepth": 10}))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth == 3
+
+    def test_depth_clamped_low(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "***", "dialecticDepth": -1}))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth == 1
+
+    def test_depth_levels_default_none(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "***"}))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth_levels is None
+
+    def test_depth_levels_from_config(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "***",
+            "dialecticDepth": 2,
+            "dialecticDepthLevels": ["minimal", "high"],
+        }))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth_levels == ["minimal", "high"]
+
+    def test_depth_levels_padded_if_short(self, tmp_path):
+        """Array shorter than depth gets padded with 'low'."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "***",
+            "dialecticDepth": 3,
+            "dialecticDepthLevels": ["high"],
+        }))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth_levels == ["high", "low", "low"]
+
+    def test_depth_levels_truncated_if_long(self, tmp_path):
+        """Array longer than depth gets truncated."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "***",
+            "dialecticDepth": 1,
+            "dialecticDepthLevels": ["high", "max", "medium"],
+        }))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth_levels == ["high"]
+
+    def test_depth_levels_invalid_values_default_to_low(self, tmp_path):
+        """Invalid reasoning levels in the array fall back to 'low'."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "***",
+            "dialecticDepth": 2,
+            "dialecticDepthLevels": ["invalid", "high"],
+        }))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth_levels == ["low", "high"]

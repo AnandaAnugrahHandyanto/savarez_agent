@@ -205,6 +205,8 @@ class HonchoMemoryProvider(MemoryProvider):
         self._injection_frequency = "every-turn"  # or "first-turn"
         self._context_cadence = 1   # minimum turns between context API calls
         self._dialectic_cadence = 3  # minimum turns between dialectic API calls
+        self._dialectic_depth = 1   # how many .chat() calls per dialectic cycle (1-3)
+        self._dialectic_depth_levels: list[str] | None = None  # per-pass reasoning levels
         self._reasoning_level_cap: Optional[str] = None  # "minimal", "low", "medium", "high"
         self._last_context_turn = -999
         self._last_dialectic_turn = -999
@@ -302,6 +304,8 @@ class HonchoMemoryProvider(MemoryProvider):
                 self._injection_frequency = raw.get("injectionFrequency", "every-turn")
                 self._context_cadence = int(raw.get("contextCadence", 1))
                 self._dialectic_cadence = int(raw.get("dialecticCadence", 3))
+                self._dialectic_depth = max(1, min(cfg.dialectic_depth, 3))
+                self._dialectic_depth_levels = cfg.dialectic_depth_levels
                 cap = raw.get("reasoningLevelCap")
                 if cap and cap in ("minimal", "low", "medium", "high"):
                     self._reasoning_level_cap = cap
@@ -614,9 +618,7 @@ class HonchoMemoryProvider(MemoryProvider):
 
         def _run():
             try:
-                result = self._manager.dialectic_query(
-                    self._session_key, query, peer="user"
-                )
+                result = self._run_dialectic_depth(query)
                 if result and result.strip():
                     with self._prefetch_lock:
                         self._prefetch_result = result
@@ -627,6 +629,136 @@ class HonchoMemoryProvider(MemoryProvider):
             target=_run, daemon=True, name="honcho-prefetch"
         )
         self._prefetch_thread.start()
+
+    # ----- Dialectic depth: multi-pass .chat() with cold/warm prompts -----
+
+    # Proportional reasoning levels per depth/pass when dialecticDepthLevels
+    # is not configured. The base level is dialecticReasoningLevel.
+    # Index: (depth, pass) → level relative to base.
+    _PROPORTIONAL_LEVELS: dict[tuple[int, int], str] = {
+        # depth 1: single pass at base level
+        (1, 0): "base",
+        # depth 2: pass 0 lighter, pass 1 at base
+        (2, 0): "minimal",
+        (2, 1): "base",
+        # depth 3: pass 0 lighter, pass 1 at base, pass 2 one above minimal
+        (3, 0): "minimal",
+        (3, 1): "base",
+        (3, 2): "low",
+    }
+
+    _LEVEL_ORDER = ("minimal", "low", "medium", "high", "max")
+
+    def _resolve_pass_level(self, pass_idx: int) -> str:
+        """Resolve reasoning level for a given pass index.
+
+        Uses dialecticDepthLevels if configured, otherwise proportional
+        defaults relative to dialecticReasoningLevel.
+        """
+        if self._dialectic_depth_levels and pass_idx < len(self._dialectic_depth_levels):
+            return self._dialectic_depth_levels[pass_idx]
+
+        base = (self._config.dialectic_reasoning_level if self._config else "low")
+        mapping = self._PROPORTIONAL_LEVELS.get((self._dialectic_depth, pass_idx))
+        if mapping is None or mapping == "base":
+            return base
+        return mapping
+
+    def _build_dialectic_prompt(self, pass_idx: int, prior_results: list[str], is_cold: bool) -> str:
+        """Build the prompt for a given dialectic pass.
+
+        Pass 0: cold start (general user query) or warm (session-scoped).
+        Pass 1: self-audit / targeted synthesis against gaps from pass 0.
+        Pass 2: reconciliation / contradiction check across prior passes.
+        """
+        if pass_idx == 0:
+            if is_cold:
+                return (
+                    "Who is this person? What are their preferences, goals, "
+                    "and working style? Focus on facts that would help an AI "
+                    "assistant be immediately useful."
+                )
+            return (
+                "Given what's been discussed in this session so far, what "
+                "context about this user is most relevant to the current "
+                "conversation? Prioritize active context over biographical facts."
+            )
+        elif pass_idx == 1:
+            prior = prior_results[-1] if prior_results else ""
+            return (
+                f"Given this initial assessment:\n\n{prior}\n\n"
+                "What gaps remain in your understanding that would help "
+                "going forward? Synthesize what you actually know about "
+                "the user's current state and immediate needs, grounded "
+                "in evidence from recent sessions."
+            )
+        else:
+            # pass 2: reconciliation
+            return (
+                f"Prior passes produced:\n\n"
+                f"Pass 1:\n{prior_results[0] if len(prior_results) > 0 else '(empty)'}\n\n"
+                f"Pass 2:\n{prior_results[1] if len(prior_results) > 1 else '(empty)'}\n\n"
+                "Do these assessments cohere? Reconcile any contradictions "
+                "and produce a final, concise synthesis of what matters most "
+                "for the current conversation."
+            )
+
+    @staticmethod
+    def _signal_sufficient(result: str) -> bool:
+        """Check if a dialectic pass returned enough signal to skip further passes.
+
+        Heuristic: a response longer than 100 chars with some structure
+        (newlines or bullet points) is considered sufficient.
+        """
+        if not result or len(result.strip()) < 100:
+            return False
+        # Structured output with sections/bullets is strong signal
+        if "\n" in result and any(c in result for c in ("-", "•", "##", "1.")):
+            return True
+        # Long enough even without structure
+        return len(result.strip()) > 300
+
+    def _run_dialectic_depth(self, query: str) -> str:
+        """Execute up to dialecticDepth .chat() calls with conditional bail-out.
+
+        Cold start (no base context): general user-oriented query.
+        Warm session (base context exists): session-scoped query.
+        Each pass is conditional — bails early if prior pass returned strong signal.
+        Returns the best (usually last) result.
+        """
+        if not self._manager or not self._session_key:
+            return ""
+
+        is_cold = not self._base_context_cache
+        results: list[str] = []
+
+        for i in range(self._dialectic_depth):
+            if i == 0:
+                prompt = self._build_dialectic_prompt(0, results, is_cold)
+            else:
+                # Skip further passes if prior pass delivered strong signal
+                if results and self._signal_sufficient(results[-1]):
+                    logger.debug("Honcho dialectic depth %d: pass %d skipped, prior signal sufficient",
+                                 self._dialectic_depth, i)
+                    break
+                prompt = self._build_dialectic_prompt(i, results, is_cold)
+
+            level = self._resolve_pass_level(i)
+            logger.debug("Honcho dialectic depth %d: pass %d, level=%s, cold=%s",
+                         self._dialectic_depth, i, level, is_cold)
+
+            result = self._manager.dialectic_query(
+                self._session_key, prompt,
+                reasoning_level=level,
+                peer="user",
+            )
+            results.append(result or "")
+
+        # Return the last non-empty result (deepest pass that ran)
+        for r in reversed(results):
+            if r and r.strip():
+                return r
+        return ""
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Track turn count for cadence and injection_frequency logic."""

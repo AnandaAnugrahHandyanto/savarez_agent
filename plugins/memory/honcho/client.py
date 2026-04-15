@@ -105,6 +105,39 @@ def _parse_context_tokens(host_val, root_val) -> int | None:
     return None
 
 
+def _parse_dialectic_depth(host_val, root_val) -> int:
+    """Parse dialecticDepth: host wins, then root, then 1. Clamped to 1-3."""
+    for val in (host_val, root_val):
+        if val is not None:
+            try:
+                return max(1, min(int(val), 3))
+            except (ValueError, TypeError):
+                pass
+    return 1
+
+
+_VALID_REASONING_LEVELS = ("minimal", "low", "medium", "high", "max")
+
+
+def _parse_dialectic_depth_levels(host_val, root_val, depth: int) -> list[str] | None:
+    """Parse dialecticDepthLevels: optional array of reasoning levels per pass.
+
+    Returns None when not configured (use proportional defaults).
+    When configured, validates each level and truncates/pads to match depth.
+    """
+    for val in (host_val, root_val):
+        if val is not None and isinstance(val, list):
+            levels = [
+                l if l in _VALID_REASONING_LEVELS else "low"
+                for l in val[:depth]
+            ]
+            # Pad with "low" if array is shorter than depth
+            while len(levels) < depth:
+                levels.append("low")
+            return levels
+    return None
+
+
 def _resolve_optional_float(*values: Any) -> float | None:
     """Return the first non-empty value coerced to a positive float."""
     for value in values:
@@ -210,6 +243,14 @@ class HonchoClientConfig:
     dialectic_dynamic: bool = True
     # Max chars of dialectic result to inject into Hermes system prompt
     dialectic_max_chars: int = 600
+    # Dialectic depth: how many .chat() calls per dialectic cycle (1-3).
+    # Depth 1: single call. Depth 2: self-audit + targeted synthesis.
+    # Depth 3: self-audit + synthesis + reconciliation.
+    dialectic_depth: int = 1
+    # Optional per-pass reasoning level override. Array of reasoning levels
+    # matching dialectic_depth length. When None, uses proportional defaults
+    # derived from dialectic_reasoning_level.
+    dialectic_depth_levels: list[str] | None = None
     # Honcho API limits — configurable for self-hosted instances
     # Max chars per message sent via add_messages() (Honcho cloud: 25000)
     message_max_chars: int = 25000
@@ -396,6 +437,18 @@ class HonchoClientConfig:
                 host_block.get("dialecticMaxChars")
                 or raw.get("dialecticMaxChars")
                 or 600
+            ),
+            dialectic_depth=_parse_dialectic_depth(
+                host_block.get("dialecticDepth"),
+                raw.get("dialecticDepth"),
+            ),
+            dialectic_depth_levels=_parse_dialectic_depth_levels(
+                host_block.get("dialecticDepthLevels"),
+                raw.get("dialecticDepthLevels"),
+                depth=_parse_dialectic_depth(
+                    host_block.get("dialecticDepth"),
+                    raw.get("dialecticDepth"),
+                ),
             ),
             message_max_chars=int(
                 host_block.get("messageMaxChars")

@@ -785,3 +785,162 @@ class TestDialecticCadenceDefaults:
         """dialecticCadence from config overrides the default."""
         provider = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 5}})
         assert provider._dialectic_cadence == 5
+
+
+class TestDialecticDepth:
+    """Tests for the dialecticDepth multi-pass system."""
+
+    @staticmethod
+    def _make_provider(cfg_extra=None):
+        from unittest.mock import patch, MagicMock
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        defaults = dict(api_key="test-key", enabled=True, recall_mode="hybrid")
+        if cfg_extra:
+            defaults.update(cfg_extra)
+        cfg = HonchoClientConfig(**defaults)
+        provider = HonchoMemoryProvider()
+        mock_manager = MagicMock()
+        mock_session = MagicMock()
+        mock_session.messages = []
+        mock_manager.get_or_create.return_value = mock_session
+
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider.initialize(session_id="test-session-001")
+
+        return provider
+
+    def test_default_depth_is_1(self):
+        """Default dialecticDepth should be 1 — single .chat() call."""
+        provider = self._make_provider()
+        assert provider._dialectic_depth == 1
+
+    def test_depth_from_config(self):
+        """dialecticDepth from config sets the depth."""
+        provider = self._make_provider(cfg_extra={"dialectic_depth": 2})
+        assert provider._dialectic_depth == 2
+
+    def test_depth_clamped_to_3(self):
+        """dialecticDepth > 3 gets clamped to 3."""
+        provider = self._make_provider(cfg_extra={"dialectic_depth": 7})
+        assert provider._dialectic_depth == 3
+
+    def test_depth_clamped_to_1(self):
+        """dialecticDepth < 1 gets clamped to 1."""
+        provider = self._make_provider(cfg_extra={"dialectic_depth": 0})
+        assert provider._dialectic_depth == 1
+
+    def test_depth_levels_from_config(self):
+        """dialecticDepthLevels array is read from config."""
+        provider = self._make_provider(cfg_extra={
+            "dialectic_depth": 2,
+            "dialectic_depth_levels": ["minimal", "high"],
+        })
+        assert provider._dialectic_depth_levels == ["minimal", "high"]
+
+    def test_depth_levels_none_by_default(self):
+        """When dialecticDepthLevels is not configured, it's None."""
+        provider = self._make_provider()
+        assert provider._dialectic_depth_levels is None
+
+    def test_resolve_pass_level_uses_depth_levels(self):
+        """Per-pass levels from dialecticDepthLevels override proportional."""
+        provider = self._make_provider(cfg_extra={
+            "dialectic_depth": 2,
+            "dialectic_depth_levels": ["minimal", "high"],
+        })
+        assert provider._resolve_pass_level(0) == "minimal"
+        assert provider._resolve_pass_level(1) == "high"
+
+    def test_resolve_pass_level_proportional_depth_1(self):
+        """Depth 1 pass 0 uses the base reasoning level."""
+        provider = self._make_provider(cfg_extra={
+            "dialectic_depth": 1,
+            "dialectic_reasoning_level": "medium",
+        })
+        assert provider._resolve_pass_level(0) == "medium"
+
+    def test_resolve_pass_level_proportional_depth_2(self):
+        """Depth 2: pass 0 is minimal, pass 1 is base level."""
+        provider = self._make_provider(cfg_extra={
+            "dialectic_depth": 2,
+            "dialectic_reasoning_level": "high",
+        })
+        assert provider._resolve_pass_level(0) == "minimal"
+        assert provider._resolve_pass_level(1) == "high"
+
+    def test_cold_start_prompt(self):
+        """Cold start (no base context) uses general user query."""
+        provider = self._make_provider()
+        prompt = provider._build_dialectic_prompt(0, [], is_cold=True)
+        assert "preferences" in prompt.lower()
+        assert "session" not in prompt.lower()
+
+    def test_warm_session_prompt(self):
+        """Warm session (has context) uses session-scoped query."""
+        provider = self._make_provider()
+        prompt = provider._build_dialectic_prompt(0, [], is_cold=False)
+        assert "session" in prompt.lower()
+        assert "current conversation" in prompt.lower()
+
+    def test_signal_sufficient_short_response(self):
+        """Short responses are not sufficient signal."""
+        assert not HonchoMemoryProvider._signal_sufficient("ok")
+        assert not HonchoMemoryProvider._signal_sufficient("")
+        assert not HonchoMemoryProvider._signal_sufficient(None)
+
+    def test_signal_sufficient_structured_response(self):
+        """Structured responses with bullets/headers are sufficient."""
+        result = "## Current State\n- Working on Honcho PR\n- Testing dialectic depth\n" + "x" * 50
+        assert HonchoMemoryProvider._signal_sufficient(result)
+
+    def test_signal_sufficient_long_unstructured(self):
+        """Long responses are sufficient even without structure."""
+        assert HonchoMemoryProvider._signal_sufficient("a" * 301)
+
+    def test_run_dialectic_depth_single_pass(self):
+        """Depth 1 makes exactly one .chat() call."""
+        from unittest.mock import MagicMock
+        provider = self._make_provider(cfg_extra={"dialectic_depth": 1})
+        provider._manager = MagicMock()
+        provider._manager.dialectic_query.return_value = "user prefers zero-fluff"
+        provider._session_key = "test"
+        provider._base_context_cache = None  # cold start
+
+        result = provider._run_dialectic_depth("hello")
+        assert result == "user prefers zero-fluff"
+        assert provider._manager.dialectic_query.call_count == 1
+
+    def test_run_dialectic_depth_two_passes(self):
+        """Depth 2 makes two .chat() calls when pass 1 signal is weak."""
+        from unittest.mock import MagicMock
+        provider = self._make_provider(cfg_extra={"dialectic_depth": 2})
+        provider._manager = MagicMock()
+        provider._manager.dialectic_query.side_effect = [
+            "thin response",  # pass 0: weak signal
+            "## Synthesis\n- Grounded in evidence\n- Current PR work\n" + "x" * 100,  # pass 1: strong
+        ]
+        provider._session_key = "test"
+        provider._base_context_cache = "existing context"
+
+        result = provider._run_dialectic_depth("test query")
+        assert provider._manager.dialectic_query.call_count == 2
+        assert "Synthesis" in result
+
+    def test_run_dialectic_depth_bails_early_on_strong_signal(self):
+        """Depth 2 skips pass 1 when pass 0 returns strong signal."""
+        from unittest.mock import MagicMock
+        provider = self._make_provider(cfg_extra={"dialectic_depth": 2})
+        provider._manager = MagicMock()
+        provider._manager.dialectic_query.return_value = (
+            "## Full Assessment\n- Strong structured response\n- With evidence\n" + "x" * 200
+        )
+        provider._session_key = "test"
+        provider._base_context_cache = "existing context"
+
+        result = provider._run_dialectic_depth("test query")
+        # Only 1 call because pass 0 had sufficient signal
+        assert provider._manager.dialectic_query.call_count == 1
