@@ -33,9 +33,9 @@ class TestCronCommandLifecycle:
         assert triggered["state"] == "scheduled"
 
         out = capsys.readouterr().out
-        assert "Paused job" in out
-        assert "Resumed job" in out
-        assert "Triggered job" in out
+        assert "일시중지한 job" in out
+        assert "재개한 job" in out
+        assert "실행 예약한 job" in out
 
     def test_edit_can_replace_and_clear_skills(self, tmp_cron_dir, capsys):
         job = create_job(
@@ -83,7 +83,7 @@ class TestCronCommandLifecycle:
         assert cleared["skill"] is None
 
         out = capsys.readouterr().out
-        assert "Updated job" in out
+        assert "작업을 업데이트했어요" in out
 
     def test_create_with_multiple_skills(self, tmp_cron_dir, capsys):
         cron_command(
@@ -99,7 +99,7 @@ class TestCronCommandLifecycle:
             )
         )
         out = capsys.readouterr().out
-        assert "Created job" in out
+        assert "작업을 만들었어요" in out
 
         jobs = list_jobs()
         assert len(jobs) == 1

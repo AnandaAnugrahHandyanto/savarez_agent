@@ -45,7 +45,7 @@ class TestSubscribe:
     def test_basic_create(self, capsys):
         webhook_command(_make_args(webhook_action="subscribe", name="test-hook"))
         out = capsys.readouterr().out
-        assert "Created" in out
+        assert "생성됨" in out
         assert "/webhooks/test-hook" in out
         subs = _load_subscriptions()
         assert "test-hook" in subs
@@ -82,13 +82,13 @@ class TestSubscribe:
         webhook_command(_make_args(webhook_action="subscribe", name="x", prompt="v1"))
         webhook_command(_make_args(webhook_action="subscribe", name="x", prompt="v2"))
         out = capsys.readouterr().out
-        assert "Updated" in out
+        assert "업데이트됨" in out
         assert _load_subscriptions()["x"]["prompt"] == "v2"
 
     def test_invalid_name(self, capsys):
         webhook_command(_make_args(webhook_action="subscribe", name="bad name!"))
         out = capsys.readouterr().out
-        assert "Error" in out or "Invalid" in out
+        assert "오류" in out or "올바르지 않아요" in out
         assert _load_subscriptions() == {}
 
 
@@ -96,7 +96,7 @@ class TestList:
     def test_empty(self, capsys):
         webhook_command(_make_args(webhook_action="list"))
         out = capsys.readouterr().out
-        assert "No dynamic" in out
+        assert "동적 웹훅 구독이 없어요" in out
 
     def test_with_entries(self, capsys):
         webhook_command(_make_args(webhook_action="subscribe", name="a"))
@@ -104,7 +104,7 @@ class TestList:
         capsys.readouterr()  # clear
         webhook_command(_make_args(webhook_action="list"))
         out = capsys.readouterr().out
-        assert "2 webhook" in out
+        assert "웹훅 구독 2개" in out
         assert "a" in out
         assert "b" in out
 
@@ -114,13 +114,13 @@ class TestRemove:
         webhook_command(_make_args(webhook_action="subscribe", name="temp"))
         webhook_command(_make_args(webhook_action="remove", name="temp"))
         out = capsys.readouterr().out
-        assert "Removed" in out
+        assert "웹훅 구독을 제거했어요" in out
         assert _load_subscriptions() == {}
 
     def test_remove_nonexistent(self, capsys):
         webhook_command(_make_args(webhook_action="remove", name="nope"))
         out = capsys.readouterr().out
-        assert "No subscription" in out
+        assert "이름의 구독이 없어요" in out
 
     def test_selective_remove(self):
         webhook_command(_make_args(webhook_action="subscribe", name="keep"))
@@ -151,7 +151,7 @@ class TestWebhookEnabledGate:
         monkeypatch.setattr("hermes_cli.webhook._is_webhook_enabled", lambda: False)
         webhook_command(_make_args(webhook_action="subscribe", name="blocked"))
         out = capsys.readouterr().out
-        assert "not enabled" in out.lower()
+        assert "활성화되어 있지 않아요" in out
         assert "hermes gateway setup" in out
         assert _load_subscriptions() == {}
 
@@ -159,13 +159,13 @@ class TestWebhookEnabledGate:
         monkeypatch.setattr("hermes_cli.webhook._is_webhook_enabled", lambda: False)
         webhook_command(_make_args(webhook_action="list"))
         out = capsys.readouterr().out
-        assert "not enabled" in out.lower()
+        assert "활성화되어 있지 않아요" in out
 
     def test_allows_when_enabled(self, capsys):
         # _is_webhook_enabled already patched to True by autouse fixture
         webhook_command(_make_args(webhook_action="subscribe", name="allowed"))
         out = capsys.readouterr().out
-        assert "Created" in out
+        assert "생성됨" in out
         assert "allowed" in _load_subscriptions()
 
     def test_real_check_disabled(self, monkeypatch):

@@ -1,13 +1,13 @@
-"""hermes webhook — manage dynamic webhook subscriptions from the CLI.
+"""hermes webhook — CLI에서 동적 웹훅 구독을 관리.
 
-Usage:
+사용법:
     hermes webhook subscribe <name> [options]
     hermes webhook list
     hermes webhook remove <name>
     hermes webhook test <name> [--payload '{"key": "value"}']
 
-Subscriptions persist to ~/.hermes/webhook_subscriptions.json and are
-hot-reloaded by the webhook adapter without a gateway restart.
+구독 정보는 ~/.hermes/webhook_subscriptions.json에 저장되며,
+게이트웨이를 재시작하지 않아도 webhook adapter가 즉시 다시 불러옵니다.
 """
 
 import json
@@ -80,12 +80,12 @@ def _get_webhook_base_url() -> str:
 def _setup_hint() -> str:
     _dhh = display_hermes_home()
     return f"""
-  Webhook platform is not enabled. To set it up:
+  Webhook 플랫폼이 활성화되어 있지 않아요. 설정 방법:
 
-  1. Run the gateway setup wizard:
+  1. 게이트웨이 설정 마법사 실행:
      hermes gateway setup
 
-  2. Or manually add to {_dhh}/config.yaml:
+  2. 또는 {_dhh}/config.yaml에 직접 추가:
      platforms:
        webhook:
          enabled: true
@@ -94,12 +94,12 @@ def _setup_hint() -> str:
            port: 8644
            secret: "your-global-hmac-secret"
 
-  3. Or set environment variables in {_dhh}/.env:
+  3. 또는 {_dhh}/.env에 환경 변수 설정:
      WEBHOOK_ENABLED=true
      WEBHOOK_PORT=8644
-     WEBHOOK_SECRET=your-global-secret
+     WEBHOOK_SECRET=your-g...cret
 
-  Then start the gateway: hermes gateway run
+  그다음 게이트웨이 시작: hermes gateway run
 """
 
 
@@ -116,8 +116,8 @@ def webhook_command(args):
     sub = getattr(args, "webhook_action", None)
 
     if not sub:
-        print("Usage: hermes webhook {subscribe|list|remove|test}")
-        print("Run 'hermes webhook --help' for details.")
+        print("사용법: hermes webhook {subscribe|list|remove|test}")
+        print("자세한 내용은 'hermes webhook --help'를 실행하세요.")
         return
 
     if not _require_webhook_enabled():
@@ -136,7 +136,7 @@ def webhook_command(args):
 def _cmd_subscribe(args):
     name = args.name.strip().lower().replace(" ", "-")
     if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
-        print(f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores.")
+        print(f"오류: 이름 '{name}' 이(가) 올바르지 않아요. 소문자 영숫자와 하이픈/밑줄만 사용해 주세요.")
         return
 
     subs = _load_subscriptions()
@@ -146,7 +146,7 @@ def _cmd_subscribe(args):
     events = [e.strip() for e in args.events.split(",")] if args.events else []
 
     route = {
-        "description": args.description or f"Agent-created subscription: {name}",
+        "description": args.description or f"에이전트가 만든 구독: {name}",
         "events": events,
         "secret": secret,
         "prompt": args.prompt or "",
@@ -162,43 +162,43 @@ def _cmd_subscribe(args):
     _save_subscriptions(subs)
 
     base_url = _get_webhook_base_url()
-    status = "Updated" if is_update else "Created"
+    status = "업데이트됨" if is_update else "생성됨"
 
-    print(f"\n  {status} webhook subscription: {name}")
+    print(f"\n  {status} 웹훅 구독: {name}")
     print(f"  URL:    {base_url}/webhooks/{name}")
     print(f"  Secret: {secret}")
     if events:
-        print(f"  Events: {', '.join(events)}")
+        print(f"  이벤트: {', '.join(events)}")
     else:
-        print("  Events: (all)")
-    print(f"  Deliver: {route['deliver']}")
+        print("  이벤트: (전체)")
+    print(f"  전달:   {route['deliver']}")
     if route.get("prompt"):
         prompt_preview = route["prompt"][:80] + ("..." if len(route["prompt"]) > 80 else "")
-        print(f"  Prompt: {prompt_preview}")
-    print(f"\n  Configure your service to POST to the URL above.")
-    print(f"  Use the secret for HMAC-SHA256 signature validation.")
-    print(f"  The gateway must be running to receive events (hermes gateway run).\n")
+        print(f"  프롬프트: {prompt_preview}")
+    print(f"\n  서비스가 위 URL로 POST를 보내도록 설정하세요.")
+    print(f"  HMAC-SHA256 서명 검증에는 위 secret을 사용하세요.")
+    print(f"  이벤트를 받으려면 게이트웨이가 실행 중이어야 해요(hermes gateway run).\n")
 
 
 def _cmd_list(args):
     subs = _load_subscriptions()
     if not subs:
-        print("  No dynamic webhook subscriptions.")
-        print("  Create one with: hermes webhook subscribe <name>")
+        print("  동적 웹훅 구독이 없어요.")
+        print("  만들려면: hermes webhook subscribe <name>")
         return
 
     base_url = _get_webhook_base_url()
-    print(f"\n  {len(subs)} webhook subscription(s):\n")
+    print(f"\n  웹훅 구독 {len(subs)}개:\n")
     for name, route in subs.items():
-        events = ", ".join(route.get("events", [])) or "(all)"
+        events = ", ".join(route.get("events", [])) or "(전체)"
         deliver = route.get("deliver", "log")
         desc = route.get("description", "")
         print(f"  ◆ {name}")
         if desc:
             print(f"    {desc}")
         print(f"    URL:     {base_url}/webhooks/{name}")
-        print(f"    Events:  {events}")
-        print(f"    Deliver: {deliver}")
+        print(f"    이벤트:  {events}")
+        print(f"    전달:    {deliver}")
         print()
 
 
@@ -207,13 +207,13 @@ def _cmd_remove(args):
     subs = _load_subscriptions()
 
     if name not in subs:
-        print(f"  No subscription named '{name}'.")
-        print("  Note: Static routes from config.yaml cannot be removed here.")
+        print(f"  '{name}' 이름의 구독이 없어요.")
+        print("  참고: config.yaml의 정적 라우트는 여기서 제거할 수 없어요.")
         return
 
     del subs[name]
     _save_subscriptions(subs)
-    print(f"  Removed webhook subscription: {name}")
+    print(f"  웹훅 구독을 제거했어요: {name}")
 
 
 def _cmd_test(args):
@@ -222,7 +222,7 @@ def _cmd_test(args):
     subs = _load_subscriptions()
 
     if name not in subs:
-        print(f"  No subscription named '{name}'.")
+        print(f"  '{name}' 이름의 구독이 없어요.")
         return
 
     route = subs[name]
@@ -230,7 +230,7 @@ def _cmd_test(args):
     base_url = _get_webhook_base_url()
     url = f"{base_url}/webhooks/{name}"
 
-    payload = args.payload or '{"test": true, "event_type": "test", "message": "Hello from hermes webhook test"}'
+    payload = args.payload or '{"test": true, "event_type": "test", "message": "hermes webhook test에서 보낸 인사"}'
 
     import hmac
     import hashlib
@@ -238,7 +238,7 @@ def _cmd_test(args):
         secret.encode(), payload.encode(), hashlib.sha256
     ).hexdigest()
 
-    print(f"  Sending test POST to {url}")
+    print(f"  테스트 POST를 전송하는 중: {url}")
     try:
         import urllib.request
         req = urllib.request.Request(
@@ -253,7 +253,7 @@ def _cmd_test(args):
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = resp.read().decode()
-            print(f"  Response ({resp.status}): {body}")
+            print(f"  응답 ({resp.status}): {body}")
     except Exception as e:
-        print(f"  Error: {e}")
-        print("  Is the gateway running? (hermes gateway run)")
+        print(f"  오류: {e}")
+        print("  게이트웨이가 실행 중인가요? (hermes gateway run)")

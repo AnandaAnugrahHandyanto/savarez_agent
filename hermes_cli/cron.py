@@ -1,8 +1,8 @@
 """
-Cron subcommand for hermes CLI.
+hermes CLI용 cron 하위 명령.
 
-Handles standalone cron management commands like list, create, edit,
-pause/resume/run/remove, status, and tick.
+list, create, edit, pause/resume/run/remove, status, tick 같은
+독립형 cron 관리 명령을 처리합니다.
 """
 
 import json
@@ -45,13 +45,13 @@ def cron_list(show_all: bool = False):
     jobs = list_jobs(include_disabled=show_all)
 
     if not jobs:
-        print(color("No scheduled jobs.", Colors.DIM))
-        print(color("Create one with 'hermes cron create ...' or the /cron command in chat.", Colors.DIM))
+        print(color("예약된 작업이 없어요.", Colors.DIM))
+        print(color("'hermes cron create ...' 또는 채팅의 /cron 명령으로 만들어 보세요.", Colors.DIM))
         return
 
     print()
     print(color("┌─────────────────────────────────────────────────────────────────────────┐", Colors.CYAN))
-    print(color("│                         Scheduled Jobs                                  │", Colors.CYAN))
+    print(color("│                           예약 작업 목록                                 │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────────────────────┘", Colors.CYAN))
     print()
 
@@ -83,16 +83,16 @@ def cron_list(show_all: bool = False):
             status = color("[disabled]", Colors.RED)
 
         print(f"  {color(job_id, Colors.YELLOW)} {status}")
-        print(f"    Name:      {name}")
-        print(f"    Schedule:  {schedule}")
-        print(f"    Repeat:    {repeat_str}")
-        print(f"    Next run:  {next_run}")
-        print(f"    Deliver:   {deliver_str}")
+        print(f"    이름:      {name}")
+        print(f"    일정:      {schedule}")
+        print(f"    반복:      {repeat_str}")
+        print(f"    다음 실행: {next_run}")
+        print(f"    전달:      {deliver_str}")
         if skills:
-            print(f"    Skills:    {', '.join(skills)}")
+            print(f"    스킬:      {', '.join(skills)}")
         script = job.get("script")
         if script:
-            print(f"    Script:    {script}")
+            print(f"    스크립트:  {script}")
 
         # Execution history
         last_status = job.get("last_status")
@@ -102,19 +102,19 @@ def cron_list(show_all: bool = False):
                 status_display = color("ok", Colors.GREEN)
             else:
                 status_display = color(f"{last_status}: {job.get('last_error', '?')}", Colors.RED)
-            print(f"    Last run:  {last_run}  {status_display}")
+            print(f"    마지막 실행: {last_run}  {status_display}")
 
         delivery_err = job.get("last_delivery_error")
         if delivery_err:
-            print(f"    {color('⚠ Delivery failed:', Colors.YELLOW)} {delivery_err}")
+            print(f"    {color('⚠ 전달 실패:', Colors.YELLOW)} {delivery_err}")
 
         print()
 
     from hermes_cli.gateway import find_gateway_pids
     if not find_gateway_pids():
-        print(color("  ⚠  Gateway is not running — jobs won't fire automatically.", Colors.YELLOW))
-        print(color("     Start it with: hermes gateway install", Colors.DIM))
-        print(color("                    sudo hermes gateway install --system  # Linux servers", Colors.DIM))
+        print(color("  ⚠  게이트웨이가 실행 중이 아니어서 작업이 자동 실행되지 않아요.", Colors.YELLOW))
+        print(color("     시작 명령: hermes gateway install", Colors.DIM))
+        print(color("                sudo hermes gateway install --system  # Linux 서버", Colors.DIM))
         print()
 
 
@@ -133,26 +133,26 @@ def cron_status():
 
     pids = find_gateway_pids()
     if pids:
-        print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
+        print(color("✓ 게이트웨이가 실행 중이어서 cron 작업이 자동으로 실행돼요", Colors.GREEN))
         print(f"  PID: {', '.join(map(str, pids))}")
     else:
-        print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
+        print(color("✗ 게이트웨이가 실행 중이 아니어서 cron 작업이 자동 실행되지 않아요", Colors.RED))
         print()
-        print("  To enable automatic execution:")
-        print("    hermes gateway install    # Install as a user service")
-        print("    sudo hermes gateway install --system  # Linux servers: boot-time system service")
-        print("    hermes gateway            # Or run in foreground")
+        print("  자동 실행을 켜려면:")
+        print("    hermes gateway install    # 사용자 서비스로 설치")
+        print("    sudo hermes gateway install --system  # Linux 서버: 부팅 시 시작되는 시스템 서비스")
+        print("    hermes gateway            # 또는 포그라운드 실행")
 
     print()
 
     jobs = list_jobs(include_disabled=False)
     if jobs:
         next_runs = [j.get("next_run_at") for j in jobs if j.get("next_run_at")]
-        print(f"  {len(jobs)} active job(s)")
+        print(f"  활성 작업 {len(jobs)}개")
         if next_runs:
-            print(f"  Next run: {min(next_runs)}")
+            print(f"  다음 실행: {min(next_runs)}")
     else:
-        print("  No active jobs")
+        print("  활성 작업이 없어요")
 
     print()
 
@@ -170,17 +170,17 @@ def cron_create(args):
         script=getattr(args, "script", None),
     )
     if not result.get("success"):
-        print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
+        print(color(f"작업을 만들지 못했어요: {result.get('error', '알 수 없는 오류')}", Colors.RED))
         return 1
-    print(color(f"Created job: {result['job_id']}", Colors.GREEN))
-    print(f"  Name: {result['name']}")
-    print(f"  Schedule: {result['schedule']}")
+    print(color(f"작업을 만들었어요: {result['job_id']}", Colors.GREEN))
+    print(f"  이름: {result['name']}")
+    print(f"  일정: {result['schedule']}")
     if result.get("skills"):
-        print(f"  Skills: {', '.join(result['skills'])}")
+        print(f"  스킬: {', '.join(result['skills'])}")
     job_data = result.get("job", {})
     if job_data.get("script"):
-        print(f"  Script: {job_data['script']}")
-    print(f"  Next run: {result['next_run_at']}")
+        print(f"  스크립트: {job_data['script']}")
+    print(f"  다음 실행: {result['next_run_at']}")
     return 0
 
 
@@ -189,7 +189,7 @@ def cron_edit(args):
 
     job = get_job(args.job_id)
     if not job:
-        print(color(f"Job not found: {args.job_id}", Colors.RED))
+        print(color(f"작업을 찾지 못했어요: {args.job_id}", Colors.RED))
         return 1
 
     existing_skills = list(job.get("skills") or ([] if not job.get("skill") else [job.get("skill")]))
@@ -220,33 +220,33 @@ def cron_edit(args):
         script=getattr(args, "script", None),
     )
     if not result.get("success"):
-        print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))
+        print(color(f"작업을 업데이트하지 못했어요: {result.get('error', '알 수 없는 오류')}", Colors.RED))
         return 1
 
     updated = result["job"]
-    print(color(f"Updated job: {updated['job_id']}", Colors.GREEN))
-    print(f"  Name: {updated['name']}")
-    print(f"  Schedule: {updated['schedule']}")
+    print(color(f"작업을 업데이트했어요: {updated['job_id']}", Colors.GREEN))
+    print(f"  이름: {updated['name']}")
+    print(f"  일정: {updated['schedule']}")
     if updated.get("skills"):
-        print(f"  Skills: {', '.join(updated['skills'])}")
+        print(f"  스킬: {', '.join(updated['skills'])}")
     else:
-        print("  Skills: none")
+        print("  스킬: 없음")
     if updated.get("script"):
-        print(f"  Script: {updated['script']}")
+        print(f"  스크립트: {updated['script']}")
     return 0
 
 
 def _job_action(action: str, job_id: str, success_verb: str) -> int:
     result = _cron_api(action=action, job_id=job_id)
     if not result.get("success"):
-        print(color(f"Failed to {action} job: {result.get('error', 'unknown error')}", Colors.RED))
+        print(color(f"작업 {action}에 실패했어요: {result.get('error', '알 수 없는 오류')}", Colors.RED))
         return 1
     job = result.get("job") or result.get("removed_job") or {}
     print(color(f"{success_verb} job: {job.get('name', job_id)} ({job_id})", Colors.GREEN))
     if action in {"resume", "run"} and result.get("job", {}).get("next_run_at"):
-        print(f"  Next run: {result['job']['next_run_at']}")
+        print(f"  다음 실행: {result['job']['next_run_at']}")
     if action == "run":
-        print("  It will run on the next scheduler tick.")
+        print("  다음 scheduler tick에서 실행돼요.")
     return 0
 
 
@@ -274,17 +274,17 @@ def cron_command(args):
         return cron_edit(args)
 
     if subcmd == "pause":
-        return _job_action("pause", args.job_id, "Paused")
+        return _job_action("pause", args.job_id, "일시중지한")
 
     if subcmd == "resume":
-        return _job_action("resume", args.job_id, "Resumed")
+        return _job_action("resume", args.job_id, "재개한")
 
     if subcmd == "run":
-        return _job_action("run", args.job_id, "Triggered")
+        return _job_action("run", args.job_id, "실행 예약한")
 
     if subcmd in {"remove", "rm", "delete"}:
-        return _job_action("remove", args.job_id, "Removed")
+        return _job_action("remove", args.job_id, "제거한")
 
-    print(f"Unknown cron command: {subcmd}")
-    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick]")
+    print(f"알 수 없는 cron 명령어예요: {subcmd}")
+    print("사용법: hermes cron [list|create|edit|pause|resume|run|remove|status|tick]")
     sys.exit(1)

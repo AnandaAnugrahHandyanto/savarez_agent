@@ -1,9 +1,9 @@
 """
-Hermes Agent Uninstaller.
+Hermes Agent 제거 도구.
 
-Provides options for:
-- Full uninstall: Remove everything including configs and data
-- Keep data: Remove code but keep ~/.hermes/ (configs, sessions, logs)
+제공하는 옵션:
+- 전체 제거: 설정과 데이터까지 모두 삭제
+- 데이터 유지: 코드는 지우고 ~/.hermes/(설정, 세션, 로그)는 유지
 """
 
 import os
@@ -184,40 +184,40 @@ def run_uninstall(args):
     
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.MAGENTA, Colors.BOLD))
-    print(color("│            ⚕ Hermes Agent Uninstaller                  │", Colors.MAGENTA, Colors.BOLD))
+    print(color("│               ⚕ Hermes Agent 제거 도구                │", Colors.MAGENTA, Colors.BOLD))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA, Colors.BOLD))
     print()
     
     # Show what will be affected
-    print(color("Current Installation:", Colors.CYAN, Colors.BOLD))
-    print(f"  Code:    {project_root}")
-    print(f"  Config:  {hermes_home / 'config.yaml'}")
-    print(f"  Secrets: {hermes_home / '.env'}")
-    print(f"  Data:    {hermes_home / 'cron/'}, {hermes_home / 'sessions/'}, {hermes_home / 'logs/'}")
+    print(color("현재 설치 상태:", Colors.CYAN, Colors.BOLD))
+    print(f"  코드:     {project_root}")
+    print(f"  설정:     {hermes_home / 'config.yaml'}")
+    print(f"  시크릿:   {hermes_home / '.env'}")
+    print(f"  데이터:   {hermes_home / 'cron/'}, {hermes_home / 'sessions/'}, {hermes_home / 'logs/'}")
     print()
     
     # Ask for confirmation
-    print(color("Uninstall Options:", Colors.YELLOW, Colors.BOLD))
+    print(color("제거 옵션:", Colors.YELLOW, Colors.BOLD))
     print()
-    print("  1) " + color("Keep data", Colors.GREEN) + " - Remove code only, keep configs/sessions/logs")
-    print("     (Recommended - you can reinstall later with your settings intact)")
+    print("  1) " + color("데이터 유지", Colors.GREEN) + " - 코드만 제거하고 설정/세션/로그는 유지")
+    print("     (권장 - 나중에 현재 설정을 그대로 사용해 다시 설치할 수 있어요)")
     print()
-    print("  2) " + color("Full uninstall", Colors.RED) + " - Remove everything including all data")
-    print("     (Warning: This deletes all configs, sessions, and logs permanently)")
+    print("  2) " + color("전체 제거", Colors.RED) + " - 데이터까지 포함해 모든 항목 제거")
+    print("     (경고: 설정, 세션, 로그를 영구적으로 삭제해요)")
     print()
-    print("  3) " + color("Cancel", Colors.CYAN) + " - Don't uninstall")
+    print("  3) " + color("취소", Colors.CYAN) + " - 제거하지 않기")
     print()
     
     try:
-        choice = input(color("Select option [1/2/3]: ", Colors.BOLD)).strip()
+        choice = input(color("옵션 선택 [1/2/3]: ", Colors.BOLD)).strip()
     except (KeyboardInterrupt, EOFError):
         print()
-        print("Cancelled.")
+        print("취소했어요.")
         return
     
     if choice == "3" or choice.lower() in ("c", "cancel", "q", "quit", "n", "no"):
         print()
-        print("Uninstall cancelled.")
+        print("제거를 취소했어요.")
         return
     
     full_uninstall = (choice == "2")
@@ -225,55 +225,55 @@ def run_uninstall(args):
     # Final confirmation
     print()
     if full_uninstall:
-        print(color("⚠️  WARNING: This will permanently delete ALL Hermes data!", Colors.RED, Colors.BOLD))
-        print(color("   Including: configs, API keys, sessions, scheduled jobs, logs", Colors.RED))
+        print(color("⚠️  경고: Hermes 데이터를 전부 영구적으로 삭제해요!", Colors.RED, Colors.BOLD))
+        print(color("   포함 항목: 설정, API key, 세션, 예약 작업, 로그", Colors.RED))
     else:
-        print("This will remove the Hermes code but keep your configuration and data.")
+        print("Hermes 코드는 제거하지만 설정과 데이터는 유지해요.")
     
     print()
     try:
-        confirm = input(f"Type '{color('yes', Colors.YELLOW)}' to confirm: ").strip().lower()
+        confirm = input(f"확인하려면 '{color('yes', Colors.YELLOW)}' 를 입력하세요: ").strip().lower()
     except (KeyboardInterrupt, EOFError):
         print()
-        print("Cancelled.")
+        print("취소했어요.")
         return
     
     if confirm != "yes":
         print()
-        print("Uninstall cancelled.")
+        print("제거를 취소했어요.")
         return
     
     print()
-    print(color("Uninstalling...", Colors.CYAN, Colors.BOLD))
+    print(color("제거하는 중...", Colors.CYAN, Colors.BOLD))
     print()
     
     # 1. Stop and uninstall gateway service
-    log_info("Checking for gateway service...")
+    log_info("게이트웨이 서비스를 확인하는 중...")
     if uninstall_gateway_service():
-        log_success("Gateway service stopped and removed")
+        log_success("게이트웨이 서비스를 중지하고 제거했어요")
     else:
-        log_info("No gateway service found")
+        log_info("게이트웨이 서비스를 찾지 못했어요")
     
     # 2. Remove PATH entries from shell configs
-    log_info("Removing PATH entries from shell configs...")
+    log_info("셸 설정에서 PATH 항목을 제거하는 중...")
     removed_configs = remove_path_from_shell_configs()
     if removed_configs:
         for config in removed_configs:
-            log_success(f"Updated {config}")
+            log_success(f"업데이트했어요: {config}")
     else:
-        log_info("No PATH entries found to remove")
+        log_info("제거할 PATH 항목이 없어요")
     
     # 3. Remove wrapper script
-    log_info("Removing hermes command...")
+    log_info("hermes 명령 래퍼를 제거하는 중...")
     removed_wrappers = remove_wrapper_script()
     if removed_wrappers:
         for wrapper in removed_wrappers:
-            log_success(f"Removed {wrapper}")
+            log_success(f"제거했어요: {wrapper}")
     else:
-        log_info("No wrapper script found")
+        log_info("래퍼 스크립트를 찾지 못했어요")
     
     # 4. Remove installation directory (code)
-    log_info("Removing installation directory...")
+    log_info("설치 디렉터리를 제거하는 중...")
     
     # Check if we're running from within the install dir
     # We need to be careful here
@@ -282,45 +282,45 @@ def run_uninstall(args):
             # If the install is inside ~/.hermes/, just remove the hermes-agent subdir
             if hermes_home in project_root.parents or project_root.parent == hermes_home:
                 shutil.rmtree(project_root)
-                log_success(f"Removed {project_root}")
+                log_success(f"제거했어요: {project_root}")
             else:
                 # Installation is somewhere else entirely
                 shutil.rmtree(project_root)
-                log_success(f"Removed {project_root}")
+                log_success(f"제거했어요: {project_root}")
     except Exception as e:
-        log_warn(f"Could not fully remove {project_root}: {e}")
-        log_info("You may need to manually remove it")
+        log_warn(f"{project_root} 를 완전히 제거하지 못했어요: {e}")
+        log_info("수동으로 제거해야 할 수도 있어요")
     
     # 5. Optionally remove ~/.hermes/ data directory
     if full_uninstall:
-        log_info("Removing configuration and data...")
+        log_info("설정과 데이터를 제거하는 중...")
         try:
             if hermes_home.exists():
                 shutil.rmtree(hermes_home)
-                log_success(f"Removed {hermes_home}")
+                log_success(f"제거했어요: {hermes_home}")
         except Exception as e:
-            log_warn(f"Could not fully remove {hermes_home}: {e}")
-            log_info("You may need to manually remove it")
+            log_warn(f"{hermes_home} 를 완전히 제거하지 못했어요: {e}")
+            log_info("수동으로 제거해야 할 수도 있어요")
     else:
-        log_info(f"Keeping configuration and data in {hermes_home}")
+        log_info(f"설정과 데이터는 {hermes_home} 에 그대로 유지해요")
     
     # Done
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.GREEN, Colors.BOLD))
-    print(color("│              ✓ Uninstall Complete!                      │", Colors.GREEN, Colors.BOLD))
+    print(color("│                   ✓ 제거 완료!                         │", Colors.GREEN, Colors.BOLD))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.GREEN, Colors.BOLD))
     print()
     
     if not full_uninstall:
-        print(color("Your configuration and data have been preserved:", Colors.CYAN))
+        print(color("설정과 데이터는 그대로 보존했어요:", Colors.CYAN))
         print(f"  {hermes_home}/")
         print()
-        print("To reinstall later with your existing settings:")
+        print("나중에 기존 설정으로 다시 설치하려면:")
         print(color("  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash", Colors.DIM))
         print()
     
-    print(color("Reload your shell to complete the process:", Colors.YELLOW))
-    print("  source ~/.bashrc  # or ~/.zshrc")
+    print(color("과정을 마무리하려면 셸을 다시 불러오세요:", Colors.YELLOW))
+    print("  source ~/.bashrc  # 또는 ~/.zshrc")
     print()
-    print("Thank you for using Hermes Agent! ⚕")
+    print("Hermes Agent를 사용해 주셔서 고마워요! ⚕")
     print()
