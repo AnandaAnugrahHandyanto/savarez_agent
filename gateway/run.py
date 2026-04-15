@@ -28,6 +28,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
 
+from gateway.response_filters import normalize_live_gateway_response
+
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
@@ -3775,7 +3777,10 @@ class GatewayRunner:
             except Exception:
                 pass
 
-            response = agent_result.get("final_response") or ""
+            response = normalize_live_gateway_response(
+                agent_result.get("final_response"),
+                failed=bool(agent_result.get("failed")),
+            )
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
@@ -8330,6 +8335,7 @@ class GatewayRunner:
                     else:
                         _stream_consumer.on_commentary(text)
                     return
+                text = normalize_live_gateway_response(text)
                 if already_streamed or not _status_adapter or not str(text or "").strip():
                     return
                 try:
@@ -9139,7 +9145,10 @@ class GatewayRunner:
                             )
                         )
                     )
-                    first_response = result.get("final_response", "")
+                    first_response = normalize_live_gateway_response(
+                        result.get("final_response"),
+                        failed=bool(result.get("failed")),
+                    )
                     if first_response and not _already_streamed:
                         try:
                             await adapter.send(
